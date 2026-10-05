@@ -1,7 +1,7 @@
 import { test, expect } from "./fixtures";
-import { applySettingsAndReload, waitForEntries } from "./helpers";
+import { applySettingsAndReload, waitForEntries, runPaletteCommand } from "./helpers";
 
-test("preview switches crop and AI tools and submits its captured revision with Trace disabled", async ({ page }) => {
+test("palette switches crop and AI tools and submits its captured revision with Trace disabled", async ({ page }) => {
   await page.goto("/?path=/home/user/Pictures");
   await applySettingsAndReload(page, { showPreviewPane: true, pluginsEnabled: { trace: false } });
   await waitForEntries(page);
@@ -19,7 +19,7 @@ test("preview switches crop and AI tools and submits its captured revision with 
     };
   });
   await page.locator(".entry-item").filter({ hasText: "screenshot.png" }).click();
-  await page.getByRole("button", { name: "Edit image…", exact: true }).click();
+  await runPaletteCommand(page, "Crop Image…");
   const dialog = page.getByRole("dialog", { name: "Edit image", exact: true });
   const right = page.getByRole("slider", { name: "Right crop edge" });
   await expect(right).toBeVisible();

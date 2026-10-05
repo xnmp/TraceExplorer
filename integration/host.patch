@@ -1,3 +1,16 @@
+diff --git a/docs/code-map/map-feature.md b/docs/code-map/map-feature.md
+index 539152c8..191a027c 100644
+--- a/docs/code-map/map-feature.md
++++ b/docs/code-map/map-feature.md
+@@ -268,7 +268,7 @@ backend for E2E/browser).
+ - `domain/image-crop.ts` — validated full-resolution rectangles, independent edge adjustment, size-preserving crop translation and image-rect pointer mapping; per-representation ICNS transparent-padding geometry (#681; used by the crop editor and native save validation).
+ - `src-tauri/src/image_crop.rs`, `src-tauri/src/image_crop/gif_crop.rs`, `src-tauri/src/image_crop/png_crop.rs`, `src-tauri/src/image_crop/webp_crop.rs`, `src-tauri/src/image_crop/icon_crop.rs` — bounded raster crop encoders; GIF retains indexed frame/disposal semantics, WebP writes cropped composited animation frames, ICNS keeps fixed canvases with transparent padding (#681 codec work; save/UI integration pending).
+ - `src-tauri/src/image_crop/svg_crop.rs` — preserves vector documents and captured pixel viewports; ordinary SMIL stays in the outer image timeline for WebKit; unsafe stylesheet/root-animation context changes are refused. `scripts/verify-image-crop-svg.mjs` renders real Rust outputs in Chromium/WebKit, including repeated crops (#681; integrated through the owned capture/save commands).
+-- `components/ImageCropEditor.svelte`, `components/ImageCropCanvas.svelte`, `state/image-crop-session.ts`, `state/image-crop-effects.ts`, `api/image-crop.ts`, `src-tauri/src/files/image_crop.rs` — crop an immutable original from PreviewPane; immediate provisional opening preview, corner/edge resizing and selection movement, full-resolution positions, copy naming and explicit replacement, source revision guards and staged native publication. Durable replacements reuse an independent generated source and verify retained original contents (#681; covered by browser interaction and real native filesystem outcomes). Unified Crop/AI tools use `plugins/image-editor-registry.svelte.ts` with lifecycle-managed contributions; OpenAI supplies `OpenAIImageEditorTool.svelte` and shared `OpenAIImageForm.svelte`. All built-in image producers use immutable inputs and mandatory native Trace publication; durable crop replacement anchors its recovery publisher before displacement.
++- `components/ImageCropEditor.svelte`, `components/ImageCropCanvas.svelte`, `state/image-crop-session.ts`, `state/image-crop-effects.ts`, `api/image-crop.ts`, `src-tauri/src/files/image_crop.rs` — crop the single selected local image through the Crop Image… palette command and lazy WindowDialogs host, independently of preview visibility; corner/edge resizing and selection movement, full-resolution positions, copy naming and explicit replacement, source revision guards and staged native publication. Durable replacements reuse an independent generated source and verify retained original contents (#681; covered by browser interaction and real native filesystem outcomes). Unified Crop/AI tools use `plugins/image-editor-registry.svelte.ts` with lifecycle-managed contributions; OpenAI supplies `OpenAIImageEditorTool.svelte` and shared `OpenAIImageForm.svelte`. All built-in image producers use immutable inputs and mandatory native Trace publication; durable crop replacement anchors its recovery publisher before displacement.
+ - `src-tauri/src/trace.rs`, `src-tauri/src/file_mutation.rs`, `src-tauri/src/file_history/mod.rs`, `api/trace.ts`, `domain/trace-layout.ts`, `plugins/trace/index.ts`, `plugins/trace/TraceInspector.svelte`, `plugins/trace/TraceDetails.svelte` — crop-as-copy and OpenAI image jobs persist start/status/output records in SQLite; retained staging identities reconcile interrupted publication, and selected-file queries expose exact captured revisions; selected images show a connected DAG with keyboard-selectable nodes, revision/run details, changed/unverified selection status, and missing recorded locations. Native operations can join multiple input revisions, and Explorer rename or history undo/redo relocates the matching recorded revision.
+ - `api/mock-image-crop.ts`, `e2e/image-crop.spec.ts`, `e2e-tauri/specs/image-crop.spec.ts` — browser edge/layout outcomes and real native capture/save qualification; PNG/JPEG browser fixtures do not establish native codec or filesystem correctness.
+ - `src-tauri/vendor/explorer-avif/` — pinned offline libavif/AOM bridge preserving AVIF/AVIS frames, precision, HDR/gain maps and presentation transforms (#681 codec work; cross-platform/save/UI qualification pending).
 diff --git a/docs/code-map/map-folder.md b/docs/code-map/map-folder.md
 index c317c139..1c5a7f3b 100644
 --- a/docs/code-map/map-folder.md
@@ -21,7 +34,7 @@ index c317c139..1c5a7f3b 100644
 +- `src/lib/plugins/trace/TraceThumbnail.svelte` — lifecycle-owned thumbnail URLs and current-file preview labeling.
 +- `src/lib/plugins/trace/visibility.svelte.ts` — Trace pane visibility used by its command palette toggle.
 diff --git a/docs/trace-phase-one.md b/docs/trace-phase-one.md
-index 9535dca7..dd65229c 100644
+index 9535dca7..289e1208 100644
 --- a/docs/trace-phase-one.md
 +++ b/docs/trace-phase-one.md
 @@ -43,10 +43,10 @@ The first model action is an OpenAI image edit using saved Codex ChatGPT sign-in
@@ -53,11 +66,33 @@ index 9535dca7..dd65229c 100644
 +
 +## Image editor and Trace interaction
 +
-+Ctrl+E on selected PNG/JPEG/WebP images opens AI edit; Ctrl+Enter submits the prompt. The compact form offers Codex by default, API models, resolution (2K by default), and aspect ratio (Keep the same by default). The seed field reads Not supported and is disabled because these interfaces expose no seed. The gear opens connection settings inside the editor; acknowledged saves report native write failures and preserve the edit draft.
++Crop Image… appears in the command palette for a single supported local image, without a preview toolbar icon; it opens Crop even with the preview pane hidden. Ctrl+E on selected PNG/JPEG/WebP images opens AI edit; Ctrl+Enter submits the prompt. The compact form offers Codex by default, API models, resolution (2K by default), and aspect ratio (Keep the same by default). The seed field reads Not supported and is disabled because these interfaces expose no seed. The gear opens connection settings inside the editor; acknowledged saves report native write failures and preserve the edit draft.
 +
 +Resolution presets request a longest edge of 1024, 2048, or 3840 pixels, quantized to provider-compatible multiples of 16 and bounded by its pixel/aspect limits. Codex receives these requested dimensions in its image-tool task; the raw record distinguishes the requested task from provider-reported evidence. Output filenames include a unique job identity, so concurrent edits cannot accidentally share a destination.
 +
 +Image jobs appear in the existing bottom-right progress panel. Trace shows a spinner for an unfinished run and combines a completed run with its output thumbnail. Clicking an image reveals and selects it in the explorer, including filtered/hidden or virtualized offscreen rows. Toggle Trace Pane in the command palette controls its visibility without disabling recording. Thumbnails show current files at their recorded paths; earlier revisions sharing a replaced path are labeled and omit a misleading thumbnail.
+diff --git a/e2e-tauri/specs/image-crop.spec.ts b/e2e-tauri/specs/image-crop.spec.ts
+index 6c6b9267..8477b5de 100644
+--- a/e2e-tauri/specs/image-crop.spec.ts
++++ b/e2e-tauri/specs/image-crop.spec.ts
+@@ -37,7 +37,7 @@ async function open(file: string): Promise<void> {
+     await browser.keys(" ");
+     await $(".preview-pane").waitForDisplayed();
+   }
+-  await $('button[aria-label="Edit image…"]').click();
++  await command("Crop Image…");
+   await slider("Right").waitForDisplayed();
+ }
+ async function crop(left = 32, top = 24, right = 480, bottom = 360): Promise<void> {
+@@ -286,7 +286,7 @@ nativeDescribe("native image cropping", () => {
+       await button("Keep editing").click(); expect(fs.readFileSync(source).equals(original)).toBe(true);
+       await button("Cancel").click(); await $(dialog).waitForDisplayed({ reverse: true });
+       expect(fs.readFileSync(source).equals(original)).toBe(true);
+-      await $('button[aria-label="Edit image…"]').click(); await slider("Right").waitForDisplayed(); await crop();
++      await command("Crop Image…"); await slider("Right").waitForDisplayed(); await crop();
+       await button("Replace original…").click(); await button("Confirm replacement").click();
+       await $(dialog).waitForDisplayed({ reverse: true });
+       const observed = await compare(original, fs.readFileSync(source), "png");
 diff --git a/e2e-tauri/specs/terminal-key-ownership.spec.ts b/e2e-tauri/specs/terminal-key-ownership.spec.ts
 index bfc363dd..1ee61409 100644
 --- a/e2e-tauri/specs/terminal-key-ownership.spec.ts
@@ -91,11 +126,152 @@ index bfc363dd..1ee61409 100644
      await browser.keys(["Control", "`"]);
      await $(".terminal-panel .xterm").waitForDisplayed({ timeout: 10_000 });
      const input = await $(".terminal-panel textarea.xterm-helper-textarea");
+diff --git a/e2e/helpers.ts b/e2e/helpers.ts
+index 4a114304..56ef5969 100644
+--- a/e2e/helpers.ts
++++ b/e2e/helpers.ts
+@@ -46,6 +46,15 @@ export async function waitForEntries(page: Page) {
+   await page.locator(".entry-item").first().waitFor({ timeout: 5000 });
+ }
+ 
++/** Execute a selection-aware action through the real command palette. */
++export async function runPaletteCommand(page: Page, label: string) {
++  await page.keyboard.press("ControlOrMeta+Shift+P");
++  const palette = page.locator(".command-palette-dialog");
++  await palette.locator(".search-input").fill(label);
++  await palette.locator(".command-item").filter({ hasText: label }).click();
++  await expect(palette).toBeHidden();
++}
++
+ /**
+  * Switch view mode via right-click context menu.
+  * This is the most reliable method as it uses real UI interactions.
+@@ -189,4 +198,3 @@ export async function focusBeforeFileList(page: Page): Promise<void> {
+   });
+   expect(focused, "the file list must have a preceding sequential focus target").not.toBeNull();
+ }
+-
+diff --git a/e2e/image-crop.spec.ts b/e2e/image-crop.spec.ts
+index e3f696cf..c04115d2 100644
+--- a/e2e/image-crop.spec.ts
++++ b/e2e/image-crop.spec.ts
+@@ -1,5 +1,5 @@
+ import { test, expect, type Page } from "./fixtures";
+-import { applySettingsAndReload, waitForEntries, VIEW_MODES } from "./helpers";
++import { applySettingsAndReload, waitForEntries, runPaletteCommand, VIEW_MODES } from "./helpers";
+ 
+ const source = "/home/user/Pictures/screenshot.png";
+ async function preparePreview(page: Page, mode: string, zoom = 1, fullscreen = false, dock = "right") {
+@@ -17,7 +17,7 @@ async function preparePreview(page: Page, mode: string, zoom = 1, fullscreen = f
+   }
+ }
+ async function openCrop(page: Page) {
+-  await page.getByRole("button", { name: "Edit image…", exact: true }).click();
++  await runPaletteCommand(page, "Crop Image…");
+   await expect(page.getByRole("slider", { name: "Right crop edge" })).toHaveAttribute("aria-valuenow", "512");
+   await expect(page.getByRole("slider", { name: "Right crop edge" })).toBeVisible();
+ }
+@@ -31,6 +31,24 @@ async function imageData(page: Page, path: string) {
+     return invoke<string>("read_image_data_url", { path });
+   }, path);
+ }
++
++test("palette crop saves the selected image with preview and AI plugin disabled", async ({ page }) => {
++  await page.goto("/?path=/home/user/Pictures");
++  await applySettingsAndReload(page, { showPreviewPane: false, pluginsEnabled: { "openai-image": false } });
++  await waitForEntries(page);
++  await page.locator(".entry-item", { hasText: "screenshot.png" }).click();
++  await expect(page.locator(".preview-pane")).toHaveCount(0);
++  await openCrop(page);
++  await page.getByRole("spinbutton", { name: "left pixel position" }).fill("32");
++  await page.getByRole("button", { name: "Save copy", exact: true }).click();
++  await expect(page.getByRole("dialog", { name: "Edit image", exact: true })).toBeHidden();
++  const target = "/home/user/Pictures/screenshot - Cropped.png";
++  await expect(page.locator(".entry-item", { hasText: "screenshot - Cropped.png" })).toBeVisible();
++  expect(await page.evaluate(async (url) => {
++    const image = new Image(); image.src = url; await image.decode();
++    return [image.naturalWidth, image.naturalHeight];
++  }, await imageData(page, target))).toEqual([480, 384]);
++});
+ async function dragEdge(page: Page, edge: string, position: number) {
+   const edges = ["left", "top", "right", "bottom"];
+   const values = () => page.locator(".crop-edge").evaluateAll((handles) => Object.fromEntries(handles.map((handle) => [handle.getAttribute("aria-label")!.split(" ")[0].toLowerCase(), Number(handle.getAttribute("aria-valuenow"))])));
+@@ -109,7 +127,7 @@ for (const mode of VIEW_MODES) {
+     expect(await imageData(page, source)).toBe(before);
+     await page.getByRole("button", { name: "Cancel", exact: true }).click();
+     expect(await imageData(page, source)).toBe(before);
+-    await page.getByRole("button", { name: "Edit image…", exact: true }).click();
++    await runPaletteCommand(page, "Crop Image…");
+     await page.getByRole("spinbutton", { name: "left pixel position" }).fill("32");
+     await page.getByRole("button", { name: "Replace original…", exact: true }).click();
+     await page.getByRole("button", { name: "Confirm replacement", exact: true }).click();
+@@ -148,7 +166,9 @@ test("an accepted save keeps modal input ownership through Escape and settles on
+   });
+   await page.getByRole("button", { name: "Save copy", exact: true }).click();
+   await expect.poll(() => page.evaluate(() => document.documentElement.dataset.cropSaveAccepted)).toBe("true");
+-  await page.keyboard.press("Escape"); await page.keyboard.press("ControlOrMeta+Shift+P");
++  await page.keyboard.press("Escape");
++  await page.evaluate(async () => (await import("/src/lib/state/dialogs.svelte.ts")).dialogStore.closeAll());
++  await page.keyboard.press("ControlOrMeta+Shift+P");
+   await expect(page.locator(".command-palette-dialog")).toBeHidden();
+   await expect(page.getByRole("dialog", { name: "Edit image", exact: true })).toBeVisible();
+   await expect(page.getByRole("button", { name: "Cancel", exact: true })).toBeDisabled();
+@@ -187,11 +207,9 @@ for (const dock of ["right", "top", "bottom"]) {
+   });
+ }
+ 
+-test("crop action is an icon and editor controls use compact themed chrome", async ({ page }) => {
++test("crop is available through the palette without a preview icon", async ({ page }) => {
+   await open(page, "details");
+-  const action = page.getByRole("button", { name: "Edit image…", exact: true });
+-  await expect(action).toHaveText("");
+-  await expect(action.locator("svg")).toBeAttached();
++  await expect(page.locator(".preview-pane .crop-button")).toHaveCount(0);
+   const zoom = page.getByRole("button", { name: "Zoom in crop" });
+   expect((await zoom.boundingBox())!.width).toBeLessThanOrEqual(36);
+   const cancel = page.getByRole("button", { name: "Cancel", exact: true });
+@@ -284,23 +302,21 @@ test("dialog scrolling during a held crop drag preserves image coordinates", asy
+   await expect(top).toHaveAttribute("aria-valuenow", String(Math.round((y - image.y) / image.height * 384)));
+ });
+ 
+-test("opening the editor shows the selected preview while immutable capture is pending", async ({ page }) => {
++test("palette editor owns input and can cancel while immutable capture is pending", async ({ page }) => {
+   await page.goto("/?path=/home/user/Pictures");
+   await applySettingsAndReload(page, { showPreviewPane: true, viewMode: "details" });
+   await waitForEntries(page);
+   await page.locator(".entry-item", { hasText: "screenshot.png" }).click();
+   await expect.poll(() => page.locator(".preview-image").evaluate(img => (img as HTMLImageElement).naturalWidth)).toBeGreaterThan(0);
+-  const preview = await page.locator(".preview-image").getAttribute("src");
+   await page.evaluate(async () => {
+     const control = (await import("/src/lib/api/mock-control.ts")).getMockControl();
+     control.imageCropCapture = () => new Promise((_, reject) => {
+       window.addEventListener("release-crop-capture", () => reject(new Error("Held source capture")), { once: true });
+     });
+   });
+-  await page.getByRole("button", { name: "Edit image…", exact: true }).click();
++  await runPaletteCommand(page, "Crop Image…");
+   await expect(page.getByRole("dialog", { name: "Edit image", exact: true })).toBeVisible();
+-  await expect(page.locator(".crop-loading-image")).toHaveAttribute("src", preview!);
+-  await expect.poll(() => page.locator(".crop-loading-image").evaluate(img => (img as HTMLImageElement).naturalWidth)).toBeGreaterThan(0);
++  await expect(page.getByRole("status").filter({ hasText: "Loading original image…" })).toBeVisible();
+   await expect(page.getByRole("button", { name: "Save copy", exact: true })).toBeDisabled();
+   await expect(page.getByRole("slider")).toHaveCount(0);
+   await page.getByRole("button", { name: "Cancel", exact: true }).click();
 diff --git a/e2e/image-editor.spec.ts b/e2e/image-editor.spec.ts
-index a1e75b3f..3b79bb74 100644
+index a1e75b3f..6d777649 100644
 --- a/e2e/image-editor.spec.ts
 +++ b/e2e/image-editor.spec.ts
-@@ -13,7 +13,7 @@ test("preview switches crop and AI tools and submits its captured revision with
+@@ -1,7 +1,7 @@
+ import { test, expect } from "./fixtures";
+-import { applySettingsAndReload, waitForEntries } from "./helpers";
++import { applySettingsAndReload, waitForEntries, runPaletteCommand } from "./helpers";
+ 
+-test("preview switches crop and AI tools and submits its captured revision with Trace disabled", async ({ page }) => {
++test("palette switches crop and AI tools and submits its captured revision with Trace disabled", async ({ page }) => {
+   await page.goto("/?path=/home/user/Pictures");
+   await applySettingsAndReload(page, { showPreviewPane: true, pluginsEnabled: { trace: false } });
+   await waitForEntries(page);
+@@ -13,13 +13,13 @@ test("preview switches crop and AI tools and submits its captured revision with
      if (!capture.ok) throw new Error(capture.error);
      pluginJobsController.accept = (_registration, start) => start();
      getMockControl().openAIImageStart = (request) => {
@@ -104,6 +280,13 @@ index a1e75b3f..3b79bb74 100644
        (window as any).__acceptedImageEdit = request;
        return 9;
      };
+   });
+   await page.locator(".entry-item").filter({ hasText: "screenshot.png" }).click();
+-  await page.getByRole("button", { name: "Edit image…", exact: true }).click();
++  await runPaletteCommand(page, "Crop Image…");
+   const dialog = page.getByRole("dialog", { name: "Edit image", exact: true });
+   const right = page.getByRole("slider", { name: "Right crop edge" });
+   await expect(right).toBeVisible();
 @@ -27,13 +27,13 @@ test("preview switches crop and AI tools and submits its captured revision with
    await expect(right).toHaveAttribute("aria-valuenow", "511");
    await dialog.getByRole("button", { name: "AI edit", exact: true }).click();
@@ -991,6 +1174,123 @@ index 648aa6cf..b511ae39 100644
        </section>
      {/each}
    </aside>
+diff --git a/src/lib/components/PreviewPane.svelte b/src/lib/components/PreviewPane.svelte
+index ce8af7a8..db4b7773 100644
+--- a/src/lib/components/PreviewPane.svelte
++++ b/src/lib/components/PreviewPane.svelte
+@@ -28,7 +28,6 @@ import { openFile } from "$lib/api/open";
+   import VirtualList from "./VirtualList.svelte";
+   import { parseCsvPreview, type CsvPreview } from "$lib/domain/csv-preview";
+   import { createPreviewLifetime, type PreviewRequest } from "$lib/state/preview-lifetime";
+-  import ImageCropEditor from "./ImageCropEditor.svelte";
+   import { subscribeToLocalFileChanges } from "$lib/state/file-events";
+   import { parentDir } from "$lib/domain/path";
+   let localPreviewRevision = $state(0);
+@@ -36,10 +35,6 @@ import { openFile } from "$lib/api/open";
+     if (selectedFile && directories.includes(parentDir(selectedFile.path))) localPreviewRevision++;
+   });
+   onDestroy(unsubscribePreviewChanges);
+-  let cropTarget = $state<{ path: string; name: string } | null>(null);
+-  function openCrop(): void {
+-    if (selectedFile) cropTarget = { path: selectedFile.path, name: selectedFile.name };
+-  }
+   import { dialogStore } from "$lib/state/dialogs.svelte";
+ 
+   // Window-global surface: the preview's SCM diff follows the ACTIVE pane's
+@@ -222,9 +217,8 @@ import { openFile } from "$lib/api/open";
+     if (!fullscreen) return;
+     const PAN = 60;
+     const onKey = (event: KeyboardEvent) => {
+-      if (cropTarget) return;
++      if (dialogStore.hasModalOpen) return;
+       const k = event.key;
+-      if (selectedFile && (isPdfFile(selectedFile) || isVideoMediaFile(selectedFile)) && dialogStore.hasModalOpen) return;
+       if (selectedFile && (isPdfFile(selectedFile) || isVideoMediaFile(selectedFile)) && k !== "Escape") return;
+       const stop = () => {
+         event.preventDefault();
+@@ -283,7 +277,6 @@ import { openFile } from "$lib/api/open";
+ 
+   /** Stable primitive that changes when the selected path OR its mtime changes,
+    * so external edits to the same file invalidate the cached preview. */
+-  const canCrop = $derived(selectedFile?.kind === "file" && /\.(jpe?g|png|gif|webp|bmp|svg|avif|icns)$/i.test(selectedFile.name));
+   const selectedPath = $derived(selectedFile?.path ?? null);
+   const previewKey = $derived(
+     selectedFile ? `${selectedFile.path}|${selectedFile.modified}|${selectedFile.size}|${localPreviewRevision}` : null,
+@@ -827,14 +820,6 @@ import { openFile } from "$lib/api/open";
+   });
+ </script>
+ 
+-{#snippet cropButton()}
+-  <button class="crop-button" aria-label="Edit image…" title="Edit image" onclick={openCrop}>
+-    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+-      <path d="M6 3v15h15M3 6h15v15" />
+-    </svg>
+-  </button>
+-{/snippet}
+-
+ <!-- svelte-ignore a11y_no_static_element_interactions -->
+ <div
+   id={paneId}
+@@ -959,16 +944,12 @@ import { openFile } from "$lib/api/open";
+     <!-- Auxiliary metadata (name + type badge, and the size/modified footer
+          below) is opt-out for a minimal, content-only preview (#494). -->
+     {#if settingsStore.showPreviewInfo}
+-      <div class="preview-header" class:with-crop={canCrop && isVertical && !fullscreen}>
++      <div class="preview-header">
+         <span class="preview-filename" title={selectedFile.path}>{selectedFile.name}</span>
+         <span class="preview-type-badge">{getFileType(selectedFile)}</span>
+-        {#if canCrop && isVertical && !fullscreen}{@render cropButton()}{/if}
+       </div>
+     {/if}
+ 
+-    {#if canCrop && (!isVertical || fullscreen || !settingsStore.showPreviewInfo)}
+-      <div class="preview-crop-action">{@render cropButton()}</div>
+-    {/if}
+     <!-- svelte-ignore a11y_no_noninteractive_tabindex -- a scrollable region must be keyboard-focusable (WCAG 2.1.1, #797). -->
+     <div class="preview-content" role="region" aria-label="Preview of {selectedFile.name}{isVideoMediaFile(selectedFile) ? ' (video)' : ''}" tabindex="0">
+       {#if isVideoMediaFile(selectedFile)}
+@@ -1102,24 +1083,7 @@ import { openFile } from "$lib/api/open";
+   {/if}
+ </div>
+ 
+-{#if cropTarget}
+-  <ImageCropEditor path={cropTarget.path} name={cropTarget.name} previewUrl={previewImageUrl} onclose={() => cropTarget = null} />
+-{/if}
+-
+ <style>
+-  .preview-crop-action { padding: var(--spacing-sm) var(--spacing-md); display: flex; justify-content: flex-end; }
+-  .crop-button {
+-    display: inline-flex; align-items: center; justify-content: center;
+-    width: 28px; height: 28px; padding: 0; flex-shrink: 0; background: var(--control-fill);
+-    border: 1px solid var(--control-stroke); border-radius: var(--radius-sm);
+-    color: var(--text-primary); font: inherit; cursor: pointer;
+-  }
+-  .crop-button:hover { background: var(--control-fill-secondary); }
+-  .crop-button:focus-visible { outline: 2px solid var(--focus-stroke-outer); outline-offset: 2px; }
+-  .preview-pane.fullscreen > .preview-crop-action {
+-    position: absolute; top: 12px; right: 48px; z-index: 1001; padding: 0;
+-  }
+-  .preview-pane.vertical:not(.fullscreen) > .preview-crop-action { grid-area: actions; }
+   .preview-pane {
+     display: flex;
+     flex-direction: column;
+@@ -1175,16 +1139,6 @@ import { openFile } from "$lib/api/open";
+     padding: 8px 12px;
+   }
+ 
+-  .preview-pane.vertical:not(.fullscreen) > .preview-header.with-crop {
+-    grid-template-columns: minmax(0, 1fr) auto;
+-  }
+-
+-  /* Crop shares the shallow dock's header. The filename retains its extension;
+-     omit the auxiliary badge so both controls remain readable at root zoom. */
+-  .preview-pane.vertical:not(.fullscreen) > .preview-header.with-crop .preview-type-badge {
+-    display: none;
+-  }
+-
+   .preview-pane.vertical:not(.fullscreen) > .preview-header .preview-type-badge {
+     display: block;
+     align-self: center;
 diff --git a/src/lib/components/ProgressDialog.svelte b/src/lib/components/ProgressDialog.svelte
 index 3dd9de6f..19e6f682 100644
 --- a/src/lib/components/ProgressDialog.svelte
@@ -1083,6 +1383,55 @@ index 3dd9de6f..19e6f682 100644
    .progress-dialog-container {
      position: fixed;
      bottom: 16px;
+diff --git a/src/lib/components/WindowDialogs.svelte b/src/lib/components/WindowDialogs.svelte
+index b7834910..9727e7c5 100644
+--- a/src/lib/components/WindowDialogs.svelte
++++ b/src/lib/components/WindowDialogs.svelte
+@@ -24,6 +24,11 @@
+ 
+   // Each dialog tracks its own demand. Constructors stay mounted after loading
+   // to retain local state and close transitions; imports stay out of startup.
++  const ImageCropEditor = useLazyDialog({
++    label: "Image editor", isOpen: () => !pickerInfo && dialogStore.imageEditorTarget !== null,
++    load: () => import("$lib/components/ImageCropEditor.svelte"),
++    onFailure: () => dialogStore.closeImageEditor(),
++  }, notifyError);
+   const ThemePicker = useLazyDialog({
+     label: "Theme Picker", isOpen: () => !pickerInfo && dialogStore.isThemePickerOpen,
+     load: () => import("$lib/components/ThemePicker.svelte"),
+@@ -108,6 +113,14 @@
+   {/if}
+ {:else}
+ <ShortcutCheatsheet open={dialogStore.isShortcutsOpen} onClose={() => dialogStore.closeShortcuts()} />
++{#if ImageCropEditor.component && dialogStore.imageEditorTarget}
++  {@const target = dialogStore.imageEditorTarget}
++  {#key target}
++    <svelte:boundary onerror={dialogCrash("Image editor", () => dialogStore.closeImageEditor(target))}>
++      <ImageCropEditor.component path={target.path} name={target.name} onclose={() => dialogStore.closeImageEditor(target)} />
++    </svelte:boundary>
++  {/key}
++{/if}
+ {#if KeybindingsDialog.component}
+   <svelte:boundary onerror={dialogCrash("Keyboard Shortcuts", () => dialogStore.closeKeybindings())}>
+     <KeybindingsDialog.component open={dialogStore.isKeybindingsOpen} onClose={() => dialogStore.closeKeybindings()} />
+diff --git a/src/lib/domain/file-types.ts b/src/lib/domain/file-types.ts
+index 5e4895de..dadbc00d 100644
+--- a/src/lib/domain/file-types.ts
++++ b/src/lib/domain/file-types.ts
+@@ -5,6 +5,13 @@
+ 
+ import type { FileEntry } from "./file";
+ import { compactRelativeTime } from "./relative-time";
++import { isVirtualPath } from "./virtual-path";
++
++/** Formats supported by the native crop encoder; requires a local file. */
++export function isCroppableImage(entry: FileEntry): boolean {
++  return entry.kind === "file" && !isVirtualPath(entry.path)
++    && /\.(jpe?g|png|gif|webp|bmp|svg|avif|icns)$/i.test(entry.name);
++}
+ 
+ // Constructing Intl state per visible row costs ~100µs of ICU setup. Keep one
+ // formatter for the absolute-date tooltip that accompanies relative labels.
 diff --git a/src/lib/domain/image-generation-settings.ts b/src/lib/domain/image-generation-settings.ts
 new file mode 100644
 index 00000000..515cdcf8
@@ -1986,6 +2335,84 @@ index 8e9022bc..a2048bd6 100644
  }
  
  /** Get a command by ID */
+diff --git a/src/lib/state/commands/file-commands.ts b/src/lib/state/commands/file-commands.ts
+index 6b91a5ac..a3cb598c 100644
+--- a/src/lib/state/commands/file-commands.ts
++++ b/src/lib/state/commands/file-commands.ts
+@@ -9,9 +9,25 @@ import { getActiveExplorer } from "./shared";
+ import { windowTabsManager } from "../window-tabs.svelte";
+ import { requestGraphUndo } from "../git-graph-undo";
+ import { activePaneIsGraph } from "./active-pane";
++import { isCroppableImage } from "$lib/domain/file-types";
++
++function selectedCropImage() {
++  const selected = getActiveExplorer()?.getSelectedEntries() ?? [];
++  return selected.length === 1 && isCroppableImage(selected[0]) ? selected[0] : null;
++}
+ 
+ /** File operation commands */
+ export const fileCommands: Command[] = [
++  {
++    id: "file.cropImage",
++    label: "Crop Image…",
++    category: "file",
++    when: () => selectedCropImage() !== null,
++    handler: () => {
++      const image = selectedCropImage();
++      if (image) dialogStore.openImageEditor(image);
++    },
++  },
+   {
+     id: "file.newFolder",
+     label: "New Folder",
+diff --git a/src/lib/state/dialogs.svelte.ts b/src/lib/state/dialogs.svelte.ts
+index 13eea7e7..a40aa44d 100644
+--- a/src/lib/state/dialogs.svelte.ts
++++ b/src/lib/state/dialogs.svelte.ts
+@@ -49,6 +49,7 @@ function createDialogStore() {
+   let pickerConfig = $state<PickerConfig | null>(null);
+   let userReportOpen = $state(false);
+   let fileRecoveryOpen = $state(false);
++  let imageEditorTarget = $state.raw<{ path: string; name: string } | null>(null);
+ 
+   function closeIfActive(dialogType: DialogType, session = fileOperationSession): void {
+     if (activeDialog === dialogType && session === fileOperationSession) {
+@@ -136,6 +137,16 @@ function createDialogStore() {
+     },
+ 
+     get isFileRecoveryOpen() { return fileRecoveryOpen; },
++    get imageEditorTarget() { return imageEditorTarget; },
++
++    openImageEditor(entry: FileEntry): void {
++      commandPaletteOpen = false;
++      imageEditorTarget = { path: entry.path, name: entry.name };
++    },
++
++    closeImageEditor(target = imageEditorTarget): void {
++      if (target === imageEditorTarget) imageEditorTarget = null;
++    },
+ 
+     // File operation actions
+     startRename(entry: FileEntry): void {
+@@ -162,7 +173,7 @@ function createDialogStore() {
+ 
+     /** True when any modal dialog is open (file ops or overlays). */
+     get hasModalOpen(): boolean {
+-      return openWithStore.isOpen || modalOwnership.hasOpen || shortcutsOpen || keybindingsOpen || activeDialog !== null || quickOpenOpen || commandPaletteOpen || settingsOpen || contentSearchOpen || workspaceOpen || bulkRenameOpen || jobsPanelOpen || themePickerOpen || pickerConfig !== null || userReportOpen || fileRecoveryOpen;
++      return openWithStore.isOpen || modalOwnership.hasOpen || imageEditorTarget !== null || shortcutsOpen || keybindingsOpen || activeDialog !== null || quickOpenOpen || commandPaletteOpen || settingsOpen || contentSearchOpen || workspaceOpen || bulkRenameOpen || jobsPanelOpen || themePickerOpen || pickerConfig !== null || userReportOpen || fileRecoveryOpen;
+     },
+ 
+     // Overlay dialog actions
+@@ -278,6 +289,9 @@ function createDialogStore() {
+ 
+     closeAll(): void {
+       modalOwnership.closeAll();
++      // Rendered editors close through their modal's canClose contract. Clear
++      // an opening that has not mounted yet, while retaining an accepted save.
++      if (!modalOwnership.hasOpen) imageEditorTarget = null;
+       openWithStore.close();
+       shortcutsOpen = false;
+       activeDialog = null;
 diff --git a/src/lib/state/explorer.svelte.ts b/src/lib/state/explorer.svelte.ts
 index 556c4528..a7e2fbf6 100644
 --- a/src/lib/state/explorer.svelte.ts
@@ -2141,6 +2568,39 @@ index 56a62c1f..85a5bcc3 100644
 -  return chain;
 +  return observe(chain);
  }
+diff --git a/tests/domain/file-types.test.ts b/tests/domain/file-types.test.ts
+index f444a6cf..f0aee061 100644
+--- a/tests/domain/file-types.test.ts
++++ b/tests/domain/file-types.test.ts
+@@ -15,6 +15,7 @@ import {
+   isGitRepoFolder,
+   isVideoMediaFile,
+   isVideoFile,
++  isCroppableImage,
+ } from "$lib/domain/file-types";
+ import type { FileEntry } from "$lib/domain/file";
+ 
+@@ -31,6 +32,20 @@ const entry = (
+   ...extra,
+ });
+ 
++describe("native crop eligibility", () => {
++  it.each(["jpg", "jpeg", "png", "gif", "webp", "bmp", "svg", "avif", "icns"])("accepts local %s images case-insensitively", (extension) => {
++    expect(isCroppableImage(entry(`image.${extension.toUpperCase()}`))).toBe(true);
++  });
++  it.each(["", "image", "image.txt", "image.ico", "image.png.bak"])("rejects unsupported name %s", (name) => {
++    expect(isCroppableImage(entry(name))).toBe(false);
++  });
++  it("rejects folders and provider paths while supporting Windows drives", () => {
++    expect(isCroppableImage(entry("folder.png", "directory"))).toBe(false);
++    expect(isCroppableImage(entry("image.png", "file", { path: "demo://image.png" }))).toBe(false);
++    expect(isCroppableImage(entry("image.png", "file", { path: "C:\\Pictures\\image.png" }))).toBe(true);
++  });
++});
++
+ describe("video identity", () => {
+   it.each(["mp4", "mov", "mkv", "webm", "avi", "wmv", "flv", "m4v", "mpg", "mpeg"])("identifies %s including uppercase names", (extension) => {
+     expect(isVideoMediaFile(entry(`frame.${extension.toUpperCase()}`))).toBe(true);
 diff --git a/tests/domain/image-generation-settings.test.ts b/tests/domain/image-generation-settings.test.ts
 new file mode 100644
 index 00000000..3a8d3205
@@ -2356,6 +2816,51 @@ index 88ced22e..a6fa11f7 100644
        onFilesChanged: () => {},
        getSelection: () => [],
        getVisibleEntries: () => [],
+diff --git a/tests/state/command-definitions.test.ts b/tests/state/command-definitions.test.ts
+index 15f99865..7209942b 100644
+--- a/tests/state/command-definitions.test.ts
++++ b/tests/state/command-definitions.test.ts
+@@ -108,6 +108,7 @@ import {
+   type Command,
+ } from "$lib/state/commands.svelte";
+ import { keybindingsStore } from "$lib/state/keybindings.svelte";
++import { dialogStore } from "$lib/state/dialogs.svelte";
+ 
+ beforeEach(() => {
+   // Reset the controllable world to a neutral baseline.
+@@ -122,10 +123,32 @@ beforeEach(() => {
+   h.recent.count = 0;
+   h.workspaces.count = 0;
+   vi.clearAllMocks();
++  h.explorer.getSelectedEntries.mockReturnValue([]);
++  dialogStore.closeAll();
+   h.getActiveExplorer.mockReturnValue(h.explorer as unknown);
+   registerAllCommands();
+ });
+ 
++describe("crop command", () => {
++  const image = { path: "/Pictures/image.png", name: "image.png", kind: "file", size: 1, modified: "" };
++  it("opens a captured selection without requiring a preview pane", async () => {
++    h.explorer.getSelectedEntries.mockReturnValue([image]);
++    expect(getAvailableCommands().map(({ id }) => id)).toContain("file.cropImage");
++    await executeCommand("file.cropImage");
++    image.name = "changed.png";
++    expect(dialogStore.imageEditorTarget).toEqual({ path: "/Pictures/image.png", name: "image.png" });
++    image.name = "image.png";
++    dialogStore.closeAll();
++    expect(dialogStore.imageEditorTarget).toBeNull();
++  });
++  it.each([[], [image, image], [{ ...image, kind: "directory" }], [{ ...image, name: "document.txt" }], [{ ...image, path: "demo://image.png" }]].map(selection => ({ selection })))("hides and rejects an ineligible selection %#", async ({ selection }) => {
++    h.explorer.getSelectedEntries.mockReturnValue(selection);
++    expect(getAvailableCommands().map(({ id }) => id)).not.toContain("file.cropImage");
++    await executeCommand("file.cropImage");
++    expect(dialogStore.imageEditorTarget).toBeNull();
++  });
++});
++
+ describe("registerAllCommands", () => {
+   it("registers the core command surface with stable ids", () => {
+     const ids = new Set(getAllCommands().map((c) => c.id));
 diff --git a/tests/state/config-writer.test.ts b/tests/state/config-writer.test.ts
 index 7271b368..e1756635 100644
 --- a/tests/state/config-writer.test.ts

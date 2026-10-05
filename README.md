@@ -5,6 +5,7 @@ Image provenance and AI image editing plugins for [Tauri Explorer](https://githu
 Trace records the actual image revisions and transformations behind creative work. The explorer remains the place to browse and select files; the Trace pane shows their ancestry, outputs, prompts, and generation status.
 
 - Ctrl+E opens AI edit; Ctrl+Enter generates.
+- Crop Image… appears in the command palette for one supported image; the preview crop icon is removed.
 - Codex is the default connection, with OpenAI API models available.
 - Resolution defaults to 2K; aspect ratio defaults to Keep the same.
 - Connection settings preserve the edit draft and report save failures.

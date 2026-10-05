@@ -22,7 +22,7 @@ Run tests from the host checkout because the focused tests use its fixtures and 
 
 ```sh
 bunx vitest run tests/domain/image-generation-settings.test.ts tests/domain/image-output-filename.test.ts tests/domain/trace-layout.test.ts tests/plugins/openai-image.test.ts
-bunx playwright test e2e/openai-image.spec.ts e2e/image-editor.spec.ts e2e/trace-inspector.spec.ts
+bunx playwright test e2e/image-crop.spec.ts e2e/openai-image.spec.ts e2e/image-editor.spec.ts e2e/trace-inspector.spec.ts
 cargo test --manifest-path src-tauri/Cargo.toml openai_image --lib
 ```
 
