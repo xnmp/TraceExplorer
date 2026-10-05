@@ -1,0 +1,237 @@
+/**
+ * Shared plugin-dialog chrome (#278), imported by the plugin dialogs.
+ *
+ * Extracted from three byte-identical copies (nano-banana, ai-rename,
+ * upscale). Every selector is rooted under .plugin-dialog so nothing leaks
+ * into the rest of the app; the card itself opts in with
+ * `class="dialog plugin-dialog"`. Per-dialog styles that remain in the
+ * component (width, bespoke rows) win via Svelte's scoping specificity.
+ */
+
+.plugin-dialog {
+  max-width: 90vw;
+  background: var(--background-solid);
+  border: 1px solid var(--surface-stroke);
+  border-radius: var(--radius-lg);
+  box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.25);
+  animation: plugin-dialog-slide-up 150ms cubic-bezier(0, 0, 0, 1);
+}
+
+@keyframes plugin-dialog-slide-up {
+  from { opacity: 0; transform: translateY(20px) scale(0.98); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+.plugin-dialog .dialog-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--divider);
+}
+
+.plugin-dialog .header-content {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.plugin-dialog .header-icon {
+  color: var(--accent-text, var(--accent));
+}
+
+.plugin-dialog .dialog-header h2 {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin: 0;
+}
+
+.plugin-dialog .close-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.plugin-dialog .close-btn:hover {
+  background: var(--subtle-fill-secondary);
+  color: var(--text-primary);
+}
+
+.plugin-dialog .dialog-body {
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.plugin-dialog .file-info {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  background: var(--subtle-fill);
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+}
+
+.plugin-dialog .file-label {
+  color: var(--text-tertiary);
+}
+
+.plugin-dialog .file-name {
+  color: var(--text-primary);
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.plugin-dialog .api-key-warning {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px;
+  background: color-mix(in srgb, var(--system-caution) 15%, transparent);
+  border: 1px solid color-mix(in srgb, var(--system-caution) 30%, transparent);
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  color: var(--text-primary);
+}
+
+.plugin-dialog .api-key-warning svg {
+  color: var(--system-caution-text, var(--system-caution));
+  flex-shrink: 0;
+}
+
+.plugin-dialog .link-btn {
+  background: none;
+  border: none;
+  color: var(--accent-text, var(--accent));
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 13px;
+  text-decoration: underline;
+  padding: 0;
+}
+
+.plugin-dialog .link-btn:hover {
+  color: var(--accent-hover, var(--accent));
+}
+
+.plugin-dialog .prompt-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.plugin-dialog .prompt-label {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-secondary);
+}
+
+.plugin-dialog .prompt-input {
+  padding: 10px 14px;
+  background: var(--control-fill);
+  border: 1px solid var(--control-stroke);
+  border-radius: var(--radius-sm);
+  font-family: inherit;
+  font-size: 14px;
+  color: var(--text-primary);
+  outline: none;
+  transition: border-color var(--transition-fast);
+}
+
+.plugin-dialog .prompt-input:focus {
+  border-color: var(--accent);
+}
+
+.plugin-dialog .prompt-input::placeholder {
+  color: var(--text-tertiary);
+}
+
+.plugin-dialog .prompt-input:disabled {
+  opacity: 0.6;
+}
+
+.plugin-dialog .model-select {
+  appearance: none;
+  -webkit-appearance: none;
+  padding: 10px 32px 10px 14px;
+  background: var(--control-fill);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath d='M3 5l3 3 3-3' fill='none' stroke='%238a95b8' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 10px center;
+  border: 1px solid var(--control-stroke);
+  border-radius: var(--radius-sm);
+  font-family: inherit;
+  font-size: 14px;
+  color: var(--text-primary);
+  cursor: pointer;
+  outline: none;
+  transition: border-color var(--transition-fast);
+}
+
+.plugin-dialog .model-select:focus {
+  border-color: var(--accent);
+}
+
+.plugin-dialog .model-select:disabled {
+  opacity: 0.6;
+}
+
+.plugin-dialog .model-select option {
+  background: var(--background-solid);
+  color: var(--text-primary);
+}
+
+.plugin-dialog .dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.plugin-dialog .btn {
+  padding: 8px 20px;
+  border: none;
+  border-radius: var(--radius-sm);
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.plugin-dialog .btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.plugin-dialog .btn-secondary {
+  background: var(--control-fill);
+  color: var(--text-primary);
+  border: 1px solid var(--control-stroke);
+}
+
+.plugin-dialog .btn-secondary:hover:not(:disabled) {
+  background: var(--control-fill-secondary);
+}
+
+.plugin-dialog .btn-primary {
+  background: var(--accent);
+  color: var(--text-on-accent);
+}
+
+.plugin-dialog .btn-primary:hover:not(:disabled) {
+  filter: brightness(1.1);
+}

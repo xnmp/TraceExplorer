@@ -33,7 +33,7 @@ export interface OpenAIImageRequest {
 
 export async function startOpenAIImageJob(request: OpenAIImageRequest, apiKey: string): Promise<ApiResult<number>> {
   try {
-    return { ok: true, data: await invoke<number>("start_openai_image_job", { request, apiKey }) };
+    return { ok: true, data: await invoke<number>("jobs.start", {kind:"openai-image", request, apiKey }) };
   } catch (error) {
     return { ok: false, error: extractError(error) };
   }

@@ -9,3 +9,9 @@ node_modules/
 target/
 /.tauri-explorer-base/
 /PHOENIX_ARCHITECTURE_ASSESSMENT.md
+
+/dist/
+/package/
+
+/test-results/
+/playwright-report/

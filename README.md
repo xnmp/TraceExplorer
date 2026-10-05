@@ -1,35 +1,32 @@
-# Trace Explorer
+# TraceExplorer
 
-Image provenance and AI image editing plugins for [Tauri Explorer](https://github.com/xnmp/tauri-explorer).
+An installable image-editing and provenance plugin for [Tauri Explorer](https://github.com/xnmp/tauri-explorer).
 
-Trace records the actual image revisions and transformations behind creative work. The explorer remains the place to browse and select files; the Trace pane shows their ancestry, outputs, prompts, and generation status.
+Ctrl+E opens AI Edit and Ctrl+Enter generates. Codex, 2K resolution, and Keep the same aspect ratio are the defaults. Connection settings preserve your draft. Seed is disabled and marked Not supported.
 
-- Ctrl+E opens AI edit; Ctrl+Enter generates.
-- Crop Image… appears in the command palette for one supported image; the preview crop icon is removed.
-- Codex is the default connection, with OpenAI API models available.
-- Resolution defaults to 2K; aspect ratio defaults to Keep the same.
-- Connection settings preserve the edit draft and report save failures.
-- Background progress appears in the bottom-right corner.
-- Completed edits use one output thumbnail node, with technical metadata under Raw.
-- Clicking a node reveals its file; Toggle Trace Pane is available in the command palette.
-- Seed is disabled and marked Not supported because the current providers expose no seed.
+Generation runs in the background and saves into managed temporary storage. Select an output in Trace and use its disk button to save permanently, with names such as `parent_edit.png` and `parent_edit_2.png`. The Trace pane shows thumbnails and prompts; technical metadata stays under Raw. Hover an image to see its prompt, or click it to select its file. The pane retains the last viewed trace after deselection. Toggle Trace Pane controls visibility from the command palette. Crop Image… is a core command for the selected image.
 
-Merged host implementation: [tauri-explorer PR #991](https://github.com/xnmp/tauri-explorer/pull/991).
+## Installation
 
-## Integration status
+Download the `.teplugin` archive matching your operating system and CPU from [Releases](https://github.com/xnmp/TraceExplorer/releases). In a compatible Tauri Explorer host, open **Settings → Plugins → Install plugin…** and select the archive. Enable, disable, and remove packages in the same section. Removal retains generated images and history; reinstalling reconnects to them.
 
-These plugins currently compile into Tauri Explorer. They are not a separately installable JavaScript package: the native Rust adapters use the host's job lifecycle, filesystem publication, config, and SQLite provenance services.
+SDK v1 requires the host's Svelte 5.56.3 runtime. The installer checks platform, SDK, archive contents, and payload digests before activating code. The original built-in implementation was [PR #991](https://github.com/xnmp/tauri-explorer/pull/991); this package requires the subsequent generic installed-plugin host support.
 
-This repository keeps the plugin sources, focused tests, design documents, and the current host integration patch together. `src/` and `src-tauri/` preserve the paths used in the host repository. Build and run the plugins from the matching Tauri Explorer checkout; see [integration/README.md](integration/README.md).
+The first separately installable release is currently being qualified. See [the implementation contract](INSTALLABLE_PLUGIN.md) for remaining release checks.
 
-## Source synchronization
+## Build and test
+
+This checkout builds independently; a host source checkout is not required.
 
 ```sh
-python3 scripts/sync-from-host.py --host /path/to/tauri-explorer --check
-python3 scripts/sync-from-host.py --host /path/to/tauri-explorer --write
+bun install --frozen-lockfile
+bun run check
+bun run test
+cargo test --locked --manifest-path src-tauri/Cargo.toml
+python3 scripts/package-plugin.py
 ```
 
-The source manifest is [integration/source-manifest.json](integration/source-manifest.json). Host-wide capabilities and UI changes are captured in `integration/host.patch`; they remain maintained and tested in the host PR.
+The package contains a frontend module, stylesheet, and native backend executable. TraceExplorer owns its provider adapters and SQLite journal. The host supplies the shared UI runtime, workspace operations, package lifecycle, optional recording bridge, and controlled CLI process service. [SDK and protocol integration](integration/README.md).
 
 [Product direction](PRODUCT_PLAN.md) · [Stage 1 specification](STAGE_1_TRACE_PLUGIN.md) · [Requested UI changes](CHANGES.md)
 

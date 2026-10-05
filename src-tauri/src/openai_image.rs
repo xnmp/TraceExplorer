@@ -1,11 +1,12 @@
 //! OpenAI image adapters. Captured input bytes and the submitted recipe
 //! enter Trace before a paid request; publication uses a retained native anchor.
+use crate::events::EventEmitter;
 #[cfg(test)]
 use crate::image_operation::execute_with_completion;
 use crate::image_operation::{execute_recorded, GeneratedImage};
 use crate::{error::AppError, plugin_job, trace};
 use base64::{engine::general_purpose::STANDARD, Engine};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::{
@@ -13,7 +14,6 @@ use std::{
     path::{Path, PathBuf},
     time::Duration,
 };
-use tauri::{AppHandle, Emitter};
 
 const API_ROOT: &str = "https://api.openai.com/v1/images";
 const MAX_INPUT_BYTES: u64 = 20 * 1024 * 1024;
@@ -26,7 +26,7 @@ const HTTP_TIMEOUT: Duration = Duration::from_secs(180);
 mod codex;
 mod codex_executable;
 
-#[derive(Clone, Copy, Default, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum ImageBackend {
     #[default]
@@ -34,7 +34,7 @@ pub(crate) enum ImageBackend {
     Codex,
 }
 
-#[derive(Clone, Deserialize)]
+#[derive(Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct ImageRequest {
     #[serde(default)]
@@ -481,32 +481,83 @@ fn validate_image(bytes: &[u8], format: image::ImageFormat) -> Result<(), AppErr
     Ok(())
 }
 
-#[tauri::command]
 pub(crate) async fn start_openai_image_job(
-    app: AppHandle,
-    request: ImageRequest,
+    app: EventEmitter,
+    mut request: ImageRequest,
     api_key: String,
+    job_id: u64,
+    operation_id: String,
 ) -> Result<u64, AppError> {
+    let request_digest = hex::encode(Sha256::digest(
+        serde_json::to_vec(&request).map_err(|error| invalid(&error.to_string()))?,
+    ));
+    if job_id == 0 || job_id > 9_007_199_254_740_991 {
+        return Err(invalid("Invalid image job ID"));
+    }
+    if let Some(existing) = trace::jobs::existing(&operation_id, &request_digest)? {
+        return Ok(existing.job_id);
+    }
+    static SLOTS: std::sync::OnceLock<std::sync::Arc<tokio::sync::Semaphore>> =
+        std::sync::OnceLock::new();
+    let permit = SLOTS
+        .get_or_init(|| std::sync::Arc::new(tokio::sync::Semaphore::new(2)))
+        .clone()
+        .try_acquire_owned()
+        .map_err(|_| invalid("Two image generations are already in progress"))?;
+    let temporary = crate::temporary_output::prepare(
+        &crate::config::config_dir()?.join("generated"),
+        request.source_path.as_deref().map(Path::new),
+        request.output_dir.clone(),
+    )?;
+    request.output_dir = temporary.directory.to_string_lossy().into_owned();
+    request.output_filename = temporary.filename.clone();
     let target = validate_request(&request)?;
     let key = if request.backend == ImageBackend::ApiKey {
         Some(resolve_key(&api_key)?)
     } else {
         None
     };
-    let (request, inputs, run) = tokio::task::spawn_blocking(move || {
-        let inputs = capture_inputs(&request)?;
-        let run = trace::begin_operation(recipe(&request, &inputs))?;
-        Ok::<_, AppError>((request, inputs, run))
-    })
-    .await
-    .map_err(|_| invalid("Image input capture failed"))??;
+    let (request, inputs, run, temporary, created, job_id) =
+        tokio::task::spawn_blocking(move || {
+            let inputs = capture_inputs(&request)?;
+            let mut temporary = temporary;
+            if let Some(directory) = inputs
+                .first()
+                .map(|input| {
+                    trace::inherited_save_directory(&trace::OperationInput {
+                        path: input.path.clone(),
+                        digest: input.digest.clone(),
+                    })
+                })
+                .transpose()?
+                .flatten()
+            {
+                temporary.save_directory_hint = directory;
+            }
+            let mut start = recipe(&request, &inputs);
+            start.parameters["output_storage"] = "temporary".into();
+            start.parameters["save_directory_hint"] = temporary.save_directory_hint.clone().into();
+            start.parameters["suggested_filename"] = temporary.filename.clone().into();
+            start.parameters["operation_id"] = operation_id.clone().into();
+            let (run, created, job_id) =
+                trace::jobs::accept(start, &operation_id, job_id, &request_digest)?;
+            Ok::<_, AppError>((request, inputs, run, temporary, created, job_id))
+        })
+        .await
+        .map_err(|_| invalid("Image input capture failed"))??;
+    if !created {
+        return Ok(job_id);
+    }
     let _ = app.emit("trace:changed", ());
-    let job_id = plugin_job::next_job_id();
     let control = plugin_job::JobControl::new();
+    let lease = plugin_job::own_job(job_id, control.clone());
     let worker_control = control.clone();
     let worker_app = app.clone();
     let attempt = crate::image_operation::Attempt::new(run, control.clone()).with_app(app.clone());
     tokio::spawn(async move {
+        let _permit = permit;
+        let _lease = lease;
+        let _temporary = temporary;
         let job = async {
             tokio::task::spawn_blocking(move || {
                 let result = execute_recorded(&attempt.run, &target, &worker_control, || {
@@ -517,7 +568,11 @@ pub(crate) async fn start_openai_image_job(
                             &inputs,
                             key.as_deref().expect("validated API key"),
                         ),
-                        ImageBackend::Codex => codex::generate(&request, &inputs, &worker_control),
+                        ImageBackend::Codex => {
+                            codex::generate(&request, &inputs, &worker_control, |details| {
+                                trace::record_operation_details(&attempt.run, details)
+                            })
+                        }
                     }
                 });
                 attempt.settle();

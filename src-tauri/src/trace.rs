@@ -2,8 +2,10 @@
 //! Artifact identity includes content and path; source revisions are never
 //! inferred from a filename after it has changed.
 use crate::{config, error::AppError, image_crop};
+pub(crate) mod jobs;
+pub(crate) mod save;
 use rusqlite::{params, Connection, OptionalExtension};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
     collections::HashSet,
@@ -16,6 +18,8 @@ use std::{
 
 const MAX_IMAGE_BYTES: u64 = 200 * 1024 * 1024;
 static TRACE_OWNER: OnceLock<Mutex<Option<File>>> = OnceLock::new();
+static LIVE_PUBLISHERS: OnceLock<HashSet<i64>> = OnceLock::new();
+static SCHEMA_SETUP: Mutex<()> = Mutex::new(());
 
 pub(crate) struct CropMetadata {
     pub source_path: String,
@@ -24,12 +28,71 @@ pub(crate) struct CropMetadata {
     pub viewport: image_crop::SvgViewport,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Serialize)]
 pub(crate) struct TraceRunHandle {
+    #[serde(skip)]
     database: PathBuf,
     id: i64,
 }
 
+pub(crate) fn rpc_handle(id: i64) -> Result<TraceRunHandle, AppError> {
+    if id <= 0 {
+        return Err(AppError::Other("Invalid provenance run ID".into()));
+    }
+    let database = database_path()?;
+    let exists: bool = connection_at(&database)?
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM runs WHERE id=?1)",
+            [id],
+            |row| row.get(0),
+        )
+        .map_err(sql)?;
+    if !exists {
+        return Err(AppError::Other("Unknown provenance run ID".into()));
+    }
+    Ok(TraceRunHandle { database, id })
+}
+
+static READY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+pub(crate) fn owner_ready() -> bool {
+    READY.load(std::sync::atomic::Ordering::Acquire)
+        && TRACE_OWNER
+            .get()
+            .and_then(|owner| owner.lock().ok().map(|guard| guard.is_some()))
+            .unwrap_or(false)
+}
+
+pub(crate) fn initialize_owner(
+    active_runs: Vec<i64>,
+    defer_recovery: bool,
+) -> Result<(), AppError> {
+    if active_runs.len() > 1024 || active_runs.iter().any(|id| *id <= 0) {
+        return Err(AppError::Other("Invalid active publisher leases".into()));
+    }
+    let active: HashSet<_> = active_runs.iter().copied().collect();
+    if active.len() != active_runs.len() {
+        return Err(AppError::Other("Duplicate publisher lease".into()));
+    }
+    LIVE_PUBLISHERS
+        .set(active)
+        .map_err(|_| AppError::Other("Backend already initialized".into()))?;
+    if defer_recovery {
+        with_trace_owner(|database| connection_at(database).map(drop))
+    } else {
+        activate_owner()
+    }
+}
+pub(crate) fn activate_owner() -> Result<(), AppError> {
+    if owner_ready() {
+        return Ok(());
+    }
+    reconcile_unfinished()?;
+    READY.store(true, std::sync::atomic::Ordering::Release);
+    Ok(())
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct OperationInput {
     pub path: String,
     pub digest: String,
@@ -44,6 +107,8 @@ struct OperationRecord {
     pub output_digest: String,
 }
 
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct OperationStart {
     pub operation: String,
     pub parameters: serde_json::Value,
@@ -82,6 +147,12 @@ pub(crate) struct Artifact {
     created_at: String,
     generating_run: Option<i64>,
     path_state: ArtifactPathState,
+    #[serde(skip_serializing_if = "is_false")]
+    temporary: bool,
+}
+
+fn is_false(value: &bool) -> bool {
+    !value
 }
 
 #[derive(Debug, PartialEq, Eq, Serialize)]
@@ -111,6 +182,7 @@ pub(crate) struct Run {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct TraceGraph {
     current_artifact_id: i64,
+    selected_path: String,
     selected_revision_status: SelectedRevisionStatus,
     artifacts: Vec<Artifact>,
     runs: Vec<Run>,
@@ -196,9 +268,8 @@ pub(crate) fn recent_image_runs_at(database: &Path) -> Result<Vec<ImageRunHistor
         .collect()
 }
 
-#[tauri::command]
 pub(crate) async fn recent_openai_image_runs() -> Result<Vec<ImageRunHistory>, AppError> {
-    tauri::async_runtime::spawn_blocking(move || recent_image_runs_at(&database_path()?))
+    tokio::task::spawn_blocking(move || recent_image_runs_at(&database_path()?))
         .await
         .map_err(|_| AppError::Other("Image run history query failed".into()))?
 }
@@ -216,6 +287,9 @@ fn sql(error: rusqlite::Error) -> AppError {
 }
 
 fn connection_at(path: &Path) -> Result<Connection, AppError> {
+    let _schema = SCHEMA_SETUP
+        .lock()
+        .map_err(|_| AppError::Other("Trace schema initialization lock is unavailable".into()))?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
@@ -246,7 +320,7 @@ fn connection_at(path: &Path) -> Result<Connection, AppError> {
     let schema_version: i64 = connection
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .map_err(sql)?;
-    if schema_version > 3 {
+    if schema_version > 7 {
         return Err(AppError::Other(format!(
             "Trace database schema {schema_version} is newer than this app supports"
         )));
@@ -300,7 +374,91 @@ fn connection_at(path: &Path) -> Result<Connection, AppError> {
             "BEGIN; ALTER TABLE runs ADD COLUMN result_details TEXT; PRAGMA user_version=3; COMMIT;",
         ).map_err(sql)?;
     }
+    if schema_version < 4 {
+        connection
+            .execute_batch(
+                "BEGIN;
+             CREATE TABLE image_saves (
+               artifact_id INTEGER PRIMARY KEY REFERENCES artifacts(id),
+               source_path TEXT NOT NULL, target_path TEXT NOT NULL,
+               digest TEXT NOT NULL, object_identity TEXT NOT NULL,
+               anchor_path TEXT NOT NULL, committed INTEGER NOT NULL DEFAULT 0
+             );
+             PRAGMA user_version=4; COMMIT;",
+            )
+            .map_err(sql)?;
+    }
+    if schema_version < 5 {
+        connection
+            .execute_batch(
+                "BEGIN;
+            CREATE TABLE artifact_locators (
+              artifact_id INTEGER NOT NULL REFERENCES artifacts(id),
+              path TEXT NOT NULL,digest TEXT NOT NULL,
+              PRIMARY KEY(path,digest,artifact_id)
+            );
+            PRAGMA user_version=5;COMMIT;",
+            )
+            .map_err(sql)?;
+    }
+    if schema_version < 6 {
+        connection
+            .execute_batch(
+                "BEGIN;
+            CREATE TABLE image_jobs (
+              operation_id TEXT PRIMARY KEY,job_id INTEGER NOT NULL,
+              request_digest TEXT NOT NULL,run_id INTEGER NOT NULL UNIQUE REFERENCES runs(id)
+            ); PRAGMA user_version=6;COMMIT;",
+            )
+            .map_err(sql)?;
+    }
+    if schema_version < 7 {
+        #[cfg(windows)]
+        add_legacy_locator_aliases(&connection)?;
+        connection
+            .pragma_update(None, "user_version", 7)
+            .map_err(sql)?;
+    }
     Ok(connection)
+}
+
+/// Historical Windows writers kept verbatim prefixes. Add safe syntactic
+/// aliases without changing revision IDs, recorded paths, or missing files.
+#[cfg(windows)]
+fn legacy_locator_alias(value: &str) -> Option<String> {
+    use std::path::{Component, Prefix};
+    let path = Path::new(value);
+    if !matches!(path.components().next(),Some(Component::Prefix(prefix)) if matches!(prefix.kind(),Prefix::VerbatimDisk(_)|Prefix::VerbatimUNC(_, _)))
+    {
+        return None;
+    }
+    let simplified = dunce::simplified(path);
+    (simplified != path).then(|| simplified.to_string_lossy().into_owned())
+}
+#[cfg(windows)]
+fn add_legacy_locator_aliases(connection: &Connection) -> Result<(), AppError> {
+    let tx = connection.unchecked_transaction().map_err(sql)?;
+    {
+        let mut statement = tx
+            .prepare("SELECT id,path,digest FROM artifacts")
+            .map_err(sql)?;
+        let records = statement
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            })
+            .map_err(sql)?;
+        for record in records {
+            let (id, path, digest) = record.map_err(sql)?;
+            if let Some(alias) = legacy_locator_alias(&path) {
+                tx.execute("INSERT OR IGNORE INTO artifact_locators(artifact_id,path,digest) VALUES(?1,?2,?3)",params![id,alias,digest]).map_err(sql)?;
+            }
+        }
+    }
+    tx.commit().map_err(sql)
 }
 
 fn database_path() -> Result<std::path::PathBuf, AppError> {
@@ -350,18 +508,30 @@ fn with_trace_owner<T>(action: impl FnOnce(&Path) -> Result<T, AppError>) -> Res
             }
             Err(std::fs::TryLockError::Error(error)) => return Err(error.into()),
         }
-        reconcile_unfinished_at(&database)?;
+        LIVE_PUBLISHERS
+            .get()
+            .ok_or_else(|| AppError::Other("Host provenance handshake required".into()))?;
         *guard = Some(lock);
     }
     action(&database)
 }
 
 fn digest(path: &Path) -> Result<String, AppError> {
-    let mut file = File::open(path)?;
+    let mut options = OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NONBLOCK);
+    }
+    let mut file = options.open(path)?;
     digest_file(&mut file)
 }
 
 fn digest_file(file: &mut File) -> Result<String, AppError> {
+    if !file.metadata()?.is_file() {
+        return Err(AppError::InvalidPath("Image must be a regular file".into()));
+    }
     if file.metadata()?.len() > MAX_IMAGE_BYTES {
         return Err(AppError::Other(
             "Image exceeds Trace's 200 MiB revision limit".into(),
@@ -369,10 +539,17 @@ fn digest_file(file: &mut File) -> Result<String, AppError> {
     }
     let mut hasher = Sha256::new();
     let mut buffer = [0u8; 64 * 1024];
+    let mut total = 0u64;
     loop {
         let read = file.read(&mut buffer)?;
         if read == 0 {
             break;
+        }
+        total += read as u64;
+        if total > MAX_IMAGE_BYTES {
+            return Err(AppError::Other(
+                "Image exceeds Trace's 200 MiB revision limit".into(),
+            ));
         }
         hasher.update(&buffer[..read]);
     }
@@ -415,11 +592,28 @@ pub(crate) fn relocate_image(source: &Path, target: &Path) -> Result<(), AppErro
     relocate_at(&database_path()?, source, target)
 }
 
+/// Editing an unsaved output retains its original permanent-folder suggestion.
+pub(crate) fn inherited_save_directory(input: &OperationInput) -> Result<Option<String>, AppError> {
+    let database = database_path()?;
+    if !database.exists() {
+        return Ok(None);
+    }
+    let path = normalize_path(Path::new(&input.path))?;
+    let connection = connection_at(&database)?;
+    let Some(id) = artifact_for_locator(&connection, &path, Some(&input.digest))? else {
+        return Ok(None);
+    };
+    let parameters:Option<String>=connection.query_row("SELECT r.parameters FROM artifacts a JOIN runs r ON r.id=a.generating_run WHERE a.id=?1",[id],|row|row.get(0)).optional().map_err(sql)?;
+    Ok(parameters
+        .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+        .and_then(|value| value["save_directory_hint"].as_str().map(str::to_owned)))
+}
+
 pub(crate) async fn relocate_after_rename(
     source: PathBuf,
     target: PathBuf,
 ) -> Result<(), AppError> {
-    tauri::async_runtime::spawn_blocking(move || relocate_image(&source, &target))
+    tokio::task::spawn_blocking(move || relocate_image(&source, &target))
         .await
         .map_err(|error| AppError::Other(format!("Trace relocation failed: {error}")))?
 }
@@ -507,14 +701,7 @@ fn insert_start(
     let mut input_ids = Vec::with_capacity(start.inputs.len());
     for input in &start.inputs {
         let path = normalize_path(Path::new(&input.path))?;
-        let existing: Option<i64> = tx
-            .query_row(
-                "SELECT id FROM artifacts WHERE path=?1 AND digest=?2 ORDER BY id DESC LIMIT 1",
-                params![path, input.digest],
-                |row| row.get(0),
-            )
-            .optional()
-            .map_err(sql)?;
+        let existing = artifact_for_locator(tx, &path, Some(&input.digest))?;
         let id = match existing {
             Some(id) => id,
             None => {
@@ -849,7 +1036,17 @@ fn cleanup_anchor_at(database: &Path, run_id: i64) -> Result<(), AppError> {
     let Some((Some(anchor), Some(expected_identity))) = evidence else {
         return Ok(());
     };
-    let anchor = Path::new(&anchor);
+    cleanup_private_anchor(Path::new(&anchor), &expected_identity)?;
+    connection
+        .execute(
+            "UPDATE runs SET prepared_anchor_path=NULL WHERE id=?1",
+            [run_id],
+        )
+        .map_err(sql)?;
+    Ok(())
+}
+
+fn cleanup_private_anchor(anchor: &Path, expected_identity: &str) -> Result<(), AppError> {
     let directory = anchor
         .parent()
         .ok_or_else(|| AppError::InvalidPath("Trace anchor has no parent".into()))?;
@@ -906,12 +1103,6 @@ fn cleanup_anchor_at(database: &Path, run_id: i64) -> Result<(), AppError> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(error) => return Err(error.into()),
     }
-    connection
-        .execute(
-            "UPDATE runs SET prepared_anchor_path=NULL WHERE id=?1",
-            [run_id],
-        )
-        .map_err(sql)?;
     Ok(())
 }
 
@@ -955,7 +1146,15 @@ fn observed_file_at(path: &Path) -> Result<Option<File>, PublicationObservation>
         }
         Err(_) => return Err(PublicationObservation::Unavailable),
     }
-    File::open(path)
+    let mut options = OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+    }
+    options
+        .open(path)
         .map(Some)
         .map_err(|_| PublicationObservation::Unavailable)
 }
@@ -997,6 +1196,13 @@ fn observe_publication(
 /// publication reached the target without relying on a reusable object ID alone.
 /// A missing target is definitive only while its parent is accessible.
 pub(crate) fn reconcile_unfinished_at(database: &Path) -> Result<(), AppError> {
+    reconcile_unfinished_except_at(database, &HashSet::new())
+}
+
+fn reconcile_unfinished_except_at(
+    database: &Path,
+    protected: &HashSet<i64>,
+) -> Result<(), AppError> {
     if !database.exists() {
         return Ok(());
     }
@@ -1020,6 +1226,11 @@ pub(crate) fn reconcile_unfinished_at(database: &Path) -> Result<(), AppError> {
     drop(statement);
     drop(connection);
     for (run_id, path, expected, identity, anchor) in pending {
+        // The publisher lives in the host, so a backend restart cannot prove
+        // this attempt died. Its host-owned lease survives that restart.
+        if protected.contains(&run_id) {
+            continue;
+        }
         let observation = match (&path, &expected, &identity, &anchor) {
             (Some(path), Some(expected), Some(identity), Some(anchor)) => {
                 observe_publication(Path::new(path), Path::new(anchor), expected, identity)
@@ -1045,11 +1256,37 @@ pub(crate) fn reconcile_unfinished_at(database: &Path) -> Result<(), AppError> {
         }
     }
     cleanup_terminal_anchors_at(database)?;
+    save::reconcile_at(database)?;
     Ok(())
 }
 
 pub(crate) fn reconcile_unfinished() -> Result<(), AppError> {
-    with_trace_owner(|_| Ok(()))
+    with_trace_owner(|database| {
+        reconcile_unfinished_except_at(
+            database,
+            LIVE_PUBLISHERS
+                .get()
+                .ok_or_else(|| AppError::Other("Host provenance handshake required".into()))?,
+        )
+    })
+}
+
+fn artifact_for_locator(
+    connection: &Connection,
+    path: &str,
+    digest: Option<&str>,
+) -> Result<Option<i64>, AppError> {
+    connection
+        .query_row(
+            "SELECT id FROM (
+          SELECT id,path,digest FROM artifacts
+          UNION ALL SELECT artifact_id AS id,path,digest FROM artifact_locators
+         ) WHERE path=?1 AND (?2 IS NULL OR digest=?2) ORDER BY id DESC LIMIT 1",
+            params![path, digest],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(sql)
 }
 
 pub(crate) fn graph_for_path_at(
@@ -1064,14 +1301,8 @@ pub(crate) fn graph_for_path_at(
     }
     let connection = connection_at(database)?;
     let path_text = normalize_path(path)?;
-    let known: bool = connection
-        .query_row(
-            "SELECT EXISTS(SELECT 1 FROM artifacts WHERE path=?1)",
-            [path_text.as_str()],
-            |row| row.get(0),
-        )
-        .map_err(sql)?;
-    if !known {
+    let known = artifact_for_locator(&connection, &path_text, None)?;
+    if known.is_none() {
         return Ok(None);
     }
     let selected_digest = if fs::metadata(path)?.len() > MAX_IMAGE_BYTES {
@@ -1080,14 +1311,7 @@ pub(crate) fn graph_for_path_at(
         Some(digest(path)?)
     };
     let current: Option<i64> = match selected_digest.as_ref() {
-        Some(digest) => connection
-            .query_row(
-                "SELECT id FROM artifacts WHERE path=?1 AND digest=?2 ORDER BY id DESC LIMIT 1",
-                params![path_text.as_str(), digest],
-                |row| row.get(0),
-            )
-            .optional()
-            .map_err(sql)?,
+        Some(digest) => artifact_for_locator(&connection, &path_text, Some(digest))?,
         None => None,
     };
     let selected_revision_status = match (&selected_digest, &current) {
@@ -1097,16 +1321,11 @@ pub(crate) fn graph_for_path_at(
     };
     let current_artifact_id = match current {
         Some(id) => id,
-        None => connection
-            .query_row(
-                "SELECT id FROM artifacts WHERE path=?1 ORDER BY id DESC LIMIT 1",
-                [path_text.as_str()],
-                |row| row.get(0),
-            )
-            .map_err(sql)?,
+        None => known.expect("locator was checked"),
     };
     let mut graph = TraceGraph {
         current_artifact_id,
+        selected_path: path_text,
         selected_revision_status,
         artifacts: Vec::new(),
         runs: Vec::new(),
@@ -1145,6 +1364,7 @@ pub(crate) fn graph_for_path_at(
                 digest,
                 created_at,
                 generating_run,
+                temporary: false,
             };
             if let Some(run_id) = artifact.generating_run {
                 if scheduled_runs.insert(run_id) {
@@ -1211,16 +1431,29 @@ pub(crate) fn graph_for_path_at(
             graph.runs.push(run);
         }
     }
+    let temporary_runs: HashSet<_> = graph
+        .runs
+        .iter()
+        .filter(|run| {
+            run.parameters
+                .get("output_storage")
+                .and_then(serde_json::Value::as_str)
+                == Some("temporary")
+        })
+        .map(|run| run.id)
+        .collect();
+    for artifact in &mut graph.artifacts {
+        artifact.temporary = artifact
+            .generating_run
+            .is_some_and(|id| temporary_runs.contains(&id));
+    }
     Ok(Some(graph))
 }
 
-#[tauri::command]
 pub(crate) async fn trace_for_image(path: String) -> Result<Option<TraceGraph>, AppError> {
-    tauri::async_runtime::spawn_blocking(move || {
-        graph_for_path_at(&database_path()?, Path::new(&path))
-    })
-    .await
-    .map_err(|error| AppError::Other(format!("Trace query failed: {error}")))?
+    tokio::task::spawn_blocking(move || graph_for_path_at(&database_path()?, Path::new(&path)))
+        .await
+        .map_err(|error| AppError::Other(format!("Trace query failed: {error}")))?
 }
 
 #[cfg(test)]
@@ -1259,7 +1492,7 @@ mod tests {
 
     #[test]
     fn crop_chain_is_durable_and_bound_to_exact_output_revision() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::test_support::tempdir().unwrap();
         let db = dir.path().join("trace.sqlite");
         let source = dir.path().join("source.png");
         let first = dir.path().join("first.png");
@@ -1341,7 +1574,7 @@ mod tests {
 
     #[test]
     fn started_crop_finishes_with_a_durable_output_revision() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::test_support::tempdir().unwrap();
         let db = dir.path().join("trace.sqlite");
         let source = dir.path().join("source.png");
         let output = dir.path().join("output.png");
@@ -1367,7 +1600,7 @@ mod tests {
 
     #[test]
     fn completion_cannot_attribute_an_external_replacement_even_with_identical_bytes() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::test_support::tempdir().unwrap();
         let db = dir.path().join("trace.sqlite");
         let source = dir.path().join("source.png");
         let output = dir.path().join("output.png");
@@ -1394,7 +1627,7 @@ mod tests {
 
     #[test]
     fn failed_crop_is_visible_from_its_source_without_an_output() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::test_support::tempdir().unwrap();
         let db = dir.path().join("trace.sqlite");
         let source = dir.path().join("source.png");
         fs::write(&source, b"source").unwrap();
@@ -1414,7 +1647,7 @@ mod tests {
 
     #[test]
     fn restart_recovers_published_bytes_and_keeps_missing_output_interrupted() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::test_support::tempdir().unwrap();
         let db = dir.path().join("trace.sqlite");
         let source = dir.path().join("source.png");
         let published = dir.path().join("published.png");
@@ -1444,9 +1677,54 @@ mod tests {
             .any(|artifact| artifact.generating_run == Some(second)));
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn legacy_windows_locators_preserve_missing_revisions_and_namespace_semantics() {
+        let directory = crate::test_support::tempdir().unwrap();
+        let database = directory.path().join("trace.sqlite");
+        let connection = connection_at(&database).unwrap();
+        let digest = "a".repeat(64);
+        let paths = [
+            r"\\?\C:\missing\result.png",
+            r"\\?\C:\missing\CON",
+            r"\\?\UNC\server\share\result.png",
+        ];
+        for (index, path) in paths.iter().enumerate() {
+            connection
+                .execute(
+                    "INSERT INTO artifacts(id,path,digest) VALUES(?1,?2,?3)",
+                    params![index as i64 + 1, path, digest],
+                )
+                .unwrap();
+        }
+        connection.pragma_update(None, "user_version", 6).unwrap();
+        drop(connection);
+        let migrated = connection_at(&database).unwrap();
+        assert_eq!(
+            artifact_for_locator(&migrated, r"C:\missing\result.png", Some(&digest)).unwrap(),
+            Some(1)
+        );
+        assert_eq!(
+            artifact_for_locator(&migrated, paths[1], Some(&digest)).unwrap(),
+            Some(2)
+        );
+        assert_eq!(
+            artifact_for_locator(&migrated, paths[2], Some(&digest)).unwrap(),
+            Some(3)
+        );
+        assert_eq!(legacy_locator_alias(paths[1]), None);
+        assert_eq!(legacy_locator_alias(paths[2]), None);
+        let recorded: String = migrated
+            .query_row("SELECT path FROM artifacts WHERE id=1", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(recorded, paths[0]);
+    }
+
     #[test]
     fn version_one_history_migrates_without_losing_its_lineage() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::test_support::tempdir().unwrap();
         let db = dir.path().join("trace.sqlite");
         let source = dir.path().join("source.png");
         let output = dir.path().join("output.png");
@@ -1462,7 +1740,7 @@ mod tests {
         .unwrap();
         old.execute(
             "INSERT INTO artifacts(id,path,digest,created_at) VALUES (1,?1,?2,'2026-10-03T00:00:00Z')",
-            params![source.to_str().unwrap(), digest(&source).unwrap()],
+            params![fs::canonicalize(&source).unwrap().to_string_lossy(), digest(&source).unwrap()],
         )
         .unwrap();
         old.execute(
@@ -1474,7 +1752,7 @@ mod tests {
             .unwrap();
         old.execute(
             "INSERT INTO artifacts(id,path,digest,created_at,generating_run) VALUES (3,?1,?2,'2026-10-03T00:00:02Z',2)",
-            params![output.to_str().unwrap(), digest(&output).unwrap()],
+            params![fs::canonicalize(&output).unwrap().to_string_lossy(), digest(&output).unwrap()],
         )
         .unwrap();
         drop(old);
@@ -1487,12 +1765,12 @@ mod tests {
             .unwrap()
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 3);
+        assert_eq!(version, 7);
     }
 
     #[test]
     fn recovery_does_not_invent_an_output_when_replacement_bytes_are_unchanged() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::test_support::tempdir().unwrap();
         let db = dir.path().join("trace.sqlite");
         let source = dir.path().join("source.png");
         fs::write(&source, b"same bytes").unwrap();
@@ -1509,7 +1787,7 @@ mod tests {
 
     #[test]
     fn matching_bytes_from_another_file_do_not_prove_crop_publication() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::test_support::tempdir().unwrap();
         let db = dir.path().join("trace.sqlite");
         let source = dir.path().join("source.png");
         let output = dir.path().join("output.png");
@@ -1529,7 +1807,7 @@ mod tests {
 
     #[test]
     fn unavailable_parent_keeps_recovery_pending_until_the_output_returns() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::test_support::tempdir().unwrap();
         let db = dir.path().join("trace.sqlite");
         let source = dir.path().join("source.png");
         let mount = dir.path().join("removable");
@@ -1555,7 +1833,7 @@ mod tests {
 
     #[test]
     fn replacement_after_publication_cannot_be_attributed_to_crop() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::test_support::tempdir().unwrap();
         let db = dir.path().join("trace.sqlite");
         let source = dir.path().join("source.png");
         let output = dir.path().join("output.png");
@@ -1580,7 +1858,7 @@ mod tests {
 
     #[test]
     fn oversized_selected_image_has_unverified_status_without_claiming_a_change() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::test_support::tempdir().unwrap();
         let db = dir.path().join("trace.sqlite");
         let source = dir.path().join("source.png");
         let output = dir.path().join("output.png");
@@ -1609,7 +1887,7 @@ mod tests {
 
     #[test]
     fn relocated_output_retains_its_graph_identity() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::test_support::tempdir().unwrap();
         let db = dir.path().join("trace.sqlite");
         let source = dir.path().join("source.png");
         let output = dir.path().join("output.png");
@@ -1643,7 +1921,7 @@ mod tests {
 
     #[test]
     fn one_operation_can_join_two_source_revisions() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::test_support::tempdir().unwrap();
         let db = dir.path().join("trace.sqlite");
         let left = dir.path().join("left.png");
         let right = dir.path().join("right.png");
@@ -1687,7 +1965,7 @@ mod tests {
 
     #[test]
     fn oversized_branching_graph_is_rejected() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::test_support::tempdir().unwrap();
         let db = dir.path().join("trace.sqlite");
         let source = dir.path().join("source.png");
         fs::write(&source, b"source pixels").unwrap();
@@ -1729,7 +2007,7 @@ mod tests {
     #[test]
     fn trace_database_is_private_even_when_an_old_file_is_too_permissive() {
         use std::os::unix::fs::PermissionsExt;
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::test_support::tempdir().unwrap();
         let db = dir.path().join("trace.sqlite");
         connection_at(&db).unwrap();
         assert_eq!(

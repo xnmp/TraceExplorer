@@ -1,6 +1,6 @@
 <script lang="ts">
   import { getThumbnailData } from "$lib/api/thumbnails";
-  let { path, present, revision, label }: { path: string; present: boolean; revision: number; label: string } = $props();
+  let { path, present, revision, label, prompt = "" }: { path: string; present: boolean; revision: number; label: string; prompt?:string } = $props();
   let url = $state("");
   $effect(() => {
     const selectedPath = path;
@@ -18,7 +18,7 @@
   });
 </script>
 <span class="thumbnail">
-  {#if url}<img src={url} alt="" title="Preview of the file at its recorded path" />
+  {#if url}<img src={url} alt="" title={prompt || undefined} />
   {:else}<span class="placeholder" aria-hidden="true">▧</span>{/if}
   {#if label}<small>{label}</small>{/if}
 </span>

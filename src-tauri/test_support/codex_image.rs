@@ -1,7 +1,7 @@
 use super::*;
 
 const THREAD: &str = "01234567-89ab-7cde-8f01-23456789abcd";
-const PNG: &[u8] = include_bytes!("../icons/32x32.png");
+const PNG: &[u8] = include_bytes!("fixtures/source32.png");
 
 fn request(dir: &Path, source: Option<&Path>) -> ImageRequest {
     ImageRequest {
@@ -48,8 +48,22 @@ fn unsuccessful_and_malformed_cli_streams_are_not_outputs() {
 }
 
 #[test]
+fn a_missing_generated_thread_reports_missing_provider_output_instead_of_a_path_error() {
+    let home = crate::test_support::tempdir().unwrap();
+    let error = read_generated_image(home.path(), THREAD)
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("no generated image was found for its thread"));
+    std::fs::create_dir(home.path().join("generated_images")).unwrap();
+    let error = read_generated_image(home.path(), THREAD)
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("no generated image was found for its thread"));
+}
+
+#[test]
 fn generated_output_belongs_to_the_exact_thread_and_must_be_unique() {
-    let home = tempfile::tempdir().unwrap();
+    let home = crate::test_support::tempdir().unwrap();
     let directory = home.path().join("generated_images").join(THREAD);
     std::fs::create_dir_all(&directory).unwrap();
     let other = home.path().join("generated_images/stale-thread");
@@ -66,8 +80,8 @@ fn generated_output_belongs_to_the_exact_thread_and_must_be_unique() {
 #[test]
 fn symlinked_output_files_and_thread_directories_are_rejected() {
     use std::os::unix::fs::symlink;
-    let home = tempfile::tempdir().unwrap();
-    let elsewhere = tempfile::tempdir().unwrap();
+    let home = crate::test_support::tempdir().unwrap();
+    let elsewhere = crate::test_support::tempdir().unwrap();
     std::fs::write(elsewhere.path().join("image.png"), PNG).unwrap();
     let directory = home.path().join("generated_images");
     std::fs::create_dir(&directory).unwrap();
@@ -87,7 +101,7 @@ fn symlinked_output_files_and_thread_directories_are_rejected() {
 #[test]
 fn headless_adapter_stages_captured_bytes_and_publishes_native_provenance() {
     use std::os::unix::fs::PermissionsExt;
-    let home = tempfile::tempdir().unwrap();
+    let home = crate::test_support::tempdir().unwrap();
     let executable = home.path().join("fake-codex");
     let directory = home.path().join("generated_images").join(THREAD);
     std::fs::create_dir_all(&directory).unwrap();
@@ -122,7 +136,7 @@ printf '%s\n' '{}' '{}'
     .unwrap();
     std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).unwrap();
     let reference = home.path().join("reference.png");
-    let reference_bytes = include_bytes!("../icons/128x128.png");
+    let reference_bytes = include_bytes!("fixtures/source.png");
     std::fs::write(&reference, reference_bytes).unwrap();
     let mut request = request(home.path(), Some(&source));
     request.reference_paths = vec![reference.to_string_lossy().into_owned()];
@@ -173,7 +187,7 @@ printf '%s\n' '{}' '{}'
 fn live_codex_edit_records_a_real_output() {
     let source = std::env::var("TRACE_CODEX_TEST_SOURCE")
         .expect("set TRACE_CODEX_TEST_SOURCE to the smoke-test image");
-    let dir = tempfile::tempdir().unwrap();
+    let dir = crate::test_support::tempdir().unwrap();
     let mut request = request(dir.path(), Some(Path::new(&source)));
     request.prompt =
         "Change only the mug to green; preserve geometry, white background, framing and lighting"
@@ -188,7 +202,7 @@ fn live_codex_edit_records_a_real_output() {
     let target = validate_request(&request).unwrap();
     let control = plugin_job::JobControl::new();
     execute_recorded(&run, &target, &control, || {
-        generate(&request, &inputs, &control)
+        generate(&request, &inputs, &control, |_| Ok(()))
     })
     .unwrap();
     let graph =
@@ -205,7 +219,7 @@ fn live_codex_edit_records_a_real_output() {
 
 #[test]
 fn requested_image_settings_reach_codex_and_the_recorded_recipe() {
-    let directory = tempfile::tempdir().unwrap();
+    let directory = crate::test_support::tempdir().unwrap();
     let mut input = request(directory.path(), None);
     input.size = "2048x1536".into();
     input.resolution = Some("2k".into());
