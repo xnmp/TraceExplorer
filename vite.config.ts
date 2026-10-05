@@ -1,4 +1,4 @@
-import { defineConfig, type Plugin as VitePlugin } from "vite";
+import { defineConfig, normalizePath, type Plugin as VitePlugin } from "vite";
 import { svelte } from "@sveltejs/vite-plugin-svelte";
 import { resolve } from "node:path";
 
@@ -10,11 +10,11 @@ function sharedHostModules(): VitePlugin {
     "$lib/components/ImageCropEditor.svelte": {key: "ui/image-editor", names: ["default"]},
   };
   for (const [name, binding] of Object.entries(special)) {
-    special[resolve("src/lib", name.slice(5))] = binding;
+    special[normalizePath(resolve("src/lib", name.slice(5)))] = binding;
   }
   return {
     name: "plugin-shared-host-modules", enforce: "pre",
-    resolveId(id) { if (id === "svelte" || id.startsWith("svelte/internal/") || id in special) return `\0host:${JSON.stringify(id)}.js`; },
+    resolveId(id) { const normalized=normalizePath(id); if (normalized === "svelte" || normalized.startsWith("svelte/internal/") || normalized in special) return `\0host:${JSON.stringify(normalized)}.js`; },
     async load(id) {
       if (!id.startsWith("\0host:")) return;
       const name = JSON.parse(id.slice(6, -3)) as string;
