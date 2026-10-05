@@ -1,0 +1,9 @@
+/tauri-explorer-worktree/
+/verification/
+/design-candidates/
+/HANDOVER.md
+__pycache__/
+.env
+.env.*
+node_modules/
+target/
