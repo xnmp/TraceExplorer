@@ -65,12 +65,16 @@ async fn execute(app: EventEmitter, request: &Request) -> Result<Value, AppError
                     .and_then(Value::as_bool)
                     .unwrap_or(false),
             );
+            if trace::owner_ready() {
+                let _ = app.emit("trace:changed", ());
+            }
             Ok(
-                json!({"protocolVersion": 1,"ready":trace::owner_ready(), "pluginVersion": env!("CARGO_PKG_VERSION")}),
+                json!({"protocolVersion":1,"ready":trace::owner_ready(),"pluginVersion":env!("CARGO_PKG_VERSION")}),
             )
         }
         "lifecycle.activate" => {
             trace::activate_owner()?;
+            let _ = app.emit("trace:changed", ());
             Ok(Value::Null)
         }
         "trace_for_image" => Ok(serde_json::to_value(
