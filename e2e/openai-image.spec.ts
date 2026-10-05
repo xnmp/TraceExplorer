@@ -41,7 +41,7 @@ test("Ctrl+E opens compact AI edit and Ctrl+Enter starts background generation",
   await expect(dialog.getByLabel("Seed")).toHaveValue("Not supported");
   await expect(dialog.getByLabel("Output filename (.png)")).toHaveCount(0);
   await dialog.getByLabel("Edit prompt").fill("Make the sky green");
-  await page.screenshot({ path: testInfo.outputPath("compact-ai-edit.png") });
+  await page.screenshot({ path: testInfo.outputPath("compact-ai-edit.png"), animations: "disabled" });
   await page.keyboard.press("Control+Enter");
   await expect(dialog).toBeHidden();
   const progress = page.getByRole("region", { name: "Background progress" });

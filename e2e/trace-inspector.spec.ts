@@ -226,7 +226,7 @@ test("Trace uses output nodes with thumbnails, prompt details, raw disclosure an
   await details.locator("summary").click();
   await expect(details.locator("pre")).toContainText("total_tokens");
   await expect(details.locator("pre")).toContainText("req_fixture");
-  await page.screenshot({ path: testInfo.outputPath("thumbnail-trace.png") });
+  await page.screenshot({ path: testInfo.outputPath("thumbnail-trace.png"), animations: "disabled" });
   for (const visible of [false, true]) {
     await page.keyboard.press("Control+Shift+p");
     await page.locator(".command-palette-dialog .search-input").fill("Toggle Trace Pane");

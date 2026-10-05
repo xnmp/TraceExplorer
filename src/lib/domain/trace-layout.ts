@@ -36,7 +36,7 @@ export interface TraceLayout {
 
 const ARTIFACT_WIDTH = 146;
 const ARTIFACT_HEIGHT = 128;
-const RUN_WIDTH = 90;
+const RUN_WIDTH = 146;
 const RUN_HEIGHT = 38;
 const COLUMN_GAP = 14;
 const ROW_GAP = 30;

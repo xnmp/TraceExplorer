@@ -2,6 +2,8 @@
 
 The plugin runs inside [xnmp/tauri-explorer](https://github.com/xnmp/tauri-explorer). Its Rust code relies on host crate services, and its Svelte components rely on the host plugin SDK and shared theme/components.
 
+The host update is [PR #991](https://github.com/xnmp/tauri-explorer/pull/991).
+
 The current host changes start from dev commit `151002923ebda01a0c885f75a54b920db311347b` and are developed on `feat/streamlined-ai-image-trace`. `host.patch` contains the complete host update, including plugin sources, host capabilities, and regression tests. The patch applies to that base; after the host PR merges, the dev branch already contains the integration.
 
 To reproduce the pre-merge integration in a clean host checkout:

@@ -100,7 +100,7 @@
                   {#if run.parameters.rect}
                     <small>{run.parameters.rect.right - run.parameters.rect.left} × {run.parameters.rect.bottom - run.parameters.rect.top}</small>
                   {/if}
-                  {#if run.status !== "succeeded"}<small class="run-status">{run.status}</small>{/if}
+                  {#if run.status !== "succeeded" && run.status !== "running"}<small class="run-status">{run.status}</small>{/if}
                 </button>
               </div>
             {/if}

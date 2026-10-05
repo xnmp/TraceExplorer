@@ -89,7 +89,7 @@ index a1e75b3f..3b79bb74 100644
    expect(await page.evaluate(() => (window as any).__acceptedImageEdit?.prompt)).toBe("Make the sky green");
    await expect(page.getByRole("list", { name: "Image provenance" })).toHaveCount(0);
 diff --git a/e2e/openai-image.spec.ts b/e2e/openai-image.spec.ts
-index a17ff9b0..f1e26fb1 100644
+index a17ff9b0..7f554950 100644
 --- a/e2e/openai-image.spec.ts
 +++ b/e2e/openai-image.spec.ts
 @@ -1,202 +1,206 @@
@@ -176,7 +176,7 @@ index a17ff9b0..f1e26fb1 100644
 +  await expect(dialog.getByLabel("Seed")).toHaveValue("Not supported");
 +  await expect(dialog.getByLabel("Output filename (.png)")).toHaveCount(0);
 +  await dialog.getByLabel("Edit prompt").fill("Make the sky green");
-+  await page.screenshot({ path: testInfo.outputPath("compact-ai-edit.png") });
++  await page.screenshot({ path: testInfo.outputPath("compact-ai-edit.png"), animations: "disabled" });
 +  await page.keyboard.press("Control+Enter");
    await expect(dialog).toBeHidden();
 -  const provenance = page.getByRole("list", { name: "Image provenance" });
@@ -464,7 +464,7 @@ index a17ff9b0..f1e26fb1 100644
  
  test("failed generation remains inspectable through image run history", async ({ page }) => {
 diff --git a/e2e/trace-inspector.spec.ts b/e2e/trace-inspector.spec.ts
-index 156ad4bd..fbf793dd 100644
+index 156ad4bd..eb2cc6e4 100644
 --- a/e2e/trace-inspector.spec.ts
 +++ b/e2e/trace-inspector.spec.ts
 @@ -26,20 +26,19 @@ for (const mode of ALL_VIEW_MODES) test(`${mode}: selected image displays its re
@@ -592,7 +592,7 @@ index 156ad4bd..fbf793dd 100644
 +  await details.locator("summary").click();
 +  await expect(details.locator("pre")).toContainText("total_tokens");
 +  await expect(details.locator("pre")).toContainText("req_fixture");
-+  await page.screenshot({ path: testInfo.outputPath("thumbnail-trace.png") });
++  await page.screenshot({ path: testInfo.outputPath("thumbnail-trace.png"), animations: "disabled" });
 +  for (const visible of [false, true]) {
 +    await page.keyboard.press("Control+Shift+p");
 +    await page.locator(".command-palette-dialog .search-input").fill("Toggle Trace Pane");
@@ -1064,18 +1064,20 @@ index 00000000..4867612c
 +  return `${prefix || "image"}_${sourceName ? "edit" : "generated"}_${jobIdentity}.png`;
 +}
 diff --git a/src/lib/domain/trace-layout.ts b/src/lib/domain/trace-layout.ts
-index f4b747cf..4e5f1dcd 100644
+index f4b747cf..9a010b8a 100644
 --- a/src/lib/domain/trace-layout.ts
 +++ b/src/lib/domain/trace-layout.ts
-@@ -35,7 +35,7 @@ export interface TraceLayout {
+@@ -35,8 +35,8 @@ export interface TraceLayout {
  }
  
  const ARTIFACT_WIDTH = 146;
 -const ARTIFACT_HEIGHT = 58;
+-const RUN_WIDTH = 90;
 +const ARTIFACT_HEIGHT = 128;
- const RUN_WIDTH = 90;
++const RUN_WIDTH = 146;
  const RUN_HEIGHT = 38;
  const COLUMN_GAP = 14;
+ const ROW_GAP = 30;
 @@ -45,6 +45,7 @@ const PADDING = 14;
  export function layoutTraceGraph(graph: TraceLayoutInput): TraceLayout {
    const artifacts = new Map(graph.artifacts.map((artifact) => [artifact.id, artifact]));
@@ -1695,7 +1697,7 @@ index a69614bc..ab124653 100644
 +  pre { box-sizing: border-box; max-height: 260px; overflow: auto; margin: 6px 0 0; padding: 8px; border-radius: var(--radius-sm); background: var(--background-card-secondary); color: var(--text-primary); font-size: 10px; line-height: 1.4; }
  </style>
 diff --git a/src/lib/plugins/trace/TraceInspector.svelte b/src/lib/plugins/trace/TraceInspector.svelte
-index 2cfae9a6..62ec04b1 100644
+index 2cfae9a6..164eca5b 100644
 --- a/src/lib/plugins/trace/TraceInspector.svelte
 +++ b/src/lib/plugins/trace/TraceInspector.svelte
 @@ -4,6 +4,7 @@
@@ -1743,7 +1745,7 @@ index 2cfae9a6..62ec04b1 100644
                  </button>
                </div>
              {/if}
-@@ -93,7 +95,8 @@
+@@ -93,11 +95,12 @@
              {#if run}
                <div role="listitem" class="node-frame" style={`left:${node.x}px;top:${node.y}px;width:${node.width}px;height:${node.height}px`}>
                  <button type="button" class="operation" aria-pressed={selectedKey === node.key} aria-controls="trace-node-details" onclick={() => focusedKey = node.key}>
@@ -1753,6 +1755,11 @@ index 2cfae9a6..62ec04b1 100644
                    {#if run.parameters.rect}
                      <small>{run.parameters.rect.right - run.parameters.rect.left} × {run.parameters.rect.bottom - run.parameters.rect.top}</small>
                    {/if}
+-                  {#if run.status !== "succeeded"}<small class="run-status">{run.status}</small>{/if}
++                  {#if run.status !== "succeeded" && run.status !== "running"}<small class="run-status">{run.status}</small>{/if}
+                 </button>
+               </div>
+             {/if}
 @@ -112,26 +115,22 @@
  <style>
    .trace-body { padding: 12px; color: var(--text-secondary); font-size: 12px; }

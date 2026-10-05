@@ -7,3 +7,5 @@ __pycache__/
 .env.*
 node_modules/
 target/
+/.tauri-explorer-base/
+/PHOENIX_ARCHITECTURE_ASSESSMENT.md

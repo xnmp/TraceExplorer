@@ -13,6 +13,8 @@ Trace records the actual image revisions and transformations behind creative wor
 - Clicking a node reveals its file; Toggle Trace Pane is available in the command palette.
 - Seed is disabled and marked Not supported because the current providers expose no seed.
 
+Host implementation: [tauri-explorer PR #991](https://github.com/xnmp/tauri-explorer/pull/991).
+
 ## Integration status
 
 These plugins currently compile into Tauri Explorer. They are not a separately installable JavaScript package: the native Rust adapters use the host's job lifecycle, filesystem publication, config, and SQLite provenance services.
