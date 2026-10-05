@@ -2,16 +2,14 @@
 
 The plugin runs inside [xnmp/tauri-explorer](https://github.com/xnmp/tauri-explorer). Its Rust code relies on host crate services, and its Svelte components rely on the host plugin SDK and shared theme/components.
 
-The host update is [PR #991](https://github.com/xnmp/tauri-explorer/pull/991).
+The host update merged as [PR #991](https://github.com/xnmp/tauri-explorer/pull/991), commit [`af06e086`](https://github.com/xnmp/tauri-explorer/commit/af06e08693826756491d44139a3af039f1da37c0) on `dev`. All 24 final-head CI checks passed. Local acceptance includes 52 Chromium outcomes and 16 native crop outcomes across eight formats.
 
-The current host changes start from dev commit `151002923ebda01a0c885f75a54b920db311347b` and are developed on `feat/streamlined-ai-image-trace`. `host.patch` contains the complete host update, including plugin sources, host capabilities, and regression tests. The patch applies to that base; after the host PR merges, the dev branch already contains the integration.
+The plugin snapshot matches the merged host tree. `host.patch` contains the complete update from base commit `151002923ebda01a0c885f75a54b920db311347b`, including plugin sources, host capabilities, and regression tests. The patch applies to that earlier base; current `dev` already includes the integration.
 
-To reproduce the pre-merge integration in a clean host checkout:
+Build the pinned integration from a clean host checkout:
 
 ```sh
-git checkout 151002923ebda01a0c885f75a54b920db311347b
-git apply --check /path/to/TraceExplorer/integration/host.patch
-git apply /path/to/TraceExplorer/integration/host.patch
+git checkout af06e08693826756491d44139a3af039f1da37c0
 bun install --frozen-lockfile
 bun run check
 bun run build
