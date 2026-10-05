@@ -58,6 +58,39 @@ index 9535dca7..dd65229c 100644
 +Resolution presets request a longest edge of 1024, 2048, or 3840 pixels, quantized to provider-compatible multiples of 16 and bounded by its pixel/aspect limits. Codex receives these requested dimensions in its image-tool task; the raw record distinguishes the requested task from provider-reported evidence. Output filenames include a unique job identity, so concurrent edits cannot accidentally share a destination.
 +
 +Image jobs appear in the existing bottom-right progress panel. Trace shows a spinner for an unfinished run and combines a completed run with its output thumbnail. Clicking an image reveals and selects it in the explorer, including filtered/hidden or virtualized offscreen rows. Toggle Trace Pane in the command palette controls its visibility without disabling recording. Thumbnails show current files at their recorded paths; earlier revisions sharing a replaced path are labeled and omit a misleading thumbnail.
+diff --git a/e2e-tauri/specs/terminal-key-ownership.spec.ts b/e2e-tauri/specs/terminal-key-ownership.spec.ts
+index bfc363dd..1ee61409 100644
+--- a/e2e-tauri/specs/terminal-key-ownership.spec.ts
++++ b/e2e-tauri/specs/terminal-key-ownership.spec.ts
+@@ -30,7 +30,9 @@ const keyProbe = process.platform === "win32"
+   it("delivers Ctrl+Q to a terminal-hosted application instead of Explorer", async () => {
+     // The native WebView keeps its tab layout between test runs. Start from
+     // one tab so the two tab-navigation captures have an unambiguous state.
+-    await browser.execute(() => {
++    const refreshToken = crypto.randomUUID();
++    await browser.execute((token: string) => {
++      document.documentElement.dataset.e2eRefreshToken = token;
+       localStorage.clear();
+       // These earlier-registered commands conflict with terminal exceptions.
+       // The window must retain the exact identity that xterm relinquished.
+@@ -38,9 +40,15 @@ const keyProbe = process.platform === "win32"
+         "navigation.goUp": "Ctrl+P",
+         "view.focusFilesSidebar": "Alt+M T",
+       }));
+-    });
++    }, refreshToken);
+     await browser.refresh();
+-    await $(".file-list").waitForExist({ timeout: 15_000 });
++    // WebKit can acknowledge refresh while the old document is still visible.
++    // Require the replacement document's keyboard/hooks and listing readiness.
++    await browser.waitUntil(() => browser.execute((token: string) =>
++      document.documentElement.dataset.e2eRefreshToken !== token
++        && document.documentElement.dataset.e2eHooksReady === "true"
++        && document.querySelector(".file-list") !== null,
++    refreshToken), { timeout: 15_000, timeoutMsg: "refreshed explorer never became ready" });
+     await browser.keys(["Control", "`"]);
+     await $(".terminal-panel .xterm").waitForDisplayed({ timeout: 10_000 });
+     const input = await $(".terminal-panel textarea.xterm-helper-textarea");
 diff --git a/e2e/image-editor.spec.ts b/e2e/image-editor.spec.ts
 index a1e75b3f..3b79bb74 100644
 --- a/e2e/image-editor.spec.ts
@@ -1985,10 +2018,10 @@ index 556c4528..a7e2fbf6 100644
      // Cleanup
      destroy: async (): Promise<void> => {
 diff --git a/src/lib/state/keybindings.svelte.ts b/src/lib/state/keybindings.svelte.ts
-index fb5deb4e..b9ebb0c3 100644
+index fb5deb4e..c6538222 100644
 --- a/src/lib/state/keybindings.svelte.ts
 +++ b/src/lib/state/keybindings.svelte.ts
-@@ -77,6 +77,13 @@ function createKeybindingsStore() {
+@@ -77,6 +77,16 @@ function createKeybindingsStore() {
     */
    function registerDefault(commandId: string, shortcut: string): void {
      defaultShortcuts[commandId] = shortcut;
@@ -1998,11 +2031,14 @@ index fb5deb4e..b9ebb0c3 100644
 +  function unregisterDefault(commandId: string): void {
 +    delete defaultShortcuts[commandId];
 +    chordCache.delete(commandId);
-+    cancelChord();
++    if (activeChordCommandIds?.includes(commandId)) {
++      activeChordCommandIds = activeChordCommandIds.filter((id) => id !== commandId);
++      if (activeChordCommandIds.length === 0) cancelChord();
++    }
    }
  
    /**
-@@ -365,6 +372,7 @@ function createKeybindingsStore() {
+@@ -365,6 +375,7 @@ function createKeybindingsStore() {
      /** Same Super overlay used by shortcut matching on WebKitGTK. */
      get trackedMetaHeld() { return superKeyHeld; },
      registerDefault,
@@ -2338,3 +2374,44 @@ index faaef7f5..f3082a6c 100644
 +    await explorer.destroy();
 +  });
 +});
+diff --git a/tests/state/keybindings.test.ts b/tests/state/keybindings.test.ts
+index a629f5ee..5de301f1 100644
+--- a/tests/state/keybindings.test.ts
++++ b/tests/state/keybindings.test.ts
+@@ -68,6 +68,36 @@ describe("keybindingsStore", () => {
+     expect(keybindingsStore.findMatchingCommand({ ...event, altKey: shortcut.endsWith("Alt+M") } as KeyboardEvent)).toBe("test");
+   });
+ 
++  describe("command disposal during a chord", () => {
++    const press = (key: string, altKey = false) => keybindingsStore.findMatchingCommand(
++      createKeyboardEvent({ key, altKey }) as KeyboardEvent,
++    );
++
++    it("preserves an unrelated command's pending chord", () => {
++      keybindingsStore.registerDefault("chord", "Alt+M T");
++      keybindingsStore.registerDefault("image-edit", "Ctrl+E");
++      expect(press("m", true)).toBe("chord:waiting");
++      keybindingsStore.unregisterDefault("image-edit");
++      expect(press("t")).toBe("chord");
++    });
++
++    it("retires a chord when its last candidate is removed", () => {
++      keybindingsStore.registerDefault("chord", "Alt+M T");
++      expect(press("m", true)).toBe("chord:waiting");
++      keybindingsStore.unregisterDefault("chord");
++      expect(keybindingsStore.isChordActive).toBe(false);
++      expect(press("t")).toBeUndefined();
++    });
++
++    it("preserves other candidates sharing the same prefix", () => {
++      keybindingsStore.registerDefault("first", "Alt+M T");
++      keybindingsStore.registerDefault("second", "Alt+M G");
++      expect(press("m", true)).toBe("chord:waiting");
++      keybindingsStore.unregisterDefault("first");
++      expect(press("g")).toBe("second");
++    });
++  });
++
+   describe("registerDefaults", () => {
+     it("registers default shortcuts", () => {
+       keybindingsStore.registerDefaults({
