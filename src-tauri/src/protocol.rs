@@ -130,6 +130,7 @@ async fn execute(app: EventEmitter, request: &Request) -> Result<Value, AppError
             )?;
             Ok(Value::Null)
         }
+        #[cfg(target_os = "linux")]
         "provenance.prepareLinked" => {
             let target: String = field(p, "target")?;
             let digest: String = field(p, "digest")?;
