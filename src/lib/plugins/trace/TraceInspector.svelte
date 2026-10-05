@@ -1,34 +1,52 @@
 <script lang="ts">
-  import { onMount } from "svelte";
+  import { onMount, untrack } from "svelte";
   import type { FileEntry } from "$lib/domain/file";
   import { traceForImage, type TraceArtifact, type TraceGraph } from "$lib/api/trace";
   import { layoutTraceGraph, traceOperationLabel } from "$lib/domain/trace-layout";
   import { traceInvalidation } from "./invalidation.svelte";
+  import { traceVisibility } from "./visibility.svelte";
+  import { cachedTrace, rememberTrace, lastTracePath, noteTracePath, hasTraceSnapshot, rememberEmptyTrace } from "./view-cache";
+  import { samePath } from "$lib/domain/path";
   import TraceThumbnail from "./TraceThumbnail.svelte";
   import TraceDetails from "./TraceDetails.svelte";
 
   function artifactCaption(artifact: TraceArtifact, graph: TraceGraph): string {
     if (artifact.pathState === "missing") return "Missing";
     if (artifact.id !== graph.currentArtifactId) return "";
-    return graph.selectedRevisionStatus === "matched" ? "Current" : "Last recorded";
+    return graph.selectedRevisionStatus === "matched" ? "" : "Last recorded";
   }
 
-  let { entries, onSelectFile }: { entries: FileEntry[]; onSelectFile: (path: string) => Promise<void> } = $props();
-  let graph = $state<TraceGraph | null>(null);
+  let { entries, onSelectFile, captureSelection }: { entries: FileEntry[]; onSelectFile: (path: string) => Promise<void>; captureSelection?:()=>()=>boolean } = $props();
+  let graph = $state<TraceGraph | null>(untrack(() => cachedTrace(entries[0]?.path || lastTracePath())));
+  let viewedPath=$state(untrack(()=>entries[0]?.path||lastTracePath()));
+  let settledPath=$state(untrack(()=>hasTraceSnapshot(viewedPath)?viewedPath:""));
   let loading = $state(false);
   let error = $state("");
   let focusedKey = $state("");
-  const path = $derived(entries[0]?.path ?? "");
+  let explicitFocus = $state<{key:string; path:string} | null>(null);
+  const path = $derived(entries[0]?.path || viewedPath);
+  const hasView=$derived(graph!==null || (!!path&&settledPath===path));
   const layout = $derived(graph ? layoutTraceGraph(graph) : null);
   const selectedKey = $derived(graph && layout?.nodes.some((node) => node.key === focusedKey)
     ? focusedKey : graph ? `a:${graph.currentArtifactId}` : "");
+  const verificationApplies = $derived(graph?.selectedPath ? samePath(graph.selectedPath,path) : graph?.artifacts.some((artifact) => artifact.id === graph?.currentArtifactId && samePath(artifact.path, path)) ?? false);
 
   $effect(() => {
-    void path;
-    focusedKey = "";
+    const selectedPath = path;
+    if(!selectedPath)return;
+    untrack(() => {
+      const currentGraph = graph;
+      if (explicitFocus && samePath(explicitFocus.path,selectedPath)) return;
+      explicitFocus = null;
+      // Before verification finishes, choose the newest cached revision at
+      // this path. The response below then selects its authoritative revision.
+      const artifact = currentGraph?.artifacts.filter((item) => samePath(item.path, selectedPath)).reduce<TraceArtifact | undefined>((latest,item)=>!latest||item.id>latest.id?item:latest,undefined);
+      focusedKey = artifact ? `a:${artifact.id}` : "";
+    });
   });
 
   onMount(() => {
+    traceVisibility.opened();
     const refresh = () => traceInvalidation.bump();
     window.addEventListener("focus", refresh);
     return () => { window.removeEventListener("focus", refresh); };
@@ -36,35 +54,53 @@
 
   $effect(() => {
     const selectedPath = path;
+    if(!selectedPath){loading=false;return;}
+    viewedPath=selectedPath;
+    noteTracePath(selectedPath);
     void entries[0]?.modified;
     void entries[0]?.size;
     void traceInvalidation.revision;
     let cancelled = false;
-    graph = null;
+    untrack(() => {
+      if (!samePath(graph?.selectedPath ?? "",selectedPath) && !graph?.artifacts.some((artifact) => samePath(artifact.path, selectedPath))) graph = cachedTrace(selectedPath);
+      settledPath=hasTraceSnapshot(selectedPath)?selectedPath:"";
+    });
     error = "";
     loading = true;
     void traceForImage(selectedPath).then((result) => {
       if (cancelled) return;
       loading = false;
-      if (result.ok) graph = result.data;
+      if (result.ok) {
+        graph = result.data;
+        settledPath=selectedPath;
+        if (!explicitFocus || !samePath(explicitFocus.path,selectedPath) || !layoutTraceGraph(result.data ?? {artifacts:[],runs:[]}).nodes.some((node)=>node.key===explicitFocus?.key)) {
+          explicitFocus = null;
+          focusedKey = result.data ? `a:${result.data.currentArtifactId}` : "";
+        }
+        if (result.data) rememberTrace(result.data);
+        else rememberEmptyTrace(selectedPath);
+      }
       else error = result.error;
     });
     return () => { cancelled = true; };
   });
 </script>
 
-<div class="trace-body">
-  {#if loading}
+<div class="trace-body" aria-busy={loading}>
+  {#if loading && !hasView}
     <p role="status">Loading trace…</p>
-  {:else if error}
+  {:else if error && !hasView}
     <p role="alert">{error}</p>
   {:else if !graph || !layout}
-    <p>No recorded edits for this image.</p>
+    {#if error}<p class="changed-notice" role="alert">Could not refresh trace: {error}</p>{/if}
+    <p>{path ? "No recorded edits for this image." : "Select an image to view its trace."}</p>
   {:else}
 
-    {#if graph.selectedRevisionStatus === "changed"}
+    {#if error}<p class="changed-notice" role="alert">Could not refresh trace: {error}</p>{/if}
+
+    {#if verificationApplies && graph.selectedRevisionStatus === "changed"}
       <p class="changed-notice" role="status">This file changed since it was recorded. Showing its last recorded revision.</p>
-    {:else if graph.selectedRevisionStatus === "unverified"}
+    {:else if verificationApplies && graph.selectedRevisionStatus === "unverified"}
       <p class="changed-notice" role="status">This file exceeds the 200 MiB verification limit. Showing its last recorded revision; its current bytes were not checked.</p>
     {/if}
     <div class="trace-scroll">
@@ -78,15 +114,18 @@
           {#if node.kind === "artifact"}
             {@const artifact = graph.artifacts.find((item) => item.id === node.id)}
             {#if artifact}
+              {@const prompt = graph.runs.find((run)=>run.id===artifact.generatingRun)?.parameters.prompt}
+              {@const tooltip = typeof prompt === "string" && prompt.trim() ? prompt : undefined}
               {@const earlierRevision = artifact.id !== graph.currentArtifactId && graph.artifacts.some((item) => item.id !== artifact.id && item.path === artifact.path)}
               <div role="listitem" class="node-frame" style={`left:${node.x}px;top:${node.y}px;width:${node.width}px;height:${node.height}px`}>
                 <button type="button" class="artifact" class:current={artifact.id === graph.currentArtifactId && graph.selectedRevisionStatus === "matched"}
+                  title={tooltip}
                   aria-current={artifact.id === graph.currentArtifactId && graph.selectedRevisionStatus === "matched" ? "true" : undefined}
                   aria-pressed={selectedKey === node.key}
                   aria-controls="trace-node-details"
-                  onclick={() => { focusedKey = node.key; if (artifact.pathState === "present") void onSelectFile(artifact.path); }}>
-                  <TraceThumbnail path={artifact.path} present={artifact.pathState === "present" && !earlierRevision} label={earlierRevision ? "Earlier revision" : artifact.id === graph.currentArtifactId && graph.selectedRevisionStatus === "matched" ? "" : "Current file preview"} revision={traceInvalidation.revision} />
-                  <span class="artifact-text"><strong>{artifact.path.split(/[\\/]/).at(-1)}</strong><small>{artifactCaption(artifact, graph)}</small></span>
+                  onclick={() => { explicitFocus={key:node.key,path:artifact.path}; focusedKey = node.key; if (artifact.pathState === "present") void onSelectFile(artifact.path); }}>
+                  <TraceThumbnail path={artifact.path} present={artifact.pathState === "present" && !earlierRevision} label={earlierRevision ? "Earlier revision" : artifact.id === graph.currentArtifactId && graph.selectedRevisionStatus === "matched" ? "" : "Current file preview"} revision={traceInvalidation.revision} prompt={tooltip} />
+                  <span class="artifact-text"><strong>{artifact.path.split(/[\\/]/).at(-1)}</strong>{#if artifactCaption(artifact, graph)}<small>{artifactCaption(artifact, graph)}</small>{/if}</span>
                 </button>
               </div>
             {/if}
@@ -94,7 +133,7 @@
             {@const run = graph.runs.find((item) => item.id === node.id)}
             {#if run}
               <div role="listitem" class="node-frame" style={`left:${node.x}px;top:${node.y}px;width:${node.width}px;height:${node.height}px`}>
-                <button type="button" class="operation" aria-pressed={selectedKey === node.key} aria-controls="trace-node-details" onclick={() => focusedKey = node.key}>
+                <button type="button" class="operation" aria-pressed={selectedKey === node.key} aria-controls="trace-node-details" onclick={() => {explicitFocus={key:node.key,path};focusedKey = node.key;}}>
                   {#if run.status === "running"}<span class="spinner" aria-hidden="true"></span>{/if}
                   <strong>{run.status === "running" ? "Generating…" : traceOperationLabel(run.operation)}</strong>
                   {#if run.parameters.rect}
@@ -108,7 +147,7 @@
         {/each}
       </div>
     </div>
-    <TraceDetails {graph} nodeKey={selectedKey} />
+    <TraceDetails {graph} nodeKey={selectedKey} {onSelectFile} {captureSelection} />
   {/if}
 </div>
 

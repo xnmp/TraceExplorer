@@ -2,7 +2,6 @@
   import { tick, untrack } from "svelte";
   import "../plugin-dialog.css";
   import type { PluginJobs, PluginStorage, PluginToast } from "../api";
-  import { pluginSettingsSections } from "../settings-registry.svelte";
   import { startOpenAIImageJob, type OpenAIImageRequest } from "$lib/api/openai-image";
   import { basename } from "$lib/domain/path";
   import { imageOutputFilename } from "$lib/domain/image-output-filename";
@@ -20,12 +19,13 @@
     codexPath?: string;
     initialBackend?: "codex" | "api_key";
     storage: PluginStorage;
+    onSaveSettings: (patch: Record<string, unknown>) => Promise<void>;
     jobs: PluginJobs;
     toast: PluginToast;
     onClose: () => void;
   }
   let { open, sourceDigest, sourceSize, onBusyChange = () => {}, sourcePath, referencePaths = [], outputDir,
-    apiKey, codexPath = "", initialBackend = "codex", storage, jobs, toast, onClose }: Props = $props();
+    apiKey, codexPath = "", initialBackend = "codex", storage, onSaveSettings, jobs, toast, onClose }: Props = $props();
   let selectedModel = $state("codex");
   let prompt = $state("");
   let resolution = $state<ImageResolution>("2k");
@@ -54,10 +54,10 @@
     try {
       if (sourcePath && aspectRatio === "keep" && !sourceSize) throw new Error("Wait for the source image to load, or choose an aspect ratio");
       const size = imageGenerationSize(resolution, aspectRatio, sourceSize);
-      const outputFilename = imageOutputFilename(sourcePath ? basename(sourcePath) : null, crypto.randomUUID());
+      const outputFilename = imageOutputFilename(sourcePath ? basename(sourcePath) : null);
       const backend = selectedModel === "codex" ? "codex" : "api_key";
       const result = await jobs.accept(
-        { kind: "openai-image", label: outputFilename, detail: prompt.trim() },
+        { kind: "openai-image", presentation: "image", label: outputFilename, detail: prompt.trim() },
         () => startOpenAIImageJob({ sourcePath, expectedSourceDigest: sourceDigest, referencePaths, outputDir,
           prompt: prompt.trim(), outputFilename, backend, codexPath: backend === "codex" ? executable : undefined,
           model: (selectedModel === "codex" ? "gpt-image-2" : selectedModel) as OpenAIImageRequest["model"],
@@ -83,12 +83,7 @@
     error = "";
     const patch = { apiKey: draftKey.trim(), codexPath: draftExecutable.trim(), backend: selectedModel === "codex" ? "codex" : "api_key" };
     try {
-      const section = pluginSettingsSections.sections.find((section) => section.pluginId === "openai-image");
-      if (section) await section.save(patch);
-      else {
-        const next = { ...await storage.get(), ...patch };
-        await (storage.setChecked?.(next) ?? storage.set(next));
-      }
+      await onSaveSettings(patch);
       connectionKey = patch.apiKey;
       executable = patch.codexPath;
       settingsOpen = false;

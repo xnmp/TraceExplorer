@@ -1,27 +1,15 @@
 # Host integration
 
-The plugin runs inside [xnmp/tauri-explorer](https://github.com/xnmp/tauri-explorer). Its Rust code relies on host crate services, and its Svelte components rely on the host plugin SDK and shared theme/components.
+TraceExplorer is built and packaged independently. `plugin.json` declares package identity, contributions, exact Svelte ABI, and mutable state files. The release builder adds platform and payload size/SHA256 declarations to `manifest.json` in a `.teplugin` ZIP.
 
-The host update merged as [PR #991](https://github.com/xnmp/tauri-explorer/pull/991), commit [`af06e086`](https://github.com/xnmp/tauri-explorer/commit/af06e08693826756491d44139a3af039f1da37c0) on `dev`. All 24 final-head CI checks passed. Local acceptance includes 52 Chromium outcomes and 16 native crop outcomes across eight formats.
+The host loads frontend assets through its restricted `plugin:` protocol. It exposes a frozen SDK v1 with Svelte 5.56.3 public/internal bindings, modal and image-editor components, thumbnails, and a native save picker. Plugin contributions receive public workspace, settings, event, job, and backend services; they import no host stores. The TypeScript contract is [plugin-sdk/index.d.ts](plugin-sdk/index.d.ts).
 
-The plugin snapshot matches the merged host tree. `host.patch` contains the complete update from base commit `151002923ebda01a0c885f75a54b920db311347b`, including plugin sources, host capabilities, and regression tests. The patch applies to that earlier base; current `dev` already includes the integration.
+The backend speaks bounded JSON-RPC2 over stdio. Host initialization supplies active publisher leases before reconciliation. Generation uses host job IDs and durable operation IDs; acceptance/status recovery queries never replay a provider request. Codex subprocesses run through the host's owned process service, so backend death cancels them. Large responses are chunked and process output uses bounded, owned spools.
 
-Build the pinned integration from a clean host checkout:
+Core crop and rename call an optional generic provenance service. They remain available without TraceExplorer installed. The plugin records immutable input digests and exact publication evidence; opaque handles contain no caller-supplied database paths. Existing `trace.sqlite` is imported into the package's data directory without deleting the old copy.
 
-```sh
-git checkout af06e08693826756491d44139a3af039f1da37c0
-bun install --frozen-lockfile
-bun run check
-bun run build
-bun run tauri dev
-```
+Upgrade waits for accepted work and host publishers to settle. The host snapshots declared mutable files, preflights the new backend with recovery deferred, and durably commits activation before external publication-proof cleanup. A failed preflight restores both index and state. The transaction journal records file presence/digests and a terminal phase so interrupted cleanup cannot erase current history. User outputs and data survive removal.
 
-Run tests from the host checkout because the focused tests use its fixtures and infrastructure:
+Build the package with `python3 scripts/package-plugin.py`. Native host integration tests must install this actual archive into an isolated profile; frontend mocks alone do not qualify custom-protocol/CSP/runtime behavior.
 
-```sh
-bunx vitest run tests/domain/image-generation-settings.test.ts tests/domain/image-output-filename.test.ts tests/domain/trace-layout.test.ts tests/plugins/openai-image.test.ts
-bunx playwright test e2e/image-crop.spec.ts e2e/openai-image.spec.ts e2e/image-editor.spec.ts e2e/trace-inspector.spec.ts
-cargo test --manifest-path src-tauri/Cargo.toml openai_image --lib
-```
-
-The source manifest is deliberately explicit. `scripts/sync-from-host.py --check` verifies that this repository's plugin snapshot matches the host; `--write` refreshes it. Shared SDK and window/explorer changes remain in the host integration patch.
+The original built-in feature work is preserved in Git history and [host PR #991](https://github.com/xnmp/tauri-explorer/pull/991). Source synchronization from the host has been retired; this repository owns the implementation now.

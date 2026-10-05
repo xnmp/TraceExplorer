@@ -55,6 +55,7 @@ pub(super) fn generate(
     request: &ImageRequest,
     inputs: &[CapturedInput],
     control: &plugin_job::JobControl,
+    receipt: impl FnMut(&Value) -> Result<(), AppError>,
 ) -> Result<GeneratedImage, AppError> {
     let home = std::env::var_os("CODEX_HOME")
         .map(PathBuf::from)
@@ -65,15 +66,27 @@ pub(super) fn generate(
         "[openai-image] using Codex executable: {}",
         executable.program.display()
     );
-    generate_at(request, inputs, control, &executable, &home)
+    generate_with_receipt(request, inputs, control, &executable, &home, receipt)
 }
 
+#[cfg(test)]
 fn generate_at(
     request: &ImageRequest,
     inputs: &[CapturedInput],
     control: &plugin_job::JobControl,
     executable: &CodexExecutable,
     home: &Path,
+) -> Result<GeneratedImage, AppError> {
+    generate_with_receipt(request, inputs, control, executable, home, |_| Ok(()))
+}
+
+fn generate_with_receipt(
+    request: &ImageRequest,
+    inputs: &[CapturedInput],
+    control: &plugin_job::JobControl,
+    executable: &CodexExecutable,
+    home: &Path,
+    mut receipt: impl FnMut(&Value) -> Result<(), AppError>,
 ) -> Result<GeneratedImage, AppError> {
     let work = tempfile::Builder::new()
         .prefix("tauri-explorer-codex-image-")
@@ -143,16 +156,19 @@ fn generate_at(
         return Err(invalid("Headless Codex image generation failed. Check your Codex version, ChatGPT sign-in, and usage limits"));
     }
     let (thread_id, usage) = completed_thread(&output.stdout)?;
+    let mut details = json!({"transport":"codex_exec","thread_id":thread_id,"usage":usage,"usage_source":"codex_turn","stage":"turn_completed","image_tool_prompt":null,"provider_revision":null,"cost":null});
+    // Retain a safe receipt before filesystem discovery. A missing thread
+    // output can then be diagnosed without keeping private model prose.
+    receipt(&details)?;
     let bytes = read_generated_image(home, &thread_id)?;
     validate_image(&bytes, image::ImageFormat::Png)?;
-    Ok(GeneratedImage {
-        bytes,
-        details: json!({
-            "transport": "codex_exec", "thread_id": thread_id, "usage": usage,
-            "usage_source": "codex_turn", "image_tool_prompt": null,
-            "provider_revision": null, "cost": null,
-        }),
-    })
+    let (width, height) =
+        image::ImageReader::with_format(std::io::Cursor::new(&bytes), image::ImageFormat::Png)
+            .into_dimensions()
+            .map_err(|_| invalid("Unreadable Codex image"))?;
+    details["stage"] = json!("image_validated");
+    details["actual_size"] = json!({"width":width,"height":height});
+    Ok(GeneratedImage { bytes, details })
 }
 
 fn valid_thread_id(id: &str) -> bool {
@@ -226,9 +242,18 @@ fn read_generated_image(home: &Path, thread_id: &str) -> Result<Vec<u8>, AppErro
     if !valid_thread_id(thread_id) {
         return Err(invalid("Invalid Codex thread identity"));
     }
-    let generated = home.join("generated_images").canonicalize()?;
+    let missing_output = |error: std::io::Error| {
+        match error.kind() {
+        std::io::ErrorKind::NotFound => invalid("Codex completed, but no generated image was found for its thread. See this edit's Raw details for the thread ID."),
+        _ => error.into(),
+    }
+    };
+    let generated = home
+        .join("generated_images")
+        .canonicalize()
+        .map_err(missing_output)?;
     let directory = generated.join(thread_id);
-    let metadata = std::fs::symlink_metadata(&directory)?;
+    let metadata = std::fs::symlink_metadata(&directory).map_err(missing_output)?;
     if !metadata.is_dir() || metadata.file_type().is_symlink() {
         return Err(invalid("Invalid Codex image directory"));
     }
@@ -261,7 +286,7 @@ fn read_generated_image(home: &Path, thread_id: &str) -> Result<Vec<u8>, AppErro
         use std::os::unix::fs::OpenOptionsExt;
         options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
     }
-    let mut file = options.open(path)?;
+    let mut file = options.open(path).map_err(missing_output)?;
     if !file.metadata()?.is_file() {
         return Err(invalid("Codex output must be a regular PNG file"));
     }

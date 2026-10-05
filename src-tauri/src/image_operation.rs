@@ -78,13 +78,13 @@ pub(crate) fn bounded_bytes(file: &mut std::fs::File) -> Result<Vec<u8>, AppErro
 pub(crate) struct Attempt {
     pub run: trace::TraceRunHandle,
     control: plugin_job::JobControl,
-    app: Option<tauri::AppHandle>,
+    app: Option<crate::events::EventEmitter>,
     armed: bool,
 }
 fn settle_attempt(
     run: &trace::TraceRunHandle,
     control: &plugin_job::JobControl,
-    app: Option<&tauri::AppHandle>,
+    app: Option<&crate::events::EventEmitter>,
 ) {
     let result = if control.has_published() {
         trace::mark_operation_uncertain(run, "image_completion_pending")
@@ -97,7 +97,6 @@ fn settle_attempt(
         log::warn!("Image attempt settlement pending: {error}");
     }
     if let Some(app) = app {
-        use tauri::Emitter;
         let _ = app.emit("trace:changed", ());
     }
 }
@@ -110,7 +109,7 @@ impl Attempt {
             armed: true,
         }
     }
-    pub fn with_app(mut self, app: tauri::AppHandle) -> Self {
+    pub fn with_app(mut self, app: crate::events::EventEmitter) -> Self {
         self.app = Some(app);
         self
     }
@@ -220,7 +219,7 @@ pub(crate) fn execute_with_completion(
 #[cfg(test)]
 mod tests {
     use super::*;
-    const PNG: &[u8] = include_bytes!("../icons/32x32.png");
+    const PNG: &[u8] = include_bytes!("../test_support/fixtures/source32.png");
     #[test]
     fn captured_provider_input_is_immutable_when_the_original_changes() {
         let root = tempfile::tempdir().unwrap();

@@ -1,17 +1,19 @@
 import { describe, expect, it } from "vitest";
 import { imageOutputFilename } from "$lib/domain/image-output-filename";
-const identity = "01234567-89ab-4cde-8f01-23456789abcd";
 describe("automatic image output names", () => {
-  it("preserves the source name and makes concurrent jobs distinct", () => {
-    const first = imageOutputFilename("photo.jpg", identity);
-    expect(first).toBe(`photo_edit_${identity}.png`);
-    expect(imageOutputFilename("photo.jpg", "11234567-89ab-4cde-8f01-23456789abcd")).not.toBe(first);
-    expect(imageOutputFilename(null, identity)).toBe(`image_generated_${identity}.png`);
+  it("preserves the parent name in human-readable PNG output names", () => {
+    expect(imageOutputFilename("photo.jpg")).toBe("photo_edit.png");
+    expect(imageOutputFilename("photo_edit.png")).toBe("photo_edit_edit.png");
+    expect(imageOutputFilename(".image.png")).toBe(".image_edit.png");
+    expect(imageOutputFilename(".png")).toBe(".png_edit.png");
+    expect(imageOutputFilename(null)).toBe("generated.png");
   });
-  it("bounds long Unicode names and rejects invalid job identities", () => {
-    const name = imageOutputFilename("猫".repeat(300) + ".png", identity);
+  it("bounds Unicode names without accepting a path as a filename", () => {
+    const name = imageOutputFilename("猫".repeat(300) + ".png");
     expect(new TextEncoder().encode(name).length).toBeLessThanOrEqual(255);
     expect(name.endsWith(".png")).toBe(true);
-    expect(() => imageOutputFilename("photo.png", "../escape")).toThrow();
+    expect(() => imageOutputFilename("../photo.png")).toThrow();
+    expect(() => imageOutputFilename("folder\\photo.png")).toThrow();
+    expect(() => imageOutputFilename("photo\0.png")).toThrow();
   });
 });

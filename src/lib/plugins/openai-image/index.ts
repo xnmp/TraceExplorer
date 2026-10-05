@@ -21,7 +21,7 @@ async function open(ctx: PluginContext, sourcePath: string | null, outputDir: st
     codexPath: typeof settings.codexPath === "string" ? settings.codexPath : "",
     initialBackend: settings.backend === "api_key" ? "api_key" : "codex",
     jobs: ctx.jobs, toast: ctx.toast,
-    storage: ctx.storage,
+    storage: ctx.storage, onSaveSettings: ctx.saveSettings,
   });
 }
 
@@ -44,7 +44,7 @@ export const openAIImagePlugin: Plugin = {
     ctx.registerImageEditorTool({
       id: "openai-image", title: "AI edit", component: OpenAIImageEditorTool,
       when: (source) => ["PNG", "JPEG", "WebP"].includes(source.format),
-      props: { storage: ctx.storage, jobs: ctx.jobs, toast: ctx.toast },
+      props: { storage: ctx.storage, onSaveSettings: ctx.saveSettings, jobs: ctx.jobs, toast: ctx.toast },
     });
     ctx.registerDialog({ id: "openai-image.edit-window", component: OpenAIImageEditDialog });
     ctx.registerDialog({ id: DIALOG_ID, component: OpenAIImageDialog });

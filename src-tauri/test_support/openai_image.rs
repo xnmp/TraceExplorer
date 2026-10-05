@@ -1,7 +1,7 @@
 use super::*;
 use std::io::{BufRead, BufReader};
 
-const PNG: &[u8] = include_bytes!("../icons/32x32.png");
+const PNG: &[u8] = include_bytes!("fixtures/source32.png");
 const TEST_KEY: &str = "test-secret-do-not-record";
 
 fn request(dir: &Path, source: Option<&Path>) -> ImageRequest {
@@ -361,7 +361,7 @@ fn http_edit_uploads_captured_bytes_with_no_original_filename_in_the_wire_format
     let source = dir.path().join("private-name.png");
     std::fs::write(&source, PNG).unwrap();
     let reference = dir.path().join("private-reference.png");
-    let reference_bytes = include_bytes!("../icons/128x128.png");
+    let reference_bytes = include_bytes!("fixtures/source.png");
     std::fs::write(&reference, reference_bytes).unwrap();
     let mut request = request(dir.path(), Some(&source));
     request.reference_paths = vec![reference.to_string_lossy().into_owned()];

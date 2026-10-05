@@ -2,8 +2,10 @@
 //! Artifact identity includes content and path; source revisions are never
 //! inferred from a filename after it has changed.
 use crate::{config, error::AppError, image_crop};
+pub(crate) mod jobs;
+pub(crate) mod save;
 use rusqlite::{params, Connection, OptionalExtension};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
     collections::HashSet,
@@ -16,6 +18,8 @@ use std::{
 
 const MAX_IMAGE_BYTES: u64 = 200 * 1024 * 1024;
 static TRACE_OWNER: OnceLock<Mutex<Option<File>>> = OnceLock::new();
+static LIVE_PUBLISHERS: OnceLock<HashSet<i64>> = OnceLock::new();
+static SCHEMA_SETUP: Mutex<()> = Mutex::new(());
 
 pub(crate) struct CropMetadata {
     pub source_path: String,
@@ -24,12 +28,71 @@ pub(crate) struct CropMetadata {
     pub viewport: image_crop::SvgViewport,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Serialize)]
 pub(crate) struct TraceRunHandle {
+    #[serde(skip)]
     database: PathBuf,
     id: i64,
 }
 
+pub(crate) fn rpc_handle(id: i64) -> Result<TraceRunHandle, AppError> {
+    if id <= 0 {
+        return Err(AppError::Other("Invalid provenance run ID".into()));
+    }
+    let database = database_path()?;
+    let exists: bool = connection_at(&database)?
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM runs WHERE id=?1)",
+            [id],
+            |row| row.get(0),
+        )
+        .map_err(sql)?;
+    if !exists {
+        return Err(AppError::Other("Unknown provenance run ID".into()));
+    }
+    Ok(TraceRunHandle { database, id })
+}
+
+static READY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+pub(crate) fn owner_ready() -> bool {
+    READY.load(std::sync::atomic::Ordering::Acquire)
+        && TRACE_OWNER
+            .get()
+            .and_then(|owner| owner.lock().ok().map(|guard| guard.is_some()))
+            .unwrap_or(false)
+}
+
+pub(crate) fn initialize_owner(
+    active_runs: Vec<i64>,
+    defer_recovery: bool,
+) -> Result<(), AppError> {
+    if active_runs.len() > 1024 || active_runs.iter().any(|id| *id <= 0) {
+        return Err(AppError::Other("Invalid active publisher leases".into()));
+    }
+    let active: HashSet<_> = active_runs.iter().copied().collect();
+    if active.len() != active_runs.len() {
+        return Err(AppError::Other("Duplicate publisher lease".into()));
+    }
+    LIVE_PUBLISHERS
+        .set(active)
+        .map_err(|_| AppError::Other("Backend already initialized".into()))?;
+    if defer_recovery {
+        with_trace_owner(|database| connection_at(database).map(drop))
+    } else {
+        activate_owner()
+    }
+}
+pub(crate) fn activate_owner() -> Result<(), AppError> {
+    if owner_ready() {
+        return Ok(());
+    }
+    reconcile_unfinished()?;
+    READY.store(true, std::sync::atomic::Ordering::Release);
+    Ok(())
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct OperationInput {
     pub path: String,
     pub digest: String,
@@ -44,6 +107,8 @@ struct OperationRecord {
     pub output_digest: String,
 }
 
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct OperationStart {
     pub operation: String,
     pub parameters: serde_json::Value,
@@ -82,6 +147,12 @@ pub(crate) struct Artifact {
     created_at: String,
     generating_run: Option<i64>,
     path_state: ArtifactPathState,
+    #[serde(skip_serializing_if = "is_false")]
+    temporary: bool,
+}
+
+fn is_false(value: &bool) -> bool {
+    !value
 }
 
 #[derive(Debug, PartialEq, Eq, Serialize)]
@@ -111,6 +182,7 @@ pub(crate) struct Run {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct TraceGraph {
     current_artifact_id: i64,
+    selected_path: String,
     selected_revision_status: SelectedRevisionStatus,
     artifacts: Vec<Artifact>,
     runs: Vec<Run>,
@@ -196,9 +268,8 @@ pub(crate) fn recent_image_runs_at(database: &Path) -> Result<Vec<ImageRunHistor
         .collect()
 }
 
-#[tauri::command]
 pub(crate) async fn recent_openai_image_runs() -> Result<Vec<ImageRunHistory>, AppError> {
-    tauri::async_runtime::spawn_blocking(move || recent_image_runs_at(&database_path()?))
+    tokio::task::spawn_blocking(move || recent_image_runs_at(&database_path()?))
         .await
         .map_err(|_| AppError::Other("Image run history query failed".into()))?
 }
@@ -216,6 +287,9 @@ fn sql(error: rusqlite::Error) -> AppError {
 }
 
 fn connection_at(path: &Path) -> Result<Connection, AppError> {
+    let _schema = SCHEMA_SETUP
+        .lock()
+        .map_err(|_| AppError::Other("Trace schema initialization lock is unavailable".into()))?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
@@ -246,7 +320,7 @@ fn connection_at(path: &Path) -> Result<Connection, AppError> {
     let schema_version: i64 = connection
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .map_err(sql)?;
-    if schema_version > 3 {
+    if schema_version > 6 {
         return Err(AppError::Other(format!(
             "Trace database schema {schema_version} is newer than this app supports"
         )));
@@ -300,6 +374,44 @@ fn connection_at(path: &Path) -> Result<Connection, AppError> {
             "BEGIN; ALTER TABLE runs ADD COLUMN result_details TEXT; PRAGMA user_version=3; COMMIT;",
         ).map_err(sql)?;
     }
+    if schema_version < 4 {
+        connection
+            .execute_batch(
+                "BEGIN;
+             CREATE TABLE image_saves (
+               artifact_id INTEGER PRIMARY KEY REFERENCES artifacts(id),
+               source_path TEXT NOT NULL, target_path TEXT NOT NULL,
+               digest TEXT NOT NULL, object_identity TEXT NOT NULL,
+               anchor_path TEXT NOT NULL, committed INTEGER NOT NULL DEFAULT 0
+             );
+             PRAGMA user_version=4; COMMIT;",
+            )
+            .map_err(sql)?;
+    }
+    if schema_version < 5 {
+        connection
+            .execute_batch(
+                "BEGIN;
+            CREATE TABLE artifact_locators (
+              artifact_id INTEGER NOT NULL REFERENCES artifacts(id),
+              path TEXT NOT NULL,digest TEXT NOT NULL,
+              PRIMARY KEY(path,digest,artifact_id)
+            );
+            PRAGMA user_version=5;COMMIT;",
+            )
+            .map_err(sql)?;
+    }
+    if schema_version < 6 {
+        connection
+            .execute_batch(
+                "BEGIN;
+            CREATE TABLE image_jobs (
+              operation_id TEXT PRIMARY KEY,job_id INTEGER NOT NULL,
+              request_digest TEXT NOT NULL,run_id INTEGER NOT NULL UNIQUE REFERENCES runs(id)
+            ); PRAGMA user_version=6;COMMIT;",
+            )
+            .map_err(sql)?;
+    }
     Ok(connection)
 }
 
@@ -350,18 +462,30 @@ fn with_trace_owner<T>(action: impl FnOnce(&Path) -> Result<T, AppError>) -> Res
             }
             Err(std::fs::TryLockError::Error(error)) => return Err(error.into()),
         }
-        reconcile_unfinished_at(&database)?;
+        LIVE_PUBLISHERS
+            .get()
+            .ok_or_else(|| AppError::Other("Host provenance handshake required".into()))?;
         *guard = Some(lock);
     }
     action(&database)
 }
 
 fn digest(path: &Path) -> Result<String, AppError> {
-    let mut file = File::open(path)?;
+    let mut options = OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NONBLOCK);
+    }
+    let mut file = options.open(path)?;
     digest_file(&mut file)
 }
 
 fn digest_file(file: &mut File) -> Result<String, AppError> {
+    if !file.metadata()?.is_file() {
+        return Err(AppError::InvalidPath("Image must be a regular file".into()));
+    }
     if file.metadata()?.len() > MAX_IMAGE_BYTES {
         return Err(AppError::Other(
             "Image exceeds Trace's 200 MiB revision limit".into(),
@@ -369,10 +493,17 @@ fn digest_file(file: &mut File) -> Result<String, AppError> {
     }
     let mut hasher = Sha256::new();
     let mut buffer = [0u8; 64 * 1024];
+    let mut total = 0u64;
     loop {
         let read = file.read(&mut buffer)?;
         if read == 0 {
             break;
+        }
+        total += read as u64;
+        if total > MAX_IMAGE_BYTES {
+            return Err(AppError::Other(
+                "Image exceeds Trace's 200 MiB revision limit".into(),
+            ));
         }
         hasher.update(&buffer[..read]);
     }
@@ -415,11 +546,28 @@ pub(crate) fn relocate_image(source: &Path, target: &Path) -> Result<(), AppErro
     relocate_at(&database_path()?, source, target)
 }
 
+/// Editing an unsaved output retains its original permanent-folder suggestion.
+pub(crate) fn inherited_save_directory(input: &OperationInput) -> Result<Option<String>, AppError> {
+    let database = database_path()?;
+    if !database.exists() {
+        return Ok(None);
+    }
+    let path = normalize_path(Path::new(&input.path))?;
+    let connection = connection_at(&database)?;
+    let Some(id) = artifact_for_locator(&connection, &path, Some(&input.digest))? else {
+        return Ok(None);
+    };
+    let parameters:Option<String>=connection.query_row("SELECT r.parameters FROM artifacts a JOIN runs r ON r.id=a.generating_run WHERE a.id=?1",[id],|row|row.get(0)).optional().map_err(sql)?;
+    Ok(parameters
+        .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+        .and_then(|value| value["save_directory_hint"].as_str().map(str::to_owned)))
+}
+
 pub(crate) async fn relocate_after_rename(
     source: PathBuf,
     target: PathBuf,
 ) -> Result<(), AppError> {
-    tauri::async_runtime::spawn_blocking(move || relocate_image(&source, &target))
+    tokio::task::spawn_blocking(move || relocate_image(&source, &target))
         .await
         .map_err(|error| AppError::Other(format!("Trace relocation failed: {error}")))?
 }
@@ -507,14 +655,7 @@ fn insert_start(
     let mut input_ids = Vec::with_capacity(start.inputs.len());
     for input in &start.inputs {
         let path = normalize_path(Path::new(&input.path))?;
-        let existing: Option<i64> = tx
-            .query_row(
-                "SELECT id FROM artifacts WHERE path=?1 AND digest=?2 ORDER BY id DESC LIMIT 1",
-                params![path, input.digest],
-                |row| row.get(0),
-            )
-            .optional()
-            .map_err(sql)?;
+        let existing = artifact_for_locator(tx, &path, Some(&input.digest))?;
         let id = match existing {
             Some(id) => id,
             None => {
@@ -849,7 +990,17 @@ fn cleanup_anchor_at(database: &Path, run_id: i64) -> Result<(), AppError> {
     let Some((Some(anchor), Some(expected_identity))) = evidence else {
         return Ok(());
     };
-    let anchor = Path::new(&anchor);
+    cleanup_private_anchor(Path::new(&anchor), &expected_identity)?;
+    connection
+        .execute(
+            "UPDATE runs SET prepared_anchor_path=NULL WHERE id=?1",
+            [run_id],
+        )
+        .map_err(sql)?;
+    Ok(())
+}
+
+fn cleanup_private_anchor(anchor: &Path, expected_identity: &str) -> Result<(), AppError> {
     let directory = anchor
         .parent()
         .ok_or_else(|| AppError::InvalidPath("Trace anchor has no parent".into()))?;
@@ -906,12 +1057,6 @@ fn cleanup_anchor_at(database: &Path, run_id: i64) -> Result<(), AppError> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(error) => return Err(error.into()),
     }
-    connection
-        .execute(
-            "UPDATE runs SET prepared_anchor_path=NULL WHERE id=?1",
-            [run_id],
-        )
-        .map_err(sql)?;
     Ok(())
 }
 
@@ -955,7 +1100,15 @@ fn observed_file_at(path: &Path) -> Result<Option<File>, PublicationObservation>
         }
         Err(_) => return Err(PublicationObservation::Unavailable),
     }
-    File::open(path)
+    let mut options = OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+    }
+    options
+        .open(path)
         .map(Some)
         .map_err(|_| PublicationObservation::Unavailable)
 }
@@ -997,6 +1150,13 @@ fn observe_publication(
 /// publication reached the target without relying on a reusable object ID alone.
 /// A missing target is definitive only while its parent is accessible.
 pub(crate) fn reconcile_unfinished_at(database: &Path) -> Result<(), AppError> {
+    reconcile_unfinished_except_at(database, &HashSet::new())
+}
+
+fn reconcile_unfinished_except_at(
+    database: &Path,
+    protected: &HashSet<i64>,
+) -> Result<(), AppError> {
     if !database.exists() {
         return Ok(());
     }
@@ -1020,6 +1180,11 @@ pub(crate) fn reconcile_unfinished_at(database: &Path) -> Result<(), AppError> {
     drop(statement);
     drop(connection);
     for (run_id, path, expected, identity, anchor) in pending {
+        // The publisher lives in the host, so a backend restart cannot prove
+        // this attempt died. Its host-owned lease survives that restart.
+        if protected.contains(&run_id) {
+            continue;
+        }
         let observation = match (&path, &expected, &identity, &anchor) {
             (Some(path), Some(expected), Some(identity), Some(anchor)) => {
                 observe_publication(Path::new(path), Path::new(anchor), expected, identity)
@@ -1045,11 +1210,37 @@ pub(crate) fn reconcile_unfinished_at(database: &Path) -> Result<(), AppError> {
         }
     }
     cleanup_terminal_anchors_at(database)?;
+    save::reconcile_at(database)?;
     Ok(())
 }
 
 pub(crate) fn reconcile_unfinished() -> Result<(), AppError> {
-    with_trace_owner(|_| Ok(()))
+    with_trace_owner(|database| {
+        reconcile_unfinished_except_at(
+            database,
+            LIVE_PUBLISHERS
+                .get()
+                .ok_or_else(|| AppError::Other("Host provenance handshake required".into()))?,
+        )
+    })
+}
+
+fn artifact_for_locator(
+    connection: &Connection,
+    path: &str,
+    digest: Option<&str>,
+) -> Result<Option<i64>, AppError> {
+    connection
+        .query_row(
+            "SELECT id FROM (
+          SELECT id,path,digest FROM artifacts
+          UNION ALL SELECT artifact_id AS id,path,digest FROM artifact_locators
+         ) WHERE path=?1 AND (?2 IS NULL OR digest=?2) ORDER BY id DESC LIMIT 1",
+            params![path, digest],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(sql)
 }
 
 pub(crate) fn graph_for_path_at(
@@ -1064,14 +1255,8 @@ pub(crate) fn graph_for_path_at(
     }
     let connection = connection_at(database)?;
     let path_text = normalize_path(path)?;
-    let known: bool = connection
-        .query_row(
-            "SELECT EXISTS(SELECT 1 FROM artifacts WHERE path=?1)",
-            [path_text.as_str()],
-            |row| row.get(0),
-        )
-        .map_err(sql)?;
-    if !known {
+    let known = artifact_for_locator(&connection, &path_text, None)?;
+    if known.is_none() {
         return Ok(None);
     }
     let selected_digest = if fs::metadata(path)?.len() > MAX_IMAGE_BYTES {
@@ -1080,14 +1265,7 @@ pub(crate) fn graph_for_path_at(
         Some(digest(path)?)
     };
     let current: Option<i64> = match selected_digest.as_ref() {
-        Some(digest) => connection
-            .query_row(
-                "SELECT id FROM artifacts WHERE path=?1 AND digest=?2 ORDER BY id DESC LIMIT 1",
-                params![path_text.as_str(), digest],
-                |row| row.get(0),
-            )
-            .optional()
-            .map_err(sql)?,
+        Some(digest) => artifact_for_locator(&connection, &path_text, Some(digest))?,
         None => None,
     };
     let selected_revision_status = match (&selected_digest, &current) {
@@ -1097,16 +1275,11 @@ pub(crate) fn graph_for_path_at(
     };
     let current_artifact_id = match current {
         Some(id) => id,
-        None => connection
-            .query_row(
-                "SELECT id FROM artifacts WHERE path=?1 ORDER BY id DESC LIMIT 1",
-                [path_text.as_str()],
-                |row| row.get(0),
-            )
-            .map_err(sql)?,
+        None => known.expect("locator was checked"),
     };
     let mut graph = TraceGraph {
         current_artifact_id,
+        selected_path: path_text,
         selected_revision_status,
         artifacts: Vec::new(),
         runs: Vec::new(),
@@ -1145,6 +1318,7 @@ pub(crate) fn graph_for_path_at(
                 digest,
                 created_at,
                 generating_run,
+                temporary: false,
             };
             if let Some(run_id) = artifact.generating_run {
                 if scheduled_runs.insert(run_id) {
@@ -1211,16 +1385,29 @@ pub(crate) fn graph_for_path_at(
             graph.runs.push(run);
         }
     }
+    let temporary_runs: HashSet<_> = graph
+        .runs
+        .iter()
+        .filter(|run| {
+            run.parameters
+                .get("output_storage")
+                .and_then(serde_json::Value::as_str)
+                == Some("temporary")
+        })
+        .map(|run| run.id)
+        .collect();
+    for artifact in &mut graph.artifacts {
+        artifact.temporary = artifact
+            .generating_run
+            .is_some_and(|id| temporary_runs.contains(&id));
+    }
     Ok(Some(graph))
 }
 
-#[tauri::command]
 pub(crate) async fn trace_for_image(path: String) -> Result<Option<TraceGraph>, AppError> {
-    tauri::async_runtime::spawn_blocking(move || {
-        graph_for_path_at(&database_path()?, Path::new(&path))
-    })
-    .await
-    .map_err(|error| AppError::Other(format!("Trace query failed: {error}")))?
+    tokio::task::spawn_blocking(move || graph_for_path_at(&database_path()?, Path::new(&path)))
+        .await
+        .map_err(|error| AppError::Other(format!("Trace query failed: {error}")))?
 }
 
 #[cfg(test)]
@@ -1487,7 +1674,7 @@ mod tests {
             .unwrap()
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 3);
+        assert_eq!(version, 6);
     }
 
     #[test]

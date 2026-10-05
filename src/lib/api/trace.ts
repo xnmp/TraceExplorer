@@ -7,6 +7,7 @@ export interface TraceArtifact {
   readonly createdAt: string;
   readonly generatingRun: number | null;
   readonly pathState: "present" | "missing" | "unavailable";
+  readonly temporary?: boolean;
 }
 
 export interface TraceRun {
@@ -24,6 +25,7 @@ export interface TraceRun {
 
 export interface TraceGraph {
   readonly currentArtifactId: number;
+  readonly selectedPath?: string;
   readonly selectedRevisionStatus: "matched" | "changed" | "unverified";
   readonly artifacts: TraceArtifact[];
   readonly runs: TraceRun[];
@@ -37,4 +39,12 @@ export async function traceForImage(path: string): Promise<ApiResult<TraceGraph 
   } catch (error) {
     return { ok: false, error: extractError(error) };
   }
+}
+
+export async function imageSaveSuggestion(artifactId: number): Promise<{directory: string; filename: string}> {
+  return invoke("image_save_suggestion", {artifactId});
+}
+
+export async function saveGeneratedImage(artifactId: number, target: string): Promise<{path: string}> {
+  return invoke("save_generated_image", {artifactId, target});
 }

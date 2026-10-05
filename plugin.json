@@ -1,0 +1,22 @@
+{
+  "formatVersion": 1,
+  "id": "xnmp.trace-explorer",
+  "name": "TraceExplorer",
+  "description": "Image editing and visual provenance for Tauri Explorer",
+  "version": "0.1.0",
+  "sdkVersion": 1,
+  "svelteVersion": "5.56.3",
+  "frontend": "frontend/index.js",
+  "styles": "frontend/index.css",
+  "contributions": [
+    "trace",
+    "openai-image"
+  ],
+  "provenance": true,
+  "initialDataFiles": [
+    "trace.sqlite"
+  ],
+  "stateFiles": [
+    "trace.sqlite"
+  ]
+}

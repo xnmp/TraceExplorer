@@ -1,7 +1,7 @@
 use super::*;
 
 const THREAD: &str = "01234567-89ab-7cde-8f01-23456789abcd";
-const PNG: &[u8] = include_bytes!("../icons/32x32.png");
+const PNG: &[u8] = include_bytes!("fixtures/source32.png");
 
 fn request(dir: &Path, source: Option<&Path>) -> ImageRequest {
     ImageRequest {
@@ -45,6 +45,20 @@ fn unsuccessful_and_malformed_cli_streams_are_not_outputs() {
     ] {
         assert!(completed_thread(&bytes).is_err());
     }
+}
+
+#[test]
+fn a_missing_generated_thread_reports_missing_provider_output_instead_of_a_path_error() {
+    let home = tempfile::tempdir().unwrap();
+    let error = read_generated_image(home.path(), THREAD)
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("no generated image was found for its thread"));
+    std::fs::create_dir(home.path().join("generated_images")).unwrap();
+    let error = read_generated_image(home.path(), THREAD)
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("no generated image was found for its thread"));
 }
 
 #[test]
@@ -122,7 +136,7 @@ printf '%s\n' '{}' '{}'
     .unwrap();
     std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).unwrap();
     let reference = home.path().join("reference.png");
-    let reference_bytes = include_bytes!("../icons/128x128.png");
+    let reference_bytes = include_bytes!("fixtures/source.png");
     std::fs::write(&reference, reference_bytes).unwrap();
     let mut request = request(home.path(), Some(&source));
     request.reference_paths = vec![reference.to_string_lossy().into_owned()];
@@ -188,7 +202,7 @@ fn live_codex_edit_records_a_real_output() {
     let target = validate_request(&request).unwrap();
     let control = plugin_job::JobControl::new();
     execute_recorded(&run, &target, &control, || {
-        generate(&request, &inputs, &control)
+        generate(&request, &inputs, &control, |_| Ok(()))
     })
     .unwrap();
     let graph =

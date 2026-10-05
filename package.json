@@ -1,0 +1,24 @@
+{
+  "name": "trace-explorer",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "scripts": {
+    "build:frontend": "vite build",
+    "build:backend": "cargo build --release --locked --manifest-path src-tauri/Cargo.toml",
+    "test:backend": "cargo test --locked --manifest-path src-tauri/Cargo.toml",
+    "check": "svelte-check --tsconfig ./tsconfig.json",
+    "test": "vitest run",
+    "test:browser": "playwright test"
+  },
+  "devDependencies": {
+    "@sveltejs/vite-plugin-svelte": "7.2.0",
+    "svelte": "5.56.3",
+    "svelte-check": "4.7.6",
+    "typescript": "6.0.3",
+    "vite": "8.1.4",
+    "vitest": "5.0.3",
+    "@playwright/test": "1.60.0"
+  }
+}

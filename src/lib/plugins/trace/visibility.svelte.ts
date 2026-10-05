@@ -1,5 +1,7 @@
-let visible = $state(true);
+let mode = $state<"unopened"|"open"|"closed">("unopened");
 export const traceVisibility = {
-  get visible() { return visible; },
-  toggle() { visible = !visible; },
+  get visible() { return mode !== "closed"; },
+  get keepsEmpty() { return mode === "open"; },
+  opened() { if(mode === "unopened") mode="open"; },
+  toggle() { mode = mode === "open" ? "closed" : "open"; },
 };
