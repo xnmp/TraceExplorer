@@ -798,6 +798,51 @@ index e3284119..dbb324fb 100644
 +    assert_eq!(recorded.parameters["resolution"], "2k");
 +    assert_eq!(recorded.parameters["aspect_ratio"], "4:3");
 +}
+diff --git a/src-tauri/test_support/git_watch.rs b/src-tauri/test_support/git_watch.rs
+index c07c80d5..79b8e886 100644
+--- a/src-tauri/test_support/git_watch.rs
++++ b/src-tauri/test_support/git_watch.rs
+@@ -60,6 +60,10 @@ struct Fixture {
+ }
+ 
+ fn fixture() -> Fixture {
++    fixture_with_registration_gate(None)
++}
++
++fn fixture_with_registration_gate(registration_gate: Option<mpsc::Receiver<()>>) -> Fixture {
+     let (observers_tx, observers) = mpsc::channel();
+     let (events_tx, emitted) = mpsc::channel();
+     let registration_failures = Arc::new(AtomicUsize::new(0));
+@@ -74,6 +78,9 @@ fn fixture() -> Fixture {
+             {
+                 return Err(AppError::Other("registration denied".into()));
+             }
++            if let Some(gate) = &registration_gate {
++                gate.recv_timeout(Duration::from_secs(20)).unwrap();
++            }
+             let (dropped_tx, dropped) = mpsc::channel();
+             observers_tx
+                 .send(Observed {
+@@ -339,14 +346,18 @@ fn cancellation_after_successful_reply_reclaims_the_unreceived_lease() {
+     use std::task::{Context, Poll, Waker};
+ 
+     let dir = repo();
+-    let f = fixture();
++    let (continue_tx, resume) = mpsc::channel();
++    let f = fixture_with_registration_gate(Some(resume));
+     let mut pending = Box::pin(
+         f.service
+             .acquire(&f.owner, dir.path().to_string_lossy().into_owned()),
+     );
+     let mut context = Context::from_waker(Waker::noop());
+ 
++    // The worker may otherwise reply before the first poll ends, missing the
++    // cancellation window this test exercises. Hold registration until Pending.
+     assert!(matches!(pending.as_mut().poll(&mut context), Poll::Pending));
++    continue_tx.send(()).unwrap();
+     let observer = receive(&f.observers);
+     // This command is queued after acquisition. Its reply proves the worker
+     // successfully sent the lease while the acquisition receiver was live.
 diff --git a/src-tauri/test_support/openai_image.rs b/src-tauri/test_support/openai_image.rs
 index a0f772d0..7cfc79fd 100644
 --- a/src-tauri/test_support/openai_image.rs
