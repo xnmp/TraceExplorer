@@ -66,7 +66,7 @@ mod tests {
     use super::*;
     #[test]
     fn unsaved_images_use_human_names_without_sharing_a_destination() {
-        let root = tempfile::tempdir().unwrap();
+        let root = crate::test_support::tempdir().unwrap();
         let first = prepare(
             root.path(),
             Some(Path::new("portrait.png")),

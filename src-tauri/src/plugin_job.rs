@@ -362,7 +362,7 @@ mod tests {
 
     #[test]
     fn cancellation_of_a_held_staging_file_removes_it_without_publication() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::test_support::tempdir().unwrap();
         let final_output = dir.path().join("result.png");
         let control = JobControl::new();
         let mut staging = StagedOutput::new(&final_output).unwrap();
@@ -382,7 +382,7 @@ mod tests {
     #[test]
     fn cancellation_and_publication_have_one_serialized_winner() {
         for attempt in 0..64 {
-            let dir = tempfile::tempdir().unwrap();
+            let dir = crate::test_support::tempdir().unwrap();
             let final_output = dir.path().join("result.png");
             let control = JobControl::new();
             let publish_control = control.clone();
@@ -443,7 +443,7 @@ mod tests {
     fn resolved_output_target_is_stable_when_directory_symlink_is_retargeted() {
         use std::os::unix::fs::symlink;
 
-        let root = tempfile::tempdir().unwrap();
+        let root = crate::test_support::tempdir().unwrap();
         let first = root.path().join("first");
         let second = root.path().join("second");
         std::fs::create_dir(&first).unwrap();
@@ -466,7 +466,7 @@ mod tests {
 
     #[test]
     fn timeout_revokes_late_blocking_output_before_reporting_failure() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::test_support::tempdir().unwrap();
         let final_output = dir.path().join("result.png");
         let control = JobControl::new();
         let worker_control = control.clone();

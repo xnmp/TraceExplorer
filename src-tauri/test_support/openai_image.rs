@@ -36,7 +36,7 @@ fn graph(db: &Path, path: &Path) -> Value {
 
 #[test]
 fn generation_publishes_a_png_and_retains_the_submitted_recipe_and_usage() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = crate::test_support::tempdir().unwrap();
     let db = dir.path().join("trace.sqlite");
     let request = request(dir.path(), None);
     let target = validate_request(&request).unwrap();
@@ -65,7 +65,7 @@ fn generation_publishes_a_png_and_retains_the_submitted_recipe_and_usage() {
 
 #[test]
 fn edit_records_the_exact_captured_input_even_when_the_source_changes() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = crate::test_support::tempdir().unwrap();
     let db = dir.path().join("trace.sqlite");
     let source = dir.path().join("source.png");
     std::fs::write(&source, PNG).unwrap();
@@ -97,7 +97,7 @@ fn edit_records_the_exact_captured_input_even_when_the_source_changes() {
 #[test]
 fn provider_failure_and_cancellation_keep_history_without_inventing_outputs() {
     for cancelled in [false, true] {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::test_support::tempdir().unwrap();
         let db = dir.path().join("trace.sqlite");
         let source = dir.path().join("source.png");
         std::fs::write(&source, PNG).unwrap();
@@ -126,7 +126,7 @@ fn provider_failure_and_cancellation_keep_history_without_inventing_outputs() {
 
 #[test]
 fn an_occupied_output_is_preserved_and_the_run_fails() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = crate::test_support::tempdir().unwrap();
     let db = dir.path().join("trace.sqlite");
     let source = dir.path().join("source.png");
     std::fs::write(&source, PNG).unwrap();
@@ -147,7 +147,7 @@ fn an_occupied_output_is_preserved_and_the_run_fails() {
 
 #[test]
 fn a_target_created_during_the_remote_call_is_never_overwritten() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = crate::test_support::tempdir().unwrap();
     let db = dir.path().join("trace.sqlite");
     let request = request(dir.path(), None);
     let target = validate_request(&request).unwrap();
@@ -170,7 +170,7 @@ fn a_target_created_during_the_remote_call_is_never_overwritten() {
 
 #[test]
 fn failed_generation_is_reachable_in_durable_history_without_an_image() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = crate::test_support::tempdir().unwrap();
     let db = dir.path().join("trace.sqlite");
     let request = request(dir.path(), None);
     let target = validate_request(&request).unwrap();
@@ -189,7 +189,7 @@ fn failed_generation_is_reachable_in_durable_history_without_an_image() {
 
 #[test]
 fn cancellation_while_waiting_for_provider_prevents_output_publication() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = crate::test_support::tempdir().unwrap();
     let db = dir.path().join("trace.sqlite");
     let request = request(dir.path(), None);
     let target = validate_request(&request).unwrap();
@@ -207,7 +207,7 @@ fn cancellation_while_waiting_for_provider_prevents_output_publication() {
 
 #[test]
 fn published_output_is_reported_as_success_when_trace_completion_needs_recovery() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = crate::test_support::tempdir().unwrap();
     let db = dir.path().join("trace.sqlite");
     let request = request(dir.path(), None);
     let target = validate_request(&request).unwrap();
@@ -242,7 +242,7 @@ fn published_output_is_reported_as_success_when_trace_completion_needs_recovery(
 
 #[test]
 fn malformed_requests_and_provider_images_are_rejected() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = crate::test_support::tempdir().unwrap();
     let valid = request(dir.path(), None);
     for request in [
         ImageRequest {
@@ -292,7 +292,7 @@ fn malformed_requests_and_provider_images_are_rejected() {
 #[test]
 fn a_named_pipe_cannot_block_input_capture() {
     use std::os::unix::ffi::OsStrExt;
-    let dir = tempfile::tempdir().unwrap();
+    let dir = crate::test_support::tempdir().unwrap();
     let path = dir.path().join("pipe.png");
     let native = std::ffi::CString::new(path.as_os_str().as_bytes()).unwrap();
     assert_eq!(unsafe { libc::mkfifo(native.as_ptr(), 0o600) }, 0);
@@ -338,7 +338,7 @@ fn server(body: Value) -> (String, std::thread::JoinHandle<(String, Vec<u8>)>) {
 
 #[test]
 fn http_generation_uses_the_official_json_contract_and_decodes_the_result() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = crate::test_support::tempdir().unwrap();
     let request = request(dir.path(), None);
     let (root, server) = server(response());
     let image = request_image(&root, &request, &[], TEST_KEY).unwrap();
@@ -357,7 +357,7 @@ fn http_generation_uses_the_official_json_contract_and_decodes_the_result() {
 
 #[test]
 fn http_edit_uploads_captured_bytes_with_no_original_filename_in_the_wire_format() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = crate::test_support::tempdir().unwrap();
     let source = dir.path().join("private-name.png");
     std::fs::write(&source, PNG).unwrap();
     let reference = dir.path().join("private-reference.png");
@@ -393,7 +393,7 @@ fn http_edit_uploads_captured_bytes_with_no_original_filename_in_the_wire_format
 
 #[test]
 fn reference_inputs_require_a_target_and_cannot_repeat_or_exceed_limits() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = crate::test_support::tempdir().unwrap();
     let source = dir.path().join("source.png");
     std::fs::write(&source, PNG).unwrap();
     let mut request = request(dir.path(), None);
@@ -412,7 +412,7 @@ fn reference_inputs_require_a_target_and_cannot_repeat_or_exceed_limits() {
 
 #[test]
 fn an_editor_revision_change_is_refused_before_provider_submission() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = crate::test_support::tempdir().unwrap();
     let source = dir.path().join("source.png");
     std::fs::write(&source, PNG).unwrap();
     let mut request = request(dir.path(), Some(&source));
@@ -428,7 +428,7 @@ fn an_editor_revision_change_is_refused_before_provider_submission() {
 
 #[test]
 fn custom_dimensions_are_validated_before_generation() {
-    let directory = tempfile::tempdir().unwrap();
+    let directory = crate::test_support::tempdir().unwrap();
     for size in ["2048x1536", "2048x2048", "3840x2160", "1024x1024"] {
         let mut input = request(directory.path(), None);
         input.size = size.into();

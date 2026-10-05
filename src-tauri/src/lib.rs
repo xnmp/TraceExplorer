@@ -17,3 +17,7 @@ pub use error::AppError;
 pub use events::EventEmitter;
 pub use plugin_job::shutdown_jobs;
 pub use protocol::{dispatch, Request, MAX_MESSAGE_BYTES};
+
+#[cfg(test)]
+#[path = "../test_support/mod.rs"]
+mod test_support;

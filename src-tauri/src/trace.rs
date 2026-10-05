@@ -320,7 +320,7 @@ fn connection_at(path: &Path) -> Result<Connection, AppError> {
     let schema_version: i64 = connection
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .map_err(sql)?;
-    if schema_version > 6 {
+    if schema_version > 7 {
         return Err(AppError::Other(format!(
             "Trace database schema {schema_version} is newer than this app supports"
         )));
@@ -412,7 +412,53 @@ fn connection_at(path: &Path) -> Result<Connection, AppError> {
             )
             .map_err(sql)?;
     }
+    if schema_version < 7 {
+        #[cfg(windows)]
+        add_legacy_locator_aliases(&connection)?;
+        connection
+            .pragma_update(None, "user_version", 7)
+            .map_err(sql)?;
+    }
     Ok(connection)
+}
+
+/// Historical Windows writers kept verbatim prefixes. Add safe syntactic
+/// aliases without changing revision IDs, recorded paths, or missing files.
+#[cfg(windows)]
+fn legacy_locator_alias(value: &str) -> Option<String> {
+    use std::path::{Component, Prefix};
+    let path = Path::new(value);
+    if !matches!(path.components().next(),Some(Component::Prefix(prefix)) if matches!(prefix.kind(),Prefix::VerbatimDisk(_)|Prefix::VerbatimUNC(_, _)))
+    {
+        return None;
+    }
+    let simplified = dunce::simplified(path);
+    (simplified != path).then(|| simplified.to_string_lossy().into_owned())
+}
+#[cfg(windows)]
+fn add_legacy_locator_aliases(connection: &Connection) -> Result<(), AppError> {
+    let tx = connection.unchecked_transaction().map_err(sql)?;
+    {
+        let mut statement = tx
+            .prepare("SELECT id,path,digest FROM artifacts")
+            .map_err(sql)?;
+        let records = statement
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            })
+            .map_err(sql)?;
+        for record in records {
+            let (id, path, digest) = record.map_err(sql)?;
+            if let Some(alias) = legacy_locator_alias(&path) {
+                tx.execute("INSERT OR IGNORE INTO artifact_locators(artifact_id,path,digest) VALUES(?1,?2,?3)",params![id,alias,digest]).map_err(sql)?;
+            }
+        }
+    }
+    tx.commit().map_err(sql)
 }
 
 fn database_path() -> Result<std::path::PathBuf, AppError> {
@@ -1446,7 +1492,7 @@ mod tests {
 
     #[test]
     fn crop_chain_is_durable_and_bound_to_exact_output_revision() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::test_support::tempdir().unwrap();
         let db = dir.path().join("trace.sqlite");
         let source = dir.path().join("source.png");
         let first = dir.path().join("first.png");
@@ -1528,7 +1574,7 @@ mod tests {
 
     #[test]
     fn started_crop_finishes_with_a_durable_output_revision() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::test_support::tempdir().unwrap();
         let db = dir.path().join("trace.sqlite");
         let source = dir.path().join("source.png");
         let output = dir.path().join("output.png");
@@ -1554,7 +1600,7 @@ mod tests {
 
     #[test]
     fn completion_cannot_attribute_an_external_replacement_even_with_identical_bytes() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::test_support::tempdir().unwrap();
         let db = dir.path().join("trace.sqlite");
         let source = dir.path().join("source.png");
         let output = dir.path().join("output.png");
@@ -1581,7 +1627,7 @@ mod tests {
 
     #[test]
     fn failed_crop_is_visible_from_its_source_without_an_output() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::test_support::tempdir().unwrap();
         let db = dir.path().join("trace.sqlite");
         let source = dir.path().join("source.png");
         fs::write(&source, b"source").unwrap();
@@ -1601,7 +1647,7 @@ mod tests {
 
     #[test]
     fn restart_recovers_published_bytes_and_keeps_missing_output_interrupted() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::test_support::tempdir().unwrap();
         let db = dir.path().join("trace.sqlite");
         let source = dir.path().join("source.png");
         let published = dir.path().join("published.png");
@@ -1631,9 +1677,54 @@ mod tests {
             .any(|artifact| artifact.generating_run == Some(second)));
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn legacy_windows_locators_preserve_missing_revisions_and_namespace_semantics() {
+        let directory = crate::test_support::tempdir().unwrap();
+        let database = directory.path().join("trace.sqlite");
+        let connection = connection_at(&database).unwrap();
+        let digest = "a".repeat(64);
+        let paths = [
+            r"\\?\C:\missing\result.png",
+            r"\\?\C:\missing\CON",
+            r"\\?\UNC\server\share\result.png",
+        ];
+        for (index, path) in paths.iter().enumerate() {
+            connection
+                .execute(
+                    "INSERT INTO artifacts(id,path,digest) VALUES(?1,?2,?3)",
+                    params![index as i64 + 1, path, digest],
+                )
+                .unwrap();
+        }
+        connection.pragma_update(None, "user_version", 6).unwrap();
+        drop(connection);
+        let migrated = connection_at(&database).unwrap();
+        assert_eq!(
+            artifact_for_locator(&migrated, r"C:\missing\result.png", Some(&digest)).unwrap(),
+            Some(1)
+        );
+        assert_eq!(
+            artifact_for_locator(&migrated, paths[1], Some(&digest)).unwrap(),
+            Some(2)
+        );
+        assert_eq!(
+            artifact_for_locator(&migrated, paths[2], Some(&digest)).unwrap(),
+            Some(3)
+        );
+        assert_eq!(legacy_locator_alias(paths[1]), None);
+        assert_eq!(legacy_locator_alias(paths[2]), None);
+        let recorded: String = migrated
+            .query_row("SELECT path FROM artifacts WHERE id=1", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(recorded, paths[0]);
+    }
+
     #[test]
     fn version_one_history_migrates_without_losing_its_lineage() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::test_support::tempdir().unwrap();
         let db = dir.path().join("trace.sqlite");
         let source = dir.path().join("source.png");
         let output = dir.path().join("output.png");
@@ -1649,7 +1740,7 @@ mod tests {
         .unwrap();
         old.execute(
             "INSERT INTO artifacts(id,path,digest,created_at) VALUES (1,?1,?2,'2026-10-03T00:00:00Z')",
-            params![source.to_str().unwrap(), digest(&source).unwrap()],
+            params![fs::canonicalize(&source).unwrap().to_string_lossy(), digest(&source).unwrap()],
         )
         .unwrap();
         old.execute(
@@ -1661,7 +1752,7 @@ mod tests {
             .unwrap();
         old.execute(
             "INSERT INTO artifacts(id,path,digest,created_at,generating_run) VALUES (3,?1,?2,'2026-10-03T00:00:02Z',2)",
-            params![output.to_str().unwrap(), digest(&output).unwrap()],
+            params![fs::canonicalize(&output).unwrap().to_string_lossy(), digest(&output).unwrap()],
         )
         .unwrap();
         drop(old);
@@ -1674,12 +1765,12 @@ mod tests {
             .unwrap()
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 6);
+        assert_eq!(version, 7);
     }
 
     #[test]
     fn recovery_does_not_invent_an_output_when_replacement_bytes_are_unchanged() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::test_support::tempdir().unwrap();
         let db = dir.path().join("trace.sqlite");
         let source = dir.path().join("source.png");
         fs::write(&source, b"same bytes").unwrap();
@@ -1696,7 +1787,7 @@ mod tests {
 
     #[test]
     fn matching_bytes_from_another_file_do_not_prove_crop_publication() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::test_support::tempdir().unwrap();
         let db = dir.path().join("trace.sqlite");
         let source = dir.path().join("source.png");
         let output = dir.path().join("output.png");
@@ -1716,7 +1807,7 @@ mod tests {
 
     #[test]
     fn unavailable_parent_keeps_recovery_pending_until_the_output_returns() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::test_support::tempdir().unwrap();
         let db = dir.path().join("trace.sqlite");
         let source = dir.path().join("source.png");
         let mount = dir.path().join("removable");
@@ -1742,7 +1833,7 @@ mod tests {
 
     #[test]
     fn replacement_after_publication_cannot_be_attributed_to_crop() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::test_support::tempdir().unwrap();
         let db = dir.path().join("trace.sqlite");
         let source = dir.path().join("source.png");
         let output = dir.path().join("output.png");
@@ -1767,7 +1858,7 @@ mod tests {
 
     #[test]
     fn oversized_selected_image_has_unverified_status_without_claiming_a_change() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::test_support::tempdir().unwrap();
         let db = dir.path().join("trace.sqlite");
         let source = dir.path().join("source.png");
         let output = dir.path().join("output.png");
@@ -1796,7 +1887,7 @@ mod tests {
 
     #[test]
     fn relocated_output_retains_its_graph_identity() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::test_support::tempdir().unwrap();
         let db = dir.path().join("trace.sqlite");
         let source = dir.path().join("source.png");
         let output = dir.path().join("output.png");
@@ -1830,7 +1921,7 @@ mod tests {
 
     #[test]
     fn one_operation_can_join_two_source_revisions() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::test_support::tempdir().unwrap();
         let db = dir.path().join("trace.sqlite");
         let left = dir.path().join("left.png");
         let right = dir.path().join("right.png");
@@ -1874,7 +1965,7 @@ mod tests {
 
     #[test]
     fn oversized_branching_graph_is_rejected() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::test_support::tempdir().unwrap();
         let db = dir.path().join("trace.sqlite");
         let source = dir.path().join("source.png");
         fs::write(&source, b"source pixels").unwrap();
@@ -1916,7 +2007,7 @@ mod tests {
     #[test]
     fn trace_database_is_private_even_when_an_old_file_is_too_permissive() {
         use std::os::unix::fs::PermissionsExt;
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::test_support::tempdir().unwrap();
         let db = dir.path().join("trace.sqlite");
         connection_at(&db).unwrap();
         assert_eq!(

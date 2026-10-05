@@ -49,7 +49,7 @@ fn unsuccessful_and_malformed_cli_streams_are_not_outputs() {
 
 #[test]
 fn a_missing_generated_thread_reports_missing_provider_output_instead_of_a_path_error() {
-    let home = tempfile::tempdir().unwrap();
+    let home = crate::test_support::tempdir().unwrap();
     let error = read_generated_image(home.path(), THREAD)
         .unwrap_err()
         .to_string();
@@ -63,7 +63,7 @@ fn a_missing_generated_thread_reports_missing_provider_output_instead_of_a_path_
 
 #[test]
 fn generated_output_belongs_to_the_exact_thread_and_must_be_unique() {
-    let home = tempfile::tempdir().unwrap();
+    let home = crate::test_support::tempdir().unwrap();
     let directory = home.path().join("generated_images").join(THREAD);
     std::fs::create_dir_all(&directory).unwrap();
     let other = home.path().join("generated_images/stale-thread");
@@ -80,8 +80,8 @@ fn generated_output_belongs_to_the_exact_thread_and_must_be_unique() {
 #[test]
 fn symlinked_output_files_and_thread_directories_are_rejected() {
     use std::os::unix::fs::symlink;
-    let home = tempfile::tempdir().unwrap();
-    let elsewhere = tempfile::tempdir().unwrap();
+    let home = crate::test_support::tempdir().unwrap();
+    let elsewhere = crate::test_support::tempdir().unwrap();
     std::fs::write(elsewhere.path().join("image.png"), PNG).unwrap();
     let directory = home.path().join("generated_images");
     std::fs::create_dir(&directory).unwrap();
@@ -101,7 +101,7 @@ fn symlinked_output_files_and_thread_directories_are_rejected() {
 #[test]
 fn headless_adapter_stages_captured_bytes_and_publishes_native_provenance() {
     use std::os::unix::fs::PermissionsExt;
-    let home = tempfile::tempdir().unwrap();
+    let home = crate::test_support::tempdir().unwrap();
     let executable = home.path().join("fake-codex");
     let directory = home.path().join("generated_images").join(THREAD);
     std::fs::create_dir_all(&directory).unwrap();
@@ -187,7 +187,7 @@ printf '%s\n' '{}' '{}'
 fn live_codex_edit_records_a_real_output() {
     let source = std::env::var("TRACE_CODEX_TEST_SOURCE")
         .expect("set TRACE_CODEX_TEST_SOURCE to the smoke-test image");
-    let dir = tempfile::tempdir().unwrap();
+    let dir = crate::test_support::tempdir().unwrap();
     let mut request = request(dir.path(), Some(Path::new(&source)));
     request.prompt =
         "Change only the mug to green; preserve geometry, white background, framing and lighting"
@@ -219,7 +219,7 @@ fn live_codex_edit_records_a_real_output() {
 
 #[test]
 fn requested_image_settings_reach_codex_and_the_recorded_recipe() {
-    let directory = tempfile::tempdir().unwrap();
+    let directory = crate::test_support::tempdir().unwrap();
     let mut input = request(directory.path(), None);
     input.size = "2048x1536".into();
     input.resolution = Some("2k".into());

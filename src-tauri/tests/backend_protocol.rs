@@ -1,4 +1,6 @@
 //! Behavior tests against the actual headless executable and persisted store.
+#[path = "../test_support/mod.rs"]
+mod test_support;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::{
@@ -98,8 +100,8 @@ impl Drop for Backend {
 #[test]
 fn generation_uses_managed_temporary_storage_and_survives_restart() {
     use std::os::unix::fs::PermissionsExt;
-    let data = tempfile::tempdir().unwrap();
-    let provider = tempfile::tempdir().unwrap();
+    let data = test_support::tempdir().unwrap();
+    let provider = test_support::tempdir().unwrap();
     let source = data.path().join("portrait.png");
     let png = include_bytes!("../test_support/fixtures/source32.png");
     std::fs::write(&source, png).unwrap();
@@ -208,7 +210,7 @@ fn generation_uses_managed_temporary_storage_and_survives_restart() {
 
 #[test]
 fn native_plugin_persists_published_lineage_across_restart_without_host_code() {
-    let directory = tempfile::tempdir().unwrap();
+    let directory = test_support::tempdir().unwrap();
     let source = directory.path().join("source.png");
     let target = directory.path().join("result.png");
     let payload = directory.path().join(".tauri-explorer-stage-rpc/payload");
@@ -273,7 +275,7 @@ fn native_plugin_persists_published_lineage_across_restart_without_host_code() {
 
 #[test]
 fn restarting_backend_preserves_a_live_host_publisher_lease() {
-    let directory = tempfile::tempdir().unwrap();
+    let directory = test_support::tempdir().unwrap();
     let source = directory.path().join("source.png");
     std::fs::write(&source, b"source").unwrap();
     let mut backend = Backend::start(directory.path());
@@ -305,7 +307,7 @@ fn restarting_backend_preserves_a_live_host_publisher_lease() {
 #[test]
 fn upgrade_preflight_retains_publication_proof_until_commit_or_rollback() {
     for rollback in [false, true] {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = test_support::tempdir().unwrap();
         let source = directory.path().join("source.png");
         let target = directory.path().join("result.png");
         let payload = directory

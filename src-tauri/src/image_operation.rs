@@ -222,7 +222,7 @@ mod tests {
     const PNG: &[u8] = include_bytes!("../test_support/fixtures/source32.png");
     #[test]
     fn captured_provider_input_is_immutable_when_the_original_changes() {
-        let root = tempfile::tempdir().unwrap();
+        let root = crate::test_support::tempdir().unwrap();
         let source = root.path().join("source.png");
         std::fs::write(&source, PNG).unwrap();
         let captured = CapturedImage::read(&source).unwrap();
@@ -233,7 +233,7 @@ mod tests {
     #[test]
     fn dropping_an_accepted_worker_records_failure_or_cancellation() {
         for cancel in [false, true] {
-            let root = tempfile::tempdir().unwrap();
+            let root = crate::test_support::tempdir().unwrap();
             let source = root.path().join("source.png");
             std::fs::write(&source, PNG).unwrap();
             let db = root.path().join("trace.sqlite");

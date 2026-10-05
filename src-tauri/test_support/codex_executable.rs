@@ -21,7 +21,7 @@ fn install(bin: &Path) -> PathBuf {
 
 #[test]
 fn inherited_path_wins_over_fallback_installations() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = crate::test_support::tempdir().unwrap();
     let primary = dir.path().join("primary");
     let fallback = dir.path().join("fallback");
     let expected = install(&primary);
@@ -36,7 +36,7 @@ fn inherited_path_wins_over_fallback_installations() {
 
 #[test]
 fn desktop_environment_finds_newest_installed_nvm_cli_without_shell_startup() {
-    let root = tempfile::tempdir().unwrap();
+    let root = crate::test_support::tempdir().unwrap();
     install(&root.path().join("versions/node/v9.8.0/bin"));
     let newest = install(&root.path().join("versions/node/v25.6.0/bin"));
     install(&root.path().join("versions/node/v25.5.99/bin"));
@@ -48,7 +48,7 @@ fn desktop_environment_finds_newest_installed_nvm_cli_without_shell_startup() {
 
 #[test]
 fn configured_path_takes_priority_and_accepts_spaces() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = crate::test_support::tempdir().unwrap();
     let expected = install(&dir.path().join("custom installation"));
     let other = dir.path().join("path");
     install(&other);
@@ -58,7 +58,7 @@ fn configured_path_takes_priority_and_accepts_spaces() {
 
 #[test]
 fn invalid_configured_path_is_not_silently_replaced_by_another_installation() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = crate::test_support::tempdir().unwrap();
     install(dir.path());
     let env = environment(&[dir.path()], vec![]);
     for configured in [
@@ -76,7 +76,7 @@ fn invalid_configured_path_is_not_silently_replaced_by_another_installation() {
 
 #[test]
 fn missing_installation_provides_the_setting_and_terminal_diagnostic() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = crate::test_support::tempdir().unwrap();
     let error = resolve_in("", &environment(&[dir.path()], vec![]))
         .err()
         .unwrap()
@@ -90,7 +90,7 @@ fn missing_installation_provides_the_setting_and_terminal_diagnostic() {
 #[test]
 fn non_executable_cli_is_skipped_and_npm_symlink_retains_its_runtime_directory() {
     use std::os::unix::fs::{symlink, PermissionsExt};
-    let dir = tempfile::tempdir().unwrap();
+    let dir = crate::test_support::tempdir().unwrap();
     let unusable = dir.path().join("unusable");
     let blocked = install(&unusable);
     std::fs::set_permissions(blocked, std::fs::Permissions::from_mode(0o600)).unwrap();
@@ -112,7 +112,7 @@ fn non_executable_cli_is_skipped_and_npm_symlink_retains_its_runtime_directory()
 #[test]
 fn desktop_child_can_run_a_launcher_requiring_its_sibling_runtime() {
     use std::os::unix::fs::PermissionsExt;
-    let dir = tempfile::tempdir().unwrap();
+    let dir = crate::test_support::tempdir().unwrap();
     let program = install(dir.path());
     let runtime = dir.path().join("codex-fixture-node");
     std::fs::write(&program, b"#!/usr/bin/env codex-fixture-node\n").unwrap();

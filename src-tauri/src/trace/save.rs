@@ -350,7 +350,7 @@ mod tests {
         id: i64,
     }
     fn fixture() -> Fixture {
-        let root = tempfile::tempdir().unwrap();
+        let root = crate::test_support::tempdir().unwrap();
         let database = root.path().join("trace.sqlite");
         let generated = root.path().join("generated");
         fs::create_dir(&generated).unwrap();
