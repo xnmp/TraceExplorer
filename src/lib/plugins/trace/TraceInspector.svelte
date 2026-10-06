@@ -16,6 +16,14 @@
     return graph.selectedRevisionStatus === "matched" ? "" : "Last recorded";
   }
 
+  function previewLabel(artifact: TraceArtifact, graph: TraceGraph, earlierRevision: boolean): string {
+    if (earlierRevision) return "Earlier revision";
+    if (artifact.id !== graph.currentArtifactId) return "";
+    if (graph.selectedRevisionStatus === "changed") return "Modified file preview";
+    if (graph.selectedRevisionStatus === "unverified") return "Unverified file preview";
+    return "";
+  }
+
   let { entries, onSelectFile, captureSelection }: { entries: FileEntry[]; onSelectFile: (path: string) => Promise<void>; captureSelection?:()=>()=>boolean } = $props();
   let graph = $state<TraceGraph | null>(untrack(() => cachedTrace(entries[0]?.path || lastTracePath())));
   let viewedPath=$state(untrack(()=>entries[0]?.path||lastTracePath()));
@@ -26,7 +34,10 @@
   let explicitFocus = $state<{key:string; path:string} | null>(null);
   const path = $derived(entries[0]?.path || viewedPath);
   const hasView=$derived(graph!==null || (!!path&&settledPath===path));
-  const layout = $derived(graph ? layoutTraceGraph(graph) : null);
+  const layout = $derived.by(() => {
+    const snapshot = graph;
+    return snapshot ? layoutTraceGraph({ ...snapshot, artifacts: snapshot.artifacts.map((artifact) => ({ ...artifact, hasCaption: !!artifactCaption(artifact, snapshot) })) }) : null;
+  });
   const selectedKey = $derived(graph && layout?.nodes.some((node) => node.key === focusedKey)
     ? focusedKey : graph ? `a:${graph.currentArtifactId}` : "");
   const verificationApplies = $derived(graph?.selectedPath ? samePath(graph.selectedPath,path) : graph?.artifacts.some((artifact) => artifact.id === graph?.currentArtifactId && samePath(artifact.path, path)) ?? false);
@@ -124,7 +135,7 @@
                   aria-pressed={selectedKey === node.key}
                   aria-controls="trace-node-details"
                   onclick={() => { explicitFocus={key:node.key,path:artifact.path}; focusedKey = node.key; if (artifact.pathState === "present") void onSelectFile(artifact.path); }}>
-                  <TraceThumbnail path={artifact.path} present={artifact.pathState === "present" && !earlierRevision} label={earlierRevision ? "Earlier revision" : artifact.id === graph.currentArtifactId && graph.selectedRevisionStatus === "matched" ? "" : "Current file preview"} revision={traceInvalidation.revision} prompt={tooltip} />
+                  <TraceThumbnail path={artifact.path} present={artifact.pathState === "present" && !earlierRevision} label={previewLabel(artifact, graph, earlierRevision)} revision={traceInvalidation.revision} prompt={tooltip} />
                   <span class="artifact-text"><strong>{artifact.path.split(/[\\/]/).at(-1)}</strong>{#if artifactCaption(artifact, graph)}<small>{artifactCaption(artifact, graph)}</small>{/if}</span>
                 </button>
               </div>
@@ -162,12 +173,12 @@
   .node-frame { position: absolute; }
   button { box-sizing: border-box; width: 100%; height: 100%; font: inherit; cursor: pointer; background: var(--background-card-secondary); color: var(--text-primary); border: 1px solid var(--control-stroke); border-radius: var(--radius-sm); }
   button:hover { background: var(--subtle-fill-secondary); }
-  button[aria-pressed="true"] { border-color: var(--accent-text); }
+  button[aria-pressed="true"] { border-color: var(--accent-text); box-shadow: inset 0 0 0 1px var(--accent-text); background: color-mix(in srgb, var(--accent-text) 14%, var(--background-card-secondary)); }
   button:focus-visible { outline: 2px solid var(--focus-stroke-outer); outline-offset: 2px; }
   .artifact { display: flex; flex-direction: column; overflow: hidden; padding: 0; text-align: left; }
   .artifact-text { display: flex; flex-direction: column; gap: 3px; padding: 6px 8px; width: 100%; box-sizing: border-box; }
-  strong { font-size: 11px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  small { color: var(--text-secondary); font-size: 10px; }
+  strong { font-size: 11px; line-height: 14px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  small { color: var(--text-secondary); font-size: 10px; line-height: 12px; }
   .operation { display: flex; align-items: center; justify-content: center; gap: 6px; padding: 6px; }
   .spinner { width: 12px; height: 12px; border: 2px solid var(--divider); border-top-color: var(--accent); border-radius: 50%; animation: spin 800ms linear infinite; flex-shrink: 0; }
   @keyframes spin { to { transform: rotate(360deg); } }

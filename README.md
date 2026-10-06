@@ -4,7 +4,7 @@ An installable image-editing and provenance plugin for [Tauri Explorer](https://
 
 Ctrl+E opens AI Edit and Ctrl+Enter generates. Codex, 2K resolution, and Keep the same aspect ratio are the defaults. Connection settings preserve your draft. Seed is disabled and marked Not supported.
 
-Generation runs in the background and saves into managed temporary storage. Select an output in Trace and use its disk button to save permanently, with names such as `parent_edit.png` and `parent_edit_2.png`. The Trace pane shows thumbnails and prompts; technical metadata stays under Raw. Hover an image to see its prompt, or click it to select its file. The pane retains the last viewed trace after deselection. Toggle Trace Pane controls visibility from the command palette. Crop Image… is a core command for the selected image.
+Generation runs in the background and saves into managed temporary storage. Select an output in Trace and use its disk button to save permanently, with names such as `parent_edit.png` and `parent_edit_2.png`. The Trace pane shows compact image cards and prompts; technical metadata stays under Raw. Hover an image to see its prompt, or click it to select its file. Loaded thumbnails stay cached during tree navigation, and refreshes retain the previous image until its replacement is ready. The pane retains the last viewed trace after deselection. Toggle Trace Pane controls visibility from the command palette. Crop Image… is a core command for the selected image.
 
 ## Installation
 

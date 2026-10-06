@@ -34,6 +34,9 @@ const suggestionCalls: unknown[] = [];
 const pickerCalls: unknown[] = [];
 const saveCalls: unknown[] = [];
 let permanentPath: string | null = null;
+const thumbnailCalls: string[] = [];
+let holdThumbnails = false;
+let thumbnailRequests: Array<() => void> = [];
 const savedLineage = () => ({
   artifacts: [artifact(301, paths.saveParent, null), {...artifact(302, permanentPath ?? paths.temporary, 401), temporary: permanentPath === null}],
   runs: [run(401, [301], "Keep the same image; make the rectangle blue.")],
@@ -43,6 +46,9 @@ const revisions = () => ({
   runs: [run(601, [], "Older recorded blue edit."), run(602, [501], "Newest recorded stripe edit.")],
 });
 export const controller = {
+  thumbnailCalls: () => [...thumbnailCalls],
+  holdThumbnails: () => { holdThumbnails = true; },
+  releaseThumbnails: () => { holdThumbnails = false; const pending = thumbnailRequests; thumbnailRequests = []; pending.forEach((resolve) => resolve()); },
   pending: () => requests.map(({ id, path }) => ({ id, path })),
   resolveTrace(id: number, graph: TraceGraph | null) {
     const request=requests.find(item=>item.id===id);
@@ -104,7 +110,11 @@ configureBackend({ invoke<T>(method: string, params?: Record<string, unknown>): 
     pickerCalls.push(structuredClone(options));
     return new Promise<string | null>((resolve,reject)=>pickers.push({resolve,reject}));
   },
-  thumbnailData: async (path: string) => ({ ok: true, data: URL.createObjectURL(new Blob([
-    `<svg xmlns="http://www.w3.org/2000/svg" width="200" height="100"><rect width="200" height="100" fill="${path === paths.unrelated ? "#437453" : "#4167c5"}"/><circle cx="100" cy="50" r="25" fill="white"/></svg>`,
-  ], { type: "image/svg+xml" })) }),
+  thumbnailData: async (path: string) => {
+    thumbnailCalls.push(path);
+    if (holdThumbnails) await new Promise<void>((resolve) => thumbnailRequests.push(resolve));
+    return { ok: true, data: URL.createObjectURL(new Blob([
+      `<svg xmlns="http://www.w3.org/2000/svg" width="200" height="100"><rect width="200" height="100" fill="${path === paths.unrelated ? "#437453" : "#4167c5"}"/><circle cx="100" cy="50" r="25" fill="white"/></svg>`,
+    ], { type: "image/svg+xml" })) };
+  },
 };

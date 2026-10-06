@@ -7,7 +7,7 @@ export function traceOperationLabel(operation: string): string {
 }
 
 export interface TraceLayoutInput {
-  readonly artifacts: readonly { readonly id: number; readonly generatingRun: number | null }[];
+  readonly artifacts: readonly { readonly id: number; readonly generatingRun: number | null; readonly hasCaption?: boolean }[];
   readonly runs: readonly { readonly id: number; readonly inputIds: readonly number[] }[];
 }
 
@@ -35,7 +35,8 @@ export interface TraceLayout {
 }
 
 const ARTIFACT_WIDTH = 146;
-const ARTIFACT_HEIGHT = 128;
+const ARTIFACT_HEIGHT = 78 + 14 + 12 + 2; // thumbnail, filename, padding, border
+const CAPTION_HEIGHT = 12 + 3; // status line and gap
 const RUN_WIDTH = 146;
 const RUN_HEIGHT = 38;
 const COLUMN_GAP = 14;
@@ -44,6 +45,7 @@ const PADDING = 14;
 
 export function layoutTraceGraph(graph: TraceLayoutInput): TraceLayout {
   const artifacts = new Map(graph.artifacts.map((artifact) => [artifact.id, artifact]));
+  const artifactHeight = (id: number) => ARTIFACT_HEIGHT + (artifacts.get(id)?.hasCaption ? CAPTION_HEIGHT : 0);
   const runs = new Map(graph.runs.map((run) => [run.id, run]));
   const outputRuns = new Set(graph.artifacts.flatMap((artifact) => artifact.generatingRun == null ? [] : [artifact.generatingRun]));
   const ranks = new Map<string, number>();
@@ -92,11 +94,11 @@ export function layoutTraceGraph(graph: TraceLayoutInput): TraceLayout {
   let y = PADDING;
   for (const [, unsorted] of sortedLevels) {
     const items = [...unsorted].sort((a, b) => a.id - b.id);
-    const height = items.some((item) => item.kind === "artifact") ? ARTIFACT_HEIGHT : RUN_HEIGHT;
+    const height = Math.max(...items.map((item) => item.kind === "artifact" ? artifactHeight(item.id) : RUN_HEIGHT));
     let x = (width - rowWidth(items)) / 2;
     for (const item of items) {
       const itemWidth = item.kind === "artifact" ? ARTIFACT_WIDTH : RUN_WIDTH;
-      nodes.push({ ...item, x, y, width: itemWidth, height: item.kind === "artifact" ? ARTIFACT_HEIGHT : RUN_HEIGHT });
+      nodes.push({ ...item, x, y, width: itemWidth, height: item.kind === "artifact" ? artifactHeight(item.id) : RUN_HEIGHT });
       x += itemWidth + COLUMN_GAP;
     }
     y += height + ROW_GAP;
