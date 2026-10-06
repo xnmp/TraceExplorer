@@ -1,6 +1,7 @@
 /** Last connected graphs survive inspector remounts during folder navigation. */
 import type { TraceGraph } from "$lib/api/trace";
 import { samePath } from "$lib/domain/path";
+import { traceThumbnails } from "./thumbnail-cache";
 
 let snapshots: readonly TraceGraph[] = [];
 let emptyPaths:readonly string[]=[];
@@ -19,4 +20,4 @@ export function rememberTrace(graph: TraceGraph): void {
   const ids = new Set(graph.artifacts.map((artifact) => artifact.id));
   snapshots = [graph, ...snapshots.filter((previous) => !previous.artifacts.some((artifact) => ids.has(artifact.id)))].slice(0, 2);
 }
-export function clearTraceCache(): void { snapshots = []; emptyPaths=[]; viewedPath=""; }
+export function clearTraceCache(): void { snapshots = []; emptyPaths=[]; viewedPath=""; traceThumbnails.clear(); }

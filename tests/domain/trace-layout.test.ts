@@ -41,4 +41,15 @@ describe("Trace graph layout", () => {
     expect(layout.nodes.every((node) => Number.isFinite(node.y))).toBe(true);
     expect(layout.width).toBeLessThan(1000);
   });
+  it("keeps captioned siblings and their next generation from overlapping", () => {
+    const layout = layoutTraceGraph({
+      artifacts: [{ id: 1, generatingRun: null }, { id: 2, generatingRun: null, hasCaption: true }, { id: 3, generatingRun: 4 }],
+      runs: [{ id: 4, inputIds: [1, 2] }],
+    });
+    const next = layout.nodes.find((node) => node.id === 3)!;
+    for (const parent of layout.nodes.filter((node) => node.id !== 3)) {
+      expect(parent.y + parent.height).toBeLessThan(next.y);
+    }
+    expect(layout.height).toBeGreaterThanOrEqual(next.y + next.height);
+  });
 });
