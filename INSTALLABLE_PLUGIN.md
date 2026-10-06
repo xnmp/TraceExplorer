@@ -30,7 +30,7 @@ Research: [VS Code extension host](https://code.visualstudio.com/api/advanced-to
 
 ## Verification and release
 
-TraceExplorer builds independently from this checkout. The [0.1.0 release](https://github.com/xnmp/TraceExplorer/releases/tag/v0.1.0) contains Linux x64/ARM64, macOS Intel/ARM64, and Windows x64 packages with SHA-256 sidecars. Every uploaded archive and checksum matches the qualified local bytes. All five package targets and browser CI pass.
+TraceExplorer builds independently from this checkout. The [0.1.1 release](https://github.com/xnmp/TraceExplorer/releases/tag/v0.1.1) contains Linux x64/ARM64, macOS Intel/ARM64, and Windows x64 packages with SHA-256 sidecars. Every uploaded archive and checksum matches the qualified local bytes. All five package targets and browser CI pass.
 
 The generic host integration is merged in [PR #996](https://github.com/xnmp/tauri-explorer/pull/996) at `0a29f5411123e1e015e9ac3f55b94ec4fcb8418b`, whose tree exactly matches the qualified source. All 23 final host checks pass. The [compatible Linux x64 host preview](https://github.com/xnmp/tauri-explorer/releases/tag/v1.11.2-plugin-sdk1-preview.1) contains the exact production binary tested with the released plugin. It requires Arch Linux / glibc 2.43+, GTK3, WebKitGTK 4.1, and libsoup3. Other operating systems need a host build containing this SDK v1 integration.
 
