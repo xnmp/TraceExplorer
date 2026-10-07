@@ -13,3 +13,5 @@ Upgrade waits for accepted work and host publishers to settle. The host snapshot
 Build the package with `python3 scripts/package-plugin.py`. Native host integration tests must install this actual archive into an isolated profile; frontend mocks alone do not qualify custom-protocol/CSP/runtime behavior.
 
 The original built-in feature work is preserved in Git history and [host PR #991](https://github.com/xnmp/tauri-explorer/pull/991). Source synchronization from the host has been retired; this repository owns the implementation now.
+
+The shared image-editor component uses its `initialTool` for that opening. Plugin AI dialogs open directly in their requested tool; core Crop Image… opens the crop surface separately. Commands can declare a default single shortcut or two-step chord (for example `Alt+M P`); the host registers it in Keyboard Shortcuts, preserves user overrides and retires it with the plugin context.

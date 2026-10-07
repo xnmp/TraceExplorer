@@ -2,7 +2,7 @@
 
 An installable image-editing and provenance plugin for [Tauri Explorer](https://github.com/xnmp/tauri-explorer).
 
-Ctrl+E opens AI Edit for one to eight highlighted images; the first is the edit target and the others are references. Ctrl+Enter generates. Codex, 2K resolution, and Keep the same aspect ratio are the defaults. Connection settings preserve your draft. Seed is disabled and marked Not supported.
+Ctrl+E opens AI Edit for one to eight highlighted images; the first is the edit target and the others are references. Ctrl+Enter generates. AI Edit opens directly; Crop Image… is a separate command. Codex, 2K resolution, and Keep the same aspect ratio are the defaults. Connection settings preserve your draft. Seed is disabled and marked Not supported.
 
 Generation runs in the background and saves into managed temporary storage. Choose one to eight outputs per prompt; related outputs appear together in Trace. Temperature and seed are disabled because the current image providers do not expose them. The host progress panel shows elapsed time and explicitly estimated progress.
 
