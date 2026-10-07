@@ -2928,21 +2928,22 @@ mod tests {
             insensitive.components[0].image_count, 1,
             "one file, two revisions"
         );
+        // The old name is an earlier revision feeding the renamed file. (Its
+        // reported path may follow the on-disk name on case-insensitive
+        // filesystems, so it is found by role, not by path.)
         let nodes = &insensitive.nodes[&insensitive.components[0].id];
-        let earlier = nodes
-            .iter()
-            .find(|node| node.path.as_deref() == Some(original.to_string_lossy().as_ref()))
-            .unwrap();
-        assert!(earlier.earlier_revision);
+        assert_eq!(nodes.len(), 2);
+        let earlier: Vec<&TraceNode> = nodes.iter().filter(|node| node.earlier_revision).collect();
+        assert_eq!(earlier.len(), 1);
+        let latest = nodes.iter().find(|node| !node.earlier_revision).unwrap();
+        assert_eq!(latest.parents, [earlier[0].key.clone()]);
 
         // Where case matters, the old name is a different image, not an
         // earlier revision of the renamed one.
         let sensitive = index_with(&f, false);
-        let old = sensitive.nodes[&sensitive.components[0].id]
-            .iter()
-            .find(|node| node.path.as_deref() == Some(original.to_string_lossy().as_ref()))
-            .unwrap();
-        assert!(!old.earlier_revision);
+        let nodes = &sensitive.nodes[&sensitive.components[0].id];
+        assert_eq!(nodes.len(), 2);
+        assert!(nodes.iter().all(|node| !node.earlier_revision));
     }
 
     /// Run with `cargo test --release -- --ignored folder_index_benchmark --nocapture`.
