@@ -2939,11 +2939,14 @@ mod tests {
         assert_eq!(latest.parents, [earlier[0].key.clone()]);
 
         // Where case matters, the old name is a different image, not an
-        // earlier revision of the renamed one.
-        let sensitive = index_with(&f, false);
-        let nodes = &sensitive.nodes[&sensitive.components[0].id];
-        assert_eq!(nodes.len(), 2);
-        assert!(nodes.iter().all(|node| !node.earlier_revision));
+        // earlier revision of the renamed one. Only a case-sensitive disk can
+        // show this: elsewhere both names resolve to the same file.
+        if !original.exists() {
+            let sensitive = index_with(&f, false);
+            let nodes = &sensitive.nodes[&sensitive.components[0].id];
+            assert_eq!(nodes.len(), 2);
+            assert!(nodes.iter().all(|node| !node.earlier_revision));
+        }
     }
 
     /// Run with `cargo test --release -- --ignored folder_index_benchmark --nocapture`.
