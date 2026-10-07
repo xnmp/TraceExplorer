@@ -26,7 +26,7 @@ export const tracePlugin: Plugin = {
       },
     });
     ctx.registerCommand({
-      id: "plugin.trace.toggle", label: "Toggle Trace Pane", category: "view",
+      id: "plugin.trace.toggle", label: "Toggle Trace Pane", category: "view", shortcut: "Alt+M P",
       handler: () => traceVisibility.toggle(),
     });
     ctx.events.listen<string>("trace:changed", () => {traceInvalidation.bump();traceFolderVisibility.refresh();});

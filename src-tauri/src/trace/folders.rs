@@ -21,17 +21,51 @@ pub(super) fn key(directory: &Path) -> Result<String, AppError> {
 
 // Persist historical absolute hints even when their volume is temporarily absent.
 pub(super) fn context_key(directory: &Path) -> Result<String, AppError> {
-    key(directory).or_else(|error| {
-        if !directory.is_absolute()
-            || directory
-                .components()
-                .any(|component| matches!(component, std::path::Component::ParentDir))
-        {
-            return Err(error);
+    if !directory.is_absolute() {
+        return Err(AppError::InvalidPath(
+            "Trace requires an absolute folder hint".into(),
+        ));
+    }
+    let resolved = resolve_context_path(directory, 32);
+    Ok(dunce::simplified(&resolved).to_string_lossy().into_owned())
+}
+
+// Canonicalize the existing prefix and resolve dangling links while a volume is offline.
+fn resolve_context_path(path: &Path, remaining_links: u8) -> PathBuf {
+    if let Ok(resolved) = fs::canonicalize(path) {
+        return resolved;
+    }
+    if remaining_links > 0 {
+        for ancestor in path.ancestors() {
+            let suffix = path.strip_prefix(ancestor).expect("path ancestor");
+            if let Ok(target) = fs::read_link(ancestor) {
+                let target = if target.is_absolute() {
+                    target
+                } else {
+                    ancestor.parent().unwrap_or(ancestor).join(target)
+                };
+                return resolve_context_path(&target.join(suffix), remaining_links - 1);
+            }
+            if let Ok(prefix) = fs::canonicalize(ancestor) {
+                return lexical_path(&prefix.join(suffix));
+            }
         }
-        let path: PathBuf = directory.components().collect();
-        Ok(dunce::simplified(&path).to_string_lossy().into_owned())
-    })
+    }
+    lexical_path(path)
+}
+
+fn lexical_path(path: &Path) -> PathBuf {
+    let mut resolved = PathBuf::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                resolved.pop();
+            }
+            _ => resolved.push(component.as_os_str()),
+        }
+    }
+    resolved
 }
 
 pub(super) fn has_trace_at(database: &Path, directory: &Path) -> Result<bool, AppError> {
@@ -54,7 +88,7 @@ fn folder_state_at(database: &Path, directory: &Path) -> Result<(bool, bool), Ap
     upper.pop();
     upper.push(char::from_u32(separator as u32 + 1).expect("ASCII path separator"));
     let connection = connection_at(database)?;
-    let mut statement = connection.prepare("SELECT path FROM artifacts WHERE path>=?1 AND path<?2 AND instr(substr(path,?3),?4)=0 UNION SELECT path FROM artifact_locators WHERE path>=?1 AND path<?2 AND instr(substr(path,?3),?4)=0").map_err(sql)?;
+    let mut statement = connection.prepare("SELECT path FROM artifacts WHERE path>=?1 AND path<?2 AND instr(substr(path,?3),?4)=0 UNION ALL SELECT path FROM artifact_locators WHERE path>=?1 AND path<?2 AND instr(substr(path,?3),?4)=0").map_err(sql)?;
     let rows = statement
         .query_map(
             params![

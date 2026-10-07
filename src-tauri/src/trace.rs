@@ -342,6 +342,7 @@ fn connection_at(path: &Path) -> Result<Connection, AppError> {
            generating_run INTEGER REFERENCES runs(id)
          );
          CREATE INDEX IF NOT EXISTS artifacts_by_path ON artifacts(path, digest, id DESC);
+         CREATE INDEX IF NOT EXISTS artifacts_by_generating_run ON artifacts(generating_run);
          CREATE TABLE IF NOT EXISTS runs (
            id INTEGER PRIMARY KEY,
            operation TEXT NOT NULL,
@@ -1887,6 +1888,7 @@ mod tests {
                 )
                 .unwrap();
         }
+        connection.execute_batch("DROP TABLE image_batch_members; DROP TABLE image_folder_contexts; DROP TABLE image_prompt_titles; DROP TABLE image_discards;").unwrap();
         connection.pragma_update(None, "user_version", 6).unwrap();
         drop(connection);
         let migrated = connection_at(&database).unwrap();

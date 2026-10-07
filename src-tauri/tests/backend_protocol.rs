@@ -96,6 +96,239 @@ impl Drop for Backend {
     }
 }
 
+fn prepare_trace_store(backend: &mut Backend) {
+    let run = backend.call(
+        "provenance.begin",
+        json!({"start":{"operation":"image.fixture","parameters":{},"inputs":[]}}),
+    )["result"]
+        .clone();
+    assert_eq!(
+        backend.call("provenance.cancel", json!({"run":run}))["result"],
+        Value::Null
+    );
+}
+
+fn seed_unsaved_output(
+    database: &std::path::Path,
+    folder: &std::path::Path,
+    output: &std::path::Path,
+) {
+    let connection = rusqlite::Connection::open(database).unwrap();
+    let parameters = json!({"output_storage":"temporary","save_directory_hint":folder,"prompt":"Folder visibility fixture"});
+    connection.execute("INSERT INTO runs(operation,parameters,status) VALUES('openai.image.generate',?1,'succeeded')", [parameters.to_string()]).unwrap();
+    let run = connection.last_insert_rowid();
+    connection
+        .execute(
+            "INSERT INTO artifacts(path,digest,generating_run) VALUES(?1,?2,?3)",
+            rusqlite::params![
+                output.to_string_lossy(),
+                hex::encode(Sha256::digest(std::fs::read(output).unwrap())),
+                run
+            ],
+        )
+        .unwrap();
+    connection
+        .execute(
+            "INSERT INTO image_folder_contexts(folder,run_id) VALUES(?1,?2)",
+            rusqlite::params![folder.to_string_lossy(), run],
+        )
+        .unwrap();
+}
+
+#[test]
+fn folder_visibility_rechecks_removed_and_restored_unsaved_outputs() {
+    let data = test_support::tempdir().unwrap();
+    let folder = data.path().join("Pictures");
+    let generated = data.path().join("generated");
+    std::fs::create_dir(&folder).unwrap();
+    std::fs::create_dir(&generated).unwrap();
+    let output = generated.join("candidate.png");
+    let png = include_bytes!("../test_support/fixtures/source32.png");
+    std::fs::write(&output, png).unwrap();
+    let mut backend = Backend::start(data.path());
+    backend.ready(vec![]);
+    prepare_trace_store(&mut backend);
+    drop(backend);
+    seed_unsaved_output(&data.path().join("trace.sqlite"), &folder, &output);
+    let mut backend = Backend::start(data.path());
+    backend.ready(vec![]);
+    let query = json!({"directory":folder});
+    assert_eq!(
+        backend.call("folder_has_trace", query.clone())["result"],
+        true
+    );
+    let modified = std::fs::metadata(&folder).unwrap().modified().unwrap();
+    std::fs::remove_file(&output).unwrap();
+    assert_eq!(
+        std::fs::metadata(&folder).unwrap().modified().unwrap(),
+        modified
+    );
+    assert_eq!(
+        backend.call("folder_has_trace", query.clone())["result"],
+        false
+    );
+    std::fs::write(&output, png).unwrap();
+    assert_eq!(
+        std::fs::metadata(&folder).unwrap().modified().unwrap(),
+        modified
+    );
+    assert_eq!(backend.call("folder_has_trace", query)["result"], true);
+}
+
+#[test]
+fn schema_upgrade_keeps_unsaved_folder_context_when_its_volume_is_unavailable() {
+    let data = test_support::tempdir().unwrap();
+    let folder = data.path().join("Pictures");
+    let generated = data.path().join("generated");
+    std::fs::create_dir(&folder).unwrap();
+    std::fs::create_dir(&generated).unwrap();
+    let output = generated.join("candidate.png");
+    std::fs::write(
+        &output,
+        include_bytes!("../test_support/fixtures/source32.png"),
+    )
+    .unwrap();
+    let mut backend = Backend::start(data.path());
+    backend.ready(vec![]);
+    prepare_trace_store(&mut backend);
+    drop(backend);
+    let database = data.path().join("trace.sqlite");
+    seed_unsaved_output(&database, &folder, &output);
+    let connection = rusqlite::Connection::open(&database).unwrap();
+    connection.execute_batch("DROP TABLE image_folder_contexts; DROP TABLE image_batch_members; DROP TABLE image_prompt_titles; DROP TABLE image_discards; PRAGMA user_version=7;").unwrap();
+    drop(connection);
+    let offline = data.path().join("Pictures-offline");
+    std::fs::rename(&folder, &offline).unwrap();
+    let mut upgraded = Backend::start(data.path());
+    upgraded.ready(vec![]);
+    drop(upgraded);
+    std::fs::rename(&offline, &folder).unwrap();
+    let mut restarted = Backend::start(data.path());
+    restarted.ready(vec![]);
+    assert_eq!(
+        restarted.call("folder_has_trace", json!({"directory":folder}))["result"],
+        true
+    );
+    assert!(output.is_file());
+}
+
+#[cfg(unix)]
+#[test]
+fn schema_upgrade_resolves_an_offline_folder_alias_when_its_volume_returns() {
+    use std::os::unix::fs::symlink;
+    let data = test_support::tempdir().unwrap();
+    let volume = data.path().join("volume");
+    let folder = volume.join("Pictures");
+    std::fs::create_dir_all(&folder).unwrap();
+    let alias = data.path().join("PicturesAlias");
+    symlink(&folder, &alias).unwrap();
+    let generated = data.path().join("generated");
+    std::fs::create_dir(&generated).unwrap();
+    let output = generated.join("candidate.png");
+    std::fs::write(
+        &output,
+        include_bytes!("../test_support/fixtures/source32.png"),
+    )
+    .unwrap();
+    let mut backend = Backend::start(data.path());
+    backend.ready(vec![]);
+    prepare_trace_store(&mut backend);
+    drop(backend);
+    let database = data.path().join("trace.sqlite");
+    seed_unsaved_output(&database, &alias, &output);
+    let connection = rusqlite::Connection::open(&database).unwrap();
+    connection.execute_batch("DROP TABLE image_folder_contexts; DROP TABLE image_batch_members; DROP TABLE image_prompt_titles; DROP TABLE image_discards; PRAGMA user_version=7;").unwrap();
+    drop(connection);
+    let offline = data.path().join("volume-offline");
+    std::fs::rename(&volume, &offline).unwrap();
+    let mut upgraded = Backend::start(data.path());
+    upgraded.ready(vec![]);
+    drop(upgraded);
+    std::fs::rename(&offline, &volume).unwrap();
+    let mut restarted = Backend::start(data.path());
+    restarted.ready(vec![]);
+    for directory in [&alias, &folder] {
+        assert_eq!(
+            restarted.call("folder_has_trace", json!({"directory":directory}))["result"],
+            true
+        );
+    }
+    assert!(output.is_file());
+}
+
+#[cfg(unix)]
+#[test]
+fn title_admission_rejects_busy_work_and_reuses_the_completed_prompt_cache() {
+    use std::os::unix::fs::PermissionsExt;
+    struct ReleaseOnDrop(std::path::PathBuf);
+    impl Drop for ReleaseOnDrop {
+        fn drop(&mut self) {
+            let _ = std::fs::write(&self.0, b"release");
+        }
+    }
+    let data = test_support::tempdir().unwrap();
+    let provider = test_support::tempdir().unwrap();
+    let executable = provider.path().join("title-codex");
+    let started = provider.path().join("started");
+    let release = provider.path().join("release");
+    let thread =
+        json!({"type":"thread.started","thread_id":"01234567-89ab-7cde-8f01-23456789abcd"});
+    let title = json!({"type":"item.completed","item":{"type":"agent_message","text":json!({"title":"Short title"}).to_string()}});
+    std::fs::write(&executable,format!("#!/bin/sh\nprintf x >> \"$TRACE_TITLE_TEST_STARTED\"\nwhile [ ! -f \"$TRACE_TITLE_TEST_RELEASE\" ]; do sleep .01; done\nprintf '%s\\n' '{thread}' '{title}' '{{\"type\":\"turn.completed\"}}'\n")).unwrap();
+    std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let mut backend = Backend::start_with_env(
+        data.path(),
+        &[
+            ("TRACE_TITLE_TEST_STARTED", &started),
+            ("TRACE_TITLE_TEST_RELEASE", &release),
+        ],
+    );
+    let _release_on_drop = ReleaseOnDrop(release.clone());
+    backend.ready(vec![]);
+    let begin = json!({"start":{"operation":"openai.image.generate","parameters":{"prompt":"Same cached prompt"},"inputs":[]}});
+    let first = backend.call("provenance.begin", begin.clone())["result"]["id"].clone();
+    let second = backend.call("provenance.begin", begin)["result"]["id"].clone();
+    backend.sequence += 1;
+    let first_request = backend.sequence;
+    writeln!(backend.child.stdin.as_mut().unwrap(), "{}", json!({"jsonrpc":"2.0","id":first_request,"method":"trace_prompt_title","params":{"runId":first,"codexPath":executable}})).unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while !started.exists() && std::time::Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(started.exists(), "Title fixture did not start");
+    let busy = backend.call(
+        "trace_prompt_title",
+        json!({"runId":second,"codexPath":executable}),
+    );
+    assert!(
+        busy["error"]["message"].as_str().unwrap().contains("busy"),
+        "{busy}"
+    );
+    let independent = backend.call("recent_openai_image_runs", json!({}));
+    assert!(independent.get("result").is_some(), "{independent}");
+    std::fs::write(&release, b"release").unwrap();
+    loop {
+        let reply = backend
+            .replies
+            .recv_timeout(Duration::from_secs(5))
+            .unwrap();
+        if reply["id"] == first_request {
+            assert_eq!(reply["result"], "Short title", "{reply}");
+            break;
+        }
+    }
+    let cached = backend.call(
+        "trace_prompt_title",
+        json!({"runId":second,"codexPath":executable}),
+    );
+    assert_eq!(cached["result"], "Short title", "{cached}");
+    assert_eq!(
+        std::fs::read(started).unwrap(),
+        b"x",
+        "Cache retry contacted the title provider again"
+    );
+}
+
 #[cfg(unix)]
 #[test]
 fn generation_uses_managed_temporary_storage_and_survives_restart() {

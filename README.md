@@ -12,7 +12,7 @@ Cards show the prompt immediately, truncated to fit, and use a cached short titl
 
 Loaded thumbnails stay cached during tree navigation. Trace remains open after deselection or selection of non-image files within a folder containing provenance; empty folders hide it. Active and unsaved generation workflows remain visible in their intended save folder until saved or discarded. Folder eligibility uses indexed locators and existence checks without hashing images or scanning the folder’s contents.
 
-Drag the divider between the tree and details to resize the tree, or focus it and use the arrow keys. The compatible host also lets you resize the whole pane. **Toggle Trace Pane** controls visibility from the command palette. **Crop Image…** is a core command for the selected image.
+Drag the divider between the tree and details to resize the tree, or focus it and use the arrow keys. The compatible host also lets you resize the whole pane. **Toggle Trace Pane** controls visibility from the command palette or the **Alt+M, then P** chord; change or remove that binding in **Keyboard Shortcuts** settings. **Crop Image…** is a core command for the selected image.
 
 ## Installation
 
