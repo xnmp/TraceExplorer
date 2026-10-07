@@ -8,6 +8,7 @@ export interface TraceArtifact {
   readonly generatingRun: number | null;
   readonly pathState: "present" | "missing" | "unavailable";
   readonly temporary?: boolean;
+  readonly discarded?: boolean;
 }
 
 export interface TraceRun {
@@ -24,11 +25,17 @@ export interface TraceRun {
 }
 
 export interface TraceGraph {
+  readonly jobId?: number;
   readonly currentArtifactId: number;
   readonly selectedPath?: string;
   readonly selectedRevisionStatus: "matched" | "changed" | "unverified";
   readonly artifacts: TraceArtifact[];
   readonly runs: TraceRun[];
+}
+
+export async function traceForJob(jobId: number): Promise<ApiResult<TraceGraph | null>> {
+  try { return {ok:true,data:await invoke<TraceGraph | null>("trace_for_job",{jobId})}; }
+  catch(error) { return {ok:false,error:extractError(error)}; }
 }
 
 export async function traceForImage(path: string): Promise<ApiResult<TraceGraph | null>> {
@@ -45,6 +52,10 @@ export async function imageSaveSuggestion(artifactId: number): Promise<{director
   return invoke("image_save_suggestion", {artifactId});
 }
 
-export async function saveGeneratedImage(artifactId: number, target: string): Promise<{path: string}> {
-  return invoke("save_generated_image", {artifactId, target});
+export async function saveGeneratedImage(artifactId: number, target?: string): Promise<{path: string}> {
+  return invoke("save_generated_image", {artifactId, ...(target ? {target} : {})});
+}
+
+export async function discardGeneratedImage(artifactId: number): Promise<{viewPath:string|null}> {
+  return invoke("discard_generated_image", {artifactId});
 }

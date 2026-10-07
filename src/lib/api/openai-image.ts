@@ -13,6 +13,7 @@ export async function recentOpenAIImageRuns(): Promise<ApiResult<OpenAIImageRunH
 }
 
 export interface OpenAIImageRequest {
+  batch?: {id: string; index: number; count: number};
   backend?: "codex" | "api_key";
   /** Optional absolute CLI path; empty/unset uses native desktop discovery. */
   codexPath?: string;

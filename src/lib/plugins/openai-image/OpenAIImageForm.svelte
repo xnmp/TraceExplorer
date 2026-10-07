@@ -1,17 +1,21 @@
 <script lang="ts">
-  import { tick, untrack } from "svelte";
+  import { tick, untrack, onDestroy } from "svelte";
   import "../plugin-dialog.css";
   import type { PluginJobs, PluginStorage, PluginToast } from "../api";
   import { startOpenAIImageJob, type OpenAIImageRequest } from "$lib/api/openai-image";
   import { basename } from "$lib/domain/path";
   import { imageOutputFilename } from "$lib/domain/image-output-filename";
   import { imageGenerationSize, type ImageResolution, type ImageAspectRatio } from "$lib/domain/image-generation-settings";
+  import { promptTitles } from "../trace/prompt-titles.svelte";
+  import { traceViewTarget } from "../trace/view-target.svelte";
+  import { traceVisibility } from "../trace/visibility.svelte";
 
   interface Props {
     open: boolean;
     sourceDigest?: string;
     sourceSize?: { readonly width: number; readonly height: number };
     onBusyChange?: (busy: boolean) => void;
+    captureSelection?: ()=>()=>boolean;
     sourcePath: string | null;
     referencePaths?: string[];
     outputDir: string;
@@ -24,12 +28,15 @@
     toast: PluginToast;
     onClose: () => void;
   }
-  let { open, sourceDigest, sourceSize, onBusyChange = () => {}, sourcePath, referencePaths = [], outputDir,
+  let { open, sourceDigest, sourceSize, onBusyChange = () => {}, captureSelection, sourcePath, referencePaths = [], outputDir,
     apiKey, codexPath = "", initialBackend = "codex", storage, onSaveSettings, jobs, toast, onClose }: Props = $props();
   let selectedModel = $state("codex");
+  let alive = true;
+  onDestroy(()=>{alive=false;});
   let prompt = $state("");
   let resolution = $state<ImageResolution>("2k");
   let aspectRatio = $state<ImageAspectRatio>("keep");
+  let count = $state(1);
   let submitting = $state(false);
   let error = $state("");
   let settingsOpen = $state(false);
@@ -38,6 +45,9 @@
   let executable = $state(untrack(() => codexPath));
   let draftKey = $state("");
   let draftExecutable = $state("");
+  let titleGenerator = $state("codex");
+  let titleExecutable = $state("");
+  let titleSettingsReady = $state(false);
   let formRef = $state<HTMLFormElement | null>(null);
   let promptRef = $state<HTMLTextAreaElement | null>(null);
   $effect(() => { onBusyChange(submitting || savingSettings); });
@@ -51,21 +61,32 @@
     if (submitting || settingsOpen || !prompt.trim()) return;
     submitting = true;
     error = "";
+    let accepted = 0;
+    const workspaceCurrent = captureSelection?.() ?? (()=>true);
+    const viewCurrent = traceViewTarget.capture();
     try {
+      if (!Number.isInteger(count) || count < 1 || count > 8) throw new Error("Choose between 1 and 8 images");
       if (sourcePath && aspectRatio === "keep" && !sourceSize) throw new Error("Wait for the source image to load, or choose an aspect ratio");
       const size = imageGenerationSize(resolution, aspectRatio, sourceSize);
       const outputFilename = imageOutputFilename(sourcePath ? basename(sourcePath) : null);
       const backend = selectedModel === "codex" ? "codex" : "api_key";
+      const batchId = count > 1 ? crypto.randomUUID() : null;
+      for (let index = 0; index < count; index += 1) {
       const result = await jobs.accept(
-        { kind: "openai-image", presentation: "image", label: outputFilename, detail: prompt.trim() },
+        { kind: "openai-image", presentation: "image", label: count > 1 ? `${outputFilename} (${index + 1}/${count})` : outputFilename, detail: prompt.trim() },
         () => startOpenAIImageJob({ sourcePath, expectedSourceDigest: sourceDigest, referencePaths, outputDir,
+          ...(batchId ? {batch:{id:batchId,index,count}} : {}),
           prompt: prompt.trim(), outputFilename, backend, codexPath: backend === "codex" ? executable : undefined,
           model: (selectedModel === "codex" ? "gpt-image-2" : selectedModel) as OpenAIImageRequest["model"],
           size, resolution, aspectRatio, quality: "auto", background: "auto" }, backend === "api_key" ? connectionKey : ""),
       );
       if (!result.ok) throw new Error(result.error);
-      onClose();
+      if (accepted === 0 && alive && workspaceCurrent() && viewCurrent()) { traceViewTarget.showJob(result.data); traceVisibility.opened(); }
+      accepted += 1;
+      }
+      if (alive) onClose();
     } catch (cause) {
+      if (accepted) { toast.error(`Started ${accepted} of ${count} images: ${cause instanceof Error ? cause.message : String(cause)}`); if (alive) onClose(); return; }
       error = cause instanceof Error ? cause.message : String(cause);
       submitting = false;
     }
@@ -76,14 +97,23 @@
     draftExecutable = executable;
     error = "";
     settingsOpen = true;
+    titleSettingsReady = false;
+    void storage.get().then(settings=>{
+      if (settingsOpen) {
+        titleGenerator = settings.titleGenerator === "disabled" ? "disabled" : "codex";
+        titleExecutable = typeof settings.titleCodexPath === "string" ? settings.titleCodexPath : "";
+        titleSettingsReady = true;
+      }
+    }).catch(()=>{ error = "Could not load title generator settings"; });
   }
   async function saveSettings(): Promise<void> {
-    if (savingSettings) return;
+    if (savingSettings || !titleSettingsReady) return;
     savingSettings = true;
     error = "";
-    const patch = { apiKey: draftKey.trim(), codexPath: draftExecutable.trim(), backend: selectedModel === "codex" ? "codex" : "api_key" };
+    const patch = { apiKey: draftKey.trim(), codexPath: draftExecutable.trim(), backend: selectedModel === "codex" ? "codex" : "api_key", titleGenerator, titleCodexPath: titleExecutable.trim() };
     try {
       await onSaveSettings(patch);
+      if (!storage.subscribe) void promptTitles.configure(patch);
       connectionKey = patch.apiKey;
       executable = patch.codexPath;
       settingsOpen = false;
@@ -113,11 +143,21 @@
       <label class="prompt-field">OpenAI API key
         <input class="prompt-input" type="password" bind:value={draftKey} autocomplete="off" disabled={savingSettings} />
       </label>
+      <label class="prompt-field">Title generator
+        <select class="model-select" bind:value={titleGenerator} disabled={savingSettings || !titleSettingsReady}>
+          <option value="codex">Codex credentials (Luna, low effort)</option><option value="disabled">Off</option>
+        </select>
+      </label>
+      {#if titleGenerator === "codex"}
+        <label class="prompt-field">Title generator Codex path
+          <input class="prompt-input" bind:value={titleExecutable} placeholder="Use image connection" disabled={savingSettings || !titleSettingsReady}/>
+        </label>
+      {/if}
       {#if error}<p class="error" role="alert">{error}</p>{/if}
     </div>
     <footer>
       <button type="button" class="btn btn-secondary" disabled={savingSettings} onclick={() => { settingsOpen = false; error = ""; }}>Back</button>
-      <button type="submit" class="btn btn-primary" disabled={savingSettings}>{savingSettings ? "Saving…" : "Save settings"}</button>
+      <button type="submit" class="btn btn-primary" disabled={savingSettings || !titleSettingsReady}>{savingSettings ? "Saving…" : "Save settings"}</button>
     </footer>
   </form>
 {:else}
@@ -145,6 +185,12 @@
           <select class="model-select" aria-label="Resolution" bind:value={resolution} disabled={submitting}>
             <option value="1k">1K</option><option value="2k">2K</option><option value="4k">4K</option>
           </select>
+        </label>
+        <label class="prompt-field">Images
+          <input class="prompt-input" type="number" min="1" max="8" step="1" bind:value={count} disabled={submitting} aria-label="Images" />
+        </label>
+        <label class="prompt-field">Temperature
+          <input class="prompt-input" value="Not supported" disabled aria-label="Temperature" />
         </label>
         <label class="prompt-field">Aspect ratio
           <select class="model-select" aria-label="Aspect ratio" bind:value={aspectRatio} disabled={submitting}>

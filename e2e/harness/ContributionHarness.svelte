@@ -11,6 +11,9 @@
   let entries=$state<FileEntry[]>([]);
   let remountRevision=$state(0);
   let selectionVersion=0;
+  const folderSupport=new URLSearchParams(location.search).has('folders');
+  let directory='/fixture/one';
+  let directoryListener: ((path:string)=>void)|undefined;
   const selections:string[]=[];
   const commands:string[]=[];
   const listeners=new Map<string,()=>void>();
@@ -25,6 +28,7 @@
   export function commandCalls(){return [...commands];}
   export function predicate(){return contribution?.when(entries)??false;}
   export function invalidate(){listeners.get("trace:changed")?.();}
+  export function changeDirectory(path:string){directory=path;clear();directoryListener?.(path);}
   async function selectFile(path:string){selections.push(path);choose(path);}
   function captureSelection(){const version=selectionVersion;return()=>version===selectionVersion;}
   async function toggle(){if(command){commands.push(command.id);await command.handler();}}
@@ -32,7 +36,8 @@
     registerInspector(value){contribution=value;},
     registerCommand(value){command=value;},
     events:{listen(name:string,callback:()=>void){listeners.set(name,callback);}},
-    workspace:{getSelection:()=>entries,selectFile,captureSelection,onFilesChanged(){}},
+    workspace:{getSelection:()=>entries,selectFile,captureSelection,onFilesChanged(){},
+      ...(folderSupport ? {getCurrentDirectory:()=>directory,onDirectoryChanged(callback:(path:string)=>void){directoryListener=callback;callback(directory);}} : {})},
   } as any);
   onDestroy(()=>tracePlugin.deactivate?.());
 </script>
@@ -48,6 +53,10 @@
     <button onclick={toggle}>Toggle Trace pane</button>
     <button onclick={remount}>Remount contribution</button>
     <button onclick={invalidate}>Refresh trace</button>
+    {#if folderSupport}
+      <button onclick={()=>changeDirectory('/fixture/one')}>Open traced folder</button>
+      <button onclick={()=>changeDirectory('/fixture/empty')}>Open empty folder</button>
+    {/if}
   </nav>
   {#if visible && contribution}
     <section class="inspector" aria-label="Trace contribution">

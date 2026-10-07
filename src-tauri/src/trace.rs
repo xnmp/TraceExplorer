@@ -2,8 +2,10 @@
 //! Artifact identity includes content and path; source revisions are never
 //! inferred from a filename after it has changed.
 use crate::{config, error::AppError, image_crop};
+pub(crate) mod folders;
 pub(crate) mod jobs;
 pub(crate) mod save;
+pub(crate) mod titles;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -149,6 +151,8 @@ pub(crate) struct Artifact {
     path_state: ArtifactPathState,
     #[serde(skip_serializing_if = "is_false")]
     temporary: bool,
+    #[serde(skip_serializing_if = "is_false")]
+    discarded: bool,
 }
 
 fn is_false(value: &bool) -> bool {
@@ -181,6 +185,8 @@ pub(crate) struct Run {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct TraceGraph {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    job_id: Option<u64>,
     current_artifact_id: i64,
     selected_path: String,
     selected_revision_status: SelectedRevisionStatus,
@@ -320,7 +326,7 @@ fn connection_at(path: &Path) -> Result<Connection, AppError> {
     let schema_version: i64 = connection
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .map_err(sql)?;
-    if schema_version > 7 {
+    if schema_version > 8 {
         return Err(AppError::Other(format!(
             "Trace database schema {schema_version} is newer than this app supports"
         )));
@@ -417,6 +423,30 @@ fn connection_at(path: &Path) -> Result<Connection, AppError> {
         add_legacy_locator_aliases(&connection)?;
         connection
             .pragma_update(None, "user_version", 7)
+            .map_err(sql)?;
+    }
+    if schema_version < 8 {
+        connection.execute_batch("BEGIN; CREATE TABLE image_batch_members (batch_id TEXT NOT NULL,position INTEGER NOT NULL,signature TEXT NOT NULL,run_id INTEGER NOT NULL UNIQUE REFERENCES runs(id),PRIMARY KEY(batch_id,position)); CREATE TABLE image_folder_contexts (folder TEXT NOT NULL,run_id INTEGER NOT NULL UNIQUE REFERENCES runs(id),PRIMARY KEY(folder,run_id)); CREATE TABLE image_prompt_titles (digest TEXT PRIMARY KEY,title TEXT NOT NULL); CREATE TABLE image_discards (artifact_id INTEGER PRIMARY KEY REFERENCES artifacts(id),path TEXT NOT NULL,staged_path TEXT NOT NULL,digest TEXT NOT NULL,object_identity TEXT NOT NULL,completed INTEGER NOT NULL DEFAULT 0); ").map_err(sql)?;
+        let mut statement=connection.prepare("SELECT id,parameters FROM runs WHERE operation IN ('openai.image.generate','openai.image.edit')").map_err(sql)?;
+        let rows = statement
+            .query_map([], |row| {
+                Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+            })
+            .map_err(sql)?;
+        for row in rows {
+            let (id, parameters) = row.map_err(sql)?;
+            if let Ok(parameters) = serde_json::from_str::<serde_json::Value>(&parameters) {
+                if parameters["output_storage"] == "temporary" {
+                    if let Some(directory) = parameters["save_directory_hint"].as_str() {
+                        if let Ok(folder) = folders::context_key(Path::new(directory)) {
+                            connection.execute("INSERT OR IGNORE INTO image_folder_contexts(folder,run_id) VALUES(?1,?2)",params![folder,id]).map_err(sql)?;
+                        }
+                    }
+                }
+            }
+        }
+        connection
+            .execute_batch("PRAGMA user_version=8; COMMIT;")
             .map_err(sql)?;
     }
     Ok(connection)
@@ -723,6 +753,19 @@ fn insert_start(
     )
     .map_err(sql)?;
     let run_id = tx.last_insert_rowid();
+    if let Some(directory) = start
+        .parameters
+        .get("save_directory_hint")
+        .and_then(serde_json::Value::as_str)
+    {
+        if let Ok(folder) = folders::context_key(Path::new(directory)) {
+            tx.execute(
+                "INSERT OR IGNORE INTO image_folder_contexts(folder,run_id) VALUES(?1,?2)",
+                params![folder, run_id],
+            )
+            .map_err(sql)?;
+        }
+    }
     for (position, input_id) in input_ids.into_iter().enumerate() {
         tx.execute(
             "INSERT INTO run_inputs(run_id,artifact_id,position) VALUES (?1,?2,?3)",
@@ -1257,6 +1300,16 @@ fn reconcile_unfinished_except_at(
     }
     cleanup_terminal_anchors_at(database)?;
     save::reconcile_at(database)?;
+    let discarding: bool = connection_at(database)?
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM image_discards WHERE completed=0)",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(sql)?;
+    if discarding {
+        save::reconcile_discards_at(database, &config::config_dir()?.join("generated"))?;
+    }
     Ok(())
 }
 
@@ -1293,13 +1346,41 @@ pub(crate) fn graph_for_path_at(
     database: &Path,
     path: &Path,
 ) -> Result<Option<TraceGraph>, AppError> {
-    if !path.is_absolute() || !path.is_file() {
+    if !path.is_absolute() {
         return Ok(None);
     }
     if !database.exists() {
         return Ok(None);
     }
     let connection = connection_at(database)?;
+    if !path.is_file() {
+        let path_text = normalize_path(path)
+            .unwrap_or_else(|_| dunce::simplified(path).to_string_lossy().into_owned());
+        let Some(id) = artifact_for_locator(&connection, &path_text, None)? else {
+            return Ok(None);
+        };
+        let discarded: bool = connection
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM image_discards WHERE artifact_id=?1 AND completed=1)",
+                [id],
+                |row| row.get(0),
+            )
+            .map_err(sql)?;
+        if !discarded {
+            return Ok(None);
+        }
+        let graph =
+            graph_for_artifact_at(&connection, id, path_text, SelectedRevisionStatus::Matched)?;
+        let next = graph
+            .artifacts
+            .iter()
+            .find(|artifact| !artifact.discarded && Path::new(&artifact.path).is_file())
+            .map(|artifact| artifact.path.clone());
+        return match next {
+            Some(path) => graph_for_path_at(database, Path::new(&path)),
+            None => Ok(None),
+        };
+    }
     let path_text = normalize_path(path)?;
     let known = artifact_for_locator(&connection, &path_text, None)?;
     if known.is_none() {
@@ -1323,17 +1404,53 @@ pub(crate) fn graph_for_path_at(
         Some(id) => id,
         None => known.expect("locator was checked"),
     };
+    graph_for_artifact_at(
+        &connection,
+        current_artifact_id,
+        path_text,
+        selected_revision_status,
+    )
+    .map(Some)
+}
+
+fn graph_for_artifact_at(
+    connection: &Connection,
+    current_artifact_id: i64,
+    path_text: String,
+    selected_revision_status: SelectedRevisionStatus,
+) -> Result<TraceGraph, AppError> {
+    graph_from_seeds(
+        connection,
+        current_artifact_id,
+        None,
+        path_text,
+        selected_revision_status,
+    )
+}
+
+fn graph_from_seeds(
+    connection: &Connection,
+    current_artifact_id: i64,
+    run_id: Option<i64>,
+    path_text: String,
+    selected_revision_status: SelectedRevisionStatus,
+) -> Result<TraceGraph, AppError> {
     let mut graph = TraceGraph {
+        job_id: None,
         current_artifact_id,
         selected_path: path_text,
         selected_revision_status,
         artifacts: Vec::new(),
         runs: Vec::new(),
     };
-    let mut pending_artifacts = vec![current_artifact_id];
-    let mut pending_runs = Vec::new();
-    let mut scheduled_artifacts = HashSet::from([current_artifact_id]);
-    let mut scheduled_runs = HashSet::new();
+    let mut pending_artifacts = if current_artifact_id > 0 {
+        vec![current_artifact_id]
+    } else {
+        vec![]
+    };
+    let mut pending_runs: Vec<_> = run_id.into_iter().collect();
+    let mut scheduled_artifacts = pending_artifacts.iter().copied().collect::<HashSet<_>>();
+    let mut scheduled_runs = pending_runs.iter().copied().collect::<HashSet<_>>();
     while !pending_artifacts.is_empty() || !pending_runs.is_empty() {
         if let Some(id) = pending_artifacts.pop() {
             let (artifact_id, path, digest, created_at, generating_run): (
@@ -1365,6 +1482,7 @@ pub(crate) fn graph_for_path_at(
                 created_at,
                 generating_run,
                 temporary: false,
+                discarded: connection.query_row("SELECT EXISTS(SELECT 1 FROM image_discards WHERE artifact_id=?1 AND completed=1)",[artifact_id],|row|row.get(0)).map_err(sql)?,
             };
             if let Some(run_id) = artifact.generating_run {
                 if scheduled_runs.insert(run_id) {
@@ -1396,6 +1514,20 @@ pub(crate) fn graph_for_path_at(
                     read_run,
                 )
                 .map_err(sql)?;
+            let mut cohort = connection.prepare("SELECT sibling.run_id FROM image_batch_members member JOIN image_batch_members sibling ON sibling.batch_id=member.batch_id WHERE member.run_id=?1 LIMIT 9").map_err(sql)?;
+            let cohort_ids = cohort
+                .query_map([run_id], |row| row.get::<_, i64>(0))
+                .map_err(sql)?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(sql)?;
+            for sibling in cohort_ids {
+                if scheduled_runs.insert(sibling) {
+                    if scheduled_runs.len() > 1024 {
+                        return Err(AppError::Other("Trace graph exceeds 1024 runs".into()));
+                    }
+                    pending_runs.push(sibling);
+                }
+            }
             let mut inputs = connection
                 .prepare("SELECT artifact_id FROM run_inputs WHERE run_id=?1 ORDER BY position")
                 .map_err(sql)?;
@@ -1447,13 +1579,71 @@ pub(crate) fn graph_for_path_at(
             .generating_run
             .is_some_and(|id| temporary_runs.contains(&id));
     }
-    Ok(Some(graph))
+    Ok(graph)
 }
 
 pub(crate) async fn trace_for_image(path: String) -> Result<Option<TraceGraph>, AppError> {
     tokio::task::spawn_blocking(move || graph_for_path_at(&database_path()?, Path::new(&path)))
         .await
         .map_err(|error| AppError::Other(format!("Trace query failed: {error}")))?
+}
+
+pub(crate) async fn trace_for_job(job_id: u64) -> Result<Option<TraceGraph>, AppError> {
+    tokio::task::spawn_blocking(move || graph_for_job_at(&database_path()?, job_id))
+        .await
+        .map_err(|error| AppError::WorkerFailed(error.to_string()))?
+}
+
+fn graph_for_job_at(database: &Path, job_id: u64) -> Result<Option<TraceGraph>, AppError> {
+    if job_id == 0 || job_id > 9_007_199_254_740_991 {
+        return Err(AppError::Other("Invalid image job ID".into()));
+    }
+    let connection = connection_at(database)?;
+    let run_id: Option<i64> = connection
+        .query_row(
+            "SELECT run_id FROM image_jobs WHERE job_id=?1 ORDER BY run_id DESC LIMIT 1",
+            [job_id as i64],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(sql)?;
+    let Some(run_id) = run_id else {
+        return Ok(None);
+    };
+    let mut graph = graph_from_seeds(
+        &connection,
+        0,
+        Some(run_id),
+        String::new(),
+        SelectedRevisionStatus::Matched,
+    )?;
+    let artifact = graph
+        .artifacts
+        .iter()
+        .find(|artifact| {
+            artifact.generating_run == Some(run_id)
+                && !artifact.discarded
+                && Path::new(&artifact.path).is_file()
+        })
+        .or_else(|| {
+            graph
+                .artifacts
+                .iter()
+                .find(|artifact| !artifact.discarded && Path::new(&artifact.path).is_file())
+        });
+    if let Some(artifact) = artifact {
+        graph.current_artifact_id = artifact.id;
+        graph.selected_path = artifact.path.clone();
+        graph.selected_revision_status = if fs::metadata(&artifact.path)?.len() > MAX_IMAGE_BYTES {
+            SelectedRevisionStatus::Unverified
+        } else if digest(Path::new(&artifact.path))? == artifact.digest {
+            SelectedRevisionStatus::Matched
+        } else {
+            SelectedRevisionStatus::Changed
+        };
+    }
+    graph.job_id = Some(job_id);
+    Ok(Some(graph))
 }
 
 #[cfg(test)]
@@ -1765,7 +1955,7 @@ mod tests {
             .unwrap()
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 7);
+        assert_eq!(version, 8);
     }
 
     #[test]

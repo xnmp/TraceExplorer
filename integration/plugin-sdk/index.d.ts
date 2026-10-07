@@ -8,6 +8,7 @@ export interface PluginStorage {
   get(): Promise<Record<string, unknown>>;
   set(value: Record<string, unknown>): Promise<void>;
   setChecked?(value: Record<string, unknown>): Promise<void>;
+  subscribe?(listener: (value: Record<string,unknown>)=>void): ()=>void;
 }
 export interface PluginJobs {
   accept(registration: {kind: string; label: string; detail: string; presentation?: "image"}, start: () => Promise<ApiResult<number>>): Promise<ApiResult<number>>;
@@ -34,6 +35,8 @@ export interface PluginContext {
   saveSettings(patch: Record<string, unknown>): Promise<void>;
   events: {listen<T>(name: string, handler: (payload: T) => void | Promise<void>): void};
   workspace: {
+    getCurrentDirectory?(): string | null;
+    onDirectoryChanged?(handler: (path:string|null)=>void): void;
     getSelection(): FileEntry[];
     captureSelection(): () => boolean;
     selectFile(path: string): Promise<void>;

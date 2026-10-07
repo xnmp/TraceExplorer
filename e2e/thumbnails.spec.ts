@@ -34,7 +34,7 @@ test("tree navigation and remounts reuse loaded thumbnails without placeholders 
       if (count) (window as any).thumbnailPlaceholders.push(count);
     }).observe(document.querySelector(".inspector")!, { childList: true, subtree: true });
   });
-  await page.locator(".artifact", { hasText: "source_edit_2.png" }).click();
+  await page.locator('.artifact[data-path="/fixture/two/source_edit_2.png"]').click();
   await expect(page.locator("[data-explorer-selection]")).toHaveText("/fixture/two/source_edit_2.png");
   await expect(page.locator(".artifact img")).toHaveCount(3);
   expect(await page.locator(".artifact img").evaluateAll((images) => images.map((image) => (image as HTMLImageElement).src))).toEqual(sources);

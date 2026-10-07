@@ -77,6 +77,13 @@ async fn execute(app: EventEmitter, request: &Request) -> Result<Value, AppError
             let _ = app.emit("trace:changed", ());
             Ok(Value::Null)
         }
+        "folder_has_trace" => Ok(json!(
+            trace::folders::has_trace(field(p, "directory")?).await?
+        )),
+        "trace_for_job" => Ok(serde_json::to_value(
+            trace::trace_for_job(field(p, "jobId")?).await?,
+        )
+        .map_err(|error| AppError::Other(error.to_string()))?),
         "trace_for_image" => Ok(serde_json::to_value(
             trace::trace_for_image(field(p, "path")?).await?,
         )
@@ -86,9 +93,40 @@ async fn execute(app: EventEmitter, request: &Request) -> Result<Value, AppError
         )
         .map_err(|error| AppError::Other(error.to_string()))?),
         "save_generated_image" => {
-            let path = trace::save::save(field(p, "artifactId")?, field(p, "target")?).await?;
+            let target = p
+                .get("target")
+                .map(|_| field::<String>(p, "target"))
+                .transpose()?;
+            let path = trace::save::save(field(p, "artifactId")?, target).await?;
             let _ = app.emit("trace:changed", serde_json::json!({"path":path}));
             Ok(json!({"path":path}))
+        }
+        "trace_prompt_title" => Ok(json!(
+            trace::titles::title(
+                field(p, "runId")?,
+                p.get("codexPath")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_owned()
+            )
+            .await?
+        )),
+        "trace_title_connection" => {
+            let executable = p
+                .get("codexPath")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_owned();
+            Ok(json!(tokio::task::spawn_blocking(move || {
+                crate::openai_image::title_connection(&executable)
+            })
+            .await
+            .map_err(|error| AppError::WorkerFailed(error.to_string()))?))
+        }
+        "discard_generated_image" => {
+            let view_path = trace::save::discard(field(p, "artifactId")?).await?;
+            let _ = app.emit("trace:changed", ());
+            Ok(json!({"viewPath":view_path}))
         }
         "recent_openai_image_runs" => Ok(serde_json::to_value(
             trace::recent_openai_image_runs().await?,

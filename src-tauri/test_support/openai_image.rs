@@ -6,6 +6,7 @@ const TEST_KEY: &str = "test-secret-do-not-record";
 
 fn request(dir: &Path, source: Option<&Path>) -> ImageRequest {
     ImageRequest {
+        batch: None,
         backend: ImageBackend::ApiKey,
         codex_path: String::new(),
         source_path: source.map(|path| path.to_string_lossy().into_owned()),
@@ -449,4 +450,16 @@ fn custom_dimensions_are_validated_before_generation() {
         input.size = size.into();
         assert!(validate_request(&input).is_err(), "{size}");
     }
+}
+
+#[test]
+fn unbatched_request_identity_is_compatible_with_pre_batch_receipts() {
+    let input = request(Path::new("/images"), None);
+    let legacy = r#"{"backend":"api_key","codexPath":"","sourcePath":null,"expectedSourceDigest":null,"referencePaths":[],"prompt":"Preserve the face; add a warm lantern","outputDir":"/images","outputFilename":"result.png","model":"gpt-image-2","size":"1024x1024","resolution":null,"aspectRatio":null,"quality":"low","background":"auto"}"#;
+    assert_eq!(serde_json::to_string(&input).unwrap(), legacy);
+    let reloaded: ImageRequest = serde_json::from_str(legacy).unwrap();
+    assert_eq!(
+        hex::encode(Sha256::digest(serde_json::to_vec(&reloaded).unwrap())),
+        hex::encode(Sha256::digest(legacy.as_bytes()))
+    );
 }
