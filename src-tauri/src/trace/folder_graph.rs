@@ -2229,7 +2229,8 @@ mod tests {
     #[test]
     fn long_entries_shorten_pages_below_the_frame_limit_but_never_drop_items() {
         let f = fixture();
-        let deep = (0..12).fold(f.folder.clone(), |path, index| {
+        // Long, but within macOS's 1024-byte path limit.
+        let deep = (0..5).fold(f.folder.clone(), |path, index| {
             path.join(format!("{index:02}{}", "d".repeat(150)))
         });
         let inputs: Vec<PathBuf> = (0..400)
@@ -2896,8 +2897,24 @@ mod tests {
     fn a_case_only_rename_is_one_member_where_paths_ignore_case() {
         let f = fixture();
         let original = image(&f.folder.join("photo.png"), b"original");
-        let renamed = image(&f.folder.join("Photo.png"), b"renamed and edited");
-        record(&f, serde_json::json!({}), &[&original], &renamed);
+        let before = input(&original);
+        // A real case-only rename, then an edit: on a case-insensitive
+        // filesystem writing "Photo.png" beside "photo.png" would only
+        // overwrite it under its old name.
+        let renamed = f.folder.join("Photo.png");
+        fs::rename(&original, &renamed).unwrap();
+        fs::write(&renamed, b"renamed and edited").unwrap();
+        record_operation_at(
+            &f.db,
+            OperationRecord {
+                operation: "image.test".into(),
+                parameters: serde_json::json!({}),
+                inputs: vec![before],
+                output_path: renamed.to_string_lossy().into_owned(),
+                output_digest: digest(&renamed).unwrap(),
+            },
+        )
+        .unwrap();
 
         let insensitive = index_with(&f, true);
         assert_eq!(insensitive.components.len(), 1);
@@ -2918,9 +2935,14 @@ mod tests {
             .unwrap();
         assert!(earlier.earlier_revision);
 
+        // Where case matters, the old name is a different image, not an
+        // earlier revision of the renamed one.
         let sensitive = index_with(&f, false);
-        assert_eq!(sensitive.members.len(), 2);
-        assert_eq!(sensitive.components[0].image_count, 2);
+        let old = sensitive.nodes[&sensitive.components[0].id]
+            .iter()
+            .find(|node| node.path.as_deref() == Some(original.to_string_lossy().as_ref()))
+            .unwrap();
+        assert!(!old.earlier_revision);
     }
 
     /// Run with `cargo test --release -- --ignored folder_index_benchmark --nocapture`.
