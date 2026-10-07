@@ -25,14 +25,18 @@ function render(nodes: TraceNode[], focus: string | null, width = 900) {
   });
 }
 
+const HEAVY = 30_000;
+
 describe("large folders", () => {
   it("lays out a 20,000-step edit chain focused at its end", () => {
     const nodes = Array.from({ length: 20000 }, (_, index) => node(`n${index}`, index ? [`n${index - 1}`] : []));
     const { value, ms } = render(nodes, "n19999");
     expect(value.layout.nodes.size).toBe(value.plan.tiles.size);
     expect(value.plan.tiles.get("n19999")?.tone).toBe("focus");
-    expect(ms).toBeLessThan(2500);
-  });
+    // Linear (about 300 ms locally, 700 ms at 80,000 steps); slow CI runners
+    // take ~8x, while a quadratic regression would take minutes.
+    expect(ms).toBeLessThan(5000);
+  }, HEAVY);
 
   it("wraps a 3,000-output fan-out within the width budget", () => {
     const nodes = [node("source"), ...Array.from({ length: 3000 }, (_, index) => node(`out${index}`, ["source"]))];
