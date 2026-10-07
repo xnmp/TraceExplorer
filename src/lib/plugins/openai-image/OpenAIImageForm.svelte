@@ -7,8 +7,6 @@
   import { imageOutputFilename } from "$lib/domain/image-output-filename";
   import { imageGenerationSize, type ImageResolution, type ImageAspectRatio } from "$lib/domain/image-generation-settings";
   import { promptTitles } from "../trace/prompt-titles.svelte";
-  import { traceViewTarget } from "../trace/view-target.svelte";
-  import { traceVisibility } from "../trace/visibility.svelte";
 
   interface Props {
     open: boolean;
@@ -62,8 +60,6 @@
     submitting = true;
     error = "";
     let accepted = 0;
-    const workspaceCurrent = captureSelection?.() ?? (()=>true);
-    const viewCurrent = traceViewTarget.capture();
     try {
       if (!Number.isInteger(count) || count < 1 || count > 8) throw new Error("Choose between 1 and 8 images");
       if (sourcePath && aspectRatio === "keep" && !sourceSize) throw new Error("Wait for the source image to load, or choose an aspect ratio");
@@ -81,7 +77,6 @@
           size, resolution, aspectRatio, quality: "auto", background: "auto" }, backend === "api_key" ? connectionKey : ""),
       );
       if (!result.ok) throw new Error(result.error);
-      if (accepted === 0 && alive && workspaceCurrent() && viewCurrent()) { traceViewTarget.showJob(result.data); traceVisibility.opened(); }
       accepted += 1;
       }
       if (alive) onClose();

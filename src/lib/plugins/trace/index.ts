@@ -1,35 +1,49 @@
 import type { Plugin } from "../api";
-import { selectedTraceImage } from "$lib/domain/trace-selection";
-import TraceInspector from "./TraceInspector.svelte";
-import { traceVisibility } from "./visibility.svelte";
 import { traceInvalidation } from "./invalidation.svelte";
-import { clearTraceCache } from "./view-cache";
 import { traceFolderVisibility } from "./folder-visibility.svelte";
+import { traceThumbnails } from "./thumbnail-cache";
+import { promptTitles } from "./prompt-titles.svelte";
+import { tracePanes, isTraceTargetData } from "./view/pane-registry.svelte";
+import { disposeLayouts } from "./view/layout-client";
+import { subjectNode } from "./view/preview-subject";
+import TraceView from "./view/TraceView.svelte";
+import TracePreviewInfo from "./view/TracePreviewInfo.svelte";
+
+export const TRACE_VIEW_ID = "trace.view";
+const IMAGE = /\.(png|jpe?g|webp|gif|bmp|avif|tiff?)$/i;
 
 export const tracePlugin: Plugin = {
   id: "trace",
   name: "Trace",
-  description: "Read-only provenance for image edits recorded by Tauri Explorer.",
+  description: "Provenance view for image edits recorded by Tauri Explorer.",
   enabledByDefault: true,
-  deactivate: () => { clearTraceCache(); traceFolderVisibility.clear(); },
+  deactivate: () => {
+    disposeLayouts();
+    tracePanes.clear();
+    traceFolderVisibility.clear();
+    traceThumbnails.clear();
+    promptTitles.clear();
+  },
   activate(ctx) {
-    traceFolderVisibility.bind(ctx);
-    ctx.registerInspector({
-      id: "trace.lineage",
+    traceFolderVisibility.clear();
+    ctx.registerFileView?.({
+      id: TRACE_VIEW_ID,
       title: "Trace",
-      component: TraceInspector,
-      props: { onSelectFile: ctx.workspace.selectFile, captureSelection: ctx.workspace.captureSelection },
-      when: (entries) => {
-        if(!traceVisibility.visible)return false;
-        if (traceFolderVisibility.supported && !traceFolderVisibility.eligible) return false;
-        return traceVisibility.isOpen || selectedTraceImage(entries) !== null;
-      },
+      component: TraceView,
+      available: (directory) => traceFolderVisibility.available(directory),
+    });
+    ctx.registerPreviewInfo?.({
+      id: "trace.info",
+      component: TracePreviewInfo,
+      when: (subject) => subject.kind === "target"
+        ? isTraceTargetData(subject.target.data)
+        : subjectNode(subject) !== null || (subject.entry.kind === "file" && IMAGE.test(subject.entry.name)),
     });
     ctx.registerCommand({
-      id: "plugin.trace.toggle", label: "Toggle Trace Pane", category: "view", shortcut: "Alt+M P",
-      handler: () => traceVisibility.toggle(),
+      id: "plugin.trace.toggle", label: "Toggle Trace View", category: "view", shortcut: "Alt+M P",
+      handler: () => ctx.workspace.toggleFileView?.(TRACE_VIEW_ID),
     });
-    ctx.events.listen<string>("trace:changed", () => {traceInvalidation.bump();traceFolderVisibility.refresh();});
-    ctx.workspace.onFilesChanged(() => traceInvalidation.bump());
+    ctx.events.listen<string>("trace:changed", () => { traceInvalidation.bump(); traceFolderVisibility.refreshRecent(); });
+    ctx.workspace.onFilesChanged((directories) => { traceInvalidation.bump(); traceFolderVisibility.filesChanged(directories); });
   },
 };

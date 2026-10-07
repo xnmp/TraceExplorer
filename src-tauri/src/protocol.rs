@@ -26,6 +26,21 @@ fn field<T: serde::de::DeserializeOwned>(params: &Value, name: &str) -> Result<T
     .map_err(|error| AppError::Other(format!("Invalid parameter {name}: {error}")))
 }
 
+/// An optional parameter; absent and `null` both mean "not given".
+fn optional_field<T: serde::de::DeserializeOwned>(
+    params: &Value,
+    name: &str,
+) -> Result<Option<T>, AppError> {
+    match params.get(name) {
+        None | Some(Value::Null) => Ok(None),
+        Some(_) => field(params, name).map(Some),
+    }
+}
+
+fn to_json(value: impl serde::Serialize) -> Result<Value, AppError> {
+    serde_json::to_value(value).map_err(|error| AppError::Other(error.to_string()))
+}
+
 fn run(params: &Value) -> Result<trace::TraceRunHandle, AppError> {
     #[derive(Deserialize)]
     #[serde(deny_unknown_fields)]
@@ -88,6 +103,36 @@ async fn execute(app: EventEmitter, request: &Request) -> Result<Value, AppError
             trace::trace_for_image(field(p, "path")?).await?,
         )
         .map_err(|error| AppError::Other(error.to_string()))?),
+        "trace_folder_components" => to_json(
+            trace::folder_graph::components(
+                field(p, "directory")?,
+                optional_field(p, "offset")?.unwrap_or(0),
+            )
+            .await?,
+        ),
+        "trace_folder_members" => to_json(
+            trace::folder_graph::members(
+                field(p, "directory")?,
+                field(p, "token")?,
+                optional_field(p, "offset")?.unwrap_or(0),
+            )
+            .await?,
+        ),
+        "trace_component_nodes" => to_json(
+            trace::folder_graph::component_nodes(
+                field(p, "directory")?,
+                field(p, "token")?,
+                field(p, "componentId")?,
+                optional_field(p, "offset")?.unwrap_or(0),
+            )
+            .await?,
+        ),
+        "trace_run_details" => {
+            to_json(trace::folder_graph::run_details(field(p, "runIds")?).await?)
+        }
+        "trace_revision_status" => {
+            to_json(trace::folder_graph::revision_status(field(p, "artifactId")?).await?)
+        }
         "image_save_suggestion" => Ok(serde_json::to_value(
             trace::save::suggestion(field(p, "artifactId")?).await?,
         )

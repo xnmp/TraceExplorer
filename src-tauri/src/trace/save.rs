@@ -140,7 +140,12 @@ fn save_default_at(database: &Path, generated: &Path, id: i64) -> Result<String,
     )
 }
 
-fn save_at(database: &Path, generated: &Path, id: i64, target: &Path) -> Result<String, AppError> {
+pub(super) fn save_at(
+    database: &Path,
+    generated: &Path,
+    id: i64,
+    target: &Path,
+) -> Result<String, AppError> {
     reconcile_at(database)?;
     ensure_not_discarding(database, id)?;
     let image = image_at(database, id)?;
@@ -387,7 +392,7 @@ fn finish_discard_at(database: &Path, generated: &Path, id: i64) -> Result<(), A
     Ok(())
 }
 
-fn discard_at(database: &Path, generated: &Path, id: i64) -> Result<(), AppError> {
+pub(super) fn discard_at(database: &Path, generated: &Path, id: i64) -> Result<(), AppError> {
     reconcile_at(database)?;
     prepare_discard_at(database, generated, id)?;
     finish_discard_at(database, generated, id)

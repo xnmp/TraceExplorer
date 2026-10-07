@@ -10,20 +10,20 @@ let configured = $state(false);
 let executable = "";
 let settingsRevision = 0;
 let unsubscribe: (()=>void) | undefined;
-let queue: TraceRun[] = [];
+let queue: number[] = [];
 let draining = false;
 async function drain() {
   if (draining) return;
   draining = true;
   try {
     while (queue.length) {
-      const run = queue.shift()!;
+      const runId = queue.shift()!;
       const current = generation;
       try {
-        const title = await invoke<string>("trace_prompt_title",{runId:run.id,codexPath:executable});
-        if (current === generation && typeof title === "string" && title.trim()) titles = {...titles,[run.id]:title};
+        const title = await invoke<string>("trace_prompt_title",{runId,codexPath:executable});
+        if (current === generation && typeof title === "string" && title.trim()) titles = {...titles,[runId]:title};
       } catch { /* Keep the full prompt when the configured generator fails. */ }
-      finally { if (current === generation) pending = pending.filter(id=>id!==run.id); }
+      finally { if (current === generation) pending = pending.filter(id=>id!==runId); }
     }
   } finally { draining = false; }
 }
@@ -46,12 +46,16 @@ export const promptTitles = {
   },
   unbind() { unsubscribe?.(); unsubscribe = undefined; settingsRevision += 1; configured = false; this.clear(); },
   label(run: TraceRun | undefined) { return run ? titles[run.id] || (typeof run.parameters.prompt === "string" ? run.parameters.prompt : "") : ""; },
+  /** Title for a run known only by id and (possibly truncated) prompt. */
+  labelFor(runId: number | null, prompt: string) { return runId === null ? "" : titles[runId] || prompt; },
+  loadFor(runId: number | null, prompt: string) { if (runId !== null) this.request(runId, prompt); },
   pending(id: number) { return pending.includes(id); },
-  load(run: TraceRun) {
-    if (!configured || requested.has(run.id) || titles[run.id] || typeof run.parameters.prompt !== "string" || !run.parameters.prompt.trim()) return;
-    requested.add(run.id);
-    pending = [...pending,run.id];
-    queue = [...queue,run];
+  load(run: TraceRun) { if (typeof run.parameters.prompt === "string") this.request(run.id, run.parameters.prompt); },
+  request(runId: number, prompt: string) {
+    if (!configured || requested.has(runId) || titles[runId] || !prompt.trim()) return;
+    requested.add(runId);
+    pending = [...pending,runId];
+    queue = [...queue,runId];
     void drain();
   },
   clear() { generation += 1; titles = {}; pending = []; queue = []; requested.clear(); },

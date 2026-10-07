@@ -2,7 +2,7 @@
   import Modal from "$lib/components/Modal.svelte";
   import "../plugin-dialog.css";
   import { recentOpenAIImageRuns, type OpenAIImageRunHistory } from "$lib/api/openai-image";
-  import { traceOperationLabel } from "$lib/domain/trace-layout";
+  import { traceOperationLabel } from "$lib/domain/trace-operation";
   import { traceInvalidation } from "../trace/invalidation.svelte";
 
   let { open, onClose }: { open: boolean; onClose: () => void } = $props();
