@@ -1,4 +1,4 @@
-/** SDK v1. Runtime capabilities come from the host, not host source imports. */
+/** SDK v2 (a superset of v1). Runtime capabilities come from the host, not host source imports. */
 import type { Component } from "svelte";
 import type { FileEntry } from "../../src/lib/domain/file";
 
@@ -19,6 +19,37 @@ export interface ImageEditorSource {
   size?: { width: number; height: number };
   referencePaths: readonly string[];
 }
+/** SDK 2: the pane a file view renders in. Getters are reactive; actions target this pane only. */
+export interface FileViewPane {
+  readonly paneId: string;
+  readonly directory: string;
+  readonly entries: readonly FileEntry[];
+  readonly selection: readonly FileEntry[];
+  readonly focusedPath: string | null;
+  readonly active: boolean;
+  readonly previewTarget: PreviewTarget | null;
+  select(entry: FileEntry, modifiers?: { ctrlKey?: boolean; shiftKey?: boolean }): void;
+  setSelection(paths: readonly string[], focus?: string | null): void;
+  clearSelection(): void;
+  open(entry: FileEntry): Promise<void>;
+  contextMenu(event: MouseEvent, entry?: FileEntry): void;
+  navigate(path: string): Promise<void>;
+  setPreviewTarget(target: PreviewTarget | null): void;
+  exitView(): void;
+}
+export interface PreviewTargetAction { id: string; label: string; title?: string; icon?: "save" | "delete" | "save-as"; disabled?: boolean; run(): void | Promise<void> }
+export interface PreviewTarget {
+  readonly id: string; readonly title: string; readonly typeLabel?: string; readonly imagePath?: string; readonly badge?: string;
+  readonly details?: readonly { label: string; value: string }[];
+  readonly actions?: readonly PreviewTargetAction[];
+  readonly data?: unknown;
+}
+export type PreviewSubject =
+  | { readonly kind: "file"; readonly entry: FileEntry; readonly paneId: string | null }
+  | { readonly kind: "target"; readonly target: PreviewTarget; readonly pluginId: string; readonly paneId: string | null };
+export interface FileViewContribution { id: string; title: string; component: Component<any>; props?: Record<string, unknown>; available?(directory: string): boolean }
+export interface PreviewInfoContribution { id: string; component: Component<any>; props?: Record<string, unknown>; when(subject: PreviewSubject): boolean }
+
 export interface PluginContext {
   registerCommand(command: {id: string; label: string; category: string; shortcut?: string; when?: () => boolean; handler: () => void | Promise<void>}): void;
   registerContextMenuItem(item: {id: string; label: string; group: string; when: (entries: FileEntry[]) => boolean; handler: (entries: FileEntry[]) => void | Promise<void>}): void;
@@ -26,6 +57,10 @@ export interface PluginContext {
   registerInspector(contribution: {id: string; title: string; component: Component<any>; props?: Record<string, unknown>; when: (entries: FileEntry[]) => boolean}): void;
   registerImageEditorTool(tool: {id: string; title: string; component: Component<any>; props?: Record<string, unknown>; when: (source: ImageEditorSource) => boolean}): void;
   registerDialog(dialog: {id: string; component: Component<any>}): void;
+  /** SDK 2. */
+  registerFileView?(view: FileViewContribution): void;
+  /** SDK 2. */
+  registerPreviewInfo?(section: PreviewInfoContribution): void;
   openDialog(id: string, props?: Record<string, unknown>): void;
   closeDialog(id: string): void;
   backend?: PluginBackend;
@@ -41,11 +76,19 @@ export interface PluginContext {
     captureSelection(): () => boolean;
     selectFile(path: string): Promise<void>;
     onFilesChanged(handler: (directories: readonly string[]) => void | Promise<void>): void;
+    /** SDK 2. */
+    getFileView?(): string | null;
+    /** SDK 2. */
+    toggleFileView?(viewId: string): void;
   };
 }
 export interface Plugin {id: string; name: string; description: string; enabledByDefault?: boolean; activate(ctx: PluginContext): void | Promise<void>; deactivate?(): void}
 export interface RuntimeSDK {
+  /** Frozen at 1 so SDK 1 packages keep loading; see apiVersion. */
   sdkVersion: 1;
+  /** Present from SDK 2 hosts on. */
+  apiVersion?: number;
+  capabilities?: readonly string[];
   svelteVersion: string;
   modules: Record<string, Record<string, unknown>>;
   thumbnailData(path: string, size?: number): Promise<ApiResult<string>>;

@@ -600,3 +600,72 @@ fn upgrade_preflight_retains_publication_proof_until_commit_or_rollback() {
         assert_eq!(std::fs::read(target).unwrap(), png);
     }
 }
+
+#[test]
+fn folder_graph_methods_page_a_folder_index_over_the_protocol() {
+    let data = test_support::tempdir().unwrap();
+    let folder = data.path().join("Pictures");
+    let generated = data.path().join("generated");
+    std::fs::create_dir(&folder).unwrap();
+    std::fs::create_dir(&generated).unwrap();
+    let output = generated.join("candidate.png");
+    let png = include_bytes!("../test_support/fixtures/source32.png");
+    std::fs::write(&output, png).unwrap();
+    let mut backend = Backend::start(data.path());
+    backend.ready(vec![]);
+    prepare_trace_store(&mut backend);
+    drop(backend);
+    seed_unsaved_output(&data.path().join("trace.sqlite"), &folder, &output);
+    let mut backend = Backend::start(data.path());
+    backend.ready(vec![]);
+
+    let page =
+        backend.call("trace_folder_components", json!({"directory":folder}))["result"].clone();
+    assert_eq!(page["total"], 1, "{page}");
+    assert_eq!(page["offset"], 0);
+    let component = &page["components"][0];
+    assert_eq!(component["unsaved"], true);
+    assert_eq!(component["imageCount"], 1);
+    let token = page["token"].as_str().unwrap().to_owned();
+    let id = component["id"].as_str().unwrap().to_owned();
+
+    let members = backend.call(
+        "trace_folder_members",
+        json!({"directory":folder,"token":token,"offset":null}),
+    )["result"]
+        .clone();
+    assert_eq!(members["stale"], false, "{members}");
+    assert_eq!(members["total"], 0, "unsaved outputs are not folder files");
+
+    let nodes = backend.call(
+        "trace_component_nodes",
+        json!({"directory":folder,"token":token,"componentId":id,"offset":0}),
+    )["result"]
+        .clone();
+    let node = &nodes["nodes"][0];
+    assert_eq!(nodes["total"], 1, "{nodes}");
+    assert_eq!(node["scope"], "current");
+    assert_eq!(node["temporary"], true);
+    assert_eq!(node["prompt"], "Folder visibility fixture");
+    let run = node["runId"].as_i64().unwrap();
+
+    let runs = backend.call("trace_run_details", json!({"runIds":[run]}))["result"].clone();
+    assert_eq!(runs[0]["id"], run, "{runs}");
+    assert_eq!(runs[0]["inputIds"], json!([]));
+    let status = backend.call(
+        "trace_revision_status",
+        json!({"artifactId":node["artifactId"]}),
+    );
+    assert_eq!(status["result"], "matched", "{status}");
+
+    let refused = backend.call("trace_run_details", json!({"runIds":vec![1; 65]}));
+    assert!(refused["error"]["message"].is_string(), "{refused}");
+    let refused = backend.call("trace_folder_components", json!({"directory":"relative"}));
+    assert!(refused["error"]["message"].is_string(), "{refused}");
+    let stale = backend.call(
+        "trace_folder_members",
+        json!({"directory":folder,"token":"expired"}),
+    )["result"]
+        .clone();
+    assert_eq!(stale["stale"], true);
+}

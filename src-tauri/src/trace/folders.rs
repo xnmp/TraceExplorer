@@ -5,6 +5,9 @@ static REVISION: AtomicU64 = AtomicU64::new(0);
 pub(crate) fn invalidate() {
     REVISION.fetch_add(1, Ordering::Relaxed);
 }
+pub(super) fn revision() -> u64 {
+    REVISION.load(Ordering::Relaxed)
+}
 
 pub(super) fn key(directory: &Path) -> Result<String, AppError> {
     if !directory.is_absolute() {
@@ -105,8 +108,12 @@ fn folder_state_at(database: &Path, directory: &Path) -> Result<(bool, bool), Ap
             return Ok((true, true));
         }
     }
-    // Unsaved generation workflows remain reachable in their intended save folder.
-    let mut contexts = connection.prepare("SELECT r.id,r.status FROM image_folder_contexts c JOIN runs r ON r.id=c.run_id WHERE c.folder=?1 AND r.status IN ('running','uncertain','succeeded')").map_err(sql)?;
+    // Unsaved generation workflows remain reachable in their intended save
+    // folder. Mirrors the Trace folder index (`folder_graph::load_snapshot`):
+    // an active run is shown, and a finished or interrupted run is shown
+    // through any newest revision of its outputs that is present and not
+    // discarded.
+    let mut contexts = connection.prepare("SELECT r.id,r.status FROM image_folder_contexts c JOIN runs r ON r.id=c.run_id WHERE c.folder=?1 AND r.status IN ('running','uncertain','interrupted','succeeded')").map_err(sql)?;
     let rows = contexts
         .query_map([directory], |row| {
             Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
@@ -116,10 +123,10 @@ fn folder_state_at(database: &Path, directory: &Path) -> Result<(bool, bool), Ap
     for row in rows {
         has_context = true;
         let (id, status) = row.map_err(sql)?;
-        if status != "succeeded" {
+        if matches!(status.as_str(), "running" | "uncertain") {
             return Ok((true, false));
         }
-        let mut outputs=connection.prepare("SELECT a.path FROM artifacts a WHERE a.generating_run=?1 AND NOT EXISTS(SELECT 1 FROM image_discards d WHERE d.artifact_id=a.id AND d.completed=1)").map_err(sql)?;
+        let mut outputs=connection.prepare("SELECT a.path FROM artifacts a WHERE a.generating_run=?1 AND NOT EXISTS(SELECT 1 FROM image_discards d WHERE d.artifact_id=a.id AND d.completed=1) AND NOT EXISTS(SELECT 1 FROM artifacts n WHERE n.path=a.path AND n.id>a.id)").map_err(sql)?;
         for path in outputs
             .query_map([id], |row| row.get::<_, String>(0))
             .map_err(sql)?

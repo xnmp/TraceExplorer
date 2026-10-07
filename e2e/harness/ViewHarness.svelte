@@ -1,0 +1,155 @@
+<script lang="ts">
+  /**
+   * A minimal SDK-2 host: one Explorer pane that renders the registered file
+   * view (or a built-in list where it is unavailable), and a Preview pane that
+   * shows files or plugin Preview targets with their info sections.
+   */
+  import type { Component } from "svelte";
+  import type { FileViewContribution, FileViewPane, PluginContext, PreviewInfoContribution, PreviewSubject, PreviewTarget } from "../../integration/plugin-sdk";
+  import type { FileEntry } from "$lib/domain/file";
+  import { tracePlugin } from "$lib/plugins/trace";
+  import { DIRECTORY, files, backend } from "./view-fixture";
+
+  let views = $state.raw<FileViewContribution[]>([]);
+  let sections = $state.raw<PreviewInfoContribution[]>([]);
+  const commands = new Map<string, () => void | Promise<void>>();
+  const listeners = new Map<string, Array<(payload: unknown) => void>>();
+  const fileListeners: Array<(directories: readonly string[]) => void> = [];
+
+  let enabled = $state(true);
+  let fileView = $state<string | null>("trace.view");
+  let directory = $state(DIRECTORY);
+  let entries = $state.raw<FileEntry[]>(files());
+  let selected = $state.raw<string[]>([]);
+  let cursor = $state<string | null>(null);
+  let target = $state.raw<PreviewTarget | null>(null);
+  let viewWidth = $state(900);
+  let opened = $state.raw<string[]>([]);
+  let menus = $state.raw<Array<string | null>>([]);
+  let navigations = $state.raw<string[]>([]);
+  let actionError = $state("");
+
+  function activate() {
+    views = []; sections = []; commands.clear(); listeners.clear(); fileListeners.length = 0;
+    const ctx = {
+      registerFileView: (view: FileViewContribution) => { views = [...views, view]; },
+      registerPreviewInfo: (section: PreviewInfoContribution) => { sections = [...sections, section]; },
+      registerCommand: (command: { id: string; handler: () => void | Promise<void> }) => { commands.set(command.id, command.handler); },
+      events: { listen: (name: string, handler: (payload: unknown) => void) => { listeners.set(name, [...(listeners.get(name) ?? []), handler]); } },
+      workspace: {
+        onFilesChanged: (handler: (directories: readonly string[]) => void) => { fileListeners.push(handler); },
+        toggleFileView: (id: string) => { fileView = fileView === id ? null : id; },
+        getFileView: () => fileView,
+        getSelection: () => entries.filter((entry) => selected.includes(entry.path)),
+        captureSelection: () => () => true,
+        selectFile: async () => {},
+      },
+    } as unknown as PluginContext;
+    tracePlugin.activate(ctx);
+  }
+  activate();
+
+  backend.onChange(() => {
+    entries = files();
+    for (const listener of listeners.get("trace:changed") ?? []) listener("");
+    for (const listener of fileListeners) listener([directory]);
+  });
+
+  const selection = $derived(entries.filter((entry) => selected.includes(entry.path)));
+  const pane: FileViewPane = {
+    paneId: "pane-1",
+    get directory() { return directory; },
+    get entries() { return entries; },
+    get selection() { return selection; },
+    get focusedPath() { return cursor && selected.includes(cursor) ? cursor : selected[0] ?? null; },
+    get active() { return true; },
+    get previewTarget() { return target; },
+    select(entry, modifiers = {}) {
+      target = null;
+      if (modifiers.ctrlKey || modifiers.shiftKey) selected = selected.includes(entry.path) ? selected.filter((path) => path !== entry.path) : [...selected, entry.path];
+      else selected = [entry.path];
+      cursor = entry.path;
+    },
+    setSelection(paths, focus = null) {
+      const listed = new Set(entries.map((entry) => entry.path));
+      selected = paths.filter((path) => listed.has(path));
+      cursor = focus ?? selected.at(-1) ?? null;
+      if (selected.length) target = null;
+    },
+    clearSelection() { selected = []; },
+    async open(entry) { opened = [...opened, entry.path]; },
+    contextMenu(event, entry) { event.preventDefault(); menus = [...menus, entry?.path ?? null]; },
+    async navigate(path) { navigations = [...navigations, path]; },
+    setPreviewTarget(next) { if (next) { selected = []; target = next; } else target = null; },
+    exitView() { fileView = null; },
+  };
+
+  const active = $derived(enabled ? views.find((view) => view.id === fileView && (view.available?.(directory) ?? true)) ?? null : null);
+  const subject = $derived<PreviewSubject | null>(target ? { kind: "target", target, pluginId: "trace", paneId: "pane-1" }
+    : selection.length === 1 ? { kind: "file", entry: selection[0], paneId: "pane-1" } : null);
+  const shownSections = $derived(enabled && subject ? sections.filter((section) => section.when(subject)) : []);
+
+  async function run(action: { run(): void | Promise<void> }) {
+    actionError = "";
+    try { await action.run(); } catch (error) { actionError = error instanceof Error ? error.message : String(error); }
+  }
+
+  export const harness = {
+    backend,
+    setWidth(width: number) { viewWidth = width; },
+    toggle() { return commands.get("plugin.trace.toggle")?.(); },
+    disable() { enabled = false; tracePlugin.deactivate?.(); },
+    enable() { enabled = true; activate(); },
+    navigate(path: string) { directory = path; entries = path === DIRECTORY ? files() : []; selected = []; target = null; },
+    state: () => ({ selected: [...selected], cursor, target: target ? { id: target.id, title: target.title, badge: target.badge ?? null } : null, fileView, opened: [...opened], menus: [...menus], navigations: [...navigations] }),
+    selectPath(path: string) { pane.setSelection([path], path); },
+  };
+</script>
+
+<main style:--view-width="{viewWidth}px">
+  <section class="explorer" aria-label="Explorer pane">
+    {#if active}
+      {@const View = active.component as Component<any>}
+      <div class="file-view" data-file-view={active.id}><View {...active.props} {pane} /></div>
+    {:else}
+      <ul class="builtin" aria-label="Built-in listing">
+        {#each entries as entry (entry.path)}<li><button type="button" onclick={() => pane.select(entry)}>{entry.name}</button></li>{/each}
+      </ul>
+    {/if}
+  </section>
+  <aside class="preview" aria-label="Preview">
+    {#if target}
+      <h2 data-testid="preview-title">{target.title}</h2>
+      {#if target.badge}<span class="badge" data-testid="preview-badge">{target.badge}</span>{/if}
+      <div class="actions">
+        {#each target.actions ?? [] as action (action.id)}
+          <button type="button" disabled={action.disabled} title={action.title} onclick={() => run(action)}>{action.label}</button>
+        {/each}
+      </div>
+      {#each target.details ?? [] as detail}<p class="detail">{detail.label}: {detail.value}</p>{/each}
+      {#if actionError}<p role="alert">{actionError}</p>{/if}
+    {:else if selection.length === 1}
+      <h2 data-testid="preview-title">{selection[0].name}</h2>
+    {:else if selection.length}
+      <h2 data-testid="preview-title">{selection.length} items</h2>
+    {/if}
+    {#if subject}
+      {#each shownSections as section (section.id)}
+        {@const Section = section.component as Component<any>}
+        <Section {...section.props} {subject} />
+      {/each}
+    {/if}
+  </aside>
+</main>
+
+<style>
+  :global(body) { margin: 0; background: #f5f6f7; font: 13px system-ui; color: #20252e; --text-primary: #20252e; --text-secondary: #68717e; --background-card-secondary: #fbfbf8; --background-solid: #fff; --control-fill: #fff; --control-stroke: #cbd1d8; --divider: #d9dfe5; --radius-sm: 4px; --subtle-fill-secondary: #edf2fd; --accent-text: #175dd8; --accent: #175dd8; --focus-stroke-outer: #175dd8; }
+  main { display: flex; height: 100vh; }
+  .explorer { display: flex; flex-direction: column; width: var(--view-width); min-width: 0; border-right: 1px solid #d9dfe5; background: white; }
+  .file-view { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+  .preview { flex: 1; min-width: 240px; padding: 12px; overflow: auto; }
+  .builtin { margin: 0; padding: 12px; list-style: none; }
+  .badge { padding: 0 6px; border: 1px solid #a76d24; border-radius: 8px; color: #865413; font-size: 11px; }
+  .actions { display: flex; gap: 6px; margin: 8px 0; }
+  h2 { margin: 0 0 6px; font-size: 14px; }
+</style>

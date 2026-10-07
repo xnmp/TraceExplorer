@@ -2,6 +2,7 @@
 //! Artifact identity includes content and path; source revisions are never
 //! inferred from a filename after it has changed.
 use crate::{config, error::AppError, image_crop};
+pub(crate) mod folder_graph;
 pub(crate) mod folders;
 pub(crate) mod jobs;
 pub(crate) mod save;
@@ -450,6 +451,7 @@ fn connection_at(path: &Path) -> Result<Connection, AppError> {
             .execute_batch("PRAGMA user_version=8; COMMIT;")
             .map_err(sql)?;
     }
+    folder_graph::ensure_change_counter(&connection)?;
     Ok(connection)
 }
 
