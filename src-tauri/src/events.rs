@@ -14,6 +14,9 @@ impl EventEmitter {
         Self(Arc::new(sink))
     }
     pub(crate) fn emit(&self, name: &str, payload: impl Serialize) -> Result<(), AppError> {
+        if name == "trace:changed" {
+            crate::trace::folders::invalidate();
+        }
         let payload =
             serde_json::to_value(payload).map_err(|error| AppError::Other(error.to_string()))?;
         (self.0)(name, payload)

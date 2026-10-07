@@ -26,6 +26,13 @@ const HTTP_TIMEOUT: Duration = Duration::from_secs(180);
 mod codex;
 mod codex_executable;
 
+pub(crate) fn prompt_title(prompt: &str, executable: &str) -> Result<String, AppError> {
+    codex::prompt_title(prompt, executable)
+}
+pub(crate) fn title_connection(executable: &str) -> bool {
+    codex::title_connection(executable)
+}
+
 #[derive(Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum ImageBackend {
@@ -37,6 +44,8 @@ pub(crate) enum ImageBackend {
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct ImageRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub batch: Option<trace::jobs::ImageBatch>,
     #[serde(default)]
     pub backend: ImageBackend,
     #[serde(default)]
@@ -71,6 +80,9 @@ fn invalid(message: &str) -> AppError {
 }
 
 fn validate_request(request: &ImageRequest) -> Result<PathBuf, AppError> {
+    if let Some(batch) = &request.batch {
+        batch.validate()?;
+    }
     if request
         .expected_source_digest
         .as_ref()
@@ -272,7 +284,7 @@ fn recipe(request: &ImageRequest, inputs: &[CapturedInput]) -> trace::OperationS
         .into(),
         parameters: if request.backend == ImageBackend::Codex {
             json!({
-                "provider": "codex-cli", "authentication": "saved_chatgpt_sign_in",
+                "provider": "codex-cli", "authentication": "saved_chatgpt_sign_in", "codex_executable": request.codex_path,
                 "prompt": request.prompt, "agent_task": codex::task(request, inputs.len()),
                 "model": null, "documented_image_model": "gpt-image-2",
                 "image_tool_prompt": null, "provider_revision": null, "cost": null,
@@ -499,11 +511,16 @@ pub(crate) async fn start_openai_image_job(
     }
     static SLOTS: std::sync::OnceLock<std::sync::Arc<tokio::sync::Semaphore>> =
         std::sync::OnceLock::new();
-    let permit = SLOTS
+    let slots = SLOTS
         .get_or_init(|| std::sync::Arc::new(tokio::sync::Semaphore::new(2)))
+        .clone();
+    static QUEUE: std::sync::OnceLock<std::sync::Arc<tokio::sync::Semaphore>> =
+        std::sync::OnceLock::new();
+    let queue_permit = QUEUE
+        .get_or_init(|| std::sync::Arc::new(tokio::sync::Semaphore::new(16)))
         .clone()
         .try_acquire_owned()
-        .map_err(|_| invalid("Two image generations are already in progress"))?;
+        .map_err(|_| invalid("The image generation queue is full"))?;
     let temporary = crate::temporary_output::prepare(
         &crate::config::config_dir()?.join("generated"),
         request.source_path.as_deref().map(Path::new),
@@ -539,6 +556,10 @@ pub(crate) async fn start_openai_image_job(
             start.parameters["save_directory_hint"] = temporary.save_directory_hint.clone().into();
             start.parameters["suggested_filename"] = temporary.filename.clone().into();
             start.parameters["operation_id"] = operation_id.clone().into();
+            if let Some(batch) = &request.batch {
+                start.parameters["batch"] =
+                    serde_json::to_value(batch).map_err(|error| invalid(&error.to_string()))?;
+            }
             let (run, created, job_id) =
                 trace::jobs::accept(start, &operation_id, job_id, &request_digest)?;
             Ok::<_, AppError>((request, inputs, run, temporary, created, job_id))
@@ -555,11 +576,17 @@ pub(crate) async fn start_openai_image_job(
     let worker_app = app.clone();
     let attempt = crate::image_operation::Attempt::new(run, control.clone()).with_app(app.clone());
     tokio::spawn(async move {
-        let _permit = permit;
+        let _queue_permit = queue_permit;
         let _lease = lease;
         let _temporary = temporary;
         let job = async {
+            let permit = tokio::select! {
+                result = slots.acquire_owned() => result.map_err(|_| invalid("Image generation queue closed"))?,
+                _ = worker_control.cancelled() => return Err(invalid("Image generation cancelled while queued")),
+            };
+            worker_control.check()?;
             tokio::task::spawn_blocking(move || {
+                let _permit = permit;
                 let result = execute_recorded(&attempt.run, &target, &worker_control, || {
                     match request.backend {
                         ImageBackend::ApiKey => request_image(

@@ -75,6 +75,7 @@ fn unused_filename(directory: &Path, filename: &str) -> Result<String, AppError>
 }
 
 fn suggestion_at(database: &Path, generated: &Path, id: i64) -> Result<SaveSuggestion, AppError> {
+    ensure_not_discarding(database, id)?;
     let image = image_at(database, id)?;
     if !is_temporary(&image) {
         return Err(AppError::Other("Image is already saved".into()));
@@ -110,23 +111,38 @@ pub(crate) async fn suggestion(id: i64) -> Result<SaveSuggestion, AppError> {
     .map_err(|error| AppError::WorkerFailed(error.to_string()))?
 }
 
-pub(crate) async fn save(id: i64, target: String) -> Result<String, AppError> {
+pub(crate) async fn save(id: i64, target: Option<String>) -> Result<String, AppError> {
     tokio::task::spawn_blocking(move || {
         with_trace_owner(|database| {
-            save_at(
-                database,
-                &config::config_dir()?.join("generated"),
-                id,
-                Path::new(&target),
-            )
+            let generated = config::config_dir()?.join("generated");
+            match target {
+                Some(target) => save_at(database, &generated, id, Path::new(&target)),
+                None => save_default_at(database, &generated, id),
+            }
         })
     })
     .await
     .map_err(|error| AppError::WorkerFailed(error.to_string()))?
 }
 
+fn save_default_at(database: &Path, generated: &Path, id: i64) -> Result<String, AppError> {
+    reconcile_at(database)?;
+    let image = image_at(database, id)?;
+    if !is_temporary(&image) {
+        return Ok(image.path);
+    }
+    let suggestion = suggestion_at(database, generated, id)?;
+    save_at(
+        database,
+        generated,
+        id,
+        &Path::new(&suggestion.directory).join(suggestion.filename),
+    )
+}
+
 fn save_at(database: &Path, generated: &Path, id: i64, target: &Path) -> Result<String, AppError> {
     reconcile_at(database)?;
+    ensure_not_discarding(database, id)?;
     let image = image_at(database, id)?;
     // A lost successful reply may be retried safely; it must not make a copy.
     if !is_temporary(&image) {
@@ -236,6 +252,206 @@ fn save_at(database: &Path, generated: &Path, id: i64, target: &Path) -> Result<
     Ok(target_text)
 }
 
+fn ensure_not_discarding(database: &Path, id: i64) -> Result<(), AppError> {
+    let discarding: bool = connection_at(database)?
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM image_discards WHERE artifact_id=?1)",
+            [id],
+            |row| row.get(0),
+        )
+        .map_err(sql)?;
+    if discarding {
+        return Err(AppError::Other(
+            "This image was discarded or its deletion is pending".into(),
+        ));
+    }
+    Ok(())
+}
+
+pub(crate) async fn discard(id: i64) -> Result<Option<String>, AppError> {
+    tokio::task::spawn_blocking(move || {
+        with_trace_owner(|database| {
+            let image = image_at(database, id)?;
+            discard_at(database, &config::config_dir()?.join("generated"), id)?;
+            let graph = graph_for_artifact_at(
+                &connection_at(database)?,
+                id,
+                image.path,
+                SelectedRevisionStatus::Matched,
+            )?;
+            Ok(graph
+                .artifacts
+                .into_iter()
+                .find(|artifact| {
+                    artifact.id != id && !artifact.discarded && Path::new(&artifact.path).is_file()
+                })
+                .map(|artifact| artifact.path))
+        })
+    })
+    .await
+    .map_err(|error| AppError::WorkerFailed(error.to_string()))?
+}
+
+fn validated_discard_source(
+    generated: &Path,
+    path: &Path,
+    expected_digest: &str,
+    identity: Option<&str>,
+) -> Result<String, AppError> {
+    let root = fs::canonicalize(generated)?;
+    let source = fs::canonicalize(path)?;
+    let metadata = fs::symlink_metadata(path)?;
+    if !source.starts_with(root) || !metadata.is_file() || metadata.file_type().is_symlink() {
+        return Err(AppError::InvalidPath(
+            "Only managed temporary images can be deleted".into(),
+        ));
+    }
+    let current_identity = crate::files::trace_file_identity(path)?;
+    if identity.is_some_and(|value| value != current_identity) || digest(path)? != expected_digest {
+        return Err(AppError::Other(
+            "Temporary image changed; refusing to delete its replacement".into(),
+        ));
+    }
+    Ok(current_identity)
+}
+
+fn finish_discard_at(database: &Path, generated: &Path, id: i64) -> Result<(), AppError> {
+    let connection = connection_at(database)?;
+    let (path, staged, digest, identity, completed): (String,String,String,String,bool) = connection.query_row("SELECT path,staged_path,digest,object_identity,completed FROM image_discards WHERE artifact_id=?1",[id],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?))).map_err(sql)?;
+    if completed {
+        return Ok(());
+    }
+    // A missing parent means storage is unavailable, not confirmed absence.
+    if matches!(fs::symlink_metadata(&staged),Err(error) if error.kind()==std::io::ErrorKind::NotFound)
+    {
+        if matches!(fs::symlink_metadata(&path),Err(error) if error.kind()==std::io::ErrorKind::NotFound)
+            && Path::new(&path)
+                .parent()
+                .is_none_or(|parent| !parent.is_dir())
+        {
+            return Err(AppError::MutationUncertain(
+                "Image storage is unavailable; deletion remains pending".into(),
+            ));
+        }
+    }
+    if !Path::new(&staged)
+        .parent()
+        .is_some_and(|parent| parent.is_dir())
+    {
+        return Err(AppError::MutationUncertain(
+            "Private image deletion storage is unavailable".into(),
+        ));
+    }
+    match fs::symlink_metadata(&staged) {
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            match fs::symlink_metadata(&path) {
+                Ok(_) => {
+                    validated_discard_source(
+                        generated,
+                        Path::new(&path),
+                        &digest,
+                        Some(&identity),
+                    )?;
+                    fs::rename(&path, &staged)?;
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error.into()),
+            }
+        }
+        Err(error) => return Err(error.into()),
+    }
+    if fs::symlink_metadata(&staged).is_ok() {
+        if let Err(error) =
+            validated_discard_source(generated, Path::new(&staged), &digest, Some(&identity))
+        {
+            // A replaced source is preserved, never unlinked. Restore only
+            // into an empty original name; a competing replacement stays put.
+            if fs::hard_link(&staged, &path).is_ok() {
+                let _ = fs::remove_file(&staged);
+            }
+            return Err(error);
+        }
+        fs::remove_file(&staged)?;
+    }
+    connection
+        .execute(
+            "UPDATE image_discards SET completed=1 WHERE artifact_id=?1",
+            [id],
+        )
+        .map_err(sql)?;
+    connection.execute("DELETE FROM image_folder_contexts WHERE run_id=(SELECT generating_run FROM artifacts WHERE id=?1)",[id]).map_err(sql)?;
+    if let Some(directory) = Path::new(&staged).parent() {
+        let _ = fs::remove_dir(directory);
+    }
+    Ok(())
+}
+
+fn discard_at(database: &Path, generated: &Path, id: i64) -> Result<(), AppError> {
+    reconcile_at(database)?;
+    prepare_discard_at(database, generated, id)?;
+    finish_discard_at(database, generated, id)
+}
+
+fn prepare_discard_at(database: &Path, generated: &Path, id: i64) -> Result<(), AppError> {
+    let connection = connection_at(database)?;
+    let recorded: bool = connection
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM image_discards WHERE artifact_id=?1)",
+            [id],
+            |row| row.get(0),
+        )
+        .map_err(sql)?;
+    if recorded {
+        return Ok(());
+    }
+    let image = image_at(database, id)?;
+    if !is_temporary(&image) {
+        return Err(AppError::Other(
+            "Only unsaved generated images can be discarded".into(),
+        ));
+    }
+    let saving: bool = connection
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM image_saves WHERE artifact_id=?1)",
+            [id],
+            |row| row.get(0),
+        )
+        .map_err(sql)?;
+    if saving {
+        return Err(AppError::MutationUncertain(
+            "This image has a pending save".into(),
+        ));
+    }
+    let identity =
+        validated_discard_source(generated, Path::new(&image.path), &image.digest, None)?;
+    let stage = tempfile::Builder::new()
+        .prefix("discard-")
+        .tempdir_in(generated)?;
+    let staged = stage.path().join("payload");
+    connection.execute("INSERT INTO image_discards(artifact_id,path,staged_path,digest,object_identity) VALUES(?1,?2,?3,?4,?5)",params![id,image.path,staged.to_string_lossy(),image.digest,identity]).map_err(sql)?;
+    let _ = stage.keep();
+    Ok(())
+}
+
+pub(super) fn reconcile_discards_at(database: &Path, generated: &Path) -> Result<(), AppError> {
+    let connection = connection_at(database)?;
+    let mut statement = connection
+        .prepare("SELECT artifact_id FROM image_discards WHERE completed=0")
+        .map_err(sql)?;
+    let ids = statement
+        .query_map([], |row| row.get::<_, i64>(0))
+        .map_err(sql)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(sql)?;
+    for id in ids {
+        if let Err(error) = finish_discard_at(database, generated, id) {
+            log::warn!("Image discard {id} remains pending: {error}");
+        }
+    }
+    Ok(())
+}
+
 fn commit_at(database: &Path, id: i64) -> Result<(), AppError> {
     let mut connection = connection_at(database)?;
     let tx = connection.transaction().map_err(sql)?;
@@ -270,6 +486,11 @@ fn commit_at(database: &Path, id: i64) -> Result<(), AppError> {
     tx.execute(
         "UPDATE runs SET parameters=?1 WHERE id=?2",
         params![parameters.to_string(), image.run],
+    )
+    .map_err(sql)?;
+    tx.execute(
+        "DELETE FROM image_folder_contexts WHERE run_id=?1",
+        [image.run],
     )
     .map_err(sql)?;
     tx.execute(
@@ -376,6 +597,122 @@ mod tests {
             source,
             id,
         }
+    }
+
+    #[test]
+    fn default_save_uses_available_names_and_retry_keeps_the_same_file() {
+        let f = fixture();
+        let first = save_default_at(&f.database, &f.generated, f.id).unwrap();
+        assert_eq!(Path::new(&first).file_name().unwrap(), "parent_edit.png");
+        assert_eq!(
+            save_default_at(&f.database, &f.generated, f.id).unwrap(),
+            first
+        );
+        fs::write(
+            &f.source,
+            include_bytes!("../../test_support/fixtures/source32.png"),
+        )
+        .unwrap();
+        record_operation_at(&f.database, OperationRecord { operation:"openai.image.edit".into(), parameters:serde_json::json!({"prompt":"second","output_storage":"temporary","save_directory_hint":f.root.path(),"suggested_filename":"parent_edit.png"}), inputs:vec![], output_path:f.source.to_string_lossy().into_owned(), output_digest:digest(&f.source).unwrap() }).unwrap();
+        let id = graph_for_path_at(&f.database, &f.source)
+            .unwrap()
+            .unwrap()
+            .current_artifact_id;
+        let second = save_default_at(&f.database, &f.generated, id).unwrap();
+        assert_eq!(Path::new(&second).file_name().unwrap(), "parent_edit_2.png");
+        assert_eq!(fs::read(first).unwrap(), fs::read(second).unwrap());
+    }
+
+    #[test]
+    fn unsaved_folder_context_ends_after_save_elsewhere_or_discard() {
+        let f = fixture();
+        assert!(super::super::folders::has_trace_at(&f.database, f.root.path()).unwrap());
+        let permanent = f.root.path().join("permanent");
+        fs::create_dir(&permanent).unwrap();
+        save_at(
+            &f.database,
+            &f.generated,
+            f.id,
+            &permanent.join("saved.png"),
+        )
+        .unwrap();
+        assert!(!super::super::folders::has_trace_at(&f.database, f.root.path()).unwrap());
+        assert!(super::super::folders::has_trace_at(&f.database, &permanent).unwrap());
+        let f = fixture();
+        assert!(super::super::folders::has_trace_at(&f.database, f.root.path()).unwrap());
+        discard_at(&f.database, &f.generated, f.id).unwrap();
+        assert!(!super::super::folders::has_trace_at(&f.database, f.root.path()).unwrap());
+    }
+
+    #[test]
+    fn discard_is_idempotent_retains_descendant_history_and_refuses_saved_images() {
+        let f = fixture();
+        let child = f.root.path().join("child.png");
+        fs::write(
+            &child,
+            include_bytes!("../../test_support/fixtures/source32.png"),
+        )
+        .unwrap();
+        record_operation_at(
+            &f.database,
+            OperationRecord {
+                operation: "image.crop".into(),
+                parameters: serde_json::Value::Null,
+                inputs: vec![OperationInput {
+                    path: f.source.to_string_lossy().into_owned(),
+                    digest: digest(&f.source).unwrap(),
+                }],
+                output_path: child.to_string_lossy().into_owned(),
+                output_digest: digest(&child).unwrap(),
+            },
+        )
+        .unwrap();
+        discard_at(&f.database, &f.generated, f.id).unwrap();
+        discard_at(&f.database, &f.generated, f.id).unwrap();
+        assert!(!f.source.exists());
+        let graph = graph_for_path_at(&f.database, &child).unwrap().unwrap();
+        assert_eq!(graph.artifacts.len(), 2);
+        assert!(
+            graph
+                .artifacts
+                .iter()
+                .find(|a| a.id == f.id)
+                .unwrap()
+                .discarded
+        );
+        assert_eq!(
+            fs::read(child).unwrap(),
+            include_bytes!("../../test_support/fixtures/source32.png")
+        );
+        assert!(save_default_at(&f.database, &f.generated, f.id).is_err());
+        let saved = fixture();
+        let permanent = save_default_at(&saved.database, &saved.generated, saved.id).unwrap();
+        assert!(discard_at(&saved.database, &saved.generated, saved.id).is_err());
+        assert!(Path::new(&permanent).is_file());
+    }
+
+    #[test]
+    fn pending_discard_waits_for_unavailable_storage_and_recovers_after_restart() {
+        let f = fixture();
+        prepare_discard_at(&f.database, &f.generated, f.id).unwrap();
+        assert!(save_default_at(&f.database, &f.generated, f.id).is_err());
+        let parked = f.root.path().join("unavailable");
+        fs::rename(&f.generated, &parked).unwrap();
+        assert!(finish_discard_at(&f.database, &f.generated, f.id).is_err());
+        assert!(parked.join("parent_edit.png").is_file());
+        fs::rename(&parked, &f.generated).unwrap();
+        reconcile_discards_at(&f.database, &f.generated).unwrap();
+        assert!(!f.source.exists());
+        assert!(finish_discard_at(&f.database, &f.generated, f.id).is_ok());
+    }
+
+    #[test]
+    fn pending_discard_never_deletes_a_replaced_source() {
+        let f = fixture();
+        prepare_discard_at(&f.database, &f.generated, f.id).unwrap();
+        fs::write(&f.source, b"replacement").unwrap();
+        assert!(finish_discard_at(&f.database, &f.generated, f.id).is_err());
+        assert_eq!(fs::read(f.source).unwrap(), b"replacement");
     }
 
     #[test]

@@ -76,6 +76,7 @@ fn job_timeout_with_override(override_ms: Option<&str>) -> std::time::Duration {
 #[derive(Clone)]
 pub struct JobControl {
     state: Arc<Mutex<JobState>>,
+    cancelled: Arc<tokio::sync::Notify>,
 }
 
 enum JobState {
@@ -88,6 +89,7 @@ impl JobControl {
     pub fn new() -> Self {
         Self {
             state: Arc::new(Mutex::new(JobState::Active)),
+            cancelled: Arc::new(tokio::sync::Notify::new()),
         }
     }
 
@@ -95,9 +97,22 @@ impl JobControl {
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         if matches!(*state, JobState::Active) {
             *state = JobState::Cancelled;
+            self.cancelled.notify_waiters();
             true
         } else {
             false
+        }
+    }
+
+    pub(crate) async fn cancelled(&self) {
+        loop {
+            let notification = self.cancelled.notified();
+            tokio::pin!(notification);
+            notification.as_mut().enable();
+            if self.check().is_err() {
+                return;
+            }
+            notification.await;
         }
     }
 

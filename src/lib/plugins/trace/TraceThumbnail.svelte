@@ -9,7 +9,7 @@
   });
 </script>
 <span class="thumbnail">
-  {#if url}<img src={url} alt="" title={prompt || undefined} />
+  {#if url}<img src={url} alt="" draggable={false} title={prompt || undefined} />
   {:else}<span class="placeholder" aria-hidden="true">▧</span>{/if}
   {#if label}<small>{label}</small>{/if}
 </span>

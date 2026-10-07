@@ -1,4 +1,5 @@
 import { describe,it,expect,vi } from "vitest";
+vi.mock("$lib/plugins/trace/prompt-titles.svelte",()=>({promptTitles:{bind(){},unbind(){}}}));
 vi.mock("$lib/plugins/openai-image/OpenAIImageDialog.svelte",()=>({default:{}}));
 vi.mock("$lib/plugins/openai-image/OpenAIImageEditorTool.svelte",()=>({default:{}}));
 vi.mock("$lib/plugins/openai-image/OpenAIImageEditDialog.svelte",()=>({default:{}}));
@@ -41,6 +42,17 @@ describe("OpenAI plugin SDK contributions",()=>{
     expect(f.opened.at(-1)?.props).toMatchObject({sourcePath:image.path,referencePaths:[reference.path],initialBackend:"api_key"});
     for(const invalid of [[image,folder],[{...image,path:"demo://photo.png"}],[{...image,name:"animated.gif"}],Array.from({length:9},(_,i)=>({...image,path:`/media/${i}.png`}))])expect(menu.when(invalid)).toBe(false);
     expect(f.tools.some(tool=>tool.when({path:image.path,name:image.name,digest:"a".repeat(64),format:"PNG",referencePaths:[]}))).toBe(true);
+  });
+  it("Ctrl+E opens all highlighted images as ordered inputs and rejects duplicate or excessive selections",async()=>{
+    const f=fixture();await openAIImagePlugin.activate(f.ctx);
+    const selected=Array.from({length:8},(_,i)=>({...image,name:`input-${i}.png`,path:`/media/input-${i}.png`}));
+    const command=f.commands.find(command=>command.id==="plugin.openai-image.edit")!;
+    f.setSelection(selected);expect(command.when?.()).toBe(true);await command.handler();
+    expect(f.opened.at(-1)?.props).toMatchObject({sourcePath:selected[0].path,referencePaths:selected.slice(1).map(item=>item.path)});
+    for(const invalid of [[image,image],[...selected,image],[],[image,folder]]){
+      f.setSelection(invalid);expect(command.when?.()).toBe(false);await command.handler();
+    }
+    expect(f.opened).toHaveLength(1);
   });
   it("generates in the chosen folder with no invented source and exposes history",async()=>{
     const f=fixture({codexPath:"/opt/custom tools/codex"});await openAIImagePlugin.activate(f.ctx);

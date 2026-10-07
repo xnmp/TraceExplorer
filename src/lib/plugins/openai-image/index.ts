@@ -6,6 +6,7 @@ import OpenAIImageDialog from "./OpenAIImageDialog.svelte";
 import OpenAIImageEditorTool from "./OpenAIImageEditorTool.svelte";
 import OpenAIImageEditDialog from "./OpenAIImageEditDialog.svelte";
 import OpenAIImageHistory from "./OpenAIImageHistory.svelte";
+import { promptTitles } from "../trace/prompt-titles.svelte";
 
 const DIALOG_ID = "openai-image.create";
 const singleLocal = (entries: FileEntry[]) => entries.length === 1 && !isVirtualPath(entries[0].path) ? entries[0] : null;
@@ -22,6 +23,7 @@ async function open(ctx: PluginContext, sourcePath: string | null, outputDir: st
     initialBackend: settings.backend === "api_key" ? "api_key" : "codex",
     jobs: ctx.jobs, toast: ctx.toast,
     storage: ctx.storage, onSaveSettings: ctx.saveSettings,
+    captureSelection: ctx.workspace.captureSelection,
   });
 }
 
@@ -30,12 +32,16 @@ export const openAIImagePlugin: Plugin = {
   name: "OpenAI Images",
   description: "Generate and edit images with GPT Image, with durable Trace provenance.",
   enabledByDefault: true,
+  deactivate: () => promptTitles.unbind(),
   activate(ctx) {
+    promptTitles.bind(ctx.storage);
     ctx.registerSettingsSection({
       id: "openai-image", title: "AI / OpenAI Images",
       rows: [{ id: "backend", label: "Image connection", type: "select", default: "codex",
         options: [{ value: "codex", label: "Codex ChatGPT sign-in" }, { value: "api_key", label: "OpenAI API key" }],
         description: "Codex mode uses the installed Codex CLI and its existing ChatGPT sign-in." },
+        { id: "titleGenerator", label: "Title generator", type: "select", default: "codex", options: [{value:"codex",label:"Codex credentials (Luna, low effort)"},{value:"disabled",label:"Off"}] },
+        { id: "titleCodexPath", label: "Title generator Codex path", type: "text", default: "", description: "Uses the image connection’s Codex executable when empty." },
         { id: "codexPath", label: "Codex executable path", type: "text", default: "",
         description: "Optional full executable path. Leave blank to search PATH and common installations, including NVM. Find it with command -v codex (Windows: where codex)." },
         { id: "apiKey", label: "OpenAI API Key", type: "password",
@@ -44,7 +50,7 @@ export const openAIImagePlugin: Plugin = {
     ctx.registerImageEditorTool({
       id: "openai-image", title: "AI edit", component: OpenAIImageEditorTool,
       when: (source) => ["PNG", "JPEG", "WebP"].includes(source.format),
-      props: { storage: ctx.storage, onSaveSettings: ctx.saveSettings, jobs: ctx.jobs, toast: ctx.toast },
+      props: { storage: ctx.storage, onSaveSettings: ctx.saveSettings, jobs: ctx.jobs, toast: ctx.toast, captureSelection: ctx.workspace.captureSelection },
     });
     ctx.registerDialog({ id: "openai-image.edit-window", component: OpenAIImageEditDialog });
     ctx.registerDialog({ id: DIALOG_ID, component: OpenAIImageDialog });

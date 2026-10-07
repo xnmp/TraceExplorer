@@ -7,8 +7,8 @@ export function traceOperationLabel(operation: string): string {
 }
 
 export interface TraceLayoutInput {
-  readonly artifacts: readonly { readonly id: number; readonly generatingRun: number | null; readonly hasCaption?: boolean }[];
-  readonly runs: readonly { readonly id: number; readonly inputIds: readonly number[] }[];
+  readonly artifacts: readonly { readonly id: number; readonly generatingRun: number | null; readonly hasCaption?: boolean; readonly discarded?: boolean; readonly groupId?: string }[];
+  readonly runs: readonly { readonly id: number; readonly inputIds: readonly number[]; readonly groupId?: string }[];
 }
 
 export interface TraceLayoutNode {
@@ -45,7 +45,7 @@ const PADDING = 14;
 
 export function layoutTraceGraph(graph: TraceLayoutInput): TraceLayout {
   const artifacts = new Map(graph.artifacts.map((artifact) => [artifact.id, artifact]));
-  const artifactHeight = (id: number) => ARTIFACT_HEIGHT + (artifacts.get(id)?.hasCaption ? CAPTION_HEIGHT : 0);
+  const artifactHeight = (id: number) => artifacts.get(id)?.discarded ? 44 : ARTIFACT_HEIGHT + (artifacts.get(id)?.hasCaption ? CAPTION_HEIGHT : 0);
   const runs = new Map(graph.runs.map((run) => [run.id, run]));
   const outputRuns = new Set(graph.artifacts.flatMap((artifact) => artifact.generatingRun == null ? [] : [artifact.generatingRun]));
   const ranks = new Map<string, number>();
@@ -75,7 +75,9 @@ export function layoutTraceGraph(graph: TraceLayoutInput): TraceLayout {
   }
 
   const levels = new Map<number, { key: string; kind: TraceLayoutNode["kind"]; id: number }[]>();
+  const referencedArtifacts = new Set(graph.runs.flatMap(run=>[...run.inputIds]));
   for (const artifact of graph.artifacts) {
+    if (artifact.discarded && !referencedArtifacts.has(artifact.id)) continue;
     const key = `a:${artifact.id}`;
     const depth = rank(key);
     levels.set(depth, [...(levels.get(depth) ?? []), { key, kind: "artifact", id: artifact.id }]);
@@ -93,7 +95,12 @@ export function layoutTraceGraph(graph: TraceLayoutInput): TraceLayout {
   const nodes: TraceLayoutNode[] = [];
   let y = PADDING;
   for (const [, unsorted] of sortedLevels) {
-    const items = [...unsorted].sort((a, b) => a.id - b.id);
+    const groupId = (item: typeof unsorted[number]) => item.kind === "artifact" ? artifacts.get(item.id)?.groupId : runs.get(item.id)?.groupId;
+    const groupOrder = new Map<string,number>();
+    for (const item of unsorted) { const group = groupId(item); if (group) groupOrder.set(group, Math.min(groupOrder.get(group) ?? Infinity, item.id)); }
+    const order = (item: typeof unsorted[number]) => groupOrder.get(groupId(item) ?? "") ?? item.id;
+    const items = [...unsorted].sort((a, b) => order(a) - order(b) || (groupId(a) ?? "").localeCompare(groupId(b) ?? "") || a.id - b.id);
+    if (groupOrder.size) y += 18;
     const height = Math.max(...items.map((item) => item.kind === "artifact" ? artifactHeight(item.id) : RUN_HEIGHT));
     let x = (width - rowWidth(items)) / 2;
     for (const item of items) {
