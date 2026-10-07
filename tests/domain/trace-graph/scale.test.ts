@@ -56,7 +56,8 @@ describe("large folders", () => {
     }
     const projected = timed(() => connectedComponents(projectDag(nodes)));
     expect(projected.value.length).toBeGreaterThanOrEqual(500);
-    expect(projected.ms).toBeLessThan(1500);
+    // Projection is linear (about 20 ms here); a per-component rebuild once made it quadratic (700 ms).
+    expect(projected.ms).toBeLessThan(300);
     const { value, ms } = render(nodes, "c250-19");
     expect(tileOverlaps(value.layout)).toEqual([]);
     expect(ms).toBeLessThan(1500);

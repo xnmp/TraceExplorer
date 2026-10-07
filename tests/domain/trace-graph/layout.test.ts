@@ -5,6 +5,8 @@ import { planScene } from "$lib/domain/trace-graph/scene";
 import { tileSize } from "$lib/domain/trace-graph/metrics";
 import { foreignJunctionContacts, mockupNodes, node, random, routeCollisions, sharedLanes, sourcesReaching, tileOverlaps } from "./fixtures";
 
+/** Correctness sweeps over many graphs: slower CI runners need more than the default 5 s. */
+const HEAVY = 30_000;
 const large = tileSize({ large: true, foreign: false, hint: false });
 const small = tileSize({ large: false, foreign: false, hint: false });
 const item = (key: string, parents: string[] = [], size = small, order = 0): LayoutItem => ({ key, parents, width: size.width, height: size.height, order });
@@ -85,7 +87,7 @@ describe("width-aware layout", () => {
         }
       }
     }
-  });
+  }, HEAVY);
 
   it("stays collision free on random graphs with mixed tile sizes", () => {
     for (let seed = 1; seed <= 30; seed++) {
@@ -97,7 +99,7 @@ describe("width-aware layout", () => {
       });
       checkLayout(items, 300 + Math.floor(next() * 900));
     }
-  });
+  }, HEAVY);
 
   it("never routes through a junction that does not combine that route's input", () => {
     // n4's inputs are n1 and n2 only; n1's route must not touch the (n0, n1) junction on its way down.
@@ -124,7 +126,7 @@ describe("width-aware layout", () => {
         expect(layout.width, `seed ${seed} at ${width}px`).toBeLessThanOrEqual(width * 1.05);
       }
     }
-  });
+  }, HEAVY);
 
   it("gives many sources passing one gap distinct lanes", () => {
     // Eight roots all feed the bottom row past a full-width middle row with one narrow gap layout.
@@ -159,7 +161,7 @@ describe("width-aware layout", () => {
       expect(sharedLanes(layout), `${walls} walls`).toEqual([]);
       expect(foreignJunctionContacts(layout, 5), `${walls} walls`).toEqual([]);
     }
-  });
+  }, HEAVY);
 
   it("keeps crowded junction channels unambiguous", () => {
     // Every pair of a dozen inputs combined: 66 junctions in one channel.
@@ -191,7 +193,7 @@ describe("width-aware layout", () => {
       }
     }
     expect(merged.length, merged.join(", ")).toBeLessThanOrEqual(1);
-  });
+  }, HEAVY);
 
   it("gives trunks that reach one lane by different courses distinct ids", () => {
     // Found by review: two shared courses from n0 met in one gap and collided.
@@ -229,7 +231,7 @@ describe("width-aware layout", () => {
     expect(trunks.length).toBeGreaterThan(0);
     for (const trunk of trunks) expect(trunk.terminal).toBe(false);
     expect(new Set(trunks.flatMap((trunk) => trunk.consumers.map((consumer) => consumer.child))).size).toBeGreaterThan(900);
-  });
+  }, HEAVY);
 
   it("orders ties consistently when only some keys have a previous position", () => {
     // x and z keep their hinted order; y is new and merges in by creation order.

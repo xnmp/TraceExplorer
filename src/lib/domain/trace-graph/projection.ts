@@ -67,6 +67,8 @@ function isAcyclic(order: readonly NodeKey[], edges: readonly (readonly [NodeKey
 export function connectedComponents(dag: TraceDag): NodeKey[][] {
   const seen = new Set<NodeKey>();
   const result: NodeKey[][] = [];
+  // Built once: rebuilding it per component made this quadratic in folder size.
+  const rank = new Map(dag.order.map((key, index) => [key, index]));
   for (const start of dag.order) {
     if (seen.has(start)) continue;
     const members: NodeKey[] = [];
@@ -79,7 +81,6 @@ export function connectedComponents(dag: TraceDag): NodeKey[][] {
         if (!seen.has(next)) { seen.add(next); pending.push(next); }
       }
     }
-    const rank = new Map(dag.order.map((key, index) => [key, index]));
     result.push(members.sort((a, b) => rank.get(a)! - rank.get(b)!));
   }
   return result;
