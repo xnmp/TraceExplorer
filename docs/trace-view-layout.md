@@ -18,28 +18,40 @@ These requirements come from the [plan](trace-view-plan.md), section 4:
 `visibility.ts` keeps the context limited, and a pure function of the current focus (earlier selections never accumulate expanded branches):
 
 - every root (a folder image without a parent in the folder) and its children;
-- the focused node's ancestry, its children, and its **siblings**: the other children of each of its parents (a reference input's other outputs included);
+- the focused node's ancestry, its children, and its nearest **siblings**: the other children of its folder parents;
 - every further parent a visible output needs, so each output keeps all of its inputs.
 
-Siblings are context, not lineage: they keep the `unrelated` tone (lightly dimmed), and routes into them are not highlighted. Only the focus's own siblings are added, not its parents' siblings or its siblings' children.
+Siblings are context, not lineage: they keep the `unrelated` tone (lightly dimmed), and routes into them are not highlighted. Only the focus's own siblings are added, not its parents' siblings or its siblings' children. Two bounds keep a selection from flooding the graph:
+
+- **Only folder parents.** A reference input (subfolder or external), such as one style image applied to hundreds of variations, contributes no siblings: its other outputs are not variations of the focus. (Before this rule, selecting one of 300 styled variations pulled in all 300 others: 602 tiles, a canvas almost five times the pane width, half a second of layout.)
+- **At most `SIBLING_LIMIT` (12).** The siblings nearest the focus in their parent's child order (creation order), half on either side where there are enough. A parent with children left out shows its usual "n further edits" hint (with the chevron); selecting it shows them all.
 
 ## Orientation
 
 A component's generations run either top to bottom or left to right (Sugiyama/dagre `rankdir` TB vs LR). `orientation.ts` decides it per component, in a pure function, and `planScene` passes it in the layout request.
 
-**Rule.** Let *depth* be the component's number of generations (longest parent chain) and *breadth* the number of images in its largest generation, both over **all** its images, not just the visible ones. The component runs left to right when
+**Rule.** Let *depth* be the component's number of generations (longest parent chain) and *breadth* the number of images in its largest generation, both over **all** its settled images, not just the visible ones. Running outputs and unsaved (or discarded) ones do not count, though an unsaved image still carries its saved children's generations. The component fits left to right when
 
 1. depth ≥ 2,
 2. depth ≥ breadth: top to bottom it would be at least as tall as it is wide, in tiles, and
-3. its generations fit side by side in the pane: `top + depth × tile width + (depth − 1) × bandChannel + bottom ≤ pane width` (with the current constants, 2 generations need 262 px, 3 need 400 px, 6 need 814 px).
+3. its generations fit side by side in the pane: `top + depth × tile width + (depth − 1) × bandChannel + channel extra + bottom ≤ pane width` (with the current constants and no extra, 2 generations need 262 px, 3 need 400 px, 6 need 814 px).
+
+The *channel extra* estimates what the engine adds to the channels between generations: `junctionLevel` (26 px) per junction level, and a channel whose distinct crossing sources need more bend tracks (6 px each) than its width holds grows to fit them. Both are estimated per channel from the whole component's settled relationships, so the estimate does not depend on the focus; the orientation is never decided from an actual, focus-dependent layout. Junction nesting is computed exactly (as `buildInputJunctions` groups inputs) for up to 200 multi-input outputs and bounded above beyond that (an output with *n* inputs nests at most *n* − 1 junctions), keeping the estimate linear.
 
 Otherwise it runs top to bottom, where a wide generation wraps onto several rows. A single image, an empty component and an invalid width all run top to bottom.
 
-**Stability.** The rule never looks at the focus or at which tiles are shown, so changing the selection can never flip a component (its tiles would jump). The orientation changes only when the pane is resized across the threshold or the component itself gains or loses images (a new generation can make it deep enough). Using the whole component is deliberately conservative: a long edit chain that does not fit side by side runs top to bottom even while only its first images are visible, instead of turning once the selection reveals more of it.
+**Hysteresis.** `chooseOrientation(profile, width, previous?)` is pure; `previous` is the orientation the component is currently shown with. Without one the rule above applies. With one, the component keeps it until the rule fails by a clear margin:
 
-**Engine.** Left to right is the top-to-bottom engine run on transposed tile sizes (each tile's width and height swapped), with its result transposed back (`transposeLayout`): node positions and sizes, junctions, every coordinate pair of every route path, and the canvas extents. Everything the engine guarantees therefore carries over unchanged, now along the other axis: routes leave a tile's right edge and enter the next generation's left edge (with the arrowhead), pass a column through the gaps between stacked tiles or above and below it, and bend only in the channels between generation columns. Running right there is no height budget, so a generation is one column and never wraps; the transposed pass also skips the minimum canvas width (it would become a minimum height). `RowBox.top`/`bottom` then bound a column along x. Spatial navigation needs nothing special: ←/→ follow lineage and ↑/↓ move between siblings.
+- shown left to right, it stays so while breadth ≤ depth + max(1, ⌊depth / 2⌋) and its generations still fit the pane (width gets no slack, so a sideways canvas never overflows);
+- shown top to bottom, it turns only when breadth ≤ depth − 1 and its generations fit in 90% of the pane.
 
-**Known limits.** Junction levels can widen the channels between columns beyond what rule 3 estimates; the canvas then scrolls horizontally rather than flipping. There is no hysteresis on resizing, so dragging the pane edge back and forth across a component's threshold flips it each time.
+The view remembers each component's orientation per pane (`TraceView` holds the map, `TraceGraph` records each committed layout's orientation), keyed by the component's identity: its earliest image (`componentIdentity`), which adding images never changes. The memory survives collapsing a section; a pane opened afresh applies the plain rule.
+
+**Stability.** The rule never looks at the focus or at which tiles are shown, so changing the selection can never flip a component (its tiles would jump). Generating into a component or discarding the results cannot flip it either (pending outputs do not count), and saving a batch flips it only once it is clearly broader than deep; resizing flips it only across the hysteresis band. Using the whole component is deliberately conservative: a long edit chain that does not fit side by side runs top to bottom even while only its first images are visible, instead of turning once the selection reveals more of it. For the same reason a left-to-right canvas is drawn as wide as the whole component's estimated sideways width (the request's `extent`), so a canvas centred in its pane does not shift when selection reveals or hides a generation column.
+
+**Engine.** Left to right is the top-to-bottom engine run on transposed tile sizes (each tile's width and height swapped), with its result transposed back (`transposeLayout`): node positions and sizes, junctions, every coordinate pair of every route path, and the canvas extents. Everything the engine guarantees therefore carries over unchanged, now along the other axis: routes leave a tile's right edge and enter the next generation's left edge (with the arrowhead), pass a column through the gaps between stacked tiles or above and below it, and bend only in the channels between generation columns. Running right there is no height budget, so a generation is one column and never wraps; the transposed pass also skips the minimum canvas width (it would become a minimum height). `RowBox.top`/`bottom` then bound a column along x. Spatial navigation needs nothing special: ←/→ follow lineage and ↑/↓ move between siblings. The focused tile's "children open" chevron points towards its children: down, or right when its component runs left to right.
+
+**Known limits.** The channel estimate is not exact: a crowded channel can open junction levels the estimate does not foresee (and the estimate cannot know which tiles a focus shows). A sweep over random components at five widths and every focus (`orientation.test.ts`) keeps left-to-right canvases within 5% of the pane; before the estimate, 3.5% of them overflowed, by up to 13%. When it is exceeded, the canvas scrolls horizontally rather than flipping.
 
 ## Spacing
 
@@ -111,7 +123,7 @@ The algorithm is described top to bottom; a left-to-right layout is its transpos
      - route ids are unique;
      - every tile, junction and route point lies on the canvas;
      - parents come before their children along the flow;
-     - the graph stays within 5% of the width it was given (top to bottom; left to right has no width budget).
+     - the graph stays within 5% of the width it was given (top to bottom; the engine has no width budget running left to right, so `orientation.test.ts` checks the same 5% for the left-to-right layouts the rule picks).
 
      Targeted tests cover crowded channels: every pair of a dozen inputs combined, sixty sources combined with a few tiles each, one style applied to many photos, and many sources passing one gap.
    - **Route ids** are unique and stable. A route is named by its endpoints; a trunk by its source and a hash of the consumers it carries, not by where it runs, so it keeps its id when a relayout moves it. (Collisions get a deterministic suffix.)
@@ -136,8 +148,8 @@ The algorithm is described top to bottom; a left-to-right layout is its transpos
 
   A layout that widens runs the pass again (at most three passes in all). Placing margin lanes costs about S² log S for S sources sharing a margin, within the sources × rows bound above.
 
-- **Benchmarks.** `tests/domain/trace-graph/scale.test.ts` covers a 20,000-step edit chain focused at its end, a 3,000-output fan-out, the same two laid out left to right (transposing adds a linear pass), and a 10,000-image folder made of 500 components. Choosing the orientation is linear in the component's size. A 1,000-child fan-out test bounds the path data (under 250 KB; it was 10.7 MB before trunks).
-- **Off-thread.** Layouts above 60 tiles run in a blob worker when the host announces `blobWorkers` (its CSP permits `worker-src blob:`), and otherwise on the main thread after yielding a frame. Results are cached by their exact request. The worker gets one job at a time, so a request superseded while it waits is dropped rather than computed; one already running finishes and is cached.
+- **Benchmarks.** `tests/domain/trace-graph/scale.test.ts` covers a 20,000-step edit chain focused at its end, a 3,000-output fan-out, the same two laid out left to right (transposing adds a linear pass), and a 10,000-image folder made of 500 components. Choosing the orientation is linear in the component's size (junction nesting is computed exactly only for up to 200 multi-input outputs) and is cached per component, so focus changes reuse it. A 1,000-child fan-out test bounds the path data (under 250 KB; it was 10.7 MB before trunks).
+- **Off-thread.** Layouts above 60 tiles run in a blob worker when the host announces `blobWorkers` (its CSP permits `worker-src blob:`), and otherwise on the main thread after yielding a frame. Results are cached by their exact request, except that a left-to-right request ignores the pane width (the engine does not use it running right), so resizing reuses its layout. The worker gets one job at a time, so a request superseded while it waits is dropped rather than computed; one already running finishes and is cached.
 - **Rendering.** Tiles outside the viewport (±800 px) are not mounted once a component shows more than 120 tiles; connectors and junctions are windowed the same way by their vertical extent. Sections far outside the viewport keep only a sized placeholder, and collapsed sections need only their summaries.
 
 ## Motion

@@ -7,6 +7,7 @@ import { describe, expect, it } from "vitest";
 import { connectedComponents, projectDag } from "$lib/domain/trace-graph/projection";
 import { planScene } from "$lib/domain/trace-graph/scene";
 import { layoutGraph } from "$lib/domain/trace-graph/layout";
+import { generationProfile } from "$lib/domain/trace-graph/orientation";
 import type { TraceNode } from "$lib/domain/trace-graph/model";
 import { node, random, tileOverlaps } from "./fixtures";
 
@@ -58,6 +59,19 @@ describe("large folders", () => {
     expect(column.value.nodes.size).toBe(3001);
     expect(tileOverlaps(column.value)).toEqual([]);
     expect(column.ms).toBeLessThan(4000);
+  }, HEAVY);
+
+  it("sizes up a huge component for its orientation in linear time", () => {
+    // Every step of a 20,000-step chain also takes the root; one style applied to 3,000 photos.
+    const chain = projectDag([node("root"), ...Array.from({ length: 20000 }, (_, index) => node(`n${index}`, index ? [`n${index - 1}`, "root"] : ["root"]))]);
+    const styled = projectDag([node("style", [], "external"), ...Array.from({ length: 3000 }, (_, index) => node(`p${index}`)),
+      ...Array.from({ length: 3000 }, (_, index) => node(`o${index}`, [`p${index}`, "style"]))]);
+    const deep = timed(() => generationProfile(chain, [...chain.order]));
+    expect(deep.value).toMatchObject({ depth: 20001, breadth: 1 });
+    expect(deep.ms).toBeLessThan(1000);
+    const broad = timed(() => generationProfile(styled, [...styled.order]));
+    expect(broad.value).toMatchObject({ depth: 2, breadth: 3001 });
+    expect(broad.ms).toBeLessThan(500);
   }, HEAVY);
 
   it("projects a 10,000-image folder of many components and lays out a focused one", () => {

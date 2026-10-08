@@ -1,8 +1,15 @@
 /**
  * Limited context: roots and their immediate children, the focused node's
- * ancestry, direct children and siblings (the other children of its
- * parents), and every further parent needed to explain a visible output. Visibility is a pure function of the current focus, so
- * earlier selections never accumulate expanded branches.
+ * ancestry, direct children and nearest siblings, and every further parent
+ * needed to explain a visible output. Visibility is a pure function of the
+ * current focus, so earlier selections never accumulate expanded branches.
+ *
+ * Siblings are the other children of the focus's folder parents only. A
+ * reference input (subfolder or external) such as a shared style image can
+ * feed hundreds of unrelated outputs, which are not variations of the focus.
+ * At most `SIBLING_LIMIT` siblings are shown, those nearest the focus in
+ * their parent's child order; a parent with children left out shows its
+ * hidden-edits hint as usual.
  */
 import type { NodeKey } from "./model";
 import type { TraceDag } from "./projection";
@@ -26,7 +33,7 @@ export function visibleKeys(dag: TraceDag, members: readonly NodeKey[], focus: N
   if (focus !== null && inComponent.has(focus)) {
     visible.add(focus);
     for (const child of dag.children.get(focus)!) visible.add(child);
-    for (const parent of dag.parents.get(focus)!) for (const sibling of dag.children.get(parent)!) visible.add(sibling);
+    for (const sibling of nearestSiblings(dag, focus)) visible.add(sibling);
   }
   // Parent closure: every visible output keeps all of its inputs.
   const pending = [...visible];
@@ -36,6 +43,29 @@ export function visibleKeys(dag: TraceDag, members: readonly NodeKey[], focus: N
     }
   }
   return members.filter((key) => visible.has(key) && inComponent.has(key));
+}
+
+/** Siblings shown around a focus; enough for a batch or two of variations. */
+export const SIBLING_LIMIT = 12;
+
+/**
+ * The focus's siblings through its folder parents, nearest first by distance
+ * in the parent's child order (creation order), at most `SIBLING_LIMIT`.
+ */
+function nearestSiblings(dag: TraceDag, focus: NodeKey): NodeKey[] {
+  const distance = new Map<NodeKey, number>();
+  for (const parent of dag.parents.get(focus)!) {
+    if (dag.nodes.get(parent)?.scope !== "current") continue;
+    const children = dag.children.get(parent)!;
+    const at = children.indexOf(focus);
+    children.forEach((child, index) => {
+      if (child === focus) return;
+      const gap = Math.abs(index - at);
+      if (gap < (distance.get(child) ?? Infinity)) distance.set(child, gap);
+    });
+  }
+  const rank = (key: NodeKey) => dag.nodes.get(key)!.order;
+  return [...distance].sort((a, b) => a[1] - b[1] || rank(a[0]) - rank(b[0]) || a[0].localeCompare(b[0])).slice(0, SIBLING_LIMIT).map(([key]) => key);
 }
 
 /** Hint counts stop here; the label reads as "999+" territory anyway. */

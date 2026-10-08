@@ -42,6 +42,13 @@ export interface LayoutRequest {
   readonly hint?: ReadonlyMap<NodeKey, number>;
   /** Defaults to "down". */
   readonly orientation?: Orientation;
+  /**
+   * Running right, the narrowest canvas width to draw: the whole component's
+   * estimated sideways width, so a canvas centred in its pane keeps its size,
+   * and its tiles their places, while selection reveals or hides generations.
+   * Ignored running down (the width budget governs) and when not a positive number.
+   */
+  readonly extent?: number;
 }
 
 export interface PlacedNode {
@@ -114,7 +121,7 @@ const FREE_STEP = 0.5;
 /** No tile is anywhere near this big; larger sizes are clamped so coordinates stay exact. */
 const MAX_TILE = 100_000;
 /** Height of one bend track; a zone grows when its tracks need more than its default height. */
-const TRACK_HEIGHT = 6;
+export const TRACK_HEIGHT = 6;
 
 /** Splits an ordered sequence into the fewest rows, then balances row widths. */
 export function wrapRow(widths: readonly number[], limit: number, gap: number): number[][] {
@@ -209,8 +216,9 @@ export function layoutGraph(request: LayoutRequest): GraphLayout {
   // Left to right: the same engine on transposed tiles, transposed back.
   // Generations then form columns that never wrap (no height budget), and
   // the canvas needs no minimum height.
-  const turned = layoutDown({ items: request.items.map((item) => ({ ...item, width: item.height, height: item.width })), maxWidth: Infinity, hint: request.hint }, 0);
-  return transposeLayout(turned);
+  const turned = transposeLayout(layoutDown({ items: request.items.map((item) => ({ ...item, width: item.height, height: item.width })), maxWidth: Infinity, hint: request.hint }, 0));
+  const extent = request.extent !== undefined && Number.isFinite(request.extent) && request.extent > 0 ? Math.ceil(request.extent) : 0;
+  return extent > turned.width ? { ...turned, width: extent } : turned;
 }
 
 /** Mirrors a layout across its diagonal: x and y (and widths and heights) trade places. */

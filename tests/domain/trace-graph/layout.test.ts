@@ -358,6 +358,18 @@ describe("left-to-right layout", () => {
     }
   });
 
+  it("draws the canvas at least as wide as the requested extent, and only when running right", () => {
+    const items = [item("p"), item("a", ["p"]), item("b", ["a"])];
+    const plain = layoutGraph({ items, maxWidth: 900, orientation: "right" });
+    const wide = layoutGraph({ items, maxWidth: 900, orientation: "right", extent: plain.width + 200.4 });
+    expect(wide.width).toBe(Math.ceil(plain.width + 200.4));
+    // Tiles keep their places: the extra room lies beyond the last generation.
+    for (const key of ["p", "a", "b"]) expect(wide.nodes.get(key)).toEqual(plain.nodes.get(key));
+    // An extent below the drawing never clips it; invalid extents are ignored; running down it has no effect.
+    for (const extent of [10, 0, -5, Number.NaN, Infinity]) expect(layoutGraph({ items, maxWidth: 900, orientation: "right", extent }).width, String(extent)).toBe(plain.width);
+    expect(layoutGraph({ items, maxWidth: 900, extent: 5000 }).width).toBe(layoutGraph({ items, maxWidth: 900 }).width);
+  });
+
   it("navigates along generations with left and right, and between siblings with up and down", () => {
     const layout = layoutGraph({ items: [item("p"), item("a", ["p"]), item("b", ["p"])], maxWidth: 600, orientation: "right" });
     expect(nearestInDirection(layout, "p", "right")).toMatch(/^[ab]$/);

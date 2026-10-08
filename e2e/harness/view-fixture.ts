@@ -44,8 +44,11 @@ function scenario(): { nodes: TraceNode[]; names: Map<string, string> } {
     { key: "forest" }, { key: "forest-mist", parents: ["forest"] }, { key: "autumn", parents: ["forest"] },
     { key: "fan" }, ...Array.from({ length: 18 }, (_, index) => ({ key: `fan-${index + 1}`, parents: ["fan"] })),
   ] satisfies Seed[]) add(seed);
+  const query = new URLSearchParams(globalThis.location?.search ?? "");
+  // `?deeper=1` continues the forest's mist edit two more generations, so selecting along it reveals new columns.
+  if (query.has("deeper")) for (const seed of [{ key: "mist-dawn", parents: ["forest-mist"] }, { key: "mist-dusk", parents: ["mist-dawn"] }]) add(seed);
   // `?many=N` appends N small components (a root and six children each) for tall, scrollable views.
-  const many = Number(new URLSearchParams(globalThis.location?.search ?? "").get("many") ?? 0);
+  const many = Number(query.get("many") ?? 0);
   for (let component = 0; component < many; component++) {
     add({ key: `m${component}` });
     for (let index = 0; index < 6; index++) add({ key: `m${component}-${index}`, parents: [`m${component}`] });
@@ -189,6 +192,11 @@ export const backend = {
     }] };
     changed();
     return key;
+  },
+  /** Discards an unsaved output, as its Delete action would. */
+  discardGeneration(name: string) {
+    update(state.names.get(name)!, { discarded: true });
+    changed();
   },
   completeGeneration(name: string) {
     const key = state.names.get(name)!;

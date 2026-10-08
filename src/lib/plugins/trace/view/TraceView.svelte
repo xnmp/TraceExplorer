@@ -10,6 +10,7 @@
   import type { FileEntry } from "$lib/domain/file";
   import { parentDir, samePath } from "$lib/domain/path";
   import type { ComponentSummary, NodeKey, TraceNode } from "$lib/domain/trace-graph/model";
+  import type { Orientation } from "$lib/domain/trace-graph/layout";
   import { traceInvalidation } from "../invalidation.svelte";
   import { promptTitles } from "../prompt-titles.svelte";
   import TraceThumbnail from "../TraceThumbnail.svelte";
@@ -39,6 +40,8 @@
   let overrides = $state.raw<ReadonlyMap<string, boolean>>(new Map());
   let near = $state.raw<ReadonlySet<string>>(new Set());
   let heights = new Map<string, number>();
+  /** Orientation each component was last shown with, by component identity: kept across collapse and remount for hysteresis. */
+  const orientations = new Map<NodeKey, Orientation>();
   let pendingPath = $state<string | null>(null);
   let anchor: { key: NodeKey; mode: "hold" | "reveal"; rect: DOMRect | null; until: number } | null = null;
   let releaseAnchor: (() => void) | null = null;
@@ -314,7 +317,7 @@
               <div use:measure={summary.id}>
                 <TraceGraph {data} focus={focus?.key ?? null} selected={selectedKeys} {width} {revision} {scroller}
                   onactivate={activate} onnavigate={(key) => focusNode(key)} onopen={open} onmenu={menu}
-                  {captureSelection} onsaved={(_key, path) => callbacks.saved(path)} ondiscarded={() => {}} oncommit={(settled) => keepAnchor(data, settled)} />
+                  {captureSelection} {orientations} onsaved={(_key, path) => callbacks.saved(path)} ondiscarded={() => {}} oncommit={(settled) => keepAnchor(data, settled)} />
               </div>
             {:else}
               <div class="placeholder loading" role="status" style:height="{heights.get(summary.id) ?? 160}px">Loading…</div>

@@ -8,7 +8,7 @@
   import { tick } from "svelte";
   import type { NodeKey } from "$lib/domain/trace-graph/model";
   import { planScene, routeStyle, junctionRelated, type RouteStyle, type ScenePlan } from "$lib/domain/trace-graph/scene";
-  import { nearestInDirection, type Direction, type GraphLayout } from "$lib/domain/trace-graph/layout";
+  import { nearestInDirection, type Direction, type GraphLayout, type Orientation } from "$lib/domain/trace-graph/layout";
   import { endpointKey } from "$lib/domain/trace-graph/junctions";
   import { promptTitles } from "../prompt-titles.svelte";
   import type { ComponentData } from "./folder-session.svelte";
@@ -34,9 +34,15 @@
     ondiscarded: (key: NodeKey) => void;
     /** Called after a new layout is in the DOM (motion has started), with a promise that settles when motion ends. */
     oncommit?: (settled: Promise<void>) => void;
+    /**
+     * The pane's memory of the orientation each component was last shown
+     * with (by component identity), for orientation hysteresis. Written on
+     * every commit; deliberately not reactive, like `ordering` below.
+     */
+    orientations?: Map<NodeKey, Orientation>;
   }
 
-  let { data, focus, selected, width, revision, scroller, onactivate, onnavigate, onopen, onmenu, onsaved, ondiscarded, oncommit, captureSelection }: Props = $props();
+  let { data, focus, selected, width, revision, scroller, onactivate, onnavigate, onopen, onmenu, onsaved, ondiscarded, oncommit, captureSelection, orientations = new Map() }: Props = $props();
 
   /** Below this many tiles layout runs inline; it takes well under a frame. */
   const SYNC_LIMIT = 60;
@@ -53,14 +59,20 @@
   /** Only the latest commit plays; one superseded before rendering never starts. */
   let commits = 0;
 
-  const plan = $derived(planScene(data.dag, data.members, focus, width, ordering));
+  const plan = $derived(planScene(data.dag, data.members, focus, width, { hint: ordering, orientations }));
+
+  /** What later plans build on: the reading order and the orientation shown. */
+  function remember(next: ScenePlan, layout: GraphLayout): void {
+    ordering = layout.readingOrder;
+    if (next.identity !== null) orientations.set(next.identity, layout.orientation);
+  }
 
   // The first render uses the very plan the effect below sees, so mounting
   // commits once instead of re-planning with the new reading order as a hint.
   function initial(): { plan: ScenePlan; layout: GraphLayout } | null {
     const first = plan;
     const layout = cachedLayout(first.request) ?? (first.request.items.length <= SYNC_LIMIT ? layoutNow(first.request) : null);
-    if (layout) ordering = layout.readingOrder;
+    if (layout) remember(first, layout);
     return layout ? { plan: first, layout } : null;
   }
   let shown = $state.raw(initial());
@@ -72,7 +84,7 @@
     for (const animation of running) animation.cancel();
     running = [];
     shown = { plan: next, layout };
-    ordering = layout.readingOrder;
+    remember(next, layout);
     failure = "";
     const current = ++commits;
     void tick().then(() => {
@@ -202,7 +214,7 @@
     <!-- Motion's fading copies of departed tiles (motion.ts); Svelte keeps it empty. -->
     <div class="ghosts" data-motion-ghosts aria-hidden="true" inert></div>
     {#each visibleTiles as tile (tile.key)}
-      <TraceTile {tile} placed={shown.layout.nodes.get(tile.key)!} selected={selected.has(tile.key)} {revision}
+      <TraceTile {tile} placed={shown.layout.nodes.get(tile.key)!} orientation={shown.layout.orientation} selected={selected.has(tile.key)} {revision}
         onactivate={(event) => onactivate(tile.key, event)} onopen={() => onopen(tile.key)}
         onmenu={(event) => onmenu(tile.key, event)} onkey={(event) => keydown(tile.key, event)}
         {captureSelection} onsaved={(path) => onsaved(tile.key, path)} ondiscarded={() => ondiscarded(tile.key)} />
