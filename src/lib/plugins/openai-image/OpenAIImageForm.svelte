@@ -2,7 +2,8 @@
   import { tick, untrack, onDestroy, onMount } from "svelte";
   import "../plugin-dialog.css";
   import type { PluginJobs, PluginStorage, PluginToast } from "../api";
-  import { describeImageInputs, startOpenAIImageJob, type OpenAIImageRequest } from "$lib/api/openai-image";
+  import { describeImageInputs, type OpenAIImageRequest } from "$lib/api/openai-image";
+  import { startImageJob } from "./image-jobs";
   import { describeInputs, inputRequestFields, moveInput, removeInput, type ImageInput } from "$lib/domain/image-inputs";
   import TraceThumbnail from "../trace/TraceThumbnail.svelte";
   import { basename } from "$lib/domain/path";
@@ -95,14 +96,13 @@
       const backend = selectedModel === "codex" ? "codex" : "api_key";
       const batchId = count > 1 ? crypto.randomUUID() : null;
       for (let index = 0; index < count; index += 1) {
-      const result = await jobs.accept(
-        { kind: "openai-image", presentation: "image", label: count > 1 ? `${outputFilename} (${index + 1}/${count})` : outputFilename, detail: prompt.trim() },
-        () => startOpenAIImageJob({ ...fields, outputDir,
+      const result = await startImageJob({ jobs, storage },
+        { label: count > 1 ? `${outputFilename} (${index + 1}/${count})` : outputFilename, detail: prompt.trim() },
+        { ...fields, outputDir,
           ...(batchId ? {batch:{id:batchId,index,count}} : {}),
           prompt: prompt.trim(), outputFilename, backend, codexPath: backend === "codex" ? executable : undefined,
           model: (selectedModel === "codex" ? "gpt-image-2" : selectedModel) as OpenAIImageRequest["model"],
-          size, resolution, aspectRatio, quality: "auto", background: "auto" }, backend === "api_key" ? connectionKey : ""),
-      );
+          size, resolution, aspectRatio, quality: "auto", background: "auto" }, backend === "api_key" ? connectionKey : "");
       if (!result.ok) throw new Error(result.error);
       accepted += 1;
       }
@@ -200,7 +200,7 @@
       </div>
       {#if images.length}
         <div class="prompt-field">
-          <span id="openai-image-inputs-label">Images <span class="hint">— sent in this order</span></span>
+          <span id="openai-image-inputs-label">Inputs <span class="hint">— Image 1, Image 2, … in the order sent</span></span>
           <ol class="strip" aria-labelledby="openai-image-inputs-label" bind:this={stripRef}>
             {#each images as input, index (input.path)}
               <li class="input-card" class:invalid={!!input.error} data-input-path={input.path} aria-label="Image {index + 1}: {basename(input.path)}">
@@ -219,7 +219,7 @@
         </div>
       {/if}
       <label class="prompt-field">{editing ? "Edit prompt" : "Image prompt"}
-        <textarea class="prompt-input" rows="6" maxlength="16000" bind:value={prompt} bind:this={promptRef} disabled={submitting} required
+        <textarea class="prompt-input" rows="4" maxlength="16000" bind:value={prompt} bind:this={promptRef} disabled={submitting} required
           placeholder={images.length > 1 ? "Describe your edit. Refer to images by number, e.g. “the hat in Image 2”…" : editing ? "Describe your edit…" : "Describe your image…"}></textarea>
       </label>
       <div class="options">
@@ -228,25 +228,25 @@
             <option value="1k">1K</option><option value="2k">2K</option><option value="4k">4K</option>
           </select>
         </label>
-        <label class="prompt-field">Images
-          <input class="prompt-input" type="number" min="1" max="8" step="1" bind:value={count} disabled={submitting} aria-label="Images" />
-        </label>
-        <label class="prompt-field">Temperature
-          <input class="prompt-input" value="Not supported" disabled aria-label="Temperature" />
-        </label>
         <label class="prompt-field">Aspect ratio
           <select class="model-select" aria-label="Aspect ratio" bind:value={aspectRatio} disabled={submitting}>
             {#if editing}<option value="keep">Keep (Image 1)</option>{/if}
             {#each ["1:1", "4:3", "3:4", "3:2", "2:3", "16:9", "9:16"] as ratio}<option value={ratio}>{ratio}</option>{/each}
           </select>
         </label>
+        <label class="prompt-field">Images
+          <input class="prompt-input" type="number" min="1" max="8" step="1" bind:value={count} disabled={submitting} aria-label="Images" />
+        </label>
+        <label class="prompt-field">Temperature
+          <input class="prompt-input" value="Not supported" disabled aria-label="Temperature" />
+        </label>
+        <label class="prompt-field">Seed
+          <input class="prompt-input" aria-label="Seed" value="Not supported" disabled title="This model does not expose a seed" />
+        </label>
       </div>
       {#if error}<p class="error" role="alert">{error}</p>{/if}
     </div>
     <footer>
-      <label class="seed-field">Seed
-        <input class="prompt-input" aria-label="Seed" value="Not supported" disabled title="This model does not expose a seed" />
-      </label>
       <button class="btn btn-primary" type="submit" disabled={!prompt.trim() || submitting} title="Ctrl+Enter">{submitting ? "Starting…" : "Generate"}</button>
     </footer>
   </form>
@@ -255,30 +255,30 @@
 <style>
   form { display: flex; flex-direction: column; min-height: 0; }
   .dialog-body { overflow: auto; min-height: 0; }
-  .model-row { display: flex; align-items: end; gap: 8px; margin-bottom: 16px; }
+  .model-row { display: flex; align-items: end; gap: 8px; }
   .model-field { flex: 1; min-width: 0; margin: 0; }
   .settings-button { min-width: 0; width: 36px; height: 36px; padding: 0; display: grid; place-items: center; }
-  footer { padding: 12px 20px; display: flex; align-items: end; justify-content: flex-end; gap: 8px; }
-  .seed-field { display: flex; flex-direction: column; gap: 6px; width: 150px; margin-right: auto; }
-  .options { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr); gap: 12px; }
+  footer { flex-shrink: 0; padding: 0 20px 16px; display: flex; align-items: end; justify-content: flex-end; gap: 8px; }
+  /* One row of settings in the dialog; fewer columns where it is narrow (the image editor's tool panel). */
+  .options { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 10px 12px; }
+  .options .prompt-input, .options .model-select { width: 100%; box-sizing: border-box; min-width: 0; }
   .options .prompt-field { margin-bottom: 0; }
   label { font-size: 12px; color: var(--text-secondary); }
   h3 { margin: 0 0 16px; font-size: 14px; color: var(--text-primary); }
-  textarea { resize: vertical; min-height: 140px; box-sizing: border-box; }
+  textarea { resize: vertical; min-height: 88px; box-sizing: border-box; }
   .hint { color: var(--text-tertiary); }
   .strip { display: flex; gap: 8px; margin: 0; padding: 2px 2px 6px; list-style: none; overflow-x: auto; }
-  .input-card { position: relative; flex: 0 0 112px; display: flex; flex-direction: column; gap: 2px; padding: 6px; border: 1px solid var(--control-stroke); border-radius: var(--radius-sm); background: var(--control-fill); }
+  .input-card { position: relative; flex: 0 0 96px; display: flex; flex-direction: column; gap: 2px; padding: 6px; border: 1px solid var(--control-stroke); border-radius: var(--radius-sm); background: var(--control-fill); }
   .input-card.invalid { border-color: var(--system-critical); }
-  .thumb { display: block; height: 72px; overflow: hidden; border-radius: 4px; }
-  .thumb :global(.thumbnail) { height: 72px !important; flex-basis: auto !important; }
+  .thumb { display: block; height: 56px; overflow: hidden; border-radius: 4px; }
+  .thumb :global(.thumbnail) { height: 56px !important; flex-basis: auto !important; }
   .number { font-size: 12px; font-weight: 600; color: var(--text-primary); }
   .name { font-size: 11px; color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .input-error { font-size: 11px; color: var(--system-critical-text, var(--system-critical)); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .card-actions { display: flex; gap: 4px; }
-  .card-actions button { flex: 1; min-width: 0; height: 24px; padding: 0; font: inherit; font-size: 14px; line-height: 1; color: var(--text-primary); background: var(--subtle-fill); border: 1px solid var(--control-stroke); border-radius: 4px; cursor: pointer; }
+  .card-actions button { flex: 1; min-width: 0; height: 22px; padding: 0; font: inherit; font-size: 14px; line-height: 1; color: var(--text-primary); background: var(--subtle-fill); border: 1px solid var(--control-stroke); border-radius: 4px; cursor: pointer; }
   .card-actions button:hover:not(:disabled) { background: var(--subtle-fill-secondary); }
   .card-actions button:disabled { opacity: 0.4; cursor: default; }
   .card-actions button:focus-visible { outline: 2px solid var(--focus-stroke-outer); outline-offset: 1px; }
   .error { color: var(--system-critical-text, var(--system-critical)); font-size: 12px; overflow-wrap: anywhere; margin: 12px 0 0; }
-  @media (max-width: 400px) { .options { grid-template-columns: 1fr; } }
 </style>

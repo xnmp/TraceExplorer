@@ -177,6 +177,10 @@ async fn execute(app: EventEmitter, request: &Request) -> Result<Value, AppError
             crate::openai_image::describe_inputs(field(p, "paths")?).await?,
         )
         .map_err(|error| AppError::Other(error.to_string()))?),
+        "openai_image_run_for_job" => Ok(serde_json::to_value(
+            trace::openai_image_run_for_job(field(p, "jobId")?).await?,
+        )
+        .map_err(|error| AppError::Other(error.to_string()))?),
         "recent_openai_image_runs" => Ok(serde_json::to_value(
             trace::recent_openai_image_runs().await?,
         )

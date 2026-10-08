@@ -234,4 +234,47 @@ mod tests {
         assert_eq!(by_job.artifacts.len(), 2);
         assert_eq!(by_job.job_id, Some(1));
     }
+
+    #[test]
+    fn a_failed_jobs_run_is_found_by_its_host_job_id_with_ordered_inputs() {
+        let root = crate::test_support::tempdir().unwrap();
+        let db = root.path().join("trace.sqlite");
+        let first = root.path().join("b.png");
+        let second = root.path().join("a.png");
+        std::fs::write(
+            &first,
+            include_bytes!("../../test_support/fixtures/source32.png"),
+        )
+        .unwrap();
+        std::fs::write(
+            &second,
+            include_bytes!("../../test_support/fixtures/source.png"),
+        )
+        .unwrap();
+        let inputs = || {
+            [&first, &second].map(|path| OperationInput {
+                path: path.to_string_lossy().into_owned(),
+                digest: digest(path).unwrap(),
+            })
+        };
+        let start = OperationStart {
+            operation: "openai.image.edit".into(),
+            parameters: serde_json::json!({"prompt":"swap the hats","provider":"codex-cli"}),
+            inputs: inputs().into(),
+        };
+        let (run, _, _) = accept_at(&db, start, &"4".repeat(32), 77, &"b".repeat(64)).unwrap();
+        assert!(crate::image_operation::execute_recorded(
+            &run,
+            &root.path().join("out.png"),
+            &crate::plugin_job::JobControl::new(),
+            || Err(crate::error::AppError::Other("no image".into())),
+        )
+        .is_err());
+        let found = serde_json::to_value(image_run_for_job_at(&db, 77).unwrap().unwrap()).unwrap();
+        assert_eq!(found["run"]["status"], "failed");
+        assert_eq!(found["run"]["parameters"]["prompt"], "swap the hats");
+        assert_eq!(found["inputs"], serde_json::to_value(inputs()).unwrap());
+        assert!(image_run_for_job_at(&db, 78).unwrap().is_none());
+        assert!(image_run_for_job_at(&db, 0).is_err());
+    }
 }

@@ -2,9 +2,10 @@
   import Modal from "$lib/components/Modal.svelte";
   import "../plugin-dialog.css";
   import type { PluginJobs, PluginStorage } from "../api";
-  import { recentOpenAIImageRuns, startOpenAIImageJob, type OpenAIImageRunHistory } from "$lib/api/openai-image";
+  import { recentOpenAIImageRuns, type OpenAIImageRunHistory } from "$lib/api/openai-image";
+  import { retryRun } from "./image-jobs";
   import { traceOperationLabel } from "$lib/domain/trace-operation";
-  import { codexExplanation, excerpt, retryable, retryPlan } from "$lib/domain/image-retry";
+  import { codexExplanation, excerpt, retryable } from "$lib/domain/image-retry";
   import { traceInvalidation } from "../trace/invalidation.svelte";
 
   let { open, onClose, jobs, storage }: { open: boolean; onClose: () => void; jobs?: PluginJobs; storage?: PluginStorage } = $props();
@@ -41,14 +42,7 @@
     const report = (message: string, failed: boolean, busy = false) => { retries = { ...retries, [id]: { busy, message, failed } }; };
     report("Starting…", false, true);
     try {
-      const settings = await storage.get();
-      const plan = retryPlan(item, {
-        codexPath: typeof settings.codexPath === "string" ? settings.codexPath : "",
-        apiKey: typeof settings.apiKey === "string" ? settings.apiKey : "",
-      });
-      if (!plan.ok) return report(plan.reason, true);
-      const { request, apiKey, label, detail } = plan.retry;
-      const result = await jobs.accept({ kind: "openai-image", presentation: "image", label, detail }, () => startOpenAIImageJob(request, apiKey));
+      const result = await retryRun({ jobs, storage }, item);
       report(result.ok ? "Retry started as a new job" : result.error, !result.ok);
     } catch (cause) {
       report(cause instanceof Error ? cause.message : String(cause), true);

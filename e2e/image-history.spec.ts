@@ -69,3 +69,29 @@ test("the Image generation panel wraps the bounded Codex reply", async ({ page }
     await page.getByRole("region", { name: "Image generation" }).screenshot({ path: `${SHOTS}/panel-before.png` });
   }
 });
+
+test("on hosts with jobRetry, a failed job's Retry in the Image generation panel resubmits the same request as a new job", async ({ page }) => {
+  await open(page);
+  await page.getByRole("button", { name: "Retry run #87" }).click();
+  const panel = page.getByRole("region", { name: "Image generation" });
+  const label = "img-20260923-160059_edit_edit.png";
+  await expect(panel.locator("[data-job-id='500']")).toContainText(label);
+  // A running job offers no Retry; a failed one does.
+  await expect(panel.getByRole("button", { name: `Retry ${label}` })).toHaveCount(0);
+  const { panel: message } = await fixture(page);
+  await page.evaluate((error) => (window as any).image.fail(500, error), message);
+  await expect(panel.locator("[data-job-id='500']").getByRole("status")).toHaveText(message);
+  await panel.getByRole("button", { name: `Retry ${label}` }).click();
+  // The failed entry is replaced by the new job.
+  await expect(panel.locator("[data-job-id='500']")).toHaveCount(0);
+  await expect(panel.locator("[data-job-id='501']")).toContainText(label);
+  const started = await page.evaluate(() => (window as any).image.started());
+  expect(started).toHaveLength(2);
+  // Same ordered, pinned inputs, prompt and settings; it records the failed job's run.
+  const { retryOf: first, ...original } = started[0].request;
+  const { retryOf: second, ...again } = started[1].request;
+  expect(again).toEqual(original);
+  expect(first).toBe(87);
+  expect(second).toBe(200);
+  expect(await page.evaluate(() => (window as any).image.errors)).toEqual([]);
+});

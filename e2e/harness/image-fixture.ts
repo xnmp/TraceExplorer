@@ -47,11 +47,39 @@ export function runs(): OpenAIImageRunHistory[] {
 
 export const started: Array<Record<string, unknown>> = [];
 let nextJob = 500;
+/** Each started job's request, by job id: what the native backend records as its run. */
+const jobRequests = new Map<number, { runId: number; request: Record<string, any> }>();
+
+/** The failed run a started job recorded, shaped like the native backend's history entry. */
+function runForJob(jobId: number): OpenAIImageRunHistory | null {
+  const found = jobRequests.get(jobId);
+  if (!found) return null;
+  const { runId, request } = found;
+  const paths: string[] = request.sourcePath ? [request.sourcePath, ...request.referencePaths] : [];
+  const digests: string[] = request.sourcePath ? [request.expectedSourceDigest, ...(request.expectedReferenceDigests ?? [])] : [];
+  return {
+    outputPath: null, inputs: paths.map((path, index) => ({ path, digest: digests[index] })),
+    run: {
+      id: runId, operation: paths.length ? "openai.image.edit" : "openai.image.generate", createdAt: "2026-10-09T09:00:00Z", status: "failed",
+      finishedAt: "2026-10-09T09:01:00Z", error: "image_operation_failed", recovered: false, inputIds: [],
+      parameters: { provider: request.backend === "codex" ? "codex-cli" : "openai", prompt: request.prompt, model: request.backend === "codex" ? null : request.model,
+        size: request.size, resolution: request.resolution, aspect_ratio: request.aspectRatio, quality: request.quality, background: request.background,
+        output_storage: "temporary", save_directory_hint: request.outputDir, ...(request.retryOf ? { retry_of: request.retryOf } : {}) },
+      details: { stage: "no_image", codex_reply: { text: REPLY, truncated: false } },
+    },
+  };
+}
 
 configureBackend({
   async invoke<T>(method: string, params?: Record<string, unknown>): Promise<T> {
     if (method === "recent_openai_image_runs") return runs() as T;
-    if (method === "jobs.start") { started.push(structuredClone(params ?? {})); return (nextJob++) as T; }
+    if (method === "jobs.start") {
+      started.push(structuredClone(params ?? {}));
+      const jobId = nextJob++;
+      jobRequests.set(jobId, { runId: 200 + jobRequests.size, request: structuredClone((params as any).request) });
+      return jobId as T;
+    }
+    if (method === "openai_image_run_for_job") return runForJob((params as any).jobId) as T;
     throw new Error(`Unexpected backend method ${method}`);
   },
 });

@@ -5,7 +5,7 @@ const SHOTS = process.env.ROUND4_SHOTS;
 const path = (page: Page, name: string) => page.evaluate((n) => (window as any).trace.backend.path(n) as string, name);
 const command = (page: Page, id: string) => page.evaluate((i) => (window as any).trace.command(i), id);
 const dialog = (page: Page) => page.getByRole("dialog");
-const strip = (page: Page) => dialog(page).getByRole("list", { name: /Images/ });
+const strip = (page: Page) => dialog(page).getByRole("list", { name: /Inputs/ });
 
 /** The numbered cards in the dialog: [number, file name]. */
 async function cards(page: Page): Promise<string[][]> {
@@ -76,4 +76,31 @@ test("an ordinary host selection of three images arrives whole", async ({ page }
   for (let index = 0; index < 2; index++) await dialog(page).getByRole("button", { name: "Remove Image 1" }).click();
   // The last image cannot be removed.
   await expect(dialog(page).getByRole("button", { name: "Remove Image 1" })).toBeDisabled();
+});
+
+test("at 1280×800 the inputs, the prompt and every setting are visible without scrolling", async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await openView(page, 900, "?ai=1");
+  await click(page, "warm");
+  for (const name of ["merge", "mist", "village"]) await click(page, name, { modifiers: ["Control"] });
+  await command(page, "plugin.openai-image.edit");
+  await expect(strip(page).locator("[data-input-path]")).toHaveCount(4);
+  await settle(page);
+  const box = (await dialog(page).locator(".plugin-dialog").boundingBox())!;
+  expect(box.y).toBeGreaterThanOrEqual(0);
+  expect(box.y + box.height).toBeLessThanOrEqual(800);
+  // Nothing in the dialog scrolls, and every control lies inside the visible dialog.
+  const scrolled = await dialog(page).locator(".plugin-dialog, .dialog-body").evaluateAll((elements) => elements.map((element) => element.scrollHeight - element.clientHeight));
+  expect(scrolled.every((overflow) => overflow <= 1)).toBe(true);
+  for (const control of [
+    strip(page), dialog(page).getByRole("textbox", { name: "Edit prompt" }),
+    dialog(page).getByRole("combobox", { name: "Resolution" }), dialog(page).getByRole("spinbutton", { name: "Images" }),
+    dialog(page).getByRole("textbox", { name: "Temperature" }), dialog(page).getByRole("textbox", { name: "Seed" }),
+    dialog(page).getByRole("combobox", { name: "Aspect ratio" }), dialog(page).getByRole("button", { name: "Generate" }),
+  ]) {
+    await expect(control).toBeInViewport({ ratio: 1 });
+    const inner = (await control.boundingBox())!;
+    expect(inner.y + inner.height).toBeLessThanOrEqual(box.y + box.height);
+  }
+  if (SHOTS) await page.screenshot({ path: `${SHOTS}/edit-dialog-1280x800.png` });
 });

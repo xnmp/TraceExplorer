@@ -8,7 +8,7 @@
   import type { PluginJobs, PluginStorage } from "../../integration/plugin-sdk";
   import { OLD_PANEL_MESSAGE, PANEL_MESSAGE, PROMPT, started } from "./image-fixture";
 
-  type Job = { id: number; label: string; detail: string; status: "running" | "error"; error?: string };
+  type Job = { id: number; label: string; detail: string; status: "running" | "error"; error?: string; retry?: () => Promise<{ ok: true; data: number } | { ok: false; error: string }>; retrying?: boolean };
   const query = new URLSearchParams(location.search);
   let jobs = $state.raw<Job[]>(query.has("panel") ? [
     { id: 1, label: "img-20260923-160059_edit_2_edit_2_edit.png", detail: PROMPT, status: "error", error: query.get("panel") === "old" ? OLD_PANEL_MESSAGE : PANEL_MESSAGE },
@@ -19,12 +19,26 @@
   const service: PluginJobs = {
     async accept(registration, start) {
       const result = await start();
-      if (result.ok) jobs = [...jobs, { id: result.data, label: registration.label, detail: registration.detail, status: "running" }];
+      if (result.ok) jobs = [...jobs, { id: result.data, label: registration.label, detail: registration.detail, status: "running", retry: registration.retry }];
       return result;
     },
   };
 
+  /** The host's Retry (SDK `jobRetry`): disabled while starting; a started retry replaces the failed entry. */
+  async function retry(job: Job): Promise<void> {
+    if (!job.retry || job.retrying) return;
+    jobs = jobs.map((other) => other === job ? { ...job, retrying: true } : other);
+    try {
+      const result = await job.retry();
+      jobs = result.ok ? jobs.filter((other) => other.id !== job.id) : jobs.map((other) => other.id === job.id ? { ...other, retrying: false, error: result.error } : other);
+    } catch (cause) {
+      jobs = jobs.map((other) => other.id === job.id ? { ...other, retrying: false, error: String(cause) } : other);
+    }
+  }
+
   export const harness = {
+    /** Reports a job's failure, as the backend's `openai-image-error` event does. */
+    fail(id: number, error: string) { jobs = jobs.map((job) => job.id === id ? { ...job, status: "error" as const, error } : job); },
     started: () => structuredClone(started),
     jobs: () => jobs.map((job) => ({ ...job })),
   };
@@ -42,6 +56,9 @@
           <div class="status-text" role="status">{job.status === "error" ? job.error : "Running"}</div>
           <div class="status-text">55s elapsed</div>
         </div>
+        {#if job.status === "error" && job.retry}
+          <button type="button" class="action-btn" aria-label={`Retry ${job.label}`} title="Retry" disabled={job.retrying} onclick={() => void retry(job)}>↻</button>
+        {/if}
       </div>
     {/each}
   </div>
@@ -59,4 +76,6 @@
   .name { font-size: 13px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .job-prompt { font-size: 12px; color: var(--text-secondary); margin: 0 0 6px; overflow-wrap: anywhere; display: -webkit-box; -webkit-line-clamp: 2; line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
   .status-text { font-size: 11px; color: var(--text-tertiary); }
+  .action-btn { align-self: flex-start; width: 24px; height: 24px; padding: 0; border: none; border-radius: 4px; background: transparent; color: var(--text-secondary); cursor: pointer; }
+  .action-btn:hover:not(:disabled) { background: var(--subtle-fill-secondary); color: var(--text-primary); }
 </style>

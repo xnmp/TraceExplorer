@@ -14,6 +14,6 @@
   </div>
 </Modal>
 <style>
-  .dialog { width: 560px; max-height: 90vh; display: flex; flex-direction: column; overflow: auto; }
+  .dialog { width: min(680px, calc(100vw - 32px)); max-height: calc(100vh - 32px); display: flex; flex-direction: column; overflow: auto; }
   .dialog-header { flex-shrink: 0; }
 </style>

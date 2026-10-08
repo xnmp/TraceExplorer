@@ -239,54 +239,88 @@ pub(crate) fn recent_image_runs_at(database: &Path) -> Result<Vec<ImageRunHistor
         .map_err(sql)?;
     drop(statement);
     runs.into_iter()
-        .map(|mut run| {
-            let output_path = connection
+        .map(|run| image_run_history(&connection, run))
+        .collect()
+}
+
+/// A recorded AI image run with its output and ordered inputs.
+fn image_run_history(connection: &Connection, mut run: Run) -> Result<ImageRunHistory, AppError> {
+    let output_path = connection
+        .query_row(
+            "SELECT path FROM artifacts WHERE generating_run=?1 ORDER BY id DESC LIMIT 1",
+            [run.id],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(sql)?;
+    let prepared_output_path =
+        if output_path.is_none() && matches!(run.status.as_str(), "pending" | "uncertain") {
+            connection
                 .query_row(
-                    "SELECT path FROM artifacts WHERE generating_run=?1 ORDER BY id DESC LIMIT 1",
+                    "SELECT prepared_output_path FROM runs WHERE id=?1",
                     [run.id],
                     |row| row.get(0),
                 )
-                .optional()
-                .map_err(sql)?;
-            let prepared_output_path = if output_path.is_none()
-                && matches!(run.status.as_str(), "pending" | "uncertain")
-            {
-                connection
-                    .query_row(
-                        "SELECT prepared_output_path FROM runs WHERE id=?1",
-                        [run.id],
-                        |row| row.get(0),
-                    )
-                    .map_err(sql)?
-            } else {
-                None
-            };
-            let mut inputs = connection
-                .prepare("SELECT i.artifact_id,a.path,a.digest FROM run_inputs i JOIN artifacts a ON a.id=i.artifact_id WHERE i.run_id=?1 ORDER BY i.position")
-                .map_err(sql)?;
-            let rows = inputs
-                .query_map([run.id], |row| {
-                    Ok((
-                        row.get::<_, i64>(0)?,
-                        OperationInput {
-                            path: row.get(1)?,
-                            digest: row.get(2)?,
-                        },
-                    ))
-                })
                 .map_err(sql)?
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(sql)?;
-            let (input_ids, inputs) = rows.into_iter().unzip();
-            run.input_ids = input_ids;
-            Ok(ImageRunHistory {
-                run,
-                output_path,
-                prepared_output_path,
-                inputs,
-            })
+        } else {
+            None
+        };
+    let mut inputs = connection
+        .prepare("SELECT i.artifact_id,a.path,a.digest FROM run_inputs i JOIN artifacts a ON a.id=i.artifact_id WHERE i.run_id=?1 ORDER BY i.position")
+        .map_err(sql)?;
+    let rows = inputs
+        .query_map([run.id], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                OperationInput {
+                    path: row.get(1)?,
+                    digest: row.get(2)?,
+                },
+            ))
         })
-        .collect()
+        .map_err(sql)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(sql)?;
+    let (input_ids, inputs) = rows.into_iter().unzip();
+    run.input_ids = input_ids;
+    Ok(ImageRunHistory {
+        run,
+        output_path,
+        prepared_output_path,
+        inputs,
+    })
+}
+
+/// The AI image run a host job ran, if it was accepted.
+pub(crate) fn image_run_for_job_at(
+    database: &Path,
+    job_id: u64,
+) -> Result<Option<ImageRunHistory>, AppError> {
+    if job_id == 0 || job_id > 9_007_199_254_740_991 {
+        return Err(AppError::Other("Invalid image job ID".into()));
+    }
+    if !database.exists() {
+        return Ok(None);
+    }
+    let connection = connection_at(database)?;
+    let run = connection
+        .query_row(
+            "SELECT r.id,r.operation,r.parameters,r.created_at,r.status,r.finished_at,r.error,r.recovered,r.result_details FROM image_jobs j JOIN runs r ON r.id=j.run_id WHERE j.job_id=?1 ORDER BY j.run_id DESC LIMIT 1",
+            [job_id as i64],
+            read_run,
+        )
+        .optional()
+        .map_err(sql)?;
+    run.map(|run| image_run_history(&connection, run))
+        .transpose()
+}
+
+pub(crate) async fn openai_image_run_for_job(
+    job_id: u64,
+) -> Result<Option<ImageRunHistory>, AppError> {
+    tokio::task::spawn_blocking(move || image_run_for_job_at(&database_path()?, job_id))
+        .await
+        .map_err(|_| AppError::Other("Image run query failed".into()))?
 }
 
 pub(crate) async fn recent_openai_image_runs() -> Result<Vec<ImageRunHistory>, AppError> {

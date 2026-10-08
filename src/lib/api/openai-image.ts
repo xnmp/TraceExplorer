@@ -14,6 +14,12 @@ export async function recentOpenAIImageRuns(): Promise<ApiResult<OpenAIImageRunH
   catch (error) { return { ok: false, error: extractError(error) }; }
 }
 
+/** The recorded run of a host image job, or null when the job never reached acceptance. */
+export async function openAIImageRunForJob(jobId: number): Promise<ApiResult<OpenAIImageRunHistory | null>> {
+  try { return { ok: true, data: await invoke<OpenAIImageRunHistory | null>("openai_image_run_for_job", { jobId }) }; }
+  catch (error) { return { ok: false, error: extractError(error) }; }
+}
+
 export interface OpenAIImageRequest {
   batch?: {id: string; index: number; count: number};
   backend?: "codex" | "api_key";
