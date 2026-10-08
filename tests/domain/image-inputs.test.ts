@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { describeInputs, imageInputPaths, inputRequestFields, moveInput, removeInput, type ImageInput } from "$lib/domain/image-inputs";
+import { describeInputs, imageInputPaths, inputRequestFields, moveInput, removeInput, withLiveInputs, type ImageInput } from "$lib/domain/image-inputs";
 
 const inputs: ImageInput[] = ["/a.png", "/b.jpg", "/c.webp"].map((path) => ({ path }));
 const paths = (list: readonly ImageInput[]) => list.map((input) => input.path);
@@ -29,7 +29,7 @@ describe("AI edit inputs", () => {
     expect(moveInput(inputs, 5, 0)).toBe(inputs);
   });
 
-  it("sends inputs in the shown order, pinning revisions only when every image has one", () => {
+  it("sends inputs in the shown order, pinning the revisions it knows", () => {
     const described = describeInputs(inputs, [
       { path: "/c.webp", digest: "c", size: { width: 3, height: 1 } }, { path: "/a.png", digest: "a" }, { path: "/b.jpg", digest: "b" },
     ]);
@@ -39,6 +39,31 @@ describe("AI edit inputs", () => {
     expect(inputRequestFields(inputs)).toEqual({ sourcePath: "/a.png", referencePaths: ["/b.jpg", "/c.webp"] });
     expect(inputRequestFields([{ path: "/a.png", digest: "a" }])).toEqual({ sourcePath: "/a.png", expectedSourceDigest: "a", referencePaths: [] });
     expect(inputRequestFields([])).toEqual({ sourcePath: null, referencePaths: [] });
+  });
+
+  it("pins Image 1 from the editor even when the other images could not be described", () => {
+    // describeImageInputs failed: only the editor's capture of Image 1 is known.
+    const known: ImageInput[] = [{ path: "/a.png", digest: "shown", size: { width: 4, height: 3 } }, { path: "/b.jpg" }];
+    expect(inputRequestFields(known)).toEqual({ sourcePath: "/a.png", expectedSourceDigest: "shown", referencePaths: ["/b.jpg"] });
+    // References are pinned as one list: all or none.
+    expect(inputRequestFields([{ path: "/a.png" }, { path: "/b.jpg", digest: "b" }, { path: "/c.webp" }]))
+      .toEqual({ sourcePath: "/a.png", referencePaths: ["/b.jpg", "/c.webp"] });
+    expect(inputRequestFields([{ path: "/a.png" }, { path: "/b.jpg", digest: "b" }]))
+      .toEqual({ sourcePath: "/a.png", referencePaths: ["/b.jpg"], expectedReferenceDigests: ["b"] });
+  });
+
+  it("follows what the caller learns later, keeping the arrangement made here", () => {
+    // The editor opened the dialog before its preview had loaded: no size yet.
+    const arranged = moveInput([{ path: "/a.png", digest: "a" }, { path: "/b.jpg", digest: "b" }], 1, 0);
+    const live: ImageInput[] = [{ path: "/a.png", digest: "a", size: { width: 8, height: 6 } }, { path: "/b.jpg" }];
+    expect(withLiveInputs(arranged, live)).toEqual([{ path: "/b.jpg", digest: "b" }, { path: "/a.png", digest: "a", size: { width: 8, height: 6 } }]);
+    // A removed image stays removed; an unusable one stays unusable.
+    expect(withLiveInputs([{ path: "/b.jpg", error: "Path not found" }], live)).toEqual([{ path: "/b.jpg", error: "Path not found" }]);
+    expect(withLiveInputs(removeInput(arranged, 0), live)).toEqual([{ path: "/a.png", digest: "a", size: { width: 8, height: 6 } }]);
+    // Nothing new: the same inputs.
+    const same = [{ path: "/b.jpg", digest: "b" }];
+    expect(withLiveInputs(same, live)[0]).toBe(same[0]);
+    expect(withLiveInputs(same, [])).toEqual(same);
   });
 
   it("keeps a revision the editor pinned and marks unusable images", () => {

@@ -9,7 +9,7 @@
    * which inherit the host's `--preview-info-inset`.
    */
   import type { Component } from "svelte";
-  import type { FileViewContribution, FileViewPane, PluginContext, PreviewInfoContribution, PreviewSubject, PreviewTarget, TileSizePreset } from "../../integration/plugin-sdk";
+  import type { FileViewContribution, FileViewPane, ImageEditorSource, PluginContext, PreviewInfoContribution, PreviewSubject, PreviewTarget, TileSizePreset } from "../../integration/plugin-sdk";
   import type { FileEntry } from "$lib/domain/file";
   import { tracePlugin } from "$lib/plugins/trace";
   import { openAIImagePlugin } from "$lib/plugins/openai-image";
@@ -19,6 +19,8 @@
   let views = $state.raw<FileViewContribution[]>([]);
   let sections = $state.raw<PreviewInfoContribution[]>([]);
   const commands = new Map<string, () => void | Promise<void>>();
+  /** Each command's `when`: whether the host would offer it (for example on its shortcut). */
+  const conditions = new Map<string, () => boolean>();
   const listeners = new Map<string, Array<(payload: unknown) => void>>();
   const fileListeners: Array<(directories: readonly string[]) => void> = [];
 
@@ -41,13 +43,16 @@
   const dialogs = new Map<string, Component<any>>();
   let opened_dialogs = $state.raw<Array<{ id: string; props: Record<string, unknown> }>>([]);
   let accepted = $state.raw<Array<{ label: string; detail: string }>>([]);
+  /** The AI edit tool in a stand-in for the host's image editor: it stays mounted while the editor's source fills in. */
+  let editorTool = $state.raw<{ component: Component<any>; props?: Record<string, unknown> } | null>(null);
+  let editorSource = $state.raw<ImageEditorSource | null>(null);
 
   function activate() {
-    views = []; sections = []; commands.clear(); listeners.clear(); fileListeners.length = 0;
+    views = []; sections = []; commands.clear(); conditions.clear(); listeners.clear(); fileListeners.length = 0;
     const ctx = {
       registerFileView: (view: FileViewContribution) => { views = [...views, view]; },
       registerPreviewInfo: (section: PreviewInfoContribution) => { sections = [...sections, section]; },
-      registerCommand: (command: { id: string; handler: () => void | Promise<void> }) => { commands.set(command.id, command.handler); },
+      registerCommand: (command: { id: string; handler: () => void | Promise<void>; when?: () => boolean }) => { commands.set(command.id, command.handler); conditions.set(command.id, command.when ?? (() => true)); },
       events: { listen: (name: string, handler: (payload: unknown) => void) => { listeners.set(name, [...(listeners.get(name) ?? []), handler]); } },
       workspace: {
         onFilesChanged: (handler: (directories: readonly string[]) => void) => { fileListeners.push(handler); },
@@ -61,7 +66,8 @@
     tracePlugin.activate(ctx);
     if (ai) openAIImagePlugin.activate({
       ...ctx,
-      registerContextMenuItem: () => {}, registerImageEditorTool: () => {}, registerSettingsSection: () => {},
+      registerContextMenuItem: () => {}, registerSettingsSection: () => {},
+      registerImageEditorTool: (tool: { component: Component<any>; props?: Record<string, unknown> }) => { editorTool = tool; },
       registerDialog: (dialog: { id: string; component: Component<any> }) => { dialogs.set(dialog.id, dialog.component); },
       openDialog: (id: string, props: Record<string, unknown> = {}) => { opened_dialogs = [...opened_dialogs, { id, props }]; },
       closeDialog: (id: string) => { opened_dialogs = opened_dialogs.filter((dialog) => dialog.id !== id); },
@@ -135,6 +141,11 @@
     state: () => ({ selected: [...selected], cursor, target: target ? { id: target.id, title: target.title, badge: target.badge ?? null } : null, fileView, opened: [...opened], menus: [...menus], navigations: [...navigations] }),
     selectPath(path: string) { pane.setSelection([path], path); },
     command: (id: string) => commands.get(id)?.(),
+    /** Opens the image editor's AI edit on `path`, captured at `digest`, before its preview has loaded (no size yet). */
+    openEditor(path: string, digest: string) { editorSource = { path, name: path.split("/").at(-1)!, digest, format: "PNG", referencePaths: [] }; },
+    /** The editor's preview loaded: its source now has a size, as the host's derived source does. */
+    editorLoaded(width: number, height: number) { if (editorSource) editorSource = { ...editorSource, size: { width, height } }; },
+    enabled: (id: string) => conditions.get(id)?.() ?? false,
     accepted: () => [...accepted],
   };
 </script>
@@ -187,6 +198,14 @@
     {/if}
   </aside>
 </main>
+{#if editorTool && editorSource}
+  <section class="plugin-dialog" role="dialog" aria-label="AI edit">
+    {#key editorTool}
+      {@const Tool = editorTool.component}
+      <Tool {...editorTool.props} source={editorSource} onClose={() => { editorSource = null; }} onBusyChange={() => {}} />
+    {/key}
+  </section>
+{/if}
 {#each opened_dialogs as dialog (dialog)}
   {@const Dialog = dialogs.get(dialog.id)}
   {#if Dialog}<Dialog {...dialog.props} open={true} onClose={() => { opened_dialogs = opened_dialogs.filter((other) => other !== dialog); }} />{/if}

@@ -33,6 +33,8 @@ test("a Trace selection of listed, subfolder and unsaved images arrives whole, i
   // Removing Image 3 renumbers the rest.
   await dialog(page).getByRole("button", { name: "Remove Image 3" }).click();
   expect(await cards(page)).toEqual([["Image 1", "warm.png"], ["Image 2", "merge.png"], ["Image 3", "village.png"]]);
+  // Focus moves to the image that took its place, so removing can continue from the keyboard.
+  await expect(dialog(page).getByRole("button", { name: "Remove Image 3" })).toBeFocused();
   // Moving by keyboard: the moved image keeps focus, so the key can be pressed again.
   await dialog(page).getByRole("button", { name: "Move Image 3 earlier" }).focus();
   await page.keyboard.press("Enter");
@@ -73,9 +75,14 @@ test("an ordinary host selection of three images arrives whole", async ({ page }
   expect((await cards(page)).map(([, name]) => name).sort()).toEqual(["cool.png", "plain.png", "village.png"]);
   expect((await cards(page)).map(([number]) => number)).toEqual(["Image 1", "Image 2", "Image 3"]);
   await expect(dialog(page).getByRole("button", { name: "Remove Image 1" })).toBeEnabled();
-  for (let index = 0; index < 2; index++) await dialog(page).getByRole("button", { name: "Remove Image 1" }).click();
-  // The last image cannot be removed.
+  await dialog(page).getByRole("button", { name: "Remove Image 3" }).click();
+  // After the last card, focus moves to the one before it.
+  await expect(dialog(page).getByRole("button", { name: "Remove Image 2" })).toBeFocused();
+  await page.keyboard.press("Enter");
+  // The last image cannot be removed: focus stays in the strip.
   await expect(dialog(page).getByRole("button", { name: "Remove Image 1" })).toBeDisabled();
+  await expect(strip(page)).toBeFocused();
+  await expect(strip(page).locator("[data-input-path]")).toHaveCount(1);
 });
 
 test("at 1280×800 the inputs, the prompt and every setting are visible without scrolling", async ({ page }) => {
@@ -103,4 +110,75 @@ test("at 1280×800 the inputs, the prompt and every setting are visible without 
     expect(inner.y + inner.height).toBeLessThanOrEqual(box.y + box.height);
   }
   if (SHOTS) await page.screenshot({ path: `${SHOTS}/edit-dialog-1280x800.png` });
+});
+
+test.describe("picks follow saves and deletes", () => {
+  const preview = (page: Page) => page.getByRole("complementary", { name: "Preview" });
+  const enabled = (page: Page) => page.evaluate(() => (window as any).trace.enabled("plugin.openai-image.edit") as boolean);
+
+  test("an unsaved pick that is then saved arrives once, as the saved file", async ({ page }) => {
+    await openView(page, 1400, "?ai=1");
+    await click(page, "warm");
+    await click(page, "merge");
+    const unsaved = await path(page, "merge");
+    await preview(page).getByRole("button", { name: "Save", exact: true }).click();
+    await expect.poll(() => path(page, "merge")).toBe("/pictures/merge.png");
+    await settle(page);
+    await command(page, "plugin.openai-image.edit");
+    await expect(strip(page).locator("[data-input-path]")).toHaveCount(1);
+    expect(await strip(page).locator("[data-input-path]").getAttribute("data-input-path")).toBe("/pictures/merge.png");
+    expect(unsaved).not.toBe("/pictures/merge.png");
+  });
+
+  test("deleting the picked unsaved image leaves nothing to edit", async ({ page }) => {
+    await openView(page, 1400, "?ai=1");
+    await click(page, "warm");
+    await click(page, "merge");
+    expect(await enabled(page)).toBe(true);
+    await preview(page).getByRole("button", { name: /^Delete/ }).click();
+    await expect(page.getByTestId("preview-badge")).toHaveText("Deleted");
+    await expect.poll(() => enabled(page)).toBe(false);
+  });
+});
+
+test.describe("when the inputs cannot be read", () => {
+  const editor = (page: Page) => page.getByRole("dialog", { name: "AI edit" });
+  const fail = (page: Page, count: number) => page.evaluate((n) => (window as any).trace.backend.failInputs(n), count);
+  const starts = (page: Page) => page.evaluate(() => (window as any).trace.backend.calls("jobs.start") as Array<{ params: { request: Record<string, any> } }>);
+
+  test("a failed read is tried again on Generate", async ({ page }) => {
+    await openView(page, 1400, "?ai=1");
+    await click(page, "warm");
+    await fail(page, 1);
+    await command(page, "plugin.openai-image.edit");
+    await expect(dialog(page).getByRole("alert")).toContainText("Could not read the input images");
+    await dialog(page).getByRole("textbox", { name: "Edit prompt" }).fill("Warmer light");
+    await page.keyboard.press("Control+Enter");
+    await expect.poll(async () => (await starts(page)).length).toBe(1);
+    const [start] = await starts(page);
+    expect(start.params.request).toMatchObject({ sourcePath: "/pictures/warm.png", aspectRatio: "keep" });
+    expect(start.params.request.expectedSourceDigest).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  test("the image editor's Image 1 keeps its revision and follows its size", async ({ page }) => {
+    await openView(page, 1400, "?ai=1");
+    const digest = "d".repeat(64);
+    await fail(page, 2);
+    await page.evaluate((d) => (window as any).trace.openEditor("/pictures/warm.png", d), digest);
+    await expect(editor(page).getByRole("alert")).toContainText("Could not read the input images");
+    await editor(page).getByRole("textbox", { name: "Edit prompt" }).fill("Warmer light");
+    // Keep needs Image 1's size: neither the backend nor the editor has it yet.
+    await page.keyboard.press("Control+Enter");
+    await expect(editor(page).getByRole("alert")).toHaveText("Could not read the input images: The image service is busy. Try again, or choose an aspect ratio");
+    expect(await starts(page)).toEqual([]);
+    // The editor's preview loads: the open form follows its source.
+    await page.evaluate(() => (window as any).trace.editorLoaded(1600, 900));
+    await page.keyboard.press("Control+Enter");
+    await expect.poll(async () => (await starts(page)).length).toBe(1);
+    const [start] = await starts(page);
+    // Image 1 stays pinned to the revision the editor captured, though the backend never described it.
+    expect(start.params.request).toMatchObject({ sourcePath: "/pictures/warm.png", expectedSourceDigest: digest, aspectRatio: "keep" });
+    const [width, height] = (start.params.request.size as string).split("x").map(Number);
+    expect(width / height).toBeCloseTo(16 / 9, 1);
+  });
 });

@@ -54,16 +54,35 @@ export function describeInputs(inputs: readonly ImageInput[], described: readonl
   });
 }
 
-/** The request fields for these inputs, in order. Revisions are pinned only when every image has one. */
+/**
+ * Overlays what the caller knows now on the inputs as arranged here (order,
+ * removals, what the backend reported): the image editor, for one, reports
+ * Image 1's size once its preview has loaded. The caller's revision and size
+ * win; an input that cannot be used stays as it is.
+ */
+export function withLiveInputs(arranged: readonly ImageInput[], live: readonly ImageInput[]): readonly ImageInput[] {
+  const byPath = new Map(live.map((input) => [input.path, input]));
+  return arranged.map((input) => {
+    const known = byPath.get(input.path);
+    if (!known || input.error) return input;
+    const digest = known.digest ?? input.digest, size = known.size ?? input.size;
+    return digest === input.digest && size === input.size ? input : { ...input, digest, size };
+  });
+}
+
+/**
+ * The request fields for these inputs, in order. Image 1's revision is pinned
+ * whenever it is known; the other images' revisions are pinned together, when
+ * every one is known (the request carries them as one list).
+ */
 export function inputRequestFields(inputs: readonly ImageInput[]): {
   sourcePath: string | null; expectedSourceDigest?: string; referencePaths: string[]; expectedReferenceDigests?: string[];
 } {
   const [first, ...rest] = inputs;
-  const pinned = inputs.length > 0 && inputs.every((input) => !!input.digest);
   return {
     sourcePath: first?.path ?? null,
-    ...(pinned ? { expectedSourceDigest: first.digest } : {}),
+    ...(first?.digest ? { expectedSourceDigest: first.digest } : {}),
     referencePaths: rest.map((input) => input.path),
-    ...(pinned && rest.length ? { expectedReferenceDigests: rest.map((input) => input.digest!) } : {}),
+    ...(rest.length && rest.every((input) => !!input.digest) ? { expectedReferenceDigests: rest.map((input) => input.digest!) } : {}),
   };
 }

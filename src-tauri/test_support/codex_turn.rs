@@ -152,12 +152,63 @@ fn an_empty_or_blank_reply_says_codex_gave_no_reply() {
     let turn = read_turn(&stream(&[
         json!({"type":"thread.started","thread_id":THREAD}),
         json!({"type":"error","message":"Reconnecting... 1/5"}),
+        json!({"type":"error","message":"Image generation is not available for this account"}),
         json!({"type":"turn.completed","usage":{}}),
     ]))
     .unwrap();
     assert_eq!(
         Failure::no_image(&turn).message(),
-        "Codex finished without generating an image. It reported: Reconnecting... 1/5"
+        "Codex finished without generating an image. It reported: Image generation is not available for this account"
+    );
+}
+
+#[test]
+fn retry_notices_are_never_the_reason() {
+    let read = |events: &[Value]| {
+        let mut all = vec![json!({"type":"thread.started","thread_id":THREAD})];
+        all.extend_from_slice(events);
+        read_turn(&stream(&all)).unwrap()
+    };
+    // Only retries, then a completed turn without an image: no reason at all.
+    let retried = read(&[
+        json!({"type":"error","message":"Reconnecting... 1/5 (stream disconnected before completion)"}),
+        json!({"type":"error","message":"Reconnecting\u{2026} 2/5"}),
+        json!({"type":"error","message":"Reconnecting... waiting for network"}),
+        json!({"type":"turn.completed","usage":{}}),
+    ]);
+    assert_eq!(retried.error, None);
+    assert_eq!(
+        Failure::no_image(&retried).message(),
+        "Codex finished without generating an image and gave no reply"
+    );
+    // A failed turn's own error wins over earlier and later error events.
+    let failed = read(&[
+        json!({"type":"error","message":"stream disconnected before completion"}),
+        json!({"type":"error","message":"Reconnecting... 5/5"}),
+        json!({"type":"turn.failed","error":{"message":"You've hit your usage limit."}}),
+        json!({"type":"error","message":"Reconnecting... 1/5"}),
+        json!({"type":"error","message":"a later error"}),
+    ]);
+    assert_eq!(
+        Failure::of_turn(&failed).unwrap().message(),
+        "Codex reported an error: You've hit your usage limit."
+    );
+    // Without one, the last real error, not a retry after it.
+    let silent = read(&[
+        json!({"type":"error","message":"Reconnecting... 1/5"}),
+        json!({"type":"error","message":"stream disconnected before completion"}),
+        json!({"type":"error","message":"Reconnecting... 2/5"}),
+        json!({"type":"turn.failed","error":{"message":"Reconnecting... 5/5"}}),
+    ]);
+    assert_eq!(
+        Failure::of_turn(&silent).unwrap().message(),
+        "Codex reported an error: stream disconnected before completion"
+    );
+    // A cut-off stream after only retries has no reason either.
+    let cut = read(&[json!({"type":"error","message":"Reconnecting... 3/5"})]);
+    assert_eq!(
+        Failure::of_turn(&cut).unwrap().message(),
+        "Codex stopped before finishing its image turn"
     );
 }
 

@@ -79,6 +79,8 @@ let heldSaves: Array<() => void> = [];
 let titleConnection = false;
 let pickerResult: string | null | undefined;
 let nextSaveFailure: string | null = null;
+/** How many of the next `openai_image_inputs` calls fail. */
+let inputFailures = 0;
 // Delay of the Preview-info queries, in ms: a native backend answers them over IPC, not within the same frame.
 let previewLatency = 0;
 const titleCalls: number[] = [];
@@ -170,7 +172,8 @@ configureBackend({
       }
       case "trace_title_connection": return reply(titleConnection);
       // AI edit inputs: every known image is present, 160×96, with a revision derived from its path.
-      case "openai_image_inputs": return reply((params.paths as string[]).map((path) => state.nodes.some((node) => node.path === path) || entryExtras.some((entry) => entry.path === path)
+      case "openai_image_inputs": if (inputFailures > 0) { inputFailures -= 1; return Promise.reject(new Error("The image service is busy")); }
+        return reply((params.paths as string[]).map((path) => state.nodes.some((node) => node.path === path) || entryExtras.some((entry) => entry.path === path)
         ? { path, digest: [...path].reduce((hash, char) => (hash * 33 + char.charCodeAt(0)) % 1e9, 5381).toString(16).padStart(64, "0"), width: 160, height: 96 }
         : { path, error: "Path not found" }));
       case "jobs.start": return reply(900 + calls.filter((call) => call.method === "jobs.start").length);
@@ -246,9 +249,11 @@ export const backend = {
   setPicker(result: string | null | undefined) { pickerResult = result; },
   /** The next save fails with this message (for example a filename collision). */
   failNextSave(message: string) { nextSaveFailure = message; },
+  /** The next `count` reads of AI edit inputs fail. */
+  failInputs(count: number) { inputFailures = count; },
   holdSaves() { holdSaves = true; },
   /** Answers run details, revision status and per-image traces after `ms`. */
   setPreviewLatency(ms: number) { previewLatency = ms; },
   releaseSaves() { holdSaves = false; const pending = heldSaves; heldSaves = []; pending.forEach((run) => run()); },
-  reset() { previewLatency = 0; pickerResult = undefined; nextSaveFailure = null; state = scenario(); version += 1; calls.length = 0; },
+  reset() { previewLatency = 0; pickerResult = undefined; nextSaveFailure = null; inputFailures = 0; state = scenario(); version += 1; calls.length = 0; },
 };

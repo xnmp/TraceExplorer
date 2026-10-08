@@ -8,6 +8,11 @@
  * ("extras") and remember the order in which images were picked, so Image 1…N
  * follow the user's clicks. The listed part stays the host's selection: the
  * resolved picks are the host selection in pick order, plus the extras.
+ *
+ * Picks are never trusted as stored: `reconcilePicks` checks them against the
+ * live state first. An extra whose image was saved, discarded, deleted or has
+ * become a listed file no longer counts, and a host selection the view did not
+ * make (Select all, Escape, a save selecting its file) replaces the extras.
  */
 import type { NodeKey, TraceNode } from "$lib/domain/trace-graph/model";
 
@@ -44,6 +49,52 @@ export function togglePick(picks: Picks, pick: Pick, listed: boolean, selected: 
     return { order: without(picks.order), extras: picks.extras.filter((extra) => extra.path !== pick.path) };
   }
   return { order: [...without(picks.order), pick.path], extras: [...picks.extras, pick] };
+}
+
+/** Removes the image a node key names, for example once its image is discarded. */
+export function dropPick(picks: Picks, key: NodeKey): Picks {
+  const gone = new Set(picks.extras.filter((extra) => extra.key === key).map((extra) => extra.path));
+  if (!gone.size) return picks;
+  return { order: picks.order.filter((path) => !gone.has(path)), extras: picks.extras.filter((extra) => extra.key !== key) };
+}
+
+/**
+ * Whether an extra still names an image that can be an input: its node is
+ * pickable at the picked path, and the host does not list that path (a listed
+ * image belongs to the host selection). `node` is `undefined` when it cannot be
+ * known yet (its component is not loaded): the extra is kept; `null` means the
+ * node is gone.
+ */
+export function extraIsLive(pick: Pick, node: TraceNode | null | undefined, listed: boolean): boolean {
+  if (listed) return false;
+  if (node === undefined) return true;
+  return node !== null && pickable(node) && node.path === pick.path;
+}
+
+const sameSelection = (a: readonly string[], b: readonly string[]) => {
+  if (a.length !== b.length) return false;
+  const set = new Set(a);
+  return b.every((path) => set.has(path));
+};
+
+/**
+ * The picks as they stand now. `basis` is the host selection the picks were
+ * last made against: when the host selection differs, something else changed
+ * it, so its selection wins (extras are dropped; still-selected images keep
+ * their pick order, newly selected ones follow). Otherwise extras that are no
+ * longer `live` are dropped.
+ */
+export function reconcilePicks(picks: Picks, basis: readonly string[], host: readonly string[], live: (pick: Pick) => boolean): Picks {
+  const selected = new Set(host);
+  if (!sameSelection(basis, host)) {
+    const kept = picks.order.filter((path) => selected.has(path));
+    const seen = new Set(kept);
+    return { order: [...kept, ...host.filter((path) => !seen.has(path))], extras: [] };
+  }
+  const extras = picks.extras.filter((extra) => !selected.has(extra.path) && live(extra));
+  if (extras.length === picks.extras.length) return picks;
+  const keep = new Set([...host, ...extras.map((extra) => extra.path)]);
+  return { order: picks.order.filter((path) => keep.has(path)), extras };
 }
 
 /** The selected images in pick order: picked paths still selected, then host selections not picked here. */

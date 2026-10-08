@@ -82,6 +82,10 @@ pub(super) fn read_turn(bytes: &[u8]) -> Result<Turn, StreamError> {
         reply: None,
         error: None,
     };
+    // `turn.failed`'s error is the reason; otherwise the last error event that
+    // is not a retry notice.
+    let mut failure: Option<String> = None;
+    let mut last_error: Option<String> = None;
     let lines: Vec<&[u8]> = bytes.split(|byte| *byte == b'\n').collect();
     let last = lines.len() - 1;
     for (index, line) in lines.into_iter().enumerate() {
@@ -108,10 +112,18 @@ pub(super) fn read_turn(bytes: &[u8]) -> Result<Turn, StreamError> {
             Some("item.completed") if event["item"]["type"] == "agent_message" => {
                 turn.reply = text(&event["item"]["text"]);
             }
-            Some("error") => turn.error = text(&event["message"]).or(turn.error),
+            Some("error") => {
+                if let Some(message) =
+                    text(&event["message"]).filter(|message| !retry_notice(message))
+                {
+                    last_error = Some(message);
+                }
+            }
             Some("turn.failed") => {
                 turn.status = TurnStatus::Failed;
-                turn.error = text(&event["error"]["message"]).or(turn.error);
+                failure = text(&event["error"]["message"])
+                    .filter(|message| !retry_notice(message))
+                    .or(failure);
             }
             Some("turn.completed") if turn.status != TurnStatus::Failed => {
                 turn.status = TurnStatus::Completed;
@@ -120,7 +132,17 @@ pub(super) fn read_turn(bytes: &[u8]) -> Result<Turn, StreamError> {
             _ => {}
         }
     }
+    turn.error = failure.or(last_error);
     Ok(turn)
+}
+
+/// Codex reports each transient stream retry ("Reconnecting... 2/5", or
+/// "Reconnecting... waiting for network") as a top-level `error` event: it
+/// emits stream errors as errors whether or not it will retry, and drops that
+/// flag from `--json` output. They are progress, not the reason a turn failed.
+fn retry_notice(message: &str) -> bool {
+    let message = message.trim_start();
+    message.starts_with("Reconnecting...") || message.starts_with("Reconnecting\u{2026}")
 }
 
 /// Only numeric token counts; anything else in `usage` is dropped.

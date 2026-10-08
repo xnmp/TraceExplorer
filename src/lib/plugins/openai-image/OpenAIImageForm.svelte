@@ -4,7 +4,7 @@
   import type { PluginJobs, PluginStorage, PluginToast } from "../api";
   import { describeImageInputs, type OpenAIImageRequest } from "$lib/api/openai-image";
   import { startImageJob } from "./image-jobs";
-  import { describeInputs, inputRequestFields, moveInput, removeInput, type ImageInput } from "$lib/domain/image-inputs";
+  import { describeInputs, inputRequestFields, moveInput, removeInput, withLiveInputs, type ImageInput } from "$lib/domain/image-inputs";
   import TraceThumbnail from "../trace/TraceThumbnail.svelte";
   import { basename } from "$lib/domain/path";
   import { imageOutputFilename } from "$lib/domain/image-output-filename";
@@ -29,8 +29,14 @@
   }
   let { open, onBusyChange = () => {}, captureSelection, inputs = [], outputDir,
     apiKey, codexPath = "", initialBackend = "codex", storage, onSaveSettings, jobs, toast, onClose }: Props = $props();
-  /** The edit's images: numbered in this order, which is the order they are sent. */
-  let images = $state.raw<readonly ImageInput[]>(untrack(() => inputs));
+  /** The edit's images as arranged here: order, removals, and what the backend reported. */
+  let arranged = $state.raw<readonly ImageInput[]>(untrack(() => inputs));
+  /**
+   * The edit's images, numbered in this order, which is the order they are
+   * sent. The caller stays live: the image editor keeps this form mounted while
+   * its source fills in (Image 1's size arrives once its preview has loaded).
+   */
+  const images = $derived(withLiveInputs(arranged, inputs));
   const editing = untrack(() => inputs.length > 0);
   let stripRef = $state<HTMLOListElement | null>(null);
   let selectedModel = $state("codex");
@@ -59,27 +65,42 @@
     untrack(() => { selectedModel = initialBackend === "api_key" ? "gpt-image-2" : "codex"; });
     void tick().then(() => promptRef?.focus());
   });
+  let describing: Promise<string | null> | null = null;
+  /** Reads each input's revision and size; resolves to why it could not, if it could not. Inputs keep what is already known. */
+  function describe(): Promise<string | null> {
+    describing ??= describeImageInputs(arranged.map((input) => input.path))
+      .then((result) => {
+        if (!result.ok) return `Could not read the input images: ${result.error}`;
+        if (alive) arranged = describeInputs(arranged, result.data.map(({ path, digest, width, height, error }) => ({
+          path, digest, error, size: width && height ? { width, height } : undefined,
+        })));
+        return null;
+      }, (cause: unknown) => `Could not read the input images: ${cause instanceof Error ? cause.message : String(cause)}`)
+      .finally(() => { describing = null; });
+    return describing;
+  }
   onMount(() => {
-    if (!images.length) return;
-    void describeImageInputs(images.map((input) => input.path)).then((result) => {
-      if (!alive) return;
-      if (result.ok) images = describeInputs(images, result.data.map(({ path, digest, width, height, error }) => ({
-        path, digest, error, size: width && height ? { width, height } : undefined,
-      })));
-      else error = `Could not read the input images: ${result.error}`;
-    });
+    if (!arranged.length) return;
+    void describe().then((problem) => { if (problem && alive) error = problem; });
   });
 
   async function move(index: number, to: number, control: "left" | "right"): Promise<void> {
     const path = images[index]?.path;
-    images = moveInput(images, index, to);
+    arranged = moveInput(arranged, index, to);
     await tick();
     // Keep focus on the moved image's control, so repeated presses keep moving it.
     const card = [...stripRef?.querySelectorAll<HTMLElement>("[data-input-path]") ?? []].find((element) => element.dataset.inputPath === path);
     const button = card?.querySelector<HTMLButtonElement>(`[data-move="${control}"]`);
     (button && !button.disabled ? button : card?.querySelector<HTMLButtonElement>("[data-move]:not(:disabled)"))?.focus();
   }
-  function remove(index: number): void { images = removeInput(images, index); }
+  async function remove(index: number): Promise<void> {
+    arranged = removeInput(arranged, index);
+    await tick();
+    // Focus moves to the next image's Remove button (the previous one's, after the last), or the strip.
+    const buttons = [...stripRef?.querySelectorAll<HTMLButtonElement>("[data-remove]") ?? []];
+    const next = buttons[Math.min(index, buttons.length - 1)];
+    (next && !next.disabled ? next : stripRef)?.focus();
+  }
   async function submit(): Promise<void> {
     if (submitting || settingsOpen || !prompt.trim()) return;
     submitting = true;
@@ -87,9 +108,15 @@
     let accepted = 0;
     try {
       if (!Number.isInteger(count) || count < 1 || count > 8) throw new Error("Choose between 1 and 8 images");
+      const keepsSize = editing && aspectRatio === "keep";
+      // A failed or unfinished read is tried again: it pins revisions and gives Image 1's size.
+      if (images.some((input) => !input.digest && !input.error) || (keepsSize && !images[0]?.size)) {
+        const problem = await describe();
+        if (problem && keepsSize && !images[0]?.size) throw new Error(`${problem}. Try again, or choose an aspect ratio`);
+      }
       const unusable = images.find((input) => input.error);
       if (unusable) throw new Error(`Remove ${basename(unusable.path)}: ${unusable.error}`);
-      if (editing && aspectRatio === "keep" && !images[0]?.size) throw new Error("Wait for Image 1 to load, or choose an aspect ratio");
+      if (keepsSize && !images[0]?.size) throw new Error("Wait for Image 1 to load, or choose an aspect ratio");
       const size = imageGenerationSize(resolution, aspectRatio, images[0]?.size);
       const outputFilename = imageOutputFilename(images[0] ? basename(images[0].path) : null);
       const fields = inputRequestFields(images);
@@ -111,6 +138,9 @@
       if (accepted) { toast.error(`Started ${accepted} of ${count} images: ${cause instanceof Error ? cause.message : String(cause)}`); if (alive) onClose(); return; }
       error = cause instanceof Error ? cause.message : String(cause);
       submitting = false;
+      // The prompt was disabled while submitting, which dropped its focus: give it back to try again.
+      await tick();
+      promptRef?.focus();
     }
   }
 
@@ -201,7 +231,7 @@
       {#if images.length}
         <div class="prompt-field">
           <span id="openai-image-inputs-label">Inputs <span class="hint">— Image 1, Image 2, … in the order sent</span></span>
-          <ol class="strip" aria-labelledby="openai-image-inputs-label" bind:this={stripRef}>
+          <ol class="strip" aria-labelledby="openai-image-inputs-label" tabindex="-1" bind:this={stripRef}>
             {#each images as input, index (input.path)}
               <li class="input-card" class:invalid={!!input.error} data-input-path={input.path} aria-label="Image {index + 1}: {basename(input.path)}">
                 <span class="thumb"><TraceThumbnail path={input.path} present={!input.error} revision={0} label="" /></span>
@@ -211,7 +241,7 @@
                 <span class="card-actions">
                   <button type="button" data-move="left" aria-label="Move Image {index + 1} earlier" title="Move earlier" disabled={submitting || index === 0} onclick={() => void move(index, index - 1, "left")}>‹</button>
                   <button type="button" data-move="right" aria-label="Move Image {index + 1} later" title="Move later" disabled={submitting || index === images.length - 1} onclick={() => void move(index, index + 1, "right")}>›</button>
-                  <button type="button" aria-label="Remove Image {index + 1}" title={images.length > 1 ? "Remove" : "An edit needs at least one image"} disabled={submitting || images.length <= 1} onclick={() => remove(index)}>×</button>
+                  <button type="button" data-remove aria-label="Remove Image {index + 1}" title={images.length > 1 ? "Remove" : "An edit needs at least one image"} disabled={submitting || images.length <= 1} onclick={() => void remove(index)}>×</button>
                 </span>
               </li>
             {/each}
@@ -268,6 +298,7 @@
   textarea { resize: vertical; min-height: 88px; box-sizing: border-box; }
   .hint { color: var(--text-tertiary); }
   .strip { display: flex; gap: 8px; margin: 0; padding: 2px 2px 6px; list-style: none; overflow-x: auto; }
+  .strip:focus-visible { outline: 2px solid var(--focus-stroke-outer); outline-offset: 1px; }
   .input-card { position: relative; flex: 0 0 96px; display: flex; flex-direction: column; gap: 2px; padding: 6px; border: 1px solid var(--control-stroke); border-radius: var(--radius-sm); background: var(--control-fill); }
   .input-card.invalid { border-color: var(--system-critical); }
   .thumb { display: block; height: 56px; overflow: hidden; border-radius: 4px; }
