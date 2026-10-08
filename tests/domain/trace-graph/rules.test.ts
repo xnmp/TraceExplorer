@@ -123,33 +123,32 @@ describe("limited visibility", () => {
     expect(visibleKeys(family, all, "edit").filter((key) => key.startsWith("v"))).toHaveLength(50);
   });
 
-  it("keeps a shared reference input from pulling in its other outputs (300 refined variations)", () => {
-    // Root R has 300 variations; each is refined with the same external style image.
-    const nodes = [node("R"), node("style", [], "external"),
-      ...Array.from({ length: 300 }, (_, index) => node(`a${index}`, ["R"])),
+  it("keeps a large refined batch in bounds: no siblings through a shared reference, at most the nearest 12 through a folder parent", () => {
+    // 300 variations of a base edit (not a root, so its children are not all shown anyway);
+    // each is refined with the same external style image.
+    const nodes = [node("R"), node("base", ["R"]), node("style", [], "external"),
+      ...Array.from({ length: 300 }, (_, index) => node(`a${index}`, ["base"])),
       ...Array.from({ length: 300 }, (_, index) => node(`s${index}`, [`a${index}`, "style"]))];
     const family = projectDag(nodes);
     const [all] = connectedComponents(family);
     const width = 900;
-    const before = planScene(family, all, null, width);
-    const scene = planScene(family, all, "s0", width);
-    // R, its 300 variations, s0 and its style input.
-    expect(scene.tiles.size).toBe(303);
-    expect(scene.tiles.size - before.tiles.size).toBeLessThanOrEqual(2 + SIBLING_LIMIT);
-    const start = performance.now();
-    const layout = layoutGraph(scene.request);
-    // Generous for CI variance; the 602-tile neighbourhood this replaced took over half a second here.
-    expect(performance.now() - start).toBeLessThan(1500);
-    expect(layout.width).toBeLessThanOrEqual(width * 1.05);
-  });
-
-  it("shows siblings in the scene, styled as outside the selected node's lineage", () => {
-    const family = projectDag([node("root"), node("a", ["root"]), node("b", ["a"]), node("b2", ["a"]), node("c", ["b"])]);
-    const [all] = connectedComponents(family);
-    const scene = planScene(family, all, "b", 900);
-    expect([...scene.tiles.keys()].sort()).toEqual(["a", "b", "b2", "c", "root"].sort());
-    expect(scene.tiles.get("b2")!.tone).toBe("unrelated");
-    expect(scene.tiles.get("a")!.tone).toBe("related");
+    const check = (focus: string, expected: number) => {
+      const scene = planScene(family, all, focus, width);
+      expect(scene.tiles.size, focus).toBe(expected);
+      const start = performance.now();
+      const layout = layoutGraph(scene.request);
+      // Generous for CI variance; the 602-tile neighbourhood this replaced took over half a second here.
+      expect(performance.now() - start, focus).toBeLessThan(1500);
+      expect(layout.width, focus).toBeLessThanOrEqual(width * 1.05);
+      return scene;
+    };
+    // A refinement: its own lineage only (R, base, a0, s0, style), not the 299 other refinements of style.
+    check("s0", 5);
+    // A variation: its lineage, its refinement and its input, plus 12 sibling variations; base hints at the rest.
+    const variation = check("a150", 5 + SIBLING_LIMIT);
+    const shownVariations = [...variation.tiles.keys()].filter((key) => /^a\d+$/.test(key)).sort((a, b) => Number(a.slice(1)) - Number(b.slice(1)));
+    expect(shownVariations).toEqual(Array.from({ length: 13 }, (_, index) => `a${144 + index}`));
+    expect(variation.tiles.get("base")!.hiddenDescendants).toBeGreaterThanOrEqual(300 - 13);
   });
 
   it("treats only folder images without folder parents as roots", () => {

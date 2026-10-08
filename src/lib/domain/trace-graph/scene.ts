@@ -9,7 +9,7 @@ import type { TraceDag } from "./projection";
 import { lineage, toneOf, type Lineage, type NodeTone } from "./lineage";
 import { hiddenDescendantCount, visibleKeys } from "./visibility";
 import { tileSize, type TileSize } from "./metrics";
-import { chooseOrientation, componentIdentity, generationProfile, sidewaysWidth } from "./orientation";
+import { chooseOrientation, generationProfile, sidewaysWidth } from "./orientation";
 import type { GraphLayout, LayoutItem, LayoutRequest, Orientation, PlacedRoute } from "./layout";
 
 export interface SceneTile {
@@ -27,22 +27,20 @@ export interface ScenePlan {
   readonly lineage: Lineage;
   readonly tiles: ReadonlyMap<NodeKey, SceneTile>;
   readonly request: LayoutRequest;
-  /** The component's stable identity (`componentIdentity`), under which callers remember its orientation. */
-  readonly identity: NodeKey | null;
 }
 
 export interface SceneOptions {
   /** Previous reading order, so siblings keep their places (see `LayoutRequest.hint`). */
   readonly hint?: ReadonlyMap<NodeKey, number>;
   /**
-   * Orientations components were last shown with, by identity. A remembered
-   * orientation is kept until the rule fails by a clear margin (orientation.ts).
+   * The orientation the component is currently shown with, if any; it is
+   * kept until the rule fails by a clear margin (orientation.ts).
    */
-  readonly orientations?: ReadonlyMap<NodeKey, Orientation>;
+  readonly previous?: Orientation;
 }
 
 export function planScene(dag: TraceDag, members: readonly NodeKey[], focus: NodeKey | null, maxWidth: number, options: SceneOptions = {}): ScenePlan {
-  const { hint, orientations } = options;
+  const { hint, previous } = options;
   const inComponent = focus !== null && members.includes(focus);
   const context = lineage(dag, inComponent ? focus : null);
   // Lineage of an out-of-component focus still dims this component entirely.
@@ -62,11 +60,10 @@ export function planScene(dag: TraceDag, members: readonly NodeKey[], focus: Nod
   }
   // Decided from the whole component, never the focus, so selection cannot flip it.
   // Running right, the canvas is sized for the whole component, so it does not re-centre as generations appear.
-  const identity = componentIdentity(dag, members);
   const profile = generationProfile(dag, members);
-  const orientation = chooseOrientation(profile, maxWidth, identity === null ? undefined : orientations?.get(identity));
+  const orientation = chooseOrientation(profile, maxWidth, previous);
   const extent = orientation === "right" ? sidewaysWidth(profile) : undefined;
-  return { lineage: effective, tiles, identity, request: { items, maxWidth, hint, orientation, extent } };
+  return { lineage: effective, tiles, request: { items, maxWidth, hint, orientation, extent } };
 }
 
 export type RouteKind = "current" | "subfolder" | "external";

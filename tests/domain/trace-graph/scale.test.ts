@@ -7,7 +7,7 @@ import { describe, expect, it } from "vitest";
 import { connectedComponents, projectDag } from "$lib/domain/trace-graph/projection";
 import { planScene } from "$lib/domain/trace-graph/scene";
 import { layoutGraph } from "$lib/domain/trace-graph/layout";
-import { generationProfile } from "$lib/domain/trace-graph/orientation";
+import { chooseOrientation, generationProfile, sidewaysWidth } from "$lib/domain/trace-graph/orientation";
 import type { TraceNode } from "$lib/domain/trace-graph/model";
 import { node, random, tileOverlaps } from "./fixtures";
 
@@ -72,6 +72,32 @@ describe("large folders", () => {
     const broad = timed(() => generationProfile(styled, [...styled.order]));
     expect(broad.value).toMatchObject({ depth: 2, breadth: 3001 });
     expect(broad.ms).toBeLessThan(500);
+  }, HEAVY);
+
+  it("decides the orientation of components with many multi-input outputs quickly", () => {
+    const next = random(7);
+    // 200 outputs of 20 inputs each from a pool of 60 images: far broader than deep, so the
+    // junction estimate (quadratic in the inputs) is never computed.
+    const pool = Array.from({ length: 60 }, (_, index) => node(`p${index}`));
+    const crowded = projectDag([...pool, ...Array.from({ length: 200 }, (_, index) =>
+      node(`o${index}`, [...new Set(Array.from({ length: 20 }, () => `p${Math.floor(next() * 60)}`))]))]);
+    const broad = timed(() => chooseOrientation(generationProfile(crowded, [...crowded.order]), 1600));
+    expect(broad.value).toBe("down");
+    expect(broad.ms).toBeLessThan(100);
+    // Deep and narrow enough to run sideways: twelve generations of eight images, each combining
+    // three of the previous generation (88 multi-input outputs, 264 inputs), so the exact estimate runs.
+    const deep: TraceNode[] = Array.from({ length: 8 }, (_, index) => node(`g0-${index}`));
+    for (let level = 1; level < 12; level++) for (let index = 0; index < 8; index++) {
+      deep.push(node(`g${level}-${index}`, [0, 1, 2].map((offset) => `g${level - 1}-${(index + offset * 3) % 8}`)));
+    }
+    const dag = projectDag(deep);
+    const exact = timed(() => {
+      const profile = generationProfile(dag, [...dag.order]);
+      return { orientation: chooseOrientation(profile, 3000), width: sidewaysWidth(profile) };
+    });
+    expect(exact.value.orientation).toBe("right");
+    expect(exact.value.width).toBeLessThanOrEqual(3000);
+    expect(exact.ms).toBeLessThan(250);
   }, HEAVY);
 
   it("projects a 10,000-image folder of many components and lays out a focused one", () => {

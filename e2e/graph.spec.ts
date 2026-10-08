@@ -236,6 +236,42 @@ test.describe("wide layouts", () => {
     expect(await uncaught(page)).toEqual([]);
   });
 
+  test("the view remembers a component's orientation while images are saved into it, and forgets it in another folder", async ({ page }) => {
+    await openView(page, 900);
+    const [forest, mist, autumn] = await Promise.all(["forest", "forest-mist", "autumn"].map((name) => key(page, name)));
+    const flow = async () => {
+      const boxes = await tileBoxes(page, 1);
+      const children = [mist, autumn, ...extra].filter((k) => boxes[k]);
+      if (children.every((k) => boxes[k].x >= boxes[forest].x + boxes[forest].width)) return "right";
+      if (children.every((k) => boxes[k].y >= boxes[forest].y + boxes[forest].height)) return "down";
+      return "mixed";
+    };
+    const extra: string[] = [];
+    const visit = async (folder: string) => {
+      await page.evaluate((path) => (window as any).trace.navigate(path), folder);
+      await expect(page.locator(`[data-tile-key="${forest}"]`)).toBeVisible();
+      await page.waitForTimeout(150);
+      await settle(page);
+    };
+    // Visit the mirror once, so switching to it later keeps the same view mounted.
+    await visit("/pictures-mirror");
+    await visit("/pictures");
+    expect(await flow()).toBe("right");
+    // A third saved edit of the root: a little broader than deep. Shown sideways, it stays so.
+    extra.push(await page.evaluate(() => (window as any).trace.backend.startGeneration("forest", "third")));
+    await page.evaluate(() => { const b = (window as any).trace.backend; b.completeGeneration("third"); b.saveGeneration("third"); });
+    await expect(page.locator(`[data-tile-key="${extra[0]}"]`)).toBeVisible();
+    await page.waitForTimeout(150);
+    await settle(page);
+    expect(await flow()).toBe("right");
+    // Another folder whose components happen to have the same ids remembers nothing: the plain rule lays it out top to bottom.
+    await page.evaluate(() => { (document.querySelector("[data-testid=trace-view]") as any).__marked = true; });
+    await visit("/pictures-mirror");
+    expect(await page.evaluate(() => (document.querySelector("[data-testid=trace-view]") as any).__marked), "same view instance").toBe(true);
+    expect(await flow()).toBe("down");
+    expect(await uncaught(page)).toEqual([]);
+  });
+
   test("an open tile's chevron points towards its children: down, or right when the component runs left to right", async ({ page }) => {
     await openView(page, 900);
     const chevron = async (name: string) => (await tile(page, name)).locator(".chevron").evaluate((svg) => {
