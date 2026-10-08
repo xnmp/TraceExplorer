@@ -201,6 +201,9 @@ pub(crate) struct ImageRunHistory {
     run: Run,
     output_path: Option<String>,
     prepared_output_path: Option<String>,
+    /// The run's inputs in submission order, as captured (path and digest),
+    /// so a failed request can be resubmitted with the same inputs.
+    inputs: Vec<OperationInput>,
 }
 
 fn read_run(row: &rusqlite::Row<'_>) -> rusqlite::Result<Run> {
@@ -259,17 +262,28 @@ pub(crate) fn recent_image_runs_at(database: &Path) -> Result<Vec<ImageRunHistor
                 None
             };
             let mut inputs = connection
-                .prepare("SELECT artifact_id FROM run_inputs WHERE run_id=?1 ORDER BY position")
+                .prepare("SELECT i.artifact_id,a.path,a.digest FROM run_inputs i JOIN artifacts a ON a.id=i.artifact_id WHERE i.run_id=?1 ORDER BY i.position")
                 .map_err(sql)?;
-            run.input_ids = inputs
-                .query_map([run.id], |row| row.get(0))
+            let rows = inputs
+                .query_map([run.id], |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        OperationInput {
+                            path: row.get(1)?,
+                            digest: row.get(2)?,
+                        },
+                    ))
+                })
                 .map_err(sql)?
                 .collect::<Result<Vec<_>, _>>()
                 .map_err(sql)?;
+            let (input_ids, inputs) = rows.into_iter().unzip();
+            run.input_ids = input_ids;
             Ok(ImageRunHistory {
                 run,
                 output_path,
                 prepared_output_path,
+                inputs,
             })
         })
         .collect()

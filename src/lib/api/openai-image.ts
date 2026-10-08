@@ -5,6 +5,8 @@ export interface OpenAIImageRunHistory {
   readonly run: TraceRun;
   readonly outputPath: string | null;
   readonly preparedOutputPath?: string | null;
+  /** Inputs in submission order, as captured. Absent from older backends. */
+  readonly inputs?: readonly { readonly path: string; readonly digest: string }[];
 }
 
 export async function recentOpenAIImageRuns(): Promise<ApiResult<OpenAIImageRunHistory[]>> {
@@ -21,6 +23,8 @@ export interface OpenAIImageRequest {
   /** Expected revision shown by the host editor; checked before contacting the provider. */
   expectedSourceDigest?: string;
   referencePaths?: string[];
+  /** Expected revisions of `referencePaths`, in order; checked before contacting the provider. */
+  expectedReferenceDigests?: string[];
   prompt: string;
   outputDir: string;
   outputFilename: string;
@@ -30,6 +34,8 @@ export interface OpenAIImageRequest {
   aspectRatio?: string;
   quality: "auto" | "low" | "medium" | "high";
   background: "auto" | "opaque" | "transparent";
+  /** The failed run this request retries, recorded as provenance. */
+  retryOf?: number;
 }
 
 export async function startOpenAIImageJob(request: OpenAIImageRequest, apiKey: string): Promise<ApiResult<number>> {

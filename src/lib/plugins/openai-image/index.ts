@@ -57,7 +57,7 @@ export const openAIImagePlugin: Plugin = {
     ctx.registerDialog({ id: "openai-image.history", component: OpenAIImageHistory });
     ctx.registerCommand({
       id: "plugin.openai-image.history", label: "OpenAI: Image Run History", category: "plugins",
-      handler: () => ctx.openDialog("openai-image.history"),
+      handler: () => ctx.openDialog("openai-image.history", { jobs: ctx.jobs, storage: ctx.storage }),
     });
     ctx.registerContextMenuItem({
       id: "openai-image.edit", label: "Edit with OpenAI", group: "ai",

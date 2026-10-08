@@ -61,5 +61,6 @@ describe("OpenAI plugin SDK contributions",()=>{
     expect(f.opened.at(-1)).toMatchObject({id:"openai-image.create",props:{sourcePath:null,outputDir:"/media",codexPath:"/opt/custom tools/codex"}});
     await f.commands.find(command=>command.id==="plugin.openai-image.history")!.handler();
     expect(f.opened.at(-1)?.id).toBe("openai-image.history");
+    expect(f.opened.at(-1)?.props).toMatchObject({jobs:f.ctx.jobs,storage:f.ctx.storage});
   });
 });

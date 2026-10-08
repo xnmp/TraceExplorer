@@ -1,0 +1,10 @@
+import { mount } from "svelte";
+import { applyTheme } from "./themes";
+import ImageHarness from "./ImageHarness.svelte";
+const query = new URLSearchParams(location.search);
+applyTheme(query.get("theme"));
+const errors: string[] = [];
+window.addEventListener("error", (event) => errors.push(event.message));
+window.addEventListener("unhandledrejection", (event) => errors.push(String(event.reason)));
+const application = mount(ImageHarness, { target: document.querySelector("#app")! }) as { harness: Record<string, unknown> };
+(window as any).image = { ...application.harness, errors };

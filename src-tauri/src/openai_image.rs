@@ -25,6 +25,7 @@ const HTTP_TIMEOUT: Duration = Duration::from_secs(180);
 
 mod codex;
 mod codex_executable;
+mod codex_turn;
 
 pub(crate) fn prompt_title(prompt: &str, executable: &str) -> Result<String, AppError> {
     codex::prompt_title(prompt, executable)
@@ -55,6 +56,10 @@ pub(crate) struct ImageRequest {
     pub expected_source_digest: Option<String>,
     #[serde(default)]
     pub reference_paths: Vec<String>,
+    /// Expected revisions of `reference_paths`, in order; checked before
+    /// contacting the provider. Empty when the caller does not pin them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub expected_reference_digests: Vec<String>,
     pub prompt: String,
     pub output_dir: String,
     pub output_filename: String,
@@ -66,6 +71,9 @@ pub(crate) struct ImageRequest {
     pub aspect_ratio: Option<String>,
     pub quality: String,
     pub background: String,
+    /// The failed run this request retries, recorded as provenance.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retry_of: Option<i64>,
 }
 
 struct CapturedInput {
@@ -93,6 +101,17 @@ fn validate_request(request: &ImageRequest) -> Result<PathBuf, AppError> {
         })
     {
         return Err(invalid("Invalid expected source revision"));
+    }
+    if !request.expected_reference_digests.is_empty()
+        && (request.expected_reference_digests.len() != request.reference_paths.len()
+            || !request.expected_reference_digests.iter().all(|digest| {
+                digest.len() == 64 && digest.bytes().all(|byte| byte.is_ascii_hexdigit())
+            }))
+    {
+        return Err(invalid("Invalid expected reference revisions"));
+    }
+    if request.retry_of.is_some_and(|run| run <= 0) {
+        return Err(invalid("Invalid retried run"));
     }
     if request.reference_paths.len() >= MAX_INPUTS
         || (request.source_path.is_none() && !request.reference_paths.is_empty())
@@ -267,14 +286,33 @@ fn capture_inputs(request: &ImageRequest) -> Result<Vec<CapturedInput>, AppError
             .is_none_or(|input| !input.digest.eq_ignore_ascii_case(expected))
         {
             return Err(invalid(
-                "The source image changed since the editor opened. Reopen it before editing.",
+                "The source image changed since this edit was requested. Reopen it to edit the current version.",
             ));
         }
+    }
+    if !request.expected_reference_digests.is_empty()
+        && inputs
+            .iter()
+            .skip(1)
+            .zip(&request.expected_reference_digests)
+            .any(|(input, expected)| !input.digest.eq_ignore_ascii_case(expected))
+    {
+        return Err(invalid(
+            "A reference image changed since this request was made. Start a new edit with the current images.",
+        ));
     }
     Ok(inputs)
 }
 
 fn recipe(request: &ImageRequest, inputs: &[CapturedInput]) -> trace::OperationStart {
+    let mut start = submitted_recipe(request, inputs);
+    if let Some(run) = request.retry_of {
+        start.parameters["retry_of"] = run.into();
+    }
+    start
+}
+
+fn submitted_recipe(request: &ImageRequest, inputs: &[CapturedInput]) -> trace::OperationStart {
     trace::OperationStart {
         operation: if !inputs.is_empty() {
             "openai.image.edit"

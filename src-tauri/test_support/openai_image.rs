@@ -12,6 +12,7 @@ fn request(dir: &Path, source: Option<&Path>) -> ImageRequest {
         source_path: source.map(|path| path.to_string_lossy().into_owned()),
         expected_source_digest: None,
         reference_paths: vec![],
+        expected_reference_digests: vec![],
         prompt: "Preserve the face; add a warm lantern".into(),
         output_dir: dir.to_string_lossy().into_owned(),
         output_filename: "result.png".into(),
@@ -21,6 +22,7 @@ fn request(dir: &Path, source: Option<&Path>) -> ImageRequest {
         aspect_ratio: None,
         quality: "low".into(),
         background: "auto".into(),
+        retry_of: None,
     }
 }
 
@@ -424,7 +426,7 @@ fn an_editor_revision_change_is_refused_before_provider_submission() {
         .err()
         .unwrap()
         .to_string()
-        .contains("changed since the editor opened"));
+        .contains("changed since this edit was requested"));
 }
 
 #[test]
@@ -462,4 +464,82 @@ fn unbatched_request_identity_is_compatible_with_pre_batch_receipts() {
         hex::encode(Sha256::digest(serde_json::to_vec(&reloaded).unwrap())),
         hex::encode(Sha256::digest(legacy.as_bytes()))
     );
+}
+
+#[test]
+fn a_failed_runs_history_carries_its_ordered_inputs_and_codexs_explanation() {
+    let dir = crate::test_support::tempdir().unwrap();
+    let db = dir.path().join("trace.sqlite");
+    let source = dir.path().join("source.png");
+    let reference = dir.path().join("reference.png");
+    std::fs::write(&source, PNG).unwrap();
+    std::fs::write(&reference, include_bytes!("fixtures/source.png")).unwrap();
+    let mut request = request(dir.path(), Some(&source));
+    request.reference_paths = vec![reference.to_string_lossy().into_owned()];
+    let inputs = capture_inputs(&request).unwrap();
+    let target = validate_request(&request).unwrap();
+    let run = trace::begin_operation_for_test(&db, recipe(&request, &inputs)).unwrap();
+    let explanation = json!({"stage":"no_image","codex_reply":{"text":"I can’t make that edit.","truncated":false}});
+    assert!(
+        execute_recorded(&run, &target, &plugin_job::JobControl::new(), || {
+            trace::record_operation_details(&run, &explanation)?;
+            Err(invalid("Codex replied without generating an image: “I can’t make that edit.”"))
+        })
+        .is_err()
+    );
+    let history = serde_json::to_value(trace::recent_image_runs_at(&db).unwrap()).unwrap();
+    assert_eq!(history[0]["run"]["status"], "failed");
+    assert_eq!(history[0]["run"]["details"], explanation);
+    let recorded: Vec<(String, String)> = history[0]["inputs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|input| {
+            (
+                input["path"].as_str().unwrap().to_owned(),
+                input["digest"].as_str().unwrap().to_owned(),
+            )
+        })
+        .collect();
+    let captured: Vec<(String, String)> = inputs
+        .iter()
+        .map(|input| (input.path.clone(), input.digest.clone()))
+        .collect();
+    assert_eq!(recorded, captured);
+}
+
+#[test]
+fn a_retry_pins_every_input_revision_and_records_the_run_it_retries() {
+    let dir = crate::test_support::tempdir().unwrap();
+    let source = dir.path().join("source.png");
+    let reference = dir.path().join("reference.png");
+    std::fs::write(&source, PNG).unwrap();
+    std::fs::write(&reference, include_bytes!("fixtures/source.png")).unwrap();
+    let mut retry = request(dir.path(), Some(&source));
+    retry.reference_paths = vec![reference.to_string_lossy().into_owned()];
+    let original = capture_inputs(&retry).unwrap();
+    retry.expected_source_digest = Some(original[0].digest.clone());
+    retry.expected_reference_digests = vec![original[1].digest.clone()];
+    retry.retry_of = Some(42);
+    assert!(validate_request(&retry).is_ok());
+    let inputs = capture_inputs(&retry).unwrap();
+    let recorded = recipe(&retry, &inputs);
+    assert_eq!(recorded.parameters["retry_of"], 42);
+    assert_eq!(recorded.inputs.len(), 2);
+    assert!(recipe(&request(dir.path(), None), &[]).parameters.get("retry_of").is_none());
+
+    std::fs::write(&reference, PNG).unwrap();
+    assert!(capture_inputs(&retry)
+        .err()
+        .unwrap()
+        .to_string()
+        .contains("A reference image changed"));
+
+    for invalid_request in [
+        ImageRequest { expected_reference_digests: vec![], retry_of: Some(0), ..retry.clone() },
+        ImageRequest { expected_reference_digests: vec!["0".repeat(64), "0".repeat(64)], ..retry.clone() },
+        ImageRequest { expected_reference_digests: vec!["not hex".into()], ..retry.clone() },
+    ] {
+        assert!(validate_request(&invalid_request).is_err());
+    }
 }
