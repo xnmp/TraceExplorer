@@ -58,5 +58,5 @@
   button:disabled { opacity: .5; cursor: default; }
   button:focus-visible { outline: 2px solid var(--focus-stroke-outer); outline-offset: 2px; }
   p { font-size: 11px; overflow-wrap: anywhere; margin: 4px 0; }
-  .error { color: var(--system-critical-text); }
+  .error { color: var(--system-critical-text, var(--system-critical)); }
 </style>

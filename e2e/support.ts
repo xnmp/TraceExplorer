@@ -61,9 +61,9 @@ export const overlaps = (boxes: Record<string, Box>): Array<[string, string]> =>
 };
 
 /** Names of rendered tiles, optionally limited to those with a given data attribute value. */
-export const rendered = (page: Page, attribute?: "size" | "tone", value?: string): Promise<string[]> => page.evaluate(({ attribute, value }) => {
+export const rendered = (page: Page, attribute?: "tone", value?: string): Promise<string[]> => page.evaluate(({ attribute, value }) => {
   const b = (window as any).trace.backend;
-  const names = ["village", "palette", "mist", "lantern", "daylight", "warm", "cool", "morning", "sunny", "evening", "rain", "merge", "quiet", "forest", "forest-mist", "autumn", "fan", "gen",
+  const names = ["village", "palette", "mist", "lantern", "daylight", "warm", "cool", "morning", "sunny", "evening", "rain", "merge", "quiet", "dawn", "noon", "dusk", "forest", "forest-mist", "autumn", "fan", "gen",
     ...Array.from({ length: 18 }, (_, i) => `fan-${i + 1}`)];
   const lookup = new Map(names.map((name) => [b.key(name), name] as const));
   return [...document.querySelectorAll<HTMLElement>("[data-tile-key]")]

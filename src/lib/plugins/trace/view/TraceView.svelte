@@ -352,13 +352,13 @@
   .cover :global(.placeholder) { font-size: 12px; }
   .name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
   .count { color: var(--text-secondary); white-space: nowrap; }
-  .unsaved { padding: 0 6px; font-size: 11px; line-height: 16px; color: var(--system-caution-text, #865413); border: 1px solid currentColor; border-radius: 8px; }
+  .unsaved { padding: 0 6px; font-size: 11px; line-height: 16px; color: var(--system-caution-text, var(--system-caution)); border: 1px solid currentColor; border-radius: 8px; }
   .dimmed .cover { filter: grayscale(.45); opacity: .78; }
   .content { border-top: 1px solid var(--divider, var(--control-stroke)); overflow-x: auto; overflow-y: hidden; scrollbar-width: thin; }
   .placeholder { display: grid; place-items: center; color: var(--text-secondary); font-size: 12px; }
   .message { display: flex; flex-direction: column; align-items: center; gap: 10px; padding: 40px 12px; color: var(--text-secondary); }
   .message button { padding: 4px 12px; font: inherit; color: var(--text-primary); background: var(--control-fill); border: 1px solid var(--control-stroke); border-radius: var(--radius-sm); cursor: pointer; }
-  .notice { margin: 0 0 10px; font-size: 12px; color: var(--system-critical-text, #c42b1c); }
+  .notice { margin: 0 0 10px; font-size: 12px; color: var(--system-critical-text, var(--system-critical)); }
   .spinner { width: 12px; height: 12px; flex: none; border: 2px solid var(--divider); border-top-color: var(--accent); border-radius: 50%; animation: spin 800ms linear infinite; }
   @keyframes spin { to { transform: rotate(360deg); } }
   @media (prefers-reduced-motion: reduce) { .spinner { animation: none; } }

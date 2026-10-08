@@ -7,9 +7,9 @@ Replace the separate Trace pane with a plugin-contributed Explorer view. Use the
 - Trace replaces the main file listing. Choose it through existing settings and commands; add no view selector, search box, or inspector toolbar.
 - Reuse the existing Preview pane. Add prompt, generation parameters, input references, and collapsible Raw metadata to Preview info.
 - Render a regular DAG with one image node per artifact. Group connected components into explicitly separated, collapsible sections. Keep files and folders without provenance accessible in an ordinary section.
-- Only the focused node, its direct parents, and its direct children are large. All other nodes are small. Ancestors and descendants retain color; unrelated nodes are slightly greyed out and remain interactive. Multiple selection has one primary focus. Without a focus, show small nodes without lineage dimming.
+- All nodes have the same (small) size, whatever the focus; the selection and focus are shown by tile styling, not size. (Revised: an earlier version enlarged the focus and its direct neighbours, which made selection changes jarring.) Ancestors and descendants retain color; unrelated nodes are slightly greyed out and remain interactive. Multiple selection has one primary focus. Without a focus, show small nodes without lineage dimming.
 - Show only limited context: roots and their immediate children, the selected node's ancestry and direct children, and any additional parents needed to explain visible outputs. Previous selections must not accumulate expanded branches.
-- Distinguish inputs in the current folder, nested subfolders, and outside the folder tree. Use relative paths/folder markers for subfolders and outward arrows/location markers for external inputs. Retain these markers when a direct neighbor enlarges.
+- Distinguish inputs in the current folder, nested subfolders, and outside the folder tree. Use relative paths/folder markers for subfolders and outward arrows/location markers for external inputs. Retain these markers in every selection state.
 - Temporary/reference clicks update selection and Preview without navigating Explorer into their storage folder. Preserve Unsaved indicators, hover save/delete controls, default collision-safe saves, and optional Save as.
 
 ## 1. Add the host interfaces

@@ -1,15 +1,14 @@
 /**
- * Focus and lineage classification. Only the focused node, its direct parents
- * and its direct children are large. Ancestors and descendants are related;
- * everything else is unrelated (dimmed, still interactive). Without a focus
- * nothing is large and nothing is dimmed.
+ * Focus and lineage classification. Ancestors and descendants of the focused
+ * node are related; everything else is unrelated (dimmed, still interactive).
+ * Without a focus nothing is dimmed. Lineage changes styling only, never tile
+ * sizes.
  */
 import type { NodeKey } from "./model";
 import type { TraceDag } from "./projection";
 
 export interface Lineage {
   readonly focus: NodeKey | null;
-  readonly large: ReadonlySet<NodeKey>;
   readonly related: ReadonlySet<NodeKey>;
 }
 
@@ -23,16 +22,10 @@ const walk = (start: NodeKey, next: (key: NodeKey) => readonly NodeKey[]): Set<N
 };
 
 export function lineage(dag: TraceDag, focus: NodeKey | null): Lineage {
-  if (focus === null || !dag.nodes.has(focus)) return { focus: null, large: new Set(), related: new Set() };
-  const parents = dag.parents.get(focus)!;
-  const children = dag.children.get(focus)!;
+  if (focus === null || !dag.nodes.has(focus)) return { focus: null, related: new Set() };
   const ancestors = walk(focus, (key) => dag.parents.get(key) ?? []);
   const descendants = walk(focus, (key) => dag.children.get(key) ?? []);
-  return {
-    focus,
-    large: new Set([focus, ...parents, ...children]),
-    related: new Set([...ancestors, ...descendants]),
-  };
+  return { focus, related: new Set([...ancestors, ...descendants]) };
 }
 
 export function toneOf(context: Lineage, key: NodeKey): NodeTone {
