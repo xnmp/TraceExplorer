@@ -48,6 +48,12 @@ export type PreviewSubject =
   | { readonly kind: "file"; readonly entry: FileEntry; readonly paneId: string | null }
   | { readonly kind: "target"; readonly target: PreviewTarget; readonly pluginId: string; readonly paneId: string | null };
 export interface FileViewContribution { id: string; title: string; component: Component<any>; props?: Record<string, unknown>; available?(directory: string): boolean }
+/**
+ * A Preview-info section. It spans the pane's width below the host's own info
+ * rows. Hosts that set `--preview-info-inset` (the inset of their rows in the
+ * current dock) let a section pad by it to line up with them; use a fallback,
+ * since older hosts do not define it.
+ */
 export interface PreviewInfoContribution { id: string; component: Component<any>; props?: Record<string, unknown>; when(subject: PreviewSubject): boolean }
 
 export interface PluginContext {

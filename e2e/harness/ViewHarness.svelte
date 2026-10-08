@@ -3,6 +3,10 @@
    * A minimal SDK-2 host: one Explorer pane that renders the registered file
    * view (or a built-in list where it is unavailable), and a Preview pane that
    * shows files or plugin Preview targets with their info sections.
+   *
+   * The Preview mirrors the host's side dock: a header, the image centred in
+   * the space left over, the host's own info rows, then the plugin sections,
+   * which inherit the host's `--preview-info-inset`.
    */
   import type { Component } from "svelte";
   import type { FileViewContribution, FileViewPane, PluginContext, PreviewInfoContribution, PreviewSubject, PreviewTarget } from "../../integration/plugin-sdk";
@@ -118,26 +122,39 @@
     {/if}
   </section>
   <aside class="preview" aria-label="Preview">
-    {#if target}
-      <h2 data-testid="preview-title">{target.title}</h2>
-      {#if target.badge}<span class="badge" data-testid="preview-badge">{target.badge}</span>{/if}
-      <div class="actions">
-        {#each target.actions ?? [] as action (action.id)}
-          <button type="button" disabled={action.disabled} title={action.title} onclick={() => run(action)}>{action.label}</button>
-        {/each}
-      </div>
-      {#each target.details ?? [] as detail}<p class="detail">{detail.label}: {detail.value}</p>{/each}
-      {#if actionError}<p role="alert">{actionError}</p>{/if}
-    {:else if selection.length === 1}
-      <h2 data-testid="preview-title">{selection[0].name}</h2>
-    {:else if selection.length}
-      <h2 data-testid="preview-title">{selection.length} items</h2>
-    {/if}
+    <header>
+      {#if target}
+        <h2 data-testid="preview-title">{target.title}</h2>
+        {#if target.badge}<span class="badge" data-testid="preview-badge">{target.badge}</span>{/if}
+        <div class="actions">
+          {#each target.actions ?? [] as action (action.id)}
+            <button type="button" disabled={action.disabled} title={action.title} onclick={() => run(action)}>{action.label}</button>
+          {/each}
+        </div>
+        {#each target.details ?? [] as detail}<p class="detail">{detail.label}: {detail.value}</p>{/each}
+        {#if actionError}<p role="alert">{actionError}</p>{/if}
+      {:else if selection.length === 1}
+        <h2 data-testid="preview-title">{selection[0].name}</h2>
+      {:else if selection.length}
+        <h2 data-testid="preview-title">{selection.length} items</h2>
+      {/if}
+    </header>
     {#if subject}
-      {#each shownSections as section (section.id)}
-        {@const Section = section.component as Component<any>}
-        <Section {...section.props} {subject} />
-      {/each}
+      <div class="content"><div class="image" data-testid="preview-image"></div></div>
+      {#if subject.kind === "file"}
+        <div class="info" data-testid="host-info">
+          <div class="info-row"><span class="info-label">Size</span><span class="info-value">32 B</span></div>
+          <div class="info-row"><span class="info-label">Modified</span><span class="info-value">1d</span></div>
+        </div>
+      {/if}
+      {#if shownSections.length}
+        <div class="sections">
+          {#each shownSections as section (section.id)}
+            {@const Section = section.component as Component<any>}
+            <Section {...section.props} {subject} />
+          {/each}
+        </div>
+      {/if}
     {/if}
   </aside>
 </main>
@@ -148,7 +165,17 @@
   main { display: flex; height: 100vh; }
   .explorer { display: flex; flex-direction: column; width: var(--view-width); min-width: 0; border-right: 1px solid var(--divider); background: var(--background-solid); }
   .file-view { display: flex; flex-direction: column; flex: 1; min-height: 0; }
-  .preview { flex: 1; min-width: 240px; padding: 12px; overflow: auto; }
+  /* Mirrors the host's side-dock Preview (PreviewPane.svelte). */
+  .preview { --preview-info-inset: 16px; display: flex; flex-direction: column; flex: 1; min-width: 240px; overflow: hidden; background: var(--background-card-secondary); }
+  header { flex-shrink: 0; padding: 12px var(--preview-info-inset); }
+  .content { display: flex; align-items: center; justify-content: center; flex: 1; min-height: 0; padding: 12px; }
+  .image { width: 100%; max-height: 100%; aspect-ratio: 3 / 2; border-radius: 8px; background: var(--accent); }
+  .info { flex-shrink: 0; border-top: 1px solid var(--divider); }
+  .info-row { display: flex; justify-content: space-between; gap: 8px; padding: 8px var(--preview-info-inset); font-size: var(--font-size-caption); border-bottom: 1px solid var(--divider); }
+  .info-row:last-child { border-bottom: none; }
+  .info-label { color: var(--text-tertiary); }
+  .info-value { color: var(--text-secondary); }
+  .sections { flex: 0 1 auto; max-height: 55%; overflow: auto; border-top: 1px solid var(--divider); }
   .builtin { margin: 0; padding: 12px; list-style: none; }
   .badge { padding: 0 6px; border: 1px solid #a76d24; border-radius: 8px; color: #865413; font-size: 11px; }
   .actions { display: flex; gap: 6px; margin: 8px 0; }

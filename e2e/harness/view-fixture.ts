@@ -77,6 +77,8 @@ let heldSaves: Array<() => void> = [];
 let titleConnection = false;
 let pickerResult: string | null | undefined;
 let nextSaveFailure: string | null = null;
+// Delay of the Preview-info queries, in ms: a native backend answers them over IPC, not within the same frame.
+let previewLatency = 0;
 const titleCalls: number[] = [];
 const titleWaiters = new Map<number, (title: string) => void>();
 
@@ -112,6 +114,7 @@ configureBackend({
   invoke<T>(method: string, params: Record<string, any> = {}): Promise<T> {
     calls.push({ method, params: structuredClone(params) });
     const reply = (value: unknown) => Promise.resolve(value as T);
+    const later = (value: unknown) => previewLatency ? new Promise<T>((resolve) => setTimeout(() => resolve(value as T), previewLatency)) : reply(value);
     const token = String(version);
     switch (method) {
       case "folder_has_trace": return reply(params.directory === DIRECTORY);
@@ -131,7 +134,7 @@ configureBackend({
         const nodes = componentsOf().find((component) => component.id === params.componentId)?.nodes ?? [];
         return reply({ stale: false, total: nodes.length, offset: params.offset, nodes: nodes.slice(params.offset) });
       }
-      case "trace_run_details": return reply((params.runIds as number[]).map((id) => {
+      case "trace_run_details": return later((params.runIds as number[]).map((id) => {
         const node = state.nodes.find((item) => item.runId === id);
         return {
           id, operation: "openai.image.edit", parameters: { prompt: node?.prompt ?? "", resolution: "2k", aspect_ratio: "keep", quality: "high", seed: 7 },
@@ -139,8 +142,8 @@ configureBackend({
           details: { actual_size: { width: 1024, height: 768 } }, inputIds: [],
         };
       }));
-      case "trace_revision_status": return reply("matched");
-      case "trace_for_image": return reply(null);
+      case "trace_revision_status": return later("matched");
+      case "trace_for_image": return later(null);
       case "image_save_suggestion": return reply({ directory: DIRECTORY, filename: `${byArtifact(params.artifactId)?.key ?? "image"}.png` });
       case "save_generated_image": {
         const node = byArtifact(params.artifactId);
@@ -223,6 +226,8 @@ export const backend = {
   /** The next save fails with this message (for example a filename collision). */
   failNextSave(message: string) { nextSaveFailure = message; },
   holdSaves() { holdSaves = true; },
+  /** Answers run details, revision status and per-image traces after `ms`. */
+  setPreviewLatency(ms: number) { previewLatency = ms; },
   releaseSaves() { holdSaves = false; const pending = heldSaves; heldSaves = []; pending.forEach((run) => run()); },
-  reset() { pickerResult = undefined; nextSaveFailure = null; state = scenario(); version += 1; calls.length = 0; },
+  reset() { previewLatency = 0; pickerResult = undefined; nextSaveFailure = null; state = scenario(); version += 1; calls.length = 0; },
 };

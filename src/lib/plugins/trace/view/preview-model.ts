@@ -3,9 +3,10 @@
  * mounted Trace view (inputs can be focused there) or, in built-in views, from
  * the per-image trace query (inputs are informational).
  */
-import type { TraceGraph } from "$lib/api/trace";
+import type { TraceGraph, TraceRun } from "$lib/api/trace";
 import type { NodeScope, TraceNode } from "$lib/domain/trace-graph/model";
 import { basename, isInsideDir, parentDir, samePath, toForwardSlashes } from "$lib/domain/path";
+import { traceOperationLabel } from "$lib/domain/trace-operation";
 
 export interface PreviewInput {
   readonly key: string;
@@ -67,4 +68,38 @@ export function modelFromGraph(graph: TraceGraph, directory: string): PreviewMod
     }];
   });
   return { artifactId: current.id, runId: run?.id ?? null, prompt: promptOf(run?.parameters), inputs, focusable: false };
+}
+
+export interface PreviewSetting {
+  readonly label: string;
+  readonly value: string;
+}
+
+const text = (value: unknown): string | null => {
+  if (typeof value === "string") return value.trim() && value !== "auto" ? value : null;
+  return (typeof value === "number" && Number.isFinite(value)) || typeof value === "boolean" ? String(value) : null;
+};
+
+function actualSize(details: TraceRun["details"]): string | null {
+  const value = details?.actual_size;
+  if (!value || typeof value !== "object") return null;
+  const { width, height } = value as { width?: unknown; height?: unknown };
+  return Number.isSafeInteger(width) && Number.isSafeInteger(height) && (width as number) > 0 && (height as number) > 0 ? `${width} × ${height} px` : null;
+}
+
+/**
+ * The labelled generation settings of a run, in display order. Missing,
+ * empty, `auto` and non-scalar values are left out.
+ */
+export function runSettings(run: TraceRun): PreviewSetting[] {
+  const { resolution, aspect_ratio: aspect, quality, seed } = run.parameters;
+  const rows: Array<[string, string | null]> = [
+    ["Operation", text(traceOperationLabel(run.operation))],
+    ["Resolution", typeof resolution === "string" ? text(resolution.toLowerCase())?.toUpperCase() ?? null : text(resolution)],
+    ["Aspect ratio", aspect === "keep" ? "Keep" : text(aspect)],
+    ["Quality", text(quality)],
+    ["Seed", text(seed)],
+    ["Actual size", actualSize(run.details)],
+  ];
+  return rows.flatMap(([label, value]) => value === null ? [] : [{ label, value }]);
 }
