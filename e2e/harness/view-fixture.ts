@@ -34,6 +34,13 @@ function scenario(): { nodes: TraceNode[]; names: Map<string, string> } {
     names.set(seed.key, node.key);
     nodes.push(node);
   };
+  const query = new URLSearchParams(globalThis.location?.search ?? "");
+  // `?gym=1` puts a small component first, shaped like a typical edit session:
+  // a root with two edits, and two further edits under the second one.
+  if (query.has("gym")) for (const seed of [
+    { key: "gym" }, { key: "cerulean", parents: ["gym"] }, { key: "saffron", parents: ["gym"] },
+    { key: "saffron-a", parents: ["saffron"] }, { key: "saffron-b", parents: ["saffron"] },
+  ] satisfies Seed[]) add(seed);
   for (const seed of [
     { key: "village" }, { key: "palette" }, { key: "mist", scope: "subfolder" }, { key: "lantern", scope: "external" },
     { key: "daylight", parents: ["village"] }, { key: "warm", parents: ["village", "palette", "mist", "lantern"] }, { key: "cool", parents: ["palette"] },

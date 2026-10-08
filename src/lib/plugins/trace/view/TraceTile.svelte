@@ -119,6 +119,6 @@
   .spinner { width: 14px; height: 14px; border: 2px solid var(--divider); border-top-color: var(--accent); border-radius: 50%; animation: spin 800ms linear infinite; }
   .title-spinner { width: 8px; height: 8px; flex: none; border: 1px solid var(--control-stroke); border-top-color: var(--accent); border-radius: 50%; animation: spin 800ms linear infinite; }
   @keyframes spin { to { transform: rotate(360deg); } }
-  @media (prefers-reduced-motion: no-preference) { .card { transition: background-color 120ms, border-color 120ms, box-shadow 120ms, opacity 180ms, filter 180ms; } .image { transition: filter 180ms; } }
+  @media (prefers-reduced-motion: no-preference) { .card { transition: background-color 120ms, border-color 120ms, box-shadow 120ms, opacity 160ms, filter 160ms; } .image { transition: filter 160ms; } }
   @media (prefers-reduced-motion: reduce) { .spinner, .title-spinner { animation: none; } }
 </style>

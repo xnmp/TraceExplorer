@@ -1,5 +1,5 @@
 /**
- * Coordinated graph motion (≈180 ms). Geometry is captured from what is
+ * Coordinated graph motion (≈160 ms). Geometry is captured from what is
  * currently displayed — including a transition still in progress — so an
  * interrupting selection animates from where things are, not where they were
  * headed. Tiles only move (their size never depends on the selection).
@@ -8,13 +8,17 @@
  * leave the graph fade out where they were displayed, as inert copies in the
  * canvas's ghost layers (`[data-motion-ghosts]`), so nothing vanishes abruptly.
  *
- * Playback measures the new geometry completely before starting any
- * animation: the canvas size animation re-centres the canvas, so measuring
- * after it starts would offset every tile.
+ * Every position is measured in the canvas's own CSS pixels, the space that
+ * keyframes, inline positions and scroll offsets use. Hosts may zoom the whole
+ * document (CSS `zoom` on the root), and most engines then report
+ * `getBoundingClientRect` in zoomed pixels: mixing the two spaces started
+ * every animation from a scaled position and snapped back when it ended.
+ * Tiles are therefore measured from their computed styles (no layout read);
+ * the few rect reads left are divided by the measured zoom (`zoomOf`).
  */
 import { displace, polyline, samplePathString, type Point } from "./path-sampling";
 
-export const MOTION_MS = 180;
+export const MOTION_MS = 160;
 const EASING = "cubic-bezier(.2,.8,.2,1)";
 const SAMPLES = 24;
 /** Above this many connectors they snap instead of morphing; animating every `d` would cost more than a frame. */
@@ -52,16 +56,39 @@ function fadingOpacity(element: Element): number | null {
 
 const supportsPathMorph = () => typeof CSS !== "undefined" && !!CSS.supports?.("d", 'path("M0 0 L1 1")');
 
-function measureTiles(canvas: HTMLElement, origin: DOMRect): Map<string, { element: HTMLElement; box: Box }> {
+/**
+ * Visual pixels per CSS pixel of `element`: the document zoom a host applies,
+ * or 1. Measured rather than assumed, so it holds whichever space an engine
+ * reports rects in. `element` must not be transformed itself.
+ */
+export function zoomOf(element: Element, rect: DOMRect = element.getBoundingClientRect()): number {
+  const style = getComputedStyle(element);
+  const edges = style.boxSizing === "border-box" ? 0
+    : parseFloat(style.paddingLeft) + parseFloat(style.paddingRight) + parseFloat(style.borderLeftWidth) + parseFloat(style.borderRightWidth);
+  const width = parseFloat(style.width) + edges;
+  return width > 0 && rect.width > 0 ? rect.width / width : 1;
+}
+
+/** A tile's displayed box in canvas pixels: its laid-out place plus any running transform. */
+function displayedBox(element: HTMLElement): Box {
+  const style = getComputedStyle(element);
+  const shift = style.transform && style.transform !== "none" ? new DOMMatrixReadOnly(style.transform) : null;
+  return {
+    x: parseFloat(style.left) + (shift?.m41 ?? 0), y: parseFloat(style.top) + (shift?.m42 ?? 0),
+    width: parseFloat(style.width), height: parseFloat(style.height), fading: fadingOpacity(element),
+  };
+}
+
+function measureTiles(canvas: HTMLElement): Map<string, { element: HTMLElement; box: Box }> {
   const tiles = new Map<string, { element: HTMLElement; box: Box }>();
-  for (const element of canvas.querySelectorAll<HTMLElement>("[data-tile-key]")) {
-    const rect = element.getBoundingClientRect();
-    tiles.set(element.dataset.tileKey!, {
-      element,
-      box: { x: rect.left - origin.left, y: rect.top - origin.top, width: rect.width, height: rect.height, fading: fadingOpacity(element) },
-    });
-  }
+  for (const element of canvas.querySelectorAll<HTMLElement>("[data-tile-key]")) tiles.set(element.dataset.tileKey!, { element, box: displayedBox(element) });
   return tiles;
+}
+
+/** The canvas's displayed size (mid-animation included), in its own pixels. */
+function canvasSize(canvas: HTMLElement): { width: number; height: number } {
+  const style = getComputedStyle(canvas);
+  return { width: parseFloat(style.width), height: parseFloat(style.height) };
 }
 
 /** The connector as displayed right now (mid-morph included), resampled. */
@@ -72,15 +99,21 @@ function displayedRoute(path: SVGPathElement, animated: boolean): Point[] | null
 
 /** Snapshot of a graph's displayed geometry, relative to its canvas. */
 export function captureGraph(canvas: HTMLElement): GraphSnapshot {
-  const origin = canvas.getBoundingClientRect();
-  const measured = measureTiles(canvas, origin);
+  const measured = measureTiles(canvas);
   const tiles = new Map([...measured].map(([key, { box }]) => [key, box]));
   const junctions = new Map<string, Point & { fading: number | null }>();
   const dotElements = new Map<string, SVGCircleElement>();
+  // A moving dot is read from its rect (engines disagree on a zoomed `cx`); one at rest from its attributes.
+  let frame: { origin: DOMRect; zoom: number } | null = null;
   for (const dot of canvas.querySelectorAll<SVGCircleElement>("[data-junction]")) {
     dotElements.set(dot.dataset.junction!, dot);
-    const box = dot.getBoundingClientRect();
-    junctions.set(dot.dataset.junction!, { x: box.left + box.width / 2 - origin.left, y: box.top + box.height / 2 - origin.top, fading: fadingOpacity(dot) });
+    let at: Point = { x: Number(dot.getAttribute("cx")), y: Number(dot.getAttribute("cy")) };
+    if (dot.getAnimations().length) {
+      if (!frame) { const origin = canvas.getBoundingClientRect(); frame = { origin, zoom: zoomOf(canvas, origin) }; }
+      const box = dot.getBoundingClientRect();
+      at = { x: (box.left + box.width / 2 - frame.origin.left) / frame.zoom, y: (box.top + box.height / 2 - frame.origin.top) / frame.zoom };
+    }
+    junctions.set(dot.dataset.junction!, { ...at, fading: fadingOpacity(dot) });
   }
   const paths = [...canvas.querySelectorAll<SVGPathElement>("path[data-route]")];
   const routeIds = new Map(paths.map((path) => [path.dataset.route!, fadingOpacity(path)]));
@@ -96,8 +129,7 @@ export function captureGraph(canvas: HTMLElement): GraphSnapshot {
   // continues from the copy's place and opacity instead of appearing twice.
   for (const { element, opacity, identity } of ghosts) {
     if (identity?.kind === "tile" && !tiles.has(identity.id)) {
-      const rect = element.getBoundingClientRect();
-      tiles.set(identity.id, { x: rect.left - origin.left, y: rect.top - origin.top, width: rect.width, height: rect.height, fading: opacity });
+      tiles.set(identity.id, { ...displayedBox(element as HTMLElement), fading: opacity });
     } else if (identity?.kind === "route" && !routeIds.has(identity.id)) {
       routeIds.set(identity.id, opacity);
       routeSources.set(identity.id, { from: identity.from, opacity });
@@ -107,7 +139,7 @@ export function captureGraph(canvas: HTMLElement): GraphSnapshot {
       junctions.set(identity.id, { x: Number(element.getAttribute("cx")), y: Number(element.getAttribute("cy")), fading: opacity });
     }
   }
-  return { width: origin.width, height: origin.height, tiles, junctions, routeIds, routeSources, routes, elements, ghosts };
+  return { ...canvasSize(canvas), tiles, junctions, routeIds, routeSources, routes, elements, ghosts };
 }
 
 /** Animates a freshly rendered graph from a snapshot. Returns the animations started. */
@@ -115,9 +147,9 @@ export function playGraph(canvas: HTMLElement, before: GraphSnapshot): Animation
   if (prefersReducedMotion()) return [];
   const timing: KeyframeAnimationOptions = { duration: MOTION_MS, easing: EASING };
 
-  // 1. Measure everything in the new layout.
-  const origin = canvas.getBoundingClientRect();
-  const tiles = measureTiles(canvas, origin);
+  // 1. Measure everything in the new layout, from computed styles in canvas pixels.
+  const size = canvasSize(canvas);
+  const tiles = measureTiles(canvas);
   const current = new Map([...tiles].map(([key, { box }]) => [key, box]));
   const dots = [...canvas.querySelectorAll<SVGCircleElement>("[data-junction]")].map((dot) => ({
     dot, at: { x: Number(dot.getAttribute("cx")), y: Number(dot.getAttribute("cy")) }, opacity: getComputedStyle(dot).opacity,
@@ -132,7 +164,9 @@ export function playGraph(canvas: HTMLElement, before: GraphSnapshot): Animation
 
   // 2. Animate from the snapshot.
   const animations: Animation[] = [];
-  animations.push(canvas.animate([{ width: `${before.width}px`, height: `${before.height}px` }, { width: `${origin.width}px`, height: `${origin.height}px` }], timing));
+  if (Math.abs(before.width - size.width) >= 0.5 || Math.abs(before.height - size.height) >= 0.5) {
+    animations.push(canvas.animate([{ width: `${before.width}px`, height: `${before.height}px` }, { width: `${size.width}px`, height: `${size.height}px` }], timing));
+  }
   // Tile sizes never depend on the selection, so tiles only move (and fade).
   for (const [key, { element, box: now }] of tiles) {
     const old = before.tiles.get(key);
@@ -156,8 +190,10 @@ export function playGraph(canvas: HTMLElement, before: GraphSnapshot): Animation
     const old = before.junctions.get(dot.dataset.junction!);
     if (!old) { animations.push(dot.animate([{ opacity: 0 }, { opacity }], timing)); continue; }
     const fading = old.fading !== null;
+    const moved = Math.abs(old.x - at.x) >= 0.5 || Math.abs(old.y - at.y) >= 0.5;
+    if (!fading && !moved) continue;
     const fade: Keyframe[] = fading ? [{ opacity: old.fading! }, { opacity }] : [{}, {}];
-    if (morph) animations.push(dot.animate([{ cx: `${old.x}px`, cy: `${old.y}px`, ...fade[0] }, { cx: `${at.x}px`, cy: `${at.y}px`, ...fade[1] }], timing));
+    if (morph && moved) animations.push(dot.animate([{ cx: `${old.x}px`, cy: `${old.y}px`, ...fade[0] }, { cx: `${at.x}px`, cy: `${at.y}px`, ...fade[1] }], timing));
     else if (fading) animations.push(dot.animate(fade, timing));
   }
   // A connector that is new here takes over one that vanished from the same
@@ -341,10 +377,12 @@ export function holdAnchor(scroller: HTMLElement, find: () => HTMLElement | null
   const adjust = () => {
     const element = find();
     if (!element) return;
+    // Rects may be in zoomed pixels; scroll offsets are in the scroller's own.
     const box = element.getBoundingClientRect();
-    scroller.scrollTop += box.top - before.top;
+    const zoom = zoomOf(scroller);
+    if (Math.abs(box.top - before.top) >= 0.5) scroller.scrollTop += (box.top - before.top) / zoom;
     const horizontal = element.closest<HTMLElement>("[data-horizontal-scroll]");
-    if (horizontal) horizontal.scrollLeft += box.left - before.left;
+    if (horizontal && Math.abs(box.left - before.left) >= 0.5) horizontal.scrollLeft += (box.left - before.left) / zoom;
   };
   const step = () => {
     if (!held) return;
@@ -362,3 +400,68 @@ export const USER_SCROLL = ["wheel", "touchstart", "pointerdown", "keydown"] as 
 const MODIFIERS = new Set(["Shift", "Control", "Alt", "Meta", "AltGraph", "CapsLock"]);
 /** A held modifier (auto-repeating during a Ctrl- or Shift-click) is not scrolling. */
 export const scrollsByUser = (event: Event) => !(event instanceof KeyboardEvent && MODIFIERS.has(event.key));
+
+/** Expanding and collapsing a section (≈160 ms, ease-out). */
+export const SECTION_MS = 160;
+const SECTION_EASING = "cubic-bezier(.2,.8,.2,1)";
+
+/** The bottom inset of a computed `inset()` clip path (1–4 lengths, optional `round`), or 0. */
+export function insetBottom(clip: string): number {
+  const match = /^inset\(([^)]*)\)$/.exec(clip.trim());
+  if (!match) return 0;
+  const lengths = match[1].split(/\s+round\s+/)[0].trim().split(/\s+/).map(parseFloat);
+  if (lengths.some((value) => !Number.isFinite(value))) return 0;
+  // CSS box shorthand: top [right [bottom [left]]]; bottom defaults to top.
+  return lengths.length >= 3 ? lengths[2] : lengths[0] ?? 0;
+}
+
+/** An element's layout height in its own CSS pixels, unrounded (unlike `offsetHeight`). */
+export function layoutHeight(element: HTMLElement): number {
+  return element.getBoundingClientRect().height / zoomOf(element);
+}
+
+/** A section's displayed height, in its own pixels: its layout height less a running reveal clip. */
+export function sectionHeight(section: HTMLElement): number {
+  return layoutHeight(section) - insetBottom(getComputedStyle(section).clipPath);
+}
+
+export interface SectionResize {
+  /** Displayed height and content opacity now. */
+  readonly from: { readonly height: number; readonly opacity: number };
+  /** Displayed height at the end. */
+  readonly to: number;
+  readonly opening: boolean;
+  /**
+   * How far the view will scroll back when the collapsed content is removed
+   * (the scroll position no longer fits). Everything slides down by it while
+   * collapsing, so the clamp at the end moves nothing.
+   */
+  readonly settle: number;
+}
+
+/**
+ * Resizes a section's displayed height without animating layout: the section
+ * keeps its current layout height (the larger one) and is revealed or hidden
+ * by a clip, its content fades, and the elements around it slide — clip,
+ * opacity and transform only, so no frame relayouts. Heights never exceed the
+ * layout height. Collapsing holds the final frame (`fill: forwards`) until
+ * the caller removes the content and cancels.
+ */
+export function resizeSection(section: HTMLElement, content: HTMLElement | null, { from, to, opening, settle }: SectionResize): Animation[] {
+  const layout = layoutHeight(section);
+  const radius = parseFloat(getComputedStyle(section).borderBottomLeftRadius) || 0;
+  const timing: KeyframeAnimationOptions = { duration: SECTION_MS, easing: SECTION_EASING, fill: opening ? "none" : "forwards" };
+  const clip = (height: number) => `inset(0px 0px ${Math.max(0, layout - height)}px 0px round ${radius}px)`;
+  const animations = [section.animate([{ clipPath: clip(from.height) }, { clipPath: clip(to) }], timing)];
+  if (content) animations.push(content.animate([{ opacity: from.opacity }, { opacity: opening ? 1 : 0 }], timing));
+  // Offsets add up, so sections resizing at the same time each move what is around them.
+  const slide: KeyframeAnimationOptions = { ...timing, composite: "add" };
+  const move = (element: Element, start: number, end: number) => {
+    if (element instanceof HTMLElement && (Math.abs(start) >= 0.01 || Math.abs(end) >= 0.01)) {
+      animations.push(element.animate([{ transform: `translateY(${start}px)` }, { transform: `translateY(${end}px)` }], slide));
+    }
+  };
+  if (settle > 0) for (let previous: Element | null = section; previous; previous = previous.previousElementSibling) move(previous, 0, settle);
+  for (let next = section.nextElementSibling; next; next = next.nextElementSibling) move(next, from.height - layout, to - layout + settle);
+  return animations;
+}
