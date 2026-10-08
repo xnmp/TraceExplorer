@@ -3,7 +3,8 @@ import { connectedComponents, projectDag } from "$lib/domain/trace-graph/project
 import { lineage, toneOf } from "$lib/domain/trace-graph/lineage";
 import { planScene } from "$lib/domain/trace-graph/scene";
 import { TILE, tileSize } from "$lib/domain/trace-graph/metrics";
-import { visibleKeys, componentRoots, hiddenDescendantCount } from "$lib/domain/trace-graph/visibility";
+import { visibleKeys, componentRoots, hiddenDescendantCount, SIBLING_LIMIT } from "$lib/domain/trace-graph/visibility";
+import { layoutGraph } from "$lib/domain/trace-graph/layout";
 import { buildInputJunctions, junctionId, normalizeRelationships } from "$lib/domain/trace-graph/junctions";
 import { mockupNodes, node, random, sourcesReaching } from "./fixtures";
 
@@ -88,6 +89,66 @@ describe("limited visibility", () => {
   it("does not accumulate previously expanded branches", () => {
     expect(sorted(visibleKeys(dag, members, "d"))).toEqual(sorted(["root", "a", "side", "b", "c", "d"]));
     expect(sorted(visibleKeys(dag, members, "root"))).toEqual(["a", "root", "side"]);
+  });
+
+  it("shows a selected node's siblings: the other children of its folder parents, not a reference input's other outputs", () => {
+    // b2 is b's sibling through a. c2 combines b with the reference input r, whose other outputs y and z are no siblings of c2.
+    const family = projectDag([node("root"), node("a", ["root"]), node("b", ["a"]), node("b2", ["a"]), node("c", ["b"]), node("r", [], "external"),
+      node("y0", ["root"]), node("y", ["y0", "r"]), node("z", ["b2", "r"]), node("c2", ["b", "r"])]);
+    const [all] = connectedComponents(family);
+    expect(visibleKeys(family, all, "b")).toContain("b2");
+    expect(visibleKeys(family, all, "c")).toContain("c2");
+    const shownWithC2 = visibleKeys(family, all, "c2");
+    // c through b; r as c2's own input.
+    for (const key of ["c", "b", "r"]) expect(shownWithC2, key).toContain(key);
+    for (const key of ["y", "z"]) expect(shownWithC2, key).not.toContain(key);
+    // Only the selected node's own siblings: not its parents' siblings, nor its siblings' children.
+    expect(visibleKeys(family, all, "c")).not.toContain("b2");
+    expect(visibleKeys(family, all, "b2")).not.toContain("c");
+  });
+
+  it("shows only the siblings nearest the selection in a large fan-out, and its parent hints at the rest", () => {
+    const variations = Array.from({ length: 50 }, (_, index) => node(`v${index}`, ["edit"]));
+    const family = projectDag([node("root"), node("edit", ["root"]), ...variations]);
+    const [all] = connectedComponents(family);
+    const shown = new Set(visibleKeys(family, all, "v25"));
+    const siblings = variations.map((entry) => entry.key).filter((key) => key !== "v25" && shown.has(key));
+    expect(siblings.length).toBe(SIBLING_LIMIT);
+    // The nearest in creation order, either side of the selection.
+    expect(siblings).toEqual(["v19", "v20", "v21", "v22", "v23", "v24", "v26", "v27", "v28", "v29", "v30", "v31"]);
+    // Near the end of the list the window shifts instead of shrinking.
+    expect(visibleKeys(family, all, "v49").filter((key) => key.startsWith("v") && key !== "v49")).toHaveLength(SIBLING_LIMIT);
+    // The parent's tile says more edits exist; selecting it shows them all.
+    expect(planScene(family, all, "v25", 900).tiles.get("edit")!.hiddenDescendants).toBe(50 - 1 - SIBLING_LIMIT);
+    expect(visibleKeys(family, all, "edit").filter((key) => key.startsWith("v"))).toHaveLength(50);
+  });
+
+  it("keeps a large refined batch in bounds: no siblings through a shared reference, at most the nearest 12 through a folder parent", () => {
+    // 300 variations of a base edit (not a root, so its children are not all shown anyway);
+    // each is refined with the same external style image.
+    const nodes = [node("R"), node("base", ["R"]), node("style", [], "external"),
+      ...Array.from({ length: 300 }, (_, index) => node(`a${index}`, ["base"])),
+      ...Array.from({ length: 300 }, (_, index) => node(`s${index}`, [`a${index}`, "style"]))];
+    const family = projectDag(nodes);
+    const [all] = connectedComponents(family);
+    const width = 900;
+    const check = (focus: string, expected: number) => {
+      const scene = planScene(family, all, focus, width);
+      expect(scene.tiles.size, focus).toBe(expected);
+      const start = performance.now();
+      const layout = layoutGraph(scene.request);
+      // Generous for CI variance; the 602-tile neighbourhood this replaced took over half a second here.
+      expect(performance.now() - start, focus).toBeLessThan(1500);
+      expect(layout.width, focus).toBeLessThanOrEqual(width * 1.05);
+      return scene;
+    };
+    // A refinement: its own lineage only (R, base, a0, s0, style), not the 299 other refinements of style.
+    check("s0", 5);
+    // A variation: its lineage, its refinement and its input, plus 12 sibling variations; base hints at the rest.
+    const variation = check("a150", 5 + SIBLING_LIMIT);
+    const shownVariations = [...variation.tiles.keys()].filter((key) => /^a\d+$/.test(key)).sort((a, b) => Number(a.slice(1)) - Number(b.slice(1)));
+    expect(shownVariations).toEqual(Array.from({ length: 13 }, (_, index) => `a${144 + index}`));
+    expect(variation.tiles.get("base")!.hiddenDescendants).toBeGreaterThanOrEqual(300 - 13);
   });
 
   it("treats only folder images without folder parents as roots", () => {

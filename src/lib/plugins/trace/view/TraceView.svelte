@@ -5,18 +5,19 @@
    * without provenance. All view state (folder session, expansion, anchors)
    * belongs to this pane; selection and Preview go through the pane handle.
    */
-  import { onDestroy, untrack } from "svelte";
+  import { flushSync, onDestroy, untrack } from "svelte";
   import type { FileViewPane, PreviewTarget } from "../../../../../integration/plugin-sdk";
   import type { FileEntry } from "$lib/domain/file";
   import { parentDir, samePath } from "$lib/domain/path";
   import type { ComponentSummary, NodeKey, TraceNode } from "$lib/domain/trace-graph/model";
+  import type { Orientation } from "$lib/domain/trace-graph/layout";
   import { traceInvalidation } from "../invalidation.svelte";
   import { promptTitles } from "../prompt-titles.svelte";
   import TraceThumbnail from "../TraceThumbnail.svelte";
   import { createFolderSession, type ComponentData, type FolderSession } from "./folder-session.svelte";
   import { tracePanes, isTraceTargetData, type TracePaneView } from "./pane-registry.svelte";
   import { nodeTarget } from "./node-target";
-  import { holdAnchor, MOTION_MS, prefersReducedMotion, scrollsByUser, USER_SCROLL } from "./motion";
+  import { holdAnchor, layoutHeight, MOTION_MS, prefersReducedMotion, resizeSection, scrollsByUser, sectionHeight, USER_SCROLL } from "./motion";
   import TraceGraph from "./TraceGraph.svelte";
   import OrdinarySection from "./OrdinarySection.svelte";
 
@@ -37,8 +38,14 @@
   let scroller = $state<HTMLElement | null>(null);
   let clientWidth = $state(0);
   let overrides = $state.raw<ReadonlyMap<string, boolean>>(new Map());
+  /** Collapsed sections whose content stays mounted until it has been hidden. */
+  let closing = $state.raw<ReadonlySet<string>>(new Set());
+  /** Each section's running expand or collapse. */
+  const sectionMotions = new Map<string, Animation[]>();
   let near = $state.raw<ReadonlySet<string>>(new Set());
   let heights = new Map<string, number>();
+  /** Orientation each component of this folder was last shown with, by component id: kept across collapse and remount for hysteresis. */
+  const orientations = new Map<string, Orientation>();
   let pendingPath = $state<string | null>(null);
   let anchor: { key: NodeKey; mode: "hold" | "reveal"; rect: DOMRect | null; until: number } | null = null;
   let releaseAnchor: (() => void) | null = null;
@@ -50,7 +57,7 @@
   const entriesByPath = $derived(new Map(pane.entries.map((entry) => [entry.path, entry])));
 
   // Session follows the pane's folder and Trace's invalidation signal.
-  $effect(() => { const dir = directory; untrack(() => { overrides = new Map(); session.setDirectory(dir); }); });
+  $effect(() => { const dir = directory; untrack(() => { overrides = new Map(); orientations.clear(); session.setDirectory(dir); }); });
   let seenRevision = untrack(() => traceInvalidation.revision);
   $effect(() => {
     const current = traceInvalidation.revision;
@@ -156,6 +163,7 @@
   function focusNode(key: NodeKey, modifiers: { ctrlKey?: boolean; shiftKey?: boolean } = {}, keep: "hold" | "reveal" = "reveal"): void {
     const found = findNode(key);
     if (!found) return;
+    keepFocusedOpen();
     captureAnchor(key, keep);
     const entry = fileEntry(found.node);
     if (entry) pane.select(entry, modifiers);
@@ -176,16 +184,18 @@
     const found = findNode(key);
     const entry = found && fileEntry(found.node);
     if (entry) {
-      if (!selectedPaths.has(entry.path)) pane.select(entry);
+      if (!selectedPaths.has(entry.path)) { keepFocusedOpen(); pane.select(entry); }
       pane.contextMenu(event, entry);
     } else {
       event.preventDefault();
+      keepFocusedOpen();
       if (found) preview(found.node, found.componentId);
     }
   }
 
   function background(event: MouseEvent): void {
     if (event.target !== event.currentTarget) return;
+    keepFocusedOpen();
     pane.clearSelection();
     if (targetData) pane.setPreviewTarget(null);
   }
@@ -218,7 +228,8 @@
     nodeForPath: (path) => { const member = session.componentOf(path); return member ? findNode(member.key)?.node ?? null : null; },
     focus: (key) => {
       const found = findNode(key);
-      if (found) overrides = new Map(overrides).set(found.componentId, true);
+      if (found && !summaries.some((summary, index) => summary.id === found.componentId && isExpanded(summary, index))) setExpanded(found.componentId, true);
+      else if (found) overrides = new Map(overrides).set(found.componentId, true);
       focusNode(key);
     },
   };
@@ -231,8 +242,62 @@
     for (const data of session.components.values()) for (const node of data.nodes) if (node.runId !== null) untrack(() => promptTitles.loadFor(node.runId, node.prompt));
   });
 
+  const withClosing = (id: string, on: boolean): ReadonlySet<string> => {
+    if (closing.has(id) === on) return closing;
+    const next = new Set(closing);
+    if (on) next.add(id); else next.delete(id);
+    return next;
+  };
+
+  /**
+   * Expands or collapses a section. The section's layout changes once; its
+   * displayed height then follows by clip and transform (see resizeSection),
+   * starting from what is displayed now, so a change interrupting another
+   * reverses smoothly.
+   */
+  function setExpanded(id: string, opening: boolean): void {
+    const section = scroller?.querySelector<HTMLElement>(`section[data-component="${CSS.escape(id)}"]`) ?? null;
+    const body = () => section?.querySelector<HTMLElement>(":scope > .content") ?? null;
+    const animate = !!section && !!scroller && !prefersReducedMotion();
+    const shown = animate ? body() : null;
+    const from = animate ? { height: sectionHeight(section!), opacity: shown ? Number(getComputedStyle(shown).opacity) : 0 } : null;
+    for (const animation of sectionMotions.get(id) ?? []) animation.cancel();
+    sectionMotions.delete(id);
+    overrides = new Map(overrides).set(id, opening);
+    closing = withClosing(id, !opening && animate);
+    if (!from) return;
+    // Mount (or keep) the content now, so the new layout can be measured.
+    flushSync();
+    const view = scroller!;
+    const content = body();
+    const layout = layoutHeight(section!);
+    const removed = opening || !content ? 0 : layoutHeight(content);
+    // Removing the content may leave the scroll position past the end; the view then scrolls back by the excess.
+    const settle = opening ? 0 : Math.max(0, view.scrollTop - (view.scrollHeight - removed - view.clientHeight));
+    const animations = resizeSection(section!, content, { from, to: layout - removed, opening, settle });
+    sectionMotions.set(id, animations);
+    void Promise.all(animations.map((animation) => animation.finished)).then(() => {
+      if (sectionMotions.get(id) !== animations) return;
+      sectionMotions.delete(id);
+      if (opening) return;
+      // Drop the hidden content and the held final frame together, so nothing shifts.
+      closing = withClosing(id, false);
+      flushSync();
+      for (const animation of animations) animation.cancel();
+    }, () => {});
+  }
+
   function toggle(summary: ComponentSummary, index: number): void {
-    overrides = new Map(overrides).set(summary.id, !isExpanded(summary, index));
+    setExpanded(summary.id, !isExpanded(summary, index));
+  }
+
+  /**
+   * A section open only because it holds the focus stays open when the focus
+   * moves on: closing it under the pointer would move everything below it.
+   */
+  function keepFocusedOpen(): void {
+    const id = focus?.componentId;
+    if (id && !overrides.has(id) && summaries.some((summary, index) => summary.id === id && isExpanded(summary, index))) overrides = new Map(overrides).set(id, true);
   }
 
   /** Tracks which sections are near the viewport. */
@@ -259,19 +324,9 @@
     return { destroy() { observer.disconnect(); } };
   }
 
-  /** Collapsing keeps a noninteractive snapshot while the section closes. */
-  function collapse(element: HTMLElement) {
-    element.inert = true;
-    const height = element.offsetHeight;
-    return { duration: prefersReducedMotion() ? 0 : MOTION_MS, css: (t: number) => `height:${t * height}px;opacity:${t};overflow:hidden` };
-  }
-  function expand(element: HTMLElement) {
-    const height = element.offsetHeight;
-    return { duration: prefersReducedMotion() ? 0 : MOTION_MS, css: (t: number) => `height:${t * height}px;opacity:${t};overflow:hidden` };
-  }
-
   onDestroy(() => {
     releaseAnchor?.();
+    for (const animations of sectionMotions.values()) for (const animation of animations) animation.cancel();
     session.dispose();
     if (pane.previewTarget && isTraceTargetData(pane.previewTarget.data)) pane.setPreviewTarget(null);
   });
@@ -306,15 +361,15 @@
           {#if summary.active}<span class="spinner" role="status" aria-label="Generating"></span>{/if}
           {#if summary.unsaved}<span class="unsaved" title="Contains unsaved images">Unsaved</span>{/if}
         </button>
-        {#if expanded}
-          <div class="content" data-horizontal-scroll in:expand out:collapse>
+        {#if expanded || closing.has(summary.id)}
+          <div class="content" data-horizontal-scroll inert={!expanded}>
             {#if !near.has(summary.id)}
               <div class="placeholder" style:height="{heights.get(summary.id) ?? 160}px"></div>
             {:else if data}
               <div use:measure={summary.id}>
                 <TraceGraph {data} focus={focus?.key ?? null} selected={selectedKeys} {width} {revision} {scroller}
                   onactivate={activate} onnavigate={(key) => focusNode(key)} onopen={open} onmenu={menu}
-                  {captureSelection} onsaved={(_key, path) => callbacks.saved(path)} ondiscarded={() => {}} oncommit={(settled) => keepAnchor(data, settled)} />
+                  {captureSelection} componentId={summary.id} {orientations} onsaved={(_key, path) => callbacks.saved(path)} ondiscarded={() => {}} oncommit={(settled) => keepAnchor(data, settled)} />
               </div>
             {:else}
               <div class="placeholder loading" role="status" style:height="{heights.get(summary.id) ?? 160}px">Loading…</div>
@@ -328,9 +383,9 @@
       <section class="component ordinary" aria-label="Other files">
         <h3 class="heading static">Other files and folders <span class="count">{ordinary.length}</span></h3>
         <OrdinarySection entries={ordinary} selected={selectedPaths} {revision}
-          onselect={(entry, event) => pane.select(entry, { ctrlKey: event.ctrlKey || event.metaKey, shiftKey: event.shiftKey })}
+          onselect={(entry, event) => { keepFocusedOpen(); pane.select(entry, { ctrlKey: event.ctrlKey || event.metaKey, shiftKey: event.shiftKey }); }}
           onopen={(entry) => void pane.open(entry)}
-          onmenu={(entry, event) => { if (!selectedPaths.has(entry.path)) pane.select(entry); pane.contextMenu(event, entry); }} />
+          onmenu={(entry, event) => { if (!selectedPaths.has(entry.path)) { keepFocusedOpen(); pane.select(entry); } pane.contextMenu(event, entry); }} />
       </section>
     {:else if !summaries.length && session.index}
       <div class="message">This folder is empty.</div>
@@ -339,7 +394,7 @@
 </div>
 
 <style>
-  .trace-view { flex: 1; min-height: 0; overflow: auto; padding: 10px 10px 24px; box-sizing: border-box; overflow-anchor: none; }
+  .trace-view { flex: 1; min-height: 0; overflow: auto; padding: 10px 10px 24px; box-sizing: border-box; overflow-anchor: none; scrollbar-gutter: stable; }
   .component { margin-bottom: 10px; border: 1px solid var(--divider, var(--control-stroke)); border-radius: 5px; background: var(--background-card-secondary, transparent); overflow: hidden; }
   .heading { display: flex; align-items: center; gap: 9px; width: 100%; min-height: 41px; margin: 0; padding: 9px 12px; box-sizing: border-box; font: inherit; font-size: 13px; text-align: left; color: var(--text-primary); background: none; border: 0; cursor: pointer; }
   .heading:hover:not(.static) { background: var(--subtle-fill-secondary); }

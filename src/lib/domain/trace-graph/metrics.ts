@@ -29,8 +29,12 @@ export function tileSize(shape: TileShape): TileSize {
 }
 
 export const SPACING = {
-  /** Horizontal gap between tiles; also the vertical lane for passing routes. */
-  column: 28,
+  /**
+   * Gap between tiles of one generation (stacked tiles when running right);
+   * also the lane for routes passing them. Room for two lanes inside the
+   * clearance either side; further routes take another gap or a margin.
+   */
+  column: 16,
   /** Side margin kept free for routes around a row. */
   margin: 20,
   top: 18,

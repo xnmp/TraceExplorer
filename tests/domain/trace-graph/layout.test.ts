@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { layoutGraph, nearestFree, nearestInDirection, wrapRow, type LayoutItem } from "$lib/domain/trace-graph/layout";
+import { layoutGraph, nearestFree, nearestInDirection, wrapRow, type LayoutItem, type Orientation } from "$lib/domain/trace-graph/layout";
 import { connectedComponents, projectDag } from "$lib/domain/trace-graph/projection";
 import { planScene } from "$lib/domain/trace-graph/scene";
-import { tileSize } from "$lib/domain/trace-graph/metrics";
+import { SPACING, tileSize } from "$lib/domain/trace-graph/metrics";
 import { foreignJunctionContacts, mockupNodes, node, random, routeCollisions, sharedLanes, sourcesReaching, tileOverlaps } from "./fixtures";
 
 /** Correctness sweeps over many graphs: slower CI runners need more than the default 5 s. */
@@ -22,20 +22,31 @@ function fanOut(children: number): LayoutItem[] {
     item("g0", ["c0"]), item("g1", ["c5"]), item("g2", ["c17"])];
 }
 
-function checkLayout(items: readonly LayoutItem[], maxWidth: number) {
-  const layout = layoutGraph({ items, maxWidth });
+const ORIENTATIONS: readonly Orientation[] = ["down", "right"];
+
+function checkLayout(items: readonly LayoutItem[], maxWidth: number, orientation: Orientation = "down") {
+  const layout = layoutGraph({ items, maxWidth, orientation });
+  expect(layout.orientation).toBe(orientation);
   expect(tileOverlaps(layout)).toEqual([]);
   expect(routeCollisions(layout)).toEqual([]);
   expect(junctionOverlaps(layout)).toEqual([]);
   // Everything drawn lies on the canvas (widening covers what the margins need).
-  for (const route of layout.routes) for (const [, x] of route.path.matchAll(/[MLC ,](-?\d+(?:\.\d+)?) -?\d/g)) {
-    expect(Number(x), route.id).toBeGreaterThanOrEqual(0);
-    expect(Number(x), route.id).toBeLessThanOrEqual(layout.width);
-  }
+  const onCanvas = (x: number, y: number, what: string) => {
+    expect(x, what).toBeGreaterThanOrEqual(0);
+    expect(x, what).toBeLessThanOrEqual(layout.width);
+    expect(y, what).toBeGreaterThanOrEqual(0);
+    expect(y, what).toBeLessThanOrEqual(layout.height);
+  };
+  for (const route of layout.routes) for (const [, x, y] of route.path.matchAll(/(-?\d+(?:\.\d+)?) (-?\d+(?:\.\d+)?)/g)) onCanvas(Number(x), Number(y), route.id);
+  for (const tile of layout.nodes.values()) { onCanvas(tile.x, tile.y, tile.key); onCanvas(tile.x + tile.width, tile.y + tile.height, tile.key); }
+  for (const junction of layout.junctions.values()) onCanvas(junction.x, junction.y, junction.id);
   const ids = layout.routes.map((route) => route.id);
   expect(ids.filter((id, index) => ids.indexOf(id) !== index), "duplicate route ids").toEqual([]);
+  // Parents come first along the flow: above their children, or to their left.
   for (const entry of items) for (const parent of entry.parents) {
-    expect(layout.nodes.get(entry.key)!.y, `${parent} above ${entry.key}`).toBeGreaterThan(layout.nodes.get(parent)!.y + layout.nodes.get(parent)!.height);
+    const child = layout.nodes.get(entry.key)!, source = layout.nodes.get(parent)!;
+    if (orientation === "down") expect(child.y, `${parent} above ${entry.key}`).toBeGreaterThan(source.y + source.height);
+    else expect(child.x, `${parent} left of ${entry.key}`).toBeGreaterThan(source.x + source.width);
   }
   return layout;
 }
@@ -83,9 +94,9 @@ describe("width-aware layout", () => {
     const dag = projectDag(mockupNodes());
     for (const members of connectedComponents(dag)) {
       for (const focus of [null, ...members]) {
-        for (const width of [380, 640, 1200]) {
+        for (const width of [380, 640, 1200]) for (const orientation of ORIENTATIONS) {
           const scene = planScene(dag, members, focus, width);
-          const layout = checkLayout(scene.request.items, width);
+          const layout = checkLayout(scene.request.items, width, orientation);
           for (const entry of scene.request.items) {
             expect(sorted(sourcesReaching(layout, entry.key))).toEqual(sorted(entry.parents));
             expect(layout.routes.filter((route) => route.terminal && route.to.id === entry.key)).toHaveLength(entry.parents.length ? 1 : 0);
@@ -103,14 +114,15 @@ describe("width-aware layout", () => {
         const parents = [...new Set(Array.from({ length: count }, () => `n${Math.floor(next() * index)}`))];
         return item(`n${index}`, index && !parents.length ? [`n${Math.floor(next() * index)}`] : parents, next() < 0.3 ? wide : small, index);
       });
-      checkLayout(items, 300 + Math.floor(next() * 900));
+      const width = 300 + Math.floor(next() * 900);
+      for (const orientation of ORIENTATIONS) checkLayout(items, width, orientation);
     }
   }, HEAVY);
 
   it("never routes through a junction that does not combine that route's input", () => {
     // n4's inputs are n1 and n2 only; n1's route must not touch the (n0, n1) junction on its way down.
     const items = [item("n0", [], small, 0), item("n1", [], small, 1), item("n2", ["n1", "n0"], small, 2), item("n3", ["n2"], small, 3), item("n4", ["n1", "n2"], small, 4)];
-    for (const width of [380, 640]) expect(foreignJunctionContacts(checkLayout(items, width), 5)).toEqual([]);
+    for (const width of [380, 640]) for (const orientation of ORIENTATIONS) expect(foreignJunctionContacts(checkLayout(items, width, orientation), 5)).toEqual([]);
   });
 
   it("keeps routes clear of foreign junctions and in separate lanes on random graphs", () => {
@@ -123,13 +135,16 @@ describe("width-aware layout", () => {
         const parents = root ? [] : [...new Set(Array.from({ length: 1 + Math.floor(next() * fanIn) }, () => `n${Math.max(0, index - 1 - Math.floor(next() * Math.min(index, locality)))}`))];
         return item(`n${index}`, parents, sizes[Math.floor(next() * sizes.length)], index);
       });
-      for (const width of [380, 640, 1000]) {
-        const layout = checkLayout(items, width);
-        expect(foreignJunctionContacts(layout, 5), `seed ${seed} at ${width}px`).toEqual([]);
-        expect(sharedLanes(layout), `seed ${seed} at ${width}px`).toEqual([]);
-        for (const entry of items) expect(sorted(sourcesReaching(layout, entry.key)), `seed ${seed} at ${width}px: ${entry.key}`).toEqual(sorted(entry.parents));
+      // Running right, generations never wrap, so the width budget does not change the layout.
+      const cases = [...[380, 640, 1000].map((width) => ({ width, orientation: "down" as const })), { width: 640, orientation: "right" as const }];
+      for (const { width, orientation } of cases) {
+        const label = `seed ${seed} ${orientation} at ${width}px`;
+        const layout = checkLayout(items, width, orientation);
+        expect(foreignJunctionContacts(layout, 5), label).toEqual([]);
+        expect(sharedLanes(layout), label).toEqual([]);
+        for (const entry of items) expect(sorted(sourcesReaching(layout, entry.key)), `${label}: ${entry.key}`).toEqual(sorted(entry.parents));
         // Ordinary graphs fit the width they are given; only overflow widens it.
-        expect(layout.width, `seed ${seed} at ${width}px`).toBeLessThanOrEqual(width * 1.05);
+        if (orientation === "down") expect(layout.width, label).toBeLessThanOrEqual(width * 1.05);
       }
     }
   }, HEAVY);
@@ -293,6 +308,95 @@ describe("width-aware layout", () => {
     const layout = layoutGraph({ items, maxWidth: 1000 });
     expect(performance.now() - start).toBeLessThan(1500);
     expect(tileOverlaps(layout)).toEqual([]);
+  });
+});
+
+describe("left-to-right layout", () => {
+  const ends = (path: string) => {
+    const points = [...path.matchAll(/(-?\d+(?:\.\d+)?) (-?\d+(?:\.\d+)?)/g)].map(([, x, y]) => ({ x: Number(x), y: Number(y) }));
+    return { first: points[0], last: points.at(-1)! };
+  };
+
+  it("places each generation in its own column, parents left of their children, with arrows entering from the left", () => {
+    const items = [item("a", [], tall), item("b", ["a"]), item("c", ["b"]), item("d", ["b"], tall), item("e", ["c", "d"])];
+    const layout = checkLayout(items, 900, "right");
+    const columns = (key: string) => layout.nodes.get(key)!.x;
+    expect(columns("c")).toBe(columns("d"));
+    expect(new Set(["a", "b", "c", "e"].map(columns)).size).toBe(4);
+    // Every tile keeps its own size; only its position changes.
+    for (const entry of items) expect([layout.nodes.get(entry.key)!.width, layout.nodes.get(entry.key)!.height]).toEqual([entry.width, entry.height]);
+    for (const route of layout.routes.filter((candidate) => candidate.terminal)) {
+      const target = layout.nodes.get(route.to.id)!;
+      const { last } = ends(route.path);
+      expect(last.x, route.id).toBeCloseTo(target.x - SPACING.arrow, 1);
+      expect(last.y, route.id).toBeCloseTo(target.y + target.height / 2, 1);
+    }
+    for (const route of layout.routes.filter((candidate) => candidate.from.kind === "node" && candidate.to !== candidate.from)) {
+      const source = layout.nodes.get(route.from.id)!;
+      const { first } = ends(route.path);
+      if (first.y !== source.y + source.height / 2) continue; // a branch leaving a shared trunk
+      expect(first.x, route.id).toBeCloseTo(source.x + source.width, 1);
+    }
+  });
+
+  it("never wraps a generation, whatever the width budget", () => {
+    const items = [item("p"), ...Array.from({ length: 12 }, (_, index) => item(`c${index}`, ["p"], small, index + 1))];
+    const layout = checkLayout(items, 380, "right");
+    expect(new Set([...layout.nodes.values()].filter((tile) => tile.key !== "p").map((tile) => tile.x)).size).toBe(1);
+  });
+
+  it("keeps crowded junctions and shared inputs readable sideways", () => {
+    const photos = 12;
+    const styled = [item("style", [], small, 0), ...Array.from({ length: photos }, (_, index) => item(`p${index}`, [], small, index + 1)),
+      ...Array.from({ length: photos }, (_, index) => item(`o${index}`, ["style", `p${index}`], small, 100 + index))];
+    const roots = Array.from({ length: 8 }, (_, index) => item(`r${index}`, [], small, index));
+    const pairs = roots.flatMap((a, i) => roots.slice(i + 1).map((b) => item(`${a.key}+${b.key}`, [a.key, b.key], small, 100 + i)));
+    for (const items of [styled, [...roots, ...pairs]]) {
+      const layout = checkLayout(items, 640, "right");
+      expect(foreignJunctionContacts(layout, 5)).toEqual([]);
+      expect(sharedLanes(layout)).toEqual([]);
+    }
+  });
+
+  it("draws the canvas at least as wide as the requested extent, and only when running right", () => {
+    const items = [item("p"), item("a", ["p"]), item("b", ["a"])];
+    const plain = layoutGraph({ items, maxWidth: 900, orientation: "right" });
+    const wide = layoutGraph({ items, maxWidth: 900, orientation: "right", extent: plain.width + 200.4 });
+    expect(wide.width).toBe(Math.ceil(plain.width + 200.4));
+    // Tiles keep their places: the extra room lies beyond the last generation.
+    for (const key of ["p", "a", "b"]) expect(wide.nodes.get(key)).toEqual(plain.nodes.get(key));
+    // An extent below the drawing never clips it; invalid extents are ignored; running down it has no effect.
+    for (const extent of [10, 0, -5, Number.NaN, Infinity]) expect(layoutGraph({ items, maxWidth: 900, orientation: "right", extent }).width, String(extent)).toBe(plain.width);
+    expect(layoutGraph({ items, maxWidth: 900, extent: 5000 }).width).toBe(layoutGraph({ items, maxWidth: 900 }).width);
+  });
+
+  it("navigates along generations with left and right, and between siblings with up and down", () => {
+    const layout = layoutGraph({ items: [item("p"), item("a", ["p"]), item("b", ["p"])], maxWidth: 600, orientation: "right" });
+    expect(nearestInDirection(layout, "p", "right")).toMatch(/^[ab]$/);
+    expect(nearestInDirection(layout, "a", "left")).toBe("p");
+    expect(nearestInDirection(layout, "a", "down")).toBe("b");
+    expect(nearestInDirection(layout, "p", "left")).toBeNull();
+  });
+});
+
+describe("spacing", () => {
+  it("packs siblings closely: six fit one row of a 700 px pane, with room for a route between neighbours", () => {
+    const items = [item("p"), ...Array.from({ length: 6 }, (_, index) => item(`c${index}`, ["p"], small, index + 1))];
+    const layout = checkLayout(items, 700);
+    const children = [...layout.nodes.values()].filter((tile) => tile.key !== "p").sort((a, b) => a.x - b.x);
+    expect(new Set(children.map((tile) => tile.row)).size).toBe(1);
+    const gaps = children.slice(1).map((tile, index) => tile.x - (children[index].x + children[index].width));
+    for (const gap of gaps) {
+      expect(gap).toBeLessThanOrEqual(16);
+      // A passing route keeps its clearance from both neighbours.
+      expect(gap).toBeGreaterThan(2 * SPACING.clearance);
+    }
+  });
+
+  it("stacks a sideways generation just as closely", () => {
+    const items = [item("p"), ...Array.from({ length: 3 }, (_, index) => item(`c${index}`, ["p"], small, index + 1))];
+    const children = [...layoutGraph({ items, maxWidth: 900, orientation: "right" }).nodes.values()].filter((tile) => tile.key !== "p").sort((a, b) => a.y - b.y);
+    for (let index = 1; index < children.length; index++) expect(children[index].y - (children[index - 1].y + children[index - 1].height)).toBeLessThanOrEqual(16);
   });
 });
 

@@ -72,6 +72,16 @@ describe("layout client (main-thread fallback)", () => {
     expect(client.cachedLayout(request(0, 300))).toBe(narrow);
   });
 
+  it("reuses a left-to-right layout at any width: running right, generations never wrap", async () => {
+    const client = await load();
+    const sideways = (width: number): LayoutRequest => ({ ...request(0, width), orientation: "right" });
+    const wide = await client.computeLayout(sideways(800));
+    expect(wide.orientation).toBe("right");
+    for (const width of [300, 1600, Number.NaN]) expect(client.cachedLayout(sideways(width)), String(width)).toBe(wide);
+    // The same items running down are a different layout.
+    expect(client.cachedLayout(request(0, 800))).toBeNull();
+  });
+
   it("layoutNow computes synchronously and caches", async () => {
     const client = await load();
     const now = client.layoutNow(request());

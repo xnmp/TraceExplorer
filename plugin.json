@@ -3,7 +3,7 @@
   "id": "xnmp.trace-explorer",
   "name": "TraceExplorer",
   "description": "Image editing and visual provenance for Tauri Explorer",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "sdkVersion": 2,
   "svelteVersion": "5.56.3",
   "frontend": "frontend/index.js",

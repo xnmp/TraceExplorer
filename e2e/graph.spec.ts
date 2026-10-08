@@ -35,9 +35,23 @@ test.describe("selection neighborhood", () => {
     await uniform();
     expect(await rendered(page, "tone", "focus")).toEqual(["rain"]);
     for (const name of ["village", "palette", "mist", "lantern"]) await expect(await tile(page, name)).toHaveAttribute("data-tone", "related");
-    await expect(await tile(page, "evening")).toHaveCount(0);
-    await expect(await tile(page, "merge")).toHaveCount(0);
     await expect(await tile(page, "daylight")).toHaveAttribute("data-tone", "unrelated");
+
+    // Daylight's view no longer shows warm's children: the old branch is dropped.
+    await click(page, "daylight");
+    await uniform();
+    for (const name of ["evening", "rain", "quiet"]) await expect(await tile(page, name)).toHaveCount(0);
+  });
+
+  test("selecting a node shows its parents, children and siblings", async ({ page }) => {
+    await openView(page);
+    await click(page, "warm");
+    await click(page, "rain");
+    // Parent, child, and the other children of rain's parent (evening, and merge, which also needs daylight).
+    for (const name of ["warm", "quiet", "evening", "merge", "daylight"]) await expect(await tile(page, name), name).toBeVisible();
+    // Siblings are shown, but are not part of rain's own history.
+    await expect(await tile(page, "evening")).toHaveAttribute("data-tone", "unrelated");
+    expect(overlaps(await tileBoxes(page, 0))).toEqual([]);
   });
 
   test("the selection shows in the tile's styling: an accent border, and a ring around the focus", async ({ page }) => {
@@ -128,6 +142,146 @@ test.describe("wide layouts", () => {
       const rows = new Set(children.map((child) => Math.round(boxes[child].y / 8)));
       if (width < 1000) expect(rows.size, `rows at ${width}`).toBeGreaterThanOrEqual(2);
     }
+  });
+
+  /** Tile boxes of a section on screen (viewport coordinates), keyed by node key. */
+  const screenBoxes = (page: Page, component: number) => page.evaluate((index) => {
+    const section = document.querySelectorAll("section.component[data-component]")[index];
+    return Object.fromEntries([...section.querySelectorAll<HTMLElement>("[data-tile-key]")].map((element) => {
+      const r = element.getBoundingClientRect();
+      return [element.dataset.tileKey!, { x: r.x, y: r.y, width: r.width, height: r.height }];
+    }));
+  }, component);
+  /** Every shown child lies entirely right of each of its shown parents. */
+  const runsRight = (boxes: Record<string, Box>, edges: Array<[string, string]>) => {
+    for (const [parent, child] of edges) if (boxes[parent] && boxes[child]) expect(boxes[child].x, `${child} right of ${parent}`).toBeGreaterThanOrEqual(boxes[parent].x + boxes[parent].width);
+  };
+
+  test("a component whose generations fit side by side runs left to right, and no tile jumps while selection reveals deeper generations", async ({ page }) => {
+    await openView(page, 900, "?deeper=1");
+    const [forest, mist, autumn, dawn, dusk] = await Promise.all(["forest", "forest-mist", "autumn", "mist-dawn", "mist-dusk"].map((name) => key(page, name)));
+    const edges: Array<[string, string]> = [[forest, mist], [forest, autumn], [mist, dawn], [dawn, dusk]];
+    const arrowEnd = (child: string) => page.evaluate((k) => {
+      const section = document.querySelectorAll("section.component[data-component]")[1];
+      const path = section.querySelector<SVGPathElement>(`path[data-route][data-to="node:${CSS.escape(k)}"]`)!;
+      const point = path.getPointAtLength(path.getTotalLength());
+      return { x: point.x, y: point.y };
+    }, child);
+    const settled: Record<string, Box> = {};
+    /** Lays out sideways, and every tile shown before is exactly where it was on screen. */
+    const check = async (shown: string[], hidden: string[]) => {
+      const local = await tileBoxes(page, 1);
+      const screen = await screenBoxes(page, 1);
+      expect(Object.keys(screen).sort()).toEqual(expect.arrayContaining(shown.sort()));
+      for (const k of hidden) expect(screen[k], `${k} hidden`).toBeUndefined();
+      expect(overlaps(local)).toEqual([]);
+      runsRight(local, edges);
+      for (const [k, box] of Object.entries(screen)) {
+        if (settled[k]) {
+          expect(Math.abs(box.x - settled[k].x), `${k} x`).toBeLessThanOrEqual(1);
+          expect(Math.abs(box.y - settled[k].y), `${k} y`).toBeLessThanOrEqual(1);
+        }
+        settled[k] = box;
+      }
+      return local;
+    };
+    const first = await check([forest, mist, autumn], [dawn, dusk]);
+    // Both edits sit in one column right of the image they were made from, one above the other.
+    expect(Math.abs(first[mist].x - first[autumn].x)).toBeLessThanOrEqual(1);
+    expect(Math.abs(first[mist].y - first[autumn].y)).toBeGreaterThanOrEqual(first[mist].height);
+    // Each arrow arrives at its edit's left edge.
+    for (const child of [mist, autumn]) {
+      const end = await arrowEnd(child);
+      expect(end.x).toBeLessThanOrEqual(first[child].x);
+      expect(end.x).toBeGreaterThan(first[child].x - 8);
+      expect(end.y).toBeGreaterThan(first[child].y);
+      expect(end.y).toBeLessThan(first[child].y + first[child].height);
+    }
+    // Each selection reveals the next generation in a new column; nothing already shown moves.
+    await click(page, "forest-mist");
+    await check([forest, mist, autumn, dawn], [dusk]);
+    await click(page, "mist-dawn");
+    await check([forest, mist, autumn, dawn, dusk], []);
+    await click(page, "mist-dusk");
+    await check([forest, mist, dawn, dusk], []);
+    await click(page, "autumn");
+    await check([forest, mist, autumn], [dawn, dusk]);
+  });
+
+  test("generating images into a left-to-right component keeps it left to right", async ({ page }) => {
+    await openView(page, 900);
+    const names = ["forest", "forest-mist", "autumn"];
+    const [forest, mist, autumn] = await Promise.all(names.map((name) => key(page, name)));
+    await click(page, "forest-mist");
+    const columns = async () => {
+      const boxes = await tileBoxes(page, 1);
+      runsRight(boxes, [[forest, mist], [forest, autumn], ...batch.map((k) => [forest, k] as [string, string])]);
+      expect(overlaps(boxes)).toEqual([]);
+      return Object.fromEntries([forest, mist, autumn].map((k) => [k, Math.round(boxes[k].x)]));
+    };
+    const batch: string[] = [];
+    const before = await columns();
+    // A four-image batch of variations of the root, as one generation request makes them.
+    for (let index = 1; index <= 4; index++) batch.push(await page.evaluate((n) => (window as any).trace.backend.startGeneration("forest", n), `variation-${index}`));
+    for (const k of batch) await expect(page.locator(`[data-tile-key="${k}"]`)).toBeVisible();
+    await settle(page);
+    expect(await columns(), "while generating").toEqual(before);
+    for (let index = 1; index <= 4; index++) await page.evaluate((n) => (window as any).trace.backend.completeGeneration(n), `variation-${index}`);
+    await settle(page);
+    expect(await columns(), "unsaved").toEqual(before);
+    for (let index = 1; index <= 4; index++) await page.evaluate((n) => (window as any).trace.backend.discardGeneration(n), `variation-${index}`);
+    await page.waitForTimeout(150);
+    await settle(page);
+    expect(await columns(), "discarded").toEqual(before);
+    expect(await uncaught(page)).toEqual([]);
+  });
+
+  test("the view remembers a component's orientation while images are saved into it, and forgets it in another folder", async ({ page }) => {
+    await openView(page, 900);
+    const [forest, mist, autumn] = await Promise.all(["forest", "forest-mist", "autumn"].map((name) => key(page, name)));
+    const flow = async () => {
+      const boxes = await tileBoxes(page, 1);
+      const children = [mist, autumn, ...extra].filter((k) => boxes[k]);
+      if (children.every((k) => boxes[k].x >= boxes[forest].x + boxes[forest].width)) return "right";
+      if (children.every((k) => boxes[k].y >= boxes[forest].y + boxes[forest].height)) return "down";
+      return "mixed";
+    };
+    const extra: string[] = [];
+    const visit = async (folder: string) => {
+      await page.evaluate((path) => (window as any).trace.navigate(path), folder);
+      await expect(page.locator(`[data-tile-key="${forest}"]`)).toBeVisible();
+      await page.waitForTimeout(150);
+      await settle(page);
+    };
+    // Visit the mirror once, so switching to it later keeps the same view mounted.
+    await visit("/pictures-mirror");
+    await visit("/pictures");
+    expect(await flow()).toBe("right");
+    // A third saved edit of the root: a little broader than deep. Shown sideways, it stays so.
+    extra.push(await page.evaluate(() => (window as any).trace.backend.startGeneration("forest", "third")));
+    await page.evaluate(() => { const b = (window as any).trace.backend; b.completeGeneration("third"); b.saveGeneration("third"); });
+    await expect(page.locator(`[data-tile-key="${extra[0]}"]`)).toBeVisible();
+    await page.waitForTimeout(150);
+    await settle(page);
+    expect(await flow()).toBe("right");
+    // Another folder whose components happen to have the same ids remembers nothing: the plain rule lays it out top to bottom.
+    await page.evaluate(() => { (document.querySelector("[data-testid=trace-view]") as any).__marked = true; });
+    await visit("/pictures-mirror");
+    expect(await page.evaluate(() => (document.querySelector("[data-testid=trace-view]") as any).__marked), "same view instance").toBe(true);
+    expect(await flow()).toBe("down");
+    expect(await uncaught(page)).toEqual([]);
+  });
+
+  test("an open tile's chevron points towards its children: down, or right when the component runs left to right", async ({ page }) => {
+    await openView(page, 900);
+    const chevron = async (name: string) => (await tile(page, name)).locator(".chevron").evaluate((svg) => {
+      const box = (svg.querySelector("path") as SVGPathElement).getBBox();
+      return box.width > box.height ? "down" : "right";
+    });
+    await click(page, "forest");
+    expect(await chevron("forest")).toBe("right");
+    await click(page, "village");
+    expect(await chevron("village")).toBe("down");
   });
 
   test("the village graph keeps tiles apart at every width", async ({ page }) => {
@@ -315,7 +469,7 @@ test.describe("motion", () => {
       };
       for (const animation of document.getAnimations()) animation.play();
       return result;
-    }, { target: await key(page, "rain"), label: "evening prompt" });
+    }, { target: await key(page, "daylight"), label: "evening prompt" });
     expect(during.tile).not.toBeNull();
     expect(Math.abs(during.tile!.x - before.x)).toBeLessThanOrEqual(2);
     expect(Math.abs(during.tile!.y - before.y)).toBeLessThanOrEqual(2);
@@ -331,11 +485,11 @@ test.describe("motion", () => {
   test("a tile that returns while fading out continues from its fading copy instead of appearing twice", async ({ page }) => {
     await openView(page);
     await click(page, "warm");
-    const result = await page.evaluate(async ({ rain, warm, evening }) => {
+    const result = await page.evaluate(async ({ daylight, warm, evening }) => {
       const frame = () => new Promise((resolve) => requestAnimationFrame(resolve));
       const select = (k: string) => document.querySelector<HTMLElement>(`[data-node-key="${CSS.escape(k)}"]`)!.click();
       const copies = () => [...document.querySelectorAll<HTMLElement>("[data-motion-ghost].tile")].filter((ghost) => ghost.textContent?.includes("evening prompt"));
-      select(rain);
+      select(daylight);
       // Wait until evening's copy is part-way through fading out.
       let copy = copies()[0];
       for (let i = 0; i < 30 && !(copy && Number(getComputedStyle(copy).opacity) < 0.9); i++) { await frame(); copy = copies()[0]; }
@@ -347,7 +501,7 @@ test.describe("motion", () => {
       const sample = { left, copies: copies().length, returned: tile ? Number(getComputedStyle(tile).opacity) : null };
       for (const animation of document.getAnimations()) animation.play();
       return sample;
-    }, { rain: await key(page, "rain"), warm: await key(page, "warm"), evening: await key(page, "evening") });
+    }, { daylight: await key(page, "daylight"), warm: await key(page, "warm"), evening: await key(page, "evening") });
     expect(result.left).not.toBeNull();
     expect(result.copies).toBe(0);
     expect(result.returned).not.toBeNull();
@@ -374,16 +528,18 @@ test.describe("scroll anchoring", () => {
 
   test("the clicked tile stays where it was on screen while its graph relayouts", async ({ page }) => {
     await openView(page, undefined, "?many=8");
-    // Selecting rain after warm drops the merge junction above it, so rain moves up in its graph.
+    // Selecting quiet after rain drops rain's siblings and with them the merge
+    // junction above rain's generation, so quiet moves up in its graph.
     await click(page, "warm");
+    await click(page, "rain");
     await page.evaluate(() => { document.querySelector<HTMLElement>("[data-testid=trace-view]")!.scrollTop += 200; });
     await settle(page);
     const offset = async () => page.evaluate((k) => {
       const element = document.querySelector<HTMLElement>(`[data-tile-key="${CSS.escape(k)}"]`)!;
       return { screen: element.getBoundingClientRect().top, inGraph: parseFloat(element.style.top) };
-    }, await key(page, "rain"));
+    }, await key(page, "quiet"));
     const before = await offset();
-    await click(page, "rain");
+    await click(page, "quiet");
     const after = await offset();
     expect(Math.abs(after.inGraph - before.inGraph)).toBeGreaterThan(10);
     expect(Math.abs(after.screen - before.screen)).toBeLessThanOrEqual(2);

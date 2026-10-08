@@ -8,12 +8,12 @@
   import { tick } from "svelte";
   import type { NodeKey } from "$lib/domain/trace-graph/model";
   import { planScene, routeStyle, junctionRelated, type RouteStyle, type ScenePlan } from "$lib/domain/trace-graph/scene";
-  import { nearestInDirection, type Direction, type GraphLayout } from "$lib/domain/trace-graph/layout";
+  import { nearestInDirection, type Direction, type GraphLayout, type Orientation } from "$lib/domain/trace-graph/layout";
   import { endpointKey } from "$lib/domain/trace-graph/junctions";
   import { promptTitles } from "../prompt-titles.svelte";
   import type { ComponentData } from "./folder-session.svelte";
   import { cachedLayout, computeLayout, layoutNow } from "./layout-client";
-  import { captureGraph, playGraph, prefersReducedMotion } from "./motion";
+  import { captureGraph, playGraph, prefersReducedMotion, zoomOf } from "./motion";
   import { nodeTitle } from "./node-target";
   import TraceTile from "./TraceTile.svelte";
 
@@ -34,9 +34,17 @@
     ondiscarded: (key: NodeKey) => void;
     /** Called after a new layout is in the DOM (motion has started), with a promise that settles when motion ends. */
     oncommit?: (settled: Promise<void>) => void;
+    /** The host's component id: stable across refreshes, saves and new descendants. */
+    componentId: string;
+    /**
+     * The pane's memory of the orientation each component was last shown
+     * with (by `componentId`), for orientation hysteresis. Written on every
+     * commit; deliberately not reactive, like `ordering` below.
+     */
+    orientations?: Map<string, Orientation>;
   }
 
-  let { data, focus, selected, width, revision, scroller, onactivate, onnavigate, onopen, onmenu, onsaved, ondiscarded, oncommit, captureSelection }: Props = $props();
+  let { data, focus, selected, width, revision, scroller, onactivate, onnavigate, onopen, onmenu, onsaved, ondiscarded, oncommit, captureSelection, componentId, orientations = new Map() }: Props = $props();
 
   /** Below this many tiles layout runs inline; it takes well under a frame. */
   const SYNC_LIMIT = 60;
@@ -50,34 +58,49 @@
   // Reading order of the last committed layout keeps siblings in place across focus changes.
   let ordering: ReadonlyMap<NodeKey, number> | undefined;
   let running: Animation[] = [];
-  /** Only the latest commit plays; one superseded before rendering never starts. */
-  let commits = 0;
+  /** Only the latest full commit plays; one superseded before rendering never starts. */
+  let plays = 0;
 
-  const plan = $derived(planScene(data.dag, data.members, focus, width, ordering));
+  const plan = $derived(planScene(data.dag, data.members, focus, width, { hint: ordering, previous: orientations.get(componentId) }));
+
+  /** What later plans build on: the reading order and the orientation shown. */
+  function remember(layout: GraphLayout): void {
+    ordering = layout.readingOrder;
+    orientations.set(componentId, layout.orientation);
+  }
 
   // The first render uses the very plan the effect below sees, so mounting
   // commits once instead of re-planning with the new reading order as a hint.
   function initial(): { plan: ScenePlan; layout: GraphLayout } | null {
     const first = plan;
     const layout = cachedLayout(first.request) ?? (first.request.items.length <= SYNC_LIMIT ? layoutNow(first.request) : null);
-    if (layout) ordering = layout.readingOrder;
+    if (layout) remember(layout);
     return layout ? { plan: first, layout } : null;
   }
   let shown = $state.raw(initial());
 
   function commit(next: ScenePlan, layout: GraphLayout): void {
     if (shown && shown.plan === next && shown.layout === layout) return;
+    // Same geometry (only tones or selection changed): nothing moves, so
+    // motion still running carries on and nothing is measured.
+    if (shown && shown.layout === layout) {
+      shown = { plan: next, layout };
+      failure = "";
+      // After any pending full commit has started its motion, so `settled` waits for it.
+      void tick().then(() => oncommit?.(Promise.allSettled(running.map((animation) => animation.finished)).then(() => {})));
+      return;
+    }
     const element = canvas;
     const before = element && shown && !prefersReducedMotion() ? captureGraph(element) : null;
     for (const animation of running) animation.cancel();
     running = [];
     shown = { plan: next, layout };
-    ordering = layout.readingOrder;
+    remember(layout);
     failure = "";
-    const current = ++commits;
+    const current = ++plays;
     void tick().then(() => {
-      if (current !== commits) return;
-      if (before && canvas) running = playGraph(canvas, before);
+      if (current !== plays) return;
+      if (before && canvas) running = playGraph(canvas, before, layout.orientation);
       oncommit?.(Promise.allSettled(running.map((animation) => animation.finished)).then(() => {}));
     });
   }
@@ -103,9 +126,10 @@
     let frame = 0;
     const update = () => {
       frame = 0;
-      const box = element.getBoundingClientRect(), view = container.getBoundingClientRect();
-      const top = Math.floor((view.top - box.top - WINDOW_MARGIN) / 200) * 200;
-      const bottom = Math.ceil((view.bottom - box.top + WINDOW_MARGIN) / 200) * 200;
+      // Rects may be in zoomed pixels; the band is in the canvas's own.
+      const box = element.getBoundingClientRect(), view = container.getBoundingClientRect(), zoom = zoomOf(element, box);
+      const top = Math.floor(((view.top - box.top) / zoom - WINDOW_MARGIN) / 200) * 200;
+      const bottom = Math.ceil(((view.bottom - box.top) / zoom + WINDOW_MARGIN) / 200) * 200;
       if (band?.top !== top || band?.bottom !== bottom) band = { top, bottom };
     };
     const schedule = () => { if (!frame) frame = requestAnimationFrame(update); };
@@ -202,7 +226,7 @@
     <!-- Motion's fading copies of departed tiles (motion.ts); Svelte keeps it empty. -->
     <div class="ghosts" data-motion-ghosts aria-hidden="true" inert></div>
     {#each visibleTiles as tile (tile.key)}
-      <TraceTile {tile} placed={shown.layout.nodes.get(tile.key)!} selected={selected.has(tile.key)} {revision}
+      <TraceTile {tile} placed={shown.layout.nodes.get(tile.key)!} orientation={shown.layout.orientation} selected={selected.has(tile.key)} {revision}
         onactivate={(event) => onactivate(tile.key, event)} onopen={() => onopen(tile.key)}
         onmenu={(event) => onmenu(tile.key, event)} onkey={(event) => keydown(tile.key, event)}
         {captureSelection} onsaved={(path) => onsaved(tile.key, path)} ondiscarded={() => ondiscarded(tile.key)} />

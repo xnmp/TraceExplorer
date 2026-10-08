@@ -4,6 +4,39 @@ import { openView, click, key, tile, card, state, uncaught, settle, rendered } f
 const previewTitle = (page: Page) => page.getByTestId("preview-title");
 const preview = (page: Page) => page.getByRole("complementary", { name: "Preview" });
 const trace = (page: Page) => preview(page).getByRole("region", { name: "Trace" });
+const detailsToggle = (page: Page) => trace(page).getByRole("button", { name: "Trace details" });
+
+async function openDetails(page: Page) {
+  await detailsToggle(page).click();
+  await expect(detailsToggle(page)).toHaveAttribute("aria-expanded", "true");
+  await settle(page);
+}
+
+/**
+ * Records, every frame, the top of the Preview image and the height of the
+ * info sections while `act` runs and the backend answers.
+ */
+async function framesDuring(page: Page, act: () => Promise<void>, settleMs: number) {
+  await page.evaluate(() => {
+    const samples: Array<{ image: number; sections: number }> = [];
+    (window as any).frames = samples;
+    (window as any).sampling = true;
+    const tick = () => {
+      const image = document.querySelector("[data-testid=preview-image]")?.getBoundingClientRect().top ?? -1;
+      const sections = document.querySelector("aside .sections")?.getBoundingClientRect().height ?? -1;
+      samples.push({ image: Math.round(image), sections: Math.round(sections) });
+      if ((window as any).sampling) requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+  });
+  await act();
+  await page.waitForTimeout(settleMs);
+  await settle(page);
+  return page.evaluate(() => { (window as any).sampling = false; return (window as any).frames as Array<{ image: number; sections: number }>; });
+}
+
+/** Consecutive distinct values: a jump that snaps back shows up as an extra value. */
+const changes = (values: number[]) => values.filter((value, index) => index === 0 || value !== values[index - 1]);
 
 /** Opens the temporary `merge` output in Preview (it renders once `warm` is focused). */
 async function previewMerge(page: Page) {
@@ -40,10 +73,111 @@ test.describe("references and unsaved outputs open in Preview without navigating
 });
 
 test.describe("Preview info", () => {
+  test("shows the prompt without a section title, and the details collapsed", async ({ page }) => {
+    await openView(page);
+    await click(page, "warm");
+    await expect(trace(page).getByTestId("trace-prompt")).toHaveText("warm prompt");
+    await expect(trace(page).getByRole("heading")).toHaveCount(0);
+    await expect(trace(page)).not.toContainText(/^Trace$/m);
+    await expect(detailsToggle(page)).toHaveAttribute("aria-expanded", "false");
+    for (const hidden of ["Operation", "Resolution", "Aspect ratio", "Actual size", "Inputs", "Raw"]) {
+      await expect(trace(page).getByText(hidden, { exact: true })).toBeHidden();
+    }
+    // Collapsed content cannot be reached with the keyboard.
+    await expect(trace(page).getByRole("button", { name: /Preview input/ })).toHaveCount(0);
+  });
+
+  test("opening Trace details shows the settings, inputs and Raw, and stays open for the next image", async ({ page }) => {
+    await openView(page);
+    await click(page, "warm");
+    const panel = trace(page).getByTestId("trace-details");
+    const closed = (await panel.boundingBox())!.height;
+    await openDetails(page);
+    expect((await panel.boundingBox())!.height).toBeGreaterThan(closed + 100);
+    await expect(trace(page).getByText("Aspect ratio", { exact: true })).toBeVisible();
+    await expect(trace(page).locator("summary", { hasText: "Raw" })).toBeVisible();
+    await click(page, "rain");
+    await expect(trace(page).getByTestId("trace-prompt")).toHaveText("rain prompt");
+    await expect(detailsToggle(page)).toHaveAttribute("aria-expanded", "true");
+    await expect(trace(page).getByText("Resolution", { exact: true })).toBeVisible();
+    await detailsToggle(page).click();
+    await settle(page);
+    await expect(detailsToggle(page)).toHaveAttribute("aria-expanded", "false");
+    expect((await panel.boundingBox())!.height).toBe(closed);
+    await expect(trace(page).getByText("Resolution", { exact: true })).toBeHidden();
+  });
+
+  test("opening and closing Trace details animates over a short time", async ({ page }) => {
+    await openView(page);
+    await click(page, "warm");
+    const panel = trace(page).getByTestId("trace-details");
+    const heights = await page.evaluate(async () => {
+      const element = document.querySelector<HTMLElement>("[data-testid=trace-details]")!;
+      const button = [...document.querySelectorAll("button")].find((candidate) => candidate.textContent?.trim() === "Trace details")!;
+      const samples: Array<[number, number]> = [];
+      const start = performance.now();
+      button.click();
+      await new Promise<void>((resolve) => {
+        const tick = () => { samples.push([performance.now() - start, element.getBoundingClientRect().height]); if (performance.now() - start < 600) requestAnimationFrame(tick); else resolve(); };
+        requestAnimationFrame(tick);
+      });
+      return samples;
+    });
+    const final = heights.at(-1)![1];
+    const intermediate = heights.filter(([, height]) => height > 1 && height < final - 1);
+    expect(intermediate.length, "the panel passes through intermediate heights").toBeGreaterThan(0);
+    const opened = heights.find(([, height]) => Math.abs(height - final) < 0.5)![0];
+    expect(opened, "and is fully open quickly").toBeLessThan(350);
+    await expect(panel).toBeVisible();
+  });
+
+  test("rows line up with the host's own info rows", async ({ page }) => {
+    await openView(page);
+    await click(page, "warm");
+    await openDetails(page);
+    const host = page.getByTestId("host-info").locator(".info-row").first();
+    const row = trace(page).locator(".row").first();
+    const [hostLabel, hostValue, label, value] = await Promise.all([
+      host.locator(".info-label").boundingBox(), host.locator(".info-value").boundingBox(),
+      row.locator("dt").boundingBox(), row.locator("dd").boundingBox(),
+    ]);
+    const promptText = await trace(page).getByTestId("trace-prompt").evaluate((element) => { const range = document.createRange(); range.selectNodeContents(element); return range.getClientRects()[0].left; });
+    expect(label!.x).toBeCloseTo(hostLabel!.x, 0);
+    expect(promptText).toBeCloseTo(hostLabel!.x, 0);
+    expect(value!.x + value!.width).toBeCloseTo(hostValue!.x + hostValue!.width, 0);
+    const styles = (selector: string) => page.locator(selector).first().evaluate((element) => { const style = getComputedStyle(element); return [style.color, style.fontSize]; });
+    expect(await styles("aside [data-testid=host-info] .info-label")).toEqual(await styles("aside section[aria-label=Trace] dt"));
+    expect(await styles("aside [data-testid=host-info] .info-value")).toEqual(await styles("aside section[aria-label=Trace] dd"));
+  });
+
+  for (const open of [false, true]) {
+    test(`selecting another image does not move the preview while its trace loads (details ${open ? "open" : "closed"})`, async ({ page }) => {
+      await openView(page);
+      await page.evaluate(() => (window as any).trace.backend.setPreviewLatency(120));
+      await click(page, "warm");
+      await page.waitForTimeout(200);
+      if (open) await openDetails(page);
+      // `rain` has the same settings and one input where `warm` has four.
+      const frames = await framesDuring(page, () => click(page, "rain"), 300);
+      await expect(trace(page).getByTestId("trace-prompt")).toHaveText("rain prompt");
+      expect(frames.length).toBeGreaterThan(5);
+      expect(changes(frames.map((frame) => frame.sections)).length, `section heights ${JSON.stringify(changes(frames.map((frame) => frame.sections)))}`).toBeLessThanOrEqual(open ? 2 : 1);
+      expect(changes(frames.map((frame) => frame.image)).length, `image tops ${JSON.stringify(changes(frames.map((frame) => frame.image)))}`).toBeLessThanOrEqual(open ? 2 : 1);
+    });
+  }
+
+  test("aspect ratio kept from the input reads Keep", async ({ page }) => {
+    await openView(page);
+    await click(page, "warm");
+    await openDetails(page);
+    await expect(trace(page).locator(".row", { hasText: "Aspect ratio" }).locator("dd")).toHaveText("Keep");
+  });
+
   test("shows the prompt, parameters and actual size", async ({ page }) => {
     await openView(page);
     await click(page, "warm");
     await expect(trace(page).getByTestId("trace-prompt")).toHaveText("warm prompt");
+    await openDetails(page);
     const settings = trace(page).locator("dl");
     await expect(settings).toContainText("Resolution");
     await expect(settings).toContainText("2K");
@@ -56,6 +190,7 @@ test.describe("Preview info", () => {
   test("lists inputs with their scope and focusing an input focuses it in the graph", async ({ page }) => {
     await openView(page);
     await click(page, "warm");
+    await openDetails(page);
     const inputs = trace(page).locator("ul.inputs li");
     await expect(inputs).toHaveCount(4);
     await expect(inputs.filter({ hasText: "village" })).toContainText("This folder");
@@ -77,6 +212,7 @@ test.describe("Preview info", () => {
   test("raw data is collapsed until opened", async ({ page }) => {
     await openView(page);
     await click(page, "warm");
+    await openDetails(page);
     const raw = trace(page).locator("details");
     await expect(raw).not.toHaveAttribute("open", "");
     await expect(raw.locator("pre")).not.toBeVisible();

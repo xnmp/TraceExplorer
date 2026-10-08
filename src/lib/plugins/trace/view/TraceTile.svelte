@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { SceneTile } from "$lib/domain/trace-graph/scene";
-  import type { PlacedNode } from "$lib/domain/trace-graph/layout";
+  import type { Orientation, PlacedNode } from "$lib/domain/trace-graph/layout";
   import { TILE } from "$lib/domain/trace-graph/metrics";
   import TraceThumbnail from "../TraceThumbnail.svelte";
   import TraceImageActions from "../TraceImageActions.svelte";
@@ -11,6 +11,8 @@
   interface Props {
     tile: SceneTile;
     placed: PlacedNode;
+    /** Which way the tile's component runs; an open chevron points towards the children. */
+    orientation?: Orientation;
     selected: boolean;
     revision: number;
     onactivate: (event: MouseEvent) => void;
@@ -22,7 +24,7 @@
     captureSelection?: () => () => boolean;
   }
 
-  let { tile, placed, selected, revision, onactivate, onopen, onmenu, onkey, onsaved, ondiscarded, captureSelection }: Props = $props();
+  let { tile, placed, orientation = "down", selected, revision, onactivate, onopen, onmenu, onkey, onsaved, ondiscarded, captureSelection }: Props = $props();
   const node = $derived(tile.node);
   const title = $derived(promptTitles.labelFor(node.runId, node.prompt) || nodeTitle(node));
   const status = $derived(nodeStatus(node));
@@ -61,7 +63,7 @@
       {#if node.runId !== null && promptTitles.pending(node.runId)}<span class="title-spinner" role="status" aria-label="Generating title"></span>{/if}
       {#if unsaved}<span class="unsaved-dot" title="Unsaved" aria-hidden="true"></span>{/if}
       {#if tile.expandable}
-        <svg class="chevron" viewBox="0 0 24 24" aria-hidden="true"><path d={tile.tone === "focus" ? "m5 9 7 7 7-7" : "m9 5 7 7-7 7"} /></svg>
+        <svg class="chevron" viewBox="0 0 24 24" aria-hidden="true"><path d={tile.tone === "focus" && orientation === "down" ? "m5 9 7 7 7-7" : "m9 5 7 7-7 7"} /></svg>
       {/if}
     </span>
     {#if node.scope !== "current"}
@@ -117,6 +119,6 @@
   .spinner { width: 14px; height: 14px; border: 2px solid var(--divider); border-top-color: var(--accent); border-radius: 50%; animation: spin 800ms linear infinite; }
   .title-spinner { width: 8px; height: 8px; flex: none; border: 1px solid var(--control-stroke); border-top-color: var(--accent); border-radius: 50%; animation: spin 800ms linear infinite; }
   @keyframes spin { to { transform: rotate(360deg); } }
-  @media (prefers-reduced-motion: no-preference) { .card { transition: background-color 120ms, border-color 120ms, box-shadow 120ms, opacity 180ms, filter 180ms; } .image { transition: filter 180ms; } }
+  @media (prefers-reduced-motion: no-preference) { .card { transition: background-color 120ms, border-color 120ms, box-shadow 120ms, opacity 160ms, filter 160ms; } .image { transition: filter 160ms; } }
   @media (prefers-reduced-motion: reduce) { .spinner, .title-spinner { animation: none; } }
 </style>

@@ -11,6 +11,7 @@ import StubFileTiles from "./StubFileTiles.svelte";
 
 export const DIRECTORY = "/pictures";
 const TEMP = "/managed";
+export const MIRROR = "/pictures-mirror";
 
 type Seed = { key: string; parents?: string[]; scope?: TraceNode["scope"]; temporary?: boolean; prompt?: string };
 let counter = 0;
@@ -34,6 +35,13 @@ function scenario(): { nodes: TraceNode[]; names: Map<string, string> } {
     names.set(seed.key, node.key);
     nodes.push(node);
   };
+  const query = new URLSearchParams(globalThis.location?.search ?? "");
+  // `?gym=1` puts a small component first, shaped like a typical edit session:
+  // a root with two edits, and two further edits under the second one.
+  if (query.has("gym")) for (const seed of [
+    { key: "gym" }, { key: "cerulean", parents: ["gym"] }, { key: "saffron", parents: ["gym"] },
+    { key: "saffron-a", parents: ["saffron"] }, { key: "saffron-b", parents: ["saffron"] },
+  ] satisfies Seed[]) add(seed);
   for (const seed of [
     { key: "village" }, { key: "palette" }, { key: "mist", scope: "subfolder" }, { key: "lantern", scope: "external" },
     { key: "daylight", parents: ["village"] }, { key: "warm", parents: ["village", "palette", "mist", "lantern"] }, { key: "cool", parents: ["palette"] },
@@ -44,8 +52,10 @@ function scenario(): { nodes: TraceNode[]; names: Map<string, string> } {
     { key: "forest" }, { key: "forest-mist", parents: ["forest"] }, { key: "autumn", parents: ["forest"] },
     { key: "fan" }, ...Array.from({ length: 18 }, (_, index) => ({ key: `fan-${index + 1}`, parents: ["fan"] })),
   ] satisfies Seed[]) add(seed);
+  // `?deeper=1` continues the forest's mist edit two more generations, so selecting along it reveals new columns.
+  if (query.has("deeper")) for (const seed of [{ key: "mist-dawn", parents: ["forest-mist"] }, { key: "mist-dusk", parents: ["mist-dawn"] }]) add(seed);
   // `?many=N` appends N small components (a root and six children each) for tall, scrollable views.
-  const many = Number(new URLSearchParams(globalThis.location?.search ?? "").get("many") ?? 0);
+  const many = Number(query.get("many") ?? 0);
   for (let component = 0; component < many; component++) {
     add({ key: `m${component}` });
     for (let index = 0; index < 6; index++) add({ key: `m${component}-${index}`, parents: [`m${component}`] });
@@ -67,6 +77,8 @@ let heldSaves: Array<() => void> = [];
 let titleConnection = false;
 let pickerResult: string | null | undefined;
 let nextSaveFailure: string | null = null;
+// Delay of the Preview-info queries, in ms: a native backend answers them over IPC, not within the same frame.
+let previewLatency = 0;
 const titleCalls: number[] = [];
 const titleWaiters = new Map<number, (title: string) => void>();
 
@@ -102,9 +114,11 @@ configureBackend({
   invoke<T>(method: string, params: Record<string, any> = {}): Promise<T> {
     calls.push({ method, params: structuredClone(params) });
     const reply = (value: unknown) => Promise.resolve(value as T);
+    const later = (value: unknown) => previewLatency ? new Promise<T>((resolve) => setTimeout(() => resolve(value as T), previewLatency)) : reply(value);
     const token = String(version);
     switch (method) {
-      case "folder_has_trace": return reply(params.directory === DIRECTORY);
+      // MIRROR answers with the same Trace: another folder whose components reuse the same ids.
+      case "folder_has_trace": return reply(params.directory === DIRECTORY || params.directory === MIRROR);
       case "trace_folder_components": {
         const all = componentsOf().map((component) => component.summary);
         return reply({ token, total: all.length, offset: params.offset, components: all.slice(params.offset) });
@@ -121,7 +135,7 @@ configureBackend({
         const nodes = componentsOf().find((component) => component.id === params.componentId)?.nodes ?? [];
         return reply({ stale: false, total: nodes.length, offset: params.offset, nodes: nodes.slice(params.offset) });
       }
-      case "trace_run_details": return reply((params.runIds as number[]).map((id) => {
+      case "trace_run_details": return later((params.runIds as number[]).map((id) => {
         const node = state.nodes.find((item) => item.runId === id);
         return {
           id, operation: "openai.image.edit", parameters: { prompt: node?.prompt ?? "", resolution: "2k", aspect_ratio: "keep", quality: "high", seed: 7 },
@@ -129,8 +143,8 @@ configureBackend({
           details: { actual_size: { width: 1024, height: 768 } }, inputIds: [],
         };
       }));
-      case "trace_revision_status": return reply("matched");
-      case "trace_for_image": return reply(null);
+      case "trace_revision_status": return later("matched");
+      case "trace_for_image": return later(null);
       case "image_save_suggestion": return reply({ directory: DIRECTORY, filename: `${byArtifact(params.artifactId)?.key ?? "image"}.png` });
       case "save_generated_image": {
         const node = byArtifact(params.artifactId);
@@ -190,6 +204,16 @@ export const backend = {
     changed();
     return key;
   },
+  /** Saves an unsaved output into the folder, as its Save action would. */
+  saveGeneration(name: string) {
+    update(state.names.get(name)!, { temporary: false, path: `${DIRECTORY}/${name}.png`, location: `./${name}.png`, scope: "current" });
+    changed();
+  },
+  /** Discards an unsaved output, as its Delete action would. */
+  discardGeneration(name: string) {
+    update(state.names.get(name)!, { discarded: true });
+    changed();
+  },
   completeGeneration(name: string) {
     const key = state.names.get(name)!;
     counter += 1;
@@ -208,6 +232,8 @@ export const backend = {
   /** The next save fails with this message (for example a filename collision). */
   failNextSave(message: string) { nextSaveFailure = message; },
   holdSaves() { holdSaves = true; },
+  /** Answers run details, revision status and per-image traces after `ms`. */
+  setPreviewLatency(ms: number) { previewLatency = ms; },
   releaseSaves() { holdSaves = false; const pending = heldSaves; heldSaves = []; pending.forEach((run) => run()); },
-  reset() { pickerResult = undefined; nextSaveFailure = null; state = scenario(); version += 1; calls.length = 0; },
+  reset() { previewLatency = 0; pickerResult = undefined; nextSaveFailure = null; state = scenario(); version += 1; calls.length = 0; },
 };

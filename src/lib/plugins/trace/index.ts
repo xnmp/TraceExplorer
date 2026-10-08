@@ -6,6 +6,7 @@ import { promptTitles } from "./prompt-titles.svelte";
 import { tracePanes, isTraceTargetData } from "./view/pane-registry.svelte";
 import { disposeLayouts } from "./view/layout-client";
 import { subjectNode } from "./view/preview-subject";
+import { previewData } from "./view/preview-data.svelte";
 import TraceView from "./view/TraceView.svelte";
 import TracePreviewInfo from "./view/TracePreviewInfo.svelte";
 
@@ -23,6 +24,7 @@ export const tracePlugin: Plugin = {
     traceFolderVisibility.clear();
     traceThumbnails.clear();
     promptTitles.clear();
+    previewData.clear();
   },
   activate(ctx) {
     traceFolderVisibility.clear();
