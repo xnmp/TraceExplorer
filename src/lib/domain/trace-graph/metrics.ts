@@ -28,6 +28,23 @@ export function tileSize(shape: TileShape): TileSize {
   };
 }
 
+/**
+ * The arrowhead every terminal route ends in, in canvas pixels: the same size
+ * whatever the line's width or tone. Its tip lies on the target tile's edge
+ * and its base where the route's path ends.
+ */
+export const ARROW = { length: 8, width: 7 } as const;
+
+/** Height of one bend track; a bend zone grows when its tracks need more than its default height. */
+export const TRACK_HEIGHT = 6;
+/**
+ * Bend room in a channel without junctions: three bend tracks, so up to three
+ * crossing sources bend in slices of their own before the channel grows.
+ */
+const BEND = 3 * TRACK_HEIGHT;
+/** Bend room between wrapped rows of one generation: two tracks. */
+const ROW_BEND = 2 * TRACK_HEIGHT;
+
 export const SPACING = {
   /**
    * Gap between tiles of one generation (stacked tiles when running right);
@@ -39,10 +56,17 @@ export const SPACING = {
   margin: 20,
   top: 18,
   bottom: 14,
-  /** Channel below the last display row of a generation. */
-  bandChannel: 46,
+  /**
+   * Straight run at the bottom of every channel, into the row below: a stem
+   * as long as the arrowhead, then the arrowhead itself. Routes bend only
+   * above it, so each arrowhead lies on a straight segment perpendicular to
+   * the tile edge and points the way its line arrives.
+   */
+  approach: 2 * ARROW.length,
+  /** Channel below the last display row of a generation: bend room, then the approach. */
+  bandChannel: BEND + 2 * ARROW.length,
   /** Channel between wrapped display rows of one generation. */
-  rowChannel: 34,
+  rowChannel: ROW_BEND + 2 * ARROW.length,
   /** Extra channel height per nested junction level. */
   junctionLevel: 26,
   /** Minimum distance between junctions sharing a level. */
@@ -51,6 +75,5 @@ export const SPACING = {
   clearance: 6,
   /** Separation between routes sharing one gap. */
   lane: 4,
-  arrow: 3,
   minWidth: 360,
 } as const;

@@ -24,9 +24,9 @@
  */
 import type { NodeKey, TraceNode } from "./model";
 import type { TraceDag } from "./projection";
-import { TRACK_HEIGHT, type Orientation } from "./layout";
+import type { Orientation } from "./layout";
 import { buildInputJunctions, type Junction } from "./junctions";
-import { SPACING, TILE } from "./metrics";
+import { SPACING, TILE, TRACK_HEIGHT } from "./metrics";
 
 export interface GenerationProfile {
   /** Number of generations of the component's settled images (longest parent chain, counted in images). */
@@ -154,8 +154,10 @@ function channelExtra(keys: readonly NodeKey[], parentsOf: (key: NodeKey) => Nod
   let extra = 0;
   for (let band = 0, tracks = 0; band < span - 1; band++) {
     tracks += delta[band];
-    const plain = SPACING.bandChannel + (levels.get(band) ?? 0) * SPACING.junctionLevel;
-    extra += Math.max(plain, tracks * TRACK_HEIGHT) - SPACING.bandChannel;
+    // Bend room only: the approach into the next column never bends, so it never grows.
+    const bend = SPACING.bandChannel - SPACING.approach;
+    const plain = bend + (levels.get(band) ?? 0) * SPACING.junctionLevel;
+    extra += Math.max(plain, tracks * TRACK_HEIGHT) - bend;
   }
   return extra;
 }

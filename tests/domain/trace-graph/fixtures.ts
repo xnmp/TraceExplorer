@@ -135,7 +135,7 @@ export function sharedLanes(layout: GraphLayout): string[] {
   for (let i = 0; i < runs.length; i++) for (let j = i + 1; j < runs.length; j++) {
     const a = runs[i], b = runs[j];
     if (endpointKey(a.route.from) === endpointKey(b.route.from) || endpointKey(a.route.to) === endpointKey(b.route.to)) continue;
-    if (Math.abs(a.x - b.x) < 1 && Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top) > 10) problems.push(`${a.route.id} and ${b.route.id} share x=${a.x}`);
+    if (Math.abs(a.x - b.x) < 1 && Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top) > 4) problems.push(`${a.route.id} and ${b.route.id} share x=${a.x}`);
   }
   return problems;
 }
@@ -154,4 +154,64 @@ export function tileOverlaps(layout: GraphLayout): string[] {
 export function random(seed: number): () => number {
   let state = seed >>> 0;
   return () => { state = (state * 1664525 + 1013904223) >>> 0; return state / 2 ** 32; };
+}
+
+/** Position along the flow (y running down, x running right) and across it. */
+const along = (layout: GraphLayout, point: Point) => layout.orientation === "right" ? point.x : point.y;
+const across = (layout: GraphLayout, point: Point) => layout.orientation === "right" ? point.y : point.x;
+
+/** The last two points of a path and the command that joins them. */
+function finalSegment(path: string): { command: string; from: Point; to: Point } | null {
+  const commands = [...path.matchAll(/([MLC])([^MLC]*)/g)].map(([, command, body]) => {
+    const numbers = (body.match(/-?\d+(?:\.\d+)?/g) ?? []).map(Number);
+    return { command, end: { x: numbers.at(-2)!, y: numbers.at(-1)! } };
+  });
+  if (commands.length < 2) return null;
+  return { command: commands.at(-1)!.command, from: commands.at(-2)!.end, to: commands.at(-1)!.end };
+}
+
+/**
+ * Terminal routes whose end is not a straight stem for the arrowhead: the
+ * path must end in a straight segment perpendicular to the target tile's
+ * entry edge (vertical running down, horizontal running right), heading into
+ * the tile, at least `arrow` long, and stop `arrow` short of that edge, level
+ * with the edge's middle (so the arrowhead, `arrow` long, ends on it).
+ */
+export function arrowStemProblems(layout: GraphLayout, arrow: number): string[] {
+  const problems: string[] = [];
+  for (const route of layout.routes) {
+    if (!route.terminal) continue;
+    const tile = layout.nodes.get(route.to.id);
+    const segment = finalSegment(route.path);
+    if (!tile || !segment) { problems.push(`${route.id}: no target or final segment`); continue; }
+    const { command, from, to } = segment;
+    const edge = layout.orientation === "right" ? tile.x : tile.y;
+    const middle = layout.orientation === "right" ? tile.y + tile.height / 2 : tile.x + tile.width / 2;
+    const length = along(layout, to) - along(layout, from);
+    if (command !== "L") problems.push(`${route.id}: ends in ${command}, not a straight segment`);
+    if (Math.abs(across(layout, to) - across(layout, from)) > 0.01) problems.push(`${route.id}: final segment is not perpendicular to the tile edge`);
+    if (length < arrow - 0.01) problems.push(`${route.id}: final segment is ${length.toFixed(2)} px, shorter than the ${arrow} px arrowhead`);
+    if (Math.abs(along(layout, to) + arrow - edge) > 0.01) problems.push(`${route.id}: arrowhead tip lands at ${(along(layout, to) + arrow).toFixed(2)}, tile edge at ${edge}`);
+    if (Math.abs(across(layout, to) - middle) > 0.01) problems.push(`${route.id}: arrives off the middle of the tile edge`);
+  }
+  return problems;
+}
+
+export interface Channel { readonly between: string; readonly gap: number; readonly betweenBands: boolean; readonly levels: number; readonly routes: number }
+
+/**
+ * Every channel between consecutive display rows, along the flow: its height,
+ * whether it separates generations, how many junction levels it holds and how
+ * many drawn routes run through it (each crosses a channel at most once, and
+ * draws each stretch only once, so this bounds the bends it holds).
+ */
+export function channels(layout: GraphLayout): Channel[] {
+  const sampled = layout.routes.map((route) => samplePath(route.path, 12));
+  return layout.rows.slice(1).map((row, index) => {
+    const above = layout.rows[index];
+    const inside = (value: number) => value > above.bottom + 0.5 && value < row.top - 0.5;
+    const levels = new Set([...layout.junctions.values()].map((junction) => along(layout, junction)).filter(inside).map((value) => Math.round(value)));
+    const routes = sampled.filter((points) => points.some((point) => inside(along(layout, point)))).length;
+    return { between: `rows ${above.index}-${row.index}`, gap: row.top - above.bottom, betweenBands: row.band !== above.band, levels: levels.size, routes };
+  });
 }

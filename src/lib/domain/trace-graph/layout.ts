@@ -16,7 +16,7 @@
  */
 import type { NodeKey } from "./model";
 import { buildInputJunctions, endpointKey, type Consumer, type Endpoint, type Junction } from "./junctions";
-import { SPACING } from "./metrics";
+import { ARROW, SPACING, TRACK_HEIGHT } from "./metrics";
 
 export interface LayoutItem {
   readonly key: NodeKey;
@@ -120,8 +120,7 @@ const JUNCTION_BERTH = 6;
 const FREE_STEP = 0.5;
 /** No tile is anywhere near this big; larger sizes are clamped so coordinates stay exact. */
 const MAX_TILE = 100_000;
-/** Height of one bend track; a zone grows when its tracks need more than its default height. */
-export const TRACK_HEIGHT = 6;
+export { TRACK_HEIGHT };
 
 /** Splits an ordered sequence into the fewest rows, then balances row widths. */
 export function wrapRow(widths: readonly number[], limit: number, gap: number): number[][] {
@@ -720,11 +719,14 @@ function layoutPass(request: LayoutRequest, extra: { readonly left: number; read
   // clear zones, the roomiest.
   const legsIn = new Map<number, Leg[]>();
   for (const item of allLegs) append(legsIn, item.channel, item);
+  // A channel is its bend zones, the junction levels between them, then the
+  // approach (a straight stem and the arrowhead). Each junction level adds
+  // `junctionLevel`: its dot's berths and the zone between it and the next
+  // level; the bend room left either side of the levels is split evenly.
   const defaultZone = (channel: number, zone: number) => {
     const count = levelCount(channel);
-    if (!count) return lastRowOfBand.get(rowKeys[channel].band) === channel ? SPACING.bandChannel : SPACING.rowChannel;
-    if (zone === 0) return 10 + SPACING.junctionLevel - JUNCTION_BERTH;
-    if (zone === count) return SPACING.bandChannel - 10 - JUNCTION_BERTH;
+    if (!count) return (lastRowOfBand.get(rowKeys[channel].band) === channel ? SPACING.bandChannel : SPACING.rowChannel) - SPACING.approach;
+    if (zone === 0 || zone === count) return (SPACING.bandChannel - SPACING.approach + SPACING.junctionLevel) / 2 - JUNCTION_BERTH;
     return SPACING.junctionLevel - 2 * JUNCTION_BERTH;
   };
   type Run = { readonly x: number; readonly from: number; readonly to: number; readonly bend: number | null; readonly leg: Leg };
@@ -886,6 +888,8 @@ function layoutPass(request: LayoutRequest, extra: { readonly left: number; read
       zoneBox.set(`${index}:${zone}`, { top: y, bottom: y + tall });
       y += tall + (zone < count ? 2 * JUNCTION_BERTH : 0);
     }
+    // No bend below the last zone: routes into the next row run straight.
+    y += SPACING.approach;
   });
   const height = rows.length ? rows.at(-1)!.bottom + SPACING.bottom : 0;
   const junctions = new Map<string, PlacedJunction & { channel: number }>();
@@ -896,14 +900,21 @@ function layoutPass(request: LayoutRequest, extra: { readonly left: number; read
   const at = (anchor: Anchor): number => {
     if ("junction" in anchor) return junctions.get(anchor.junction)!.y;
     const row = rows[anchor.row];
-    return anchor.edge === "bottom" ? row.bottom : anchor.edge === "top" ? row.top : row.top - SPACING.arrow;
+    // A route into a tile ends at its arrowhead's base; the tip lies on the tile's edge.
+    return anchor.edge === "bottom" ? row.bottom : anchor.edge === "top" ? row.top : row.top - ARROW.length;
   };
 
   // 7. Paths: vertical to the bend's slice, an S-curve within it, vertical on.
+  // Bend zones end `approach` above the next row, so a route into a tile ends
+  // in a straight, vertical stem at least as long as its arrowhead.
   const draw = (item: Leg): string => {
     const y1 = at(item.from), y2 = at(item.to);
     const { x1, x2 } = item;
-    if (!bends(item)) return ` L${round(x2)} ${round(y2)}`;
+    if (!bends(item)) {
+      // Too slight an offset to bend; the stem into an arrowhead is still exactly vertical.
+      const stem = "edge" in item.to && item.to.edge === "arrow" && round(x1) !== round(x2) ? ` L${round(x2)} ${round(y2 - ARROW.length)}` : "";
+      return `${stem} L${round(x2)} ${round(y2)}`;
+    }
     const box = zoneBox.get(`${item.channel}:${item.zone}`)!;
     const top = Math.max(box.top, y1), bottom = Math.min(box.bottom, y2);
     const slice = (bottom - top) / (trackCount.get(`${item.channel}:${item.zone}`) ?? 1);

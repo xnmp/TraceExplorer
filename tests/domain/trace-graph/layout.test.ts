@@ -2,8 +2,8 @@ import { describe, expect, it } from "vitest";
 import { layoutGraph, nearestFree, nearestInDirection, wrapRow, type LayoutItem, type Orientation } from "$lib/domain/trace-graph/layout";
 import { connectedComponents, projectDag } from "$lib/domain/trace-graph/projection";
 import { planScene } from "$lib/domain/trace-graph/scene";
-import { SPACING, tileSize } from "$lib/domain/trace-graph/metrics";
-import { foreignJunctionContacts, mockupNodes, node, random, routeCollisions, sharedLanes, sourcesReaching, tileOverlaps } from "./fixtures";
+import { ARROW, SPACING, TRACK_HEIGHT, tileSize } from "$lib/domain/trace-graph/metrics";
+import { arrowStemProblems, channels, foreignJunctionContacts, mockupNodes, node, random, routeCollisions, sharedLanes, sourcesReaching, tileOverlaps } from "./fixtures";
 
 /** Correctness sweeps over many graphs: slower CI runners need more than the default 5 s. */
 const HEAVY = 30_000;
@@ -42,6 +42,9 @@ function checkLayout(items: readonly LayoutItem[], maxWidth: number, orientation
   for (const junction of layout.junctions.values()) onCanvas(junction.x, junction.y, junction.id);
   const ids = layout.routes.map((route) => route.id);
   expect(ids.filter((id, index) => ids.indexOf(id) !== index), "duplicate route ids").toEqual([]);
+  // Every arrowhead sits on a straight stem into its tile, its tip on the edge.
+  expect(arrowStemProblems(layout, ARROW.length)).toEqual([]);
+  expect(channelProblems(layout)).toEqual([]);
   // Parents come first along the flow: above their children, or to their left.
   for (const entry of items) for (const parent of entry.parents) {
     const child = layout.nodes.get(entry.key)!, source = layout.nodes.get(parent)!;
@@ -49,6 +52,26 @@ function checkLayout(items: readonly LayoutItem[], maxWidth: number, orientation
     else expect(child.x, `${parent} left of ${entry.key}`).toBeGreaterThan(source.x + source.width);
   }
   return layout;
+}
+
+/**
+ * Channels outside the bounds their contents justify. Every channel holds at
+ * least the approach (a stem and the arrowhead) and one bend track. A channel
+ * is its default height (`bandChannel` between generations, `rowChannel`
+ * between wrapped rows) plus `junctionLevel` per junction level; it grows past
+ * that only when its bends need more tracks than a zone holds, by at most one
+ * track per route crossing it in each zone. Without junctions, as many routes
+ * as its default bend room has tracks for keep it at exactly its default.
+ */
+function channelProblems(layout: ReturnType<typeof layoutGraph>): string[] {
+  return channels(layout).flatMap(({ between, gap, betweenBands, levels, routes }) => {
+    const base = betweenBands ? SPACING.bandChannel : SPACING.rowChannel;
+    const problems: string[] = [];
+    if (gap < SPACING.approach + TRACK_HEIGHT) problems.push(`${between}: ${gap} px leaves no room to bend`);
+    if (gap > base + levels * SPACING.junctionLevel + (levels + 1) * routes * TRACK_HEIGHT) problems.push(`${between}: ${gap} px for ${levels} levels and ${routes} routes`);
+    if (!levels && routes * TRACK_HEIGHT <= base - SPACING.approach && Math.abs(gap - base) > 0.01) problems.push(`${between}: ${gap} px, not the default ${base} px, for ${routes} routes`);
+    return problems;
+  });
 }
 
 /** Pairs of junction dots closer than a dot's diameter. */
@@ -328,7 +351,7 @@ describe("left-to-right layout", () => {
     for (const route of layout.routes.filter((candidate) => candidate.terminal)) {
       const target = layout.nodes.get(route.to.id)!;
       const { last } = ends(route.path);
-      expect(last.x, route.id).toBeCloseTo(target.x - SPACING.arrow, 1);
+      expect(last.x, route.id).toBeCloseTo(target.x - ARROW.length, 1);
       expect(last.y, route.id).toBeCloseTo(target.y + target.height / 2, 1);
     }
     for (const route of layout.routes.filter((candidate) => candidate.from.kind === "node" && candidate.to !== candidate.from)) {
@@ -390,6 +413,27 @@ describe("spacing", () => {
       expect(gap).toBeLessThanOrEqual(16);
       // A passing route keeps its clearance from both neighbours.
       expect(gap).toBeGreaterThan(2 * SPACING.clearance);
+    }
+  });
+
+  it("separates generations by only what their routes need, in both orientations", () => {
+    // A root with two edits, and two further edits under the second: the
+    // shape of a typical session, with "n edits" hints under the open tiles.
+    const hinted = tileSize({ foreign: false, hint: true });
+    const items = [item("root", [], hinted), item("left", ["root"], small, 1), item("right", ["root"], hinted, 2),
+      item("a", ["right"], small, 3), item("b", ["right"], small, 4)];
+    // What a channel needs: a straight stem as long as the arrowhead, the
+    // arrowhead, and room for three bend tracks (three crossing sources bend
+    // apart without the channel growing). It used to be 46 px.
+    const needed = 2 * ARROW.length + 3 * TRACK_HEIGHT;
+    for (const orientation of ORIENTATIONS) {
+      const layout = checkLayout(items, orientation === "down" ? 360 : 900, orientation);
+      const between = channels(layout);
+      expect(between.map((channel) => channel.betweenBands), orientation).toEqual([true, true]);
+      for (const { gap } of between) {
+        expect(gap, orientation).toBeLessThanOrEqual(needed);
+        expect(gap, orientation).toBeLessThan(46);
+      }
     }
   });
 
