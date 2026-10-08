@@ -1,18 +1,30 @@
 import { test, expect, type Page } from "@playwright/test";
 import { openView, click, key, tile, card, state, uncaught, settle, tileBoxes, overlaps, rendered, type Box } from "./support";
 
+/** Rendered width and image height of every tile, keyed by node key. */
+const tileSizes = (page: Page) => page.evaluate(() => Object.fromEntries([...document.querySelectorAll<HTMLElement>("[data-tile-key]")].map((element) => {
+  const image = element.querySelector<HTMLElement>(".image")!;
+  return [element.dataset.tileKey!, { width: element.getBoundingClientRect().width, image: image.getBoundingClientRect().height }];
+})));
+
 test.describe("selection neighborhood", () => {
-  test("without a selection nothing is dimmed and nothing is enlarged", async ({ page }) => {
+  test("without a selection nothing is dimmed and every tile has the same size", async ({ page }) => {
     await openView(page);
     expect(await rendered(page, "tone", "unrelated")).toEqual([]);
-    expect(await rendered(page, "size", "large")).toEqual([]);
     expect(await rendered(page, "tone", "focus")).toEqual([]);
+    const sizes = Object.values(await tileSizes(page));
+    expect(sizes.length).toBeGreaterThan(10);
+    expect(new Set(sizes.map((size) => JSON.stringify(size))).size).toBe(1);
   });
 
-  test("selecting a node enlarges exactly its parents and children, dims the rest and drops the old branch", async ({ page }) => {
+  test("selecting a node dims the rest and drops the old branch, without resizing any tile", async ({ page }) => {
     await openView(page);
+    const initial = Object.values(await tileSizes(page))[0];
+    const uniform = async () => {
+      for (const [k, size] of Object.entries(await tileSizes(page))) expect(size, k).toEqual(initial);
+    };
     await click(page, "warm");
-    expect(await rendered(page, "size", "large")).toEqual(["evening", "lantern", "merge", "mist", "palette", "rain", "village", "warm"]);
+    await uniform();
     expect(await rendered(page, "tone", "focus")).toEqual(["warm"]);
     expect(await rendered(page, "tone", "related")).toEqual(["evening", "lantern", "merge", "mist", "palette", "rain", "village"]);
     const unrelated = await rendered(page, "tone", "unrelated");
@@ -20,17 +32,35 @@ test.describe("selection neighborhood", () => {
     expect(unrelated).not.toContain("warm");
 
     await click(page, "rain");
-    expect(await rendered(page, "size", "large")).toEqual(["quiet", "rain", "warm"]);
+    await uniform();
     expect(await rendered(page, "tone", "focus")).toEqual(["rain"]);
-    // Ancestors stay related (small); the previous focus's other branch is gone.
-    for (const name of ["village", "palette", "mist", "lantern"]) {
-      const t = await tile(page, name);
-      await expect(t).toHaveAttribute("data-size", "small");
-      await expect(t).toHaveAttribute("data-tone", "related");
-    }
+    for (const name of ["village", "palette", "mist", "lantern"]) await expect(await tile(page, name)).toHaveAttribute("data-tone", "related");
     await expect(await tile(page, "evening")).toHaveCount(0);
     await expect(await tile(page, "merge")).toHaveCount(0);
     await expect(await tile(page, "daylight")).toHaveAttribute("data-tone", "unrelated");
+  });
+
+  test("the selection shows in the tile's styling: an accent border, and a ring around the focus", async ({ page }) => {
+    await openView(page);
+    await click(page, "warm");
+    await click(page, "rain", { modifiers: ["Control"] });
+    const styles = await page.evaluate((keys) => {
+      const probe = document.createElement("span");
+      probe.style.color = "var(--accent)";
+      document.body.append(probe);
+      const accent = getComputedStyle(probe).color;
+      probe.remove();
+      return { accent, cards: keys.map((k) => {
+        const style = getComputedStyle(document.querySelector(`[data-node-key="${CSS.escape(k)}"]`)!);
+        return { border: style.borderTopColor, ring: style.boxShadow };
+      }) };
+    }, await Promise.all(["rain", "warm", "village"].map((name) => key(page, name))));
+    const [focus, selected, plain] = styles.cards;
+    expect(focus.border).toBe(styles.accent);
+    expect(selected.border).toBe(styles.accent);
+    expect(plain.border).not.toBe(styles.accent);
+    expect(focus.ring).toContain(styles.accent);
+    expect(selected.ring).toBe("none");
   });
 
   test("ctrl-click multi-selects with one primary focus on the last clicked node", async ({ page }) => {
@@ -236,7 +266,8 @@ test.describe("motion", () => {
   test("motion starts every tile where it was displayed, even when the graph changes width", async ({ page }) => {
     await openView(page);
     await click(page, "village");
-    const warm = await key(page, "warm");
+    // Daylight's six children widen the graph.
+    const daylight = await key(page, "daylight");
     const result = await page.evaluate(async (target) => {
       const section = document.querySelector("section[data-component]")!;
       const graph = () => section.querySelector<HTMLElement>(".graph")!;
@@ -252,11 +283,79 @@ test.describe("motion", () => {
       const undimmed = paths.filter((path) => shownRoutes.has(path.dataset.route!) && path.classList.contains("unrelated") && Number(getComputedStyle(path).opacity) > 0.5).length;
       await new Promise((resolve) => setTimeout(resolve, 400));
       return { jumps, refaded, undimmed, widthChanged: Math.abs(graph().getBoundingClientRect().width - widthBefore) > 20 };
-    }, warm);
+    }, daylight);
     expect(result.widthChanged).toBe(true);
     expect(result.jumps).toEqual([]);
     expect(result.refaded).toBe(0);
     expect(result.undimmed).toBe(0);
+  });
+
+  test("tiles and connectors that leave fade out where they were, then are gone", async ({ page }) => {
+    await openView(page);
+    await click(page, "warm");
+    const evening = await key(page, "evening");
+    const before = await page.evaluate((k) => {
+      const box = document.querySelector(`[data-tile-key="${CSS.escape(k)}"]`)!.getBoundingClientRect();
+      return { x: box.x, y: box.y, routes: document.querySelectorAll(`path[data-route][data-to="node:${CSS.escape(k)}"]`).length };
+    }, evening);
+    expect(before.routes).toBeGreaterThan(0);
+    // Select and sample in one evaluation, so a slow runner cannot miss the 180 ms fade.
+    const during = await page.evaluate(async ({ target, label }) => {
+      document.querySelector<HTMLElement>(`[data-node-key="${CSS.escape(target)}"]`)!.click();
+      await new Promise((resolve) => requestAnimationFrame(resolve));
+      for (const animation of document.getAnimations()) animation.pause();
+      const ghosts = [...document.querySelectorAll<HTMLElement>("[data-motion-ghost]")];
+      const tile = ghosts.find((ghost) => ghost.classList.contains("tile") && ghost.textContent?.includes(label));
+      const box = tile?.getBoundingClientRect();
+      const result = {
+        tile: tile ? { x: box!.x, y: box!.y, opacity: Number(getComputedStyle(tile).opacity),
+          fading: tile.getAnimations().some((animation) => Number((animation.effect as KeyframeEffect).getKeyframes().at(-1)?.opacity ?? 1) === 0),
+          interactive: !!tile.querySelector("[data-node-key]") || !tile.closest("[inert]") } : null,
+        paths: ghosts.filter((ghost) => ghost instanceof SVGPathElement).length,
+      };
+      for (const animation of document.getAnimations()) animation.play();
+      return result;
+    }, { target: await key(page, "rain"), label: "evening prompt" });
+    expect(during.tile).not.toBeNull();
+    expect(Math.abs(during.tile!.x - before.x)).toBeLessThanOrEqual(2);
+    expect(Math.abs(during.tile!.y - before.y)).toBeLessThanOrEqual(2);
+    expect(during.tile!.opacity).toBeGreaterThan(0);
+    expect(during.tile!.fading).toBe(true);
+    expect(during.tile!.interactive).toBe(false);
+    expect(during.paths).toBeGreaterThan(0);
+    await settle(page);
+    expect(await page.locator("[data-motion-ghost]").count()).toBe(0);
+    await expect(await tile(page, "evening")).toHaveCount(0);
+  });
+
+  test("a tile that returns while fading out continues from its fading copy instead of appearing twice", async ({ page }) => {
+    await openView(page);
+    await click(page, "warm");
+    const result = await page.evaluate(async ({ rain, warm, evening }) => {
+      const frame = () => new Promise((resolve) => requestAnimationFrame(resolve));
+      const select = (k: string) => document.querySelector<HTMLElement>(`[data-node-key="${CSS.escape(k)}"]`)!.click();
+      const copies = () => [...document.querySelectorAll<HTMLElement>("[data-motion-ghost].tile")].filter((ghost) => ghost.textContent?.includes("evening prompt"));
+      select(rain);
+      // Wait until evening's copy is part-way through fading out.
+      let copy = copies()[0];
+      for (let i = 0; i < 30 && !(copy && Number(getComputedStyle(copy).opacity) < 0.9); i++) { await frame(); copy = copies()[0]; }
+      const left = copy ? Number(getComputedStyle(copy).opacity) : null;
+      select(warm);
+      await frame();
+      for (const animation of document.getAnimations()) animation.pause();
+      const tile = document.querySelector<HTMLElement>(`[data-tile-key="${CSS.escape(evening)}"]`);
+      const sample = { left, copies: copies().length, returned: tile ? Number(getComputedStyle(tile).opacity) : null };
+      for (const animation of document.getAnimations()) animation.play();
+      return sample;
+    }, { rain: await key(page, "rain"), warm: await key(page, "warm"), evening: await key(page, "evening") });
+    expect(result.left).not.toBeNull();
+    expect(result.copies).toBe(0);
+    expect(result.returned).not.toBeNull();
+    // It fades back in from where its copy had faded to, rather than from nothing or at full opacity.
+    expect(result.returned!).toBeGreaterThan(0.05);
+    expect(result.returned!).toBeLessThanOrEqual(result.left! + 0.05);
+    await settle(page);
+    expect(await page.locator("[data-motion-ghost]").count()).toBe(0);
   });
 
   test("reduced motion starts no animations when selection changes", async ({ page }) => {
@@ -275,16 +374,16 @@ test.describe("scroll anchoring", () => {
 
   test("the clicked tile stays where it was on screen while its graph relayouts", async ({ page }) => {
     await openView(page, undefined, "?many=8");
-    const child = await tile(page, "fan-7");
-    await child.scrollIntoViewIfNeeded();
-    await page.evaluate(() => { document.querySelector<HTMLElement>("[data-testid=trace-view]")!.scrollTop += 120; });
+    // Selecting rain after warm drops the merge junction above it, so rain moves up in its graph.
+    await click(page, "warm");
+    await page.evaluate(() => { document.querySelector<HTMLElement>("[data-testid=trace-view]")!.scrollTop += 200; });
     await settle(page);
     const offset = async () => page.evaluate((k) => {
       const element = document.querySelector<HTMLElement>(`[data-tile-key="${CSS.escape(k)}"]`)!;
       return { screen: element.getBoundingClientRect().top, inGraph: parseFloat(element.style.top) };
-    }, await key(page, "fan-7"));
+    }, await key(page, "rain"));
     const before = await offset();
-    await click(page, "fan-7");
+    await click(page, "rain");
     const after = await offset();
     expect(Math.abs(after.inGraph - before.inGraph)).toBeGreaterThan(10);
     expect(Math.abs(after.screen - before.screen)).toBeLessThanOrEqual(2);
@@ -376,4 +475,51 @@ test.describe("keyboard", () => {
     await page.keyboard.press("Enter");
     expect((await state(page)).opened).toEqual(["/pictures/warm.png"]);
   });
+});
+
+test.describe("theme colours", () => {
+  // The harness themes copy host themes that, like most, define no `--accent-text`.
+  for (const theme of ["light", "dark"]) {
+    test(`connectors follow the ${theme} theme: the selected branch is drawn in the accent and every arrowhead matches its line`, async ({ page }) => {
+      await openView(page, undefined, `?theme=${theme}`);
+      await click(page, "warm");
+      const result = await page.evaluate(() => {
+        const probe = document.createElement("span");
+        probe.style.color = "var(--accent)";
+        document.body.append(probe);
+        const accent = getComputedStyle(probe).color;
+        probe.remove();
+        const section = document.querySelector("section.component[data-component]")!;
+        const lines = [...section.querySelectorAll<SVGPathElement>("path[data-route]")].map((path) => {
+          const style = getComputedStyle(path);
+          const marker = path.getAttribute("marker-end")?.match(/url\(#(.+)\)/)?.[1];
+          const head = marker ? section.querySelector<SVGPolygonElement>(`marker[id="${marker}"] polygon`) : null;
+          return {
+            tone: path.classList.contains("highlight") ? "highlight" : path.classList.contains("branch") ? "branch" : "other",
+            stroke: style.stroke, width: parseFloat(style.strokeWidth), head: head ? getComputedStyle(head).fill : null,
+          };
+        });
+        const dots = [...section.querySelectorAll<SVGCircleElement>("circle.junction.highlight")].map((dot) => getComputedStyle(dot).fill);
+        return { accent, lines, dots };
+      });
+      const { accent, lines, dots } = result;
+      const highlight = lines.filter((line) => line.tone === "highlight");
+      const branch = lines.filter((line) => line.tone === "branch");
+      expect(highlight.length).toBeGreaterThan(0);
+      expect(branch.length + lines.filter((line) => line.tone === "other").length).toBeGreaterThan(0);
+      for (const line of lines) {
+        // An undefined token would make the stroke `none` and the arrowhead black.
+        expect(line.stroke).not.toBe("none");
+        if (line.head !== null) expect(line.head, `${line.tone} arrowhead`).toBe(line.stroke);
+      }
+      for (const line of highlight) expect(line.stroke).toBe(accent);
+      for (const dot of dots) expect(dot).toBe(accent);
+      // The selected branch stands out from every other line.
+      const others = lines.filter((line) => line.tone !== "highlight");
+      for (const line of others) {
+        expect(line.stroke).not.toBe(accent);
+        expect(line.width).toBeLessThan(highlight[0].width);
+      }
+    });
+  }
 });

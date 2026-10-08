@@ -7,6 +7,7 @@
 import { configureBackend } from "$lib/api/common";
 import type { TraceNode } from "$lib/domain/trace-graph/model";
 import { connectedComponents, projectDag } from "$lib/domain/trace-graph/projection";
+import StubFileTiles from "./StubFileTiles.svelte";
 
 export const DIRECTORY = "/pictures";
 const TEMP = "/managed";
@@ -38,6 +39,8 @@ function scenario(): { nodes: TraceNode[]; names: Map<string, string> } {
     { key: "daylight", parents: ["village"] }, { key: "warm", parents: ["village", "palette", "mist", "lantern"] }, { key: "cool", parents: ["palette"] },
     { key: "morning", parents: ["daylight"] }, { key: "sunny", parents: ["daylight"] }, { key: "evening", parents: ["warm"] }, { key: "rain", parents: ["warm"] },
     { key: "merge", parents: ["daylight", "warm"], temporary: true }, { key: "quiet", parents: ["rain"] },
+    // Daylight's six children make its focus widen the graph (see the motion specs).
+    { key: "dawn", parents: ["daylight"] }, { key: "noon", parents: ["daylight"] }, { key: "dusk", parents: ["daylight"] },
     { key: "forest" }, { key: "forest-mist", parents: ["forest"] }, { key: "autumn", parents: ["forest"] },
     { key: "fan" }, ...Array.from({ length: 18 }, (_, index) => ({ key: `fan-${index + 1}`, parents: ["fan"] })),
   ] satisfies Seed[]) add(seed);
@@ -156,9 +159,13 @@ configureBackend({
   },
 });
 
+// `?fileTiles=1` simulates a host with the `ui/file-tiles` module; without it, an older SDK 2 host.
+const fileTiles = new URLSearchParams(globalThis.location?.search ?? "").has("fileTiles");
 const color = (path: string) => `hsl(${[...path].reduce((sum, char) => (sum * 31 + char.charCodeAt(0)) % 360, 7)} 45% 55%)`;
 (globalThis as any).__TAURI_EXPLORER_PLUGIN_SDK__ = {
-  sdkVersion: 1, apiVersion: 2, capabilities: ["fileViews", "previewInfo", "previewTargets", "blobWorkers"], svelteVersion: "5.56.3", modules: {},
+  sdkVersion: 1, apiVersion: 2, svelteVersion: "5.56.3",
+  capabilities: ["fileViews", "previewInfo", "previewTargets", "blobWorkers", ...(fileTiles ? ["fileTiles"] : [])],
+  modules: fileTiles ? { "ui/file-tiles": { default: StubFileTiles } } : {},
   pickSaveFile: async () => pickerResult === undefined ? `${DIRECTORY}/picked.png` : pickerResult,
   thumbnailData: async (path: string) => ({ ok: true, data: URL.createObjectURL(new Blob([
     `<svg xmlns="http://www.w3.org/2000/svg" width="160" height="96"><rect width="160" height="96" fill="${color(path)}"/></svg>`,

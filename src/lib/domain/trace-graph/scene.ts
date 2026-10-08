@@ -14,7 +14,6 @@ import type { GraphLayout, LayoutItem, LayoutRequest, PlacedRoute } from "./layo
 export interface SceneTile {
   readonly key: NodeKey;
   readonly node: TraceNode;
-  readonly large: boolean;
   readonly tone: NodeTone;
   readonly size: TileSize;
   readonly childCount: number;
@@ -33,7 +32,7 @@ export function planScene(dag: TraceDag, members: readonly NodeKey[], focus: Nod
   const inComponent = focus !== null && members.includes(focus);
   const context = lineage(dag, inComponent ? focus : null);
   // Lineage of an out-of-component focus still dims this component entirely.
-  const effective: Lineage = focus !== null && !inComponent ? { focus, large: new Set(), related: new Set() } : context;
+  const effective: Lineage = focus !== null && !inComponent ? { focus, related: new Set() } : context;
   const visible = visibleKeys(dag, members, inComponent ? focus : null);
   const shown = new Set(visible);
   const tiles = new Map<NodeKey, SceneTile>();
@@ -42,9 +41,9 @@ export function planScene(dag: TraceDag, members: readonly NodeKey[], focus: Nod
     const node = dag.nodes.get(key)!;
     const childCount = dag.children.get(key)!.length;
     const expandable = node.scope === "current" && childCount > 0;
-    const large = effective.large.has(key);
-    const size = tileSize({ large, foreign: node.scope !== "current", hint: expandable });
-    tiles.set(key, { key, node, large, tone: toneOf(effective, key), size, childCount, hiddenDescendants: hiddenDescendantCount(dag, key, shown), expandable });
+    // Sizes depend only on the node, never on the focus.
+    const size = tileSize({ foreign: node.scope !== "current", hint: expandable });
+    tiles.set(key, { key, node, tone: toneOf(effective, key), size, childCount, hiddenDescendants: hiddenDescendantCount(dag, key, shown), expandable });
     items.push({ key, width: size.width, height: size.height, order: node.order, parents: dag.parents.get(key)!.filter((parent) => shown.has(parent)) });
   }
   return { lineage: effective, tiles, request: { items, maxWidth, hint } };

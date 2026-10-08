@@ -7,7 +7,7 @@
    */
   import { tick } from "svelte";
   import type { NodeKey } from "$lib/domain/trace-graph/model";
-  import { planScene, routeStyle, junctionRelated, type ScenePlan } from "$lib/domain/trace-graph/scene";
+  import { planScene, routeStyle, junctionRelated, type RouteStyle, type ScenePlan } from "$lib/domain/trace-graph/scene";
   import { nearestInDirection, type Direction, type GraphLayout } from "$lib/domain/trace-graph/layout";
   import { endpointKey } from "$lib/domain/trace-graph/junctions";
   import { promptTitles } from "../prompt-titles.svelte";
@@ -129,6 +129,10 @@
 
   // With a focus, its lineage (the selected branch) is drawn with more contrast than the rest.
   const branch = $derived(!!shown && shown.plan.lineage.focus !== null);
+  /** A line's colour: highlight and branch (with a focus) win over the route's scope. */
+  const MARKER_TONES = ["", "subfolder", "external", "branch", "highlight"] as const;
+  const lineTone = (style: RouteStyle): (typeof MARKER_TONES)[number] =>
+    style.highlighted ? "highlight" : branch && style.related ? "branch" : style.kind === "current" ? "" : style.kind;
   // Each connector's vertical extent, so windowing can skip far-away ones too.
   const extents = $derived(shown ? new Map(shown.layout.routes.map((route) => [route.id, verticalExtent(route.path)])) : new Map<string, [number, number]>());
   const inBand = (top: number, bottom: number) => !band || (bottom >= band.top && top <= band.bottom);
@@ -175,23 +179,28 @@
   <div class="graph" bind:this={canvas} style:width="{shown.layout.width}px" style:height="{shown.layout.height}px">
     <svg class="edges" width={shown.layout.width} height={shown.layout.height} aria-hidden="true">
       <defs>
-        {#each ["", "branch", "highlight"] as tone (tone)}
+        <!-- One arrowhead per line colour, so every arrowhead matches its line. -->
+        {#each MARKER_TONES as tone (tone)}
           <marker id="arrow-{uid}{tone ? `-${tone}` : ""}" class={tone} viewBox="0 0 6 6" refX="5" refY="3" markerWidth="5" markerHeight="5" orient="auto">
             <polygon points="0,0 6,3 0,6" />
           </marker>
         {/each}
       </defs>
+      <!-- Motion's fading copies of departed connectors and junctions (motion.ts); Svelte keeps it empty. -->
+      <g class="ghosts" data-motion-ghosts></g>
       {#each routes as { route, style } (route.id)}
-        {@const tone = style.highlighted ? "-highlight" : branch && style.related ? "-branch" : ""}
+        {@const tone = lineTone(style)}
         <path class={style.kind} class:unrelated={!style.related} class:branch={branch && style.related} class:highlight={style.highlighted}
           data-route={route.id} data-from={endpointKey(route.from)} data-to={endpointKey(route.to)}
-          marker-end={route.terminal ? `url(#arrow-${uid}${tone})` : undefined} d={route.path} />
+          marker-end={route.terminal ? `url(#arrow-${uid}${tone ? `-${tone}` : ""})` : undefined} d={route.path} />
       {/each}
       {#each junctions as junction (junction.id)}
         <circle class="junction" class:highlight={junctionRelated(junction.parents, shown.plan.lineage)}
           data-junction={junction.id} cx={junction.x} cy={junction.y} r="2.8"><title>{junctionTitle(junction.parents)}</title></circle>
       {/each}
     </svg>
+    <!-- Motion's fading copies of departed tiles (motion.ts); Svelte keeps it empty. -->
+    <div class="ghosts" data-motion-ghosts aria-hidden="true" inert></div>
     {#each visibleTiles as tile (tile.key)}
       <TraceTile {tile} placed={shown.layout.nodes.get(tile.key)!} selected={selected.has(tile.key)} {revision}
         onactivate={(event) => onactivate(tile.key, event)} onopen={() => onopen(tile.key)}
@@ -206,17 +215,33 @@
 <style>
   .graph { position: relative; margin: 0 auto; }
   .edges { position: absolute; inset: 0; overflow: visible; pointer-events: none; }
-  .edges path { fill: none; stroke: var(--trace-edge, color-mix(in srgb, var(--text-secondary) 55%, transparent)); stroke-width: 1.35; }
-  .edges path.subfolder { stroke: var(--trace-edge-subfolder, color-mix(in srgb, var(--accent-text) 45%, var(--text-secondary))); }
-  .edges path.external { stroke: var(--trace-edge-external, color-mix(in srgb, var(--system-caution-text, #a76d24) 70%, var(--text-secondary))); stroke-dasharray: 4 3; }
-  .edges path.branch { stroke: var(--trace-edge-branch, color-mix(in srgb, var(--text-primary) 72%, transparent)); stroke-width: 1.6; }
-  .edges path.highlight { stroke: var(--accent-text); stroke-width: 2.3; }
+  /*
+   * Line colours, one per tone. Lines, their arrowheads and junction dots read
+   * the same property, so they always match. Only tokens every host theme
+   * defines are used without a fallback (see integration/plugin-sdk/theme-tokens.ts).
+   */
+  .edges {
+    --edge: var(--trace-edge, color-mix(in srgb, var(--text-secondary) 55%, transparent));
+    --edge-subfolder: var(--trace-edge-subfolder, color-mix(in srgb, var(--accent) 45%, var(--text-secondary)));
+    --edge-external: var(--trace-edge-external, color-mix(in srgb, var(--system-caution-text, var(--system-caution)) 70%, var(--text-secondary)));
+    --edge-branch: var(--trace-edge-branch, color-mix(in srgb, var(--text-primary) 72%, transparent));
+    --edge-highlight: var(--trace-edge-highlight, var(--accent));
+  }
+  .edges path { fill: none; stroke: var(--edge); stroke-width: 1.35; }
+  .edges path.subfolder { stroke: var(--edge-subfolder); }
+  .edges path.external { stroke: var(--edge-external); stroke-dasharray: 4 3; }
+  .edges path.branch { stroke: var(--edge-branch); stroke-width: 1.6; }
+  .edges path.highlight { stroke: var(--edge-highlight); stroke-width: 2.3; }
   .edges path.unrelated { opacity: .4; }
-  .edges marker polygon { fill: var(--trace-edge, color-mix(in srgb, var(--text-secondary) 55%, transparent)); }
-  .edges marker.branch polygon { fill: var(--trace-edge-branch, color-mix(in srgb, var(--text-primary) 72%, transparent)); }
-  .edges marker.highlight polygon { fill: var(--accent-text); }
-  .junction { fill: color-mix(in srgb, var(--text-secondary) 75%, transparent); stroke: var(--background-solid, transparent); stroke-width: 1; pointer-events: auto; }
-  .junction.highlight { fill: var(--accent-text); }
+  .edges marker polygon { fill: var(--edge); }
+  .edges marker.subfolder polygon { fill: var(--edge-subfolder); }
+  .edges marker.external polygon { fill: var(--edge-external); }
+  .edges marker.branch polygon { fill: var(--edge-branch); }
+  .edges marker.highlight polygon { fill: var(--edge-highlight); }
+  .junction { fill: color-mix(in srgb, var(--text-secondary) 75%, transparent); stroke: var(--background-solid); stroke-width: 1; pointer-events: auto; }
+  .junction.highlight { fill: var(--edge-highlight); }
+  .ghosts { pointer-events: none; }
+  div.ghosts { position: absolute; inset: 0; }
   .pending { padding: 18px 12px; color: var(--text-secondary); font-size: 12px; }
   .pending.stale { padding: 4px 12px; }
 </style>

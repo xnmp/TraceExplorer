@@ -11,14 +11,14 @@ These requirements come from the [plan](trace-view-plan.md), section 4:
 - **Direction.** Parents always sit above their children.
 - **Junctions.** Multi-parent inputs combine in readable junctions, with one terminal arrow per output.
 - **Clean routes.** Routes never cross a tile and do not make long detours along the border.
-- **Stable sizes.** Tile sizes are fixed by role (large/small, foreign scope, hint), so decoding and title changes never move tiles.
+- **Stable sizes.** Every tile has the same width and image size (`metrics.ts`), whatever the selection or focus; only rows a node always carries (its scope marker, its expansion hint) add height. Decoding, title changes and selection therefore never resize a tile; selection shows in styling only.
 
 ## ELK spike
 
-We ran `elkjs` 0.9 (layered, `DOWN`, orthogonal routing) with the real tile sizes:
+We ran `elkjs` 0.9 (layered, `DOWN`, orthogonal routing) with the tile sizes of the time:
 
-- Large tiles are 168×152.
-- Small tiles are 92×104.
+- Large tiles (focus and direct neighbours, since removed) were 168×152.
+- Small tiles were 92×104; every tile now has this width.
 - Spacing matches the production constants.
 
 We tried four layering strategies:
@@ -106,12 +106,14 @@ The fan-out and random-DAG fixtures overflow the budget under every strategy.
 
 ## Motion
 
-`motion.ts` captures the displayed geometry before a commit and animates for about 180 ms from there. The captured geometry includes any transition still in progress, so interrupted selections continue smoothly. The transitions are:
+`motion.ts` captures the displayed geometry before a commit and animates for about 180 ms from there. The captured geometry includes any transition still in progress, so interrupted selections continue smoothly. Tile sizes never depend on the selection, so a selection change only moves, adds and removes things. The transitions are:
 
-- tile translate, width and image height;
+- tile translate (tiles that did not move are not animated);
 - junction positions;
 - route `d` morphs; new routes are displaced to follow their endpoints and fade in to their own (possibly dimmed) opacity;
-- section height.
+- departures: tiles, connectors and junctions that leave fade out where they were displayed;
+- section height;
+- tile styling (selection border, focus ring, lineage dimming) by short CSS transitions.
 
 Rules:
 
@@ -119,6 +121,7 @@ Rules:
 - **Pure path sampling.** Connectors are resampled from their path strings (`path-sampling.ts`, using the animated computed `d` when interrupted), never with `getPointAtLength`. Above 300 connectors they snap instead of morphing.
 - **Engine support.** Engines without CSS `d` animation (WebKit) snap existing connectors, fade in only connectors that are new, and do not move junction dots either, so a dot never slides while its connectors have snapped. A connector shown without a captured shape (the previous graph exceeded the morph limit) snaps rather than morphing from a guess.
 - **Regrouped connectors.** A connector new in this commit takes over one that vanished from the same source (a trunk regrouped by a relayout, say), nearest shape first: it morphs from that shape (and from its opacity, should lineage dimming differ), or simply appears where shapes do not morph, instead of fading in. Only connectors beyond those that vanished fade in.
+- **Departures.** A tile, connector or junction that leaves is copied (without its identifying attributes, so it is never mistaken for content) into a ghost layer that Svelte renders empty (`[data-motion-ghosts]`: a `div` under the tiles, an SVG `g` under the connectors), placed where it was displayed, faded out and removed. A connector that hands its shape to a successor morphs instead of leaving. An interruption carries a copy still fading over from its displayed opacity; if its original returns instead (a quick reselection), the copy is dropped and the original moves and fades in from the copy's displayed place and opacity, so nothing shows twice. Connector and junction copies need shape morphing (they would otherwise fade at a spot their successors have already left); past 200 departures at once they simply vanish.
 - **Unchanged connectors** keep their exact curve: a connector whose shape did not change is not morphed (morphing runs on a sampled polyline, which would wobble it).
 - **Superseded commits.** When two commits land before one render, only the later one plays.
 - **Opacity.** Keyframes never set an existing element's opacity, so lineage dimming (a class) holds throughout. The exception is an element caught mid fade-in: its displayed opacity is captured and the fade continues from there, so an interruption never flashes it.

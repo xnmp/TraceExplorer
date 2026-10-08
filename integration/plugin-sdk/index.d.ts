@@ -83,13 +83,31 @@ export interface PluginContext {
   };
 }
 export interface Plugin {id: string; name: string; description: string; enabledByDefault?: boolean; activate(ctx: PluginContext): void | Promise<void>; deactivate?(): void}
+/**
+ * Props of the host's `ui/file-tiles` module (capability `"fileTiles"`): the
+ * Explorer's Tiles view for a list of entries. Each tile carries
+ * `data-entry-path`; the host renders icons, thumbnails, selection and
+ * keyboard behaviour exactly as in its Tiles view.
+ */
+export interface FileTilesProps {
+  entries: readonly FileEntry[];
+  /** Selected entry paths. */
+  selected: ReadonlySet<string>;
+  onselect(entry: FileEntry, event: MouseEvent): void;
+  onopen(entry: FileEntry): void;
+  onmenu(entry: FileEntry, event: MouseEvent): void;
+  /** Accessible name of the tile list. */
+  label?: string;
+}
 export interface RuntimeSDK {
   /** Frozen at 1 so SDK 1 packages keep loading; see apiVersion. */
   sdkVersion: 1;
   /** Present from SDK 2 hosts on. */
   apiVersion?: number;
+  /** For example `fileViews`, `previewInfo`, `previewTargets`, `blobWorkers`, `fileTiles`. */
   capabilities?: readonly string[];
   svelteVersion: string;
+  /** Shared host modules: `svelte`, `ui/modal`, `ui/image-editor`, and `ui/file-tiles` where `fileTiles` is announced. */
   modules: Record<string, Record<string, unknown>>;
   thumbnailData(path: string, size?: number): Promise<ApiResult<string>>;
   pickSaveFile(options: {directory: string; filename: string; title: string}): Promise<string | null>;

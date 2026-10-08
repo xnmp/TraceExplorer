@@ -131,7 +131,7 @@
   dl { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 6px 12px; margin: 0 0 10px; font-size: 11px; line-height: 1.4; }
   dt { color: var(--text-secondary); }
   dd { min-width: 0; margin: 0; overflow-wrap: anywhere; }
-  .error { color: var(--system-critical-text); overflow-wrap: anywhere; }
+  .error { color: var(--system-critical-text, var(--system-critical)); overflow-wrap: anywhere; }
   .notice { color: var(--text-secondary); }
   .inputs { display: flex; flex-direction: column; gap: 4px; margin: 0; padding: 0; list-style: none; }
   .input { display: flex; align-items: center; gap: 8px; width: 100%; padding: 4px; font: inherit; text-align: left; color: var(--text-primary); background: none; border: 1px solid transparent; border-radius: var(--radius-sm); cursor: pointer; }
@@ -145,8 +145,8 @@
   .title, .location { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .title { font-size: 11px; }
   .location { font-size: 10px; color: var(--text-secondary); }
-  .location.subfolder { color: var(--accent-text); }
-  .location.external { color: var(--system-caution-text, #865413); }
+  .location.subfolder { color: var(--accent-text, var(--accent)); }
+  .location.external { color: var(--system-caution-text, var(--system-caution)); }
   summary { cursor: pointer; font-size: 11px; color: var(--text-secondary); padding: 4px 0; margin-top: 8px; }
   summary:focus-visible { outline: 2px solid var(--focus-stroke-outer); outline-offset: 2px; }
   pre { box-sizing: border-box; max-height: 260px; overflow: auto; margin: 6px 0 0; padding: 8px; border-radius: var(--radius-sm); background: var(--background-card-secondary); color: var(--text-primary); font-size: 10px; line-height: 1.4; }

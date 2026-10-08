@@ -219,6 +219,6 @@
   h3 { margin: 0 0 16px; font-size: 14px; color: var(--text-primary); }
   textarea { resize: vertical; min-height: 140px; box-sizing: border-box; }
   .references { margin: 0 0 16px; font-size: 12px; overflow-wrap: anywhere; }
-  .error { color: var(--system-critical-text); font-size: 12px; overflow-wrap: anywhere; margin: 12px 0 0; }
+  .error { color: var(--system-critical-text, var(--system-critical)); font-size: 12px; overflow-wrap: anywhere; margin: 12px 0 0; }
   @media (max-width: 400px) { .options { grid-template-columns: 1fr; } }
 </style>

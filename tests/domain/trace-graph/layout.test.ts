@@ -7,12 +7,18 @@ import { foreignJunctionContacts, mockupNodes, node, random, routeCollisions, sh
 
 /** Correctness sweeps over many graphs: slower CI runners need more than the default 5 s. */
 const HEAVY = 30_000;
-const large = tileSize({ large: true, foreign: false, hint: false });
-const small = tileSize({ large: false, foreign: false, hint: false });
+const small = tileSize({ foreign: false, hint: false });
+const tall = tileSize({ foreign: true, hint: true });
+/**
+ * The engine lays out items of any size. The view gives every tile one width
+ * (metrics.ts), but the sweeps also mix in wider items so the engine's
+ * guarantees never silently depend on uniform widths.
+ */
+const wide = { width: 168, height: 152 };
 const item = (key: string, parents: string[] = [], size = small, order = 0): LayoutItem => ({ key, parents, width: size.width, height: size.height, order });
 
 function fanOut(children: number): LayoutItem[] {
-  return [item("p", [], large), ...Array.from({ length: children }, (_, index) => item(`c${index}`, ["p"], large, index + 1)),
+  return [item("p", [], wide), ...Array.from({ length: children }, (_, index) => item(`c${index}`, ["p"], wide, index + 1)),
     item("g0", ["c0"]), item("g1", ["c5"]), item("g2", ["c17"])];
 }
 
@@ -95,7 +101,7 @@ describe("width-aware layout", () => {
       const items = Array.from({ length: 30 }, (_, index) => {
         const count = index === 0 ? 0 : Math.floor(next() * 3);
         const parents = [...new Set(Array.from({ length: count }, () => `n${Math.floor(next() * index)}`))];
-        return item(`n${index}`, index && !parents.length ? [`n${Math.floor(next() * index)}`] : parents, next() < 0.3 ? large : small, index);
+        return item(`n${index}`, index && !parents.length ? [`n${Math.floor(next() * index)}`] : parents, next() < 0.3 ? wide : small, index);
       });
       checkLayout(items, 300 + Math.floor(next() * 900));
     }
@@ -108,7 +114,7 @@ describe("width-aware layout", () => {
   });
 
   it("keeps routes clear of foreign junctions and in separate lanes on random graphs", () => {
-    const sizes = [large, small, small, tileSize({ large: false, foreign: true, hint: true })];
+    const sizes = [wide, small, small, tall];
     for (let seed = 1; seed <= 60; seed++) {
       const next = random(seed * 7919);
       const count = 8 + Math.floor(next() * 40), fanIn = 1 + Math.floor(next() * 4), locality = 2 + Math.floor(next() * 10);
@@ -131,7 +137,7 @@ describe("width-aware layout", () => {
   it("gives many sources passing one gap distinct lanes", () => {
     // Eight roots all feed the bottom row past a full-width middle row with one narrow gap layout.
     const roots = Array.from({ length: 8 }, (_, index) => item(`r${index}`, [], small, index));
-    const middle = [item("m0", ["r0"], large, 10), item("m1", ["r7"], large, 11)];
+    const middle = [item("m0", ["r0"], wide, 10), item("m1", ["r7"], wide, 11)];
     const sinks = roots.map((root, index) => item(`s${index}`, [root.key, middle[index % 2].key], small, 20 + index));
     const layout = checkLayout([...roots, ...middle, ...sinks], 420);
     expect(sharedLanes(layout)).toEqual([]);
@@ -155,7 +161,7 @@ describe("width-aware layout", () => {
     // widths, so more walls than this would stack dots; a documented limit.)
     for (const walls of [2, 3, 4]) {
       const sources = Array.from({ length: 60 }, (_, index) => item(`s${index}`, [], small, index));
-      const wall = Array.from({ length: walls }, (_, index) => item(`w${index}`, [`s${index}`], large, 100 + index));
+      const wall = Array.from({ length: walls }, (_, index) => item(`w${index}`, [`s${index}`], wide, 100 + index));
       const outputs = sources.map((source, index) => item(`o${index}`, [source.key, wall[index % walls].key], small, 200 + index));
       const layout = checkLayout([...sources, ...wall, ...outputs], 380);
       expect(sharedLanes(layout), `${walls} walls`).toEqual([]);
@@ -179,7 +185,7 @@ describe("width-aware layout", () => {
     const merged: string[] = [];
     for (let seed = 1; seed <= 40; seed++) {
       const next = random(seed);
-      const roots = Array.from({ length: 8 }, (_, index) => item(`r${index}`, [], next() < 0.3 ? large : small, index));
+      const roots = Array.from({ length: 8 }, (_, index) => item(`r${index}`, [], next() < 0.3 ? wide : small, index));
       const outputs = Array.from({ length: 6 + Math.floor(next() * 10) }, (_, index) => {
         const inputs = new Set<string>();
         for (const size = 2 + Math.floor(next() * 4); inputs.size < size;) inputs.add(`r${Math.floor(next() * 8)}`);
@@ -205,7 +211,7 @@ describe("width-aware layout", () => {
   });
 
   it("names a trunk by the consumers it carries, so it keeps its id when relayout moves it", () => {
-    const items = [item("p", [], large), ...Array.from({ length: 12 }, (_, index) => item(`c${index}`, ["p"], small, index + 1))];
+    const items = [item("p", [], wide), ...Array.from({ length: 12 }, (_, index) => item(`c${index}`, ["p"], small, index + 1))];
     const trunks = (width: number) => new Map(layoutGraph({ items, maxWidth: width }).routes.filter((route) => route.to === route.from)
       .map((route) => [route.consumers.map((entry) => entry.child).sort().join(","), route] as const));
     const narrow = trunks(380), wider = trunks(392);
@@ -220,7 +226,7 @@ describe("width-aware layout", () => {
   });
 
   it("draws a shared trunk once, so a large fan-out's path data stays proportional to its rows", () => {
-    const items = [item("p", [], large), ...Array.from({ length: 1000 }, (_, index) => item(`c${index}`, ["p"], small, index + 1))];
+    const items = [item("p", [], wide), ...Array.from({ length: 1000 }, (_, index) => item(`c${index}`, ["p"], small, index + 1))];
     const layout = checkLayout(items, 380);
     const bytes = layout.routes.reduce((sum, route) => sum + route.path.length, 0);
     expect(layout.rows.length).toBeGreaterThan(100);
@@ -282,7 +288,7 @@ describe("width-aware layout", () => {
   });
 
   it("lays out a large visible neighbourhood quickly", () => {
-    const items = Array.from({ length: 600 }, (_, index) => item(`n${index}`, index ? [`n${Math.floor(index / 4)}`] : [], index % 7 ? small : large, index));
+    const items = Array.from({ length: 600 }, (_, index) => item(`n${index}`, index ? [`n${Math.floor(index / 4)}`] : [], index % 7 ? small : wide, index));
     const start = performance.now();
     const layout = layoutGraph({ items, maxWidth: 1000 });
     expect(performance.now() - start).toBeLessThan(1500);

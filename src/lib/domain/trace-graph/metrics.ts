@@ -1,7 +1,9 @@
 /**
- * Fixed tile bounds. Every tile size is a function of (large, foreign, hint)
- * only, so title completion and image decoding can never rearrange the graph.
- * The Svelte tiles use these same numbers as CSS sizes.
+ * Fixed tile bounds. Every tile has the same width and image size, whatever
+ * the selection or focus; only rows a node always carries (its scope marker,
+ * its expansion hint) add height. Title completion, image decoding and
+ * selection changes therefore never resize a tile. The Svelte tiles use these
+ * same numbers as CSS sizes.
  */
 export const TILE = {
   border: 1,
@@ -9,20 +11,20 @@ export const TILE = {
   label: 18,
   scope: 28,
   hint: 16,
-  large: { width: 168, image: 101 },
-  small: { width: 92, image: 51 },
+  width: 92,
+  image: 51,
 } as const;
 
-export interface TileShape { readonly large: boolean; readonly foreign: boolean; readonly hint: boolean }
+/** What a node always shows besides its image and title. */
+export interface TileShape { readonly foreign: boolean; readonly hint: boolean }
 export interface TileSize { readonly width: number; readonly height: number; readonly imageHeight: number }
 
 export function tileSize(shape: TileShape): TileSize {
-  const kind = shape.large ? TILE.large : TILE.small;
   const chrome = 2 * TILE.border + 2 * TILE.padding + TILE.label;
   return {
-    width: kind.width,
-    imageHeight: kind.image,
-    height: chrome + kind.image + (shape.foreign ? TILE.scope : 0) + (shape.hint ? TILE.hint : 0),
+    width: TILE.width,
+    imageHeight: TILE.image,
+    height: chrome + TILE.image + (shape.foreign ? TILE.scope : 0) + (shape.hint ? TILE.hint : 0),
   };
 }
 

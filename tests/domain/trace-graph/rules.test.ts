@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { connectedComponents, projectDag } from "$lib/domain/trace-graph/projection";
 import { lineage, toneOf } from "$lib/domain/trace-graph/lineage";
+import { planScene } from "$lib/domain/trace-graph/scene";
+import { TILE, tileSize } from "$lib/domain/trace-graph/metrics";
 import { visibleKeys, componentRoots, hiddenDescendantCount } from "$lib/domain/trace-graph/visibility";
 import { buildInputJunctions, junctionId, normalizeRelationships } from "$lib/domain/trace-graph/junctions";
 import { mockupNodes, node, random, sourcesReaching } from "./fixtures";
@@ -35,8 +37,21 @@ describe("graph projection", () => {
 describe("focus and lineage", () => {
   const dag = projectDag(mockupNodes());
 
-  it("enlarges exactly the focus, its direct parents and its direct children", () => {
-    expect(sorted(lineage(dag, "warm").large)).toEqual(sorted(["warm", "village", "palette", "mist-ref", "lantern-ref", "evening", "rain", "merge"]));
+  it("never sizes a tile by the focus: every tile has one width and image size, whatever is selected", () => {
+    const [members] = connectedComponents(dag);
+    const sizes = new Map<string, string>();
+    for (const focus of [null, ...members]) {
+      for (const tile of planScene(dag, members, focus, 900).tiles.values()) {
+        expect(tile.size.width, `${tile.key} with focus ${focus}`).toBe(TILE.width);
+        expect(tile.size.imageHeight, `${tile.key} with focus ${focus}`).toBe(TILE.image);
+        const size = JSON.stringify(tile.size);
+        expect(sizes.get(tile.key) ?? size, `${tile.key} with focus ${focus}`).toBe(size);
+        sizes.set(tile.key, size);
+      }
+    }
+    // Only rows a node always carries (scope marker, expansion hint) add height.
+    expect(tileSize({ foreign: true, hint: true }).height).toBeGreaterThan(tileSize({ foreign: false, hint: false }).height);
+    expect(sizes.size).toBe(members.length);
   });
 
   it("keeps ancestors and descendants related and dims everything else", () => {
@@ -51,7 +66,7 @@ describe("focus and lineage", () => {
   it("shows no lineage dimming without a focus or with an unknown focus", () => {
     for (const focus of [null, "nope"]) {
       const context = lineage(dag, focus);
-      expect(context.large.size).toBe(0);
+      expect(context.related.size).toBe(0);
       expect(toneOf(context, "warm")).toBe("neutral");
     }
   });

@@ -143,9 +143,10 @@
 </main>
 
 <style>
-  :global(body) { margin: 0; background: #f5f6f7; font: 13px system-ui; color: #20252e; --text-primary: #20252e; --text-secondary: #68717e; --background-card-secondary: #fbfbf8; --background-solid: #fff; --control-fill: #fff; --control-stroke: #cbd1d8; --divider: #d9dfe5; --radius-sm: 4px; --subtle-fill-secondary: #edf2fd; --accent-text: #175dd8; --accent: #175dd8; --focus-stroke-outer: #175dd8; }
+  /* Theme tokens come from ./themes.ts (copies of host themes), set on the root element. */
+  :global(body) { margin: 0; background: var(--background-solid); font: 13px system-ui; color: var(--text-primary); }
   main { display: flex; height: 100vh; }
-  .explorer { display: flex; flex-direction: column; width: var(--view-width); min-width: 0; border-right: 1px solid #d9dfe5; background: white; }
+  .explorer { display: flex; flex-direction: column; width: var(--view-width); min-width: 0; border-right: 1px solid var(--divider); background: var(--background-solid); }
   .file-view { display: flex; flex-direction: column; flex: 1; min-height: 0; }
   .preview { flex: 1; min-width: 240px; padding: 12px; overflow: auto; }
   .builtin { margin: 0; padding: 12px; list-style: none; }

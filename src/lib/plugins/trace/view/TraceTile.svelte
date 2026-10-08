@@ -35,20 +35,19 @@
     pathState: node.state === "present" ? "present" : node.state === "missing" ? "missing" : "unavailable", temporary: true, discarded: false,
   } : null);
   const hint = $derived(tile.expandable
-    ? tile.large && tile.tone === "focus" ? `${tile.childCount} direct ${tile.childCount === 1 ? "child" : "children"} open`
+    ? tile.tone === "focus" ? `${tile.childCount} ${tile.childCount === 1 ? "child" : "children"} open`
       : tile.hiddenDescendants ? `${tile.hiddenDescendants} further ${tile.hiddenDescendants === 1 ? "edit" : "edits"}` : `${tile.childCount} ${tile.childCount === 1 ? "edit" : "edits"}`
     : "");
 </script>
 
-<div class="tile" class:large={tile.large} class:unrelated={tile.tone === "unrelated"} class:foreign={node.scope !== "current"}
-  data-tile-key={node.key} data-scope={node.scope} data-size={tile.large ? "large" : "small"} data-tone={tile.tone}
-  style:left="{placed.x}px" style:top="{placed.y}px" style:width="{placed.width}px" style:height="{placed.height}px"
-  style:--image-height="{tile.size.imageHeight}px">
+<div class="tile" class:unrelated={tile.tone === "unrelated"} class:foreign={node.scope !== "current"}
+  data-tile-key={node.key} data-scope={node.scope} data-tone={tile.tone}
+  style:left="{placed.x}px" style:top="{placed.y}px" style:width="{placed.width}px" style:height="{placed.height}px">
   <button type="button" class="card" class:selected class:focus={tile.tone === "focus"} class:discarded={node.discarded}
     data-node-key={node.key} aria-pressed={selected} title={tooltip}
     aria-label="{title}{status ? `, ${status}` : ""}{unsaved ? ", unsaved" : ""}{node.scope === "external" ? ", outside this folder" : node.scope === "subfolder" ? ", in a subfolder" : ""}"
     onclick={onactivate} ondblclick={onopen} oncontextmenu={onmenu} onkeydown={onkey}>
-    <span class="image" data-tile-image style:height="{tile.size.imageHeight}px">
+    <span class="image" style:height="{tile.size.imageHeight}px">
       {#if node.state === "running"}
         <span class="spinner" role="status" aria-label="Generating"></span>
       {:else if present}
@@ -90,8 +89,9 @@
   .tile { position: absolute; box-sizing: border-box; }
   .card { display: flex; flex-direction: column; align-items: stretch; box-sizing: border-box; width: 100%; padding: 5px; overflow: hidden; text-align: left; font: inherit; color: var(--text-primary); background: var(--background-card-secondary, var(--control-fill)); border: 1px solid var(--control-stroke); border-radius: var(--radius-sm); cursor: pointer; }
   .card:hover { background: var(--subtle-fill-secondary); }
-  .card.selected { border-color: var(--accent-text); background: color-mix(in srgb, var(--accent-text) 12%, var(--background-card-secondary, transparent)); }
-  .card.focus { box-shadow: 0 0 0 1px var(--accent-text); }
+  /* Selection shows in styling, never size: an accent border, and for the focus a ring and halo. */
+  .card.selected { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 14%, var(--background-card-secondary)); }
+  .card.focus { box-shadow: 0 0 0 1px var(--accent), 0 0 0 4px color-mix(in srgb, var(--accent) 24%, transparent); }
   .card:focus-visible { outline: 2px solid var(--focus-stroke-outer); outline-offset: 2px; }
   .card.discarded { border-style: dashed; }
   .image { display: grid; place-items: center; flex: none; overflow: hidden; border-radius: 2px; background: var(--subtle-fill-secondary, rgba(127,127,127,.08)); }
@@ -100,11 +100,10 @@
   .placeholder { color: var(--text-secondary); font-size: 20px; }
   .label { display: flex; align-items: center; gap: 3px; min-width: 0; height: 14px; margin-top: 4px; }
   .text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; line-height: 14px; }
-  .large .text { font-size: 12px; }
   .chevron { width: 11px; height: 11px; flex: none; fill: none; stroke: var(--text-secondary); stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
-  .unsaved-dot { flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--system-caution-text, #a76d24); }
-  .scope { display: flex; align-items: center; gap: 3px; height: 14px; margin-top: 3px; font-size: 10px; color: var(--accent-text); white-space: nowrap; overflow: hidden; }
-  .scope.external { color: var(--system-caution-text, #865413); }
+  .unsaved-dot { flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--system-caution-text, var(--system-caution)); }
+  .scope { display: flex; align-items: center; gap: 3px; height: 14px; margin-top: 3px; font-size: 10px; color: var(--accent-text, var(--accent)); white-space: nowrap; overflow: hidden; }
+  .scope.external { color: var(--system-caution-text, var(--system-caution)); }
   .scope svg { width: 11px; height: 11px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
   .scope-path, .status-line { height: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 10px; line-height: 11px; color: var(--text-secondary); }
   .status { color: var(--text-secondary); }
@@ -116,8 +115,8 @@
   .tile:hover .actions, .tile:focus-within .actions { visibility: visible; }
   @media (hover: none) { .actions { visibility: visible; } }
   .spinner { width: 14px; height: 14px; border: 2px solid var(--divider); border-top-color: var(--accent); border-radius: 50%; animation: spin 800ms linear infinite; }
-  .title-spinner { width: 8px; height: 8px; flex: none; border: 1px solid var(--control-stroke); border-top-color: var(--accent-text); border-radius: 50%; animation: spin 800ms linear infinite; }
+  .title-spinner { width: 8px; height: 8px; flex: none; border: 1px solid var(--control-stroke); border-top-color: var(--accent); border-radius: 50%; animation: spin 800ms linear infinite; }
   @keyframes spin { to { transform: rotate(360deg); } }
-  @media (prefers-reduced-motion: no-preference) { .card { transition: background-color 100ms, border-color 100ms; } }
+  @media (prefers-reduced-motion: no-preference) { .card { transition: background-color 120ms, border-color 120ms, box-shadow 120ms, opacity 180ms, filter 180ms; } .image { transition: filter 180ms; } }
   @media (prefers-reduced-motion: reduce) { .spinner, .title-spinner { animation: none; } }
 </style>

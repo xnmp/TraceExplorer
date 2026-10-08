@@ -1,5 +1,7 @@
 import { mount } from "svelte";
 import "./view-fixture";
+import { applyTheme } from "./themes";
+applyTheme(new URLSearchParams(location.search).get("theme"));
 import { promptTitles } from "$lib/plugins/trace/prompt-titles.svelte";
 import ViewHarness from "./ViewHarness.svelte";
 const errors: string[] = [];

@@ -4,23 +4,47 @@ import { openView, click, state, uncaught, settle, rendered } from "./support";
 const view = (page: import("@playwright/test").Page) => page.getByTestId("trace-view");
 const builtin = (page: import("@playwright/test").Page) => page.getByRole("list", { name: "Built-in listing" });
 
-test("the ordinary section lists files without provenance; click selects and double-click opens", async ({ page }) => {
-  await openView(page);
-  const entries = page.locator("button.entry[data-entry-path]");
-  await expect(entries).toHaveCount(3);
-  for (const path of ["/pictures/notes.txt", "/pictures/plain.png", "/pictures/refs"]) await expect(page.locator(`button.entry[data-entry-path="${path}"]`)).toHaveCount(1);
-  const notes = page.locator('button.entry[data-entry-path="/pictures/notes.txt"]');
-  await notes.click();
-  await expect(notes).toHaveAttribute("aria-pressed", "true");
-  expect((await state(page)).selected).toEqual(["/pictures/notes.txt"]);
-  await notes.dblclick();
-  expect((await state(page)).opened).toContain("/pictures/notes.txt");
-  await page.locator('button.entry[data-entry-path="/pictures/plain.png"]').click();
-  expect((await state(page)).selected).toEqual(["/pictures/plain.png"]);
-  await expect(notes).toHaveAttribute("aria-pressed", "false");
-  // Selecting something without provenance removes any lineage dimming.
-  expect(await rendered(page, "tone", "focus")).toEqual([]);
-});
+for (const host of [
+  { name: "a host with ui/file-tiles", query: "?fileTiles=1", module: true },
+  { name: "an older SDK 2 host", query: "", module: false },
+]) {
+  test(`with ${host.name}, the ordinary section lists files without provenance and keeps selection, opening and menus working`, async ({ page }) => {
+    await openView(page, undefined, host.query);
+    const list = page.getByRole("list", { name: "Other files and folders" });
+    const entry = (path: string) => list.locator(`[data-entry-path="${path}"]`);
+    await expect(list.locator("[data-entry-path]")).toHaveCount(3);
+    for (const path of ["/pictures/notes.txt", "/pictures/plain.png", "/pictures/refs"]) await expect(entry(path)).toHaveCount(1);
+    // The host's Tiles view renders the entries when available; the plugin then draws no icons of its own.
+    await expect(page.locator("section.ordinary [data-host-file-tiles]")).toHaveCount(host.module ? 1 : 0);
+    if (host.module) await expect(page.locator("section.ordinary svg")).toHaveCount(0);
+
+    const notes = entry("/pictures/notes.txt");
+    await notes.click();
+    await expect(notes).toHaveAttribute("aria-pressed", "true");
+    expect((await state(page)).selected).toEqual(["/pictures/notes.txt"]);
+    await entry("/pictures/plain.png").click({ modifiers: ["Control"] });
+    expect((await state(page)).selected.sort()).toEqual(["/pictures/notes.txt", "/pictures/plain.png"]);
+    await notes.dblclick();
+    expect((await state(page)).opened).toContain("/pictures/notes.txt");
+    await entry("/pictures/plain.png").click();
+    expect((await state(page)).selected).toEqual(["/pictures/plain.png"]);
+    await expect(notes).toHaveAttribute("aria-pressed", "false");
+    // Selecting something without provenance removes any lineage dimming.
+    expect(await rendered(page, "tone", "focus")).toEqual([]);
+
+    // A context menu targets the entry, selecting it first.
+    await entry("/pictures/refs").click({ button: "right" });
+    const after = await state(page);
+    expect(after.menus.at(-1)).toBe("/pictures/refs");
+    expect(after.selected).toEqual(["/pictures/refs"]);
+
+    // Keyboard: entries are focusable and Space selects.
+    await notes.focus();
+    await page.keyboard.press("Space");
+    expect((await state(page)).selected).toEqual(["/pictures/notes.txt"]);
+    await expect(notes).toBeFocused();
+  });
+}
 
 test("the toggle command switches to the built-in listing and back", async ({ page }) => {
   await openView(page);
@@ -62,6 +86,6 @@ test("disabling removes the view cleanly and re-enabling restores a working one"
   await settle(page);
   await click(page, "rain");
   expect(await rendered(page, "tone", "focus")).toEqual(["rain"]);
-  expect(await rendered(page, "size", "large")).toEqual(["quiet", "rain", "warm"]);
+  expect(await rendered(page, "tone", "related")).toContain("quiet");
   expect(await uncaught(page)).toEqual([]);
 });
