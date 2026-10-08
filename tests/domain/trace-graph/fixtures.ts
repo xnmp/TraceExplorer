@@ -109,9 +109,15 @@ export function foreignJunctionContacts(layout: GraphLayout, distance: number): 
   return problems;
 }
 
-/** Vertical runs of routes with different sources and destinations that share an x (merged lanes). */
+/**
+ * Runs along the flow (vertical when generations run down, horizontal when
+ * they run right) of routes with different sources and destinations that
+ * share a lane (merged lanes). Coordinates below are flow-relative: `x`
+ * across the flow, `y` along it.
+ */
 export function sharedLanes(layout: GraphLayout): string[] {
   const runs: { x: number; top: number; bottom: number; route: GraphLayout["routes"][number] }[] = [];
+  const sideways = layout.orientation === "right";
   for (const route of layout.routes) {
     const tokens = route.path.match(/[MLC]|-?\d+(?:\.\d+)?/g) ?? [];
     let x = 0, y = 0;
@@ -119,7 +125,8 @@ export function sharedLanes(layout: GraphLayout): string[] {
       const command = tokens[index++];
       const values = tokens.slice(index, index + (command === "C" ? 6 : 2)).map(Number);
       index += values.length;
-      const [nextX, nextY] = values.slice(-2);
+      const [first, second] = values.slice(-2);
+      const [nextX, nextY] = sideways ? [second, first] : [first, second];
       if (command === "L" && Math.abs(nextX - x) < 0.01 && Math.abs(nextY - y) > 1) runs.push({ x, top: Math.min(y, nextY), bottom: Math.max(y, nextY), route });
       x = nextX; y = nextY;
     }

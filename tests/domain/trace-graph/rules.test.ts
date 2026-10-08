@@ -90,6 +90,29 @@ describe("limited visibility", () => {
     expect(sorted(visibleKeys(dag, members, "root"))).toEqual(["a", "root", "side"]);
   });
 
+  it("shows a selected node's siblings: the other children of each of its parents", () => {
+    // b2 is b's sibling through a; y is c's sibling through the reference input r.
+    const family = projectDag([node("root"), node("a", ["root"]), node("b", ["a"]), node("b2", ["a"]), node("c", ["b"]), node("r", [], "external"), node("y", ["r"]), node("c2", ["b", "r"])]);
+    const [all] = connectedComponents(family);
+    expect(visibleKeys(family, all, "b")).toContain("b2");
+    expect(visibleKeys(family, all, "c")).toContain("c2");
+    const shownWithC2 = visibleKeys(family, all, "c2");
+    // Siblings through every parent, including a reference input.
+    for (const key of ["c", "y", "r"]) expect(shownWithC2, key).toContain(key);
+    // Only the selected node's own siblings: not its parents' siblings, nor its siblings' children.
+    expect(visibleKeys(family, all, "c")).not.toContain("b2");
+    expect(visibleKeys(family, all, "b2")).not.toContain("c");
+  });
+
+  it("shows siblings in the scene, styled as outside the selected node's lineage", () => {
+    const family = projectDag([node("root"), node("a", ["root"]), node("b", ["a"]), node("b2", ["a"]), node("c", ["b"])]);
+    const [all] = connectedComponents(family);
+    const scene = planScene(family, all, "b", 900);
+    expect([...scene.tiles.keys()].sort()).toEqual(["a", "b", "b2", "c", "root"].sort());
+    expect(scene.tiles.get("b2")!.tone).toBe("unrelated");
+    expect(scene.tiles.get("a")!.tone).toBe("related");
+  });
+
   it("treats only folder images without folder parents as roots", () => {
     expect(componentRoots(dag, members)).toEqual(["root"]);
   });

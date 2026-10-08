@@ -1,7 +1,7 @@
 /**
  * Limited context: roots and their immediate children, the focused node's
- * ancestry and direct children, and every further parent needed to explain a
- * visible output. Visibility is a pure function of the current focus, so
+ * ancestry, direct children and siblings (the other children of its
+ * parents), and every further parent needed to explain a visible output. Visibility is a pure function of the current focus, so
  * earlier selections never accumulate expanded branches.
  */
 import type { NodeKey } from "./model";
@@ -26,6 +26,7 @@ export function visibleKeys(dag: TraceDag, members: readonly NodeKey[], focus: N
   if (focus !== null && inComponent.has(focus)) {
     visible.add(focus);
     for (const child of dag.children.get(focus)!) visible.add(child);
+    for (const parent of dag.parents.get(focus)!) for (const sibling of dag.children.get(parent)!) visible.add(sibling);
   }
   // Parent closure: every visible output keeps all of its inputs.
   const pending = [...visible];

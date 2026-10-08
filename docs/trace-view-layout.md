@@ -1,6 +1,6 @@
 # Trace view layout
 
-How the Trace view arranges one connected component, and why it does not use ELK.
+How the Trace view arranges one connected component, which way it runs, which nodes it shows, and why it does not use ELK.
 
 ## Requirements
 
@@ -8,10 +8,42 @@ These requirements come from the [plan](trace-view-plan.md), section 4:
 
 - **Pixel width budget.** Lay out within the measured pane width.
 - **Siblings wrap onto several rows.** A display row is not a generation boundary.
-- **Direction.** Parents always sit above their children.
+- **Direction.** Parents always come before their children: above them, or to their left when the component runs left to right (see [Orientation](#orientation)).
 - **Junctions.** Multi-parent inputs combine in readable junctions, with one terminal arrow per output.
 - **Clean routes.** Routes never cross a tile and do not make long detours along the border.
 - **Stable sizes.** Every tile has the same width and image size (`metrics.ts`), whatever the selection or focus; only rows a node always carries (its scope marker, its expansion hint) add height. Decoding, title changes and selection therefore never resize a tile; selection shows in styling only.
+
+## Visible nodes
+
+`visibility.ts` keeps the context limited, and a pure function of the current focus (earlier selections never accumulate expanded branches):
+
+- every root (a folder image without a parent in the folder) and its children;
+- the focused node's ancestry, its children, and its **siblings**: the other children of each of its parents (a reference input's other outputs included);
+- every further parent a visible output needs, so each output keeps all of its inputs.
+
+Siblings are context, not lineage: they keep the `unrelated` tone (lightly dimmed), and routes into them are not highlighted. Only the focus's own siblings are added, not its parents' siblings or its siblings' children.
+
+## Orientation
+
+A component's generations run either top to bottom or left to right (Sugiyama/dagre `rankdir` TB vs LR). `orientation.ts` decides it per component, in a pure function, and `planScene` passes it in the layout request.
+
+**Rule.** Let *depth* be the component's number of generations (longest parent chain) and *breadth* the number of images in its largest generation, both over **all** its images, not just the visible ones. The component runs left to right when
+
+1. depth ≥ 2,
+2. depth ≥ breadth: top to bottom it would be at least as tall as it is wide, in tiles, and
+3. its generations fit side by side in the pane: `top + depth × tile width + (depth − 1) × bandChannel + bottom ≤ pane width` (with the current constants, 2 generations need 262 px, 3 need 400 px, 6 need 814 px).
+
+Otherwise it runs top to bottom, where a wide generation wraps onto several rows. A single image, an empty component and an invalid width all run top to bottom.
+
+**Stability.** The rule never looks at the focus or at which tiles are shown, so changing the selection can never flip a component (its tiles would jump). The orientation changes only when the pane is resized across the threshold or the component itself gains or loses images (a new generation can make it deep enough). Using the whole component is deliberately conservative: a long edit chain that does not fit side by side runs top to bottom even while only its first images are visible, instead of turning once the selection reveals more of it.
+
+**Engine.** Left to right is the top-to-bottom engine run on transposed tile sizes (each tile's width and height swapped), with its result transposed back (`transposeLayout`): node positions and sizes, junctions, every coordinate pair of every route path, and the canvas extents. Everything the engine guarantees therefore carries over unchanged, now along the other axis: routes leave a tile's right edge and enter the next generation's left edge (with the arrowhead), pass a column through the gaps between stacked tiles or above and below it, and bend only in the channels between generation columns. Running right there is no height budget, so a generation is one column and never wraps; the transposed pass also skips the minimum canvas width (it would become a minimum height). `RowBox.top`/`bottom` then bound a column along x. Spatial navigation needs nothing special: ←/→ follow lineage and ↑/↓ move between siblings.
+
+**Known limits.** Junction levels can widen the channels between columns beyond what rule 3 estimates; the canvas then scrolls horizontally rather than flipping. There is no hysteresis on resizing, so dragging the pane edge back and forth across a component's threshold flips it each time.
+
+## Spacing
+
+`SPACING` in `metrics.ts`. Tiles in one generation are `column` = 16 px apart (28 px before; the old gap left graphs looking sparse). That gap is also the lane routes take past a row: 16 px less 6 px clearance either side leaves room for two lanes, and further sources move to the next gap or an outer margin. Running right, the same gap separates the tiles stacked in a column, and `bandChannel` (46 px) separates the columns.
 
 ## ELK spike
 
@@ -38,6 +70,8 @@ The fan-out and random-DAG fixtures overflow the budget under every strategy.
 **Decision:** keep ELK as a rejected candidate and use a purpose-built engine behind the same adapter boundary. Callers depend only on `layoutGraph(request: LayoutRequest): GraphLayout` (`src/lib/domain/trace-graph/layout.ts`). A different engine can replace it without touching the view: `layout-client.ts` schedules it, the worker runs it, and `TraceGraph.svelte` renders its output.
 
 ## Algorithm
+
+The algorithm is described top to bottom; a left-to-right layout is its transpose (see [Orientation](#orientation)).
 
 1. **Bands.** Each node gets a longest-path band (generation), computed iteratively so that deep edit chains cannot exhaust the stack. Bands run top to bottom.
 2. **Junction plan.** `junctions.ts` combines inputs before each multi-parent child:
@@ -68,14 +102,16 @@ The fan-out and random-DAG fixtures overflow the budget under every strategy.
      - two bends that swap columns form a unit and take consecutive tracks, keeping their unavoidable crossing steep;
      - constraints are sequenced topologically (cycles broken by the sort order), then tracks are assigned by longest path. A zone used by a single source needs no tracks.
    - **Vertical pass.** Zone heights become `max(default, tracks × TRACK_HEIGHT)`; junction y is the previous zone's bottom plus `JUNCTION_BERTH`. Paths are emitted last: vertical run, S-curve inside the route's track slice of the zone, vertical run.
-   - **Guarantees.** Fuzz tests in `tests/domain/trace-graph/layout.test.ts` (60 random graphs at 380, 640 and 1,000 px, plus targeted cases) check that:
+   - **Guarantees.** Fuzz tests in `tests/domain/trace-graph/layout.test.ts` (60 random graphs at 380, 640 and 1,000 px top to bottom and once left to right, 30 mixed-size graphs in both orientations, plus targeted cases) check that:
      - no route passes within 5 px of a foreign junction;
      - no two junctions overlap;
      - routes from different sources never share a vertical lane;
      - routes never cross a tile;
      - every child's drawn sources are exactly its parents (trunks included);
      - route ids are unique;
-     - the graph stays within 5% of the width it was given.
+     - every tile, junction and route point lies on the canvas;
+     - parents come before their children along the flow;
+     - the graph stays within 5% of the width it was given (top to bottom; left to right has no width budget).
 
      Targeted tests cover crowded channels: every pair of a dozen inputs combined, sixty sources combined with a few tiles each, one style applied to many photos, and many sources passing one gap.
    - **Route ids** are unique and stable. A route is named by its endpoints; a trunk by its source and a hash of the consumers it carries, not by where it runs, so it keeps its id when a relayout moves it. (Collisions get a deterministic suffix.)
@@ -84,7 +120,7 @@ The fan-out and random-DAG fixtures overflow the budget under every strategy.
      - Past two extra view widths, junctions in an extremely crowded channel (over a hundred combinations in one generation, sooner in narrow panes) may share a column, and their routes can then meet. Even below that, in very crowded channels a tile's exit can line up with another tile's entry; the bend zones cannot always separate the routes using that column. Every pair of 20 inputs at 300 px still shows this.
      - Neither hides parentage: highlighting a node shows its exact lineage.
 8. **Tie-breaks.** Ties use one total order: hinted keys keep their previous relative order, and new keys merge in by creation order. This keeps sorting transitive and independent of input order.
-9. **Navigation.** `nearestInDirection` picks arrow-key targets spatially. The cross axis is weighted 3×, so ←/→ stay on a row and ↑/↓ follow lineage.
+9. **Navigation.** `nearestInDirection` picks arrow-key targets spatially. The cross axis is weighted 3×, so ←/→ stay on a row and ↑/↓ follow lineage (the other way round when the component runs left to right).
 
 ## Performance
 
@@ -100,7 +136,7 @@ The fan-out and random-DAG fixtures overflow the budget under every strategy.
 
   A layout that widens runs the pass again (at most three passes in all). Placing margin lanes costs about S² log S for S sources sharing a margin, within the sources × rows bound above.
 
-- **Benchmarks.** `tests/domain/trace-graph/scale.test.ts` covers a 20,000-step edit chain focused at its end, a 3,000-output fan-out, and a 10,000-image folder made of 500 components. A 1,000-child fan-out test bounds the path data (under 250 KB; it was 10.7 MB before trunks).
+- **Benchmarks.** `tests/domain/trace-graph/scale.test.ts` covers a 20,000-step edit chain focused at its end, a 3,000-output fan-out, the same two laid out left to right (transposing adds a linear pass), and a 10,000-image folder made of 500 components. Choosing the orientation is linear in the component's size. A 1,000-child fan-out test bounds the path data (under 250 KB; it was 10.7 MB before trunks).
 - **Off-thread.** Layouts above 60 tiles run in a blob worker when the host announces `blobWorkers` (its CSP permits `worker-src blob:`), and otherwise on the main thread after yielding a frame. Results are cached by their exact request. The worker gets one job at a time, so a request superseded while it waits is dropped rather than computed; one already running finishes and is cached.
 - **Rendering.** Tiles outside the viewport (±800 px) are not mounted once a component shows more than 120 tiles; connectors and junctions are windowed the same way by their vertical extent. Sections far outside the viewport keep only a sized placeholder, and collapsed sections need only their summaries.
 

@@ -6,7 +6,8 @@
  * generation boundaries. Rows are separated by tile-free channels; routes cross
  * a channel as a vertical-tangent S-curve and pass intermediate rows through
  * the gaps between tiles, so they never cross a tile and never need long
- * detours along the border.
+ * detours along the border. A left-to-right layout (`orientation: "right"`)
+ * is the same engine run on transposed tile sizes, its result transposed back.
  *
  * An ELK spike (see docs/trace-view-layout.md) showed that width-bounded ELK
  * layering counts nodes and overflowed the pixel budget on wide fan-outs, so
@@ -27,12 +28,20 @@ export interface LayoutItem {
   readonly parents: readonly NodeKey[];
 }
 
+/**
+ * Which way generations run: "down" puts parents above their children,
+ * "right" puts them to their left (dagre's `rankdir` TB and LR).
+ */
+export type Orientation = "down" | "right";
+
 export interface LayoutRequest {
   readonly items: readonly LayoutItem[];
-  /** Pixel width available for the graph. */
+  /** Pixel width available for the graph. Generations wrap to fit it when they run down; running right, they never wrap. */
   readonly maxWidth: number;
   /** Previous reading order, used to keep ordering stable between relayouts. */
   readonly hint?: ReadonlyMap<NodeKey, number>;
+  /** Defaults to "down". */
+  readonly orientation?: Orientation;
 }
 
 export interface PlacedNode {
@@ -67,9 +76,15 @@ export interface PlacedRoute {
   readonly terminal: boolean;
 }
 
+/**
+ * One display row of a generation. `top` and `bottom` bound it along the
+ * direction generations run: y when they run down, x when they run right
+ * (the row is then a column).
+ */
 export interface RowBox { readonly index: number; readonly band: number; readonly top: number; readonly bottom: number; readonly keys: readonly NodeKey[] }
 
 export interface GraphLayout {
+  readonly orientation: Orientation;
   readonly width: number;
   readonly height: number;
   readonly nodes: ReadonlyMap<NodeKey, PlacedNode>;
@@ -190,6 +205,31 @@ function hashOf(text: string): string {
 }
 
 export function layoutGraph(request: LayoutRequest): GraphLayout {
+  if (request.orientation !== "right") return layoutDown(request, SPACING.minWidth);
+  // Left to right: the same engine on transposed tiles, transposed back.
+  // Generations then form columns that never wrap (no height budget), and
+  // the canvas needs no minimum height.
+  const turned = layoutDown({ items: request.items.map((item) => ({ ...item, width: item.height, height: item.width })), maxWidth: Infinity, hint: request.hint }, 0);
+  return transposeLayout(turned);
+}
+
+/** Mirrors a layout across its diagonal: x and y (and widths and heights) trade places. */
+export function transposeLayout(layout: GraphLayout): GraphLayout {
+  const swapPairs = (path: string) => path.replace(/(-?\d+(?:\.\d+)?) (-?\d+(?:\.\d+)?)/g, "$2 $1");
+  return {
+    orientation: layout.orientation === "down" ? "right" : "down",
+    width: layout.height,
+    height: layout.width,
+    nodes: new Map([...layout.nodes].map(([key, node]) => [key, { ...node, x: node.y, y: node.x, width: node.height, height: node.width }])),
+    junctions: new Map([...layout.junctions].map(([id, junction]) => [id, { ...junction, x: junction.y, y: junction.x }])),
+    routes: layout.routes.map((route) => ({ ...route, path: swapPairs(route.path) })),
+    rows: layout.rows,
+    readingOrder: layout.readingOrder,
+  };
+}
+
+/** The top-to-bottom engine; `minWidth` is the narrowest canvas it draws (within the budget). */
+function layoutDown(request: LayoutRequest, minWidth: number): GraphLayout {
   // Outer margins hold every lane that does not fit between tiles, and the
   // junctions a crowded channel has no column for. When they overflow, they
   // widen (the graph scrolls horizontally) rather than letting lanes merge or
@@ -198,13 +238,13 @@ export function layoutGraph(request: LayoutRequest): GraphLayout {
   // took room the lanes' widening opened.
   let extra = { left: 0, right: 0 };
   for (let attempt = 0; ; attempt++) {
-    const { layout, shortfall } = layoutPass(request, extra);
+    const { layout, shortfall } = layoutPass(request, extra, minWidth);
     if ((shortfall.left <= 0 && shortfall.right <= 0) || attempt === 2) return layout;
     extra = { left: extra.left + Math.max(0, Math.ceil(shortfall.left)), right: extra.right + Math.max(0, Math.ceil(shortfall.right)) };
   }
 }
 
-function layoutPass(request: LayoutRequest, extra: { readonly left: number; readonly right: number }): { layout: GraphLayout; shortfall: { left: number; right: number } } {
+function layoutPass(request: LayoutRequest, extra: { readonly left: number; readonly right: number }, minWidth: number): { layout: GraphLayout; shortfall: { left: number; right: number } } {
   // Malformed input never spreads through the geometry: a size that is not a
   // finite, non-negative number counts as zero, sizes are capped far above
   // any tile, and an order that is not a number sorts first (ties by key).
@@ -259,7 +299,7 @@ function layoutPass(request: LayoutRequest, extra: { readonly left: number; read
   const budget = Number.isFinite(request.maxWidth) && request.maxWidth > 0 ? Math.floor(request.maxWidth) : Infinity;
   const contentLimit = Math.max(widest, budget - 2 * margin);
   const contentWidth = Math.max(widest, Math.min(natural, contentLimit));
-  const width = Math.max(contentWidth + 2 * margin, Math.min(SPACING.minWidth, budget)) + extra.left + extra.right;
+  const width = Math.max(contentWidth + 2 * margin, Math.min(minWidth, budget)) + extra.left + extra.right;
 
   // 1. Horizontal placement. Each band is ordered, wrapped onto display rows
   // and centered. Vertical positions come last, once junction levels and
@@ -928,7 +968,7 @@ function layoutPass(request: LayoutRequest, extra: { readonly left: number; read
   return {
     shortfall,
     layout: {
-      width, height, nodes, rows, routes, readingOrder: reading,
+      orientation: "down", width, height, nodes, rows, routes, readingOrder: reading,
       junctions: new Map([...junctions].map(([id, { channel: _channel, ...join }]) => [id, join])),
     },
   };

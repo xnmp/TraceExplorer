@@ -35,9 +35,23 @@ test.describe("selection neighborhood", () => {
     await uniform();
     expect(await rendered(page, "tone", "focus")).toEqual(["rain"]);
     for (const name of ["village", "palette", "mist", "lantern"]) await expect(await tile(page, name)).toHaveAttribute("data-tone", "related");
-    await expect(await tile(page, "evening")).toHaveCount(0);
-    await expect(await tile(page, "merge")).toHaveCount(0);
     await expect(await tile(page, "daylight")).toHaveAttribute("data-tone", "unrelated");
+
+    // Daylight's view no longer shows warm's children: the old branch is dropped.
+    await click(page, "daylight");
+    await uniform();
+    for (const name of ["evening", "rain", "quiet"]) await expect(await tile(page, name)).toHaveCount(0);
+  });
+
+  test("selecting a node shows its parents, children and siblings", async ({ page }) => {
+    await openView(page);
+    await click(page, "warm");
+    await click(page, "rain");
+    // Parent, child, and the other children of rain's parent (evening, and merge, which also needs daylight).
+    for (const name of ["warm", "quiet", "evening", "merge", "daylight"]) await expect(await tile(page, name), name).toBeVisible();
+    // Siblings are shown, but are not part of rain's own history.
+    await expect(await tile(page, "evening")).toHaveAttribute("data-tone", "unrelated");
+    expect(overlaps(await tileBoxes(page, 0))).toEqual([]);
   });
 
   test("the selection shows in the tile's styling: an accent border, and a ring around the focus", async ({ page }) => {
@@ -127,6 +141,42 @@ test.describe("wide layouts", () => {
       for (const child of children) expect(boxes[child], `child rendered at ${width}`).toBeTruthy();
       const rows = new Set(children.map((child) => Math.round(boxes[child].y / 8)));
       if (width < 1000) expect(rows.size, `rows at ${width}`).toBeGreaterThanOrEqual(2);
+    }
+  });
+
+  test("a component whose generations fit side by side runs left to right, and stays so while selecting", async ({ page }) => {
+    await openView(page, 900);
+    const [forest, mist, autumn] = await Promise.all(["forest", "forest-mist", "autumn"].map((name) => key(page, name)));
+    const arrowEnd = (child: string) => page.evaluate((k) => {
+      const section = document.querySelectorAll("section.component[data-component]")[1];
+      const path = section.querySelector<SVGPathElement>(`path[data-route][data-to="node:${CSS.escape(k)}"]`)!;
+      const point = path.getPointAtLength(path.getTotalLength());
+      return { x: point.x, y: point.y };
+    }, child);
+    const check = async () => {
+      const boxes = await tileBoxes(page, 1);
+      expect(overlaps(boxes)).toEqual([]);
+      // Both edits sit in one column right of the image they were made from, one above the other.
+      for (const child of [mist, autumn]) expect(boxes[child].x).toBeGreaterThanOrEqual(boxes[forest].x + boxes[forest].width);
+      expect(Math.abs(boxes[mist].x - boxes[autumn].x)).toBeLessThanOrEqual(1);
+      expect(Math.abs(boxes[mist].y - boxes[autumn].y)).toBeGreaterThanOrEqual(boxes[mist].height);
+      // Each arrow arrives at its edit's left edge.
+      for (const child of [mist, autumn]) {
+        const end = await arrowEnd(child);
+        expect(end.x).toBeLessThanOrEqual(boxes[child].x);
+        expect(end.x).toBeGreaterThan(boxes[child].x - 8);
+        expect(end.y).toBeGreaterThan(boxes[child].y);
+        expect(end.y).toBeLessThan(boxes[child].y + boxes[child].height);
+      }
+      return boxes;
+    };
+    const before = await check();
+    await click(page, "autumn");
+    const after = await check();
+    // Selecting never flips the orientation, so no tile jumps.
+    for (const k of [forest, mist, autumn]) {
+      expect(Math.abs(after[k].x - before[k].x), k).toBeLessThanOrEqual(1);
+      expect(Math.abs(after[k].y - before[k].y), k).toBeLessThanOrEqual(1);
     }
   });
 
@@ -315,7 +365,7 @@ test.describe("motion", () => {
       };
       for (const animation of document.getAnimations()) animation.play();
       return result;
-    }, { target: await key(page, "rain"), label: "evening prompt" });
+    }, { target: await key(page, "daylight"), label: "evening prompt" });
     expect(during.tile).not.toBeNull();
     expect(Math.abs(during.tile!.x - before.x)).toBeLessThanOrEqual(2);
     expect(Math.abs(during.tile!.y - before.y)).toBeLessThanOrEqual(2);
@@ -331,11 +381,11 @@ test.describe("motion", () => {
   test("a tile that returns while fading out continues from its fading copy instead of appearing twice", async ({ page }) => {
     await openView(page);
     await click(page, "warm");
-    const result = await page.evaluate(async ({ rain, warm, evening }) => {
+    const result = await page.evaluate(async ({ daylight, warm, evening }) => {
       const frame = () => new Promise((resolve) => requestAnimationFrame(resolve));
       const select = (k: string) => document.querySelector<HTMLElement>(`[data-node-key="${CSS.escape(k)}"]`)!.click();
       const copies = () => [...document.querySelectorAll<HTMLElement>("[data-motion-ghost].tile")].filter((ghost) => ghost.textContent?.includes("evening prompt"));
-      select(rain);
+      select(daylight);
       // Wait until evening's copy is part-way through fading out.
       let copy = copies()[0];
       for (let i = 0; i < 30 && !(copy && Number(getComputedStyle(copy).opacity) < 0.9); i++) { await frame(); copy = copies()[0]; }
@@ -347,7 +397,7 @@ test.describe("motion", () => {
       const sample = { left, copies: copies().length, returned: tile ? Number(getComputedStyle(tile).opacity) : null };
       for (const animation of document.getAnimations()) animation.play();
       return sample;
-    }, { rain: await key(page, "rain"), warm: await key(page, "warm"), evening: await key(page, "evening") });
+    }, { daylight: await key(page, "daylight"), warm: await key(page, "warm"), evening: await key(page, "evening") });
     expect(result.left).not.toBeNull();
     expect(result.copies).toBe(0);
     expect(result.returned).not.toBeNull();
@@ -374,16 +424,18 @@ test.describe("scroll anchoring", () => {
 
   test("the clicked tile stays where it was on screen while its graph relayouts", async ({ page }) => {
     await openView(page, undefined, "?many=8");
-    // Selecting rain after warm drops the merge junction above it, so rain moves up in its graph.
+    // Selecting quiet after rain drops rain's siblings and with them the merge
+    // junction above rain's generation, so quiet moves up in its graph.
     await click(page, "warm");
+    await click(page, "rain");
     await page.evaluate(() => { document.querySelector<HTMLElement>("[data-testid=trace-view]")!.scrollTop += 200; });
     await settle(page);
     const offset = async () => page.evaluate((k) => {
       const element = document.querySelector<HTMLElement>(`[data-tile-key="${CSS.escape(k)}"]`)!;
       return { screen: element.getBoundingClientRect().top, inGraph: parseFloat(element.style.top) };
-    }, await key(page, "rain"));
+    }, await key(page, "quiet"));
     const before = await offset();
-    await click(page, "rain");
+    await click(page, "quiet");
     const after = await offset();
     expect(Math.abs(after.inGraph - before.inGraph)).toBeGreaterThan(10);
     expect(Math.abs(after.screen - before.screen)).toBeLessThanOrEqual(2);

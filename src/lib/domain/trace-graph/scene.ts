@@ -9,6 +9,7 @@ import type { TraceDag } from "./projection";
 import { lineage, toneOf, type Lineage, type NodeTone } from "./lineage";
 import { hiddenDescendantCount, visibleKeys } from "./visibility";
 import { tileSize, type TileSize } from "./metrics";
+import { componentOrientation } from "./orientation";
 import type { GraphLayout, LayoutItem, LayoutRequest, PlacedRoute } from "./layout";
 
 export interface SceneTile {
@@ -46,7 +47,9 @@ export function planScene(dag: TraceDag, members: readonly NodeKey[], focus: Nod
     tiles.set(key, { key, node, tone: toneOf(effective, key), size, childCount, hiddenDescendants: hiddenDescendantCount(dag, key, shown), expandable });
     items.push({ key, width: size.width, height: size.height, order: node.order, parents: dag.parents.get(key)!.filter((parent) => shown.has(parent)) });
   }
-  return { lineage: effective, tiles, request: { items, maxWidth, hint } };
+  // Decided from the whole component, never the focus, so selection cannot flip it.
+  const orientation = componentOrientation(dag, members, maxWidth);
+  return { lineage: effective, tiles, request: { items, maxWidth, hint, orientation } };
 }
 
 export type RouteKind = "current" | "subfolder" | "external";

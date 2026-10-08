@@ -54,7 +54,7 @@ function finish(outcome: { layout: GraphLayout } | { error: Error }): void {
 export function layoutSignature(request: LayoutRequest): string {
   // Width is normalised exactly as the engine does, so equal keys mean equal layouts.
   const width = Number.isFinite(request.maxWidth) && request.maxWidth > 0 ? Math.floor(request.maxWidth) : null;
-  return JSON.stringify([width, request.items.map((item) => [item.key, item.width, item.height, item.order, item.parents]), request.hint ? [...request.hint] : null]);
+  return JSON.stringify([width, request.items.map((item) => [item.key, item.width, item.height, item.order, item.parents]), request.hint ? [...request.hint] : null, request.orientation ?? "down"]);
 }
 
 function remember(signature: string, layout: GraphLayout): GraphLayout {

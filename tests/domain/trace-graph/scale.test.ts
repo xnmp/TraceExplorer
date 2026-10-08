@@ -46,6 +46,20 @@ describe("large folders", () => {
     expect(ms).toBeLessThan(4000);
   }, 20000);
 
+  it("lays large graphs out sideways within the same budgets", () => {
+    const item = (key: string, parents: string[]) => ({ key, parents, width: 92, height: 81, order: 0 });
+    const chain = Array.from({ length: 20000 }, (_, index) => item(`n${index}`, index ? [`n${index - 1}`] : []));
+    const sideways = timed(() => layoutGraph({ items: chain, maxWidth: 900, orientation: "right" }));
+    expect(sideways.value.nodes.size).toBe(20000);
+    expect(sideways.value.width).toBeGreaterThan(sideways.value.height);
+    expect(sideways.ms).toBeLessThan(5000);
+    const fan = [item("source", []), ...Array.from({ length: 3000 }, (_, index) => item(`out${index}`, ["source"]))];
+    const column = timed(() => layoutGraph({ items: fan, maxWidth: 1100, orientation: "right" }));
+    expect(column.value.nodes.size).toBe(3001);
+    expect(tileOverlaps(column.value)).toEqual([]);
+    expect(column.ms).toBeLessThan(4000);
+  }, HEAVY);
+
   it("projects a 10,000-image folder of many components and lays out a focused one", () => {
     const next = random(42);
     const nodes: TraceNode[] = [];
