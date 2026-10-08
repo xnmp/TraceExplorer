@@ -196,20 +196,21 @@ test.describe("anchoring under the host's zoom", () => {
   test.use({ viewport: { width: 1200, height: 700 } });
 
   test("at 130% zoom the clicked tile stays where it was on screen while its graph relayouts", async ({ page }) => {
-    await openView(page, undefined, "?many=8&zoom=1.3");
-    // Selecting rain after warm drops the merge junction above it, so rain moves up in its graph.
+    // Narrow enough that the village runs top to bottom (the view only scrolls, and anchors, vertically).
+    await openView(page, 480, "?many=8&zoom=1.3");
+    // Selecting merge after warm changes which of its relatives are shown, so merge moves within its graph.
     await page.locator(await node(page, "warm")).click();
     await settle(page);
     await page.evaluate(() => { document.querySelector<HTMLElement>("[data-testid=trace-view]")!.scrollTop += 200; });
     await settle(page);
-    const rain = await node(page, "rain");
+    const target = await node(page, "merge");
     const offset = () => page.evaluate((selector) => {
       const element = document.querySelector<HTMLElement>(selector)!.closest<HTMLElement>("[data-tile-key]")!;
       return { screen: element.getBoundingClientRect().top, inGraph: parseFloat(element.style.top) };
-    }, rain);
+    }, target);
     const before = await offset();
-    const key = await page.evaluate((selector) => document.querySelector<HTMLElement>(selector)!.dataset.nodeKey!, rain);
-    const frames = await sampleClick(page, rain);
+    const key = await page.evaluate((selector) => document.querySelector<HTMLElement>(selector)!.dataset.nodeKey!, target);
+    const frames = await sampleClick(page, target);
     await settle(page);
     const after = await offset();
     expect(Math.abs(after.inGraph - before.inGraph)).toBeGreaterThan(10);

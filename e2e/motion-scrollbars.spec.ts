@@ -9,7 +9,8 @@ test.use({
 });
 
 test("a scrollbar appearing while a graph grows moves no tile that keeps its place", async ({ page }) => {
-  const { scrolled } = await clickThroughGym(page, "");
+  // Narrow enough that the gym runs top to bottom, so revealing generations makes it taller.
+  const { scrolled } = await clickThroughGym(page, "", 380);
   // Some click made the view scroll, with a scrollbar that takes space.
   expect(scrolled).toBe(true);
 });

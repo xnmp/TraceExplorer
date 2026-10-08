@@ -96,8 +96,8 @@ export const unchanged = (frames: Frame[]) => {
  * make it scroll mid-motion. Returns whether any click left the view
  * scrolling with a scrollbar that takes space.
  */
-export async function clickThroughGym(page: Page, query: string): Promise<{ scrolled: boolean }> {
-  await openView(page, 720, `?gym=1&scrollbars=host${query}`);
+export async function clickThroughGym(page: Page, query: string, width = 720): Promise<{ scrolled: boolean }> {
+  await openView(page, width, `?gym=1&scrollbars=host${query}`);
   await page.locator(await node(page, "gym")).click();
   await settle(page);
   const fit = await page.evaluate(() => {

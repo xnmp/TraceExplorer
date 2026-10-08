@@ -52,7 +52,6 @@ function scenario(): { nodes: TraceNode[]; names: Map<string, string> } {
     { key: "forest" }, { key: "forest-mist", parents: ["forest"] }, { key: "autumn", parents: ["forest"] },
     { key: "fan" }, ...Array.from({ length: 18 }, (_, index) => ({ key: `fan-${index + 1}`, parents: ["fan"] })),
   ] satisfies Seed[]) add(seed);
-  const query = new URLSearchParams(globalThis.location?.search ?? "");
   // `?deeper=1` continues the forest's mist edit two more generations, so selecting along it reveals new columns.
   if (query.has("deeper")) for (const seed of [{ key: "mist-dawn", parents: ["forest-mist"] }, { key: "mist-dusk", parents: ["mist-dawn"] }]) add(seed);
   // `?many=N` appends N small components (a root and six children each) for tall, scrollable views.
