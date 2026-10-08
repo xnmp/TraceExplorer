@@ -171,18 +171,21 @@ export function playGraph(canvas: HTMLElement, before: GraphSnapshot, orientatio
   if (Math.abs(before.width - size.width) >= 0.5 || Math.abs(before.height - size.height) >= 0.5) {
     animations.push(canvas.animate([{ width: `${before.width}px`, height: `${before.height}px` }, { width: `${size.width}px`, height: `${size.height}px` }], timing));
   }
-  // Tile sizes never depend on the selection, so tiles only move (and fade).
+  // Tile sizes never depend on the selection, so tiles mostly only move (and
+  // fade); they grow or shrink only when the host's tile size changes.
   for (const [key, { element, box: now }] of tiles) {
     const old = before.tiles.get(key);
     if (old) {
       // A tile still fading in when interrupted continues from its opacity.
       const fading = old.fading !== null;
       const dx = old.x - now.x, dy = old.y - now.y;
-      if (!fading && Math.abs(dx) < 0.5 && Math.abs(dy) < 0.5) continue;
+      const resized = Math.abs(old.width - now.width) >= 0.5 || Math.abs(old.height - now.height) >= 0.5;
+      if (!fading && !resized && Math.abs(dx) < 0.5 && Math.abs(dy) < 0.5) continue;
       const fade: Keyframe[] = fading ? [{ opacity: old.fading! }, { opacity: getComputedStyle(element).opacity }] : [{}, {}];
+      const size: Keyframe[] = resized ? [{ width: `${old.width}px`, height: `${old.height}px` }, { width: `${now.width}px`, height: `${now.height}px` }] : [{}, {}];
       animations.push(element.animate([
-        { transform: `translate(${dx}px, ${dy}px)`, ...fade[0] },
-        { transform: "translate(0, 0)", ...fade[1] },
+        { transform: `translate(${dx}px, ${dy}px)`, ...size[0], ...fade[0] },
+        { transform: "translate(0, 0)", ...size[1], ...fade[1] },
       ], timing));
     } else {
       const enter = enterOffset(orientation);

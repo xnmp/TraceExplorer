@@ -16,7 +16,7 @@
  */
 import type { NodeKey } from "./model";
 import { buildInputJunctions, endpointKey, type Consumer, type Endpoint, type Junction } from "./junctions";
-import { ARROW, SPACING, TRACK_HEIGHT } from "./metrics";
+import { ARROW, spacingFor, TRACK_HEIGHT } from "./metrics";
 
 export interface LayoutItem {
   readonly key: NodeKey;
@@ -49,6 +49,12 @@ export interface LayoutRequest {
    * Ignored running down (the width budget governs) and when not a positive number.
    */
   readonly extent?: number;
+  /**
+   * The width of the view's tiles (`TileMetrics.width`), whichever way they
+   * run: the spacing around them scales with it (`spacingFor`). Defaults to
+   * the default tile.
+   */
+  readonly tileWidth?: number;
 }
 
 export interface PlacedNode {
@@ -211,11 +217,11 @@ function hashOf(text: string): string {
 }
 
 export function layoutGraph(request: LayoutRequest): GraphLayout {
-  if (request.orientation !== "right") return layoutDown(request, SPACING.minWidth);
+  if (request.orientation !== "right") return layoutDown(request, spacingFor(request.tileWidth).minWidth);
   // Left to right: the same engine on transposed tiles, transposed back.
   // Generations then form columns that never wrap (no height budget), and
   // the canvas needs no minimum height.
-  const turned = transposeLayout(layoutDown({ items: request.items.map((item) => ({ ...item, width: item.height, height: item.width })), maxWidth: Infinity, hint: request.hint }, 0));
+  const turned = transposeLayout(layoutDown({ items: request.items.map((item) => ({ ...item, width: item.height, height: item.width })), maxWidth: Infinity, hint: request.hint, tileWidth: request.tileWidth }, 0));
   const extent = request.extent !== undefined && Number.isFinite(request.extent) && request.extent > 0 ? Math.ceil(request.extent) : 0;
   return extent > turned.width ? { ...turned, width: extent } : turned;
 }
@@ -256,6 +262,7 @@ function layoutPass(request: LayoutRequest, extra: { readonly left: number; read
   // finite, non-negative number counts as zero, sizes are capped far above
   // any tile, and an order that is not a number sorts first (ties by key).
   const size = (value: number) => Number.isFinite(value) && value > 0 ? Math.min(value, MAX_TILE) : 0;
+  const space = spacingFor(request.tileWidth);
   const items = new Map(request.items.map((item) => [item.key, { ...item, width: size(item.width), height: size(item.height), order: Number.isFinite(item.order) ? item.order : 0 }]));
   const parentsOf = (key: NodeKey) => [...new Set(items.get(key)!.parents)].filter((parent) => parent !== key && items.has(parent));
   const keys = [...items.keys()];
@@ -297,8 +304,8 @@ function layoutPass(request: LayoutRequest, extra: { readonly left: number; read
     return depth;
   };
   plan.joins.forEach((join) => joinDepth(join.id));
-  const gap = SPACING.column;
-  const margin = SPACING.margin;
+  const gap = space.column;
+  const margin = space.margin;
   const widest = keys.reduce((most, key) => Math.max(most, items.get(key)!.width), 0);
   const byBand: NodeKey[][] = Array.from({ length: bandCount }, () => []);
   for (const key of keys) byBand[bands.get(key)!].push(key);
@@ -434,7 +441,7 @@ function layoutPass(request: LayoutRequest, extra: { readonly left: number; read
     if (nearestOutside(preferred, merged, 14, width - 14) === null) return null;
     for (let level = minLevel; level <= deepest; level++) {
       // Junctions on a level are kept sorted, so their spacing needs no sort.
-      const spacing = mergeSortedStarts(onLevelOf(channel, level).map((other) => [other - SPACING.junctionSpacing, other + SPACING.junctionSpacing] as const));
+      const spacing = mergeSortedStarts(onLevelOf(channel, level).map((other) => [other - space.junctionSpacing, other + space.junctionSpacing] as const));
       const x = nearestOutside(preferred, spacing.length ? unionMerged(merged, spacing) : merged, 14, width - 14);
       if (x !== null) return { x, level };
     }
@@ -480,19 +487,19 @@ function layoutPass(request: LayoutRequest, extra: { readonly left: number; read
     const cached = slotCache.get(row);
     if (cached) return cached;
     const boxes = spans(row);
-    const clear = SPACING.clearance;
+    const clear = space.clearance;
     const options: Omit<Slot, "cost">[] = [];
     const first = boxes[0];
     const last = boxes.at(-1)!;
     // Each outer margin is one slot for the whole graph: a source keeps one
     // x in it, placed once every source is known (below).
-    if (first.x - clear >= clear) options.push({ id: "L", x: first.x - SPACING.column / 2, low: clear, high: first.x - clear, margin: true });
+    if (first.x - clear >= clear) options.push({ id: "L", x: first.x - space.column / 2, low: clear, high: first.x - clear, margin: true });
     for (let index = 1; index < boxes.length; index++) {
       const low = boxes[index - 1].x + boxes[index - 1].width + clear;
       const high = boxes[index].x - clear;
       if (high >= low) options.push({ id: `G:${round(low)}:${round(high)}`, x: (low + high) / 2, low, high, margin: false });
     }
-    if (width - clear >= last.x + last.width + clear) options.push({ id: "R", x: last.x + last.width + SPACING.column / 2, low: last.x + last.width + clear, high: width - clear, margin: true });
+    if (width - clear >= last.x + last.width + clear) options.push({ id: "R", x: last.x + last.width + space.column / 2, low: last.x + last.width + clear, high: width - clear, margin: true });
     slotCache.set(row, options);
     return options;
   };
@@ -595,11 +602,11 @@ function layoutPass(request: LayoutRequest, extra: { readonly left: number; read
     const entries = [...sources].map(([source, sourceX]) => {
       const used = marginRows.get(`${side}|${source}`)!;
       const edges = used.map((row) => spans(row)).filter((boxes) => boxes.length)
-        .map((boxes) => left ? boxes[0].x - SPACING.clearance : boxes.at(-1)!.x + boxes.at(-1)!.width + SPACING.clearance);
+        .map((boxes) => left ? boxes[0].x - space.clearance : boxes.at(-1)!.x + boxes.at(-1)!.width + space.clearance);
       const edge = left ? Math.min(...edges) : Math.max(...edges);
-      return { source, sourceX, lo: Math.min(...used) - 1, hi: Math.max(...used) + 1, edge, anchor: left ? edge - SPACING.column / 2 + SPACING.clearance : edge + SPACING.column / 2 - SPACING.clearance };
+      return { source, sourceX, lo: Math.min(...used) - 1, hi: Math.max(...used) + 1, edge, anchor: left ? edge - space.column / 2 + space.clearance : edge + space.column / 2 - space.clearance };
     }).sort((a, b) => (left ? b.sourceX - a.sourceX : a.sourceX - b.sourceX) || a.source.localeCompare(b.source));
-    const bound = left ? SPACING.clearance : width - SPACING.clearance;
+    const bound = left ? space.clearance : width - space.clearance;
     /** Every entry's x at one separation; the outer side is unbounded, so each always finds one. */
     const place = (separation: number) => {
       const placedLanes: { x: number; lo: number; hi: number }[] = [];
@@ -612,7 +619,7 @@ function layoutPass(request: LayoutRequest, extra: { readonly left: number; read
       const overflow = Math.max(0, ...placedLanes.map(({ x }) => left ? bound - x : x - bound));
       return { xs: placedLanes.map(({ x }) => x), overflow };
     };
-    const roomy = place(SPACING.lane);
+    const roomy = place(space.lane);
     const chosen = roomy.overflow <= 0 ? roomy : place(MIN_LANE);
     shortfall[left ? "left" : "right"] = Math.max(shortfall[left ? "left" : "right"], chosen.overflow);
     entries.forEach((entry, index) => laneX.set(`${side}|${entry.source}`, chosen.xs[index]));
@@ -623,7 +630,7 @@ function layoutPass(request: LayoutRequest, extra: { readonly left: number; read
   for (const [id, { slot, sources }] of lanes) {
     if (slot.margin) continue;
     const order = [...sources].sort((a, b) => a[1] - b[1] || a[0].localeCompare(b[0]));
-    const spacing = order.length > 1 ? Math.min(SPACING.lane, (slot.high - slot.low) / (order.length - 1)) : 0;
+    const spacing = order.length > 1 ? Math.min(space.lane, (slot.high - slot.low) / (order.length - 1)) : 0;
     const span = spacing * (order.length - 1);
     const first = Math.min(slot.high - span, Math.max(slot.low, slot.x - span / 2));
     order.forEach(([source], index) => laneX.set(`${id}|${source}`, first + index * spacing));
@@ -725,9 +732,9 @@ function layoutPass(request: LayoutRequest, extra: { readonly left: number; read
   // level; the bend room left either side of the levels is split evenly.
   const defaultZone = (channel: number, zone: number) => {
     const count = levelCount(channel);
-    if (!count) return (lastRowOfBand.get(rowKeys[channel].band) === channel ? SPACING.bandChannel : SPACING.rowChannel) - SPACING.approach;
-    if (zone === 0 || zone === count) return (SPACING.bandChannel - SPACING.approach + SPACING.junctionLevel) / 2 - JUNCTION_BERTH;
-    return SPACING.junctionLevel - 2 * JUNCTION_BERTH;
+    if (!count) return (lastRowOfBand.get(rowKeys[channel].band) === channel ? space.bandChannel : space.rowChannel) - space.approach;
+    if (zone === 0 || zone === count) return (space.bandChannel - space.approach + space.junctionLevel) / 2 - JUNCTION_BERTH;
+    return space.junctionLevel - 2 * JUNCTION_BERTH;
   };
   type Run = { readonly x: number; readonly from: number; readonly to: number; readonly bend: number | null; readonly leg: Leg };
   const bucket = (x: number) => Math.floor(x / MIN_LANE);
@@ -873,7 +880,7 @@ function layoutPass(request: LayoutRequest, extra: { readonly left: number; read
   const nodes = new Map<NodeKey, PlacedNode>();
   const rows: RowBox[] = [];
   const zoneBox = new Map<string, { top: number; bottom: number }>();
-  let y: number = SPACING.top;
+  let y: number = space.top;
   rowKeys.forEach(({ band, keys: keysInRow }, index) => {
     for (const key of keysInRow) {
       const item = items.get(key)!;
@@ -889,9 +896,9 @@ function layoutPass(request: LayoutRequest, extra: { readonly left: number; read
       y += tall + (zone < count ? 2 * JUNCTION_BERTH : 0);
     }
     // No bend below the last zone: routes into the next row run straight.
-    y += SPACING.approach;
+    y += space.approach;
   });
-  const height = rows.length ? rows.at(-1)!.bottom + SPACING.bottom : 0;
+  const height = rows.length ? rows.at(-1)!.bottom + space.bottom : 0;
   const junctions = new Map<string, PlacedJunction & { channel: number }>();
   for (const join of plan.joins) {
     const { x, level, channel } = placed.get(join.id)!;

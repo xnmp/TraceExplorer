@@ -72,6 +72,17 @@ describe("layout client (main-thread fallback)", () => {
     expect(client.cachedLayout(request(0, 300))).toBe(narrow);
   });
 
+  it("a different tile size is a different cache entry, even for items of the same size", async () => {
+    const client = await load();
+    const sized = { ...request(0), tileWidth: 172 };
+    const large = await client.computeLayout(sized);
+    expect(client.cachedLayout(request(0))).toBeNull();
+    expect(client.cachedLayout({ ...request(0), tileWidth: 92 })).toBeNull();
+    expect(client.cachedLayout({ ...request(0), tileWidth: 172 })).toBe(large);
+    // Spacing follows the tile size, so the layouts really differ.
+    expect((await client.computeLayout(request(0))).height).not.toBe(large.height);
+  });
+
   it("reuses a left-to-right layout at any width: running right, generations never wrap", async () => {
     const client = await load();
     const sideways = (width: number): LayoutRequest => ({ ...request(0, width), orientation: "right" });

@@ -3,9 +3,13 @@
    * Files and folders without provenance, listed so they stay reachable.
    * Hosts that announce `fileTiles` render them with their own Tiles view
    * (`ui/file-tiles`), so they look and behave exactly like the rest of the
-   * Explorer. Older SDK 2 hosts get the plugin's simple grid instead.
+   * Explorer, at the pane's tile size where the host says what it is
+   * (`size`). Older SDK 2 hosts get the plugin's simple grid instead, sized
+   * like the Trace tiles.
    */
   import type { FileEntry } from "$lib/domain/file";
+  import type { TileSizePreset } from "../../../../../integration/plugin-sdk";
+  import { tileMetrics, type TileMetrics } from "$lib/domain/trace-graph/metrics";
   import { hostFileTiles } from "../../../../sdk";
   import TraceThumbnail from "../TraceThumbnail.svelte";
 
@@ -16,8 +20,12 @@
     onselect: (entry: FileEntry, event: MouseEvent) => void;
     onopen: (entry: FileEntry) => void;
     onmenu: (entry: FileEntry, event: MouseEvent) => void;
+    /** The pane's tile-size preset, for the host's tiles; undefined on hosts without the "tileSize" capability. */
+    size?: TileSizePreset;
+    /** The Trace tiles' size, for the fallback grid. */
+    tile?: TileMetrics;
   }
-  let { entries, selected, revision, onselect, onopen, onmenu }: Props = $props();
+  let { entries, selected, revision, onselect, onopen, onmenu, size, tile = tileMetrics() }: Props = $props();
   const LABEL = "Other files and folders";
   // The host's capabilities do not change while the plugin is loaded.
   const HostTiles = hostFileTiles();
@@ -25,10 +33,10 @@
 </script>
 
 {#if HostTiles}
-  <div class="host-tiles"><HostTiles {entries} {selected} {onselect} {onopen} {onmenu} label={LABEL} /></div>
+  <div class="host-tiles"><HostTiles {entries} {selected} {onselect} {onopen} {onmenu} label={LABEL} {size} /></div>
 {:else}
   <!-- Fallback for hosts without `ui/file-tiles`. -->
-  <ul class="entries" aria-label={LABEL}>
+  <ul class="entries" aria-label={LABEL} style:--entry-width="{tile.width}px" style:--entry-image="{tile.image}px">
     {#each entries as entry (entry.path)}
       <li>
         <button type="button" class="entry" class:selected={selected.has(entry.path)} data-entry-path={entry.path}
@@ -52,12 +60,12 @@
 
 <style>
   .host-tiles { min-width: 0; }
-  .entries { display: grid; grid-template-columns: repeat(auto-fill, minmax(92px, 1fr)); gap: 8px; margin: 0; padding: 10px 12px 14px; list-style: none; }
+  .entries { display: grid; grid-template-columns: repeat(auto-fill, minmax(var(--entry-width, 92px), 1fr)); gap: 8px; margin: 0; padding: 10px 12px 14px; list-style: none; }
   .entry { display: flex; flex-direction: column; align-items: center; gap: 4px; width: 100%; padding: 5px; font: inherit; color: var(--text-primary); background: none; border: 1px solid transparent; border-radius: var(--radius-sm); cursor: pointer; }
   .entry:hover { background: var(--subtle-fill-secondary); }
   .entry.selected { background: color-mix(in srgb, var(--accent) 12%, transparent); border-color: var(--accent); }
   .entry:focus-visible { outline: 2px solid var(--focus-stroke-outer); outline-offset: 2px; }
-  .icon { display: grid; place-items: center; width: 100%; height: 51px; overflow: hidden; border-radius: 2px; }
+  .icon { display: grid; place-items: center; width: 100%; height: var(--entry-image, 51px); overflow: hidden; border-radius: 2px; }
   .icon :global(.thumbnail) { height: 100% !important; flex-basis: auto !important; }
   .icon :global(img) { object-fit: cover !important; }
   .icon svg { width: 30px; height: 30px; fill: none; stroke: var(--text-secondary); stroke-width: 1.4; stroke-linejoin: round; }

@@ -5,6 +5,7 @@ import { layoutGraph, type GraphLayout, type Orientation } from "$lib/domain/tra
 import { chooseOrientation, generationProfile, sidewaysWidth, type GenerationProfile } from "$lib/domain/trace-graph/orientation";
 import type { TraceNode } from "$lib/domain/trace-graph/model";
 import { mockupNodes, node, random } from "./fixtures";
+import { tileMetrics } from "$lib/domain/trace-graph/metrics";
 
 /** Lays out one component as the view would, focused on `focus`. */
 function render(nodes: TraceNode[], focus: string | null, width: number): GraphLayout {
@@ -152,6 +153,26 @@ describe("orientation", () => {
       expect(wide.orientation, focus).toBe("right");
       expect(wide.width, focus).toBe(roomy);
       expect(wide.nodes.get("c")?.x ?? 0, focus).toBeLessThan(roomy);
+    }
+  });
+
+  it("decides with the real tile width: larger tiles need a wider pane to run left to right, and stay within it", () => {
+    const nodes = [node("r"), node("a", ["r"]), node("b", ["a"]), node("c", ["b"])];
+    const dag = projectDag(nodes);
+    const profile = generationProfile(dag, dag.order);
+    const [small, xlarge] = [tileMetrics(48), tileMetrics(128)];
+    expect(sidewaysWidth(profile, xlarge)).toBeGreaterThan(sidewaysWidth(profile, small) + 4 * (xlarge.width - small.width) - 1);
+    // A pane that fits the chain side by side at the default size, but not at the largest.
+    const pane = Math.ceil(sidewaysWidth(profile, small)) + 10;
+    expect(chooseOrientation(profile, pane, undefined, small)).toBe("right");
+    expect(chooseOrientation(profile, pane, undefined, xlarge)).toBe("down");
+    for (const tile of [small, tileMetrics(64), tileMetrics(96), xlarge]) {
+      const plan = planScene(dag, dag.order, "c", Math.ceil(sidewaysWidth(profile, tile)) + 10, { tile });
+      expect(plan.request.orientation).toBe("right");
+      expect(plan.request.tileWidth).toBe(tile.width);
+      const layout = layoutGraph(plan.request);
+      expect(layout.width).toBeLessThanOrEqual(Math.ceil(sidewaysWidth(profile, tile)) + 10);
+      for (const placed of layout.nodes.values()) expect(placed.width).toBe(tile.width);
     }
   });
 

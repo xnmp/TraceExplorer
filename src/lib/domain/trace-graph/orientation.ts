@@ -26,7 +26,7 @@ import type { NodeKey, TraceNode } from "./model";
 import type { TraceDag } from "./projection";
 import type { Orientation } from "./layout";
 import { buildInputJunctions, type Junction } from "./junctions";
-import { SPACING, TILE, TRACK_HEIGHT } from "./metrics";
+import { spacingFor, tileMetrics, TRACK_HEIGHT, type Spacing, type TileMetrics } from "./metrics";
 
 export interface GenerationProfile {
   /** Number of generations of the component's settled images (longest parent chain, counted in images). */
@@ -42,9 +42,10 @@ export interface GenerationProfile {
    * Estimated width the channels between the drawn generations need beyond
    * their plain `bandChannel`, summed over the channels: junction levels and
    * crowded bend tracks. Estimated from the whole component, so it does not
-   * depend on the focus. Computed on first use (it can be costly), then remembered.
+   * depend on the focus. The channels' contents are computed on first use (it
+   * can be costly), then remembered; their extra width follows the spacing.
    */
-  readonly channelExtra: () => number;
+  readonly channelExtra: (spacing?: Spacing) => number;
 }
 
 /** Whether a node counts toward its component's shape: running and unsaved (or discarded) outputs do not. */
@@ -102,8 +103,8 @@ function computeProfile(dag: TraceDag, members: readonly NodeKey[]): GenerationP
   const depth = deepest(core);
   const span = Math.max(depth, deepest(ready));
   const breadth = [...sizes.values()].reduce((most, size) => Math.max(most, size), 0);
-  let extra: number | undefined;
-  return { depth, breadth, span, channelExtra: () => extra ??= channelExtra(ready, parentsOf, generation, span) };
+  let channels: readonly ChannelLoad[] | undefined;
+  return { depth, breadth, span, channelExtra: (spacing = spacingFor()) => extraWidth(channels ??= channelLoads(ready, parentsOf, generation, span), spacing) };
 }
 
 /**
@@ -134,14 +135,24 @@ function settledCore(dag: TraceDag, keys: readonly NodeKey[]): NodeKey[] {
   return best;
 }
 
+/** What one channel between generations must hold: its junction levels and the bend tracks its crossing sources may need. */
+interface ChannelLoad { readonly levels: number; readonly tracks: number }
+
 /**
  * Extra channel width (see `GenerationProfile.channelExtra`). Mirrors how the
  * engine sizes a channel: each junction level adds `junctionLevel`, and a
- * channel whose bends need more tracks than fit its default width grows by a
- * track per bend. Both are estimated over every drawn relationship.
+ * channel whose bends need more tracks than fit its bend room grows by a
+ * track per bend.
  */
-function channelExtra(keys: readonly NodeKey[], parentsOf: (key: NodeKey) => NodeKey[], generation: ReadonlyMap<NodeKey, number>, span: number): number {
-  if (span < 2) return 0;
+function extraWidth(channels: readonly ChannelLoad[], spacing: Spacing): number {
+  // Bend room only: the approach into the next column never bends, so it never grows.
+  const bend = spacing.bandChannel - spacing.approach;
+  return channels.reduce((sum, { levels, tracks }) => sum + Math.max(bend + levels * spacing.junctionLevel, tracks * TRACK_HEIGHT) - bend, 0);
+}
+
+/** Every channel's load, estimated over every drawn relationship. */
+function channelLoads(keys: readonly NodeKey[], parentsOf: (key: NodeKey) => NodeKey[], generation: ReadonlyMap<NodeKey, number>, span: number): ChannelLoad[] {
+  if (span < 2) return [];
   const relationships = keys.map((child) => ({ child, parents: parentsOf(child) })).filter((row) => row.parents.length > 0);
   const levels = junctionLevels(relationships.filter((row) => row.parents.length > 1), (id) => generation.get(id) ?? 0);
   // Distinct sources whose routes cross each channel, each of which may need
@@ -151,15 +162,12 @@ function channelExtra(keys: readonly NodeKey[], parentsOf: (key: NodeKey) => Nod
   for (const { child, parents } of relationships) for (const parent of parents) reach.set(parent, Math.max(reach.get(parent) ?? 0, generation.get(child)!));
   const delta = new Array<number>(span + 1).fill(0);
   for (const [source, deepest] of reach) { delta[generation.get(source)!]++; delta[Math.min(deepest, span)]--; }
-  let extra = 0;
+  const loads: ChannelLoad[] = [];
   for (let band = 0, tracks = 0; band < span - 1; band++) {
     tracks += delta[band];
-    // Bend room only: the approach into the next column never bends, so it never grows.
-    const bend = SPACING.bandChannel - SPACING.approach;
-    const plain = bend + (levels.get(band) ?? 0) * SPACING.junctionLevel;
-    extra += Math.max(plain, tracks * TRACK_HEIGHT) - bend;
+    loads.push({ levels: levels.get(band) ?? 0, tracks });
   }
-  return extra;
+  return loads;
 }
 
 /**
@@ -200,10 +208,17 @@ function junctionLevels(rows: readonly { readonly child: NodeKey; readonly paren
   return levels;
 }
 
-/** Canvas width of the profile's drawn generations side by side, without and with the channel extra. */
-const plainWidth = (span: number) => span <= 0 ? 0 : SPACING.top + span * TILE.width + (span - 1) * SPACING.bandChannel + SPACING.bottom;
-export function sidewaysWidth(profile: GenerationProfile): number {
-  return profile.span <= 0 ? 0 : plainWidth(profile.span) + profile.channelExtra();
+/**
+ * Canvas width of the profile's drawn generations side by side, for tiles of
+ * the given metrics (and the spacing that goes with them), without and with
+ * the channel extra.
+ */
+function plainWidth(span: number, tile: TileMetrics): number {
+  const spacing = spacingFor(tile.width);
+  return span <= 0 ? 0 : spacing.top + span * tile.width + (span - 1) * spacing.bandChannel + spacing.bottom;
+}
+export function sidewaysWidth(profile: GenerationProfile, tile: TileMetrics = tileMetrics()): number {
+  return profile.span <= 0 ? 0 : plainWidth(profile.span, tile) + profile.channelExtra(spacingFor(tile.width));
 }
 
 /**
@@ -223,11 +238,11 @@ const ENTER_WIDTH = 0.9;
  * so the channel estimate is only computed for components that could run
  * left to right.
  */
-export function chooseOrientation(profile: GenerationProfile, maxWidth: number, previous?: Orientation): Orientation {
+export function chooseOrientation(profile: GenerationProfile, maxWidth: number, previous?: Orientation, tile: TileMetrics = tileMetrics()): Orientation {
   const budget = Number.isFinite(maxWidth) || maxWidth === Infinity ? maxWidth : 0;
   const { depth, breadth, span } = profile;
   const fits = (breadthSlack: number, widthShare: number) =>
-    depth >= 2 && breadth <= depth + breadthSlack && budget > 0 && plainWidth(span) <= budget * widthShare && sidewaysWidth(profile) <= budget * widthShare;
+    depth >= 2 && breadth <= depth + breadthSlack && budget > 0 && plainWidth(span, tile) <= budget * widthShare && sidewaysWidth(profile, tile) <= budget * widthShare;
   if (previous === "right") return fits(KEEP_BREADTH(depth), 1) ? "right" : "down";
   if (previous === "down") return fits(-ENTER_BREADTH, ENTER_WIDTH) ? "right" : "down";
   return fits(0, 1) ? "right" : "down";

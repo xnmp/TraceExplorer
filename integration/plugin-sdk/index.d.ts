@@ -19,6 +19,18 @@ export interface ImageEditorSource {
   size?: { width: number; height: number };
   referencePaths: readonly string[];
 }
+/** The host's tile-size presets (THUMBNAIL_SIZE_CONFIG). */
+export type TileSizePreset = "small" | "medium" | "large" | "xlarge";
+/**
+ * A pane's tile size, resolved the way the host's Tiles view resolves it:
+ * the per-folder override for the pane's directory, then the global setting.
+ * Reactive: reading it inside a Svelte derivation tracks changes.
+ */
+export interface PaneTileSize {
+  readonly preset: TileSizePreset;
+  /** Thumbnail image edge in CSS px for that preset (e.g. 48 / 64 / 96 / 128). */
+  readonly imagePx: number;
+}
 /** SDK 2: the pane a file view renders in. Getters are reactive; actions target this pane only. */
 export interface FileViewPane {
   readonly paneId: string;
@@ -28,6 +40,8 @@ export interface FileViewPane {
   readonly focusedPath: string | null;
   readonly active: boolean;
   readonly previewTarget: PreviewTarget | null;
+  /** Present on hosts with the "tileSize" capability. */
+  readonly tileSize?: PaneTileSize;
   select(entry: FileEntry, modifiers?: { ctrlKey?: boolean; shiftKey?: boolean }): void;
   setSelection(paths: readonly string[], focus?: string | null): void;
   clearSelection(): void;
@@ -104,13 +118,15 @@ export interface FileTilesProps {
   onmenu(entry: FileEntry, event: MouseEvent): void;
   /** Accessible name of the tile list. */
   label?: string;
+  /** Tile size preset (hosts with the "tileSize" capability); omitted, the host's global setting applies. Pass `pane.tileSize?.preset`. */
+  size?: TileSizePreset;
 }
 export interface RuntimeSDK {
   /** Frozen at 1 so SDK 1 packages keep loading; see apiVersion. */
   sdkVersion: 1;
   /** Present from SDK 2 hosts on. */
   apiVersion?: number;
-  /** For example `fileViews`, `previewInfo`, `previewTargets`, `blobWorkers`, `fileTiles`. */
+  /** For example `fileViews`, `previewInfo`, `previewTargets`, `blobWorkers`, `fileTiles`, `tileSize`. */
   capabilities?: readonly string[];
   svelteVersion: string;
   /** Shared host modules: `svelte`, `ui/modal`, `ui/image-editor`, and `ui/file-tiles` where `fileTiles` is announced. */

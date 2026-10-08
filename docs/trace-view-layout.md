@@ -11,7 +11,15 @@ These requirements come from the [plan](trace-view-plan.md), section 4:
 - **Direction.** Parents always come before their children: above them, or to their left when the component runs left to right (see [Orientation](#orientation)).
 - **Junctions.** Multi-parent inputs combine in readable junctions, with one terminal arrow per output.
 - **Clean routes.** Routes never cross a tile and do not make long detours along the border.
-- **Stable sizes.** Every tile has the same width and image size (`metrics.ts`), whatever the selection or focus; only rows a node always carries (its scope marker, its expansion hint) add height. Decoding, title changes and selection therefore never resize a tile; selection shows in styling only.
+- **Stable sizes.** Every tile has the same width and image size (`metrics.ts`), whatever the selection or focus; only rows a node always carries (its scope marker, its expansion hint) add height. Decoding, title changes and selection therefore never resize a tile; selection shows in styling only. Only the host's tile-size setting does (see [Tile size](#tile-size)).
+
+## Tile size
+
+Hosts with the SDK's `tileSize` capability report each pane's tile size (`FileViewPane.tileSize`: its preset and thumbnail edge `imagePx`, resolved as their Tiles view resolves it, per-folder override first). `tileMetrics(imagePx)` turns it into the Trace tile: as wide as the host's own tiles, the edge plus 44 px of chrome (92, 108, 140 and 172 px for the 48, 64, 96 and 128 px presets), with the image keeping its 80:51 aspect inside the usual 6 px chrome. The text rows (title, scope, hint) keep their heights. The ordinary section passes the same preset to the host's `ui/file-tiles` (`size`), so both sections match.
+
+Hosts without the capability (up to v1.11.4) report nothing: Trace draws the default 92 px tile, the same as the smallest preset, and the host's tiles keep their global setting.
+
+The view passes the metrics to `planScene`, whose layout request carries the tile sizes and `tileWidth`, so the cache key changes with the setting and a layout of one size is never reused for another. Spacing scales with the tile width (`spacingFor`, never below the default): the gap between tiles, the side margins and the bend room grow in proportion, while the arrowhead, its approach, junction levels, clearances and lanes stay the same. Tiles resize in motion, from the size shown to the new one. The orientation rule uses the real tile width and its spacing. The layout sweeps run at all four presets.
 
 ## Visible nodes
 
@@ -34,7 +42,7 @@ A component's generations run either top to bottom or left to right (Sugiyama/da
 
 1. depth ≥ 2,
 2. depth ≥ breadth: top to bottom it would be at least as tall as it is wide, in tiles, and
-3. its drawn generations fit side by side in the pane: `top + span × tile width + (span − 1) × bandChannel + channel extra + bottom ≤ pane width` (with the current constants and no extra, 2 generations need 250 px, 3 need 376 px, 6 need 754 px).
+3. its drawn generations fit side by side in the pane: `top + span × tile width + (span − 1) × bandChannel + channel extra + bottom ≤ pane width`, with the view's real tile width and the spacing that goes with it (with the default tile and no extra, 2 generations need 250 px, 3 need 376 px, 6 need 754 px).
 
 The *channel extra* estimates what the engine adds to the channels between generations: `junctionLevel` (26 px) per level of junction nesting, and a channel whose distinct crossing sources need more bend tracks (6 px each) than its bend room holds grows to fit them (the approach into the next column never bends, so it never grows). Both are estimated per channel from every drawn relationship of the whole component, so the estimate does not depend on the focus; the orientation is never decided from an actual, focus-dependent layout. Junction nesting is computed exactly (as `buildInputJunctions` groups inputs) for up to 200 multi-input outputs with up to 800 inputs in all; beyond that it is bounded (an output with *n* inputs nests at most *n* − 1 junctions). Neither counts the further levels the engine opens when a level is full, so the extra is an estimate, not a bound. Grouping inputs is quadratic, so `chooseOrientation` runs the cheap checks first (depth, breadth, and the width without the extra) and computes the extra, once per component, only for components that could still run left to right.
 
@@ -55,7 +63,7 @@ The view remembers each component's orientation per pane: `TraceView` holds the 
 
 ## Spacing
 
-`SPACING` and `ARROW` in `metrics.ts`. Tiles in one generation are `column` = 16 px apart (28 px before; the old gap left graphs looking sparse). That gap is also the lane routes take past a row: 16 px less 6 px clearance either side leaves room for two lanes, and further sources move to the next gap or an outer margin. Running right, the same gap separates the tiles stacked in a column.
+`spacingFor` and `ARROW` in `metrics.ts`; the numbers below are for the default tile (`SPACING`; see [Tile size](#tile-size) for larger ones). Tiles in one generation are `column` = 16 px apart (28 px before; the old gap left graphs looking sparse). That gap is also the lane routes take past a row: 16 px less 6 px clearance either side leaves room for two lanes, and further sources move to the next gap or an outer margin. Running right, the same gap separates the tiles stacked in a column.
 
 Generations are `bandChannel` = 34 px apart (46 px before), and wrapped rows of one generation `rowChannel` = 28 px (34 before). A channel holds only what its routes need, from the row above:
 

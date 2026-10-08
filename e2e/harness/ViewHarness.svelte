@@ -9,10 +9,11 @@
    * which inherit the host's `--preview-info-inset`.
    */
   import type { Component } from "svelte";
-  import type { FileViewContribution, FileViewPane, PluginContext, PreviewInfoContribution, PreviewSubject, PreviewTarget } from "../../integration/plugin-sdk";
+  import type { FileViewContribution, FileViewPane, PluginContext, PreviewInfoContribution, PreviewSubject, PreviewTarget, TileSizePreset } from "../../integration/plugin-sdk";
   import type { FileEntry } from "$lib/domain/file";
   import { tracePlugin } from "$lib/plugins/trace";
-  import { DIRECTORY, files, backend } from "./view-fixture";
+  import { DIRECTORY, files, backend, initialTileSize } from "./view-fixture";
+  import { TILE_IMAGE_PX } from "./tile-presets";
 
   let views = $state.raw<FileViewContribution[]>([]);
   let sections = $state.raw<PreviewInfoContribution[]>([]);
@@ -32,6 +33,8 @@
   let menus = $state.raw<Array<string | null>>([]);
   let navigations = $state.raw<string[]>([]);
   let actionError = $state("");
+  // The pane's tile size, as a host with the "tileSize" capability reports it; null simulates an older host.
+  let tilePreset = $state<TileSizePreset | null>(initialTileSize);
 
   function activate() {
     views = []; sections = []; commands.clear(); listeners.clear(); fileListeners.length = 0;
@@ -68,6 +71,7 @@
     get focusedPath() { return cursor && selected.includes(cursor) ? cursor : selected[0] ?? null; },
     get active() { return true; },
     get previewTarget() { return target; },
+    get tileSize() { return tilePreset ? { preset: tilePreset, imagePx: TILE_IMAGE_PX[tilePreset] } : undefined; },
     select(entry, modifiers = {}) {
       target = null;
       if (modifiers.ctrlKey || modifiers.shiftKey) selected = selected.includes(entry.path) ? selected.filter((path) => path !== entry.path) : [...selected, entry.path];
@@ -101,6 +105,8 @@
   export const harness = {
     backend,
     setWidth(width: number) { viewWidth = width; },
+    /** Changes the pane's tile-size preset live, as the host's setting would; null removes it (an older host). */
+    setTileSize(preset: TileSizePreset | null) { tilePreset = preset; },
     toggle() { return commands.get("plugin.trace.toggle")?.(); },
     disable() { enabled = false; tracePlugin.deactivate?.(); },
     enable() { enabled = true; activate(); },

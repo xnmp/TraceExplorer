@@ -11,6 +11,7 @@
   import { parentDir, samePath } from "$lib/domain/path";
   import type { ComponentSummary, NodeKey, TraceNode } from "$lib/domain/trace-graph/model";
   import type { Orientation } from "$lib/domain/trace-graph/layout";
+  import { tileMetrics } from "$lib/domain/trace-graph/metrics";
   import { traceInvalidation } from "../invalidation.svelte";
   import { promptTitles } from "../prompt-titles.svelte";
   import TraceThumbnail from "../TraceThumbnail.svelte";
@@ -54,6 +55,10 @@
   const directory = $derived(pane.directory);
   const width = $derived(Math.max(0, Math.floor((clientWidth - GRAPH_CHROME - 2) / WIDTH_STEP) * WIDTH_STEP));
   const revision = $derived(traceInvalidation.revision);
+  // Trace tiles follow the host's tile-size setting for this pane; older hosts
+  // (without the "tileSize" capability) leave it undefined: the default tile.
+  const imagePx = $derived(pane.tileSize?.imagePx);
+  const tile = $derived(tileMetrics(imagePx));
   const entriesByPath = $derived(new Map(pane.entries.map((entry) => [entry.path, entry])));
 
   // Session follows the pane's folder and Trace's invalidation signal.
@@ -367,7 +372,7 @@
               <div class="placeholder" style:height="{heights.get(summary.id) ?? 160}px"></div>
             {:else if data}
               <div use:measure={summary.id}>
-                <TraceGraph {data} focus={focus?.key ?? null} selected={selectedKeys} {width} {revision} {scroller}
+                <TraceGraph {data} focus={focus?.key ?? null} selected={selectedKeys} {width} {tile} {revision} {scroller}
                   onactivate={activate} onnavigate={(key) => focusNode(key)} onopen={open} onmenu={menu}
                   {captureSelection} componentId={summary.id} {orientations} onsaved={(_key, path) => callbacks.saved(path)} ondiscarded={() => {}} oncommit={(settled) => keepAnchor(data, settled)} />
               </div>
@@ -382,7 +387,7 @@
     {#if ordinary.length}
       <section class="component ordinary" aria-label="Other files">
         <h3 class="heading static">Other files and folders <span class="count">{ordinary.length}</span></h3>
-        <OrdinarySection entries={ordinary} selected={selectedPaths} {revision}
+        <OrdinarySection entries={ordinary} selected={selectedPaths} {revision} size={pane.tileSize?.preset} {tile}
           onselect={(entry, event) => { keepFocusedOpen(); pane.select(entry, { ctrlKey: event.ctrlKey || event.metaKey, shiftKey: event.shiftKey }); }}
           onopen={(entry) => void pane.open(entry)}
           onmenu={(entry, event) => { if (!selectedPaths.has(entry.path)) { keepFocusedOpen(); pane.select(entry); } pane.contextMenu(event, entry); }} />

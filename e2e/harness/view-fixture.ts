@@ -6,6 +6,8 @@
  */
 import { configureBackend } from "$lib/api/common";
 import type { TraceNode } from "$lib/domain/trace-graph/model";
+import type { TileSizePreset } from "../../integration/plugin-sdk";
+import { TILE_IMAGE_PX } from "./tile-presets";
 import { connectedComponents, projectDag } from "$lib/domain/trace-graph/projection";
 import StubFileTiles from "./StubFileTiles.svelte";
 
@@ -175,10 +177,13 @@ configureBackend({
 
 // `?fileTiles=1` simulates a host with the `ui/file-tiles` module; without it, an older SDK 2 host.
 const fileTiles = new URLSearchParams(globalThis.location?.search ?? "").has("fileTiles");
+// `?tileSize=<preset>` simulates a host with the `tileSize` capability whose pane reports that preset; without it, an older host.
+const tileQuery = new URLSearchParams(globalThis.location?.search ?? "").get("tileSize");
+export const initialTileSize: TileSizePreset | null = tileQuery && tileQuery in TILE_IMAGE_PX ? tileQuery as TileSizePreset : null;
 const color = (path: string) => `hsl(${[...path].reduce((sum, char) => (sum * 31 + char.charCodeAt(0)) % 360, 7)} 45% 55%)`;
 (globalThis as any).__TAURI_EXPLORER_PLUGIN_SDK__ = {
   sdkVersion: 1, apiVersion: 2, svelteVersion: "5.56.3",
-  capabilities: ["fileViews", "previewInfo", "previewTargets", "blobWorkers", ...(fileTiles ? ["fileTiles"] : [])],
+  capabilities: ["fileViews", "previewInfo", "previewTargets", "blobWorkers", ...(fileTiles ? ["fileTiles"] : []), ...(initialTileSize ? ["tileSize"] : [])],
   modules: fileTiles ? { "ui/file-tiles": { default: StubFileTiles } } : {},
   pickSaveFile: async () => pickerResult === undefined ? `${DIRECTORY}/picked.png` : pickerResult,
   thumbnailData: async (path: string) => ({ ok: true, data: URL.createObjectURL(new Blob([
