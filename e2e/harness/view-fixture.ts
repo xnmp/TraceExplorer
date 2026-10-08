@@ -169,6 +169,11 @@ configureBackend({
         return reply({ viewPath: null });
       }
       case "trace_title_connection": return reply(titleConnection);
+      // AI edit inputs: every known image is present, 160×96, with a revision derived from its path.
+      case "openai_image_inputs": return reply((params.paths as string[]).map((path) => state.nodes.some((node) => node.path === path) || entryExtras.some((entry) => entry.path === path)
+        ? { path, digest: [...path].reduce((hash, char) => (hash * 33 + char.charCodeAt(0)) % 1e9, 5381).toString(16).padStart(64, "0"), width: 160, height: 96 }
+        : { path, error: "Path not found" }));
+      case "jobs.start": return reply(900 + calls.filter((call) => call.method === "jobs.start").length);
       case "trace_prompt_title": return new Promise<T>((resolve) => { titleCalls.push(params.runId); titleWaiters.set(params.runId, (title) => resolve(title as T)); });
       default: return Promise.reject(new Error(`Unexpected method ${method}`));
     }

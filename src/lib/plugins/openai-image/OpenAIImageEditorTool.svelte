@@ -18,7 +18,7 @@
   });
 </script>
 {#if settings}
-  <OpenAIImageForm open={true} sourcePath={source.path} sourceDigest={source.digest} sourceSize={source.size} referencePaths={[...source.referencePaths]} outputDir={parentDir(source.path)}
+  <OpenAIImageForm open={true} inputs={[{ path: source.path, digest: source.digest, size: source.size }, ...source.referencePaths.map((path) => ({ path }))]} outputDir={parentDir(source.path)}
     apiKey={typeof settings.apiKey === "string" ? settings.apiKey : ""} initialBackend={settings.backend === "api_key" ? "api_key" : "codex"}
     codexPath={typeof settings.codexPath === "string" ? settings.codexPath : ""}
     {storage} {onSaveSettings} {jobs} {toast} {onClose} {onBusyChange} {captureSelection} />

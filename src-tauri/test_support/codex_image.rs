@@ -11,6 +11,7 @@ fn request(dir: &Path, source: Option<&Path>) -> ImageRequest {
         source_path: source.map(|path| path.to_string_lossy().into_owned()),
         expected_source_digest: None,
         reference_paths: vec![],
+        expected_reference_digests: vec![],
         prompt: "Preserve the face; add a warm lantern".into(),
         output_dir: dir.to_string_lossy().into_owned(),
         output_filename: "result.png".into(),
@@ -20,6 +21,7 @@ fn request(dir: &Path, source: Option<&Path>) -> ImageRequest {
         aspect_ratio: None,
         quality: "auto".into(),
         background: "auto".into(),
+        retry_of: None,
     }
 }
 
@@ -29,37 +31,44 @@ fn events(id: &str) -> Vec<u8> {
 
 #[test]
 fn cli_protocol_retains_only_completed_thread_identity_and_numeric_usage() {
-    let (thread, usage) = completed_thread(&events(THREAD)).unwrap();
-    assert_eq!(thread, THREAD);
-    assert_eq!(usage, json!({"input_tokens":12,"output_tokens":3}));
+    let turn = completed_turn(&events(THREAD)).unwrap();
+    assert_eq!(turn.thread_id.as_deref(), Some(THREAD));
+    assert_eq!(turn.usage, json!({"input_tokens":12,"output_tokens":3}));
 }
 
 #[test]
 fn unsuccessful_and_malformed_cli_streams_are_not_outputs() {
     for bytes in [
-        b"not JSON".to_vec(),
+        b"not JSON\n".to_vec(),
         events("../../elsewhere"),
         b"{\"type\":\"turn.completed\"}\n".to_vec(),
         format!("{}\n", json!({"type":"thread.started","thread_id":THREAD})).into_bytes(),
         [events(THREAD), b"{\"type\":\"turn.failed\"}\n".to_vec()].concat(),
         [events(THREAD), events(THREAD)].concat(),
     ] {
-        assert!(completed_thread(&bytes).is_err());
+        assert!(completed_turn(&bytes).is_err());
     }
 }
 
 #[test]
-fn a_missing_generated_thread_reports_missing_provider_output_instead_of_a_path_error() {
+fn a_missing_generated_thread_is_distinguished_from_a_thread_without_a_png() {
     let home = crate::test_support::tempdir().unwrap();
-    let error = read_generated_image(home.path(), THREAD)
-        .unwrap_err()
-        .to_string();
-    assert!(error.contains("no generated image was found for its thread"));
+    assert!(matches!(
+        read_generated_image(home.path(), THREAD),
+        Err(Discovery::NoThreadOutput)
+    ));
     std::fs::create_dir(home.path().join("generated_images")).unwrap();
-    let error = read_generated_image(home.path(), THREAD)
-        .unwrap_err()
-        .to_string();
-    assert!(error.contains("no generated image was found for its thread"));
+    assert!(matches!(
+        read_generated_image(home.path(), THREAD),
+        Err(Discovery::NoThreadOutput)
+    ));
+    let directory = home.path().join("generated_images").join(THREAD);
+    std::fs::create_dir(&directory).unwrap();
+    std::fs::write(directory.join("notes.txt"), b"not an image").unwrap();
+    assert!(matches!(
+        read_generated_image(home.path(), THREAD),
+        Err(Discovery::NoImage)
+    ));
 }
 
 #[test]
@@ -169,6 +178,14 @@ printf '%s\n' '{}' '{}'
     );
     let flags = std::fs::read_to_string(flags).unwrap();
     assert!(flags.contains("--sandbox\nread-only"));
+    assert!(flags.contains(
+        "2 images are attached, numbered Image 1 to Image 2 in the order they are attached"
+    ));
+    assert!(!flags.contains("edit target") && !flags.contains("references"));
+    let roles = &recipe(&request, &inputs).parameters["input_roles"];
+    assert_eq!(roles[0]["label"], "Image 1");
+    assert_eq!(roles[1]["label"], "Image 2");
+    assert_eq!(roles[1]["digest"], inputs[1].digest);
     assert!(flags.contains("--disable\nshell_tool"));
     let graph =
         serde_json::to_value(trace::graph_for_path_at(&db, &target).unwrap().unwrap()).unwrap();
@@ -253,4 +270,146 @@ fn prompt_titles_accept_only_a_valid_completed_final_json_message() {
         assert!(parse_prompt_title(&stream(title)).is_err());
     }
     assert!(parse_prompt_title(&b"{}\n"[..]).is_err());
+}
+
+/// A fake `codex` that prints a recorded `--json` stream and exits with `code`.
+#[cfg(unix)]
+fn recorded_codex(
+    home: &Path,
+    fixture: &str,
+    code: i32,
+) -> super::super::codex_executable::CodexExecutable {
+    use std::os::unix::fs::PermissionsExt;
+    let stream = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("test_support/fixtures/codex")
+        .join(fixture);
+    let executable = home.join("fake-codex");
+    std::fs::write(
+        &executable,
+        format!(
+            "#!/bin/sh\nif [ \"$1\" = login ]; then printf 'Logged in using ChatGPT\\n' >&2; exit 0; fi\ncat '{}'\nexit {code}\n",
+            stream.display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).unwrap();
+    super::super::codex_executable::resolve(executable.to_str().unwrap()).unwrap()
+}
+
+/// Runs a recorded stream through the adapter; returns the outcome and the
+/// last details it recorded for the run.
+#[cfg(unix)]
+fn run_recorded(
+    home: &Path,
+    fixture: &str,
+    code: i32,
+) -> (Result<GeneratedImage, AppError>, Option<Value>) {
+    let executable = recorded_codex(home, fixture, code);
+    let mut recorded = None;
+    let result = generate_with_receipt(
+        &request(home, None),
+        &[],
+        &plugin_job::JobControl::new(),
+        &executable,
+        home,
+        |details| {
+            recorded = Some(details.clone());
+            Ok(())
+        },
+    );
+    (result, recorded)
+}
+
+const RECORDED_THREAD: &str = "01a11dad-5c1e-7f3a-9b2d-4e6f8a0c2d41";
+
+#[cfg(unix)]
+#[test]
+fn a_text_reply_without_an_image_fails_with_the_reply_and_records_it() {
+    let home = crate::test_support::tempdir().unwrap();
+    let (result, recorded) = run_recorded(home.path(), "refusal.jsonl", 0);
+    let error = result.err().unwrap().to_string();
+    assert!(
+        error.starts_with("Codex replied without generating an image: “I can’t make that edit"),
+        "{error}"
+    );
+    assert!(!error.contains("Raw details"));
+    let recorded = recorded.unwrap();
+    assert_eq!(recorded["stage"], "no_image");
+    assert_eq!(recorded["thread_id"], RECORDED_THREAD);
+    assert_eq!(recorded["usage"]["output_tokens"], 291);
+    assert!(recorded["codex_reply"]["text"]
+        .as_str()
+        .unwrap()
+        .starts_with("I can’t make that edit"));
+    assert!(!recorded.to_string().contains("Considering the request"));
+}
+
+#[cfg(unix)]
+#[test]
+fn a_tool_success_without_a_saved_png_keeps_the_thread_id() {
+    let home = crate::test_support::tempdir().unwrap();
+    let directory = home.path().join("generated_images").join(RECORDED_THREAD);
+    std::fs::create_dir_all(&directory).unwrap();
+    let (result, recorded) = run_recorded(home.path(), "image-saved.jsonl", 0);
+    let error = result.err().unwrap().to_string();
+    assert_eq!(
+        error,
+        format!("Codex's image tool ran for thread {RECORDED_THREAD}, but no PNG was found in its output folder")
+    );
+    let recorded = recorded.unwrap();
+    assert_eq!(recorded["stage"], "image_missing");
+    assert!(recorded.get("codex_reply").is_none());
+}
+
+#[cfg(unix)]
+#[test]
+fn a_saved_image_succeeds_without_keeping_codexs_reply() {
+    let home = crate::test_support::tempdir().unwrap();
+    let directory = home.path().join("generated_images").join(RECORDED_THREAD);
+    std::fs::create_dir_all(&directory).unwrap();
+    std::fs::write(directory.join("ig_0.png"), PNG).unwrap();
+    let (result, _) = run_recorded(home.path(), "image-saved.jsonl", 0);
+    let image = result.unwrap();
+    assert_eq!(image.bytes, PNG);
+    assert_eq!(image.details["stage"], "image_validated");
+    assert!(image.details.get("codex_reply").is_none());
+    assert!(!image.details.to_string().contains("edited image"));
+}
+
+#[cfg(unix)]
+#[test]
+fn a_failed_turn_reports_codexs_error_even_when_the_cli_exits_with_an_error() {
+    let home = crate::test_support::tempdir().unwrap();
+    let (result, recorded) = run_recorded(home.path(), "turn-failed.jsonl", 1);
+    assert_eq!(
+        result.err().unwrap().to_string(),
+        "Codex reported an error: You've hit your usage limit. Try again at 4:05 PM."
+    );
+    assert_eq!(recorded.unwrap()["stage"], "turn_failed");
+}
+
+#[cfg(unix)]
+#[test]
+fn cut_off_and_malformed_streams_are_explained() {
+    let home = crate::test_support::tempdir().unwrap();
+    let (result, recorded) = run_recorded(home.path(), "truncated.jsonl", 0);
+    assert_eq!(
+        result.err().unwrap().to_string(),
+        "Codex stopped before finishing. Its last reply: “Working on the edit now.”"
+    );
+    assert_eq!(recorded.unwrap()["stage"], "turn_unfinished");
+    // A killed CLI with nothing to say keeps the generic advice.
+    let (result, _) = run_recorded(home.path(), "truncated.jsonl", 137);
+    assert!(result
+        .err()
+        .unwrap()
+        .to_string()
+        .starts_with("Headless Codex image generation failed"));
+    let (result, recorded) = run_recorded(home.path(), "malformed.jsonl", 0);
+    assert!(result
+        .err()
+        .unwrap()
+        .to_string()
+        .starts_with("Codex returned an unreadable event stream"));
+    assert!(recorded.is_none());
 }

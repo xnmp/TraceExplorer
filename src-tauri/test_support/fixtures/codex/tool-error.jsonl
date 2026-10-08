@@ -1,0 +1,5 @@
+{"type":"thread.started","thread_id":"01a11dad-5c1e-7f3a-9b2d-4e6f8a0c2d41"}
+{"type":"turn.started"}
+{"type":"item.completed","item":{"id":"item_0","type":"reasoning","text":"**Generating the image**"}}
+{"type":"item.completed","item":{"id":"item_1","type":"agent_message","text":"Image generation failed: the image tool reported that this request was rejected by the safety system. No image was created."}}
+{"type":"turn.completed","usage":{"input_tokens":27593,"cached_input_tokens":3456,"cache_write_input_tokens":0,"output_tokens":291,"reasoning_output_tokens":192}}

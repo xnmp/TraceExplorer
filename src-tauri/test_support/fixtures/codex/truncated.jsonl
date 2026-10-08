@@ -1,0 +1,4 @@
+{"type":"thread.started","thread_id":"01a11dad-5c1e-7f3a-9b2d-4e6f8a0c2d41"}
+{"type":"turn.started"}
+{"type":"item.completed","item":{"id":"item_1","type":"agent_message","text":"Working on the edit now."}}
+{"type":"turn.compl

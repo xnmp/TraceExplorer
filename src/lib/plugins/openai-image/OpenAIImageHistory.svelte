@@ -1,14 +1,21 @@
 <script lang="ts">
   import Modal from "$lib/components/Modal.svelte";
   import "../plugin-dialog.css";
+  import type { PluginJobs, PluginStorage } from "../api";
   import { recentOpenAIImageRuns, type OpenAIImageRunHistory } from "$lib/api/openai-image";
+  import { retryRun } from "./image-jobs";
   import { traceOperationLabel } from "$lib/domain/trace-operation";
+  import { codexExplanation, excerpt, retryable } from "$lib/domain/image-retry";
   import { traceInvalidation } from "../trace/invalidation.svelte";
 
-  let { open, onClose }: { open: boolean; onClose: () => void } = $props();
+  let { open, onClose, jobs, storage }: { open: boolean; onClose: () => void; jobs?: PluginJobs; storage?: PluginStorage } = $props();
   let runs = $state<OpenAIImageRunHistory[]>([]);
   let loading = $state(true);
   let error = $state("");
+  /** Runs whose full Codex explanation is shown. */
+  let expanded = $state<ReadonlySet<number>>(new Set());
+  /** Per-run retry progress and outcome. */
+  let retries = $state<Readonly<Record<number, { busy: boolean; message: string; failed: boolean }>>>({});
   $effect(() => {
     if (!open) return;
     void traceInvalidation.revision;
@@ -22,6 +29,25 @@
     });
     return () => { active = false; };
   });
+
+  function toggle(id: number): void {
+    const next = new Set(expanded);
+    if (!next.delete(id)) next.add(id);
+    expanded = next;
+  }
+
+  async function retry(item: OpenAIImageRunHistory): Promise<void> {
+    const id = item.run.id;
+    if (!jobs || !storage || retries[id]?.busy) return;
+    const report = (message: string, failed: boolean, busy = false) => { retries = { ...retries, [id]: { busy, message, failed } }; };
+    report("Starting…", false, true);
+    try {
+      const result = await retryRun({ jobs, storage }, item);
+      report(result.ok ? "Retry started as a new job" : result.error, !result.ok);
+    } catch (cause) {
+      report(cause instanceof Error ? cause.message : String(cause), true);
+    }
+  }
 </script>
 
 <Modal {open} {onClose} overlayClass="dialog-overlay" labelledby="openai-history-title">
@@ -35,7 +61,9 @@
         <p class="note">Most recent 64 runs. Failed generations remain here even when they produced no image.</p>
         <ol aria-label="OpenAI image runs">
           {#each runs as item (item.run.id)}
-            <li>
+            {@const explanation = item.run.status === "failed" ? codexExplanation(item.run.details) : null}
+            {@const attempt = retries[item.run.id]}
+            <li data-run-id={item.run.id}>
               <details>
                 <summary><span>{traceOperationLabel(item.run.operation)} · #{item.run.id}</span><span class="status">{item.run.status}</span></summary>
                 <dl>
@@ -48,6 +76,27 @@
                 </dl>
                 <pre>{JSON.stringify({ parameters: item.run.parameters, result: item.run.details ?? null }, null, 2)}</pre>
               </details>
+              {#if explanation || (jobs && storage && retryable(item))}
+                <div class="failure">
+                  {#if explanation}
+                    {@const full = expanded.has(item.run.id)}
+                    {@const short = excerpt(explanation.text)}
+                    <p class="explanation" data-testid="codex-explanation">
+                      <span class="label">{explanation.label}:</span>
+                      {#if full}<span class="full">{explanation.text}</span>{#if explanation.truncated}<span class="cut"> (cut at 2 KB)</span>{/if}{:else}{short}{/if}
+                    </p>
+                    {#if short !== explanation.text.trim() || explanation.truncated}
+                      <button type="button" class="link-btn more" aria-expanded={full} onclick={() => toggle(item.run.id)}>{full ? "Show less" : `Show full ${explanation.label === "Codex reply" ? "reply" : "error"}`}</button>
+                    {/if}
+                  {/if}
+                  {#if jobs && storage && retryable(item)}
+                    <div class="retry-row">
+                      <button type="button" class="btn btn-secondary retry" disabled={attempt?.busy} onclick={() => void retry(item)} aria-label={`Retry run #${item.run.id}`}>Retry</button>
+                      {#if attempt}<span class="retry-status" class:failed={attempt.failed} role="status">{attempt.message}</span>{/if}
+                    </div>
+                  {/if}
+                </div>
+              {/if}
             </li>
           {/each}
         </ol>
@@ -66,4 +115,15 @@
   dl { display: grid; grid-template-columns: 60px minmax(0, 1fr); gap: 8px; font-size: 12px; }
   dt { color: var(--text-secondary); } dd { margin: 0; overflow-wrap: anywhere; }
   pre { padding: 12px; font-size: 11px; background: var(--background-card-secondary); overflow: auto; max-height: 200px; }
+  .failure { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; margin-top: 8px; font-size: 12px; }
+  .explanation { margin: 0; color: var(--text-primary); overflow-wrap: anywhere; line-height: 1.45; }
+  .explanation .label { color: var(--text-secondary); }
+  .full { white-space: pre-wrap; }
+  .cut { color: var(--text-tertiary); }
+  .more { font-size: 12px; }
+  .more:focus-visible, .retry:focus-visible { outline: 2px solid var(--focus-stroke-outer); outline-offset: 2px; }
+  .retry-row { display: flex; align-items: center; gap: 8px; }
+  .retry { min-width: 0; padding: 4px 12px; font-size: 12px; }
+  .retry-status { color: var(--text-secondary); }
+  .retry-status.failed { color: var(--system-critical-text, var(--system-critical)); }
 </style>

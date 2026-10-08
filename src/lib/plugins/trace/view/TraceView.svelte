@@ -17,6 +17,7 @@
   import TraceThumbnail from "../TraceThumbnail.svelte";
   import { createFolderSession, type ComponentData, type FolderSession } from "./folder-session.svelte";
   import { tracePanes, isTraceTargetData, type TracePaneView } from "./pane-registry.svelte";
+  import { NO_PICKS, pickOnly, pickable, resolvePicks, togglePick, type Picks } from "./input-picks";
   import { nodeTarget } from "./node-target";
   import { holdAnchor, layoutHeight, MOTION_MS, prefersReducedMotion, resizeSection, scrollsByUser, sectionHeight, USER_SCROLL } from "./motion";
   import TraceGraph from "./TraceGraph.svelte";
@@ -62,7 +63,9 @@
   const entriesByPath = $derived(new Map(pane.entries.map((entry) => [entry.path, entry])));
 
   // Session follows the pane's folder and Trace's invalidation signal.
-  $effect(() => { const dir = directory; untrack(() => { overrides = new Map(); orientations.clear(); session.setDirectory(dir); }); });
+  /** The ordered image selection, including images the host cannot select (see input-picks). */
+  let picks = $state.raw<Picks>(NO_PICKS);
+  $effect(() => { const dir = directory; untrack(() => { overrides = new Map(); orientations.clear(); picks = NO_PICKS; session.setDirectory(dir); }); });
   let seenRevision = untrack(() => traceInvalidation.revision);
   $effect(() => {
     const current = traceInvalidation.revision;
@@ -87,9 +90,18 @@
     const keys = new Set<NodeKey>();
     for (const entry of pane.selection) { const member = session.componentOf(entry.path); if (member) keys.add(member.key); }
     if (targetData) keys.add(targetData.key);
+    for (const extra of picks.extras) keys.add(extra.key);
     return keys;
   });
   const selectedPaths = $derived(new Set(pane.selection.map((entry) => entry.path)));
+  /** The selected images in the order they were picked: Image 1…N of an AI edit. */
+  const inputs = $derived(resolvePicks(picks, pane.selection.map((entry) => entry.path)));
+
+  /** Records a click on a listed file in the picks; the host updates its own selection. */
+  function pickListed(path: string, modifiers: { ctrlKey?: boolean; shiftKey?: boolean }): void {
+    const pick = { path, key: path };
+    picks = modifiers.ctrlKey || modifiers.shiftKey ? togglePick(picks, pick, true, inputs.includes(path), !modifiers.ctrlKey) : pickOnly(pick, true);
+  }
 
   const isExpanded = (summary: ComponentSummary, index: number) =>
     overrides.get(summary.id) ?? (index < DEFAULT_EXPANDED || summary.id === focus?.componentId);
@@ -171,8 +183,17 @@
     keepFocusedOpen();
     captureAnchor(key, keep);
     const entry = fileEntry(found.node);
-    if (entry) pane.select(entry, modifiers);
-    else preview(found.node, found.componentId);
+    if (entry) {
+      pickListed(entry.path, modifiers);
+      pane.select(entry, modifiers);
+      return;
+    }
+    const pick = pickable(found.node) ? { path: found.node.path!, key } : null;
+    // Showing a Preview target replaces the host selection, so a Ctrl or
+    // Shift click adds an unlisted image to the picks without one.
+    if (pick && (modifiers.ctrlKey || modifiers.shiftKey)) { picks = togglePick(picks, pick, false, false); return; }
+    picks = pick ? pickOnly(pick, false) : NO_PICKS;
+    preview(found.node, found.componentId);
   }
 
   function activate(key: NodeKey, event: MouseEvent): void {
@@ -189,7 +210,7 @@
     const found = findNode(key);
     const entry = found && fileEntry(found.node);
     if (entry) {
-      if (!selectedPaths.has(entry.path)) { keepFocusedOpen(); pane.select(entry); }
+      if (!selectedPaths.has(entry.path)) { keepFocusedOpen(); pickListed(entry.path, {}); pane.select(entry); }
       pane.contextMenu(event, entry);
     } else {
       event.preventDefault();
@@ -201,6 +222,7 @@
   function background(event: MouseEvent): void {
     if (event.target !== event.currentTarget) return;
     keepFocusedOpen();
+    picks = NO_PICKS;
     pane.clearSelection();
     if (targetData) pane.setPreviewTarget(null);
   }
@@ -237,6 +259,8 @@
       else if (found) overrides = new Map(overrides).set(found.componentId, true);
       focusNode(key);
     },
+    get active() { return pane.active; },
+    inputs: () => inputs,
   };
   $effect(() => tracePanes.set(pane.paneId, view));
 
@@ -388,9 +412,9 @@
       <section class="component ordinary" aria-label="Other files">
         <h3 class="heading static">Other files and folders <span class="count">{ordinary.length}</span></h3>
         <OrdinarySection entries={ordinary} selected={selectedPaths} {revision} size={pane.tileSize?.preset} {tile}
-          onselect={(entry, event) => { keepFocusedOpen(); pane.select(entry, { ctrlKey: event.ctrlKey || event.metaKey, shiftKey: event.shiftKey }); }}
+          onselect={(entry, event) => { const modifiers = { ctrlKey: event.ctrlKey || event.metaKey, shiftKey: event.shiftKey }; keepFocusedOpen(); pickListed(entry.path, modifiers); pane.select(entry, modifiers); }}
           onopen={(entry) => void pane.open(entry)}
-          onmenu={(entry, event) => { if (!selectedPaths.has(entry.path)) { keepFocusedOpen(); pane.select(entry); } pane.contextMenu(event, entry); }} />
+          onmenu={(entry, event) => { if (!selectedPaths.has(entry.path)) { keepFocusedOpen(); pickListed(entry.path, {}); pane.select(entry); } pane.contextMenu(event, entry); }} />
       </section>
     {:else if !summaries.length && session.index}
       <div class="message">This folder is empty.</div>

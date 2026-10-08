@@ -1,6 +1,7 @@
 //! Headless Codex transport. Codex owns authentication and generation; this
 //! adapter reads only the fresh thread's generated image, never credentials.
 use super::codex_executable::CodexExecutable;
+use super::codex_turn::{read_turn, valid_thread_id, Failure, Turn, TurnStatus};
 use super::*;
 use crate::process_ext::{output_controlled, NoConsole};
 use std::process::Command;
@@ -86,18 +87,7 @@ pub(super) fn title_connection(configured: &str) -> bool {
 }
 
 fn parse_prompt_title(events: &[u8]) -> Result<String, AppError> {
-    completed_thread(events)?;
-    let mut final_message = None;
-    for line in events
-        .split(|byte| *byte == b'\n')
-        .filter(|line| !line.is_empty())
-    {
-        let event: Value =
-            serde_json::from_slice(line).map_err(|_| invalid("Invalid prompt title response"))?;
-        if event["type"] == "item.completed" && event["item"]["type"] == "agent_message" {
-            final_message = event["item"]["text"].as_str().map(str::to_owned);
-        }
-    }
+    let final_message = completed_turn(events)?.reply;
     let value: Value =
         serde_json::from_str(&final_message.ok_or_else(|| invalid("No AI prompt title returned"))?)
             .map_err(|_| invalid("Invalid prompt title JSON"))?;
@@ -121,9 +111,7 @@ pub(super) fn task(request: &ImageRequest, input_count: usize) -> String {
          If image generation is unavailable, report that and stop.",
         if input_count > 0 { "edit" } else { "generate" },
         json!({"prompt": request.prompt, "size": request.size, "resolution": request.resolution, "aspect_ratio": request.aspect_ratio}),
-        if input_count > 0 {
-            format!("There are {input_count} attached images in order. The first is the edit target; subsequent images are references. Preserve target details the request does not ask to change. Use the references as directed in the user's request.")
-        } else { String::new() },
+        input_framing(input_count).unwrap_or_default(),
     )
 }
 
@@ -255,15 +243,41 @@ fn generate_with_receipt(
     // the positional prompt so the prompt is never interpreted as a filename.
     child.arg("--").arg(task(request, inputs.len()));
     let output = run(&mut child, control)?;
+    let turn = read_turn(&output.stdout).map_err(|error| invalid(error.message()))?;
+    // A failed run keeps a bounded excerpt of Codex's final reply and of the
+    // error it reported, so the user can see why no image was made (the run
+    // is --ephemeral; no transcript survives). Reasoning and inputs are never
+    // kept, and a successful run keeps neither.
+    let mut details = json!({"transport":"codex_exec","thread_id":turn.thread_id,"usage":turn.usage,"usage_source":"codex_turn","stage":"turn_completed","image_tool_prompt":null,"provider_revision":null,"cost":null});
+    // A crashed or killed CLI with nothing to say keeps the generic advice.
+    if let Some(failure) = Failure::of_turn(&turn) {
+        if output.status.success() || turn.error.is_some() || turn.status == TurnStatus::Failed {
+            return Err(failed(&mut details, &mut receipt, failure));
+        }
+    }
     if !output.status.success() {
         return Err(invalid("Headless Codex image generation failed. Check your Codex version, ChatGPT sign-in, and usage limits"));
     }
-    let (thread_id, usage) = completed_thread(&output.stdout)?;
-    let mut details = json!({"transport":"codex_exec","thread_id":thread_id,"usage":usage,"usage_source":"codex_turn","stage":"turn_completed","image_tool_prompt":null,"provider_revision":null,"cost":null});
-    // Retain a safe receipt before filesystem discovery. A missing thread
-    // output can then be diagnosed without keeping private model prose.
+    let thread_id = turn
+        .thread_id
+        .clone()
+        .ok_or_else(|| invalid("Codex did not return a thread identity"))?;
+    // Retain a safe receipt before filesystem discovery.
     receipt(&details)?;
-    let bytes = read_generated_image(home, &thread_id)?;
+    let bytes = match read_generated_image(home, &thread_id) {
+        Ok(bytes) => bytes,
+        Err(Discovery::NoThreadOutput) => {
+            return Err(failed(&mut details, &mut receipt, Failure::no_image(&turn)))
+        }
+        Err(Discovery::NoImage) => {
+            return Err(failed(
+                &mut details,
+                &mut receipt,
+                Failure::OutputMissing { thread_id },
+            ))
+        }
+        Err(Discovery::Invalid(error)) => return Err(error),
+    };
     validate_image(&bytes, image::ImageFormat::Png)?;
     let (width, height) =
         image::ImageReader::with_format(std::io::Cursor::new(&bytes), image::ImageFormat::Png)
@@ -274,96 +288,80 @@ fn generate_with_receipt(
     Ok(GeneratedImage { bytes, details })
 }
 
-fn valid_thread_id(id: &str) -> bool {
-    id.len() == 36
-        && id.bytes().enumerate().all(|(index, byte)| {
-            if [8, 13, 18, 23].contains(&index) {
-                byte == b'-'
-            } else {
-                byte.is_ascii_hexdigit()
-            }
-        })
+/// Records why the job produced no image and returns its user-facing error.
+fn failed(
+    details: &mut Value,
+    receipt: &mut impl FnMut(&Value) -> Result<(), AppError>,
+    failure: Failure,
+) -> AppError {
+    merge(details, failure.record());
+    if let Err(error) = receipt(details) {
+        log::warn!("[openai-image] Codex failure details were not recorded: {error}");
+    }
+    invalid(&failure.message())
 }
 
-/// Interpret the CLI protocol, never the agent's prose or a returned filename.
-fn completed_thread(bytes: &[u8]) -> Result<(String, Value), AppError> {
-    let mut thread = None;
-    let mut completed = false;
-    let mut usage = serde_json::Map::new();
-    for line in bytes
-        .split(|byte| *byte == b'\n')
-        .filter(|line| !line.is_empty())
-    {
-        let event: Value =
-            serde_json::from_slice(line).map_err(|_| invalid("Malformed Codex event stream"))?;
-        match event.get("type").and_then(Value::as_str) {
-            Some("thread.started") => {
-                let id = event
-                    .get("thread_id")
-                    .and_then(Value::as_str)
-                    .filter(|id| valid_thread_id(id))
-                    .ok_or_else(|| invalid("Invalid Codex thread identity"))?;
-                if thread.replace(id.to_owned()).is_some() {
-                    return Err(invalid("Multiple Codex threads returned for one image job"));
-                }
-            }
-            Some("turn.failed" | "error") => {
-                return Err(invalid("Codex reported an unsuccessful image generation"))
-            }
-            Some("turn.completed") => {
-                completed = true;
-                for key in [
-                    "input_tokens",
-                    "cached_input_tokens",
-                    "output_tokens",
-                    "reasoning_output_tokens",
-                ] {
-                    if let Some(value) = event
-                        .get("usage")
-                        .and_then(|usage| usage.get(key))
-                        .and_then(Value::as_u64)
-                    {
-                        usage.insert(key.into(), value.into());
-                    }
-                }
-            }
-            _ => {}
-        }
+fn merge(details: &mut Value, fields: Value) {
+    if let (Some(details), Value::Object(fields)) = (details.as_object_mut(), fields) {
+        details.extend(fields);
     }
-    if !completed {
-        return Err(invalid("Codex did not complete its image turn"));
+}
+
+/// A completed turn with a thread identity, as prompt titles require.
+fn completed_turn(bytes: &[u8]) -> Result<Turn, AppError> {
+    let turn = read_turn(bytes).map_err(|error| invalid(error.message()))?;
+    if let Some(failure) = Failure::of_turn(&turn) {
+        return Err(invalid(&failure.message()));
     }
-    Ok((
-        thread.ok_or_else(|| invalid("Codex did not return a thread identity"))?,
-        Value::Object(usage),
-    ))
+    if turn.thread_id.is_none() {
+        return Err(invalid("Codex did not return a thread identity"));
+    }
+    Ok(turn)
+}
+
+/// Why no image was read for a thread.
+#[derive(Debug)]
+enum Discovery {
+    /// Codex created no output folder for the thread: no image was saved.
+    NoThreadOutput,
+    /// The thread's output folder exists but holds no PNG.
+    NoImage,
+    Invalid(AppError),
+}
+
+impl From<std::io::Error> for Discovery {
+    fn from(error: std::io::Error) -> Self {
+        Self::Invalid(error.into())
+    }
 }
 
 /// Each new Codex thread owns its generated-images directory. Never scan a
 /// global folder for the newest file or trust a path supplied by model text.
-fn read_generated_image(home: &Path, thread_id: &str) -> Result<Vec<u8>, AppError> {
+fn read_generated_image(home: &Path, thread_id: &str) -> Result<Vec<u8>, Discovery> {
+    let reject = |message: &str| Discovery::Invalid(invalid(message));
     if !valid_thread_id(thread_id) {
-        return Err(invalid("Invalid Codex thread identity"));
+        return Err(reject("Invalid Codex thread identity"));
     }
-    let missing_output = |error: std::io::Error| {
-        match error.kind() {
-        std::io::ErrorKind::NotFound => invalid("Codex completed, but no generated image was found for its thread. See this edit's Raw details for the thread ID."),
-        _ => error.into(),
-    }
+    let absent = |missing: Discovery| {
+        move |error: std::io::Error| match error.kind() {
+            std::io::ErrorKind::NotFound => missing,
+            _ => error.into(),
+        }
     };
     let generated = home
         .join("generated_images")
         .canonicalize()
-        .map_err(missing_output)?;
+        .map_err(absent(Discovery::NoThreadOutput))?;
     let directory = generated.join(thread_id);
-    let metadata = std::fs::symlink_metadata(&directory).map_err(missing_output)?;
+    let metadata =
+        std::fs::symlink_metadata(&directory).map_err(absent(Discovery::NoThreadOutput))?;
     if !metadata.is_dir() || metadata.file_type().is_symlink() {
-        return Err(invalid("Invalid Codex image directory"));
+        return Err(reject("Invalid Codex image directory"));
     }
     let mut selected = None;
     for (index, entry) in std::fs::read_dir(&directory)?.enumerate() {
         if index >= 16 {
-            return Err(invalid("Too many files in Codex image output"));
+            return Err(reject("Too many files in Codex image output"));
         }
         let path = entry?.path();
         if path
@@ -375,13 +373,13 @@ fn read_generated_image(home: &Path, thread_id: &str) -> Result<Vec<u8>, AppErro
         }
         let metadata = std::fs::symlink_metadata(&path)?;
         if !metadata.is_file() || metadata.file_type().is_symlink() {
-            return Err(invalid("Codex output must be a regular PNG file"));
+            return Err(reject("Codex output must be a regular PNG file"));
         }
         if selected.replace(path).is_some() {
-            return Err(invalid("Codex returned multiple images for one job"));
+            return Err(reject("Codex returned multiple images for one job"));
         }
     }
-    let path = selected.ok_or_else(|| invalid("Codex completed without producing a PNG image"))?;
+    let path = selected.ok_or(Discovery::NoImage)?;
     let mut options = std::fs::OpenOptions::new();
     options.read(true);
     #[cfg(unix)]
@@ -389,16 +387,16 @@ fn read_generated_image(home: &Path, thread_id: &str) -> Result<Vec<u8>, AppErro
         use std::os::unix::fs::OpenOptionsExt;
         options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
     }
-    let mut file = options.open(path).map_err(missing_output)?;
+    let mut file = options.open(path).map_err(absent(Discovery::NoImage))?;
     if !file.metadata()?.is_file() {
-        return Err(invalid("Codex output must be a regular PNG file"));
+        return Err(reject("Codex output must be a regular PNG file"));
     }
     let mut bytes = Vec::new();
     (&mut file)
         .take(MAX_OUTPUT_BYTES as u64 + 1)
         .read_to_end(&mut bytes)?;
     if bytes.len() > MAX_OUTPUT_BYTES {
-        return Err(invalid("Codex image exceeds the 50 MiB output limit"));
+        return Err(reject("Codex image exceeds the 50 MiB output limit"));
     }
     Ok(bytes)
 }
