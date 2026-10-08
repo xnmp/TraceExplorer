@@ -13,7 +13,7 @@
   import { promptTitles } from "../prompt-titles.svelte";
   import type { ComponentData } from "./folder-session.svelte";
   import { cachedLayout, computeLayout, layoutNow } from "./layout-client";
-  import { captureGraph, playGraph, prefersReducedMotion } from "./motion";
+  import { captureGraph, playGraph, prefersReducedMotion, zoomOf } from "./motion";
   import { nodeTitle } from "./node-target";
   import TraceTile from "./TraceTile.svelte";
 
@@ -50,8 +50,8 @@
   // Reading order of the last committed layout keeps siblings in place across focus changes.
   let ordering: ReadonlyMap<NodeKey, number> | undefined;
   let running: Animation[] = [];
-  /** Only the latest commit plays; one superseded before rendering never starts. */
-  let commits = 0;
+  /** Only the latest full commit plays; one superseded before rendering never starts. */
+  let plays = 0;
 
   const plan = $derived(planScene(data.dag, data.members, focus, width, ordering));
 
@@ -67,6 +67,15 @@
 
   function commit(next: ScenePlan, layout: GraphLayout): void {
     if (shown && shown.plan === next && shown.layout === layout) return;
+    // Same geometry (only tones or selection changed): nothing moves, so
+    // motion still running carries on and nothing is measured.
+    if (shown && shown.layout === layout) {
+      shown = { plan: next, layout };
+      failure = "";
+      // After any pending full commit has started its motion, so `settled` waits for it.
+      void tick().then(() => oncommit?.(Promise.allSettled(running.map((animation) => animation.finished)).then(() => {})));
+      return;
+    }
     const element = canvas;
     const before = element && shown && !prefersReducedMotion() ? captureGraph(element) : null;
     for (const animation of running) animation.cancel();
@@ -74,9 +83,9 @@
     shown = { plan: next, layout };
     ordering = layout.readingOrder;
     failure = "";
-    const current = ++commits;
+    const current = ++plays;
     void tick().then(() => {
-      if (current !== commits) return;
+      if (current !== plays) return;
       if (before && canvas) running = playGraph(canvas, before);
       oncommit?.(Promise.allSettled(running.map((animation) => animation.finished)).then(() => {}));
     });
@@ -103,9 +112,10 @@
     let frame = 0;
     const update = () => {
       frame = 0;
-      const box = element.getBoundingClientRect(), view = container.getBoundingClientRect();
-      const top = Math.floor((view.top - box.top - WINDOW_MARGIN) / 200) * 200;
-      const bottom = Math.ceil((view.bottom - box.top + WINDOW_MARGIN) / 200) * 200;
+      // Rects may be in zoomed pixels; the band is in the canvas's own.
+      const box = element.getBoundingClientRect(), view = container.getBoundingClientRect(), zoom = zoomOf(element, box);
+      const top = Math.floor(((view.top - box.top) / zoom - WINDOW_MARGIN) / 200) * 200;
+      const bottom = Math.ceil(((view.bottom - box.top) / zoom + WINDOW_MARGIN) / 200) * 200;
       if (band?.top !== top || band?.bottom !== bottom) band = { top, bottom };
     };
     const schedule = () => { if (!frame) frame = requestAnimationFrame(update); };

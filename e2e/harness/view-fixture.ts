@@ -34,6 +34,13 @@ function scenario(): { nodes: TraceNode[]; names: Map<string, string> } {
     names.set(seed.key, node.key);
     nodes.push(node);
   };
+  const query = new URLSearchParams(globalThis.location?.search ?? "");
+  // `?gym=1` puts a small component first, shaped like a typical edit session:
+  // a root with two edits, and two further edits under the second one.
+  if (query.has("gym")) for (const seed of [
+    { key: "gym" }, { key: "cerulean", parents: ["gym"] }, { key: "saffron", parents: ["gym"] },
+    { key: "saffron-a", parents: ["saffron"] }, { key: "saffron-b", parents: ["saffron"] },
+  ] satisfies Seed[]) add(seed);
   for (const seed of [
     { key: "village" }, { key: "palette" }, { key: "mist", scope: "subfolder" }, { key: "lantern", scope: "external" },
     { key: "daylight", parents: ["village"] }, { key: "warm", parents: ["village", "palette", "mist", "lantern"] }, { key: "cool", parents: ["palette"] },
@@ -45,7 +52,7 @@ function scenario(): { nodes: TraceNode[]; names: Map<string, string> } {
     { key: "fan" }, ...Array.from({ length: 18 }, (_, index) => ({ key: `fan-${index + 1}`, parents: ["fan"] })),
   ] satisfies Seed[]) add(seed);
   // `?many=N` appends N small components (a root and six children each) for tall, scrollable views.
-  const many = Number(new URLSearchParams(globalThis.location?.search ?? "").get("many") ?? 0);
+  const many = Number(query.get("many") ?? 0);
   for (let component = 0; component < many; component++) {
     add({ key: `m${component}` });
     for (let index = 0; index < 6; index++) add({ key: `m${component}-${index}`, parents: [`m${component}`] });
