@@ -178,6 +178,14 @@ printf '%s\n' '{}' '{}'
     );
     let flags = std::fs::read_to_string(flags).unwrap();
     assert!(flags.contains("--sandbox\nread-only"));
+    assert!(flags.contains(
+        "2 images are attached, numbered Image 1 to Image 2 in the order they are attached"
+    ));
+    assert!(!flags.contains("edit target") && !flags.contains("references"));
+    let roles = &recipe(&request, &inputs).parameters["input_roles"];
+    assert_eq!(roles[0]["label"], "Image 1");
+    assert_eq!(roles[1]["label"], "Image 2");
+    assert_eq!(roles[1]["digest"], inputs[1].digest);
     assert!(flags.contains("--disable\nshell_tool"));
     let graph =
         serde_json::to_value(trace::graph_for_path_at(&db, &target).unwrap().unwrap()).unwrap();
@@ -266,7 +274,11 @@ fn prompt_titles_accept_only_a_valid_completed_final_json_message() {
 
 /// A fake `codex` that prints a recorded `--json` stream and exits with `code`.
 #[cfg(unix)]
-fn recorded_codex(home: &Path, fixture: &str, code: i32) -> super::super::codex_executable::CodexExecutable {
+fn recorded_codex(
+    home: &Path,
+    fixture: &str,
+    code: i32,
+) -> super::super::codex_executable::CodexExecutable {
     use std::os::unix::fs::PermissionsExt;
     let stream = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("test_support/fixtures/codex")

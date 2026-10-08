@@ -91,7 +91,11 @@ fn a_failed_turn_reports_codexs_error() {
         json!({"type":"turn.completed","usage":{}}),
     ]))
     .unwrap();
-    assert_eq!(silent.status, TurnStatus::Failed, "a later completion never hides a failure");
+    assert_eq!(
+        silent.status,
+        TurnStatus::Failed,
+        "a later completion never hides a failure"
+    );
     assert_eq!(
         Failure::of_turn(&silent).unwrap().message(),
         "Codex reported that the image turn failed, without a reason"
@@ -107,7 +111,9 @@ fn a_cut_off_stream_is_unfinished_and_keeps_the_last_reply() {
         "Codex stopped before finishing. Its last reply: “Working on the edit now.”"
     );
     assert_eq!(
-        Failure::of_turn(&read_turn(b"").unwrap()).unwrap().message(),
+        Failure::of_turn(&read_turn(b"").unwrap())
+            .unwrap()
+            .message(),
         "Codex stopped before finishing its image turn"
     );
 }
@@ -119,7 +125,9 @@ fn a_malformed_complete_line_is_a_protocol_error() {
         Err(StreamError::Malformed)
     );
     assert_eq!(
-        read_turn(&stream(&[json!({"type":"thread.started","thread_id":"../../elsewhere"})])),
+        read_turn(&stream(&[
+            json!({"type":"thread.started","thread_id":"../../elsewhere"})
+        ])),
         Err(StreamError::InvalidThread)
     );
     assert_eq!(
@@ -194,7 +202,10 @@ fn control_characters_never_reach_the_message_or_the_record() {
         failure.message(),
         "Codex replied without generating an image: “No[31m image here sorry”"
     );
-    assert_eq!(failure.record()["codex_reply"]["text"], "No[31m image here\nsorry");
+    assert_eq!(
+        failure.record()["codex_reply"]["text"],
+        "No[31m image here\nsorry"
+    );
 }
 
 #[test]
@@ -204,7 +215,9 @@ fn a_tool_success_without_a_png_names_the_thread() {
     };
     assert_eq!(
         failure.message(),
-        format!("Codex's image tool ran for thread {THREAD}, but no PNG was found in its output folder")
+        format!(
+            "Codex's image tool ran for thread {THREAD}, but no PNG was found in its output folder"
+        )
     );
     assert_eq!(failure.record(), json!({"stage":"image_missing"}));
 }

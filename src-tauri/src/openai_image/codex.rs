@@ -111,9 +111,7 @@ pub(super) fn task(request: &ImageRequest, input_count: usize) -> String {
          If image generation is unavailable, report that and stop.",
         if input_count > 0 { "edit" } else { "generate" },
         json!({"prompt": request.prompt, "size": request.size, "resolution": request.resolution, "aspect_ratio": request.aspect_ratio}),
-        if input_count > 0 {
-            format!("There are {input_count} attached images in order. The first is the edit target; subsequent images are references. Preserve target details the request does not ask to change. Use the references as directed in the user's request.")
-        } else { String::new() },
+        input_framing(input_count).unwrap_or_default(),
     )
 }
 

@@ -12,6 +12,7 @@
   import type { FileViewContribution, FileViewPane, PluginContext, PreviewInfoContribution, PreviewSubject, PreviewTarget } from "../../integration/plugin-sdk";
   import type { FileEntry } from "$lib/domain/file";
   import { tracePlugin } from "$lib/plugins/trace";
+  import { openAIImagePlugin } from "$lib/plugins/openai-image";
   import { DIRECTORY, files, backend } from "./view-fixture";
 
   let views = $state.raw<FileViewContribution[]>([]);
@@ -32,6 +33,11 @@
   let menus = $state.raw<Array<string | null>>([]);
   let navigations = $state.raw<string[]>([]);
   let actionError = $state("");
+  // `?ai=1` also activates the AI image plugin, with dialogs and a jobs service.
+  const ai = new URLSearchParams(location.search).has("ai");
+  const dialogs = new Map<string, Component<any>>();
+  let opened_dialogs = $state.raw<Array<{ id: string; props: Record<string, unknown> }>>([]);
+  let accepted = $state.raw<Array<{ label: string; detail: string }>>([]);
 
   function activate() {
     views = []; sections = []; commands.clear(); listeners.clear(); fileListeners.length = 0;
@@ -50,6 +56,21 @@
       },
     } as unknown as PluginContext;
     tracePlugin.activate(ctx);
+    if (ai) openAIImagePlugin.activate({
+      ...ctx,
+      registerContextMenuItem: () => {}, registerImageEditorTool: () => {}, registerSettingsSection: () => {},
+      registerDialog: (dialog: { id: string; component: Component<any> }) => { dialogs.set(dialog.id, dialog.component); },
+      openDialog: (id: string, props: Record<string, unknown> = {}) => { opened_dialogs = [...opened_dialogs, { id, props }]; },
+      closeDialog: (id: string) => { opened_dialogs = opened_dialogs.filter((dialog) => dialog.id !== id); },
+      storage: { get: async () => ({ backend: "codex", codexPath: "/opt/codex" }), set: async () => {} },
+      saveSettings: async () => {},
+      toast: { show: () => {}, error: () => {} },
+      jobs: { accept: async (registration: { label: string; detail: string }, start: () => Promise<{ ok: boolean }>) => {
+        const result = await start();
+        if (result.ok) accepted = [...accepted, { label: registration.label, detail: registration.detail }];
+        return result;
+      } },
+    } as unknown as PluginContext);
   }
   activate();
 
@@ -107,6 +128,8 @@
     navigate(path: string) { directory = path; entries = path === DIRECTORY ? files() : []; selected = []; target = null; },
     state: () => ({ selected: [...selected], cursor, target: target ? { id: target.id, title: target.title, badge: target.badge ?? null } : null, fileView, opened: [...opened], menus: [...menus], navigations: [...navigations] }),
     selectPath(path: string) { pane.setSelection([path], path); },
+    command: (id: string) => commands.get(id)?.(),
+    accepted: () => [...accepted],
   };
 </script>
 
@@ -117,7 +140,7 @@
       <div class="file-view" data-file-view={active.id}><View {...active.props} {pane} /></div>
     {:else}
       <ul class="builtin" aria-label="Built-in listing">
-        {#each entries as entry (entry.path)}<li><button type="button" onclick={() => pane.select(entry)}>{entry.name}</button></li>{/each}
+        {#each entries as entry (entry.path)}<li><button type="button" class:selected={selected.includes(entry.path)} onclick={(event) => pane.select(entry, { ctrlKey: event.ctrlKey || event.metaKey, shiftKey: event.shiftKey })}>{entry.name}</button></li>{/each}
       </ul>
     {/if}
   </section>
@@ -158,6 +181,10 @@
     {/if}
   </aside>
 </main>
+{#each opened_dialogs as dialog (dialog)}
+  {@const Dialog = dialogs.get(dialog.id)}
+  {#if Dialog}<Dialog {...dialog.props} open={true} onClose={() => { opened_dialogs = opened_dialogs.filter((other) => other !== dialog); }} />{/if}
+{/each}
 
 <style>
   /* Theme tokens come from ./themes.ts (copies of host themes), set on the root element. */
@@ -177,6 +204,7 @@
   .info-value { color: var(--text-secondary); }
   .sections { flex: 0 1 auto; max-height: 55%; overflow: auto; border-top: 1px solid var(--divider); }
   .builtin { margin: 0; padding: 12px; list-style: none; }
+  .builtin .selected { outline: 2px solid var(--accent); }
   .badge { padding: 0 6px; border: 1px solid #a76d24; border-radius: 8px; color: #865413; font-size: 11px; }
   .actions { display: flex; gap: 6px; margin: 8px 0; }
   h2 { margin: 0 0 6px; font-size: 14px; }

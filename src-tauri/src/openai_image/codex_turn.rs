@@ -52,7 +52,9 @@ pub(super) enum StreamError {
 impl StreamError {
     pub(super) fn message(&self) -> &'static str {
         match self {
-            Self::Malformed => "Codex returned an unreadable event stream. Check that the Codex CLI is up to date",
+            Self::Malformed => {
+                "Codex returned an unreadable event stream. Check that the Codex CLI is up to date"
+            }
             Self::InvalidThread => "Invalid Codex thread identity",
             Self::MultipleThreads => "Multiple Codex threads returned for one image job",
         }
@@ -182,7 +184,8 @@ impl Failure {
     /// The job error shown in the Image generation panel: one bounded line.
     pub(super) fn message(&self) -> String {
         let quoted = |text: &str| format!("“{}”", excerpt(text, MESSAGE_TEXT_CHARS));
-        let error = |text: &Option<String>| present(text).map(|text| excerpt(text, MESSAGE_TEXT_CHARS));
+        let error =
+            |text: &Option<String>| present(text).map(|text| excerpt(text, MESSAGE_TEXT_CHARS));
         match self {
             Self::TurnFailed { error: message } => match error(message) {
                 Some(message) => format!("Codex reported an error: {message}"),
@@ -211,7 +214,9 @@ impl Failure {
         let mut record = serde_json::Map::new();
         let (stage, reply, error) = match self {
             Self::TurnFailed { error } => ("turn_failed", None, error.as_deref()),
-            Self::Unfinished { error, reply } => ("turn_unfinished", reply.as_deref(), error.as_deref()),
+            Self::Unfinished { error, reply } => {
+                ("turn_unfinished", reply.as_deref(), error.as_deref())
+            }
             Self::NoImage { reply, error } => ("no_image", reply.as_deref(), error.as_deref()),
             Self::OutputMissing { .. } => ("image_missing", None, None),
         };

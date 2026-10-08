@@ -45,3 +45,9 @@ export async function startOpenAIImageJob(request: OpenAIImageRequest, apiKey: s
     return { ok: false, error: extractError(error) };
   }
 }
+
+/** The current revision and size of each input image, in order; unusable images carry an error. */
+export async function describeImageInputs(paths: readonly string[]): Promise<ApiResult<{ path: string; digest?: string; width?: number; height?: number; error?: string }[]>> {
+  try { return { ok: true, data: await invoke("openai_image_inputs", { paths: [...paths] }) }; }
+  catch (error) { return { ok: false, error: extractError(error) }; }
+}

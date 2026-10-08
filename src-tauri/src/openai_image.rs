@@ -116,9 +116,7 @@ fn validate_request(request: &ImageRequest) -> Result<PathBuf, AppError> {
     if request.reference_paths.len() >= MAX_INPUTS
         || (request.source_path.is_none() && !request.reference_paths.is_empty())
     {
-        return Err(invalid(
-            "Choose an edit target and at most seven reference images",
-        ));
+        return Err(invalid("Choose one to eight input images"));
     }
     if request.prompt.trim().is_empty() || request.prompt.len() > 16_000 {
         return Err(invalid("Enter an image prompt of 1–16,000 bytes"));
@@ -256,6 +254,60 @@ fn capture_input(path: Option<&str>) -> Result<Option<CapturedInput>, AppError> 
     }))
 }
 
+/// An input image as the editor shows it: its current revision and size, or
+/// why it cannot be used.
+#[derive(Debug, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct InputImage {
+    path: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    digest: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    width: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    height: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
+}
+
+fn describe_input(path: &str) -> InputImage {
+    let described = capture_input(Some(path)).and_then(|input| {
+        let input = input.expect("a supplied path is captured");
+        let (width, height) = image::ImageReader::new(std::io::Cursor::new(&input.bytes))
+            .with_guessed_format()
+            .map_err(AppError::from)?
+            .into_dimensions()
+            .map_err(|_| invalid("Unreadable image data"))?;
+        Ok((input.digest, width, height))
+    });
+    match described {
+        Ok((digest, width, height)) => InputImage {
+            path: path.to_owned(),
+            digest: Some(digest),
+            width: Some(width),
+            height: Some(height),
+            error: None,
+        },
+        Err(error) => InputImage {
+            path: path.to_owned(),
+            digest: None,
+            width: None,
+            height: None,
+            error: Some(error.to_string()),
+        },
+    }
+}
+
+/// Describes up to eight input images, in order, for the AI edit dialog.
+pub(crate) async fn describe_inputs(paths: Vec<String>) -> Result<Vec<InputImage>, AppError> {
+    if paths.len() > MAX_INPUTS {
+        return Err(invalid("At most eight input images are supported"));
+    }
+    tokio::task::spawn_blocking(move || paths.iter().map(|path| describe_input(path)).collect())
+        .await
+        .map_err(|_| invalid("Image input inspection failed"))
+}
+
 fn capture_inputs(request: &ImageRequest) -> Result<Vec<CapturedInput>, AppError> {
     if request.reference_paths.len() >= MAX_INPUTS {
         return Err(invalid("At most eight input images are supported"));
@@ -352,26 +404,44 @@ fn submitted_recipe(request: &ImageRequest, inputs: &[CapturedInput]) -> trace::
     }
 }
 
+/// Inputs are numbered Image 1…N in the order they are sent; none is primary.
 fn input_roles(inputs: &[CapturedInput]) -> Value {
     inputs
         .iter()
         .enumerate()
         .map(|(index, input)| {
             json!({
-                "position": index + 1, "role": if index == 0 { "edit_target" } else { "reference" },
+                "position": index + 1, "label": format!("Image {}", index + 1),
                 "path": input.path, "digest": input.digest,
             })
         })
         .collect()
 }
 
+/// How both transports tell the model about the attached images: numbered
+/// in the order sent and equally weighted, as the editor shows them.
+fn input_framing(input_count: usize) -> Option<String> {
+    match input_count {
+        0 => None,
+        1 => Some("One image is attached, Image 1. Preserve its details that the request does not ask to change.".into()),
+        count => Some(format!(
+            "{count} images are attached, numbered Image 1 to Image {count} in the order they are attached. \
+             They are equal inputs; none is the main image. The request may refer to them by number \
+             (for example \"the hat in Image 2\"); use each image as the request describes, and preserve \
+             details the request does not ask to change."
+        )),
+    }
+}
+
 fn api_prompt(request: &ImageRequest, input_count: usize) -> String {
     if input_count <= 1 {
         return request.prompt.clone();
     }
-    format!("Edit image 1, the primary target. Images 2 through {input_count} are ordered references. \
-        Preserve target details unless the user's request asks to change them; use references as directed. \
-        User's visual request: {}", json!({"prompt": request.prompt}))
+    format!(
+        "{} User's visual request: {}",
+        input_framing(input_count).unwrap_or_default(),
+        json!({"prompt": request.prompt})
+    )
 }
 
 fn fields(request: &ImageRequest, input_count: usize) -> Value {

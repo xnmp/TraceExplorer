@@ -386,8 +386,19 @@ fn http_edit_uploads_captured_bytes_with_no_original_filename_in_the_wire_format
     assert!(!wire.contains("private-name"));
     assert!(bytes.windows(PNG.len()).any(|window| window == PNG));
     assert!(wire.contains(&request.prompt));
-    assert!(wire.contains("Edit image 1, the primary target"));
-    assert!(wire.contains("Images 2 through 2 are ordered references"));
+    // Image N on the wire is image N in the editor: the parts keep input order.
+    let position = |needle: &[u8]| {
+        bytes
+            .windows(needle.len())
+            .position(|window| window == needle)
+            .unwrap()
+    };
+    assert!(position(b"filename=\"source-1.png\"") < position(PNG));
+    assert!(position(PNG) < position(b"filename=\"source-2.png\""));
+    assert!(position(b"filename=\"source-2.png\"") < position(reference_bytes));
+    assert!(wire.contains("numbered Image 1 to Image 2 in the order they are attached"));
+    assert!(wire.contains("none is the main image"));
+    assert!(!wire.contains("primary target") && !wire.contains("reference"));
     assert_eq!(
         recipe(&request, &inputs).parameters["submitted_prompt"],
         api_prompt(&request, 2)
@@ -483,7 +494,9 @@ fn a_failed_runs_history_carries_its_ordered_inputs_and_codexs_explanation() {
     assert!(
         execute_recorded(&run, &target, &plugin_job::JobControl::new(), || {
             trace::record_operation_details(&run, &explanation)?;
-            Err(invalid("Codex replied without generating an image: “I can’t make that edit.”"))
+            Err(invalid(
+                "Codex replied without generating an image: “I can’t make that edit.”",
+            ))
         })
         .is_err()
     );
@@ -526,7 +539,10 @@ fn a_retry_pins_every_input_revision_and_records_the_run_it_retries() {
     let recorded = recipe(&retry, &inputs);
     assert_eq!(recorded.parameters["retry_of"], 42);
     assert_eq!(recorded.inputs.len(), 2);
-    assert!(recipe(&request(dir.path(), None), &[]).parameters.get("retry_of").is_none());
+    assert!(recipe(&request(dir.path(), None), &[])
+        .parameters
+        .get("retry_of")
+        .is_none());
 
     std::fs::write(&reference, PNG).unwrap();
     assert!(capture_inputs(&retry)
@@ -536,10 +552,56 @@ fn a_retry_pins_every_input_revision_and_records_the_run_it_retries() {
         .contains("A reference image changed"));
 
     for invalid_request in [
-        ImageRequest { expected_reference_digests: vec![], retry_of: Some(0), ..retry.clone() },
-        ImageRequest { expected_reference_digests: vec!["0".repeat(64), "0".repeat(64)], ..retry.clone() },
-        ImageRequest { expected_reference_digests: vec!["not hex".into()], ..retry.clone() },
+        ImageRequest {
+            expected_reference_digests: vec![],
+            retry_of: Some(0),
+            ..retry.clone()
+        },
+        ImageRequest {
+            expected_reference_digests: vec!["0".repeat(64), "0".repeat(64)],
+            ..retry.clone()
+        },
+        ImageRequest {
+            expected_reference_digests: vec!["not hex".into()],
+            ..retry.clone()
+        },
     ] {
         assert!(validate_request(&invalid_request).is_err());
     }
+}
+
+#[test]
+fn input_images_are_described_in_order_with_their_revision_and_size() {
+    let dir = crate::test_support::tempdir().unwrap();
+    let first = dir.path().join("first.png");
+    let second = dir.path().join("second.png");
+    std::fs::write(&first, PNG).unwrap();
+    std::fs::write(&second, include_bytes!("fixtures/source.png")).unwrap();
+    let missing = dir.path().join("missing.png");
+    let text = dir.path().join("notes.png");
+    std::fs::write(&text, b"not an image").unwrap();
+    let paths = [&second, &first, &missing, &text].map(|path| path.to_string_lossy().into_owned());
+    let described: Vec<InputImage> = paths.iter().map(|path| describe_input(path)).collect();
+    let (width, height) = image::load_from_memory(include_bytes!("fixtures/source.png"))
+        .map(|image| (image.width(), image.height()))
+        .unwrap();
+    assert_eq!(described[0].path, paths[0]);
+    assert_eq!(
+        described[0].digest.as_deref(),
+        Some(hex::encode(Sha256::digest(include_bytes!("fixtures/source.png"))).as_str())
+    );
+    assert_eq!(
+        (described[0].width, described[0].height),
+        (Some(width), Some(height))
+    );
+    assert_eq!(
+        described[1].digest.as_deref(),
+        Some(hex::encode(Sha256::digest(PNG)).as_str())
+    );
+    assert!(described[2].error.is_some() && described[2].digest.is_none());
+    assert!(described[3]
+        .error
+        .as_deref()
+        .unwrap()
+        .contains("PNG, JPEG, or WebP"));
 }
