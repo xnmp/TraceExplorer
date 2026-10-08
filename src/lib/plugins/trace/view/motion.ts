@@ -17,6 +17,7 @@
  * the few rect reads left are divided by the measured zoom (`zoomOf`).
  */
 import { displace, polyline, samplePathString, type Point } from "./path-sampling";
+import type { Orientation } from "$lib/domain/trace-graph/layout";
 
 export const MOTION_MS = 160;
 const EASING = "cubic-bezier(.2,.8,.2,1)";
@@ -143,7 +144,10 @@ export function captureGraph(canvas: HTMLElement): GraphSnapshot {
 }
 
 /** Animates a freshly rendered graph from a snapshot. Returns the animations started. */
-export function playGraph(canvas: HTMLElement, before: GraphSnapshot): Animation[] {
+/** How far a new tile or connector slides in from: back along the flow, toward its parents. */
+export const enterOffset = (orientation: Orientation): Point => orientation === "right" ? { x: -10, y: 0 } : { x: 0, y: -10 };
+
+export function playGraph(canvas: HTMLElement, before: GraphSnapshot, orientation: Orientation = "down"): Animation[] {
   if (prefersReducedMotion()) return [];
   const timing: KeyframeAnimationOptions = { duration: MOTION_MS, easing: EASING };
 
@@ -181,7 +185,8 @@ export function playGraph(canvas: HTMLElement, before: GraphSnapshot): Animation
         { transform: "translate(0, 0)", ...fade[1] },
       ], timing));
     } else {
-      animations.push(element.animate([{ opacity: 0, transform: "translateY(-10px)" }, { opacity: 1, transform: "translateY(0)" }], timing));
+      const enter = enterOffset(orientation);
+      animations.push(element.animate([{ opacity: 0, transform: `translate(${enter.x}px, ${enter.y}px)` }, { opacity: 1, transform: "translate(0, 0)" }], timing));
     }
   }
   // Junctions move only where their connectors morph; otherwise a dot would
@@ -214,7 +219,7 @@ export function playGraph(canvas: HTMLElement, before: GraphSnapshot): Animation
     const from: Keyframe = blend === null ? {} : { opacity: blend }, to: Keyframe = blend === null ? {} : { opacity };
     // A connector shown without a captured shape (the previous graph was over
     // the morph limit) snaps rather than starting from a guessed shape.
-    const start = target ? before.routes.get(heir ?? id) ?? (shown === undefined ? displacedRoute(target, path, before, current) : null) : null;
+    const start = target ? before.routes.get(heir ?? id) ?? (shown === undefined ? displacedRoute(target, path, before, current, enterOffset(orientation)) : null) : null;
     // An unchanged connector keeps its exact curve rather than morphing as a polyline.
     if (start && target && !sameShape(start, target)) { from.d = `path("${polyline(start)}")`; to.d = `path("${polyline(target)}")`; }
     if (Object.keys(from).length) animations.push(path.animate([from, to], timing));
@@ -343,16 +348,16 @@ const sameShape = (a: readonly Point[], b: readonly Point[]) =>
   a.length === b.length && a.every((point, index) => Math.abs(point.x - b[index].x) < 0.25 && Math.abs(point.y - b[index].y) < 0.25);
 
 /** A new connector starts where its endpoints were, then moves with them. */
-function displacedRoute(target: readonly Point[], path: SVGPathElement, before: GraphSnapshot, current: ReadonlyMap<string, Box>): Point[] {
+function displacedRoute(target: readonly Point[], path: SVGPathElement, before: GraphSnapshot, current: ReadonlyMap<string, Box>, enter: Point): Point[] {
   const shift = (endpoint: string | undefined, source: boolean, at: Point): Point => {
-    if (!endpoint) return { x: 0, y: -10 };
+    if (!endpoint) return enter;
     if (endpoint.startsWith("junction:")) {
       const old = before.junctions.get(endpoint.slice(9));
       return old ? { x: old.x - at.x, y: old.y - at.y } : { x: 0, y: 0 };
     }
     const key = endpoint.slice(5);
     const old = before.tiles.get(key), now = current.get(key);
-    if (!old || !now) return { x: 0, y: -10 };
+    if (!old || !now) return enter;
     return { x: old.x + old.width / 2 - (now.x + now.width / 2), y: source ? old.y + old.height - (now.y + now.height) : old.y - now.y };
   };
   return displace(target, shift(path.dataset.from, true, target[0]), shift(path.dataset.to, false, target.at(-1)!));

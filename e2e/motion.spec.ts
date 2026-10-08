@@ -1,5 +1,5 @@
 import { test, expect, type Page } from "@playwright/test";
-import { openView, settle, uncaught } from "./support";
+import { key, openView, settle, uncaught } from "./support";
 import { clickThroughGym, motionFaults, node, sampleClick } from "./motion-support";
 
 /**
@@ -219,5 +219,22 @@ test.describe("anchoring under the host's zoom", () => {
     expect(shown.length).toBeGreaterThan(3);
     expect(Math.max(...shown.map((frame) => Math.abs(frame.tiles[key][3] - shown[0].tiles[key][3])))).toBeLessThanOrEqual(2);
     expect(Math.abs(after.screen - before.screen)).toBeLessThanOrEqual(2);
+  });
+});
+
+test.describe("new tiles arrive from their parents' side", () => {
+  test.use({ viewport: { width: 900, height: 900 } });
+
+  test("in a left-to-right component a revealed tile slides in from the left, level with where it lands", async ({ page }) => {
+    await openView(page, 900, "?deeper=1");
+    const dawn = await key(page, "mist-dawn");
+    const frames = await sampleClick(page, await node(page, "forest-mist"));
+    const seen = frames.filter((frame) => frame.tiles[dawn]).map((frame) => frame.tiles[dawn]);
+    expect(seen.length).toBeGreaterThan(2);
+    const [first, last] = [seen[0], seen[seen.length - 1]];
+    expect(last[0] - first[0]).toBeGreaterThan(3);
+    for (const sample of seen) expect(Math.abs(sample[1] - last[1])).toBeLessThanOrEqual(1);
+    await settle(page);
+    expect(await uncaught(page)).toEqual([]);
   });
 });

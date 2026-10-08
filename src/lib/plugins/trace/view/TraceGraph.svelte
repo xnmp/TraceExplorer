@@ -98,7 +98,7 @@
     const current = ++plays;
     void tick().then(() => {
       if (current !== plays) return;
-      if (before && canvas) running = playGraph(canvas, before);
+      if (before && canvas) running = playGraph(canvas, before, layout.orientation);
       oncommit?.(Promise.allSettled(running.map((animation) => animation.finished)).then(() => {}));
     });
   }
