@@ -26,7 +26,7 @@ import type { NodeKey, TraceNode } from "./model";
 import type { TraceDag } from "./projection";
 import type { Orientation } from "./layout";
 import { buildInputJunctions, type Junction } from "./junctions";
-import { spacingFor, tileMetrics, TRACK_HEIGHT, type Spacing, type TileMetrics } from "./metrics";
+import { bendZones, spacingFor, tileMetrics, TRACK_HEIGHT, type Spacing, type TileMetrics } from "./metrics";
 
 export interface GenerationProfile {
   /** Number of generations of the component's settled images (longest parent chain, counted in images). */
@@ -140,14 +140,21 @@ interface ChannelLoad { readonly levels: number; readonly tracks: number }
 
 /**
  * Extra channel width (see `GenerationProfile.channelExtra`). Mirrors how the
- * engine sizes a channel: each junction level adds `junctionLevel`, and a
- * channel whose bends need more tracks than fit its bend room grows by a
- * track per bend.
+ * engine sizes a channel (`bendZones`): each junction level adds
+ * `junctionLevel`, and a zone whose bends need more tracks than its default
+ * height holds grows by a track per bend. Junction levels split the bend room
+ * into zones, the ones either side only 16 px at the default size, and the
+ * estimate cannot know which zone a bend takes: it assumes every track lands
+ * in the smallest. Spreading tracks over zones only leaves more of each
+ * zone's default unused, so this errs on the wide side rather than letting a
+ * crowded channel overflow a left-to-right canvas. The approach into the
+ * next column never bends, so it never grows.
  */
 function extraWidth(channels: readonly ChannelLoad[], spacing: Spacing): number {
-  // Bend room only: the approach into the next column never bends, so it never grows.
-  const bend = spacing.bandChannel - spacing.approach;
-  return channels.reduce((sum, { levels, tracks }) => sum + Math.max(bend + levels * spacing.junctionLevel, tracks * TRACK_HEIGHT) - bend, 0);
+  return channels.reduce((sum, { levels, tracks }) => {
+    const smallest = Math.min(...bendZones(spacing, levels));
+    return sum + levels * spacing.junctionLevel + Math.max(0, tracks * TRACK_HEIGHT - smallest);
+  }, 0);
 }
 
 /** Every channel's load, estimated over every drawn relationship. */

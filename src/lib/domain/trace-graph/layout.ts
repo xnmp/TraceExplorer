@@ -16,7 +16,7 @@
  */
 import type { NodeKey } from "./model";
 import { buildInputJunctions, endpointKey, type Consumer, type Endpoint, type Junction } from "./junctions";
-import { ARROW, spacingFor, TRACK_HEIGHT } from "./metrics";
+import { ARROW, bendZones, JUNCTION_BERTH, spacingFor, TRACK_HEIGHT } from "./metrics";
 
 export interface LayoutItem {
   readonly key: NodeKey;
@@ -120,8 +120,6 @@ const insertSorted = <K>(map: Map<K, number[]>, key: K, value: number) => {
 const append = <K, V>(map: Map<K, V[]>, key: K, ...values: V[]) => { const list = map.get(key); if (list) list.push(...values); else map.set(key, [...values]); };
 /** Narrowest separation between lanes sharing a gap. */
 const MIN_LANE = 3;
-/** A route this close to a junction it does not belong to reads as passing through it. */
-const JUNCTION_BERTH = 6;
 /** Distance kept outside a forbidden interval when stepping past it. */
 const FREE_STEP = 0.5;
 /** No tile is anywhere near this big; larger sizes are clamped so coordinates stay exact. */
@@ -726,15 +724,12 @@ function layoutPass(request: LayoutRequest, extra: { readonly left: number; read
   // clear zones, the roomiest.
   const legsIn = new Map<number, Leg[]>();
   for (const item of allLegs) append(legsIn, item.channel, item);
-  // A channel is its bend zones, the junction levels between them, then the
-  // approach (a straight stem and the arrowhead). Each junction level adds
-  // `junctionLevel`: its dot's berths and the zone between it and the next
-  // level; the bend room left either side of the levels is split evenly.
+  // Default zone heights (`bendZones`); the orientation estimate sizes channels from the same.
+  const zoneDefaults = new Map<number, readonly number[]>();
   const defaultZone = (channel: number, zone: number) => {
-    const count = levelCount(channel);
-    if (!count) return (lastRowOfBand.get(rowKeys[channel].band) === channel ? space.bandChannel : space.rowChannel) - space.approach;
-    if (zone === 0 || zone === count) return (space.bandChannel - space.approach + space.junctionLevel) / 2 - JUNCTION_BERTH;
-    return space.junctionLevel - 2 * JUNCTION_BERTH;
+    let heights = zoneDefaults.get(channel);
+    if (!heights) zoneDefaults.set(channel, heights = bendZones(space, levelCount(channel), lastRowOfBand.get(rowKeys[channel].band) === channel));
+    return heights[zone];
   };
   type Run = { readonly x: number; readonly from: number; readonly to: number; readonly bend: number | null; readonly leg: Leg };
   const bucket = (x: number) => Math.floor(x / MIN_LANE);

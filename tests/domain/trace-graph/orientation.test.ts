@@ -194,6 +194,37 @@ describe("orientation", () => {
     expect(sideways).toBeGreaterThan(0);
   });
 
+  it("sizes crowded junction channels so that a left-to-right canvas never overflows its pane", () => {
+    // Dense edit sessions where most images combine several earlier ones. Bends
+    // into and out of their junctions crowd the 16 px zones either side of a
+    // junction level; an estimate that spread the tracks over the whole
+    // channel let these canvases overflow the pane by up to 26 px.
+    const sessions: [string, string[]][][] = [
+      [["a0", []], ["b0", ["a0"]], ["b1", ["a0"]], ["b2", ["a0"]], ["c0", ["b0", "b1"]], ["c1", ["b1", "b0", "b2"]], ["c2", ["b1", "b2"]],
+        ["d0", ["c1", "b0", "c2", "b1"]], ["d1", ["c0", "c2", "b2"]], ["d2", ["c1", "c0"]], ["e0", ["d2"]], ["e1", ["d0"]], ["e2", ["d1", "b0"]],
+        ["f0", ["e0"]], ["f1", ["e1", "c0", "c2"]], ["f2", ["e0", "b0", "e1", "d0"]]],
+      [["a0", []], ["b0", ["a0"]], ["b1", ["a0"]], ["b2", ["a0"]], ["c0", ["b2", "b0"]], ["c1", ["b2", "b1", "a0"]], ["c2", ["b1", "b0", "b2"]],
+        ["d0", ["c1", "b0"]], ["d1", ["c2"]], ["d2", ["c2", "b1"]], ["e0", ["d1"]], ["e1", ["d1"]], ["e2", ["d1", "b1", "a0"]]],
+      [["a0", []], ["b0", ["a0"]], ["b1", ["a0"]], ["b2", ["a0"]], ["c0", ["b0"]], ["c1", ["b1"]], ["c2", ["b0", "a0", "b1"]],
+        ["d0", ["c0", "b2", "a0"]], ["d1", ["c1", "a0", "c2"]], ["d2", ["c1"]], ["e0", ["d1", "c1", "b2"]], ["e1", ["d0", "a0", "c1"]], ["e2", ["d1", "b1", "d2"]]],
+    ];
+    for (const [index, session] of sessions.entries()) {
+      const nodes = session.map(([key, parents]) => node(key, parents));
+      const dag = projectDag(nodes);
+      const estimate = Math.ceil(sidewaysWidth(generationProfile(dag, dag.order)));
+      let sideways = 0;
+      for (let width = estimate - 10; width <= estimate + 120; width += 2) {
+        for (const focus of [null, ...dag.order]) {
+          const layout = render(nodes, focus, width);
+          if (layout.orientation !== "right") continue;
+          sideways++;
+          expect(layout.width, `session ${index} at ${width}px, focus ${focus}`).toBeLessThanOrEqual(width);
+        }
+      }
+      expect(sideways, `session ${index}`).toBeGreaterThan(0);
+    }
+  }, 60_000);
+
   it("keeps left-to-right canvases within 5% of the width they are given on random graphs, pending outputs included", () => {
     let sideways = 0, withPending = 0;
     for (let seed = 1; seed <= 150; seed++) for (const pendingShare of [0, 0.2]) {

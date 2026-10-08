@@ -75,9 +75,9 @@ export const ARROW = { length: 8, width: 7 } as const;
 /** Height of one bend track; a bend zone grows when its tracks need more than its default height. */
 export const TRACK_HEIGHT = 6;
 /**
- * Bend room in a channel without junctions, at the default tile: three bend
- * tracks, so up to three crossing sources bend in slices of their own before
- * the channel grows.
+ * Bend room in a channel between generations without junctions, at the
+ * default tile: three bend tracks, so up to three crossing sources bend in
+ * slices of their own before the channel grows.
  */
 const BEND = 3 * TRACK_HEIGHT;
 /** Bend room between wrapped rows of one generation: two tracks. */
@@ -134,3 +134,20 @@ export type Spacing = ReturnType<typeof spacingFor>;
 
 /** Spacing at the default tile size. */
 export const SPACING: Spacing = spacingFor();
+
+/** A route this close to a junction it does not belong to reads as passing through it; dots keep this berth above and below. */
+export const JUNCTION_BERTH = 6;
+
+/**
+ * Default heights of a channel's bend zones, top to bottom, for `levels`
+ * junction levels. A channel is its bend zones, the junction levels between
+ * them, then the approach (a straight stem and the arrowhead). Each junction
+ * level adds `junctionLevel`: its dot's berths and the zone between it and
+ * the next level; the bend room left either side of the levels is split
+ * evenly. A zone grows past its default when its bend tracks need more.
+ */
+export function bendZones(spacing: Spacing, levels: number, betweenBands = true): number[] {
+  if (levels <= 0) return [(betweenBands ? spacing.bandChannel : spacing.rowChannel) - spacing.approach];
+  const end = (spacing.bandChannel - spacing.approach + spacing.junctionLevel) / 2 - JUNCTION_BERTH;
+  return Array.from({ length: levels + 1 }, (_, zone) => zone === 0 || zone === levels ? end : spacing.junctionLevel - 2 * JUNCTION_BERTH);
+}

@@ -422,9 +422,10 @@ describe("spacing", () => {
     const hinted = tileSize({ foreign: false, hint: true });
     const items = [item("root", [], hinted), item("left", ["root"], small, 1), item("right", ["root"], hinted, 2),
       item("a", ["right"], small, 3), item("b", ["right"], small, 4)];
-    // What a channel needs: a straight stem as long as the arrowhead, the
-    // arrowhead, and room for three bend tracks (three crossing sources bend
-    // apart without the channel growing). It used to be 46 px.
+    // What a channel between generations needs: a straight stem as long as
+    // the arrowhead, the arrowhead, and room for three bend tracks (three
+    // crossing sources bend apart without the channel growing; wrapped rows
+    // of one generation get two). It used to be 46 px.
     const needed = 2 * ARROW.length + 3 * TRACK_HEIGHT;
     for (const orientation of ORIENTATIONS) {
       const layout = checkLayout(items, orientation === "down" ? 360 : 900, orientation);
