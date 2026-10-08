@@ -34,15 +34,17 @@
     ondiscarded: (key: NodeKey) => void;
     /** Called after a new layout is in the DOM (motion has started), with a promise that settles when motion ends. */
     oncommit?: (settled: Promise<void>) => void;
+    /** The host's component id: stable across refreshes, saves and new descendants. */
+    componentId: string;
     /**
      * The pane's memory of the orientation each component was last shown
-     * with (by component identity), for orientation hysteresis. Written on
-     * every commit; deliberately not reactive, like `ordering` below.
+     * with (by `componentId`), for orientation hysteresis. Written on every
+     * commit; deliberately not reactive, like `ordering` below.
      */
-    orientations?: Map<NodeKey, Orientation>;
+    orientations?: Map<string, Orientation>;
   }
 
-  let { data, focus, selected, width, revision, scroller, onactivate, onnavigate, onopen, onmenu, onsaved, ondiscarded, oncommit, captureSelection, orientations = new Map() }: Props = $props();
+  let { data, focus, selected, width, revision, scroller, onactivate, onnavigate, onopen, onmenu, onsaved, ondiscarded, oncommit, captureSelection, componentId, orientations = new Map() }: Props = $props();
 
   /** Below this many tiles layout runs inline; it takes well under a frame. */
   const SYNC_LIMIT = 60;
@@ -59,12 +61,12 @@
   /** Only the latest commit plays; one superseded before rendering never starts. */
   let commits = 0;
 
-  const plan = $derived(planScene(data.dag, data.members, focus, width, { hint: ordering, orientations }));
+  const plan = $derived(planScene(data.dag, data.members, focus, width, { hint: ordering, previous: orientations.get(componentId) }));
 
   /** What later plans build on: the reading order and the orientation shown. */
-  function remember(next: ScenePlan, layout: GraphLayout): void {
+  function remember(layout: GraphLayout): void {
     ordering = layout.readingOrder;
-    if (next.identity !== null) orientations.set(next.identity, layout.orientation);
+    orientations.set(componentId, layout.orientation);
   }
 
   // The first render uses the very plan the effect below sees, so mounting
@@ -72,7 +74,7 @@
   function initial(): { plan: ScenePlan; layout: GraphLayout } | null {
     const first = plan;
     const layout = cachedLayout(first.request) ?? (first.request.items.length <= SYNC_LIMIT ? layoutNow(first.request) : null);
-    if (layout) remember(first, layout);
+    if (layout) remember(layout);
     return layout ? { plan: first, layout } : null;
   }
   let shown = $state.raw(initial());
@@ -84,7 +86,7 @@
     for (const animation of running) animation.cancel();
     running = [];
     shown = { plan: next, layout };
-    remember(next, layout);
+    remember(layout);
     failure = "";
     const current = ++commits;
     void tick().then(() => {

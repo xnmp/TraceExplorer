@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { connectedComponents, projectDag } from "$lib/domain/trace-graph/projection";
 import { planScene } from "$lib/domain/trace-graph/scene";
 import { layoutGraph, type GraphLayout, type Orientation } from "$lib/domain/trace-graph/layout";
-import { chooseOrientation, componentIdentity, generationProfile, sidewaysWidth, type GenerationProfile } from "$lib/domain/trace-graph/orientation";
+import { chooseOrientation, generationProfile, sidewaysWidth, type GenerationProfile } from "$lib/domain/trace-graph/orientation";
 import type { TraceNode } from "$lib/domain/trace-graph/model";
 import { mockupNodes, node, random } from "./fixtures";
 
@@ -25,26 +25,17 @@ function flow(layout: GraphLayout, nodes: TraceNode[]): "right" | "down" | "mixe
   return right && !down ? "right" : down && !right ? "down" : "mixed";
 }
 
-const shape = (depth: number, breadth: number, channelExtra = 0): GenerationProfile => ({ depth, breadth, channelExtra });
+const shape = (depth: number, breadth: number, extra = 0): GenerationProfile => ({ depth, breadth, span: depth, channelExtra: () => extra });
 
 const running = (key: string, parents: string[]) => node(key, parents, "current", { state: "running", temporary: true, artifactId: null, path: null });
 const unsaved = (key: string, parents: string[]) => node(key, parents, "current", { temporary: true });
 const discarded = (key: string, parents: string[]) => node(key, parents, "current", { temporary: true, discarded: true });
 
-/**
- * A pane as the view drives it: each plan sees the orientations remembered
- * from earlier layouts, and each layout's orientation is remembered.
- */
-function pane(width: number) {
-  const orientations = new Map<string, Orientation>();
-  return (nodes: TraceNode[], focus: string | null): GraphLayout => {
-    const dag = projectDag(nodes);
-    const members = connectedComponents(dag).find((component) => focus === null || component.includes(focus))!;
-    const plan = planScene(dag, members, focus, width, { orientations });
-    const layout = layoutGraph(plan.request);
-    if (plan.identity !== null) orientations.set(plan.identity, layout.orientation);
-    return layout;
-  };
+/** Lays out the component holding `focus` with `previous` as the orientation it is shown with. */
+function shown(nodes: TraceNode[], focus: string, width: number, previous?: Orientation): GraphLayout {
+  const dag = projectDag(nodes);
+  const members = connectedComponents(dag).find((component) => component.includes(focus))!;
+  return layoutGraph(planScene(dag, members, focus, width, { previous }).request);
 }
 
 const chain = (length: number) => Array.from({ length }, (_, index) => node(`s${index}`, index ? [`s${index - 1}`] : []));
@@ -126,18 +117,49 @@ describe("orientation", () => {
     expect(chooseOrientation(shape(2, 3), 900)).toBe("down");
   });
 
-  it("ignores running and unsaved outputs when counting generations", () => {
+  it("takes the shape from settled images only, but the drawn span from everything", () => {
     const dag = projectDag([node("root"), node("a", ["root"]), node("b", ["root"]),
       ...["g1", "g2", "g3"].map((key) => running(key, ["root"])), unsaved("u", ["a"]), node("kept", ["u"]), discarded("d", ["kept"])]);
-    // The saved child of an unsaved edit still sits two generations below a.
-    expect(generationProfile(dag, dag.order)).toMatchObject({ depth: 4, breadth: 2 });
+    // kept hangs off the settled images only through the unsaved u: not part of the shape.
+    expect(generationProfile(dag, dag.order)).toMatchObject({ depth: 2, breadth: 2, span: 5 });
+  });
+
+  it("ignores the reference inputs a pending output pulls into the component", () => {
+    // Older external references, combined with a by a running output: settled, but connected only through it.
+    const refs = ["s1", "s2", "s3"].map((key) => node(key, [], "external"));
+    const base = [node("root"), node("a", ["root"]), node("b", ["root"])];
+    const dag = projectDag([...refs, ...base, running("r", ["a", "s1", "s2", "s3"])]);
+    const [members] = connectedComponents(dag);
+    expect(members).toContain("s1");
+    expect(generationProfile(dag, members)).toMatchObject({ depth: 2, breadth: 2, span: 3 });
+    for (const previous of [undefined, "right"] as const) expect(shown([...refs, ...base, running("r", ["a", "s1", "s2", "s3"])], "a", 700, previous).orientation, String(previous)).toBe("right");
+  });
+
+  it("makes room for a pending output in a new deepest generation, or turns rather than overflow", () => {
+    const base = [node("root"), node("a", ["root"]), node("b", ["a"])];
+    const fit = sidewaysWidth(generationProfile(projectDag(base), projectDag(base).order));
+    const generating = [...base, running("c", ["b"])];
+    const roomy = sidewaysWidth(generationProfile(projectDag(generating), projectDag(generating).order));
+    expect(roomy).toBeGreaterThan(fit);
+    // Just wide enough for the settled images: generating a column more turns it, even shown sideways.
+    expect(shown(base, "a", fit, "right").orientation).toBe("right");
+    for (const focus of ["root", "a", "b", "c"]) {
+      const tight = shown(generating, focus, fit, "right");
+      expect(tight.orientation, focus).toBe("down");
+      expect(tight.width, focus).toBeLessThanOrEqual(fit);
+      // With room for the new column it stays sideways, its canvas holding every column within the pane.
+      const wide = shown(generating, focus, roomy, "right");
+      expect(wide.orientation, focus).toBe("right");
+      expect(wide.width, focus).toBe(roomy);
+      expect(wide.nodes.get("c")?.x ?? 0, focus).toBeLessThan(roomy);
+    }
   });
 
   it("estimates the width junctions add between generations, so a sideways canvas stays within the pane", () => {
     // Every step combines the previous image with one shared reference: a junction in every channel.
     const nodes = [node("x0"), node("style", [], "external"), ...Array.from({ length: 4 }, (_, index) => node(`x${index + 1}`, [`x${index}`, "style"]))];
     const dag = projectDag(nodes);
-    const plain = sidewaysWidth({ ...generationProfile(dag, dag.order), channelExtra: 0 });
+    const plain = sidewaysWidth({ ...generationProfile(dag, dag.order), channelExtra: () => 0 });
     expect(sidewaysWidth(generationProfile(dag, dag.order))).toBeGreaterThan(plain);
     let sideways = 0;
     for (let width = plain - 40; width <= plain + 200; width += 4) {
@@ -151,27 +173,32 @@ describe("orientation", () => {
     expect(sideways).toBeGreaterThan(0);
   });
 
-  it("keeps left-to-right canvases within 5% of the width they are given on random graphs", () => {
-    let sideways = 0;
-    for (let seed = 1; seed <= 150; seed++) {
+  it("keeps left-to-right canvases within 5% of the width they are given on random graphs, pending outputs included", () => {
+    let sideways = 0, withPending = 0;
+    for (let seed = 1; seed <= 150; seed++) for (const pendingShare of [0, 0.2]) {
       const next = random(seed * 104729);
       const count = 4 + Math.floor(next() * 22), fanIn = 1 + Math.floor(next() * 3), locality = 1 + Math.floor(next() * 6);
       const nodes = Array.from({ length: count }, (_, index) => {
         const root = index === 0 || next() < 0.12;
         const parents = root ? [] : [...new Set(Array.from({ length: 1 + Math.floor(next() * fanIn) }, () => `n${Math.max(0, index - 1 - Math.floor(next() * Math.min(index, locality)))}`))];
-        return node(`n${index}`, parents, root && next() < 0.15 ? "external" : "current");
+        const pending = !root && next() < pendingShare;
+        return node(`n${index}`, parents, root && next() < 0.15 ? "external" : "current", pending ? { temporary: true } : {});
       });
       const dag = projectDag(nodes);
       for (const members of connectedComponents(dag)) for (const width of [400, 560, 720, 900, 1200]) for (const focus of [null, ...members]) {
-        const plan = planScene(dag, members, focus, width);
-        if (plan.request.orientation !== "right") continue;
-        sideways++;
-        expect(layoutGraph(plan.request).width, `seed ${seed} at ${width}px, focus ${focus}`).toBeLessThanOrEqual(width * 1.05);
+        for (const previous of [undefined, "right"] as const) {
+          const plan = planScene(dag, members, focus, width, { previous });
+          if (plan.request.orientation !== "right") continue;
+          sideways++;
+          if (members.some((key) => dag.nodes.get(key)!.temporary)) withPending++;
+          expect(layoutGraph(plan.request).width, `seed ${seed} (${pendingShare} pending) at ${width}px, focus ${focus}, after ${previous}`).toBeLessThanOrEqual(width * 1.05);
+        }
       }
     }
     // The sweep exercises the sideways case thoroughly, not vacuously.
-    expect(sideways).toBeGreaterThan(1000);
-  }, 30_000);
+    expect(sideways).toBeGreaterThan(2000);
+    expect(withPending).toBeGreaterThan(500);
+  }, 60_000);
 
   it("keeps a remembered orientation until the rule fails by a clear margin", () => {
     // Slightly broader than deep: top to bottom when fresh, but a sideways component stays sideways.
@@ -199,14 +226,6 @@ describe("orientation", () => {
     expect(chooseOrientation(profile, Math.ceil(fit / 0.9), "down")).toBe("right");
   });
 
-  it("identifies a component by its earliest image, whatever is added to it", () => {
-    const base = [node("root"), node("a", ["root"]), node("b", ["a"])];
-    const identity = (nodes: TraceNode[]) => { const dag = projectDag(nodes); return componentIdentity(dag, connectedComponents(dag)[0]); };
-    expect(identity(base)).toBe("root");
-    expect(identity([...base, running("g", ["b"]), node("c", ["root"])])).toBe("root");
-    expect(componentIdentity(projectDag([]), [])).toBeNull();
-  });
-
   describe("while images are generated into a component", () => {
     // The user's example: a root, two edits, and two edits of one of them; sideways at 700 px.
     const base = () => [node("root"), node("cerulean", ["root"]), node("saffron", ["root"]), node("replace-1", ["saffron"]), node("replace-2", ["saffron"])];
@@ -215,31 +234,28 @@ describe("orientation", () => {
     const columns = (layout: GraphLayout) => Object.fromEntries(["root", "cerulean", "saffron", "replace-1"].map((key) => [key, layout.nodes.get(key)!.x]));
 
     it("stays left to right, with no tile changing column, through a batch generation, its completion and its discard", () => {
-      const show = pane(700);
-      const before = show(base(), "replace-1");
+      const before = shown(base(), "replace-1", 700);
       expect(flow(before, base())).toBe("right");
       for (const state of ["running", "unsaved", "discarded"] as const) {
         const nodes = [...base(), ...batch(state)];
-        const layout = show(nodes, "replace-1");
-        expect(flow(layout, nodes), state).toBe("right");
-        expect(layout.nodes.has("v1"), state).toBe(true);
-        expect(columns(layout), state).toEqual(columns(before));
+        // Whether or not the orientation it is shown with is known.
+        for (const previous of [undefined, "right"] as const) {
+          const layout = shown(nodes, "replace-1", 700, previous);
+          expect(flow(layout, nodes), `${state} after ${previous}`).toBe("right");
+          expect(layout.nodes.has("v1"), state).toBe(true);
+          expect(columns(layout), state).toEqual(columns(before));
+        }
       }
-      // Pending outputs alone never flip it, even for a pane that remembers nothing.
-      const fresh = [...base(), ...batch("running")];
-      expect(flow(pane(700)(fresh, "replace-1"), fresh)).toBe("right");
     });
 
     it("stays left to right when the batch is saved, unless the component becomes clearly broader than deep", () => {
-      const show = pane(700);
-      show(base(), "replace-1");
       // Two saved variations: four edits of root across three generations.
       const saved = [...base(), ...batch("saved").slice(0, 2)];
-      expect(flow(show(saved, "replace-1"), saved)).toBe("right");
-      // A pane seeing it for the first time lays it out top to bottom: the hysteresis kept it sideways.
-      expect(flow(pane(700)(saved, "replace-1"), saved)).toBe("down");
+      expect(flow(shown(saved, "replace-1", 700, "right"), saved)).toBe("right");
+      // Seen afresh it runs top to bottom: the hysteresis keeps it sideways.
+      expect(flow(shown(saved, "replace-1", 700), saved)).toBe("down");
       const broad = [...base(), ...batch("saved"), node("v5", ["root"]), node("v6", ["root"])];
-      expect(flow(show(broad, "replace-1"), broad)).toBe("down");
+      expect(flow(shown(broad, "replace-1", 700, "right"), broad)).toBe("down");
     });
   });
 });

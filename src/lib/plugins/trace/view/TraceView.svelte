@@ -40,8 +40,8 @@
   let overrides = $state.raw<ReadonlyMap<string, boolean>>(new Map());
   let near = $state.raw<ReadonlySet<string>>(new Set());
   let heights = new Map<string, number>();
-  /** Orientation each component was last shown with, by component identity: kept across collapse and remount for hysteresis. */
-  const orientations = new Map<NodeKey, Orientation>();
+  /** Orientation each component of this folder was last shown with, by component id: kept across collapse and remount for hysteresis. */
+  const orientations = new Map<string, Orientation>();
   let pendingPath = $state<string | null>(null);
   let anchor: { key: NodeKey; mode: "hold" | "reveal"; rect: DOMRect | null; until: number } | null = null;
   let releaseAnchor: (() => void) | null = null;
@@ -53,7 +53,7 @@
   const entriesByPath = $derived(new Map(pane.entries.map((entry) => [entry.path, entry])));
 
   // Session follows the pane's folder and Trace's invalidation signal.
-  $effect(() => { const dir = directory; untrack(() => { overrides = new Map(); session.setDirectory(dir); }); });
+  $effect(() => { const dir = directory; untrack(() => { overrides = new Map(); orientations.clear(); session.setDirectory(dir); }); });
   let seenRevision = untrack(() => traceInvalidation.revision);
   $effect(() => {
     const current = traceInvalidation.revision;
@@ -317,7 +317,7 @@
               <div use:measure={summary.id}>
                 <TraceGraph {data} focus={focus?.key ?? null} selected={selectedKeys} {width} {revision} {scroller}
                   onactivate={activate} onnavigate={(key) => focusNode(key)} onopen={open} onmenu={menu}
-                  {captureSelection} {orientations} onsaved={(_key, path) => callbacks.saved(path)} ondiscarded={() => {}} oncommit={(settled) => keepAnchor(data, settled)} />
+                  {captureSelection} componentId={summary.id} {orientations} onsaved={(_key, path) => callbacks.saved(path)} ondiscarded={() => {}} oncommit={(settled) => keepAnchor(data, settled)} />
               </div>
             {:else}
               <div class="placeholder loading" role="status" style:height="{heights.get(summary.id) ?? 160}px">Loading…</div>

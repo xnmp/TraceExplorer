@@ -11,6 +11,7 @@ import StubFileTiles from "./StubFileTiles.svelte";
 
 export const DIRECTORY = "/pictures";
 const TEMP = "/managed";
+export const MIRROR = "/pictures-mirror";
 
 type Seed = { key: string; parents?: string[]; scope?: TraceNode["scope"]; temporary?: boolean; prompt?: string };
 let counter = 0;
@@ -107,7 +108,8 @@ configureBackend({
     const reply = (value: unknown) => Promise.resolve(value as T);
     const token = String(version);
     switch (method) {
-      case "folder_has_trace": return reply(params.directory === DIRECTORY);
+      // MIRROR answers with the same Trace: another folder whose components reuse the same ids.
+      case "folder_has_trace": return reply(params.directory === DIRECTORY || params.directory === MIRROR);
       case "trace_folder_components": {
         const all = componentsOf().map((component) => component.summary);
         return reply({ token, total: all.length, offset: params.offset, components: all.slice(params.offset) });
@@ -192,6 +194,11 @@ export const backend = {
     }] };
     changed();
     return key;
+  },
+  /** Saves an unsaved output into the folder, as its Save action would. */
+  saveGeneration(name: string) {
+    update(state.names.get(name)!, { temporary: false, path: `${DIRECTORY}/${name}.png`, location: `./${name}.png`, scope: "current" });
+    changed();
   },
   /** Discards an unsaved output, as its Delete action would. */
   discardGeneration(name: string) {
