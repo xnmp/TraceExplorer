@@ -7,6 +7,9 @@
   import { promptTitles } from "../prompt-titles.svelte";
   import { nodeStatus, nodeTitle } from "./node-target";
   import type { TraceArtifact } from "$lib/api/trace";
+  import { tileTooltipContent } from "./tooltip/content";
+  import { tooltipTrigger } from "./tooltip/controller.svelte";
+  import { previewData } from "./preview-data.svelte";
 
   interface Props {
     tile: SceneTile;
@@ -30,7 +33,11 @@
   const status = $derived(nodeStatus(node));
   const present = $derived(node.state === "present" && !node.earlierRevision && !node.discarded && !!node.path);
   const unsaved = $derived(node.temporary && !node.discarded && node.artifactId !== null);
-  const tooltip = $derived([node.prompt || nodeTitle(node), node.scope === "current" ? "" : node.location].filter(Boolean).join("\n"));
+  // The tooltip reads these while it shows; its run details load only once it opens.
+  const tooltip = tooltipTrigger({
+    content: () => tileTooltipContent(node, node.runId === null ? null : previewData.runs.read(node.runId, revision).value),
+    onshow: () => { if (node.runId !== null) previewData.runs.request(node.runId, revision); },
+  });
   // Hover actions reuse the established save/delete flow for unsaved outputs.
   const artifact = $derived<TraceArtifact | null>(unsaved && node.artifactId !== null && node.path ? {
     id: node.artifactId, path: node.path, digest: "", createdAt: "", generatingRun: node.runId,
@@ -46,7 +53,7 @@
   data-tile-key={node.key} data-scope={node.scope} data-tone={tile.tone}
   style:left="{placed.x}px" style:top="{placed.y}px" style:width="{placed.width}px" style:height="{placed.height}px">
   <button type="button" class="card" class:selected class:focus={tile.tone === "focus"} class:discarded={node.discarded}
-    data-node-key={node.key} aria-pressed={selected} title={tooltip}
+    data-node-key={node.key} aria-pressed={selected} {@attach tooltip}
     aria-label="{title}{status ? `, ${status}` : ""}{unsaved ? ", unsaved" : ""}{node.scope === "external" ? ", outside this folder" : node.scope === "subfolder" ? ", in a subfolder" : ""}"
     onclick={onactivate} ondblclick={onopen} oncontextmenu={onmenu} onkeydown={onkey}>
     <span class="image" style:height="{tile.size.imageHeight}px">
@@ -61,7 +68,7 @@
     <span class="label">
       <span class="text">{title}</span>
       {#if node.runId !== null && promptTitles.pending(node.runId)}<span class="title-spinner" role="status" aria-label="Generating title"></span>{/if}
-      {#if unsaved}<span class="unsaved-dot" title="Unsaved" aria-hidden="true"></span>{/if}
+      {#if unsaved}<span class="unsaved-dot" aria-hidden="true"></span>{/if}
       {#if tile.expandable}
         <svg class="chevron" viewBox="0 0 24 24" aria-hidden="true"><path d={tile.tone === "focus" && orientation === "down" ? "m5 9 7 7 7-7" : "m9 5 7 7-7 7"} /></svg>
       {/if}
@@ -112,8 +119,9 @@
   .hint { display: block; box-sizing: border-box; padding-top: 3px; text-align: center; font-size: 10px; line-height: 13px; color: var(--text-secondary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .unrelated .card { opacity: .78; }
   .unrelated .image { filter: grayscale(.45); }
-  .actions { position: absolute; top: 8px; right: 8px; visibility: hidden; }
-  .actions :global(p) { position: absolute; right: 0; top: 30px; width: max-content; max-width: 220px; padding: 2px 6px; background: var(--background-solid); border: 1px solid var(--control-stroke); border-radius: 3px; }
+  /* The action chip sits in the image's top-right corner; status messages hang below it. */
+  .actions { position: absolute; top: 9px; right: 9px; display: flex; flex-direction: column; align-items: flex-end; visibility: hidden; }
+  .actions :global(p) { position: absolute; right: 0; top: 100%; }
   .tile:hover .actions, .tile:focus-within .actions { visibility: visible; }
   @media (hover: none) { .actions { visibility: visible; } }
   .spinner { width: 14px; height: 14px; border: 2px solid var(--divider); border-top-color: var(--accent); border-radius: 50%; animation: spin 800ms linear infinite; }
