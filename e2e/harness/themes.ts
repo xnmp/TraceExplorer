@@ -7,7 +7,10 @@
  * `--system-*-text` variants, so the harness renders the plugin the way most
  * users see it. `?theme=dark` selects the dark theme; light is the default.
  */
-const base = { "--radius-sm": "8px", "--radius-md": "12px", "--radius-lg": "16px", "--transition-fast": "80ms cubic-bezier(0.25, 0.1, 0.25, 1)" };
+const base = {
+  "--radius-sm": "8px", "--radius-md": "12px", "--radius-lg": "16px", "--transition-fast": "80ms cubic-bezier(0.25, 0.1, 0.25, 1)",
+  "--font-size-caption": "11px", "--font-size-body": "14px", "--line-height-normal": "1.5",
+};
 
 export const THEMES = {
   light: {

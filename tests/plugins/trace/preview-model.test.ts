@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { classify, modelFromGraph, modelFromView } from "$lib/plugins/trace/view/preview-model";
+import { classify, modelFromGraph, modelFromView, runSettings } from "$lib/plugins/trace/view/preview-model";
 import type { TraceArtifact, TraceGraph, TraceRun } from "$lib/api/trace";
 import type { TraceNode } from "$lib/domain/trace-graph/model";
 
@@ -118,5 +118,43 @@ describe("modelFromGraph", () => {
     const ids = Array.from({ length: 2000 }, (_, i) => i + 2);
     const g = graph({ artifacts: [artifact(1, { generatingRun: 10 }), ...ids.map((id) => artifact(id))], runs: [run(10, ids)] });
     expect(modelFromGraph(g, "/f")!.inputs).toHaveLength(2000);
+  });
+});
+
+describe("runSettings", () => {
+  const edit = (parameters: Record<string, unknown>, details: TraceRun["details"] = null): TraceRun => ({
+    id: 1, operation: "openai.image.edit", parameters, createdAt: "", status: "succeeded", finishedAt: null, error: null, recovered: false, details, inputIds: [],
+  });
+
+  it("labels the recorded settings in display order, ending with the actual size", () => {
+    expect(runSettings(edit({ prompt: "p", resolution: "2k", aspect_ratio: "3:2", quality: "high", seed: 7 }, { actual_size: { width: 1536, height: 1024 } }))).toEqual([
+      { label: "Operation", value: "OpenAI edit" },
+      { label: "Resolution", value: "2K" },
+      { label: "Aspect ratio", value: "3:2" },
+      { label: "Quality", value: "high" },
+      { label: "Seed", value: "7" },
+      { label: "Actual size", value: "1536 × 1024 px" },
+    ]);
+  });
+
+  it("shows the keep-aspect setting as Keep", () => {
+    expect(runSettings(edit({ aspect_ratio: "keep" }))).toContainEqual({ label: "Aspect ratio", value: "Keep" });
+  });
+
+  it("leaves out missing, empty, automatic and non-scalar values", () => {
+    expect(runSettings(edit({ resolution: "AUTO", aspect_ratio: "auto", quality: "", seed: null, rect: { left: 0 } }))).toEqual([{ label: "Operation", value: "OpenAI edit" }]);
+    expect(runSettings(edit({ quality: { level: 3 }, seed: Number.NaN })).map((row) => row.label)).toEqual(["Operation"]);
+  });
+
+  it("ignores a malformed or implausible actual size", () => {
+    for (const actual_size of [null, "1024x768", { width: 1024 }, { width: 0, height: 768 }, { width: 1.5, height: 2 }, { width: -4, height: 4 }, { width: 2 ** 60, height: 1 }]) {
+      expect(runSettings(edit({}, { actual_size })).map((row) => row.label)).not.toContain("Actual size");
+    }
+    expect(runSettings(edit({}, null)).map((row) => row.label)).toEqual(["Operation"]);
+  });
+
+  it("keeps a very long value intact for the row to ellipsize", () => {
+    const seed = "9".repeat(5000);
+    expect(runSettings(edit({ seed }))).toContainEqual({ label: "Seed", value: seed });
   });
 });
