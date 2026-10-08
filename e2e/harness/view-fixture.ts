@@ -231,6 +231,11 @@ export const backend = {
     calls: () => [...titleCalls],
     finish(runId: number, title: string) { titleWaiters.get(runId)?.(title); titleWaiters.delete(runId); },
   },
+  /** Replaces a node's prompt, as a rerecorded run would. */
+  setPrompt(name: string, prompt: string) {
+    update(state.names.get(name)!, { prompt });
+    changed();
+  },
   runId: (name: string) => state.nodes.find((node) => node.key === state.names.get(name))?.runId ?? null,
   /** `null` simulates cancelling the Save as… picker. */
   setPicker(result: string | null | undefined) { pickerResult = result; },
