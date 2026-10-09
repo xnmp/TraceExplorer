@@ -357,18 +357,31 @@ test.describe("picks follow saves and deletes", () => {
     expect(await editInputs(page)).toEqual([mist]);
   });
 
-  test("saving the Preview target after unpicking it adds its file and keeps the other picks", async ({ page }) => {
+  test("saving the Preview target after unpicking it selects its file alone, as a plain click would", async ({ page }) => {
     await openView(page, 1400, "?ai=1");
     await click(page, "warm");
     await click(page, "merge");
     await click(page, "mist", { modifiers: ["Control"] });
     await click(page, "merge", { modifiers: ["Control"] });
-    const mist = await path(page, "mist");
     await preview(page).getByRole("button", { name: "Save", exact: true }).click();
     await expect.poll(() => path(page, "merge")).toBe("/pictures/merge.png");
     await settle(page);
-    // The save came after the picks, so its file is added; it never replaces them.
-    expect(await editInputs(page)).toEqual([mist, "/pictures/merge.png"]);
+    // The save is the newest action: the saved file alone, with no input added unseen.
+    expect((await state(page)).selected).toEqual(["/pictures/merge.png"]);
+    expect(await editInputs(page)).toEqual(["/pictures/merge.png"]);
+  });
+
+  test("hover-saving an unsaved image picked alongside a listed one keeps both, in place", async ({ page }) => {
+    await openView(page, 1400, "?ai=1");
+    await click(page, "warm");
+    await click(page, "merge", { modifiers: ["Control"] });
+    const warm = await path(page, "warm");
+    const merge = await tile(page, "merge");
+    await merge.hover();
+    await merge.getByRole("button", { name: "Save image permanently" }).click();
+    await expect.poll(async () => (await state(page)).selected).toEqual([warm, "/pictures/merge.png"]);
+    await settle(page);
+    expect(await editInputs(page)).toEqual([warm, "/pictures/merge.png"]);
   });
 
   test("deleting the picked unsaved image leaves nothing to edit", async ({ page }) => {

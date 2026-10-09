@@ -306,14 +306,16 @@
   });
 
   /**
-   * Adds a saved image's file to the selection: in its place among `before`
-   * if it was picked, otherwise after the rest. The host keeps what it holds;
-   * nothing it dropped comes back.
+   * Selects a saved image's file, the user's newest action. Picked, it takes
+   * its place among `before` and the host keeps the rest of its selection
+   * (nothing it dropped comes back); not picked, it is selected alone, as a
+   * plain click would, so the next AI edit gains no input unseen.
    */
   function selectSaved(before: Picks, key: NodeKey, path: string): void {
-    const next = replacePick(before, key, { path, key: path }, true) ?? { ...before, order: [...before.order, path] };
-    pane.setSelection([...hostSelected, path], path);
-    commitPicks(next);
+    const saved = { path, key: path };
+    const next = replacePick(before, key, saved, true);
+    pane.setSelection(next ? [...hostSelected, path] : [path], path);
+    commitPicks(next ?? pickOnly(saved, true));
   }
 
   // Keep this pane's Preview target in step with refreshed node data.

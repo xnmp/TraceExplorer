@@ -281,7 +281,6 @@ test.describe("unsaved output actions", () => {
     expect((await state(page)).selected).toEqual(before);
     expect((await state(page)).selected).not.toContain(await key(page, "merge"));
     await page.evaluate(() => (window as any).trace.backend.releaseSaves());
-    // The saved file joins the selection; a save never replaces it.
-    await expect.poll(async () => (await state(page)).selected).toEqual([...before, "/pictures/merge.png"]);
+    await expect.poll(async () => (await state(page)).selected).toEqual(["/pictures/merge.png"]);
   });
 });
