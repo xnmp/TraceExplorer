@@ -108,13 +108,16 @@
     get directory() { return directory; },
     get entries() { return entries; },
     get selection() { return selection; },
-    get focusedPath() { return cursor && selected.includes(cursor) ? cursor : selected[0] ?? null; },
+    // As the host: the cursor while it is selected, otherwise the first selected file in listing order.
+    get focusedPath() { return cursor && selected.includes(cursor) ? cursor : selection[0]?.path ?? null; },
     get active() { return true; },
     get previewTarget() { return target; },
     get tileSize() { return tilePreset ? { preset: tilePreset, imagePx: TILE_IMAGE_PX[tilePreset] } : undefined; },
     // As the host's selectEntry (tauri-explorer selection.ts calculateSelection):
     // Shift selects the listing range from the anchor, Ctrl toggles, a plain click selects one.
     select(entry, modifiers = {}) {
+      // The host moves its cursor even to an entry it does not list.
+      cursor = entry.path;
       const clicked = entries.findIndex((other) => other.path === entry.path);
       if (clicked < 0) return;
       const from = entries.findIndex((other) => other.path === anchor);
@@ -127,7 +130,6 @@
         replaceSelection([entry.path]);
         anchor = entry.path;
       }
-      cursor = entry.path;
     },
     // As the host's selectPaths: listed paths only; `focus` becomes the anchor and cursor.
     setSelection(paths, focus = null) {

@@ -19,7 +19,12 @@
  */
 import type { NodeKey, TraceNode } from "$lib/domain/trace-graph/model";
 
-export interface Pick { readonly path: string; readonly key: NodeKey }
+export interface Pick {
+  readonly path: string;
+  readonly key: NodeKey;
+  /** An extra's Trace component: kept loaded while picked, so the pick is checked against fresh data. */
+  readonly componentId?: string;
+}
 export interface Picks {
   /** Paths in the order they were picked. */
   readonly order: readonly string[];

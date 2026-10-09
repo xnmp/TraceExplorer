@@ -250,7 +250,7 @@ test.describe("saving and deleting unsaved outputs", () => {
     await expect(merge.locator(".unsaved-dot")).toHaveCount(0);
   });
 
-  test("hover-saving an output that is not focused selects it when the selection did not change meanwhile", async ({ page }) => {
+  test("hover-saving an output that is not focused adds it to the selection when the selection did not change meanwhile", async ({ page }) => {
     await openView(page);
     await (await card(page, "warm")).click();
     await expect.poll(async () => (await state(page)).selected).toEqual(["/pictures/warm.png"]);
@@ -258,7 +258,8 @@ test.describe("saving and deleting unsaved outputs", () => {
     const merge = await tile(page, "merge");
     await merge.hover();
     await merge.getByRole("button", { name: "Save image permanently" }).click();
-    await expect.poll(async () => (await state(page)).selected).toEqual(["/pictures/merge.png"]);
+    // A save never replaces the selection: its file joins it.
+    await expect.poll(async () => (await state(page)).selected).toEqual(["/pictures/warm.png", "/pictures/merge.png"]);
     await expect(merge.locator(".unsaved-dot")).toHaveCount(0);
   });
 

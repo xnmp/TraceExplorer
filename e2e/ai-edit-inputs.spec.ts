@@ -189,6 +189,28 @@ test.describe("the view's own clicks", () => {
     expect(await editInputs(page)).toEqual(picked);
   });
 
+  test("Ctrl-clicking an image that cannot be an input changes no picks", async ({ page }) => {
+    await openView(page, 1400, "?ai=1");
+    await click(page, "warm");
+    await click(page, "merge", { modifiers: ["Control"] });
+    await click(page, "mist", { modifiers: ["Control"] });
+    const picked = await Promise.all(["warm", "merge", "mist"].map((name) => path(page, name)));
+    await page.evaluate(() => (window as any).trace.backend.startGeneration("warm", "gen"));
+    await settle(page);
+    await click(page, "gen", { modifiers: ["Control"] });
+    await click(page, "gen", { modifiers: ["Shift"] });
+    expect((await state(page)).selected).toEqual([picked[0]]);
+    expect(await editInputs(page)).toEqual(picked);
+  });
+
+  test("Shift-clicking an unsaved image already picked keeps it picked", async ({ page }) => {
+    await openView(page, 1400, "?ai=1");
+    await click(page, "warm");
+    await click(page, "merge", { modifiers: ["Control"] });
+    await click(page, "merge", { modifiers: ["Shift"] });
+    expect(await editInputs(page)).toEqual([await path(page, "warm"), await path(page, "merge")]);
+  });
+
   test("Ctrl-clicking the Preview target unpicks it and its highlight", async ({ page }) => {
     await openView(page, 1400, "?ai=1");
     await click(page, "warm");
@@ -197,6 +219,38 @@ test.describe("the view's own clicks", () => {
     await click(page, "merge", { modifiers: ["Control"] });
     await expect(await card(page, "merge")).toHaveAttribute("aria-pressed", "false");
     expect(await editInputs(page)).toEqual([await path(page, "mist")]);
+  });
+});
+
+test.describe("picks in sections that are not shown", () => {
+  async function section(page: Page, name: string) {
+    const id = await (await tile(page, name)).locator("xpath=ancestor::section[@data-component]").getAttribute("data-component");
+    return page.locator(`section[data-component="${id}"]`).locator("button.heading").first();
+  }
+
+  test("an unsaved pick discarded while its section is collapsed is no longer an input", async ({ page }) => {
+    await openView(page, 1400, "?ai=1");
+    await click(page, "warm");
+    await click(page, "merge", { modifiers: ["Control"] });
+    const heading = await section(page, "merge");
+    await heading.click();
+    await expect(heading).toHaveAttribute("aria-expanded", "false");
+    await page.evaluate(() => (window as any).trace.backend.discardGeneration("merge"));
+    await settle(page);
+    await expect.poll(() => editInputs(page)).toEqual([await path(page, "warm")]);
+  });
+
+  test("a section expanded again shows what changed while it was collapsed", async ({ page }) => {
+    await openView(page, 1400, "?ai=1");
+    await click(page, "warm");
+    const heading = await section(page, "merge");
+    await heading.click();
+    await expect(heading).toHaveAttribute("aria-expanded", "false");
+    await page.evaluate(() => (window as any).trace.backend.discardGeneration("merge"));
+    await settle(page);
+    await heading.click();
+    await expect(heading).toHaveAttribute("aria-expanded", "true");
+    await expect(await card(page, "merge")).toHaveAttribute("aria-label", /Deleted/);
   });
 });
 
@@ -284,6 +338,37 @@ test.describe("picks follow saves and deletes", () => {
     const inputs = await editInputs(page);
     expect(inputs).not.toContain(village);
     expect(inputs.at(-1)).toBe("/pictures/merge.png");
+  });
+
+  test("a slow save of the Preview target the user unpicked meanwhile leaves the newer picks alone", async ({ page }) => {
+    await openView(page, 1400, "?ai=1");
+    await click(page, "warm");
+    await click(page, "merge");
+    await page.evaluate(() => (window as any).trace.backend.holdSaves());
+    await preview(page).getByRole("button", { name: "Save", exact: true }).click();
+    await click(page, "mist", { modifiers: ["Control"] });
+    await click(page, "merge", { modifiers: ["Control"] });
+    const mist = await path(page, "mist");
+    expect(await editInputs(page)).toEqual([mist]);
+    await page.evaluate(() => (window as any).trace.backend.releaseSaves());
+    await expect.poll(() => path(page, "merge")).toBe("/pictures/merge.png");
+    await settle(page);
+    expect((await state(page)).selected).toEqual([]);
+    expect(await editInputs(page)).toEqual([mist]);
+  });
+
+  test("saving the Preview target after unpicking it adds its file and keeps the other picks", async ({ page }) => {
+    await openView(page, 1400, "?ai=1");
+    await click(page, "warm");
+    await click(page, "merge");
+    await click(page, "mist", { modifiers: ["Control"] });
+    await click(page, "merge", { modifiers: ["Control"] });
+    const mist = await path(page, "mist");
+    await preview(page).getByRole("button", { name: "Save", exact: true }).click();
+    await expect.poll(() => path(page, "merge")).toBe("/pictures/merge.png");
+    await settle(page);
+    // The save came after the picks, so its file is added; it never replaces them.
+    expect(await editInputs(page)).toEqual([mist, "/pictures/merge.png"]);
   });
 
   test("deleting the picked unsaved image leaves nothing to edit", async ({ page }) => {

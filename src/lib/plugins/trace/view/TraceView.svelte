@@ -145,9 +145,12 @@
   const isExpanded = (summary: ComponentSummary, index: number) =>
     overrides.get(summary.id) ?? (index < DEFAULT_EXPANDED || summary.id === focus?.componentId);
 
-  // Load what is expanded and near the viewport; release the rest.
+  // Load what is expanded and near the viewport, and every component holding an
+  // extra pick (so a pick in a collapsed section is checked against fresh
+  // data); release the rest.
   $effect(() => {
-    const wanted = summaries.filter((summary, index) => isExpanded(summary, index) && near.has(summary.id)).map((summary) => summary.id);
+    const picked = new Set(picks.extras.map((extra) => extra.componentId));
+    const wanted = summaries.filter((summary, index) => (isExpanded(summary, index) && near.has(summary.id)) || picked.has(summary.id)).map((summary) => summary.id);
     untrack(() => {
       for (const summary of summaries) if (!wanted.includes(summary.id)) session.release(summary.id);
       for (const id of wanted) void session.ensure(id);
@@ -232,10 +235,19 @@
     captureAnchor(key, keep);
     const entry = fileEntry(found.node);
     if (entry) { selectListed(entry, modifiers); return; }
-    // Showing a Preview target replaces the host selection, so a Ctrl or
-    // Shift click adds an unlisted image to the picks without one.
-    if (pickable(found.node) && (modifiers.ctrlKey || modifiers.shiftKey)) {
-      commitPicks(togglePick(livePicks, { path: found.node.path!, key }, false, false));
+    if (modifiers.ctrlKey || modifiers.shiftKey) {
+      // Showing a Preview target replaces the host selection, so a Ctrl or
+      // Shift click adds an unlisted image to the picks without one: Ctrl
+      // toggles it, Shift only adds.
+      if (pickable(found.node)) {
+        const pick = { path: found.node.path!, key, componentId: found.componentId };
+        const picked = livePicks.extras.some((extra) => extra.key === key);
+        if (!(picked && modifiers.shiftKey)) commitPicks(togglePick(livePicks, pick, false, false));
+        return;
+      }
+      // An image that cannot be an input never changes the selection; it is
+      // only shown when that costs no host selection (a target clears it).
+      if (!hostSelected.length) { const before = livePicks; preview(found.node, found.componentId); commitPicks(before); }
       return;
     }
     show(found.node, found.componentId);
@@ -244,7 +256,7 @@
   /** Shows an unlisted node as this pane's Preview target; it becomes the only pick. */
   function show(node: TraceNode, componentId: string): void {
     preview(node, componentId);
-    commitPicks(pickable(node) ? pickOnly({ path: node.path!, key: node.key }, false) : NO_PICKS);
+    commitPicks(pickable(node) ? pickOnly({ path: node.path!, key: node.key, componentId }, false) : NO_PICKS);
   }
 
   function activate(key: NodeKey, event: MouseEvent): void {
@@ -293,13 +305,15 @@
     });
   });
 
-  /** Selects a saved image's file: in its place among `before` if it was picked, otherwise alone. */
+  /**
+   * Adds a saved image's file to the selection: in its place among `before`
+   * if it was picked, otherwise after the rest. The host keeps what it holds;
+   * nothing it dropped comes back.
+   */
   function selectSaved(before: Picks, key: NodeKey, path: string): void {
-    const saved = { path, key: path };
-    const next = replacePick(before, key, saved, true);
-    // The host keeps what it holds and adds the saved file; nothing else comes back.
-    pane.setSelection(next === null ? [path] : [...hostSelected, path], path);
-    commitPicks(next ?? pickOnly(saved, true));
+    const next = replacePick(before, key, { path, key: path }, true) ?? { ...before, order: [...before.order, path] };
+    pane.setSelection([...hostSelected, path], path);
+    commitPicks(next);
   }
 
   // Keep this pane's Preview target in step with refreshed node data.
@@ -310,9 +324,11 @@
     if (!fresh || issuedTargets.get(current) === fresh) return;
     untrack(() => {
       const entry = fileEntry(fresh);
-      // The target is a listed file now (saved by a save that did not select it,
-      // or elsewhere): select the file, keeping its place among the picks.
-      if (entry && pendingSave?.path !== entry.path) { selectSaved(livePicks, data.key, entry.path); return; }
+      // The target is a listed file now (saved by a save that did not select
+      // it, or elsewhere). While it is picked, its file takes its place among
+      // the picks; otherwise the selection stays and the target shows the file.
+      const stillPicked = livePicks.extras.some((extra) => extra.key === data.key);
+      if (entry && stillPicked && pendingSave?.path !== entry.path) { selectSaved(livePicks, data.key, entry.path); return; }
       // Re-issuing the target clears the host selection, which a target keeps
       // empty: the picks stay (restored only if a host notified anyway).
       const before = picks;

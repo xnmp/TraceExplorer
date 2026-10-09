@@ -225,6 +225,32 @@ describe("folder session", () => {
     expect(backend.nodes.mock.calls[0][1]).toBe("t2");
   });
 
+  it("a released component a refresh skipped reloads when it is wanted again, keeping its old graph until then", async () => {
+    let token = "t1";
+    let state: TraceNode["discarded"] = false;
+    const backend = fakeBackend({
+      components: vi.fn(async () => compPage(token, ["c1"])),
+      nodes: vi.fn(async () => nodePage([{ ...node("a", 0), discarded: state }])),
+    });
+    const session = createFolderSession(backend);
+    session.setDirectory("/f");
+    await flush();
+    await session.ensure("c1");
+    session.release("c1");
+    // The image is discarded while its section is collapsed.
+    token = "t2"; state = true;
+    await session.refresh();
+    await flush();
+    expect(session.components.get("c1")!.nodes[0].discarded).toBe(false);
+    backend.nodes.mockClear();
+    await session.ensure("c1");
+    expect(backend.nodes).toHaveBeenCalledTimes(1);
+    expect(session.components.get("c1")!.nodes[0].discarded).toBe(true);
+    // Fresh again: a later ensure does not reload.
+    await session.ensure("c1");
+    expect(backend.nodes).toHaveBeenCalledTimes(1);
+  });
+
   it("a failed refresh keeps the existing data and reports the error", async () => {
     let fail = false;
     const backend = fakeBackend({
