@@ -39,6 +39,8 @@ export function createFolderSession(backend: TraceBackend = traceBackend) {
   let disposed = false;
   const loading = new Map<string, Promise<void>>();
   let wanted = new Set<string>();
+  /** Loaded components a refresh did not reload (not wanted then): shown until reloaded, reloaded when wanted again. */
+  let stale = $state.raw<ReadonlySet<string>>(new Set());
 
   async function loadIndex(dir: string, current: number, attempt = 0): Promise<FolderIndex | null> {
     const summaries: ComponentSummary[] = [];
@@ -85,6 +87,7 @@ export function createFolderSession(backend: TraceBackend = traceBackend) {
     const next = new Map(components);
     next.set(id, { nodes, dag, members: dag.order });
     components = next;
+    if (stale.has(id)) stale = new Set([...stale].filter((other) => other !== id));
   }
 
   async function open(dir: string | null, keepVisible: boolean): Promise<void> {
@@ -92,7 +95,7 @@ export function createFolderSession(backend: TraceBackend = traceBackend) {
     loading.clear();
     directory = dir;
     if (!dir) { index = null; components = new Map(); status = "idle"; return; }
-    if (!keepVisible) { index = null; components = new Map(); }
+    if (!keepVisible) { index = null; components = new Map(); stale = new Set(); }
     status = keepVisible && index ? "ready" : "loading";
     error = "";
     try {
@@ -104,6 +107,8 @@ export function createFolderSession(backend: TraceBackend = traceBackend) {
       // Reload what is shown; keep the old graph visible until it is replaced.
       const keep = new Set(next.components.map((component) => component.id));
       components = new Map([...previous].filter(([id]) => keep.has(id)));
+      // Every kept component may be out of date: wanted ones reload now, the others when wanted again.
+      stale = new Set([...components.keys()].filter((id) => !wanted.has(id)));
       for (const id of wanted) if (keep.has(id)) void ensure(id, true);
     } catch (cause) {
       if (current !== generation || disposed) return;
@@ -115,7 +120,7 @@ export function createFolderSession(backend: TraceBackend = traceBackend) {
   function ensure(id: string, force = false): Promise<void> {
     wanted.add(id);
     const folder = index;
-    if (!folder || (!force && components.has(id))) return Promise.resolve();
+    if (!folder || (!force && components.has(id) && !stale.has(id))) return Promise.resolve();
     const key = `${folder.token}:${id}`;
     const pending = loading.get(key);
     if (pending) return pending;
@@ -142,6 +147,8 @@ export function createFolderSession(backend: TraceBackend = traceBackend) {
     ensure,
     release(id: string) { wanted.delete(id); },
     componentOf(path: string): Member | null { return index?.members.get(path) ?? null; },
+    /** Whether a loaded component's data predates the current index (a refresh skipped it). Reactive. */
+    isStale(id: string): boolean { return stale.has(id); },
     dispose() { disposed = true; generation += 1; loading.clear(); },
   };
 }

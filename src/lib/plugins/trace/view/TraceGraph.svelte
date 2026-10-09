@@ -10,6 +10,7 @@
   import { planScene, routeStyle, junctionRelated, type RouteStyle, type ScenePlan } from "$lib/domain/trace-graph/scene";
   import { nearestInDirection, type Direction, type GraphLayout, type Orientation } from "$lib/domain/trace-graph/layout";
   import { endpointKey } from "$lib/domain/trace-graph/junctions";
+  import { ARROW, tileMetrics, type TileMetrics } from "$lib/domain/trace-graph/metrics";
   import { promptTitles } from "../prompt-titles.svelte";
   import type { ComponentData } from "./folder-session.svelte";
   import { cachedLayout, computeLayout, layoutNow } from "./layout-client";
@@ -22,6 +23,8 @@
     focus: NodeKey | null;
     selected: ReadonlySet<NodeKey>;
     width: number;
+    /** The size of every tile (the host's tile-size setting); defaults to the default tile. */
+    tile?: TileMetrics;
     revision: number;
     scroller: HTMLElement | null;
     onactivate: (key: NodeKey, event: MouseEvent) => void;
@@ -44,7 +47,7 @@
     orientations?: Map<string, Orientation>;
   }
 
-  let { data, focus, selected, width, revision, scroller, onactivate, onnavigate, onopen, onmenu, onsaved, ondiscarded, oncommit, captureSelection, componentId, orientations = new Map() }: Props = $props();
+  let { data, focus, selected, width, tile = tileMetrics(), revision, scroller, onactivate, onnavigate, onopen, onmenu, onsaved, ondiscarded, oncommit, captureSelection, componentId, orientations = new Map() }: Props = $props();
 
   /** Below this many tiles layout runs inline; it takes well under a frame. */
   const SYNC_LIMIT = 60;
@@ -61,7 +64,7 @@
   /** Only the latest full commit plays; one superseded before rendering never starts. */
   let plays = 0;
 
-  const plan = $derived(planScene(data.dag, data.members, focus, width, { hint: ordering, previous: orientations.get(componentId) }));
+  const plan = $derived(planScene(data.dag, data.members, focus, width, { hint: ordering, previous: orientations.get(componentId), tile }));
 
   /** What later plans build on: the reading order and the orientation shown. */
   function remember(layout: GraphLayout): void {
@@ -203,10 +206,18 @@
   <div class="graph" bind:this={canvas} style:width="{shown.layout.width}px" style:height="{shown.layout.height}px">
     <svg class="edges" width={shown.layout.width} height={shown.layout.height} aria-hidden="true">
       <defs>
-        <!-- One arrowhead per line colour, so every arrowhead matches its line. -->
+        <!--
+          One arrowhead per line colour, so every arrowhead matches its line.
+          Sized in canvas pixels (not stroke widths), so a highlighted line's
+          arrowhead is no bigger than any other. Its base sits on the route's
+          end and its tip one ARROW.length further on, on the tile's edge
+          (layout.ts ends each route that far short of it); `orient="auto"`
+          follows the route's straight final stem.
+        -->
         {#each MARKER_TONES as tone (tone)}
-          <marker id="arrow-{uid}{tone ? `-${tone}` : ""}" class={tone} viewBox="0 0 6 6" refX="5" refY="3" markerWidth="5" markerHeight="5" orient="auto">
-            <polygon points="0,0 6,3 0,6" />
+          <marker id="arrow-{uid}{tone ? `-${tone}` : ""}" class={tone} markerUnits="userSpaceOnUse" viewBox="0 0 {ARROW.length} {ARROW.width}"
+            refX="0" refY={ARROW.width / 2} markerWidth={ARROW.length} markerHeight={ARROW.width} orient="auto">
+            <polygon points="0,0 {ARROW.length},{ARROW.width / 2} 0,{ARROW.width}" />
           </marker>
         {/each}
       </defs>

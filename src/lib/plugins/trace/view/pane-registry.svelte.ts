@@ -12,12 +12,18 @@ export interface TracePaneView {
   nodeForPath(path: string): TraceNode | null;
   /** Focus a node in this pane (expanding its component), like clicking it. */
   focus(key: NodeKey): void;
+  /** Whether this view's pane is the window's active pane. */
+  readonly active: boolean;
+  /** The selected images in the order they were picked, including unlisted ones. */
+  inputs(): readonly string[];
 }
 
 let views = $state.raw<ReadonlyMap<string, TracePaneView>>(new Map());
 
 export const tracePanes = {
   get(paneId: string | null): TracePaneView | null { return paneId ? views.get(paneId) ?? null : null; },
+  /** The view in the window's active pane, if that pane shows Trace. */
+  active(): TracePaneView | null { for (const view of views.values()) if (view.active) return view; return null; },
   /** Registers a pane's view (safe to call from effects); returns the unregister function. */
   set(paneId: string, view: TracePaneView): () => void {
     untrack(() => { views = new Map(views).set(paneId, view); });

@@ -6,6 +6,8 @@
  */
 import { configureBackend } from "$lib/api/common";
 import type { TraceNode } from "$lib/domain/trace-graph/model";
+import type { TileSizePreset } from "../../integration/plugin-sdk";
+import { TILE_IMAGE_PX } from "./tile-presets";
 import { connectedComponents, projectDag } from "$lib/domain/trace-graph/projection";
 import StubFileTiles from "./StubFileTiles.svelte";
 
@@ -77,6 +79,8 @@ let heldSaves: Array<() => void> = [];
 let titleConnection = false;
 let pickerResult: string | null | undefined;
 let nextSaveFailure: string | null = null;
+/** How many of the next `openai_image_inputs` calls fail. */
+let inputFailures = 0;
 // Delay of the Preview-info queries, in ms: a native backend answers them over IPC, not within the same frame.
 let previewLatency = 0;
 const titleCalls: number[] = [];
@@ -167,6 +171,12 @@ configureBackend({
         return reply({ viewPath: null });
       }
       case "trace_title_connection": return reply(titleConnection);
+      // AI edit inputs: every known image is present, 160×96, with a revision derived from its path.
+      case "openai_image_inputs": if (inputFailures > 0) { inputFailures -= 1; return Promise.reject(new Error("The image service is busy")); }
+        return reply((params.paths as string[]).map((path) => state.nodes.some((node) => node.path === path) || entryExtras.some((entry) => entry.path === path)
+        ? { path, digest: [...path].reduce((hash, char) => (hash * 33 + char.charCodeAt(0)) % 1e9, 5381).toString(16).padStart(64, "0"), width: 160, height: 96 }
+        : { path, error: "Path not found" }));
+      case "jobs.start": return reply(900 + calls.filter((call) => call.method === "jobs.start").length);
       case "trace_prompt_title": return new Promise<T>((resolve) => { titleCalls.push(params.runId); titleWaiters.set(params.runId, (title) => resolve(title as T)); });
       default: return Promise.reject(new Error(`Unexpected method ${method}`));
     }
@@ -175,10 +185,13 @@ configureBackend({
 
 // `?fileTiles=1` simulates a host with the `ui/file-tiles` module; without it, an older SDK 2 host.
 const fileTiles = new URLSearchParams(globalThis.location?.search ?? "").has("fileTiles");
+// `?tileSize=<preset>` simulates a host with the `tileSize` capability whose pane reports that preset; without it, an older host.
+const tileQuery = new URLSearchParams(globalThis.location?.search ?? "").get("tileSize");
+export const initialTileSize: TileSizePreset | null = tileQuery && tileQuery in TILE_IMAGE_PX ? tileQuery as TileSizePreset : null;
 const color = (path: string) => `hsl(${[...path].reduce((sum, char) => (sum * 31 + char.charCodeAt(0)) % 360, 7)} 45% 55%)`;
 (globalThis as any).__TAURI_EXPLORER_PLUGIN_SDK__ = {
   sdkVersion: 1, apiVersion: 2, svelteVersion: "5.56.3",
-  capabilities: ["fileViews", "previewInfo", "previewTargets", "blobWorkers", ...(fileTiles ? ["fileTiles"] : [])],
+  capabilities: ["fileViews", "previewInfo", "previewTargets", "blobWorkers", ...(fileTiles ? ["fileTiles"] : []), ...(initialTileSize ? ["tileSize"] : [])],
   modules: fileTiles ? { "ui/file-tiles": { default: StubFileTiles } } : {},
   pickSaveFile: async () => pickerResult === undefined ? `${DIRECTORY}/picked.png` : pickerResult,
   thumbnailData: async (path: string) => ({ ok: true, data: URL.createObjectURL(new Blob([
@@ -199,6 +212,18 @@ export const backend = {
     state.names.set(name, key);
     state = { ...state, nodes: [...state.nodes, {
       key, artifactId: null, runId: counter, parents: [state.names.get(parent)!], path: null, scope: "current", location: "Generating",
+      state: "running", temporary: true, discarded: false, earlierRevision: false, order: counter, prompt: `${name} prompt`,
+    }] };
+    changed();
+    return key;
+  },
+  /** Starts a generation from several parents: an AI edit with several inputs, which merges their components. */
+  joinGeneration(parents: string[], name: string) {
+    counter += 1;
+    const key = `o:${counter}:0`;
+    state.names.set(name, key);
+    state = { ...state, nodes: [...state.nodes, {
+      key, artifactId: null, runId: counter, parents: parents.map((parent) => state.names.get(parent)!), path: null, scope: "current", location: "Generating",
       state: "running", temporary: true, discarded: false, earlierRevision: false, order: counter, prompt: `${name} prompt`,
     }] };
     changed();
@@ -226,14 +251,21 @@ export const backend = {
     calls: () => [...titleCalls],
     finish(runId: number, title: string) { titleWaiters.get(runId)?.(title); titleWaiters.delete(runId); },
   },
+  /** Replaces a node's prompt, as a rerecorded run would. */
+  setPrompt(name: string, prompt: string) {
+    update(state.names.get(name)!, { prompt });
+    changed();
+  },
   runId: (name: string) => state.nodes.find((node) => node.key === state.names.get(name))?.runId ?? null,
   /** `null` simulates cancelling the Save as… picker. */
   setPicker(result: string | null | undefined) { pickerResult = result; },
   /** The next save fails with this message (for example a filename collision). */
   failNextSave(message: string) { nextSaveFailure = message; },
+  /** The next `count` reads of AI edit inputs fail. */
+  failInputs(count: number) { inputFailures = count; },
   holdSaves() { holdSaves = true; },
   /** Answers run details, revision status and per-image traces after `ms`. */
   setPreviewLatency(ms: number) { previewLatency = ms; },
   releaseSaves() { holdSaves = false; const pending = heldSaves; heldSaves = []; pending.forEach((run) => run()); },
-  reset() { previewLatency = 0; pickerResult = undefined; nextSaveFailure = null; state = scenario(); version += 1; calls.length = 0; },
+  reset() { previewLatency = 0; pickerResult = undefined; nextSaveFailure = null; inputFailures = 0; state = scenario(); version += 1; calls.length = 0; },
 };

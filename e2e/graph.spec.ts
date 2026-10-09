@@ -189,11 +189,11 @@ test.describe("wide layouts", () => {
     // Both edits sit in one column right of the image they were made from, one above the other.
     expect(Math.abs(first[mist].x - first[autumn].x)).toBeLessThanOrEqual(1);
     expect(Math.abs(first[mist].y - first[autumn].y)).toBeGreaterThanOrEqual(first[mist].height);
-    // Each arrow arrives at its edit's left edge.
+    // Each arrow arrives at its edit's left edge (its line ends at the arrowhead's base, 8 px short).
     for (const child of [mist, autumn]) {
       const end = await arrowEnd(child);
       expect(end.x).toBeLessThanOrEqual(first[child].x);
-      expect(end.x).toBeGreaterThan(first[child].x - 8);
+      expect(end.x).toBeGreaterThan(first[child].x - 12);
       expect(end.y).toBeGreaterThan(first[child].y);
       expect(end.y).toBeLessThan(first[child].y + first[child].height);
     }
@@ -292,6 +292,186 @@ test.describe("wide layouts", () => {
       expect((await overflow(page, 0)).over).toBeLessThanOrEqual(1);
       expect(overlaps(await tileBoxes(page, 0)), `overlaps at ${width}`).toEqual([]);
     }
+  });
+});
+
+interface Head { route: string; tone: string; sideways: boolean; edgeGap: number; withinEdge: boolean; misalignment: number; baseOffset: number; contrast: number; length: number; width: number; straight: boolean; painted: boolean }
+
+/**
+ * Every arrowhead of a section (the first by default) as the browser renders it: the
+ * marker its line references, placed per SVG marker rules at the line's
+ * end, against its tile's box (CSS pixels, so independent of any zoom).
+ * `painted` samples the screenshot just inside the tip.
+ */
+async function arrowheads(page: Page, index = 0): Promise<Head[]> {
+  const section = page.locator("section.component[data-component]").nth(index);
+  const shot = await section.screenshot({ animations: "disabled" });
+  return section.evaluate(async (element, png) => {
+    const graph = element.querySelector<HTMLElement>(".graph")!;
+    const bitmap = await createImageBitmap(new Blob([Uint8Array.from(atob(png), (c) => c.charCodeAt(0))], { type: "image/png" }));
+    const canvas = new OffscreenCanvas(bitmap.width, bitmap.height);
+    const context = canvas.getContext("2d")!;
+    context.drawImage(bitmap, 0, 0);
+    const sectionBox = element.getBoundingClientRect(), graphBox = graph.getBoundingClientRect();
+    // Graph CSS pixels to screenshot pixels: document zoom, then device scale.
+    const pixel = (x: number, y: number) => {
+      const zoom = graphBox.width / graph.offsetWidth;
+      const px = Math.round(((graphBox.left - sectionBox.left) + x * zoom) * (bitmap.width / sectionBox.width));
+      const py = Math.round(((graphBox.top - sectionBox.top) + y * zoom) * (bitmap.height / sectionBox.height));
+      return [...context.getImageData(px, py, 1, 1).data];
+    };
+    return [...element.querySelectorAll<SVGPathElement>("path[data-route][marker-end]")].map((path) => {
+      const id = path.getAttribute("marker-end")!.match(/url\(#(.+)\)/)![1];
+      const marker = element.querySelector<SVGMarkerElement>(`marker[id="${CSS.escape(id)}"]`)!;
+      const polygon = marker.querySelector("polygon")!;
+      const length = path.getTotalLength();
+      const end = path.getPointAtLength(length);
+      const before = path.getPointAtLength(Math.max(0, length - 0.5));
+      const norm = Math.hypot(end.x - before.x, end.y - before.y);
+      const direction = { x: (end.x - before.x) / norm, y: (end.y - before.y) / norm };
+      // The line is straight over its last arrowhead's length (sampled every pixel).
+      const viewBox = marker.viewBox.baseVal;
+      const unit = marker.markerUnits.baseVal === SVGMarkerElement.SVG_MARKERUNITS_STROKEWIDTH ? parseFloat(getComputedStyle(path).strokeWidth) : 1;
+      const sx = marker.markerWidth.baseVal.value / viewBox.width * unit, sy = marker.markerHeight.baseVal.value / viewBox.height * unit;
+      const angle = marker.orientType.baseVal === SVGMarkerElement.SVG_MARKER_ORIENT_AUTO ? Math.atan2(direction.y, direction.x) : marker.orientAngle.baseVal.value * Math.PI / 180;
+      const place = (point: DOMPoint) => {
+        const lx = (point.x - marker.refX.baseVal.value) * sx, ly = (point.y - marker.refY.baseVal.value) * sy;
+        return { x: end.x + lx * Math.cos(angle) - ly * Math.sin(angle), y: end.y + lx * Math.sin(angle) + ly * Math.cos(angle) };
+      };
+      const corners = [...polygon.points].map(place);
+      const reach = (point: { x: number; y: number }) => (point.x - end.x) * direction.x + (point.y - end.y) * direction.y;
+      const tip = corners.reduce((best, point) => reach(point) > reach(best) ? point : best);
+      const base = corners.filter((point) => point !== tip);
+      const baseMiddle = { x: (base[0].x + base[1].x) / 2, y: (base[0].y + base[1].y) / 2 };
+      const axis = { x: tip.x - baseMiddle.x, y: tip.y - baseMiddle.y };
+      const axisLength = Math.hypot(axis.x, axis.y);
+      const misalignment = Math.acos(Math.min(1, (axis.x * direction.x + axis.y * direction.y) / axisLength)) * 180 / Math.PI;
+      let straight = true;
+      for (let back = 1; back <= axisLength; back++) {
+        const point = path.getPointAtLength(Math.max(0, length - back));
+        const off = Math.abs((point.x - end.x) * direction.y - (point.y - end.y) * direction.x);
+        if (off > 0.05) straight = false;
+      }
+      const tile = graph.querySelector<HTMLElement>(`[data-tile-key="${CSS.escape(path.dataset.to!.slice(5))}"]`)!;
+      const box = { left: tile.offsetLeft, top: tile.offsetTop, right: tile.offsetLeft + tile.offsetWidth, bottom: tile.offsetTop + tile.offsetHeight };
+      const sideways = Math.abs(direction.x) > Math.abs(direction.y);
+      const edgeGap = sideways ? tip.x - box.left : tip.y - box.top;
+      const withinEdge = sideways ? tip.y > box.top && tip.y < box.bottom : tip.x > box.left && tip.x < box.right;
+      // Just inside the tip (where the head is still wider than a pixel) the head is painted: the
+      // pixel differs from the background beside it, by as much as the head's own colour does.
+      const inside = { x: tip.x - direction.x * 3, y: tip.y - direction.y * 3 };
+      const sample = pixel(inside.x, inside.y), beside = pixel(inside.x + direction.y * 6, inside.y - direction.x * 6);
+      const contrast = Math.max(...[0, 1, 2].map((index) => Math.abs(sample[index] - beside[index])));
+      const painted = contrast >= 12;
+      return {
+        route: path.dataset.route!, tone: path.classList.contains("highlight") ? "highlight" : "normal", sideways,
+        edgeGap, withinEdge, misalignment, straight, painted, contrast,
+        baseOffset: Math.hypot(baseMiddle.x - end.x, baseMiddle.y - end.y),
+        length: axisLength, width: Math.hypot(base[0].x - base[1].x, base[0].y - base[1].y),
+      };
+    });
+  }, shot.toString("base64"));
+}
+
+test.describe("arrowheads", () => {
+  for (const { orientation, width } of [{ orientation: "top to bottom", width: 360 }, { orientation: "left to right", width: 700 }]) {
+    for (const zoom of [1, 1.3]) {
+      test(`running ${orientation} at ${zoom * 100}% zoom, every arrowhead ends on its tile's edge, points along its line and has one size`, async ({ page }) => {
+        // A root with two edits and two further edits under the second, selected (the selected branch is highlighted).
+        await openView(page, width, `?gym=1&zoom=${zoom}`);
+        await click(page, "saffron");
+        const heads = await arrowheads(page);
+        expect(heads.filter((head) => head.tone === "highlight").length).toBeGreaterThanOrEqual(3);
+        expect(heads.filter((head) => head.tone === "normal").length).toBeGreaterThanOrEqual(1);
+        for (const head of heads) {
+          const label = `${head.tone} ${head.route}`;
+          expect(head.sideways, label).toBe(orientation === "left to right");
+          // The tip touches the tile's edge, within a pixel, on the edge itself.
+          expect(Math.abs(head.edgeGap), label).toBeLessThanOrEqual(1);
+          expect(head.withinEdge, label).toBe(true);
+          // It points the way the line arrives, and the line is straight beneath it.
+          expect(head.misalignment, label).toBeLessThan(1);
+          expect(head.straight, label).toBe(true);
+          // The line stops at the head's base, so its stroke never pokes past the head.
+          expect(head.baseOffset, label).toBeLessThan(0.5);
+          expect(head.painted, `${label} is drawn at its tip (contrast ${head.contrast})`).toBe(true);
+        }
+        // One size for every line, highlighted or not.
+        expect(new Set(heads.map((head) => `${head.length.toFixed(2)}x${head.width.toFixed(2)}`)).size).toBe(1);
+      });
+    }
+  }
+});
+
+test.describe("tile size", () => {
+  const PRESETS = ["small", "medium", "large", "xlarge"] as const;
+  type Preset = (typeof PRESETS)[number] | null;
+  const setTileSize = (page: Page, preset: Preset) => page.evaluate((p) => (window as any).trace.setTileSize(p), preset);
+  /** Rendered sizes: every Trace tile and its image, and the ordinary section's host tiles and thumbnails. */
+  const sizes = (page: Page) => page.evaluate(() => {
+    const widths = (selector: string) => [...new Set([...document.querySelectorAll<HTMLElement>(selector)].map((element) => element.getBoundingClientRect().width))];
+    const heights = (selector: string) => [...new Set([...document.querySelectorAll<HTMLElement>(selector)].map((element) => element.getBoundingClientRect().height))];
+    return {
+      trace: widths("[data-tile-key]"), traceImage: heights("[data-tile-key] .image"),
+      ordinary: widths("[data-host-file-tiles] [data-entry-path]"), thumbnail: widths("[data-host-file-tiles] [data-thumbnail]"),
+      preset: document.querySelector<HTMLElement>("[data-host-file-tiles]")?.dataset.size ?? null,
+    };
+  });
+  const boxes = async (page: Page) => ({ ...(await tileBoxes(page, 0)), ...(await tileBoxes(page, 1)) });
+
+  test("changing the host's tile size resizes Trace tiles and the ordinary tiles to match, smoothly and without a stale layout", async ({ page }) => {
+    await openView(page, 900, "?fileTiles=1&tileSize=small");
+    await click(page, "warm");
+    const first = await boxes(page);
+    const warm = await key(page, "warm");
+    let previous = 92;
+    for (const preset of ["large", "medium", "xlarge", "small"] as const) {
+      await setTileSize(page, preset);
+      // The tiles grow or shrink in motion, from the size shown to the new one.
+      const resizing = await page.evaluate(async (k) => {
+        await new Promise((resolve) => requestAnimationFrame(resolve));
+        const element = document.querySelector(`[data-tile-key="${CSS.escape(k)}"]`)!;
+        return element.getAnimations().map((animation) => (animation.effect as KeyframeEffect).getKeyframes().map((frame) => frame.width).filter(Boolean));
+      }, warm);
+      await settle(page);
+      const shown = await sizes(page);
+      // One width for every Trace tile: the host's thumbnail edge plus its tile chrome, as wide as the host's own tiles.
+      expect(shown.preset, preset).toBe(preset);
+      expect(shown.thumbnail, preset).toHaveLength(1);
+      expect(shown.trace, preset).toEqual([shown.thumbnail[0] + 44]);
+      if (preset !== "small") expect(shown.trace, preset).toEqual(shown.ordinary);
+      // The image keeps its aspect inside the same chrome.
+      expect(shown.traceImage, preset).toEqual([Math.round((shown.trace[0] - 12) * 51 / 80)]);
+      expect(resizing.flat(), preset).toEqual([`${previous}px`, `${shown.trace[0]}px`]);
+      previous = shown.trace[0];
+      // Relaid out for the new size: nothing overlaps and every arrowhead still ends on its tile's edge.
+      expect(overlaps(await tileBoxes(page, 0)), preset).toEqual([]);
+      for (const head of await arrowheads(page)) {
+        expect(Math.abs(head.edgeGap), `${preset} ${head.route}`).toBeLessThanOrEqual(1);
+        expect(head.misalignment, `${preset} ${head.route}`).toBeLessThan(1);
+      }
+    }
+    // Back at the first size, every tile is exactly where it was: no layout of another size was reused.
+    const last = await boxes(page);
+    expect(Object.keys(last).sort()).toEqual(Object.keys(first).sort());
+    for (const [k, box] of Object.entries(first)) for (const side of ["x", "y", "width", "height"] as const) expect(Math.abs(last[k][side] - box[side]), `${k} ${side}`).toBeLessThanOrEqual(0.5);
+    expect(await uncaught(page)).toEqual([]);
+  });
+
+  test("a host that does not report its tile size gets the default tiles, and its own tile setting for the ordinary section", async ({ page }) => {
+    await openView(page, 900, "?fileTiles=1");
+    const shown = await sizes(page);
+    expect(shown.trace).toEqual([92]);
+    expect(shown.traceImage).toEqual([51]);
+    // No `size` is passed, so the host's tiles keep their own (global) setting.
+    expect(shown.preset).toBe("default");
+    // A host that stops reporting it (say, the plugin is moved to an older host) returns to the default too.
+    await setTileSize(page, "xlarge");
+    await settle(page);
+    expect((await sizes(page)).trace).toEqual([172]);
+    await setTileSize(page, null);
+    await settle(page);
+    expect(await sizes(page)).toMatchObject({ trace: [92], traceImage: [51], preset: "default" });
   });
 });
 

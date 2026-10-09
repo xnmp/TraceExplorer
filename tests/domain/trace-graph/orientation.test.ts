@@ -5,6 +5,7 @@ import { layoutGraph, type GraphLayout, type Orientation } from "$lib/domain/tra
 import { chooseOrientation, generationProfile, sidewaysWidth, type GenerationProfile } from "$lib/domain/trace-graph/orientation";
 import type { TraceNode } from "$lib/domain/trace-graph/model";
 import { mockupNodes, node, random } from "./fixtures";
+import { tileMetrics } from "$lib/domain/trace-graph/metrics";
 
 /** Lays out one component as the view would, focused on `focus`. */
 function render(nodes: TraceNode[], focus: string | null, width: number): GraphLayout {
@@ -155,6 +156,26 @@ describe("orientation", () => {
     }
   });
 
+  it("decides with the real tile width: larger tiles need a wider pane to run left to right, and stay within it", () => {
+    const nodes = [node("r"), node("a", ["r"]), node("b", ["a"]), node("c", ["b"])];
+    const dag = projectDag(nodes);
+    const profile = generationProfile(dag, dag.order);
+    const [small, xlarge] = [tileMetrics(48), tileMetrics(128)];
+    expect(sidewaysWidth(profile, xlarge)).toBeGreaterThan(sidewaysWidth(profile, small) + 4 * (xlarge.width - small.width) - 1);
+    // A pane that fits the chain side by side at the default size, but not at the largest.
+    const pane = Math.ceil(sidewaysWidth(profile, small)) + 10;
+    expect(chooseOrientation(profile, pane, undefined, small)).toBe("right");
+    expect(chooseOrientation(profile, pane, undefined, xlarge)).toBe("down");
+    for (const tile of [small, tileMetrics(64), tileMetrics(96), xlarge]) {
+      const plan = planScene(dag, dag.order, "c", Math.ceil(sidewaysWidth(profile, tile)) + 10, { tile });
+      expect(plan.request.orientation).toBe("right");
+      expect(plan.request.tileWidth).toBe(tile.width);
+      const layout = layoutGraph(plan.request);
+      expect(layout.width).toBeLessThanOrEqual(Math.ceil(sidewaysWidth(profile, tile)) + 10);
+      for (const placed of layout.nodes.values()) expect(placed.width).toBe(tile.width);
+    }
+  });
+
   it("estimates the width junctions add between generations, so a sideways canvas stays within the pane", () => {
     // Every step combines the previous image with one shared reference: a junction in every channel.
     const nodes = [node("x0"), node("style", [], "external"), ...Array.from({ length: 4 }, (_, index) => node(`x${index + 1}`, [`x${index}`, "style"]))];
@@ -172,6 +193,37 @@ describe("orientation", () => {
     }
     expect(sideways).toBeGreaterThan(0);
   });
+
+  it("sizes crowded junction channels so that a left-to-right canvas never overflows its pane", () => {
+    // Dense edit sessions where most images combine several earlier ones. Bends
+    // into and out of their junctions crowd the 16 px zones either side of a
+    // junction level; an estimate that spread the tracks over the whole
+    // channel let these canvases overflow the pane by up to 26 px.
+    const sessions: [string, string[]][][] = [
+      [["a0", []], ["b0", ["a0"]], ["b1", ["a0"]], ["b2", ["a0"]], ["c0", ["b0", "b1"]], ["c1", ["b1", "b0", "b2"]], ["c2", ["b1", "b2"]],
+        ["d0", ["c1", "b0", "c2", "b1"]], ["d1", ["c0", "c2", "b2"]], ["d2", ["c1", "c0"]], ["e0", ["d2"]], ["e1", ["d0"]], ["e2", ["d1", "b0"]],
+        ["f0", ["e0"]], ["f1", ["e1", "c0", "c2"]], ["f2", ["e0", "b0", "e1", "d0"]]],
+      [["a0", []], ["b0", ["a0"]], ["b1", ["a0"]], ["b2", ["a0"]], ["c0", ["b2", "b0"]], ["c1", ["b2", "b1", "a0"]], ["c2", ["b1", "b0", "b2"]],
+        ["d0", ["c1", "b0"]], ["d1", ["c2"]], ["d2", ["c2", "b1"]], ["e0", ["d1"]], ["e1", ["d1"]], ["e2", ["d1", "b1", "a0"]]],
+      [["a0", []], ["b0", ["a0"]], ["b1", ["a0"]], ["b2", ["a0"]], ["c0", ["b0"]], ["c1", ["b1"]], ["c2", ["b0", "a0", "b1"]],
+        ["d0", ["c0", "b2", "a0"]], ["d1", ["c1", "a0", "c2"]], ["d2", ["c1"]], ["e0", ["d1", "c1", "b2"]], ["e1", ["d0", "a0", "c1"]], ["e2", ["d1", "b1", "d2"]]],
+    ];
+    for (const [index, session] of sessions.entries()) {
+      const nodes = session.map(([key, parents]) => node(key, parents));
+      const dag = projectDag(nodes);
+      const estimate = Math.ceil(sidewaysWidth(generationProfile(dag, dag.order)));
+      let sideways = 0;
+      for (let width = estimate - 10; width <= estimate + 120; width += 2) {
+        for (const focus of [null, ...dag.order]) {
+          const layout = render(nodes, focus, width);
+          if (layout.orientation !== "right") continue;
+          sideways++;
+          expect(layout.width, `session ${index} at ${width}px, focus ${focus}`).toBeLessThanOrEqual(width);
+        }
+      }
+      expect(sideways, `session ${index}`).toBeGreaterThan(0);
+    }
+  }, 60_000);
 
   it("keeps left-to-right canvases within 5% of the width they are given on random graphs, pending outputs included", () => {
     let sideways = 0, withPending = 0;

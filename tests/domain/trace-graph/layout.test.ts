@@ -2,8 +2,8 @@ import { describe, expect, it } from "vitest";
 import { layoutGraph, nearestFree, nearestInDirection, wrapRow, type LayoutItem, type Orientation } from "$lib/domain/trace-graph/layout";
 import { connectedComponents, projectDag } from "$lib/domain/trace-graph/projection";
 import { planScene } from "$lib/domain/trace-graph/scene";
-import { SPACING, tileSize } from "$lib/domain/trace-graph/metrics";
-import { foreignJunctionContacts, mockupNodes, node, random, routeCollisions, sharedLanes, sourcesReaching, tileOverlaps } from "./fixtures";
+import { ARROW, SPACING, TRACK_HEIGHT, spacingFor, tileMetrics, tileSize, type Spacing } from "$lib/domain/trace-graph/metrics";
+import { arrowStemProblems, channels, foreignJunctionContacts, mockupNodes, node, random, routeCollisions, sharedLanes, sourcesReaching, tileOverlaps } from "./fixtures";
 
 /** Correctness sweeps over many graphs: slower CI runners need more than the default 5 s. */
 const HEAVY = 30_000;
@@ -24,8 +24,8 @@ function fanOut(children: number): LayoutItem[] {
 
 const ORIENTATIONS: readonly Orientation[] = ["down", "right"];
 
-function checkLayout(items: readonly LayoutItem[], maxWidth: number, orientation: Orientation = "down") {
-  const layout = layoutGraph({ items, maxWidth, orientation });
+function checkLayout(items: readonly LayoutItem[], maxWidth: number, orientation: Orientation = "down", tileWidth?: number) {
+  const layout = layoutGraph({ items, maxWidth, orientation, tileWidth });
   expect(layout.orientation).toBe(orientation);
   expect(tileOverlaps(layout)).toEqual([]);
   expect(routeCollisions(layout)).toEqual([]);
@@ -42,6 +42,9 @@ function checkLayout(items: readonly LayoutItem[], maxWidth: number, orientation
   for (const junction of layout.junctions.values()) onCanvas(junction.x, junction.y, junction.id);
   const ids = layout.routes.map((route) => route.id);
   expect(ids.filter((id, index) => ids.indexOf(id) !== index), "duplicate route ids").toEqual([]);
+  // Every arrowhead sits on a straight stem into its tile, its tip on the edge.
+  expect(arrowStemProblems(layout, ARROW.length)).toEqual([]);
+  expect(channelProblems(layout, spacingFor(tileWidth))).toEqual([]);
   // Parents come first along the flow: above their children, or to their left.
   for (const entry of items) for (const parent of entry.parents) {
     const child = layout.nodes.get(entry.key)!, source = layout.nodes.get(parent)!;
@@ -49,6 +52,26 @@ function checkLayout(items: readonly LayoutItem[], maxWidth: number, orientation
     else expect(child.x, `${parent} left of ${entry.key}`).toBeGreaterThan(source.x + source.width);
   }
   return layout;
+}
+
+/**
+ * Channels outside the bounds their contents justify. Every channel holds at
+ * least the approach (a stem and the arrowhead) and one bend track. A channel
+ * is its default height (`bandChannel` between generations, `rowChannel`
+ * between wrapped rows) plus `junctionLevel` per junction level; it grows past
+ * that only when its bends need more tracks than a zone holds, by at most one
+ * track per route crossing it in each zone. Without junctions, as many routes
+ * as its default bend room has tracks for keep it at exactly its default.
+ */
+function channelProblems(layout: ReturnType<typeof layoutGraph>, spacing: Spacing): string[] {
+  return channels(layout).flatMap(({ between, gap, betweenBands, levels, routes }) => {
+    const base = betweenBands ? spacing.bandChannel : spacing.rowChannel;
+    const problems: string[] = [];
+    if (gap < spacing.approach + TRACK_HEIGHT) problems.push(`${between}: ${gap} px leaves no room to bend`);
+    if (gap > base + levels * spacing.junctionLevel + (levels + 1) * routes * TRACK_HEIGHT) problems.push(`${between}: ${gap} px for ${levels} levels and ${routes} routes`);
+    if (!levels && routes * TRACK_HEIGHT <= base - spacing.approach && Math.abs(gap - base) > 0.01) problems.push(`${between}: ${gap} px, not the default ${base} px, for ${routes} routes`);
+    return problems;
+  });
 }
 
 /** Pairs of junction dots closer than a dot's diameter. */
@@ -328,7 +351,7 @@ describe("left-to-right layout", () => {
     for (const route of layout.routes.filter((candidate) => candidate.terminal)) {
       const target = layout.nodes.get(route.to.id)!;
       const { last } = ends(route.path);
-      expect(last.x, route.id).toBeCloseTo(target.x - SPACING.arrow, 1);
+      expect(last.x, route.id).toBeCloseTo(target.x - ARROW.length, 1);
       expect(last.y, route.id).toBeCloseTo(target.y + target.height / 2, 1);
     }
     for (const route of layout.routes.filter((candidate) => candidate.from.kind === "node" && candidate.to !== candidate.from)) {
@@ -393,11 +416,91 @@ describe("spacing", () => {
     }
   });
 
+  it("separates generations by only what their routes need, in both orientations", () => {
+    // A root with two edits, and two further edits under the second: the
+    // shape of a typical session, with "n edits" hints under the open tiles.
+    const hinted = tileSize({ foreign: false, hint: true });
+    const items = [item("root", [], hinted), item("left", ["root"], small, 1), item("right", ["root"], hinted, 2),
+      item("a", ["right"], small, 3), item("b", ["right"], small, 4)];
+    // What a channel between generations needs: a straight stem as long as
+    // the arrowhead, the arrowhead, and room for three bend tracks (three
+    // crossing sources bend apart without the channel growing; wrapped rows
+    // of one generation get two). It used to be 46 px.
+    const needed = 2 * ARROW.length + 3 * TRACK_HEIGHT;
+    for (const orientation of ORIENTATIONS) {
+      const layout = checkLayout(items, orientation === "down" ? 360 : 900, orientation);
+      const between = channels(layout);
+      expect(between.map((channel) => channel.betweenBands), orientation).toEqual([true, true]);
+      for (const { gap } of between) {
+        expect(gap, orientation).toBeLessThanOrEqual(needed);
+        expect(gap, orientation).toBeLessThan(46);
+      }
+    }
+  });
+
   it("stacks a sideways generation just as closely", () => {
     const items = [item("p"), ...Array.from({ length: 3 }, (_, index) => item(`c${index}`, ["p"], small, index + 1))];
     const children = [...layoutGraph({ items, maxWidth: 900, orientation: "right" }).nodes.values()].filter((tile) => tile.key !== "p").sort((a, b) => a.y - b.y);
     for (let index = 1; index < children.length; index++) expect(children[index].y - (children[index - 1].y + children[index - 1].height)).toBeLessThanOrEqual(16);
   });
+});
+
+describe("tile sizes", () => {
+  /** The host's tile-size presets: their thumbnail edges (`PaneTileSize.imagePx`). */
+  const PRESETS = { small: 48, medium: 64, large: 96, xlarge: 128 } as const;
+
+  it("follows the host's tile size: as wide as the host's own tiles, the default tile at its smallest preset", () => {
+    expect(Object.values(PRESETS).map((edge) => tileMetrics(edge).width)).toEqual([92, 108, 140, 172]);
+    expect(tileMetrics(48)).toEqual(tileMetrics());
+    for (const edge of Object.values(PRESETS)) {
+      const { width, image } = tileMetrics(edge);
+      // The image keeps the default tile's aspect, inside the same chrome.
+      expect(Math.abs(image / (width - 12) - 51 / 80)).toBeLessThan(0.01);
+    }
+  });
+
+  it("falls back to the default tile for a missing or invalid size, and clamps absurd ones", () => {
+    for (const value of [undefined, null, Number.NaN, Infinity, -64, 0]) expect(tileMetrics(value)).toEqual(tileMetrics());
+    expect(tileMetrics(1e9).width).toBeLessThan(600);
+    expect(tileMetrics(1).width).toBeGreaterThan(60);
+  });
+
+  it("keeps spacing proportionate: what frames the tiles grows with them, what serves the lines does not", () => {
+    const base = spacingFor(), xlarge = spacingFor(tileMetrics(PRESETS.xlarge).width);
+    expect(spacingFor(tileMetrics(PRESETS.small).width)).toEqual(SPACING);
+    expect(base).toEqual(SPACING);
+    expect(xlarge.column / base.column).toBeCloseTo(172 / 92, 1);
+    expect(xlarge.bandChannel - xlarge.approach).toBeGreaterThan(base.bandChannel - base.approach);
+    for (const fixed of ["approach", "junctionLevel", "clearance", "lane"] as const) expect(xlarge[fixed]).toBe(base[fixed]);
+    // Narrower than the default, tiles keep the spacing their routes need.
+    expect(spacingFor(40)).toEqual(SPACING);
+  });
+
+  it("stays collision free, within the width budget and with arrowheads on the tile edge at every preset", () => {
+    for (const [preset, edge] of Object.entries(PRESETS)) {
+      const metrics = tileMetrics(edge);
+      const sizes = [tileSize({ foreign: false, hint: false }, metrics), tileSize({ foreign: false, hint: true }, metrics), tileSize({ foreign: true, hint: true }, metrics)];
+      for (let seed = 1; seed <= 20; seed++) {
+        const next = random(seed * 104729 + edge);
+        const count = 6 + Math.floor(next() * 30), locality = 2 + Math.floor(next() * 8);
+        const items = Array.from({ length: count }, (_, index) => {
+          const root = next() < 0.15 || index < 2;
+          const parents = root ? [] : [...new Set(Array.from({ length: 1 + Math.floor(next() * 3) }, () => `n${Math.max(0, index - 1 - Math.floor(next() * Math.min(index, locality)))}`))];
+          return item(`n${index}`, parents, sizes[Math.floor(next() * sizes.length)], index);
+        });
+        for (const width of [380, 700, 1100]) for (const orientation of ORIENTATIONS) {
+          const label = `${preset} seed ${seed} ${orientation} at ${width}px`;
+          const layout = checkLayout(items, width, orientation, metrics.width);
+          expect(foreignJunctionContacts(layout, 5), label).toEqual([]);
+          expect(sharedLanes(layout), label).toEqual([]);
+          for (const entry of items) expect(sorted(sourcesReaching(layout, entry.key)), `${label}: ${entry.key}`).toEqual(sorted(entry.parents));
+          if (orientation === "down") expect(layout.width, label).toBeLessThanOrEqual(Math.max(width, metrics.width + 2 * spacingFor(metrics.width).margin) * 1.05);
+          // Tiles keep the preset's size.
+          for (const tile of layout.nodes.values()) expect(tile.width, label).toBe(metrics.width);
+        }
+      }
+    }
+  }, HEAVY);
 });
 
 describe("free positions", () => {

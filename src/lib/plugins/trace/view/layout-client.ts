@@ -56,7 +56,7 @@ export function layoutSignature(request: LayoutRequest): string {
   // layouts. Running right the engine ignores the width (generations never
   // wrap), so resizing must not recompute an identical layout.
   const width = request.orientation !== "right" && Number.isFinite(request.maxWidth) && request.maxWidth > 0 ? Math.floor(request.maxWidth) : null;
-  return JSON.stringify([width, request.items.map((item) => [item.key, item.width, item.height, item.order, item.parents]), request.hint ? [...request.hint] : null, request.orientation ?? "down", request.orientation === "right" ? request.extent ?? null : null]);
+  return JSON.stringify([width, request.items.map((item) => [item.key, item.width, item.height, item.order, item.parents]), request.hint ? [...request.hint] : null, request.orientation ?? "down", request.orientation === "right" ? request.extent ?? null : null, request.tileWidth ?? null]);
 }
 
 function remember(signature: string, layout: GraphLayout): GraphLayout {

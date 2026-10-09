@@ -9,14 +9,18 @@
    * which inherit the host's `--preview-info-inset`.
    */
   import type { Component } from "svelte";
-  import type { FileViewContribution, FileViewPane, PluginContext, PreviewInfoContribution, PreviewSubject, PreviewTarget } from "../../integration/plugin-sdk";
+  import type { FileViewContribution, FileViewPane, ImageEditorSource, PluginContext, PreviewInfoContribution, PreviewSubject, PreviewTarget, TileSizePreset } from "../../integration/plugin-sdk";
   import type { FileEntry } from "$lib/domain/file";
   import { tracePlugin } from "$lib/plugins/trace";
-  import { DIRECTORY, files, backend } from "./view-fixture";
+  import { openAIImagePlugin } from "$lib/plugins/openai-image";
+  import { DIRECTORY, files, backend, initialTileSize } from "./view-fixture";
+  import { TILE_IMAGE_PX } from "./tile-presets";
 
   let views = $state.raw<FileViewContribution[]>([]);
   let sections = $state.raw<PreviewInfoContribution[]>([]);
   const commands = new Map<string, () => void | Promise<void>>();
+  /** Each command's `when`: whether the host would offer it (for example on its shortcut). */
+  const conditions = new Map<string, () => boolean>();
   const listeners = new Map<string, Array<(payload: unknown) => void>>();
   const fileListeners: Array<(directories: readonly string[]) => void> = [];
 
@@ -26,19 +30,42 @@
   let entries = $state.raw<FileEntry[]>(files());
   let selected = $state.raw<string[]>([]);
   let cursor = $state<string | null>(null);
+  /** The Shift-range anchor, as the host's `selectionAnchorPath`. */
+  let anchor: string | null = null;
+  /**
+   * Replaces the selection as the host's `setSelection` does: only a change of
+   * its contents notifies (the host mutates a SvelteSet in place), and a
+   * non-empty change replaces a Preview target.
+   */
+  function replaceSelection(next: readonly string[]): void {
+    const unique = [...new Set(next)];
+    if (unique.length === selected.length && unique.every((path) => selected.includes(path))) return;
+    selected = unique;
+    if (unique.length && target) target = null;
+  }
   let target = $state.raw<PreviewTarget | null>(null);
   let viewWidth = $state(900);
   let opened = $state.raw<string[]>([]);
   let menus = $state.raw<Array<string | null>>([]);
   let navigations = $state.raw<string[]>([]);
   let actionError = $state("");
+  // The pane's tile size, as a host with the "tileSize" capability reports it; null simulates an older host.
+  let tilePreset = $state<TileSizePreset | null>(initialTileSize);
+  // `?ai=1` also activates the AI image plugin, with dialogs and a jobs service.
+  const ai = new URLSearchParams(location.search).has("ai");
+  const dialogs = new Map<string, Component<any>>();
+  let opened_dialogs = $state.raw<Array<{ id: string; props: Record<string, unknown> }>>([]);
+  let accepted = $state.raw<Array<{ label: string; detail: string }>>([]);
+  /** The AI edit tool in a stand-in for the host's image editor: it stays mounted while the editor's source fills in. */
+  let editorTool = $state.raw<{ component: Component<any>; props?: Record<string, unknown> } | null>(null);
+  let editorSource = $state.raw<ImageEditorSource | null>(null);
 
   function activate() {
-    views = []; sections = []; commands.clear(); listeners.clear(); fileListeners.length = 0;
+    views = []; sections = []; commands.clear(); conditions.clear(); listeners.clear(); fileListeners.length = 0;
     const ctx = {
       registerFileView: (view: FileViewContribution) => { views = [...views, view]; },
       registerPreviewInfo: (section: PreviewInfoContribution) => { sections = [...sections, section]; },
-      registerCommand: (command: { id: string; handler: () => void | Promise<void> }) => { commands.set(command.id, command.handler); },
+      registerCommand: (command: { id: string; handler: () => void | Promise<void>; when?: () => boolean }) => { commands.set(command.id, command.handler); conditions.set(command.id, command.when ?? (() => true)); },
       events: { listen: (name: string, handler: (payload: unknown) => void) => { listeners.set(name, [...(listeners.get(name) ?? []), handler]); } },
       workspace: {
         onFilesChanged: (handler: (directories: readonly string[]) => void) => { fileListeners.push(handler); },
@@ -50,6 +77,22 @@
       },
     } as unknown as PluginContext;
     tracePlugin.activate(ctx);
+    if (ai) openAIImagePlugin.activate({
+      ...ctx,
+      registerContextMenuItem: () => {}, registerSettingsSection: () => {},
+      registerImageEditorTool: (tool: { component: Component<any>; props?: Record<string, unknown> }) => { editorTool = tool; },
+      registerDialog: (dialog: { id: string; component: Component<any> }) => { dialogs.set(dialog.id, dialog.component); },
+      openDialog: (id: string, props: Record<string, unknown> = {}) => { opened_dialogs = [...opened_dialogs, { id, props }]; },
+      closeDialog: (id: string) => { opened_dialogs = opened_dialogs.filter((dialog) => dialog.id !== id); },
+      storage: { get: async () => ({ backend: "codex", codexPath: "/opt/codex" }), set: async () => {} },
+      saveSettings: async () => {},
+      toast: { show: () => {}, error: () => {} },
+      jobs: { accept: async (registration: { label: string; detail: string }, start: () => Promise<{ ok: boolean }>) => {
+        const result = await start();
+        if (result.ok) accepted = [...accepted, { label: registration.label, detail: registration.detail }];
+        return result;
+      } },
+    } as unknown as PluginContext);
   }
   activate();
 
@@ -65,26 +108,43 @@
     get directory() { return directory; },
     get entries() { return entries; },
     get selection() { return selection; },
-    get focusedPath() { return cursor && selected.includes(cursor) ? cursor : selected[0] ?? null; },
+    // As the host: the cursor while it is selected, otherwise the first selected file in listing order.
+    get focusedPath() { return cursor && selected.includes(cursor) ? cursor : selection[0]?.path ?? null; },
     get active() { return true; },
     get previewTarget() { return target; },
+    get tileSize() { return tilePreset ? { preset: tilePreset, imagePx: TILE_IMAGE_PX[tilePreset] } : undefined; },
+    // As the host's selectEntry (tauri-explorer selection.ts calculateSelection):
+    // Shift selects the listing range from the anchor, Ctrl toggles, a plain click selects one.
     select(entry, modifiers = {}) {
-      target = null;
-      if (modifiers.ctrlKey || modifiers.shiftKey) selected = selected.includes(entry.path) ? selected.filter((path) => path !== entry.path) : [...selected, entry.path];
-      else selected = [entry.path];
+      // The host moves its cursor even to an entry it does not list.
       cursor = entry.path;
+      const clicked = entries.findIndex((other) => other.path === entry.path);
+      if (clicked < 0) return;
+      const from = entries.findIndex((other) => other.path === anchor);
+      if (modifiers.shiftKey && from >= 0) {
+        replaceSelection(entries.slice(Math.min(from, clicked), Math.max(from, clicked) + 1).map((other) => other.path));
+      } else if (modifiers.ctrlKey) {
+        replaceSelection(selected.includes(entry.path) ? selected.filter((path) => path !== entry.path) : [...selected, entry.path]);
+        anchor = entry.path;
+      } else {
+        replaceSelection([entry.path]);
+        anchor = entry.path;
+      }
     },
+    // As the host's selectPaths: listed paths only; `focus` becomes the anchor and cursor.
     setSelection(paths, focus = null) {
       const listed = new Set(entries.map((entry) => entry.path));
-      selected = paths.filter((path) => listed.has(path));
-      cursor = focus ?? selected.at(-1) ?? null;
-      if (selected.length) target = null;
+      const next = paths.filter((path) => listed.has(path));
+      const primary = focus !== null && next.includes(focus) ? focus : next.at(-1) ?? null;
+      replaceSelection(next);
+      anchor = primary;
+      if (primary) cursor = primary;
     },
-    clearSelection() { selected = []; },
+    clearSelection() { replaceSelection([]); anchor = null; },
     async open(entry) { opened = [...opened, entry.path]; },
     contextMenu(event, entry) { event.preventDefault(); menus = [...menus, entry?.path ?? null]; },
     async navigate(path) { navigations = [...navigations, path]; },
-    setPreviewTarget(next) { if (next) { selected = []; target = next; } else target = null; },
+    setPreviewTarget(next) { if (next) { replaceSelection([]); anchor = null; target = next; } else target = null; },
     exitView() { fileView = null; },
   };
 
@@ -101,12 +161,27 @@
   export const harness = {
     backend,
     setWidth(width: number) { viewWidth = width; },
+    /** Changes the pane's tile-size preset live, as the host's setting would; null removes it (an older host). */
+    setTileSize(preset: TileSizePreset | null) { tilePreset = preset; },
     toggle() { return commands.get("plugin.trace.toggle")?.(); },
     disable() { enabled = false; tracePlugin.deactivate?.(); },
     enable() { enabled = true; activate(); },
-    navigate(path: string) { directory = path; entries = path === DIRECTORY ? files() : []; selected = []; target = null; },
+    navigate(path: string) { directory = path; entries = path === DIRECTORY ? files() : []; selected = []; anchor = null; target = null; },
     state: () => ({ selected: [...selected], cursor, target: target ? { id: target.id, title: target.title, badge: target.badge ?? null } : null, fileView, opened: [...opened], menus: [...menus], navigations: [...navigations] }),
     selectPath(path: string) { pane.setSelection([path], path); },
+    /** The host replaces the selection itself (another pane, a command), as `explorer.selectPaths` does. */
+    setSelection(paths: string[]) { pane.setSelection(paths); },
+    /** The host's Select all: every listed file (an unchanged selection notifies nothing). */
+    selectAll() { replaceSelection(entries.map((entry) => entry.path)); anchor = entries[0]?.path ?? null; },
+    /** Re-sorts the listing (reversed), as choosing another sort order does: the selection is unchanged. */
+    resort() { entries = [...entries].reverse(); },
+    command: (id: string) => commands.get(id)?.(),
+    /** Opens the image editor's AI edit on `path`, captured at `digest`, before its preview has loaded (no size yet). */
+    openEditor(path: string, digest: string) { editorSource = { path, name: path.split("/").at(-1)!, digest, format: "PNG", referencePaths: [] }; },
+    /** The editor's preview loaded: its source now has a size, as the host's derived source does. */
+    editorLoaded(width: number, height: number) { if (editorSource) editorSource = { ...editorSource, size: { width, height } }; },
+    enabled: (id: string) => conditions.get(id)?.() ?? false,
+    accepted: () => [...accepted],
   };
 </script>
 
@@ -117,7 +192,7 @@
       <div class="file-view" data-file-view={active.id}><View {...active.props} {pane} /></div>
     {:else}
       <ul class="builtin" aria-label="Built-in listing">
-        {#each entries as entry (entry.path)}<li><button type="button" onclick={() => pane.select(entry)}>{entry.name}</button></li>{/each}
+        {#each entries as entry (entry.path)}<li><button type="button" class:selected={selected.includes(entry.path)} onclick={(event) => pane.select(entry, { ctrlKey: event.ctrlKey || event.metaKey, shiftKey: event.shiftKey })}>{entry.name}</button></li>{/each}
       </ul>
     {/if}
   </section>
@@ -158,6 +233,18 @@
     {/if}
   </aside>
 </main>
+{#if editorTool && editorSource}
+  <section class="plugin-dialog" role="dialog" aria-label="AI edit">
+    {#key editorTool}
+      {@const Tool = editorTool.component}
+      <Tool {...editorTool.props} source={editorSource} onClose={() => { editorSource = null; }} onBusyChange={() => {}} />
+    {/key}
+  </section>
+{/if}
+{#each opened_dialogs as dialog (dialog)}
+  {@const Dialog = dialogs.get(dialog.id)}
+  {#if Dialog}<Dialog {...dialog.props} open={true} onClose={() => { opened_dialogs = opened_dialogs.filter((other) => other !== dialog); }} />{/if}
+{/each}
 
 <style>
   /* Theme tokens come from ./themes.ts (copies of host themes), set on the root element. */
@@ -177,6 +264,7 @@
   .info-value { color: var(--text-secondary); }
   .sections { flex: 0 1 auto; max-height: 55%; overflow: auto; border-top: 1px solid var(--divider); }
   .builtin { margin: 0; padding: 12px; list-style: none; }
+  .builtin .selected { outline: 2px solid var(--accent); }
   .badge { padding: 0 6px; border: 1px solid #a76d24; border-radius: 8px; color: #865413; font-size: 11px; }
   .actions { display: flex; gap: 6px; margin: 8px 0; }
   h2 { margin: 0 0 6px; font-size: 14px; }

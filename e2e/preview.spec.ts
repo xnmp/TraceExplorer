@@ -368,7 +368,11 @@ test.describe("titles", () => {
     });
     await expect(warm.locator(".text")).toHaveText("Warm edit");
     await expect(warm.getByRole("status", { name: "Generating title" })).toHaveCount(0);
-    await expect(await card(page, "warm")).toHaveAttribute("title", "warm prompt");
+    // The tooltip still shows the full prompt behind the generated title. (The earlier
+    // click closed it for as long as the pointer stays on the tile.)
+    await page.mouse.move(2, 2);
+    await (await card(page, "warm")).hover();
+    await expect(page.locator("#trace-tile-tooltip .text")).toHaveText("warm prompt");
     await page.evaluate(async () => await (window as any).trace.configureTitles({ titleGenerator: "disabled" }));
     await expect(page.getByRole("status", { name: "Generating title" })).toHaveCount(0);
   });

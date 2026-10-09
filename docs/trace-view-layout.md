@@ -11,7 +11,15 @@ These requirements come from the [plan](trace-view-plan.md), section 4:
 - **Direction.** Parents always come before their children: above them, or to their left when the component runs left to right (see [Orientation](#orientation)).
 - **Junctions.** Multi-parent inputs combine in readable junctions, with one terminal arrow per output.
 - **Clean routes.** Routes never cross a tile and do not make long detours along the border.
-- **Stable sizes.** Every tile has the same width and image size (`metrics.ts`), whatever the selection or focus; only rows a node always carries (its scope marker, its expansion hint) add height. Decoding, title changes and selection therefore never resize a tile; selection shows in styling only.
+- **Stable sizes.** Every tile has the same width and image size (`metrics.ts`), whatever the selection or focus; only rows a node always carries (its scope marker, its expansion hint) add height. Decoding, title changes and selection therefore never resize a tile; selection shows in styling only. Only the host's tile-size setting does (see [Tile size](#tile-size)).
+
+## Tile size
+
+Hosts with the SDK's `tileSize` capability report each pane's tile size (`FileViewPane.tileSize`: its preset and thumbnail edge `imagePx`, resolved as their Tiles view resolves it, per-folder override first). `tileMetrics(imagePx)` turns it into the Trace tile: as wide as the host's own tiles, the edge plus 44 px of chrome (92, 108, 140 and 172 px for the 48, 64, 96 and 128 px presets), with the image keeping its 80:51 aspect inside the usual 6 px chrome. The text rows (title, scope, hint) keep their heights. The ordinary section passes the same preset to the host's `ui/file-tiles` (`size`), so both sections match.
+
+Hosts without the capability (up to v1.11.4) report nothing: Trace draws the default 92 px tile, the same as the smallest preset, and the host's tiles keep their global setting.
+
+The view passes the metrics to `planScene`, whose layout request carries the tile sizes and `tileWidth`, so the cache key changes with the setting and a layout of one size is never reused for another. Spacing scales with the tile width (`spacingFor`, never below the default): the gap between tiles, the side margins and the bend room grow in proportion, while the arrowhead, its approach, junction levels, clearances and lanes stay the same. Tiles resize in motion, from the size shown to the new one. The orientation rule uses the real tile width and its spacing. The layout sweeps run at all four presets.
 
 ## Visible nodes
 
@@ -34,9 +42,9 @@ A component's generations run either top to bottom or left to right (Sugiyama/da
 
 1. depth ≥ 2,
 2. depth ≥ breadth: top to bottom it would be at least as tall as it is wide, in tiles, and
-3. its drawn generations fit side by side in the pane: `top + span × tile width + (span − 1) × bandChannel + channel extra + bottom ≤ pane width` (with the current constants and no extra, 2 generations need 262 px, 3 need 400 px, 6 need 814 px).
+3. its drawn generations fit side by side in the pane: `top + span × tile width + (span − 1) × bandChannel + channel extra + bottom ≤ pane width`, with the view's real tile width and the spacing that goes with it (with the default tile and no extra, 2 generations need 250 px, 3 need 376 px, 6 need 754 px).
 
-The *channel extra* estimates what the engine adds to the channels between generations: `junctionLevel` (26 px) per level of junction nesting, and a channel whose distinct crossing sources need more bend tracks (6 px each) than its width holds grows to fit them. Both are estimated per channel from every drawn relationship of the whole component, so the estimate does not depend on the focus; the orientation is never decided from an actual, focus-dependent layout. Junction nesting is computed exactly (as `buildInputJunctions` groups inputs) for up to 200 multi-input outputs with up to 800 inputs in all; beyond that it is bounded (an output with *n* inputs nests at most *n* − 1 junctions). Neither counts the further levels the engine opens when a level is full, so the extra is an estimate, not a bound. Grouping inputs is quadratic, so `chooseOrientation` runs the cheap checks first (depth, breadth, and the width without the extra) and computes the extra, once per component, only for components that could still run left to right.
+The *channel extra* estimates what the engine adds to the channels between generations: `junctionLevel` (26 px) per level of junction nesting, and a channel whose distinct crossing sources need more bend tracks (6 px each) than its bend room holds grows to fit them (the approach into the next column never bends, so it never grows). Junction levels split the bend room into zones (`bendZones`, shared with the engine), only 16 px either side of the levels; since the estimate cannot know which zone a bend takes, it assumes every track lands in the smallest. (Spreading the tracks over the whole channel instead let dense edit sessions overflow their pane by up to 26 px.) Both are estimated per channel from every drawn relationship of the whole component, so the estimate does not depend on the focus; the orientation is never decided from an actual, focus-dependent layout. Junction nesting is computed exactly (as `buildInputJunctions` groups inputs) for up to 200 multi-input outputs with up to 800 inputs in all; beyond that it is bounded (an output with *n* inputs nests at most *n* − 1 junctions). Neither counts the further levels the engine opens when a level is full, so the extra is an estimate, not a bound. Grouping inputs is quadratic, so `chooseOrientation` runs the cheap checks first (depth, breadth, and the width without the extra) and computes the extra, once per component, only for components that could still run left to right.
 
 Otherwise it runs top to bottom, where a wide generation wraps onto several rows. A single image, an empty component and an invalid width all run top to bottom.
 
@@ -55,7 +63,14 @@ The view remembers each component's orientation per pane: `TraceView` holds the 
 
 ## Spacing
 
-`SPACING` in `metrics.ts`. Tiles in one generation are `column` = 16 px apart (28 px before; the old gap left graphs looking sparse). That gap is also the lane routes take past a row: 16 px less 6 px clearance either side leaves room for two lanes, and further sources move to the next gap or an outer margin. Running right, the same gap separates the tiles stacked in a column, and `bandChannel` (46 px) separates the columns.
+`spacingFor` and `ARROW` in `metrics.ts`; the numbers below are for the default tile (`SPACING`; see [Tile size](#tile-size) for larger ones). Tiles in one generation are `column` = 16 px apart (28 px before; the old gap left graphs looking sparse). That gap is also the lane routes take past a row: 16 px less 6 px clearance either side leaves room for two lanes, and further sources move to the next gap or an outer margin. Running right, the same gap separates the tiles stacked in a column.
+
+Generations are `bandChannel` = 34 px apart (46 px before), and wrapped rows of one generation `rowChannel` = 28 px (34 before). A channel holds only what its routes need, from the row above:
+
+- **Bend room**: three bend tracks (`TRACK_HEIGHT`, 6 px each) between generations, two between wrapped rows. Up to that many crossing sources bend in slices of their own before the channel grows; it grows by a track per further one.
+- **Approach** (`approach`, 16 px): a straight stem as long as the arrowhead, then the arrowhead (`ARROW`, 8 × 7 px). Nothing bends here, so every arrowhead lies on a straight segment perpendicular to the tile edge and points the way its line arrives.
+
+The old channel reserved room the routes never used, and its arrowheads were sized in stroke widths (`markerUnits="strokeWidth"`): a highlighted line (2.3 px) drew a 70% larger head than a plain one, whose tip overshot the line's end onto the tile's border, while the curve still turned under it. Arrowheads are now sized in canvas pixels, one size for every line. A terminal route's path ends at its arrowhead's base, `ARROW.length` short of the tile, so its stroke stops where the head begins and the tip lands exactly on the edge. Expansion hints ("2 edits") are part of the tile (`TILE.hint`), so a route leaves below them. Running right, all of this holds along x: columns are 34 px apart.
 
 ## ELK spike
 
@@ -95,12 +110,12 @@ The algorithm is described top to bottom; a left-to-right layout is its transpos
    - Junction IDs derive from their sorted parents, so they are stable across relayouts.
 3. **Ordering.** Band 0 is sorted by the ordering hint (the previous reading order, so siblings stay put across focus changes), then by creation order. Each later band is sorted by the barycenter of its parents in reading order (row first, then x). Children therefore stay near their parents even when the parent row wrapped.
 4. **Balanced wrapping.** `wrapRow` uses the smallest row bound that needs no more rows than a greedy fill at the budget, found by binary search. This keeps the last row from being a lone straggler. Each row is centered.
-5. **Channels.** Rows are separated by tile-free channels: `rowChannel` within a band (wrapped rows), `bandChannel` between bands. A channel that holds junctions is divided into **zones** by junction levels: zone *i* lies between levels *i* and *i+1*. Default zone heights reproduce the original spacing (30 px above the first level, 14 between levels, 30 below the last); a zone grows when more tracks (below) cross it than fit.
+5. **Channels.** Rows are separated by tile-free channels: `rowChannel` within a band (wrapped rows), `bandChannel` between bands (see [Spacing](#spacing)). Each ends in the `approach`, where nothing bends. A channel that holds junctions is divided into **zones** by junction levels: zone *i* lies between levels *i* and *i+1*. Each level adds `junctionLevel` (its dot's berths and 14 px to the next level); the bend room either side of the levels is split evenly (16 px above the first level and 16 below the last, before the approach). A zone grows when more tracks (below) cross it than fit.
 6. **Junction placement.** A junction sits in the channel below its deepest parent's band. Its minimum level follows its nesting; its x prefers a point between its parents and its consumers, and is found by an interval search (`nearestFree`), not a pixel scan. Placement runs in two passes:
    - **Before lanes**, a junction takes the nearest x, at the shallowest level with room, that keeps `junctionSpacing` from junctions on its level, stays off every other junction's column in its channel (a dot above another would put one's routes through the other), and avoids every vertical run other routes *may* take: tile centres and gaps of the rows above and below, and both outer margins. It may sit on a parent's exit only if that parent feeds nothing else, and on its consumers' entries.
    - **After lanes**, the junctions that found no such x (and those nesting one) are placed against the runs routes *actually* take: lane positions, tile exits that carry routes and arrow entries. Routes to and from them are re-anchored to their final spot. If even that leaves no column of its own, the junction asks for room in the nearer margin and the canvas widens on the next pass (up to two extra view widths); only past that may dots share a column, and same-level spacing always holds.
 7. **Routes.**
-   - A route leaves the bottom centre of its source and enters the top centre of its target, which carries the arrow.
+   - A route leaves the bottom centre of its source and enters the top centre of its target, which carries the arrow: the path stops `ARROW.length` above the tile, after a straight vertical stem at least as long, and the arrowhead spans the rest.
    - **Lanes.** Intermediate rows are passed through a gap between tiles or an outer margin, chosen closest to the target. A lane slot is keyed by geometry (left margin, the gap between two x positions, right margin), so slots from different rows that line up are the same slot.
      - Routes from one source share a lane per slot; different sources get distinct lanes, ordered by source x, spread evenly and at least `MIN_LANE` apart inside the slot's clearance. A full gap sends further sources to the next-best gap.
      - Each outer margin is one slot for the whole graph, with unlimited capacity. A source keeps one x in it, just outside the rows it passes there, and stays at least `MIN_LANE` (preferably `lane`) from every other source whose rows, with the channel either side, overlap its own. Inner sources are placed first and nearest the tiles, which avoids most crossings. Lanes take the roomier `lane` spacing when all of a margin's lanes fit the canvas that way, and otherwise `MIN_LANE`. Two sources therefore never meet in a margin, whichever rows they pass, while sources at different heights reuse the same room.
@@ -113,7 +128,7 @@ The algorithm is described top to bottom; a left-to-right layout is its transpos
      - a bend leaving a column precedes one arriving in it, so a route never turns into a lane another is still using;
      - two bends that swap columns form a unit and take consecutive tracks, keeping their unavoidable crossing steep;
      - constraints are sequenced topologically (cycles broken by the sort order), then tracks are assigned by longest path. A zone used by a single source needs no tracks.
-   - **Vertical pass.** Zone heights become `max(default, tracks × TRACK_HEIGHT)`; junction y is the previous zone's bottom plus `JUNCTION_BERTH`. Paths are emitted last: vertical run, S-curve inside the route's track slice of the zone, vertical run.
+   - **Vertical pass.** Zone heights become `max(default, tracks × TRACK_HEIGHT)`; junction y is the previous zone's bottom plus `JUNCTION_BERTH`. Paths are emitted last: vertical run, S-curve inside the route's track slice of the zone, vertical run (through the approach, into a tile).
    - **Guarantees.** Fuzz tests in `tests/domain/trace-graph/layout.test.ts` (60 random graphs at 380, 640 and 1,000 px top to bottom and once left to right, 30 mixed-size graphs in both orientations, plus targeted cases) check that:
      - no route passes within 5 px of a foreign junction;
      - no two junctions overlap;
@@ -123,6 +138,8 @@ The algorithm is described top to bottom; a left-to-right layout is its transpos
      - route ids are unique;
      - every tile, junction and route point lies on the canvas;
      - parents come before their children along the flow;
+     - every route into a tile ends in a straight segment perpendicular to the tile's edge, at least `ARROW.length` long, stopping `ARROW.length` short of the edge's middle;
+     - every channel is at least the approach plus one bend track, at most its default plus `junctionLevel` per level plus a track per crossing route in each zone, and exactly its default when it holds no junctions and no more crossing routes than its bend room has tracks;
      - the graph stays within 5% of the width it was given (top to bottom; the engine has no width budget running left to right, so `orientation.test.ts` checks the same 5% for the left-to-right layouts the rule picks).
 
      Targeted tests cover crowded channels: every pair of a dozen inputs combined, sixty sources combined with a few tiles each, one style applied to many photos, and many sources passing one gap.

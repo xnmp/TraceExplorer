@@ -10,6 +10,8 @@
 const base = {
   "--radius-sm": "8px", "--radius-md": "12px", "--radius-lg": "16px", "--transition-fast": "80ms cubic-bezier(0.25, 0.1, 0.25, 1)",
   "--font-size-caption": "11px", "--font-size-body": "14px", "--line-height-normal": "1.5",
+  "--font-family": '"Inter Variable", "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI Variable", "Segoe UI", "Cantarell", "Noto Sans", sans-serif',
+  "--font-weight-semibold": "600", "--z-menu": "1200",
 };
 
 export const THEMES = {
@@ -24,6 +26,7 @@ export const THEMES = {
     "--control-stroke": "rgba(0, 0, 0, 0.05)", "--control-stroke-secondary": "rgba(0, 0, 0, 0.14)",
     "--focus-stroke-outer": "#000000", "--focus-stroke-inner": "#ffffff",
     "--system-critical": "#c42b1c", "--system-success": "#0f7b0f", "--system-caution": "#9d5d00",
+    "--shadow-tooltip": "0 4px 12px rgba(0, 0, 0, 0.1)",
   },
   dark: {
     ...base,
@@ -36,6 +39,7 @@ export const THEMES = {
     "--control-stroke": "rgba(255, 255, 255, 0.1)", "--control-stroke-secondary": "rgba(255, 255, 255, 0.08)",
     "--focus-stroke-outer": "#ffffff", "--focus-stroke-inner": "#000000",
     "--system-critical": "#ff6b6b", "--system-success": "#69db7c", "--system-caution": "#ffd43b",
+    "--shadow-tooltip": "0 4px 12px rgba(0, 0, 0, 0.45)",
   },
 } as const;
 
