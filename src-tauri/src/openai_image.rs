@@ -214,7 +214,8 @@ fn capture_input(path: Option<&str>) -> Result<Option<CapturedInput>, AppError> 
     if !Path::new(path).is_absolute() {
         return Err(invalid("Input image path must be absolute"));
     }
-    let physical = std::fs::canonicalize(path)?;
+    // dunce keeps Windows paths in the plain `C:\…` form that the trace history records.
+    let physical = dunce::canonicalize(path)?;
     if !std::fs::symlink_metadata(&physical)?.is_file() {
         return Err(invalid("Input image must be a regular file"));
     }
