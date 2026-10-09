@@ -19,6 +19,7 @@
   import { tracePanes, isTraceTargetData, type TracePaneView } from "./pane-registry.svelte";
   import { NO_PICKS, clickListed, dropPick, followPicks, picksFromHost, pickOnly, pickable, replacePick, resolvePicks, selectionKey, settlePicks, togglePick, type PickLocation, type Picks } from "./input-picks";
   import { nodeTarget } from "./node-target";
+  import { locateTarget } from "./target-location";
   import { holdAnchor, layoutHeight, MOTION_MS, prefersReducedMotion, resizeSection, scrollsByUser, sectionHeight, USER_SCROLL } from "./motion";
   import TraceGraph from "./TraceGraph.svelte";
   import OrdinarySection from "./OrdinarySection.svelte";
@@ -344,12 +345,21 @@
     commitPicks(next ?? pickOnly(saved, true));
   }
 
-  // Keep this pane's Preview target in step with refreshed node data.
+  // Keep this pane's Preview target in step with refreshed node data. A
+  // target whose node is gone (its generation failed, say) is cleared: left
+  // in place, its component would stay the focus and dim every section.
   $effect(() => {
     const current = target, data = targetData;
     if (!current || !data) return;
-    const fresh = session.components.get(data.componentId)?.dag.nodes.get(data.key);
-    if (!fresh || issuedTargets.get(current) === fresh) return;
+    const located = locateTarget(data.key, data.componentId, {
+      listed: session.index ? new Set(summaries.map((summary) => summary.id)) : null,
+      components: session.components,
+      isStale: (id) => session.isStale(id),
+    });
+    if (located === "unknown") return;
+    if (located === "gone") { untrack(() => pane.setPreviewTarget(null)); return; }
+    const { node: fresh, componentId } = located;
+    if (issuedTargets.get(current) === fresh && componentId === data.componentId) return;
     untrack(() => {
       const entry = fileEntry(fresh);
       // The target is a listed file now (saved by a save that did not select
@@ -360,7 +370,7 @@
       // Re-issuing the target clears the host selection, which a target keeps
       // empty: the picks stay (restored only if a host notified anyway).
       const before = picks;
-      preview(fresh, data.componentId);
+      preview(fresh, componentId);
       if (picks !== before) { void hostChoice; picks = settlePicks(before, hostSelected); }
     });
   });

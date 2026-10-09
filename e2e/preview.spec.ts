@@ -292,13 +292,25 @@ test.describe("saving and deleting unsaved outputs", () => {
     await expect.poll(async () => (await state(page)).selected).toEqual(["/pictures/merge.png"]);
   });
 
-  test("Delete marks the output deleted and keeps its parents", async ({ page }) => {
+  test("a deleted unsaved output that was edited stays as its edit's Deleted parent", async ({ page }) => {
     await previewMerge(page);
+    await page.evaluate(() => { const backend = (window as any).trace.backend; backend.startGeneration("merge", "remix"); backend.completeGeneration("remix"); });
+    await settle(page);
     await preview(page).getByRole("button", { name: /^Delete/ }).click();
     await expect(page.getByTestId("preview-badge")).toHaveText("Deleted");
     await settle(page);
     await expect(await card(page, "merge")).toHaveAttribute("aria-label", /Deleted/);
     await expect((await tile(page, "merge")).locator(".unsaved-dot")).toHaveCount(0);
+    await expect(await tile(page, "remix")).toHaveCount(1);
+  });
+
+  test("Delete removes the output and its Preview and keeps its parents", async ({ page }) => {
+    await previewMerge(page);
+    await preview(page).getByRole("button", { name: /^Delete/ }).click();
+    await expect.poll(async () => (await state(page)).target).toBeNull();
+    await settle(page);
+    await expect(await tile(page, "merge")).toHaveCount(0);
+    expect(await page.locator("section.component.dimmed").count()).toBe(0);
     await expect(await tile(page, "warm")).toHaveCount(1);
     await expect(await tile(page, "daylight")).toHaveCount(1);
     expect((await state(page)).navigations).toEqual([]);

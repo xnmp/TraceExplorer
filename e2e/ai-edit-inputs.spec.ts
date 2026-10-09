@@ -274,7 +274,9 @@ test.describe("picks in sections that are not shown", () => {
     await settle(page);
     await heading.click();
     await expect(heading).toHaveAttribute("aria-expanded", "true");
-    await expect(await card(page, "merge")).toHaveAttribute("aria-label", /Deleted/);
+    // The deleted unsaved output had no edits, so it is no longer drawn.
+    await expect(await card(page, "merge")).toHaveCount(0);
+    await expect(await card(page, "warm")).toHaveCount(1);
   });
 });
 
@@ -414,7 +416,8 @@ test.describe("picks follow saves and deletes", () => {
     await click(page, "merge");
     expect(await enabled(page)).toBe(true);
     await preview(page).getByRole("button", { name: /^Delete/ }).click();
-    await expect(page.getByTestId("preview-badge")).toHaveText("Deleted");
+    // Its node leaves the graph, so its Preview target is cleared.
+    await expect.poll(async () => (await state(page)).target).toBeNull();
     await expect.poll(() => enabled(page)).toBe(false);
   });
 });

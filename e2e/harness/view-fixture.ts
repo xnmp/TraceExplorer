@@ -56,6 +56,8 @@ function scenario(): { nodes: TraceNode[]; names: Map<string, string> } {
   ] satisfies Seed[]) add(seed);
   // `?deeper=1` continues the forest's mist edit two more generations, so selecting along it reveals new columns.
   if (query.has("deeper")) for (const seed of [{ key: "mist-dawn", parents: ["forest-mist"] }, { key: "mist-dusk", parents: ["mist-dawn"] }]) add(seed);
+  // `?lone=1` adds an image whose only history is failed edits: recorded, but with no visible relationship.
+  if (query.has("lone")) add({ key: "lonely" });
   // `?many=N` appends N small components (a root and six children each) for tall, scrollable views.
   const many = Number(query.get("many") ?? 0);
   for (let component = 0; component < many; component++) {
@@ -86,9 +88,32 @@ let previewLatency = 0;
 const titleCalls: number[] = [];
 const titleWaiters = new Map<number, (title: string) => void>();
 
+/**
+ * Mirrors the backend's rule (`has_relationship` in src-tauri/src/trace/folder_graph.rs):
+ * a component that is one plain file in this folder (not generated, not
+ * unsaved, not a placeholder, no displayed parent or child) is not a section,
+ * so its file is not a member and lists with the ordinary files.
+ */
+function hasRelationship(nodes: readonly TraceNode[]): boolean {
+  if (nodes.length !== 1) return true;
+  const [node] = nodes;
+  return !(node.scope === "current" && node.artifactId !== null && node.runId === null && !node.temporary
+    && node.state !== "running" && node.state !== "uncertain" && node.parents.length === 0);
+}
+
+/**
+ * The nodes the backend displays (`load_snapshot`): a discarded output is no
+ * seed, so it is shown only as the parent of a node that is.
+ */
+function displayed(nodes: readonly TraceNode[]): TraceNode[] {
+  const seeds = nodes.filter((node) => !node.discarded);
+  const parents = new Set(seeds.flatMap((node) => node.parents));
+  return nodes.filter((node) => !node.discarded || parents.has(node.key));
+}
+
 function componentsOf() {
-  const dag = projectDag(state.nodes);
-  return connectedComponents(dag).map((members) => {
+  const dag = projectDag(displayed(state.nodes));
+  return connectedComponents(dag).filter((members) => hasRelationship(members.map((key) => dag.nodes.get(key)!))).map((members) => {
     const first = members.map((key) => dag.nodes.get(key)!).sort((a, b) => a.order - b.order)[0];
     const name = [...state.names].find(([, key]) => key === first.key)?.[0] ?? first.key;
     const nodes = members.map((key) => dag.nodes.get(key)!);
@@ -234,9 +259,15 @@ export const backend = {
     update(state.names.get(name)!, { temporary: false, path: `${DIRECTORY}/${name}.png`, location: `./${name}.png`, scope: "current" });
     changed();
   },
-  /** Discards an unsaved output, as its Delete action would. */
+  /** Discards an unsaved output, as its Delete action would; it is then displayed only as a parent. */
   discardGeneration(name: string) {
     update(state.names.get(name)!, { discarded: true });
+    changed();
+  },
+  /** Fails a generation before any output: the backend shows no placeholder for a failed run. */
+  failGeneration(name: string) {
+    const key = state.names.get(name)!;
+    state = { ...state, nodes: state.nodes.filter((node) => node.key !== key) };
     changed();
   },
   completeGeneration(name: string) {

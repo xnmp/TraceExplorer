@@ -2,7 +2,8 @@
 //!
 //! The index holds the newest recorded revision of every image directly inside
 //! a folder, the folder's unsaved generations, and the direct parents of both,
-//! grouped into connected components. It is built from a single SQLite read
+//! grouped into connected components; a lone plain file forms none (see
+//! `has_relationship`). It is built from a single SQLite read
 //! snapshot with batched queries and existence checks: no image is hashed and
 //! no graph is walked per file.
 //!
@@ -449,7 +450,8 @@ enum NodeRef {
 }
 
 /// Assembles the displayed graph: seeds and their direct parents, edges among
-/// them, connected components, summaries and folder members.
+/// them, connected components (those with a visible relationship, see
+/// `has_relationship`), summaries and folder members.
 fn build_index(facts: &Facts, layout: &Layout) -> FolderIndex {
     let run_of = |node: NodeRef| match node {
         NodeRef::Artifact(id) => facts.artifacts.get(&id).and_then(|a| a.generating_run),
@@ -628,13 +630,19 @@ fn build_index(facts: &Facts, layout: &Layout) -> FolderIndex {
             (newest, summary, component_nodes)
         })
         .collect();
+    ranked.retain(|(_, _, component_nodes)| has_relationship(component_nodes));
     ranked.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.id.cmp(&b.1.id)));
+    let shown: HashSet<&str> = ranked
+        .iter()
+        .map(|(_, summary, _)| summary.id.as_str())
+        .collect();
 
     let mut members: Vec<Member> = displayed
         .iter()
         .enumerate()
         .filter(|(_, node)| matches!(node, NodeRef::Artifact(id) if direct.contains(id)))
         .filter(|(index, _)| nodes[*index].state == NodeState::Present)
+        .filter(|(index, _)| shown.contains(component_of[*index].as_str()))
         .map(|(index, _)| Member {
             path: nodes[index].path.clone().unwrap_or_default(),
             component_id: component_of[index].clone(),
@@ -650,6 +658,28 @@ fn build_index(facts: &Facts, layout: &Layout) -> FolderIndex {
     }
     index.members = members;
     index
+}
+
+/// Whether a component is shown as a section: it needs at least one visible
+/// relationship. A lone plain file is not one: a single recorded image
+/// directly in this folder that no run produced, that is not unsaved and not
+/// a generation placeholder, with no displayed parent or child. Starting an
+/// AI edit records its inputs, so without this an image whose only history
+/// is failed edits (which have no output) would get a one-image section. Its
+/// file is then not a member, so the view lists it with the ordinary files;
+/// the failed runs stay recorded, and a later successful edit draws an edge
+/// that makes the component a section again.
+fn has_relationship(component: &[TraceNode]) -> bool {
+    let lone_plain_file = |node: &TraceNode| {
+        node.scope == NodeScope::Current
+            && node.artifact_id.is_some()
+            && node.run_id.is_none()
+            && !node.temporary
+            && !matches!(node.state, NodeState::Running | NodeState::Uncertain)
+            // A single node has no displayed child by construction.
+            && node.parents.is_empty()
+    };
+    !matches!(component, [node] if lone_plain_file(node))
 }
 
 fn summarize(
@@ -1529,6 +1559,14 @@ fn component_nodes_at(
     })
 }
 
+/// Whether the folder's index shows any section; Trace view eligibility.
+pub(super) fn has_components_at(database: &Path, directory: &Path) -> Result<bool, AppError> {
+    Ok(!current_index(database, directory)?
+        .index
+        .components
+        .is_empty())
+}
+
 fn run_details_at(database: &Path, run_ids: &[i64]) -> Result<Vec<Run>, AppError> {
     if run_ids.len() > MAX_RUN_DETAILS {
         return Err(AppError::Other(format!(
@@ -2189,12 +2227,19 @@ mod tests {
     #[test]
     fn pages_cover_every_member_and_component_without_truncation() {
         let f = fixture();
-        let paths: Vec<PathBuf> = (0..2500)
-            .map(|index| image(&f.folder.join(format!("{index:05}.png")), b"x"))
+        // 2500 components of a source and its edit.
+        let pairs: Vec<(PathBuf, PathBuf)> = (0..2500)
+            .map(|index| {
+                (
+                    image(&f.folder.join(format!("{index:05}.png")), b"x"),
+                    image(&f.folder.join(format!("{index:05}-edit.png")), b"y"),
+                )
+            })
             .collect();
         bulk(&f.db, |tx| {
-            for path in &paths {
-                insert_artifact(tx, path, None);
+            for (source, edit) in &pairs {
+                let source = insert_artifact(tx, source, None);
+                insert_derived(tx, source, edit);
             }
         });
         let first = members_at(
@@ -2204,16 +2249,16 @@ mod tests {
             0,
         )
         .unwrap();
-        assert_eq!((first.total, first.members.len()), (2500, MEMBER_PAGE));
+        assert_eq!((first.total, first.members.len()), (5000, MEMBER_PAGE));
         let view = view(&f);
         assert_eq!(view.components.len(), 2500);
-        assert_eq!(view.members.len(), 2500);
+        assert_eq!(view.members.len(), 5000);
         let unique: HashSet<&str> = view.members.iter().map(|m| m.path.as_str()).collect();
-        assert_eq!(unique.len(), 2500);
-        let last = members_at(&f.db, &f.folder, &view.token, 2000).unwrap();
-        assert_eq!((last.offset, last.members.len()), (2000, 500));
+        assert_eq!(unique.len(), 5000);
+        let last = members_at(&f.db, &f.folder, &view.token, 4500).unwrap();
+        assert_eq!((last.offset, last.members.len()), (4500, 500));
         let beyond = members_at(&f.db, &f.folder, &view.token, 9999).unwrap();
-        assert!(!beyond.stale && beyond.members.is_empty() && beyond.total == 2500);
+        assert!(!beyond.stale && beyond.members.is_empty() && beyond.total == 5000);
         let pages: Vec<usize> = (0..13)
             .map(|page| {
                 components_at(&f.db, &f.folder, page * COMPONENT_PAGE)
@@ -2354,12 +2399,264 @@ mod tests {
         assert_eq!(paths, [source.to_string_lossy(), traced.to_string_lossy()]);
         fs::remove_file(&traced).unwrap();
         let view = super::tests::view(&f);
-        assert_eq!(view.members.len(), 1);
+        assert!(
+            view.members.is_empty() && view.components.is_empty(),
+            "a removed file is no longer a seed, so its source has no visible relationship"
+        );
+    }
+
+    /// Starts an unsaved AI edit of `inputs` meant for the folder, as the
+    /// image service does, and fails it before any output.
+    fn failed_edit(f: &Fixture, inputs: &[&Path]) -> i64 {
+        let run = begin_operation_at(
+            &f.db,
+            OperationStart {
+                operation: "openai.image.edit".into(),
+                parameters: temporary(&f.folder),
+                inputs: inputs.iter().map(|path| input(path)).collect(),
+            },
+        )
+        .unwrap();
+        fail_run_at(&f.db, run, "openai_failed").unwrap();
+        run
+    }
+
+    fn is_member(view: &View, path: &Path) -> bool {
+        let path = path.to_string_lossy();
+        view.members.iter().any(|member| member.path == path)
+    }
+
+    fn is_displayed(view: &View, path: &Path) -> bool {
+        let path = path.to_string_lossy();
+        view.nodes
+            .values()
+            .flatten()
+            .any(|node| node.path.as_deref() == Some(path.as_ref()))
+    }
+
+    #[test]
+    fn an_image_whose_only_edits_failed_is_an_ordinary_file() {
+        let f = fixture();
+        let lone = image(&f.folder.join("lone.png"), b"lone");
+        let first = failed_edit(&f, &[&lone]);
+        let second = failed_edit(&f, &[&lone]);
+        let source = image(&f.folder.join("source.png"), b"source");
+        let child = image(&f.folder.join("child.png"), b"child");
+        assert!(
+            !folders::has_trace_at(&f.db, &f.folder).unwrap(),
+            "nothing to show, so the folder is not offered the Trace view"
+        );
+        record(&f, serde_json::json!({}), &[&source], &child);
+        let view = view(&f);
+        assert!(folders::has_trace_at(&f.db, &f.folder).unwrap());
+        assert!(!is_member(&view, &lone));
+        assert!(!is_displayed(&view, &lone));
         assert_eq!(view.components.len(), 1);
         assert_eq!(
-            view.components[0].node_count, 1,
-            "a removed file is no longer a seed"
+            view.components[0].id,
+            format!("c:a:{}", artifact(&f, &source)),
+            "other components keep their IDs"
         );
+        assert_eq!(view.members.len(), 2);
+        // The failed runs stay recorded, so their history and Retry remain.
+        let failed: i64 = connection_at(&f.db)
+            .unwrap()
+            .query_row(
+                "SELECT count(*) FROM runs WHERE id IN (?1,?2) AND status='failed'",
+                [first, second],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(failed, 2);
+    }
+
+    #[test]
+    fn a_successful_edit_after_failed_ones_makes_a_section_again() {
+        let f = fixture();
+        let lone = image(&f.folder.join("lone.png"), b"lone");
+        failed_edit(&f, &[&lone]);
+        assert!(view(&f).components.is_empty());
+        assert!(!folders::has_trace_at(&f.db, &f.folder).unwrap());
+        let edited = image(&f.folder.join("edited.png"), b"edited");
+        record(&f, temporary(&f.folder), &[&lone], &edited);
+        assert!(folders::has_trace_at(&f.db, &f.folder).unwrap());
+        let view = view(&f);
+        assert_eq!(view.components.len(), 1);
+        let component = &view.components[0];
+        assert_eq!(component.id, format!("c:a:{}", artifact(&f, &lone)));
+        assert_eq!((component.image_count, component.node_count), (2, 2));
+        assert!(is_member(&view, &lone) && is_member(&view, &edited));
+    }
+
+    #[test]
+    fn a_saved_output_whose_only_parent_is_external_is_a_component() {
+        let f = fixture();
+        let parent = image(&f.elsewhere.join("parent.png"), b"parent");
+        let output = image(&f.folder.join("output.png"), b"output");
+        record(&f, serde_json::json!({}), &[&parent], &output);
+        let view = view(&f);
+        assert_eq!(view.components.len(), 1);
+        let component = &view.components[0];
+        assert_eq!((component.image_count, component.node_count), (1, 2));
+        assert_eq!(view.node(&parent).scope, NodeScope::External);
+        let members: Vec<&str> = view.members.iter().map(|m| m.path.as_str()).collect();
+        assert_eq!(members, [output.to_string_lossy()]);
+    }
+
+    #[test]
+    fn a_source_whose_edits_were_saved_elsewhere_is_an_ordinary_file() {
+        let f = fixture();
+        let source = image(&f.folder.join("source.png"), b"source");
+        let output = image(&f.elsewhere.join("output.png"), b"output");
+        record(&f, serde_json::json!({}), &[&source], &output);
+        let here = view(&f);
+        assert!(here.components.is_empty() && here.members.is_empty());
+        assert!(!folders::has_trace_at(&f.db, &f.folder).unwrap());
+        // The output's own folder shows the edit, with the source as an
+        // outside parent.
+        let there = view_at(&f, &f.elsewhere);
+        assert_eq!(there.components.len(), 1);
+        assert_eq!(there.node(&source).scope, NodeScope::External);
+        assert!(folders::has_trace_at(&f.db, &f.elsewhere).unwrap());
+    }
+
+    #[test]
+    fn a_running_edit_of_a_folder_image_is_a_component_until_it_fails() {
+        let f = fixture();
+        let source = image(&f.folder.join("source.png"), b"source");
+        let run = begin_operation_at(
+            &f.db,
+            OperationStart {
+                operation: "openai.image.edit".into(),
+                parameters: temporary(&f.folder),
+                inputs: vec![input(&source)],
+            },
+        )
+        .unwrap();
+        let running = view(&f);
+        assert_eq!(running.components.len(), 1);
+        let component = running.component_of(&format!("o:{run}:0"));
+        assert_eq!((component.image_count, component.node_count), (1, 2));
+        assert!(component.active);
+        assert!(is_member(&running, &source));
+        assert!(folders::has_trace_at(&f.db, &f.folder).unwrap());
+
+        fail_run_at(&f.db, run, "openai_failed").unwrap();
+        let failed = view(&f);
+        assert!(failed.components.is_empty() && failed.members.is_empty());
+        assert!(!folders::has_trace_at(&f.db, &f.folder).unwrap());
+    }
+
+    #[test]
+    fn an_image_whose_only_unsaved_child_was_discarded_is_an_ordinary_file() {
+        let f = fixture();
+        let source = image(&f.folder.join("source.png"), b"source");
+        let draft = image(&f.generated.join("draft.png"), PNG);
+        record(&f, temporary(&f.folder), &[&source], &draft);
+        let before = view(&f);
+        assert_eq!(before.components.len(), 1);
+        assert_eq!(before.components[0].node_count, 2);
+
+        save::discard_at(&f.db, &f.generated, artifact(&f, &draft)).unwrap();
+        // A discarded output is not displayed, so its parent has no visible
+        // relationship left.
+        let after = view(&f);
+        assert!(!is_displayed(&after, &draft));
+        assert!(after.components.is_empty());
+        assert!(!is_member(&after, &source));
+    }
+
+    #[test]
+    fn ordinary_files_are_excluded_from_paging_totals_and_members() {
+        let f = fixture();
+        let lone: Vec<PathBuf> = (0..3)
+            .map(|index| image(&f.folder.join(format!("lone{index}.png")), &[index]))
+            .collect();
+        failed_edit(&f, &[&lone[0], &lone[1]]);
+        bulk(&f.db, |tx| {
+            insert_artifact(tx, &lone[2], None);
+        });
+        let source = image(&f.folder.join("source.png"), b"source");
+        let child = image(&f.folder.join("child.png"), b"child");
+        record(&f, serde_json::json!({}), &[&source], &child);
+        let components = components_at(&f.db, &f.folder, 0).unwrap();
+        assert_eq!((components.total, components.components.len()), (1, 1));
+        let members = members_at(&f.db, &f.folder, &components.token, 0).unwrap();
+        assert_eq!(members.total, 2);
+        let mut paths: Vec<&str> = members.members.iter().map(|m| m.path.as_str()).collect();
+        paths.sort();
+        assert_eq!(paths, [child.to_string_lossy(), source.to_string_lossy()]);
+        let nodes = component_nodes_at(
+            &f.db,
+            &f.folder,
+            &components.token,
+            &components.components[0].id,
+            0,
+        )
+        .unwrap();
+        assert_eq!((nodes.total, components.components[0].node_count), (2, 2));
+    }
+
+    #[test]
+    fn only_a_lone_plain_file_lacks_a_relationship() {
+        let plain = TraceNode {
+            key: "a:1".into(),
+            artifact_id: Some(1),
+            run_id: None,
+            parents: Vec::new(),
+            path: Some("/f/plain.png".into()),
+            scope: NodeScope::Current,
+            location: "./plain.png".into(),
+            state: NodeState::Present,
+            temporary: false,
+            discarded: false,
+            earlier_revision: false,
+            order: 1,
+            prompt: String::new(),
+        };
+        let with = |change: fn(&mut TraceNode)| {
+            let mut node = plain.clone();
+            change(&mut node);
+            vec![node]
+        };
+        assert!(!has_relationship(std::slice::from_ref(&plain)));
+        assert!(
+            !has_relationship(&with(|node| node.state = NodeState::Missing)),
+            "a plain file's presence does not draw a relationship"
+        );
+        for (shown, why) in [
+            (with(|node| node.run_id = Some(7)), "generated output"),
+            (
+                with(|node| {
+                    node.run_id = Some(7);
+                    node.temporary = true;
+                }),
+                "unsaved output",
+            ),
+            (
+                with(|node| {
+                    node.artifact_id = None;
+                    node.run_id = Some(7);
+                    node.path = None;
+                    node.state = NodeState::Running;
+                }),
+                "running placeholder",
+            ),
+            (
+                with(|node| {
+                    node.artifact_id = None;
+                    node.run_id = Some(7);
+                    node.path = None;
+                    node.state = NodeState::Uncertain;
+                }),
+                "uncertain placeholder",
+            ),
+            (with(|node| node.scope = NodeScope::Subfolder), "subfolder"),
+            (with(|node| node.scope = NodeScope::External), "external"),
+            (vec![plain.clone(), plain.clone()], "two nodes"),
+        ] {
+            assert!(has_relationship(&shown), "{why}");
+        }
     }
 
     #[test]
