@@ -9,11 +9,13 @@
  * follow the user's clicks. The listed part stays the host's selection: the
  * resolved picks are the host selection in pick order, plus the extras.
  *
- * Who decides: every change of the host selection that the view did not make
- * (Select all, Escape, another pane) starts the picks over from the host
- * selection (`picksFromHost`); the view's own clicks replace them. Extras
- * follow their nodes (`followPicks`): a saved image carries its pick to the
- * saved file, a discarded or deleted one drops it.
+ * Who decides: every change of the host selection's files that the view did
+ * not make (Select all, Escape, another pane) starts the picks over from the
+ * host selection (`picksFromHost`); a re-sort or a listing refresh is not a
+ * change (`selectionKey`). The view's own clicks replace the picks, settled
+ * against the host selection they produced (`settlePicks`). Extras follow
+ * their nodes (`followPicks`): a saved image carries its pick to the saved
+ * file, a discarded or deleted one drops it.
  */
 import type { NodeKey, TraceNode } from "$lib/domain/trace-graph/model";
 
@@ -34,6 +36,40 @@ export const pickable = (node: TraceNode): boolean =>
 /** The picks a host selection stands for: its files, in its order, and no extras. */
 export function picksFromHost(host: readonly string[]): Picks {
   return host.length ? { order: [...host], extras: [] } : NO_PICKS;
+}
+
+/**
+ * What the picks start over on: the folder and the host's selected files as a
+ * set. A re-sort or a listing refresh keeps it, as the host itself only
+ * notifies when the selection's contents change.
+ */
+export function selectionKey(directory: string, host: readonly string[]): string {
+  return JSON.stringify([directory, [...new Set(host)].sort()]);
+}
+
+/**
+ * The picks as the view records them after its own interaction: a new object
+ * (an assignment of the same object would not register), with the order
+ * holding only what is still selected: the host selection and the extras.
+ * A Shift range, for one, replaces the host selection.
+ */
+export function settlePicks(picks: Picks, host: readonly string[]): Picks {
+  const keep = new Set([...host, ...picks.extras.map((extra) => extra.path)]);
+  return { order: [...new Set(picks.order.filter((path) => keep.has(path)))], extras: [...picks.extras] };
+}
+
+/**
+ * A click on a listed file. `host` says whether the host should apply the
+ * click to its selection. A Ctrl-click on a file picked only as an extra (an
+ * unsaved image saved since, which the host does not hold) unpicks that extra:
+ * passed on, the host would select it instead.
+ */
+export function clickListed(picks: Picks, path: string, host: readonly string[], modifiers: { ctrlKey?: boolean; shiftKey?: boolean }): { picks: Picks; host: boolean } {
+  const extra = picks.extras.find((candidate) => candidate.path === path);
+  if (modifiers.ctrlKey && extra && !host.includes(path)) return { picks: togglePick(picks, extra, false, false), host: false };
+  const pick = { path, key: path };
+  if (!modifiers.ctrlKey && !modifiers.shiftKey) return { picks: pickOnly(pick, true), host: true };
+  return { picks: togglePick(picks, pick, true, resolvePicks(picks, host).includes(path), !modifiers.ctrlKey), host: true };
 }
 
 /** A plain click: the selection becomes this one image. */
@@ -111,25 +147,4 @@ export function resolvePicks(picks: Picks, hostSelected: readonly string[]): str
   const ordered = [...new Set(picks.order.filter((path) => host.has(path) || extras.has(path)))];
   const seen = new Set(ordered);
   return [...ordered, ...hostSelected.filter((path) => !seen.has(path))];
-}
-
-/** What the view last saw of the host selection; see `followHost`. */
-export interface HostSelection {
-  readonly directory: string;
-  /** The listing the selection was read from (compared by identity). */
-  readonly entries: unknown;
-  readonly paths: readonly string[];
-}
-
-/**
- * The host selection as the picks follow it. Every recomputation of the
- * host's selection is a change — even to the same files (Select all over an
- * all-selected folder) — except a listing refresh: new entries, same folder,
- * same files in the same order. That keeps the previous `paths` array, so the
- * picks made against it survive a folder's files changing on disk.
- */
-export function followHost(previous: HostSelection | null, next: HostSelection): HostSelection {
-  const refresh = previous !== null && previous.directory === next.directory && previous.entries !== next.entries
-    && previous.paths.length === next.paths.length && previous.paths.every((path, index) => path === next.paths[index]);
-  return refresh ? { ...next, paths: previous.paths } : next;
 }

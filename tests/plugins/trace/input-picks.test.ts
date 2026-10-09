@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { NO_PICKS, dropPick, followHost, followPicks, picksFromHost, pickOnly, pickable, replacePick, resolvePicks, togglePick, type Picks } from "$lib/plugins/trace/view/input-picks";
+import { NO_PICKS, clickListed, dropPick, followPicks, picksFromHost, pickOnly, pickable, replacePick, resolvePicks, selectionKey, settlePicks, togglePick, type Picks } from "$lib/plugins/trace/view/input-picks";
 import type { TraceNode } from "$lib/domain/trace-graph/model";
 
 const listed = (path: string) => ({ path, key: path });
@@ -108,30 +108,48 @@ describe("picks against the live graph and host selection", () => {
     expect(followPicks(both, nodesOf(graph()))).toBe(both);
   });
 
-  it("Ctrl-clicking a saved file that is still an extra unpicks it", () => {
-    const moved = followPicks(both, nodesOf(graph({ path: "/f/u.png" })));
-    const off = togglePick(moved, listed("/f/u.png"), true, true);
-    expect(resolvePicks(off, [])).toEqual([mist.path]);
-    expect(off.extras).toEqual([mist]);
+  it("Ctrl-clicking a saved file that is picked only as an extra unpicks it without the host", () => {
+    // warm is host-selected; merge was saved after a newer pick, so the host does not hold it.
+    const host = ["/f/warm.png"];
+    const picks = followPicks(togglePick(togglePick(pickOnly(listed("/f/warm.png"), true), unsaved, false, false), mist, false, false),
+      nodesOf(graph({ path: "/f/u.png" })));
+    expect(resolvePicks(picks, host)).toEqual(["/f/warm.png", "/f/u.png", mist.path]);
+    const click = clickListed(picks, "/f/u.png", host, { ctrlKey: true });
+    expect(click.host).toBe(false);
+    expect(resolvePicks(click.picks, host)).toEqual(["/f/warm.png", mist.path]);
+    // Once the host holds it, the click goes to the host, which toggles it off too.
+    const held = clickListed(picks, "/f/u.png", [...host, "/f/u.png"], { ctrlKey: true });
+    expect(held.host).toBe(true);
+    expect(resolvePicks(held.picks, host)).toEqual(["/f/warm.png", mist.path]);
+  });
+
+  it("listed clicks: a plain click picks one, Ctrl toggles, Shift adds", () => {
+    const start = pickOnly(listed("/f/a.png"), true);
+    expect(clickListed(start, "/f/b.png", ["/f/a.png"], {})).toEqual({ picks: pickOnly(listed("/f/b.png"), true), host: true });
+    expect(clickListed(start, "/f/a.png", ["/f/a.png"], { ctrlKey: true }).picks.order).toEqual([]);
+    expect(clickListed(start, "/f/b.png", ["/f/a.png"], { shiftKey: true }).picks.order).toEqual(["/f/a.png", "/f/b.png"]);
   });
 });
 
-describe("following the host selection", () => {
-  const entries = [{}, {}];
-  const at = (paths: string[], list: unknown = entries[0], directory = "/f") => ({ directory, entries: list, paths });
-
-  it("a listing refresh with the same selection keeps the same paths", () => {
-    const first = followHost(null, at(["/f/a.png"]));
-    const refreshed = followHost(first, at(["/f/a.png"], entries[1]));
-    expect(refreshed.paths).toBe(first.paths);
-    // A later selection change against the refreshed listing is still seen.
-    expect(followHost(refreshed, at(["/f/a.png"], entries[1])).paths).not.toBe(first.paths);
+describe("recording the view's picks", () => {
+  it("drops what the host no longer holds, keeping extras, as a new object", () => {
+    // A host Shift range replaced [village, warm] with [warm, daylight].
+    const picks: Picks = { order: ["/f/village.png", "/f/warm.png", "/x/u.png", "/f/daylight.png"], extras: [extra("/x/u.png")] };
+    const settled = settlePicks(picks, ["/f/daylight.png", "/f/warm.png"]);
+    expect(settled.order).toEqual(["/f/warm.png", "/x/u.png", "/f/daylight.png"]);
+    expect(settled.extras).toEqual(picks.extras);
+    // The same picks again are still a new value, so recording them registers.
+    expect(settlePicks(settled, ["/f/daylight.png", "/f/warm.png"])).not.toBe(settled);
+    expect(settlePicks(settled, ["/f/daylight.png", "/f/warm.png"])).toEqual(settled);
   });
+});
 
-  it("any other recomputation is a change, even to the same files", () => {
-    const first = followHost(null, at(["/f/a.png", "/f/b.png"]));
-    expect(followHost(first, at(["/f/a.png", "/f/b.png"])).paths).not.toBe(first.paths);
-    expect(followHost(first, at(["/f/b.png"], entries[1])).paths).toEqual(["/f/b.png"]);
-    expect(followHost(first, at(["/f/a.png", "/f/b.png"], entries[1], "/g")).paths).not.toBe(first.paths);
+describe("what the picks start over on", () => {
+  it("is the folder and the selected files as a set", () => {
+    expect(selectionKey("/f", ["/f/a.png", "/f/b.png"])).toBe(selectionKey("/f", ["/f/b.png", "/f/a.png"]));
+    expect(selectionKey("/f", ["/f/a.png"])).not.toBe(selectionKey("/f", ["/f/a.png", "/f/b.png"]));
+    expect(selectionKey("/f", [])).not.toBe(selectionKey("/g", []));
+    // Paths with separators or quotes cannot collide.
+    expect(selectionKey("/f", ["/f/a\n/f/b"])).not.toBe(selectionKey("/f", ["/f/a", "/f/b"]));
   });
 });

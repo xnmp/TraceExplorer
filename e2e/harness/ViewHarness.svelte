@@ -30,6 +30,19 @@
   let entries = $state.raw<FileEntry[]>(files());
   let selected = $state.raw<string[]>([]);
   let cursor = $state<string | null>(null);
+  /** The Shift-range anchor, as the host's `selectionAnchorPath`. */
+  let anchor: string | null = null;
+  /**
+   * Replaces the selection as the host's `setSelection` does: only a change of
+   * its contents notifies (the host mutates a SvelteSet in place), and a
+   * non-empty change replaces a Preview target.
+   */
+  function replaceSelection(next: readonly string[]): void {
+    const unique = [...new Set(next)];
+    if (unique.length === selected.length && unique.every((path) => selected.includes(path))) return;
+    selected = unique;
+    if (unique.length && target) target = null;
+  }
   let target = $state.raw<PreviewTarget | null>(null);
   let viewWidth = $state(900);
   let opened = $state.raw<string[]>([]);
@@ -99,23 +112,37 @@
     get active() { return true; },
     get previewTarget() { return target; },
     get tileSize() { return tilePreset ? { preset: tilePreset, imagePx: TILE_IMAGE_PX[tilePreset] } : undefined; },
+    // As the host's selectEntry (tauri-explorer selection.ts calculateSelection):
+    // Shift selects the listing range from the anchor, Ctrl toggles, a plain click selects one.
     select(entry, modifiers = {}) {
-      target = null;
-      if (modifiers.ctrlKey || modifiers.shiftKey) selected = selected.includes(entry.path) ? selected.filter((path) => path !== entry.path) : [...selected, entry.path];
-      else selected = [entry.path];
+      const clicked = entries.findIndex((other) => other.path === entry.path);
+      if (clicked < 0) return;
+      const from = entries.findIndex((other) => other.path === anchor);
+      if (modifiers.shiftKey && from >= 0) {
+        replaceSelection(entries.slice(Math.min(from, clicked), Math.max(from, clicked) + 1).map((other) => other.path));
+      } else if (modifiers.ctrlKey) {
+        replaceSelection(selected.includes(entry.path) ? selected.filter((path) => path !== entry.path) : [...selected, entry.path]);
+        anchor = entry.path;
+      } else {
+        replaceSelection([entry.path]);
+        anchor = entry.path;
+      }
       cursor = entry.path;
     },
+    // As the host's selectPaths: listed paths only; `focus` becomes the anchor and cursor.
     setSelection(paths, focus = null) {
       const listed = new Set(entries.map((entry) => entry.path));
-      selected = paths.filter((path) => listed.has(path));
-      cursor = focus ?? selected.at(-1) ?? null;
-      if (selected.length) target = null;
+      const next = paths.filter((path) => listed.has(path));
+      const primary = focus !== null && next.includes(focus) ? focus : next.at(-1) ?? null;
+      replaceSelection(next);
+      anchor = primary;
+      if (primary) cursor = primary;
     },
-    clearSelection() { selected = []; },
+    clearSelection() { replaceSelection([]); anchor = null; },
     async open(entry) { opened = [...opened, entry.path]; },
     contextMenu(event, entry) { event.preventDefault(); menus = [...menus, entry?.path ?? null]; },
     async navigate(path) { navigations = [...navigations, path]; },
-    setPreviewTarget(next) { if (next) { selected = []; target = next; } else target = null; },
+    setPreviewTarget(next) { if (next) { replaceSelection([]); anchor = null; target = next; } else target = null; },
     exitView() { fileView = null; },
   };
 
@@ -137,13 +164,15 @@
     toggle() { return commands.get("plugin.trace.toggle")?.(); },
     disable() { enabled = false; tracePlugin.deactivate?.(); },
     enable() { enabled = true; activate(); },
-    navigate(path: string) { directory = path; entries = path === DIRECTORY ? files() : []; selected = []; target = null; },
+    navigate(path: string) { directory = path; entries = path === DIRECTORY ? files() : []; selected = []; anchor = null; target = null; },
     state: () => ({ selected: [...selected], cursor, target: target ? { id: target.id, title: target.title, badge: target.badge ?? null } : null, fileView, opened: [...opened], menus: [...menus], navigations: [...navigations] }),
     selectPath(path: string) { pane.setSelection([path], path); },
     /** The host replaces the selection itself (another pane, a command), as `explorer.selectPaths` does. */
     setSelection(paths: string[]) { pane.setSelection(paths); },
-    /** The host's Select all: every listed file, as a new selection even when it is unchanged. */
-    selectAll() { selected = entries.map((entry) => entry.path); },
+    /** The host's Select all: every listed file (an unchanged selection notifies nothing). */
+    selectAll() { replaceSelection(entries.map((entry) => entry.path)); anchor = entries[0]?.path ?? null; },
+    /** Re-sorts the listing (reversed), as choosing another sort order does: the selection is unchanged. */
+    resort() { entries = [...entries].reverse(); },
     command: (id: string) => commands.get(id)?.(),
     /** Opens the image editor's AI edit on `path`, captured at `digest`, before its preview has loaded (no size yet). */
     openEditor(path: string, digest: string) { editorSource = { path, name: path.split("/").at(-1)!, digest, format: "PNG", referencePaths: [] }; },

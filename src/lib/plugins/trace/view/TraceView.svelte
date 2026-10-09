@@ -17,7 +17,7 @@
   import TraceThumbnail from "../TraceThumbnail.svelte";
   import { createFolderSession, type ComponentData, type FolderSession } from "./folder-session.svelte";
   import { tracePanes, isTraceTargetData, type TracePaneView } from "./pane-registry.svelte";
-  import { NO_PICKS, dropPick, followHost, followPicks, picksFromHost, pickOnly, pickable, replacePick, resolvePicks, togglePick, type HostSelection, type Picks } from "./input-picks";
+  import { NO_PICKS, clickListed, dropPick, followPicks, picksFromHost, pickOnly, pickable, replacePick, resolvePicks, selectionKey, settlePicks, togglePick, type Picks } from "./input-picks";
   import { nodeTarget } from "./node-target";
   import { holdAnchor, layoutHeight, MOTION_MS, prefersReducedMotion, resizeSection, scrollsByUser, sectionHeight, USER_SCROLL } from "./motion";
   import TraceGraph from "./TraceGraph.svelte";
@@ -49,7 +49,7 @@
   /** Orientation each component of this folder was last shown with, by component id: kept across collapse and remount for hysteresis. */
   const orientations = new Map<string, Orientation>();
   /** A save into this folder waiting for the listing to contain its file; see `callbacks.saved`. */
-  let pendingSave = $state.raw<{ path: string; key: NodeKey; picks: Picks } | null>(null);
+  let pendingSave = $state.raw<{ directory: string; path: string; key: NodeKey; picks: Picks } | null>(null);
   let anchor: { key: NodeKey; mode: "hold" | "reveal"; rect: DOMRect | null; until: number } | null = null;
   let releaseAnchor: (() => void) | null = null;
   const issuedTargets = new WeakMap<PreviewTarget, TraceNode>();
@@ -88,25 +88,25 @@
   const selectedKeys = $derived.by(() => {
     const keys = new Set<NodeKey>();
     for (const entry of pane.selection) { const member = session.componentOf(entry.path); if (member) keys.add(member.key); }
-    if (targetData) keys.add(targetData.key);
     const included = new Set(inputs);
+    // The target is highlighted while it is an input (a Ctrl-click unpicks it), or when it cannot be one.
+    const targetNode = targetData ? findNode(targetData.key)?.node : undefined;
+    if (targetData && (!targetNode || !pickable(targetNode) || included.has(targetNode.path!))) keys.add(targetData.key);
     for (const extra of livePicks.extras) if (included.has(extra.path)) keys.add(extra.key);
     return keys;
   });
   const selectedPaths = $derived(new Set(pane.selection.map((entry) => entry.path)));
 
-  let seenHost: HostSelection | null = null;
-  /** The host selection's paths; the same array across a listing refresh (see followHost). */
-  const hostSelected = $derived.by(() => {
-    seenHost = followHost(seenHost, { directory: pane.directory, entries: pane.entries, paths: pane.selection.map((entry) => entry.path) });
-    return seenHost.paths;
-  });
+  /** The host selection's paths, in listing order. */
+  const hostSelected = $derived(pane.selection.map((entry) => entry.path));
+  /** The folder and the selected files as a set: a re-sort or listing refresh keeps it (see selectionKey). */
+  const hostChoice = $derived(selectionKey(directory, hostSelected));
   /**
    * The ordered image selection, including images the host cannot select (see
-   * input-picks). Any host selection change starts it over from the host
-   * selection; the view's own clicks assign it (see `commitPicks`).
+   * input-picks). A change of the host's selected files starts it over from
+   * the host selection; the view's own clicks assign it (see `commitPicks`).
    */
-  let picks = $derived.by(() => picksFromHost(hostSelected));
+  let picks = $derived.by(() => { void hostChoice; return picksFromHost(untrack(() => hostSelected)); });
   /** An extra's node, or undefined while that cannot be known (a component not loaded yet). */
   function extraNode(key: NodeKey): TraceNode | null | undefined {
     const found = findNode(key);
@@ -122,22 +122,24 @@
   /**
    * Records the picks of one of the view's own interactions. Call it after the
    * host calls of that interaction, with picks computed from those before
-   * them: reading `hostSelected` takes in the host's change first, so this
-   * assignment is what `picks` holds until the host selection changes again.
-   * This relies on the host applying selection changes synchronously, as the
-   * host's explorer state and the e2e harness do.
+   * them: reading `hostChoice` takes in the host's change first, so this
+   * assignment is what `picks` holds until the host's selected files change
+   * again. This relies on the host applying selection changes synchronously,
+   * as the host's explorer state and the e2e harness do. The recorded picks
+   * are always a new object (see settlePicks), and a save still waiting to
+   * select its file yields to this newer choice.
    */
   function commitPicks(next: Picks): void {
-    void hostSelected;
-    picks = next;
+    void hostChoice;
+    picks = settlePicks(next, hostSelected);
+    pendingSave = null;
   }
 
   /** Selects a listed file through the host and records it in the picks. */
   function selectListed(entry: FileEntry, modifiers: { ctrlKey?: boolean; shiftKey?: boolean } = {}): void {
-    const pick = { path: entry.path, key: entry.path };
-    const next = modifiers.ctrlKey || modifiers.shiftKey ? togglePick(livePicks, pick, true, inputs.includes(entry.path), !modifiers.ctrlKey) : pickOnly(pick, true);
-    pane.select(entry, modifiers);
-    commitPicks(next);
+    const click = clickListed(livePicks, entry.path, hostSelected, modifiers);
+    if (click.host) pane.select(entry, modifiers);
+    commitPicks(click.picks);
   }
 
   const isExpanded = (summary: ComponentSummary, index: number) =>
@@ -213,7 +215,7 @@
      * folder selects its file once the listing has it; one elsewhere needs
      * nothing: its pick follows the node to the saved path (followPicks).
      */
-    saved(path: string, key: NodeKey) { if (samePath(parentDir(path), directory)) pendingSave = { path, key, picks }; },
+    saved(path: string, key: NodeKey) { if (samePath(parentDir(path), directory)) pendingSave = { directory, path, key, picks }; },
     discarded(key: NodeKey) { commitPicks(dropPick(livePicks, key)); },
   };
 
@@ -280,21 +282,24 @@
   // place among the picks: [unsaved U, mist] becomes [saved U, mist].
   $effect(() => {
     const save = pendingSave;
-    if (!save || !entriesByPath.has(save.path)) return;
+    if (!save) return;
+    // A save for a folder this pane has left is dropped.
+    const here = samePath(save.directory, directory);
+    if (here && !entriesByPath.has(save.path)) return;
     untrack(() => {
       pendingSave = null;
       // Picks changed since the save finished: that newer choice stands.
-      if (picks === save.picks) selectSaved(save.picks, save.key, save.path);
+      if (here && picks === save.picks) selectSaved(save.picks, save.key, save.path);
     });
   });
 
   /** Selects a saved image's file: in its place among `before` if it was picked, otherwise alone. */
   function selectSaved(before: Picks, key: NodeKey, path: string): void {
     const saved = { path, key: path };
-    const next = replacePick(before, key, saved, true) ?? pickOnly(saved, true);
-    const extras = new Set(next.extras.map((extra) => extra.path));
-    pane.setSelection(next.order.filter((picked) => !extras.has(picked)), path);
-    commitPicks(next);
+    const next = replacePick(before, key, saved, true);
+    // The host keeps what it holds and adds the saved file; nothing else comes back.
+    pane.setSelection(next === null ? [path] : [...hostSelected, path], path);
+    commitPicks(next ?? pickOnly(saved, true));
   }
 
   // Keep this pane's Preview target in step with refreshed node data.
@@ -308,10 +313,11 @@
       // The target is a listed file now (saved by a save that did not select it,
       // or elsewhere): select the file, keeping its place among the picks.
       if (entry && pendingSave?.path !== entry.path) { selectSaved(livePicks, data.key, entry.path); return; }
-      // Re-issuing the target clears the (already empty) host selection: the picks stay.
+      // Re-issuing the target clears the host selection, which a target keeps
+      // empty: the picks stay (restored only if a host notified anyway).
       const before = picks;
       preview(fresh, data.componentId);
-      commitPicks(before);
+      if (picks !== before) { void hostChoice; picks = settlePicks(before, hostSelected); }
     });
   });
 
