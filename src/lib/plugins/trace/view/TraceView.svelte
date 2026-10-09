@@ -17,7 +17,7 @@
   import TraceThumbnail from "../TraceThumbnail.svelte";
   import { createFolderSession, type ComponentData, type FolderSession } from "./folder-session.svelte";
   import { tracePanes, isTraceTargetData, type TracePaneView } from "./pane-registry.svelte";
-  import { NO_PICKS, clickListed, dropPick, followPicks, picksFromHost, pickOnly, pickable, replacePick, resolvePicks, selectionKey, settlePicks, togglePick, type Picks } from "./input-picks";
+  import { NO_PICKS, clickListed, dropPick, followPicks, picksFromHost, pickOnly, pickable, replacePick, resolvePicks, selectionKey, settlePicks, togglePick, type PickLocation, type Picks } from "./input-picks";
   import { nodeTarget } from "./node-target";
   import { holdAnchor, layoutHeight, MOTION_MS, prefersReducedMotion, resizeSection, scrollsByUser, sectionHeight, USER_SCROLL } from "./motion";
   import TraceGraph from "./TraceGraph.svelte";
@@ -107,15 +107,41 @@
    * the host selection; the view's own clicks assign it (see `commitPicks`).
    */
   let picks = $derived.by(() => { void hostChoice; return picksFromHost(untrack(() => hostSelected)); });
-  /** An extra's node, or undefined while that cannot be known (a component not loaded yet). */
-  function extraNode(key: NodeKey): TraceNode | null | undefined {
-    const found = findNode(key);
-    if (found) return found.node;
-    const loaded = summaries.every((summary) => session.components.has(summary.id));
-    return loaded ? null : undefined;
+  /** Whether a component's loaded data is current (loaded, and not skipped by a refresh). */
+  const fresh = (id: string) => session.components.has(id) && !session.isStale(id);
+  /**
+   * Where an extra's node is now, from current data only: a copy in data a
+   * refresh skipped may be out of date (discarded since, say), so it is
+   * "unknown" until reloaded, as is a node in no loaded component while some
+   * component is not loaded fresh.
+   */
+  function locateExtra(key: NodeKey): PickLocation {
+    let unknown = false;
+    for (const [componentId, data] of session.components) {
+      const node = data.dag.nodes.get(key);
+      if (!node) continue;
+      if (!session.isStale(componentId)) return { node, componentId };
+      unknown = true;
+    }
+    return unknown || !summaries.every((summary) => fresh(summary.id)) ? "unknown" : null;
   }
-  /** The picks with their extras following their nodes (saved, discarded, gone). */
-  const livePicks = $derived(followPicks(picks, extraNode));
+  /** The picks with their extras following their nodes (saved, discarded, gone, merged into another component). */
+  const livePicks = $derived(followPicks(picks, locateExtra));
+  /**
+   * The components to keep loaded for the extras: each one's own component.
+   * When that is gone (merged into another) or does not hold the node, every
+   * component not loaded fresh, until the node is found and its pick follows.
+   */
+  const pickComponents = $derived.by(() => {
+    const ids = new Set<string>();
+    const listed = new Set(summaries.map((summary) => summary.id));
+    for (const extra of livePicks.extras) {
+      const own = extra.componentId;
+      if (own && listed.has(own) && (!fresh(own) || session.components.get(own)!.dag.nodes.has(extra.key))) { ids.add(own); continue; }
+      for (const summary of summaries) if (!fresh(summary.id)) ids.add(summary.id);
+    }
+    return ids;
+  });
   /** The selected images in the order they were picked: Image 1…N of an AI edit. */
   const inputs = $derived(resolvePicks(livePicks, hostSelected));
 
@@ -149,7 +175,7 @@
   // extra pick (so a pick in a collapsed section is checked against fresh
   // data); release the rest.
   $effect(() => {
-    const picked = new Set(picks.extras.map((extra) => extra.componentId));
+    const picked = pickComponents;
     const wanted = summaries.filter((summary, index) => (isExpanded(summary, index) && near.has(summary.id)) || picked.has(summary.id)).map((summary) => summary.id);
     untrack(() => {
       for (const summary of summaries) if (!wanted.includes(summary.id)) session.release(summary.id);

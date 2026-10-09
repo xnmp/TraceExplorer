@@ -40,7 +40,7 @@ export function createFolderSession(backend: TraceBackend = traceBackend) {
   const loading = new Map<string, Promise<void>>();
   let wanted = new Set<string>();
   /** Loaded components a refresh did not reload (not wanted then): shown until reloaded, reloaded when wanted again. */
-  let stale = new Set<string>();
+  let stale = $state.raw<ReadonlySet<string>>(new Set());
 
   async function loadIndex(dir: string, current: number, attempt = 0): Promise<FolderIndex | null> {
     const summaries: ComponentSummary[] = [];
@@ -87,7 +87,7 @@ export function createFolderSession(backend: TraceBackend = traceBackend) {
     const next = new Map(components);
     next.set(id, { nodes, dag, members: dag.order });
     components = next;
-    stale.delete(id);
+    if (stale.has(id)) stale = new Set([...stale].filter((other) => other !== id));
   }
 
   async function open(dir: string | null, keepVisible: boolean): Promise<void> {
@@ -147,6 +147,8 @@ export function createFolderSession(backend: TraceBackend = traceBackend) {
     ensure,
     release(id: string) { wanted.delete(id); },
     componentOf(path: string): Member | null { return index?.members.get(path) ?? null; },
+    /** Whether a loaded component's data predates the current index (a refresh skipped it). Reactive. */
+    isStale(id: string): boolean { return stale.has(id); },
     dispose() { disposed = true; generation += 1; loading.clear(); },
   };
 }

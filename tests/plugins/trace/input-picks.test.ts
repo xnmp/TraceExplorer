@@ -1,9 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { NO_PICKS, clickListed, dropPick, followPicks, picksFromHost, pickOnly, pickable, replacePick, resolvePicks, selectionKey, settlePicks, togglePick, type Picks } from "$lib/plugins/trace/view/input-picks";
+import { NO_PICKS, clickListed, dropPick, followPicks, picksFromHost, pickOnly, pickable, replacePick, resolvePicks, selectionKey, settlePicks, togglePick, type PickLocation, type Picks } from "$lib/plugins/trace/view/input-picks";
 import type { TraceNode } from "$lib/domain/trace-graph/model";
 
 const listed = (path: string) => ({ path, key: path });
-const extra = (path: string) => ({ path, key: `o:${path}` });
+const extra = (path: string) => ({ path, key: `o:${path}`, componentId: "c1" });
 
 /** Applies clicks like the Trace view: the host selection follows only listed images. */
 function click(state: { picks: Picks; host: string[] }, path: string, isListed: boolean, ctrl = false) {
@@ -63,7 +63,11 @@ describe("picks against the live graph and host selection", () => {
   const present = (path: string, change: Partial<TraceNode> = {}) =>
     ({ key: `o:${path}`, path, state: "present", earlierRevision: false, discarded: false, ...change }) as TraceNode;
   /** The view's lookup: nodes by key; keys missing from a loaded graph are gone. */
-  const nodesOf = (nodes: TraceNode[], loaded = true) => (key: string) => nodes.find((node) => node.key === key) ?? (loaded ? null : undefined);
+  /** The view's lookup: nodes by key in component c1; keys missing from fully loaded data are gone. */
+  const nodesOf = (nodes: TraceNode[], loaded = true, componentId = "c1") => (key: string): PickLocation => {
+    const node = nodes.find((candidate) => candidate.key === key);
+    return node ? { node, componentId } : loaded ? null : "unknown";
+  };
   const unsaved = extra("/cfg/generated/u.png");
   const mist = extra("/f/refs/mist.png");
   const both = togglePick(pickOnly(unsaved, false), mist, false, false);
@@ -101,6 +105,12 @@ describe("picks against the live graph and host selection", () => {
     // The Delete action drops it at once, before the graph refreshes.
     expect(resolvePicks(dropPick(both, unsaved.key), [])).toEqual([mist.path]);
     expect(dropPick(both, "o:unknown")).toBe(both);
+  });
+
+  it("a pick follows its node into the component it merged into", () => {
+    const merged = followPicks(both, nodesOf(graph(), true, "c0"));
+    expect(merged.extras.map((pick) => pick.componentId)).toEqual(["c0", "c0"]);
+    expect(resolvePicks(merged, [])).toEqual([unsaved.path, mist.path]);
   });
 
   it("keeps a pick whose component is not loaded, and the same picks when nothing changed", () => {

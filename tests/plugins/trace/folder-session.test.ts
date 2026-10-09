@@ -242,10 +242,12 @@ describe("folder session", () => {
     await session.refresh();
     await flush();
     expect(session.components.get("c1")!.nodes[0].discarded).toBe(false);
+    expect(session.isStale("c1")).toBe(true);
     backend.nodes.mockClear();
     await session.ensure("c1");
     expect(backend.nodes).toHaveBeenCalledTimes(1);
     expect(session.components.get("c1")!.nodes[0].discarded).toBe(true);
+    expect(session.isStale("c1")).toBe(false);
     // Fresh again: a later ensure does not reload.
     await session.ensure("c1");
     expect(backend.nodes).toHaveBeenCalledTimes(1);

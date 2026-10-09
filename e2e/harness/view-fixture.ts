@@ -217,6 +217,18 @@ export const backend = {
     changed();
     return key;
   },
+  /** Starts a generation from several parents: an AI edit with several inputs, which merges their components. */
+  joinGeneration(parents: string[], name: string) {
+    counter += 1;
+    const key = `o:${counter}:0`;
+    state.names.set(name, key);
+    state = { ...state, nodes: [...state.nodes, {
+      key, artifactId: null, runId: counter, parents: parents.map((parent) => state.names.get(parent)!), path: null, scope: "current", location: "Generating",
+      state: "running", temporary: true, discarded: false, earlierRevision: false, order: counter, prompt: `${name} prompt`,
+    }] };
+    changed();
+    return key;
+  },
   /** Saves an unsaved output into the folder, as its Save action would. */
   saveGeneration(name: string) {
     update(state.names.get(name)!, { temporary: false, path: `${DIRECTORY}/${name}.png`, location: `./${name}.png`, scope: "current" });

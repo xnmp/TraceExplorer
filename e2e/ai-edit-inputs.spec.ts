@@ -240,6 +240,30 @@ test.describe("picks in sections that are not shown", () => {
     await expect.poll(() => editInputs(page)).toEqual([await path(page, "warm")]);
   });
 
+  test("an unsaved pick whose component merged into another is checked against the merged one", async ({ page }) => {
+    await openView(page, 1400, "?ai=1");
+    await page.evaluate(() => { const backend = (window as any).trace.backend; backend.startGeneration("forest", "fgen"); backend.completeGeneration("fgen"); });
+    await settle(page);
+    await click(page, "warm");
+    await click(page, "fgen", { modifiers: ["Control"] });
+    const [warm, fgen] = await Promise.all([path(page, "warm"), path(page, "fgen")]);
+    const id = async () => (await tile(page, "fgen")).locator("xpath=ancestor::section[@data-component]").getAttribute("data-component");
+    const before = await id();
+    expect(await editInputs(page)).toEqual([warm, fgen]);
+    // An edit of warm and fgen joins their components under a new id.
+    await page.evaluate(() => (window as any).trace.backend.joinGeneration(["warm", "fgen"], "joined"));
+    await settle(page);
+    await expect.poll(id).not.toBe(before);
+    expect(await editInputs(page)).toEqual([warm, fgen]);
+    const heading = page.locator(`section[data-component="${await id()}"]`).locator("button.heading").first();
+    await heading.click();
+    await expect(heading).toHaveAttribute("aria-expanded", "false");
+    await settle(page);
+    await page.evaluate(() => (window as any).trace.backend.discardGeneration("fgen"));
+    await settle(page);
+    await expect.poll(() => editInputs(page)).toEqual([warm]);
+  });
+
   test("a section expanded again shows what changed while it was collapsed", async ({ page }) => {
     await openView(page, 1400, "?ai=1");
     await click(page, "warm");

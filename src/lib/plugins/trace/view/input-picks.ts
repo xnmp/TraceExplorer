@@ -119,24 +119,32 @@ export function replacePick(picks: Picks, key: NodeKey, next: Pick, listed: bool
   return { order, extras };
 }
 
+/** Where an extra's node is now: found in current data, gone, or not known yet ("unknown"). */
+export type PickLocation = { readonly node: TraceNode; readonly componentId: string } | null | "unknown";
+
 /**
- * The picks with each extra checked against its node now. `nodeOf` returns
- * the node, null when it is gone, or undefined when that cannot be known yet
- * (its component is not loaded): such a pick is kept. A node that is gone,
- * discarded, missing or an earlier revision drops its pick; a node whose image
- * moved (an unsaved image that was saved) carries its pick to the new path.
+ * The picks with each extra checked against its node now. `locate` finds the
+ * node in current data, says it is gone (null), or that it cannot tell yet
+ * ("unknown": its component is not loaded or out of date): such a pick is kept
+ * as it is. A node that is gone, discarded, missing or an earlier revision
+ * drops its pick; a node whose image moved (an unsaved image that was saved)
+ * carries its pick to the new path, and one whose component changed (merged
+ * with another) carries its pick to that component.
  */
-export function followPicks(picks: Picks, nodeOf: (key: NodeKey) => TraceNode | null | undefined): Picks {
+export function followPicks(picks: Picks, locate: (key: NodeKey) => PickLocation): Picks {
   const moved = new Map<string, string | null>();
+  let changed = false;
   const extras: Pick[] = [];
   for (const extra of picks.extras) {
-    const node = nodeOf(extra.key);
-    if (node === undefined) extras.push(extra);
-    else if (!node || !pickable(node)) moved.set(extra.path, null);
-    else if (node.path !== extra.path) { moved.set(extra.path, node.path!); extras.push({ ...extra, path: node.path! }); }
+    const found = locate(extra.key);
+    if (found === "unknown") { extras.push(extra); continue; }
+    if (!found || !pickable(found.node)) { moved.set(extra.path, null); changed = true; continue; }
+    const path = found.node.path!;
+    if (path !== extra.path) moved.set(extra.path, path);
+    if (path !== extra.path || found.componentId !== extra.componentId) { extras.push({ ...extra, path, componentId: found.componentId }); changed = true; }
     else extras.push(extra);
   }
-  if (!moved.size) return picks;
+  if (!changed) return picks;
   const order = picks.order.flatMap((path) => {
     if (!moved.has(path)) return [path];
     const to = moved.get(path);
