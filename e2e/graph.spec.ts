@@ -230,6 +230,8 @@ test.describe("wide layouts", () => {
     await settle(page);
     expect(await columns(), "unsaved").toEqual(before);
     for (let index = 1; index <= 4; index++) await page.evaluate((n) => (window as any).trace.backend.discardGeneration(n), `variation-${index}`);
+    // Discarded outputs with no edits of their own leave the graph.
+    for (const k of batch) await expect(page.locator(`[data-tile-key="${k}"]`)).toHaveCount(0);
     await page.waitForTimeout(150);
     await settle(page);
     expect(await columns(), "discarded").toEqual(before);

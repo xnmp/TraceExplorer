@@ -68,6 +68,41 @@ test("an image whose only history is failed edits lists with the other files unt
   expect(await uncaught(page)).toEqual([]);
 });
 
+test("an image whose edit fails before any output goes back to the other files", async ({ page }) => {
+  await openView(page, undefined, "?lone=1");
+  const lonely = "/pictures/lonely.png";
+  const others = page.getByRole("list", { name: "Other files and folders" });
+  const sections = await page.locator("section.component[data-component]").count();
+  await page.evaluate(() => (window as any).trace.backend.startGeneration("lonely", "retry"));
+  await expect(page.locator("section.component[data-component]")).toHaveCount(sections + 1);
+  await expect(others.locator(`[data-entry-path="${lonely}"]`)).toHaveCount(0);
+
+  await page.evaluate(() => (window as any).trace.backend.failGeneration("retry"));
+  await expect(page.locator("section.component[data-component]")).toHaveCount(sections);
+  await expect(page.locator("section.component[data-component]", { has: page.locator(".heading .name", { hasText: /^lonely$/ }) })).toHaveCount(0);
+  await expect(others.locator(`[data-entry-path="${lonely}"]`)).toHaveCount(1);
+  await expect(page.locator("section.ordinary .count")).toHaveText("4");
+  expect(await uncaught(page)).toEqual([]);
+});
+
+test("a Preview target whose generation fails is cleared and dims no section", async ({ page }) => {
+  await openView(page, undefined, "?lone=1");
+  await page.evaluate(() => (window as any).trace.backend.startGeneration("lonely", "retry"));
+  const section = page.locator("section.component[data-component]", { has: page.locator(".heading .name", { hasText: /^lonely$/ }) });
+  await expect(section).toHaveCount(1);
+  await section.locator(".heading").click();
+  await settle(page);
+  await click(page, "retry");
+  expect((await state(page)).target?.badge).toBe("Generating");
+  await expect(page.locator("section.component.dimmed[data-component]")).not.toHaveCount(0);
+
+  await page.evaluate(() => (window as any).trace.backend.failGeneration("retry"));
+  await expect(section).toHaveCount(0);
+  await expect.poll(async () => (await state(page)).target).toBeNull();
+  await expect(page.locator("section.component.dimmed[data-component]")).toHaveCount(0);
+  expect(await uncaught(page)).toEqual([]);
+});
+
 test("the toggle command switches to the built-in listing and back", async ({ page }) => {
   await openView(page);
   await expect(view(page)).toBeVisible();

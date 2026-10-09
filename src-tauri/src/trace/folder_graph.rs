@@ -1559,6 +1559,14 @@ fn component_nodes_at(
     })
 }
 
+/// Whether the folder's index shows any section; Trace view eligibility.
+pub(super) fn has_components_at(database: &Path, directory: &Path) -> Result<bool, AppError> {
+    Ok(!current_index(database, directory)?
+        .index
+        .components
+        .is_empty())
+}
+
 fn run_details_at(database: &Path, run_ids: &[i64]) -> Result<Vec<Run>, AppError> {
     if run_ids.len() > MAX_RUN_DETAILS {
         return Err(AppError::Other(format!(
@@ -2434,8 +2442,13 @@ mod tests {
         let second = failed_edit(&f, &[&lone]);
         let source = image(&f.folder.join("source.png"), b"source");
         let child = image(&f.folder.join("child.png"), b"child");
+        assert!(
+            !folders::has_trace_at(&f.db, &f.folder).unwrap(),
+            "nothing to show, so the folder is not offered the Trace view"
+        );
         record(&f, serde_json::json!({}), &[&source], &child);
         let view = view(&f);
+        assert!(folders::has_trace_at(&f.db, &f.folder).unwrap());
         assert!(!is_member(&view, &lone));
         assert!(!is_displayed(&view, &lone));
         assert_eq!(view.components.len(), 1);
@@ -2463,8 +2476,10 @@ mod tests {
         let lone = image(&f.folder.join("lone.png"), b"lone");
         failed_edit(&f, &[&lone]);
         assert!(view(&f).components.is_empty());
+        assert!(!folders::has_trace_at(&f.db, &f.folder).unwrap());
         let edited = image(&f.folder.join("edited.png"), b"edited");
         record(&f, temporary(&f.folder), &[&lone], &edited);
+        assert!(folders::has_trace_at(&f.db, &f.folder).unwrap());
         let view = view(&f);
         assert_eq!(view.components.len(), 1);
         let component = &view.components[0];
@@ -2489,6 +2504,23 @@ mod tests {
     }
 
     #[test]
+    fn a_source_whose_edits_were_saved_elsewhere_is_an_ordinary_file() {
+        let f = fixture();
+        let source = image(&f.folder.join("source.png"), b"source");
+        let output = image(&f.elsewhere.join("output.png"), b"output");
+        record(&f, serde_json::json!({}), &[&source], &output);
+        let here = view(&f);
+        assert!(here.components.is_empty() && here.members.is_empty());
+        assert!(!folders::has_trace_at(&f.db, &f.folder).unwrap());
+        // The output's own folder shows the edit, with the source as an
+        // outside parent.
+        let there = view_at(&f, &f.elsewhere);
+        assert_eq!(there.components.len(), 1);
+        assert_eq!(there.node(&source).scope, NodeScope::External);
+        assert!(folders::has_trace_at(&f.db, &f.elsewhere).unwrap());
+    }
+
+    #[test]
     fn a_running_edit_of_a_folder_image_is_a_component_until_it_fails() {
         let f = fixture();
         let source = image(&f.folder.join("source.png"), b"source");
@@ -2507,10 +2539,12 @@ mod tests {
         assert_eq!((component.image_count, component.node_count), (1, 2));
         assert!(component.active);
         assert!(is_member(&running, &source));
+        assert!(folders::has_trace_at(&f.db, &f.folder).unwrap());
 
         fail_run_at(&f.db, run, "openai_failed").unwrap();
         let failed = view(&f);
         assert!(failed.components.is_empty() && failed.members.is_empty());
+        assert!(!folders::has_trace_at(&f.db, &f.folder).unwrap());
     }
 
     #[test]

@@ -101,8 +101,18 @@ function hasRelationship(nodes: readonly TraceNode[]): boolean {
     && node.state !== "running" && node.state !== "uncertain" && node.parents.length === 0);
 }
 
+/**
+ * The nodes the backend displays (`load_snapshot`): a discarded output is no
+ * seed, so it is shown only as the parent of a node that is.
+ */
+function displayed(nodes: readonly TraceNode[]): TraceNode[] {
+  const seeds = nodes.filter((node) => !node.discarded);
+  const parents = new Set(seeds.flatMap((node) => node.parents));
+  return nodes.filter((node) => !node.discarded || parents.has(node.key));
+}
+
 function componentsOf() {
-  const dag = projectDag(state.nodes);
+  const dag = projectDag(displayed(state.nodes));
   return connectedComponents(dag).filter((members) => hasRelationship(members.map((key) => dag.nodes.get(key)!))).map((members) => {
     const first = members.map((key) => dag.nodes.get(key)!).sort((a, b) => a.order - b.order)[0];
     const name = [...state.names].find(([, key]) => key === first.key)?.[0] ?? first.key;
@@ -249,9 +259,15 @@ export const backend = {
     update(state.names.get(name)!, { temporary: false, path: `${DIRECTORY}/${name}.png`, location: `./${name}.png`, scope: "current" });
     changed();
   },
-  /** Discards an unsaved output, as its Delete action would. */
+  /** Discards an unsaved output, as its Delete action would; it is then displayed only as a parent. */
   discardGeneration(name: string) {
     update(state.names.get(name)!, { discarded: true });
+    changed();
+  },
+  /** Fails a generation before any output: the backend shows no placeholder for a failed run. */
+  failGeneration(name: string) {
+    const key = state.names.get(name)!;
+    state = { ...state, nodes: state.nodes.filter((node) => node.key !== key) };
     changed();
   },
   completeGeneration(name: string) {

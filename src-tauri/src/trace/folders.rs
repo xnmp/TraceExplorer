@@ -71,12 +71,23 @@ fn lexical_path(path: &Path) -> PathBuf {
     resolved
 }
 
+/// Whether the folder has a Trace section. Eligibility is read from the same
+/// cached folder index the view shows, so a folder is never offered the Trace
+/// view with nothing to show (for example one whose only history is failed
+/// edits). The cheap `may_have_trace_at` check runs first: browsing folders
+/// without provenance never builds an index.
 pub(super) fn has_trace_at(database: &Path, directory: &Path) -> Result<bool, AppError> {
-    Ok(folder_state_at(database, directory)?.0)
+    Ok(may_have_trace_at(database, directory)?.0
+        && folder_graph::has_components_at(database, directory)?)
 }
 
-// Only folder-local results can use the directory mtime as a cache token.
-fn folder_state_at(database: &Path, directory: &Path) -> Result<(bool, bool), AppError> {
+/// A necessary condition for a Trace section: some file recorded directly in
+/// the folder is present, or one of its unsaved generations is active or has
+/// a present output. It covers every seed of the folder index
+/// (`folder_graph::load_snapshot`), so `false` means the index is empty; `true`
+/// means the index decides. The second value says whether the answer may be
+/// cached by the folder's mtime: only folder-local results can.
+fn may_have_trace_at(database: &Path, directory: &Path) -> Result<(bool, bool), AppError> {
     if !database.exists() {
         return Ok((false, true));
     }
@@ -109,7 +120,7 @@ fn folder_state_at(database: &Path, directory: &Path) -> Result<(bool, bool), Ap
         }
     }
     // Unsaved generation workflows remain reachable in their intended save
-    // folder. Mirrors the Trace folder index (`folder_graph::load_snapshot`):
+    // folder. As in the Trace folder index (`folder_graph::load_snapshot`):
     // an active run is shown, and a finished or interrupted run is shown
     // through any newest revision of its outputs that is present and not
     // discarded.
@@ -148,26 +159,33 @@ pub(crate) async fn has_trace(directory: String) -> Result<bool, AppError> {
         let modified = fs::metadata(&directory)?.modified().ok();
         let revision = REVISION.load(Ordering::Relaxed);
         let cache = CACHE.get_or_init(|| Mutex::new(Vec::new()));
-        if let Some((_, (_, _, eligible))) = cache
+        let database = database_path()?;
+        let cached = cache
             .lock()
             .map_err(|_| AppError::Other("Folder trace cache unavailable".into()))?
             .iter()
             .find(|(path, (mtime, version, _))| {
                 path == &directory && *mtime == modified && *version == revision
             })
-        {
-            return Ok(*eligible);
-        }
-        let (eligible, cacheable) = folder_state_at(&database_path()?, Path::new(&directory))?;
-        let mut cache = cache
-            .lock()
-            .map_err(|_| AppError::Other("Folder trace cache unavailable".into()))?;
-        cache.retain(|(path, _)| path != &directory);
-        if cacheable {
-            cache.insert(0, (directory, (modified, revision, eligible)));
-        }
-        cache.truncate(128);
-        Ok(eligible)
+            .map(|(_, (_, _, candidate))| *candidate);
+        let candidate = match cached {
+            Some(candidate) => candidate,
+            None => {
+                let (candidate, cacheable) = may_have_trace_at(&database, Path::new(&directory))?;
+                let mut cache = cache
+                    .lock()
+                    .map_err(|_| AppError::Other("Folder trace cache unavailable".into()))?;
+                cache.retain(|(path, _)| path != &directory);
+                if cacheable {
+                    cache.insert(0, (directory.clone(), (modified, revision, candidate)));
+                }
+                cache.truncate(128);
+                candidate
+            }
+        };
+        // The index is cached per token and shared with the view, so a folder
+        // the view then opens is not indexed twice.
+        Ok(candidate && folder_graph::has_components_at(&database, Path::new(&directory))?)
     })
     .await
     .map_err(|error| AppError::WorkerFailed(error.to_string()))?
