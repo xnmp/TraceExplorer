@@ -1,5 +1,5 @@
 import { test, expect } from "@playwright/test";
-import { openView, click, state, uncaught, settle, rendered } from "./support";
+import { openView, click, state, uncaught, settle, rendered, tile } from "./support";
 
 const view = (page: import("@playwright/test").Page) => page.getByTestId("trace-view");
 const builtin = (page: import("@playwright/test").Page) => page.getByRole("list", { name: "Built-in listing" });
@@ -45,6 +45,28 @@ for (const host of [
     await expect(notes).toBeFocused();
   });
 }
+
+test("an image whose only history is failed edits lists with the other files until an edit draws its section", async ({ page }) => {
+  await openView(page, undefined, "?lone=1");
+  const lonely = "/pictures/lonely.png";
+  const others = page.getByRole("list", { name: "Other files and folders" });
+  await expect(others.locator(`[data-entry-path="${lonely}"]`)).toHaveCount(1);
+  await expect(page.locator("section.ordinary .count")).toHaveText("4");
+  await expect(await tile(page, "lonely")).toHaveCount(0);
+  const sections = await page.locator("section.component[data-component]").count();
+
+  // A new edit from it draws a relationship: the image gets its own section and leaves the ordinary files.
+  await page.evaluate(() => (window as any).trace.backend.startGeneration("lonely", "retry"));
+  await expect(page.locator("section.component[data-component]")).toHaveCount(sections + 1);
+  await expect(others.locator(`[data-entry-path="${lonely}"]`)).toHaveCount(0);
+  await expect(page.locator("section.ordinary .count")).toHaveText("3");
+  const section = page.locator("section.component[data-component]", { has: page.locator(".heading .name", { hasText: /^lonely$/ }) });
+  await section.locator(".heading").click();
+  await settle(page);
+  await expect(section.locator(await tile(page, "lonely"))).toHaveCount(1);
+  await expect(section.locator(await tile(page, "retry"))).toHaveCount(1);
+  expect(await uncaught(page)).toEqual([]);
+});
 
 test("the toggle command switches to the built-in listing and back", async ({ page }) => {
   await openView(page);
