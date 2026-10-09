@@ -1,5 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
-import { click, openView, settle } from "./support";
+import { card, click, openView, settle, state } from "./support";
 
 const SHOTS = process.env.ROUND4_SHOTS;
 const path = (page: Page, name: string) => page.evaluate((n) => (window as any).trace.backend.path(n) as string, name);
@@ -112,6 +112,45 @@ test("at 1280×800 the inputs, the prompt and every setting are visible without 
   if (SHOTS) await page.screenshot({ path: `${SHOTS}/edit-dialog-1280x800.png` });
 });
 
+/** The AI Edit dialog's inputs for the current selection, in order; closes the dialog again. */
+async function editInputs(page: Page): Promise<string[]> {
+  await command(page, "plugin.openai-image.edit");
+  await expect(strip(page)).toBeVisible();
+  const paths = await strip(page).locator("[data-input-path]").evaluateAll((items) => items.map((item) => (item as HTMLElement).dataset.inputPath!));
+  await dialog(page).getByRole("button", { name: "Close", exact: true }).click();
+  await expect(dialog(page)).toHaveCount(0);
+  return paths;
+}
+
+test.describe("host selection changes the view did not make", () => {
+  test("an external change and back does not bring back an unsaved pick", async ({ page }) => {
+    await openView(page, 1400, "?ai=1");
+    await click(page, "warm");
+    await click(page, "merge", { modifiers: ["Control"] });
+    const [warm, village] = await Promise.all([path(page, "warm"), path(page, "village")]);
+    expect(await editInputs(page)).toEqual([warm, await path(page, "merge")]);
+    await page.evaluate((p) => (window as any).trace.setSelection([p]), village);
+    await page.evaluate((p) => (window as any).trace.setSelection([p]), warm);
+    expect(await editInputs(page)).toEqual([warm]);
+  });
+
+  test("the host selecting the same files again (as Select all would) drops the unsaved picks", async ({ page }) => {
+    await openView(page, 1400, "?ai=1");
+    await click(page, "warm");
+    // Warm last, so it stays the focus and merge stays in view.
+    const listed = await Promise.all([path(page, "village"), path(page, "warm")]);
+    await page.evaluate((paths) => (window as any).trace.setSelection(paths), listed);
+    await click(page, "merge", { modifiers: ["Control"] });
+    await expect(await card(page, "merge")).toHaveAttribute("aria-pressed", "true");
+    const before = await editInputs(page);
+    expect(before.toSorted()).toEqual([...listed, await path(page, "merge")].toSorted());
+    await page.evaluate((paths) => (window as any).trace.setSelection(paths), listed);
+    expect((await state(page)).selected).toEqual(listed);
+    await expect(await card(page, "merge")).toHaveAttribute("aria-pressed", "false");
+    expect((await editInputs(page)).toSorted()).toEqual(listed.toSorted());
+  });
+});
+
 test.describe("picks follow saves and deletes", () => {
   const preview = (page: Page) => page.getByRole("complementary", { name: "Preview" });
   const enabled = (page: Page) => page.evaluate(() => (window as any).trace.enabled("plugin.openai-image.edit") as boolean);
@@ -128,6 +167,34 @@ test.describe("picks follow saves and deletes", () => {
     await expect(strip(page).locator("[data-input-path]")).toHaveCount(1);
     expect(await strip(page).locator("[data-input-path]").getAttribute("data-input-path")).toBe("/pictures/merge.png");
     expect(unsaved).not.toBe("/pictures/merge.png");
+  });
+
+  test("saving a picked unsaved image keeps its place among the picks", async ({ page }) => {
+    await openView(page, 1400, "?ai=1");
+    await click(page, "warm");
+    await click(page, "merge");
+    await click(page, "mist", { modifiers: ["Control"] });
+    const mist = await path(page, "mist");
+    await preview(page).getByRole("button", { name: "Save", exact: true }).click();
+    await expect.poll(async () => (await state(page)).selected).toEqual(["/pictures/merge.png"]);
+    await settle(page);
+    expect(await editInputs(page)).toEqual(["/pictures/merge.png", mist]);
+  });
+
+  test("a pick made while a save is running wins over the save", async ({ page }) => {
+    await openView(page, 1400, "?ai=1");
+    await click(page, "warm");
+    await click(page, "merge");
+    await page.evaluate(() => (window as any).trace.backend.holdSaves());
+    await preview(page).getByRole("button", { name: "Save", exact: true }).click();
+    await click(page, "mist", { modifiers: ["Control"] });
+    const mist = await path(page, "mist");
+    await page.evaluate(() => (window as any).trace.backend.releaseSaves());
+    await expect.poll(() => path(page, "merge")).toBe("/pictures/merge.png");
+    await settle(page);
+    // Both picks stay, merge as its saved file; the save selected nothing else.
+    expect(await editInputs(page)).toEqual(["/pictures/merge.png", mist]);
+    expect((await state(page)).selected).not.toContain(mist);
   });
 
   test("deleting the picked unsaved image leaves nothing to edit", async ({ page }) => {

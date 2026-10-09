@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { NO_PICKS, dropPick, extraIsLive, pickOnly, pickable, reconcilePicks, resolvePicks, togglePick, type Pick, type Picks } from "$lib/plugins/trace/view/input-picks";
+import { NO_PICKS, dropPick, followHost, followPicks, picksFromHost, pickOnly, pickable, replacePick, resolvePicks, togglePick, type Picks } from "$lib/plugins/trace/view/input-picks";
 import type { TraceNode } from "$lib/domain/trace-graph/model";
 
 const listed = (path: string) => ({ path, key: path });
@@ -59,79 +59,79 @@ describe("Trace view picks", () => {
   });
 });
 
-describe("reconciling picks with the live state", () => {
+describe("picks against the live graph and host selection", () => {
   const present = (path: string, change: Partial<TraceNode> = {}) =>
     ({ key: `o:${path}`, path, state: "present", earlierRevision: false, discarded: false, ...change }) as TraceNode;
-  /** The view's check: the graph's nodes by key, and the folder's listed paths. */
-  const liveIn = (nodes: TraceNode[], listedPaths: string[] = [], loaded = true) => (pick: Pick) =>
-    extraIsLive(pick, nodes.find((node) => node.key === pick.key) ?? (loaded ? null : undefined), listedPaths.includes(pick.path));
-  const inputs = (picks: Picks, basis: string[], host: string[], live: (pick: Pick) => boolean) =>
-    resolvePicks(reconcilePicks(picks, basis, host, live), host);
-
+  /** The view's lookup: nodes by key; keys missing from a loaded graph are gone. */
+  const nodesOf = (nodes: TraceNode[], loaded = true) => (key: string) => nodes.find((node) => node.key === key) ?? (loaded ? null : undefined);
   const unsaved = extra("/cfg/generated/u.png");
+  const mist = extra("/f/refs/mist.png");
+  const both = togglePick(pickOnly(unsaved, false), mist, false, false);
+  const graph = (u: Partial<TraceNode> = {}) => [present(unsaved.path, { key: unsaved.key, ...u }), present(mist.path, { key: mist.key })];
 
-  it("an unsaved pick that is then saved counts once, as the saved file", () => {
-    // A plain click on unsaved U showed it as the Preview target: no host selection.
-    const picks = pickOnly(unsaved, false);
-    expect(inputs(picks, [], [], liveIn([present(unsaved.path, { key: unsaved.key })]))).toEqual([unsaved.path]);
-    // Saving moves U's node to the saved path and selects that file.
-    const saved = present("/home/x/u.png", { key: unsaved.key });
-    expect(inputs(picks, [], ["/home/x/u.png"], liveIn([saved], ["/home/x/u.png"]))).toEqual(["/home/x/u.png"]);
-    // Even before the host selection follows, the stale temporary path is gone.
-    expect(inputs(picks, [], [], liveIn([saved], ["/home/x/u.png"]))).toEqual([]);
+  it("a host selection change starts the picks over from the host selection", () => {
+    expect(picksFromHost(["/f/b.png", "/f/a.png"])).toEqual({ order: ["/f/b.png", "/f/a.png"], extras: [] });
+    expect(picksFromHost([])).toBe(NO_PICKS);
   });
 
-  it("then deleting the saved file leaves nothing to edit", () => {
-    const picks = pickOnly(unsaved, false);
-    expect(inputs(picks, [], [], liveIn([present("/home/x/u.png", { key: unsaved.key, state: "missing" })]))).toEqual([]);
-    expect(inputs(picks, [], [], liveIn([]))).toEqual([]);
+  it("saving a picked unsaved image puts the saved file in its place", () => {
+    const saved = { path: "/f/u.png", key: "/f/u.png" };
+    const next = replacePick(both, unsaved.key, saved, true)!;
+    expect(next.extras).toEqual([mist]);
+    // The host selects the saved file; mist stays an extra, in its place after it.
+    expect(resolvePicks(next, ["/f/u.png"])).toEqual(["/f/u.png", mist.path]);
+    expect(replacePick(both, "o:not-picked", saved, true)).toBeNull();
+    // Saved outside the folder: still an extra, at its new path.
+    const outside = replacePick(both, unsaved.key, { path: "/x/u.png", key: unsaved.key }, false)!;
+    expect(resolvePicks(outside, [])).toEqual(["/x/u.png", mist.path]);
   });
 
-  it("drops a discarded pick, and keeps the others in order", () => {
-    const other = extra("/x/b.png");
-    const picks = togglePick(pickOnly(unsaved, false), other, false, false);
-    const nodes = [present(unsaved.path, { key: unsaved.key, discarded: true }), present(other.path, { key: other.key })];
-    expect(inputs(picks, [], [], liveIn(nodes))).toEqual(["/x/b.png"]);
-    // The Delete action also drops it at once, before the graph refreshes.
-    expect(resolvePicks(dropPick(picks, unsaved.key), [])).toEqual(["/x/b.png"]);
-    expect(dropPick(picks, "o:unknown")).toBe(picks);
+  it("an extra follows its node to the saved path, once, without the stale temporary path", () => {
+    const moved = followPicks(both, nodesOf(graph({ path: "/f/u.png", temporary: false })));
+    expect(resolvePicks(moved, [])).toEqual(["/f/u.png", mist.path]);
+    // The host selecting the saved file too does not list it twice.
+    expect(resolvePicks(moved, ["/f/u.png"])).toEqual(["/f/u.png", mist.path]);
   });
 
-  it("drops a pick that became an earlier revision or now has a different path", () => {
-    const picks = pickOnly(extra("/x/b.png"), false);
-    expect(inputs(picks, [], [], liveIn([present("/x/b.png", { key: "o:/x/b.png", earlierRevision: true })]))).toEqual([]);
-    expect(inputs(picks, [], [], liveIn([present("/x/c.png", { key: "o:/x/b.png" })]))).toEqual([]);
+  it("drops a discarded, missing, earlier-revision or vanished pick and keeps the rest in order", () => {
+    for (const change of [{ discarded: true }, { state: "missing" as const }, { earlierRevision: true }]) {
+      expect(resolvePicks(followPicks(both, nodesOf(graph(change))), [])).toEqual([mist.path]);
+    }
+    expect(resolvePicks(followPicks(both, nodesOf([present(mist.path, { key: mist.key })])), [])).toEqual([mist.path]);
+    // The Delete action drops it at once, before the graph refreshes.
+    expect(resolvePicks(dropPick(both, unsaved.key), [])).toEqual([mist.path]);
+    expect(dropPick(both, "o:unknown")).toBe(both);
   });
 
-  it("an extra that is now a listed file belongs to the host selection", () => {
-    const picks = pickOnly(extra("/f/b.png"), false);
-    const nodes = [present("/f/b.png")];
-    expect(inputs(picks, [], [], liveIn(nodes, ["/f/b.png"]))).toEqual([]);
-    expect(inputs(picks, [], ["/f/b.png"], liveIn(nodes, ["/f/b.png"]))).toEqual(["/f/b.png"]);
+  it("keeps a pick whose component is not loaded, and the same picks when nothing changed", () => {
+    expect(followPicks(both, nodesOf([], false))).toBe(both);
+    expect(followPicks(both, nodesOf(graph()))).toBe(both);
   });
 
-  it("keeps an extra whose component is not loaded yet", () => {
-    const picks = pickOnly(unsaved, false);
-    expect(inputs(picks, [], [], liveIn([], [], false))).toEqual([unsaved.path]);
+  it("Ctrl-clicking a saved file that is still an extra unpicks it", () => {
+    const moved = followPicks(both, nodesOf(graph({ path: "/f/u.png" })));
+    const off = togglePick(moved, listed("/f/u.png"), true, true);
+    expect(resolvePicks(off, [])).toEqual([mist.path]);
+    expect(off.extras).toEqual([mist]);
+  });
+});
+
+describe("following the host selection", () => {
+  const entries = [{}, {}];
+  const at = (paths: string[], list: unknown = entries[0], directory = "/f") => ({ directory, entries: list, paths });
+
+  it("a listing refresh with the same selection keeps the same paths", () => {
+    const first = followHost(null, at(["/f/a.png"]));
+    const refreshed = followHost(first, at(["/f/a.png"], entries[1]));
+    expect(refreshed.paths).toBe(first.paths);
+    // A later selection change against the refreshed listing is still seen.
+    expect(followHost(refreshed, at(["/f/a.png"], entries[1])).paths).not.toBe(first.paths);
   });
 
-  it("a host selection change the view did not make replaces the extras", () => {
-    // A listed pick, then a Ctrl-picked unsaved image, made against host selection [a].
-    const picks = togglePick(pickOnly(listed("/f/a.png"), true), unsaved, false, false);
-    const live = liveIn([present(unsaved.path, { key: unsaved.key })]);
-    expect(inputs(picks, ["/f/a.png"], ["/f/a.png"], live)).toEqual(["/f/a.png", unsaved.path]);
-    // Escape in the host clears it all.
-    expect(inputs(picks, ["/f/a.png"], [], live)).toEqual([]);
-    // Select all: the still-selected pick keeps its place, the rest follow.
-    expect(inputs(picks, ["/f/a.png"], ["/f/0.png", "/f/a.png", "/f/b.png"], live)).toEqual(["/f/a.png", "/f/0.png", "/f/b.png"]);
-    // A new pick starts from the reconciled picks, not the stale extras.
-    const after = reconcilePicks(picks, ["/f/a.png"], ["/f/b.png"], live);
-    expect(resolvePicks(togglePick(after, extra("/x/c.png"), false, false), ["/f/b.png"])).toEqual(["/f/b.png", "/x/c.png"]);
-  });
-
-  it("returns the same picks when nothing changed", () => {
-    const picks = pickOnly(unsaved, false);
-    expect(reconcilePicks(picks, [], [], () => true)).toBe(picks);
-    expect(reconcilePicks(NO_PICKS, [], [], () => true)).toBe(NO_PICKS);
+  it("any other recomputation is a change, even to the same files", () => {
+    const first = followHost(null, at(["/f/a.png", "/f/b.png"]));
+    expect(followHost(first, at(["/f/a.png", "/f/b.png"])).paths).not.toBe(first.paths);
+    expect(followHost(first, at(["/f/b.png"], entries[1])).paths).toEqual(["/f/b.png"]);
+    expect(followHost(first, at(["/f/a.png", "/f/b.png"], entries[1], "/g")).paths).not.toBe(first.paths);
   });
 });

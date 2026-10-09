@@ -79,9 +79,11 @@
       .finally(() => { describing = null; });
     return describing;
   }
+  /** Generate presses so far: a later one owns the error shown. */
+  let submits = 0;
   onMount(() => {
     if (!arranged.length) return;
-    void describe().then((problem) => { if (problem && alive) error = problem; });
+    void describe().then((problem) => { if (problem && alive && submits === 0) error = problem; });
   });
 
   async function move(index: number, to: number, control: "left" | "right"): Promise<void> {
@@ -103,6 +105,7 @@
   }
   async function submit(): Promise<void> {
     if (submitting || settingsOpen || !prompt.trim()) return;
+    submits += 1;
     submitting = true;
     error = "";
     let accepted = 0;

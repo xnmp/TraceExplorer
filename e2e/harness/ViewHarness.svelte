@@ -140,6 +140,10 @@
     navigate(path: string) { directory = path; entries = path === DIRECTORY ? files() : []; selected = []; target = null; },
     state: () => ({ selected: [...selected], cursor, target: target ? { id: target.id, title: target.title, badge: target.badge ?? null } : null, fileView, opened: [...opened], menus: [...menus], navigations: [...navigations] }),
     selectPath(path: string) { pane.setSelection([path], path); },
+    /** The host replaces the selection itself (another pane, a command), as `explorer.selectPaths` does. */
+    setSelection(paths: string[]) { pane.setSelection(paths); },
+    /** The host's Select all: every listed file, as a new selection even when it is unchanged. */
+    selectAll() { selected = entries.map((entry) => entry.path); },
     command: (id: string) => commands.get(id)?.(),
     /** Opens the image editor's AI edit on `path`, captured at `digest`, before its preview has loaded (no size yet). */
     openEditor(path: string, digest: string) { editorSource = { path, name: path.split("/").at(-1)!, digest, format: "PNG", referencePaths: [] }; },

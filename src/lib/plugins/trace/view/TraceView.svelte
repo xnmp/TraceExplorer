@@ -17,7 +17,7 @@
   import TraceThumbnail from "../TraceThumbnail.svelte";
   import { createFolderSession, type ComponentData, type FolderSession } from "./folder-session.svelte";
   import { tracePanes, isTraceTargetData, type TracePaneView } from "./pane-registry.svelte";
-  import { NO_PICKS, dropPick, extraIsLive, pickOnly, pickable, reconcilePicks, resolvePicks, togglePick, type Picks } from "./input-picks";
+  import { NO_PICKS, dropPick, followHost, followPicks, picksFromHost, pickOnly, pickable, replacePick, resolvePicks, togglePick, type HostSelection, type Picks } from "./input-picks";
   import { nodeTarget } from "./node-target";
   import { holdAnchor, layoutHeight, MOTION_MS, prefersReducedMotion, resizeSection, scrollsByUser, sectionHeight, USER_SCROLL } from "./motion";
   import TraceGraph from "./TraceGraph.svelte";
@@ -48,7 +48,8 @@
   let heights = new Map<string, number>();
   /** Orientation each component of this folder was last shown with, by component id: kept across collapse and remount for hysteresis. */
   const orientations = new Map<string, Orientation>();
-  let pendingPath = $state<string | null>(null);
+  /** A save into this folder waiting for the listing to contain its file; see `callbacks.saved`. */
+  let pendingSave = $state.raw<{ path: string; key: NodeKey; picks: Picks } | null>(null);
   let anchor: { key: NodeKey; mode: "hold" | "reveal"; rect: DOMRect | null; until: number } | null = null;
   let releaseAnchor: (() => void) | null = null;
   const issuedTargets = new WeakMap<PreviewTarget, TraceNode>();
@@ -63,11 +64,7 @@
   const entriesByPath = $derived(new Map(pane.entries.map((entry) => [entry.path, entry])));
 
   // Session follows the pane's folder and Trace's invalidation signal.
-  /** The ordered image selection, including images the host cannot select (see input-picks). */
-  let picks = $state.raw<Picks>(NO_PICKS);
-  /** The host selection `picks` were made against; see reconcilePicks. */
-  let basis = $state.raw<readonly string[]>([]);
-  $effect(() => { const dir = directory; untrack(() => { overrides = new Map(); orientations.clear(); picks = NO_PICKS; basis = []; session.setDirectory(dir); }); });
+  $effect(() => { const dir = directory; untrack(() => { overrides = new Map(); orientations.clear(); session.setDirectory(dir); }); });
   let seenRevision = untrack(() => traceInvalidation.revision);
   $effect(() => {
     const current = traceInvalidation.revision;
@@ -92,12 +89,24 @@
     const keys = new Set<NodeKey>();
     for (const entry of pane.selection) { const member = session.componentOf(entry.path); if (member) keys.add(member.key); }
     if (targetData) keys.add(targetData.key);
-    for (const extra of livePicks.extras) keys.add(extra.key);
+    const included = new Set(inputs);
+    for (const extra of livePicks.extras) if (included.has(extra.path)) keys.add(extra.key);
     return keys;
   });
   const selectedPaths = $derived(new Set(pane.selection.map((entry) => entry.path)));
-  /** The selected images in the order they were picked: Image 1…N of an AI edit. */
-  const hostSelected = $derived(pane.selection.map((entry) => entry.path));
+
+  let seenHost: HostSelection | null = null;
+  /** The host selection's paths; the same array across a listing refresh (see followHost). */
+  const hostSelected = $derived.by(() => {
+    seenHost = followHost(seenHost, { directory: pane.directory, entries: pane.entries, paths: pane.selection.map((entry) => entry.path) });
+    return seenHost.paths;
+  });
+  /**
+   * The ordered image selection, including images the host cannot select (see
+   * input-picks). Any host selection change starts it over from the host
+   * selection; the view's own clicks assign it (see `commitPicks`).
+   */
+  let picks = $derived.by(() => picksFromHost(hostSelected));
   /** An extra's node, or undefined while that cannot be known (a component not loaded yet). */
   function extraNode(key: NodeKey): TraceNode | null | undefined {
     const found = findNode(key);
@@ -105,15 +114,22 @@
     const loaded = summaries.every((summary) => session.components.has(summary.id));
     return loaded ? null : undefined;
   }
-  /** The picks checked against the live graph and host selection. */
-  const livePicks = $derived(reconcilePicks(picks, basis, hostSelected,
-    (pick) => extraIsLive(pick, extraNode(pick.key), entriesByPath.has(pick.path))));
+  /** The picks with their extras following their nodes (saved, discarded, gone). */
+  const livePicks = $derived(followPicks(picks, extraNode));
+  /** The selected images in the order they were picked: Image 1…N of an AI edit. */
   const inputs = $derived(resolvePicks(livePicks, hostSelected));
 
-  /** Records new picks once the host has applied the selection change that goes with them. */
+  /**
+   * Records the picks of one of the view's own interactions. Call it after the
+   * host calls of that interaction, with picks computed from those before
+   * them: reading `hostSelected` takes in the host's change first, so this
+   * assignment is what `picks` holds until the host selection changes again.
+   * This relies on the host applying selection changes synchronously, as the
+   * host's explorer state and the e2e harness do.
+   */
   function commitPicks(next: Picks): void {
+    void hostSelected;
     picks = next;
-    basis = pane.selection.map((entry) => entry.path);
   }
 
   /** Selects a listed file through the host and records it in the picks. */
@@ -185,10 +201,19 @@
   // A save claims the selection only if the selection is unchanged since the
   // save began, so a slow save never overrides a newer choice.
   const selectionStamp = () => `${targetData?.key ?? ""}\n${pane.selection.map((entry) => entry.path).join("\n")}`;
-  const captureSelection = () => { const stamp = selectionStamp(); return () => stamp === selectionStamp(); };
+  const captureSelection = () => {
+    const stamp = selectionStamp(), before = picks;
+    // A new pick (a Ctrl-click on an unsaved image, say) is a newer choice too.
+    return () => stamp === selectionStamp() && before === picks;
+  };
   const callbacks = {
     capture: captureSelection,
-    saved(path: string) { if (samePath(parentDir(path), directory)) pendingPath = path; },
+    /**
+     * A save finished while the selection was unchanged. A save into this
+     * folder selects its file once the listing has it; one elsewhere needs
+     * nothing: its pick follows the node to the saved path (followPicks).
+     */
+    saved(path: string, key: NodeKey) { if (samePath(parentDir(path), directory)) pendingSave = { path, key, picks }; },
     discarded(key: NodeKey) { commitPicks(dropPick(livePicks, key)); },
   };
 
@@ -251,14 +276,26 @@
     commitPicks(NO_PICKS);
   }
 
-  // A just-saved image becomes the selection once the listing contains it.
+  // A just-saved image becomes selected once the listing contains it, in its
+  // place among the picks: [unsaved U, mist] becomes [saved U, mist].
   $effect(() => {
-    const path = pendingPath;
-    if (!path) return;
-    const entry = entriesByPath.get(path);
-    if (!entry) return;
-    untrack(() => { pendingPath = null; pane.setSelection([path], path); });
+    const save = pendingSave;
+    if (!save || !entriesByPath.has(save.path)) return;
+    untrack(() => {
+      pendingSave = null;
+      // Picks changed since the save finished: that newer choice stands.
+      if (picks === save.picks) selectSaved(save.picks, save.key, save.path);
+    });
   });
+
+  /** Selects a saved image's file: in its place among `before` if it was picked, otherwise alone. */
+  function selectSaved(before: Picks, key: NodeKey, path: string): void {
+    const saved = { path, key: path };
+    const next = replacePick(before, key, saved, true) ?? pickOnly(saved, true);
+    const extras = new Set(next.extras.map((extra) => extra.path));
+    pane.setSelection(next.order.filter((picked) => !extras.has(picked)), path);
+    commitPicks(next);
+  }
 
   // Keep this pane's Preview target in step with refreshed node data.
   $effect(() => {
@@ -268,8 +305,13 @@
     if (!fresh || issuedTargets.get(current) === fresh) return;
     untrack(() => {
       const entry = fileEntry(fresh);
-      if (entry && pendingPath !== entry.path) { pane.setSelection([entry.path], entry.path); return; }
+      // The target is a listed file now (saved by a save that did not select it,
+      // or elsewhere): select the file, keeping its place among the picks.
+      if (entry && pendingSave?.path !== entry.path) { selectSaved(livePicks, data.key, entry.path); return; }
+      // Re-issuing the target clears the (already empty) host selection: the picks stay.
+      const before = picks;
       preview(fresh, data.componentId);
+      commitPicks(before);
     });
   });
 
@@ -422,7 +464,7 @@
               <div use:measure={summary.id}>
                 <TraceGraph {data} focus={focus?.key ?? null} selected={selectedKeys} {width} {tile} {revision} {scroller}
                   onactivate={activate} onnavigate={(key) => focusNode(key)} onopen={open} onmenu={menu}
-                  {captureSelection} componentId={summary.id} {orientations} onsaved={(_key, path) => callbacks.saved(path)} ondiscarded={(key) => callbacks.discarded(key)} oncommit={(settled) => keepAnchor(data, settled)} />
+                  {captureSelection} componentId={summary.id} {orientations} onsaved={(key, path) => callbacks.saved(path, key)} ondiscarded={(key) => callbacks.discarded(key)} oncommit={(settled) => keepAnchor(data, settled)} />
               </div>
             {:else}
               <div class="placeholder loading" role="status" style:height="{heights.get(summary.id) ?? 160}px">Loading…</div>
