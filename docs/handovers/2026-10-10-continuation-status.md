@@ -1,59 +1,61 @@
-# Shared AI services — continuation status (2026-10-10, evening)
+# Shared AI services: continuation status (2026-10-10, late)
 
-Supersedes the "first next action" in `2026-10-10-073019Z-issue-1047.md`. Nothing is merged or released.
+This supersedes earlier status notes. Nothing is merged into `dev`/`main` or released. Paired draft PRs: host #1048 (into `dev`), Trace #12 (into `main`), issue #1047.
 
-## Done this session
+## Branches
 
-### Host `/tmp/te-shared-ai-host` (feat/shared-ai-services)
+| Repo | Checkout | Branch | Tip | CI |
+|---|---|---|---|---|
+| Host | `/tmp/te-shared-ai-host` | `feat/shared-ai-services` | `37a3579a` (pushed) | running |
+| Trace | `.worktrees/shared-ai-services` | `feat/shared-ai-services` | `8a99e61` (pushed) | green on all 5 targets |
 
-| Commit | State | Change |
-|---|---|---|
-| `ca1f2525` | pushed | Queue/shutdown race fixed. The gated regression test fails under the old ordering. The queue worker spawns fallibly. |
-| `8f2dac26` | pushed | Windows durability via `durable_dir::sync`, a writable directory-handle flush. The fail-closed gate and `unsupported_platform` availability are removed. The unwired `windows_artifact_namespace.rs`, its fixture and its CI job are removed. See `docs/shared-ai-windows-namespace-evidence.md`. |
-| `da950101` | pushed | Clippy and fmt clean under Rust 1.99. Startup GC and recovery are now enabled on Windows. |
-| `6126913e` | pushed | Writable Windows evidence flush (`sync_file`). `operationDeadlineAtMs` is measured from native command entry. |
-| `23a756d6` | **local only** | Native Wry fixtures: publisher-only proof, and a new seeded-startup-recovery fixture. Both pass, and both fail when their guarded shutdown wait is removed. |
+Agent worktrees and logs live under `/var/tmp/te-wt/`. Summarise a CI run with `/var/tmp/te-wt/ci.sh <repo> <sha>`.
 
-Push `23a756d6` once CI is idle; a new push cancels in-flight runs.
+## Done since the previous status
 
-### Trace (this worktree, pushed to `7f43d46`)
+- **Acceptance gaps closed.**
+  - Native consumer-kill fixture (3.20).
+  - Native e2e for §14.4: titles/default profile, slow-profile isolation, text/image config isolation, selection and folder generation with ordered inputs, retry lineage, progress panel, Save/Discard.
+  - §21.3 #12: Plugins-page modal.
+  - 21.1, 21.3 and 2.6 were covered by earlier merges.
+- **Review round 1.** Four independent reviewers covered host lifecycle, host store/AI, Trace consumer and provider. Every confirmed defect is fixed with tests:
+  - unknown outcomes are terminal and retryable;
+  - publication happens before the provider ack;
+  - moved profiles;
+  - cancellation-intent leak;
+  - sealing reported as Running;
+  - Codex host-error classification;
+  - first-run journal and ledger recovery;
+  - unaccepted jobs settle;
+  - parked jobs are dismissable;
+  - a refused drain restores ACTIVE;
+  - cross-platform profile lock;
+  - degraded store open;
+  - best-effort byte GC;
+  - malformed config repair;
+  - temp-file sweep;
+  - keyring orphans.
+- **CLI text adapters.** Codex and Claude Code are enabled behind isolation checks, a decision the user made on 2026-10-10. See host `docs/shared-ai-cli-text-isolation.md`.
+- **Review round 2, host.** It found two low-severity issues (parked-job reactivation, keyring deletion on a failed dir sync) plus Codex `todo_list`. All are fixed in `37a3579a`.
+- **Flaky tests made deterministic.** Trace deadline/FIFO/layout/Playwright tests, the host mutation matrix (a real ArtifactLease fork bug), and `ai/tests.rs` semaphore contention.
 
-- `te_plugin_runtime::durable_dir` is used by Trace and the provider.
-- macOS fixture path alias fixed: macOS CI is now green.
-- Windows legacy-locator test fixed.
-- Write transactions default to IMMEDIATE. This fixes a real `database is locked` failure seen on aarch64.
-- `ETXTBSY` exec retry.
-- Provider README corrected (local commit).
+## In flight
 
-## CI at host `6126913e` / Trace `7f43d46`
+- **Review round 2, Trace.** It reviews `554f8e9..c0a2715`.
+- **Paired change: typed pre-spawn refusal codes and bounded stdin for `host.process.run`.**
+  - Worktrees: `/var/tmp/te-wt/host-process-api` and `/var/tmp/te-wt/trace-process-api`.
+  - Codex image prompts go via stdin when the host supports it, which removes the Windows cmd.exe 8191-character limit.
 
-Logs are in `/var/tmp/te-wt/logs-*.txt`; `/var/tmp/te-wt/ci.sh <repo> <sha>` summarizes a run.
+## Remaining before merge
 
-| Repo | Check | Result | Notes |
-|---|---|---|---|
-| Trace | All except Windows | Green | |
-| Trace | Windows | 172/1 | Diagnose the single failure in `logs-twin.txt`. |
-| Host | CI | Green | |
-| Host | Rust platforms, Windows | 1182 pass / 18 fail | `logs-hwin.txt`, not yet diagnosed |
-| Host | Rust platforms, macOS | 1570 pass / 1 fail | `logs-hmac.txt` |
-| Host | Smoke, ubuntu | Fail | Possibly the known WebKitGTK flake #1026; check `logs-subu.txt`. |
-| Host | Smoke, windows | Fail | Check `logs-swin.txt`. |
+1. Merge the in-flight branches. Get CI green on both repos on all platforms.
+2. Rebuild the host e2e binary and the Trace/provider archives from the final tips. Re-run `e2e-tauri/run-shared-ai-services.sh` with the absent and present profiles, including `SHARED_AI_NATIVE_GENERATE=1`. Record the hashes in host `docs/shared-ai-native-acceptance.md`.
+3. Re-fetch `origin/dev` and `origin/main`, and merge them in if they moved. Update the PR #1048 and #12 descriptions, mark them ready, and merge once CI is green. No release and no install: neither is authorized.
+4. Clean up `/var/tmp/te-wt` worktrees and branches after merge, checking each one first.
 
-## Acceptance-gap closure in progress
+## Known gaps and decisions
 
-The gap audit is `/var/tmp/te-wt/traceability.md` (67 items: 30 covered, 33 partial, 4 gaps). Agents follow `/var/tmp/te-wt/conventions.md` and work in worktrees under `/var/tmp/te-wt/`:
-
-| Worktree | Branch | Status |
-|---|---|---|
-| `trace-provider` | test/shared-ai-provider | **Done**, `9591330` (71 backend tests). It reports a host seam: `verify_bytes` errors reach the provider as `service_unavailable`, so the missing/corrupt reasons never occur in production. |
-| `trace-consumer` | test/shared-ai-consumer | In progress or check its log |
-| `host-recovery` | test/shared-ai-host-recovery | In progress or check its log |
-| `host-mutation` | test/shared-ai-host-mutation | In progress or check its log |
-
-Next steps:
-
-1. Verify each branch's merge-base and merge it into feat/shared-ai-services.
-2. Run an independent adversarial review of the merged result, as the user's workflow rules require.
-3. Handle the remaining native-e2e gaps: backend killed while the provider runs, multi-window, modals, native Save/Discard, and the §14.4 flows.
-4. Fix the remaining CI failures.
-5. Update PRs #1048 and #12, then merge.
+- **Image-editor tool entry point is unreachable.** The host image editor always opens in crop mode, so Trace's "AI edit" editor tool can't be reached. This predates the work on host `dev`, and fixing it needs a host editor tool switcher.
+- **The provider keeps a durable Failed receipt for transient admission refusals.** This deviates from plan §8.5. Trace's status polling needs that receipt to settle a never-dispatched start.
+- **Possible remaining Codex CLI risk.** A future default-on Codex tool would run before the event backstop rejects the turn. This is documented.
+- **One host test always fails locally:** `file_mutation::...creation_is_lazy_and_competing_entry_plans...`. It also fails on base and passes in CI.
