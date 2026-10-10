@@ -85,8 +85,14 @@ export const promptTitles = {
       preferences = settings;
       void this.configure(settings);
     }) ?? (() => {}));
-    subscriptions.push(ctx.text.subscribe(() => {
-      if (owner === binding && preferences) void this.configure(preferences);
+    // The host announces one saved revision more than once (its save command
+    // and its configuration watcher). Reconfiguring on a repeat would clear
+    // shown titles and cancel in-flight requests for an unchanged context.
+    let textRevision = -1;
+    subscriptions.push(ctx.text.subscribe((revision) => {
+      if (owner !== binding || revision <= textRevision) return;
+      textRevision = revision;
+      if (preferences) void this.configure(preferences);
     }));
     const revision = storageRevision;
     void ctx.storage.get().then(settings => {
