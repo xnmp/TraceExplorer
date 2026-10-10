@@ -6,7 +6,7 @@ import { imageAvailability } from "../../tests/fixtures/image-connections";
  */
 import { configureBackend } from "$lib/api/common";
 import type { OpenAIImageRunHistory } from "$lib/api/openai-image";
-import { excerpt } from "$lib/domain/image-retry";
+import { excerpt, retryable } from "$lib/domain/image-retry";
 
 export const REPLY = "I can’t make that edit: it depicts copyrighted characters (Charizard and Alakazam) in a new scene, and I can’t generate images of them. "
   + "I can make an original fire-type dragon unleashing a spiral of flame while a psychic fox-like creature teleports out of the way instead, keeping your composition, lighting and colours. "
@@ -87,6 +87,12 @@ configureBackend({
     if (method === "image_service_describe") return availability as T;
     if (method === "recent_openai_image_runs") return runs() as T;
     if (method === "jobs.start") {
+      // Like the native backend: only an explicitly failed image run is a Retry source.
+      const retryOf = (params as any)?.request?.retryOf;
+      if (retryOf !== undefined && retryOf !== null) {
+        const source = [...runs(), ...[...jobRequests.keys()].map(runForJob)].find((history) => history?.run.id === retryOf);
+        if (!source || !retryable(source)) throw new Error("Only an explicitly failed image run can be retried");
+      }
       started.push(structuredClone(params ?? {}));
       const jobId = nextJob++;
       jobRequests.set(jobId, { runId: 200 + jobRequests.size, request: structuredClone((params as any).request) });

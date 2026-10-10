@@ -368,6 +368,47 @@ fn shared_service_images_adopt_exact_bytes_and_recover_without_repeating_start()
     assert!(String::from_utf8_lossy(&output.stdout).contains("PASS actual-native-stdio restart-delivery-restoration"));
 }
 
+/// The actual Image Generation provider executable. `TE_IMAGE_GENERATION_BACKEND`
+/// may name a prebuilt one; otherwise it is built into this test's own target
+/// directory so the outer build's lock and artifacts are untouched.
+#[cfg(unix)]
+fn image_generation_backend() -> std::path::PathBuf {
+    if let Some(path) = std::env::var_os("TE_IMAGE_GENERATION_BACKEND") {
+        return path.into();
+    }
+    let target = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("image-generation-provider");
+    let status = Command::new(option_env!("CARGO").unwrap_or("cargo"))
+        .args(["build", "--locked", "--manifest-path"])
+        .arg(concat!(env!("CARGO_MANIFEST_DIR"), "/../plugins/image-generation/backend/Cargo.toml"))
+        .arg("--target-dir")
+        .arg(&target)
+        .status()
+        .unwrap();
+    assert!(status.success(), "Could not build the Image Generation provider");
+    target.join("debug/image-generation-backend")
+}
+
+/// Real Trace and real provider executables joined by a host-shaped broker:
+/// ordered immutable inputs reach a loopback endpoint byte-for-byte, the effective
+/// prompt/task is durable in Trace before the provider invokes anything, a >4 MiB
+/// random-pixel PNG arrives by artifact path under the 1 MiB frame bound, and a
+/// profile change or provider restart between prepare and start never dispatches.
+#[cfg(unix)]
+#[test]
+fn shared_ai_end_to_end_preserves_ordered_inputs_durable_recipe_and_large_output_by_artifact() {
+    let output = Command::new("python3")
+        .arg(concat!(env!("CARGO_MANIFEST_DIR"), "/test_support/shared_ai_end_to_end.py"))
+        .arg(env!("CARGO_BIN_EXE_trace-explorer-backend"))
+        .arg(image_generation_backend())
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(output.status.success(), "{stdout}\n{}", String::from_utf8_lossy(&output.stderr));
+    for scenario in ["ordered-large-http", "profile-change", "provider-restart", "cli-task"] {
+        assert!(stdout.contains(&format!("PASS {scenario}:")), "{stdout}");
+    }
+}
+
 #[test]
 fn native_plugin_persists_published_lineage_across_restart_without_host_code() {
     let directory = test_support::tempdir().unwrap();

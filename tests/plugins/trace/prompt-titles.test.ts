@@ -232,6 +232,36 @@ describe("promptTitles", () => {
     expect(invoke).not.toHaveBeenCalled();
   });
 
+  it("never regenerates loaded titles eagerly: configuration and preference changes request nothing until nodes ask again", async () => {
+    const settle = async () => { for (let i = 0; i < 5; i++) await flush(); };
+    await configured();
+    let textChanged!: (revision: number) => void;
+    let preferencesChanged!: (settings: Record<string, unknown>) => void;
+    promptTitles.bind({
+      storage: { get: async () => ({ summarizePrompts: true }), set: async () => {}, subscribe: (listener) => { preferencesChanged = listener; return () => {}; } },
+      text: { subscribe: (listener) => { textChanged = listener; return () => {}; }, openSettings() {} },
+    });
+    await settle();
+    const loaded = Array.from({ length: 40 }, (_, index) => index + 1);
+    for (const id of loaded) promptTitles.request(id, `Prompt ${id}`);
+    await settle();
+    expect(titleCalls().map((call) => call[1].runId)).toEqual(loaded);
+    invoke.mockClear();
+    textChanged(2);
+    await settle();
+    preferencesChanged({ summarizePrompts: true });
+    await settle();
+    expect(promptTitles.configured).toBe(true);
+    expect(invoke.mock.calls.filter((call) => call[0] === "trace_title_context")).toHaveLength(2);
+    expect(titleCalls()).toHaveLength(0);
+    expect(loaded.every((id) => promptTitles.labelFor(id, `Prompt ${id}`) === `Prompt ${id}` && !promptTitles.pending(id))).toBe(true);
+    promptTitles.request(7, "Prompt 7");
+    promptTitles.request(3, "Prompt 3");
+    await settle();
+    expect(titleCalls().map((call) => call[1].runId)).toEqual([7, 3]);
+    expect(titleCalls().every((call) => call[1].expectedConfigurationRevision === 1)).toBe(true);
+  });
+
   it("falls back quietly on an older host and ignores a preference load after disposal", async () => {
     const get = vi.fn(async()=>({}));
     promptTitles.bind({storage:{get,set:async()=>{}}});
