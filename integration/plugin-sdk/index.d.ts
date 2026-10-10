@@ -85,12 +85,19 @@ export interface FileViewContribution { id: string; title: string; component: Co
 export interface PreviewInfoContribution { id: string; component: Component<any>; props?: Record<string, unknown>; when(subject: PreviewSubject): boolean }
 
 export interface PluginContext {
+  /** Host-managed modal navigation retains the caller's mounted draft. */
+  presentation?: {openDialog(id:string,props?:Record<string,unknown>):Promise<{reason:"closed"|"caller-closed"|"owner-disposed"}>};
+  /** Present on hosts with the textGeneration capability. Text execution is backend-owned. */
+  text?: {
+    subscribe(listener: (revision: number) => void): () => void;
+    openSettings(): void;
+  };
   registerCommand(command: {id: string; label: string; category: string; shortcut?: string; when?: () => boolean; handler: () => void | Promise<void>}): void;
   registerContextMenuItem(item: {id: string; label: string; group: string; when: (entries: FileEntry[]) => boolean; handler: (entries: FileEntry[]) => void | Promise<void>}): void;
-  registerSettingsSection(section: {id: string; title: string; rows: {id: string; label: string; type: "select" | "text" | "password" | "toggle"; default?: string | boolean; description?: string; options?: {value: string; label: string}[]}[]}): void;
+  registerSettingsSection(section: {id: string; title: string; rows: {id: string; label: string; type: "select" | "text" | "password" | "toggle"; default?: string | boolean; description?: string; options?: {value: string; label: string}[]}[];actions?:{id:string;label:string;description?:string;run:()=>void|Promise<void>}[]}): void;
   registerInspector(contribution: {id: string; title: string; component: Component<any>; props?: Record<string, unknown>; when: (entries: FileEntry[]) => boolean}): void;
   registerImageEditorTool(tool: {id: string; title: string; component: Component<any>; props?: Record<string, unknown>; when: (source: ImageEditorSource) => boolean}): void;
-  registerDialog(dialog: {id: string; component: Component<any>}): void;
+  registerDialog(dialog: {id: string; component: Component<any>; props?: Record<string,unknown>}): void;
   /** SDK 2. */
   registerFileView?(view: FileViewContribution): void;
   /** SDK 2. */

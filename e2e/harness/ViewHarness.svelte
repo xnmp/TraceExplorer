@@ -60,9 +60,13 @@
   let editorTool = $state.raw<{ component: Component<any>; props?: Record<string, unknown> } | null>(null);
   let editorSource = $state.raw<ImageEditorSource | null>(null);
 
+  let configureOpen = $state(false);
+  let closeConfiguration: (() => void) | undefined;
+  let configureFailure: string | null = null;
   function activate() {
     views = []; sections = []; commands.clear(); conditions.clear(); listeners.clear(); fileListeners.length = 0;
     const ctx = {
+      registerSettingsSection: () => {},
       registerFileView: (view: FileViewContribution) => { views = [...views, view]; },
       registerPreviewInfo: (section: PreviewInfoContribution) => { sections = [...sections, section]; },
       registerCommand: (command: { id: string; handler: () => void | Promise<void>; when?: () => boolean }) => { commands.set(command.id, command.handler); conditions.set(command.id, command.when ?? (() => true)); },
@@ -84,7 +88,13 @@
       registerDialog: (dialog: { id: string; component: Component<any> }) => { dialogs.set(dialog.id, dialog.component); },
       openDialog: (id: string, props: Record<string, unknown> = {}) => { opened_dialogs = [...opened_dialogs, { id, props }]; },
       closeDialog: (id: string) => { opened_dialogs = opened_dialogs.filter((dialog) => dialog.id !== id); },
-      storage: { get: async () => ({ backend: "codex", codexPath: "/opt/codex" }), set: async () => {} },
+      presentation: { openDialog: async (id: string) => {
+        if (configureFailure) throw new Error(configureFailure);
+        if (id !== "image-generation.connections") throw new Error("Unknown provider dialog");
+        configureOpen = true;
+        await new Promise<void>((resolve) => { closeConfiguration = resolve; });
+        return { reason: "closed" };
+      } },
       saveSettings: async () => {},
       toast: { show: () => {}, error: () => {} },
       jobs: { accept: async (registration: { label: string; detail: string }, start: () => Promise<{ ok: boolean }>) => {
@@ -160,6 +170,7 @@
 
   export const harness = {
     backend,
+    setConfigureFailure(message: string | null) { configureFailure = message; },
     setWidth(width: number) { viewWidth = width; },
     /** Changes the pane's tile-size preset live, as the host's setting would; null removes it (an older host). */
     setTileSize(preset: TileSizePreset | null) { tilePreset = preset; },
@@ -269,3 +280,11 @@
   .actions { display: flex; gap: 6px; margin: 8px 0; }
   h2 { margin: 0 0 6px; font-size: 14px; }
 </style>
+
+{#if configureOpen}
+  <div role="dialog" aria-label="Image connections" aria-modal="true" style="position:fixed;inset:10%;z-index:20;background:var(--background-solid);padding:20px">
+    <h2>Image connections</h2>
+    <button onclick={() => { backend.configureImages(); configureOpen = false; closeConfiguration?.(); }}>Use custom connection</button>
+    <button onclick={() => { configureOpen = false; closeConfiguration?.(); }}>Close connections</button>
+  </div>
+{/if}

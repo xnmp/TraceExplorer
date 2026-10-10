@@ -48,7 +48,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     trace_explorer_backend::initialize(&directory)?;
     let output = Arc::new(Mutex::new(io::stdout()));
     let callback_output = output.clone();
-    trace_explorer_backend::host_process::configure(move |value| {
+    trace_explorer_backend::host_rpc::configure(move |value| {
         send(&callback_output, &value).map_err(Into::into)
     });
     let event_output = output.clone();
@@ -86,6 +86,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
     let slots = Arc::new(tokio::sync::Semaphore::new(32));
+    let controls = Arc::new(tokio::sync::Semaphore::new(8));
+    let draining = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let active = Arc::new(Mutex::new(HashSet::new()));
     let mut handlers = tokio::task::JoinSet::new();
     while let Some(frame) = input.recv().await {
@@ -99,7 +101,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 continue;
             }
         };
-        if trace_explorer_backend::host_process::deliver(&value) {
+        if trace_explorer_backend::host_rpc::deliver(&value) {
             continue;
         }
         let request = match serde_json::from_value::<Request>(value) {
@@ -113,16 +115,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         };
         let id = request.id;
-        let permit = match slots.clone().try_acquire_owned() {
+        let control = matches!(request.method.as_str(),"jobs.status"|"jobs.cancelOperation"|"jobs.resumeOperation"|"lifecycle.quiesce"|"lifecycle.activate");
+        if !control && draining.load(std::sync::atomic::Ordering::Acquire) {
+            send(&output,&json!({"jsonrpc":"2.0","id":id,"error":{"code":-32002,"message":"Trace is draining for a lifecycle change","data":{"code":"capacity_reached"}}}))?;
+            continue;
+        }
+        let permit = match (if control {controls.clone()} else {slots.clone()}).try_acquire_owned() {
             Ok(permit) => permit,
             Err(_) => {
                 send(
                     &output,
-                    &json!({"jsonrpc":"2.0","id":id,"error":{"code":-32002,"message":"Plugin request capacity reached"}}),
+                    &json!({"jsonrpc":"2.0","id":id,"error":{"code":-32002,"message":"Plugin request capacity reached","data":{"code":"capacity_reached"}}}),
                 )?;
                 continue;
             }
         };
+        if request.method == "lifecycle.quiesce" {
+            if slots.available_permits() != 32 || controls.available_permits() != 7 {
+                send(&output,&json!({"jsonrpc":"2.0","id":id,"error":{"code":-32002,"message":"Trace request handlers are still active","data":{"code":"capacity_reached"}}}))?;
+                continue;
+            }
+        }
         if !active
             .lock()
             .unwrap_or_else(|error| error.into_inner())
@@ -134,12 +147,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             )?;
             continue;
         }
+        if request.method == "lifecycle.quiesce" {draining.store(true,std::sync::atomic::Ordering::Release);}
         let output = output.clone();
         let app = app.clone();
         let active = active.clone();
+        let draining = draining.clone();
         handlers.spawn(async move {
             let _permit = permit;
+            let quiesce = request.method == "lifecycle.quiesce";
+            let activate = request.method == "lifecycle.activate";
             let response = trace_explorer_backend::dispatch(app, request).await;
+            if quiesce && response.get("error").is_some() || activate && response["result"]["ready"] == true {
+                draining.store(false,std::sync::atomic::Ordering::Release);
+            }
             if let Err(cause)=send(&output,&response) {
                 let _=send(&output,&json!({"jsonrpc":"2.0","id":id,"error":{"code":-32003,"message":cause.to_string()}}));
             }
@@ -150,7 +170,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         });
         while handlers.try_join_next().is_some() {}
     }
-    trace_explorer_backend::host_process::disconnected();
+    trace_explorer_backend::host_rpc::disconnected();
     trace_explorer_backend::shutdown_jobs();
     handlers.abort_all();
     // Accepted blocking workers can be inside HTTP calls. The host retains

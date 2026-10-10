@@ -50,7 +50,7 @@ test("a Trace selection of listed, subfolder and unsaved images arrives whole, i
   const [warm, merge, , village] = picked;
   expect(start.params.request).toMatchObject({
     sourcePath: village, referencePaths: [warm, merge], prompt: "Put the hat in Image 3 on the man in Image 1",
-    outputDir: "/pictures", outputFilename: "village_edit.png", backend: "codex", model: "gpt-image-2", resolution: "2k", aspectRatio: "keep",
+    outputDir: "/pictures", outputFilename: "village_edit.png", connectionId: "saved-login", expectedConnectionRevision: "cli-revision", model: null, resolution: "2k", aspectRatio: "keep",
   });
   // Every input is pinned to the revision the dialog read, in the same order.
   const described = await page.evaluate(() => (window as any).trace.backend.calls("openai_image_inputs"));
@@ -102,7 +102,7 @@ test("at 1280×800 the inputs, the prompt and every setting are visible without 
   for (const control of [
     strip(page), dialog(page).getByRole("textbox", { name: "Edit prompt" }),
     dialog(page).getByRole("combobox", { name: "Resolution" }), dialog(page).getByRole("spinbutton", { name: "Images" }),
-    dialog(page).getByRole("textbox", { name: "Temperature" }), dialog(page).getByRole("textbox", { name: "Seed" }),
+    dialog(page).getByRole("combobox", { name: "Quality" }), dialog(page).getByRole("combobox", { name: "Background" }),
     dialog(page).getByRole("combobox", { name: "Aspect ratio" }), dialog(page).getByRole("button", { name: "Generate" }),
   ]) {
     await expect(control).toBeInViewport({ ratio: 1 });

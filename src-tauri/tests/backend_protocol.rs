@@ -195,7 +195,7 @@ fn schema_upgrade_keeps_unsaved_folder_context_when_its_volume_is_unavailable() 
     let database = data.path().join("trace.sqlite");
     seed_unsaved_output(&database, &folder, &output);
     let connection = rusqlite::Connection::open(&database).unwrap();
-    connection.execute_batch("DROP TABLE image_folder_contexts; DROP TABLE image_batch_members; DROP TABLE image_prompt_titles; DROP TABLE image_discards; PRAGMA user_version=7;").unwrap();
+    connection.execute_batch("DROP TABLE image_service_operations; DROP TABLE image_service_cancellations; DROP TABLE image_service_schema; PRAGMA application_id=0; DROP TABLE image_folder_contexts; DROP TABLE image_batch_members; DROP TABLE image_prompt_titles; DROP TABLE image_discards; PRAGMA user_version=7;").unwrap();
     drop(connection);
     let offline = data.path().join("Pictures-offline");
     std::fs::rename(&folder, &offline).unwrap();
@@ -237,7 +237,7 @@ fn schema_upgrade_resolves_an_offline_folder_alias_when_its_volume_returns() {
     let database = data.path().join("trace.sqlite");
     seed_unsaved_output(&database, &alias, &output);
     let connection = rusqlite::Connection::open(&database).unwrap();
-    connection.execute_batch("DROP TABLE image_folder_contexts; DROP TABLE image_batch_members; DROP TABLE image_prompt_titles; DROP TABLE image_discards; PRAGMA user_version=7;").unwrap();
+    connection.execute_batch("DROP TABLE image_service_operations; DROP TABLE image_service_cancellations; DROP TABLE image_service_schema; PRAGMA application_id=0; DROP TABLE image_folder_contexts; DROP TABLE image_batch_members; DROP TABLE image_prompt_titles; DROP TABLE image_discards; PRAGMA user_version=7;").unwrap();
     drop(connection);
     let offline = data.path().join("volume-offline");
     std::fs::rename(&volume, &offline).unwrap();
@@ -256,189 +256,157 @@ fn schema_upgrade_resolves_an_offline_folder_alias_when_its_volume_returns() {
     assert!(output.is_file());
 }
 
-#[cfg(unix)]
 #[test]
 fn title_admission_rejects_busy_work_and_reuses_the_completed_prompt_cache() {
-    use std::os::unix::fs::PermissionsExt;
-    struct ReleaseOnDrop(std::path::PathBuf);
-    impl Drop for ReleaseOnDrop {
-        fn drop(&mut self) {
-            let _ = std::fs::write(&self.0, b"release");
-        }
-    }
     let data = test_support::tempdir().unwrap();
-    let provider = test_support::tempdir().unwrap();
-    let executable = provider.path().join("title-codex");
-    let started = provider.path().join("started");
-    let release = provider.path().join("release");
-    let thread =
-        json!({"type":"thread.started","thread_id":"01234567-89ab-7cde-8f01-23456789abcd"});
-    let title = json!({"type":"item.completed","item":{"type":"agent_message","text":json!({"title":"Short title"}).to_string()}});
-    std::fs::write(&executable,format!("#!/bin/sh\nprintf x >> \"$TRACE_TITLE_TEST_STARTED\"\nwhile [ ! -f \"$TRACE_TITLE_TEST_RELEASE\" ]; do sleep .01; done\nprintf '%s\\n' '{thread}' '{title}' '{{\"type\":\"turn.completed\"}}'\n")).unwrap();
-    std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).unwrap();
-    let mut backend = Backend::start_with_env(
-        data.path(),
-        &[
-            ("TRACE_TITLE_TEST_STARTED", &started),
-            ("TRACE_TITLE_TEST_RELEASE", &release),
-        ],
+    let mut backend = Backend::start(data.path());
+    let initialized = backend.call(
+        "initialize",
+        json!({"protocolVersion":1,"activeRunIds":[],"textService":{"version":1}}),
     );
-    let _release_on_drop = ReleaseOnDrop(release.clone());
-    backend.ready(vec![]);
+    assert!(initialized.get("error").is_none(), "{initialized}");
     let begin = json!({"start":{"operation":"openai.image.generate","parameters":{"prompt":"Same cached prompt"},"inputs":[]}});
     let first = backend.call("provenance.begin", begin.clone())["result"]["id"].clone();
     let second = backend.call("provenance.begin", begin)["result"]["id"].clone();
+    let context = json!({"profileId":"fixture","configurationRevision":1,"fingerprint":"f".repeat(64),"transport":"openai-chat-completions","requestedModel":"fixture-model"});
+    let description = json!({"version":1,"enabled":true,"available":true,"configurationRevision":1,"context":context});
+    let respond = |backend: &mut Backend, request: &Value, result: Value| {
+        writeln!(
+            backend.child.stdin.as_mut().unwrap(),
+            "{}",
+            json!({"jsonrpc":"2.0","id":request["id"],"result":result})
+        )
+        .unwrap();
+    };
     backend.sequence += 1;
     let first_request = backend.sequence;
-    writeln!(backend.child.stdin.as_mut().unwrap(), "{}", json!({"jsonrpc":"2.0","id":first_request,"method":"trace_prompt_title","params":{"runId":first,"codexPath":executable}})).unwrap();
-    let deadline = std::time::Instant::now() + Duration::from_secs(5);
-    while !started.exists() && std::time::Instant::now() < deadline {
-        std::thread::sleep(Duration::from_millis(5));
-    }
-    assert!(started.exists(), "Title fixture did not start");
+    writeln!(backend.child.stdin.as_mut().unwrap(), "{}", json!({"jsonrpc":"2.0","id":first_request,"method":"trace_prompt_title","params":{"runId":first,"requestId":"title-first","expectedConfigurationRevision":1}})).unwrap();
+    let generation = loop {
+        let request = backend
+            .replies
+            .recv_timeout(Duration::from_secs(5))
+            .unwrap();
+        match request["method"].as_str() {
+            Some("host.text.describe") => respond(&mut backend, &request, description.clone()),
+            Some("host.text.generate") => break request,
+            _ => panic!("Unexpected frame before host generation: {request}"),
+        }
+    };
+    assert_eq!(generation["params"]["input"], "Same cached prompt");
+    assert_eq!(generation["params"]["requestId"], "title-first");
+    assert!(generation["params"].get("codexPath").is_none());
     let busy = backend.call(
         "trace_prompt_title",
-        json!({"runId":second,"codexPath":executable}),
+        json!({"runId":second,"requestId":"title-second","expectedConfigurationRevision":1}),
     );
     assert!(
         busy["error"]["message"].as_str().unwrap().contains("busy"),
         "{busy}"
     );
-    let independent = backend.call("recent_openai_image_runs", json!({}));
-    assert!(independent.get("result").is_some(), "{independent}");
-    std::fs::write(&release, b"release").unwrap();
+    assert!(backend
+        .call("recent_openai_image_runs", json!({}))
+        .get("result")
+        .is_some());
+    respond(
+        &mut backend,
+        &generation,
+        json!({"text":"Short title","context":context}),
+    );
+    let result = backend
+        .replies
+        .recv_timeout(Duration::from_secs(5))
+        .unwrap();
+    assert_eq!(result["id"], first_request);
+    assert_eq!(result["result"]["title"], "Short title", "{result}");
+    backend.sequence += 1;
+    let cached_id = backend.sequence;
+    writeln!(backend.child.stdin.as_mut().unwrap(), "{}", json!({"jsonrpc":"2.0","id":cached_id,"method":"trace_prompt_title","params":{"runId":second,"requestId":"title-cache","expectedConfigurationRevision":1}})).unwrap();
     loop {
-        let reply = backend
+        let request = backend
             .replies
             .recv_timeout(Duration::from_secs(5))
             .unwrap();
-        if reply["id"] == first_request {
-            assert_eq!(reply["result"], "Short title", "{reply}");
+        if request["method"] == "host.text.describe" {
+            respond(&mut backend, &request, description.clone());
+        } else {
+            assert_eq!(
+                request["id"], cached_id,
+                "Cache retry must not generate again: {request}"
+            );
+            assert_eq!(request["result"]["title"], "Short title", "{request}");
             break;
         }
     }
-    let cached = backend.call(
-        "trace_prompt_title",
-        json!({"runId":second,"codexPath":executable}),
-    );
-    assert_eq!(cached["result"], "Short title", "{cached}");
-    assert_eq!(
-        std::fs::read(started).unwrap(),
-        b"x",
-        "Cache retry contacted the title provider again"
-    );
+}
+
+#[test]
+fn image_generation_requires_shared_services_and_rejects_legacy_credentials() {
+    let data = test_support::tempdir().unwrap();
+    let mut backend = Backend::start(data.path());
+    backend.ready(vec![]);
+    let op = "0123456789abcdef0123456789abcdef";
+    let legacy = json!({"kind":"openai-image","operationId":op,"jobId":777,"request":{
+        "backend":"codex","codexPath":"/not/invoked/codex","sourcePath":null,"prompt":"Fixture",
+        "outputDir":"","outputFilename":"image.png","model":"gpt-image-2","size":"auto","quality":"auto","background":"auto"
+    },"apiKey":"private-value-must-never-be-a-consumer-parameter"});
+    assert!(backend.call("jobs.start", legacy).get("error").is_some());
+    let request = json!({"kind":"openai-image","operationId":op,"jobId":777,"request":{
+        "connectionId":"fixture","expectedConnectionRevision":"revision-1","model":null,"sourcePath":null,
+        "prompt":"Fixture","outputDir":"","outputFilename":"image.png","size":"auto","quality":"auto","background":"auto"
+    }});
+    let reply = backend.call("jobs.start",request);
+    assert!(reply["error"]["message"].as_str().unwrap().contains("Update Tauri Explorer"),"{reply}");
+    assert!(backend.call("jobs.status",json!({"operationId":op}))["result"].is_null());
 }
 
 #[cfg(unix)]
 #[test]
-fn generation_uses_managed_temporary_storage_and_survives_restart() {
-    use std::os::unix::fs::PermissionsExt;
-    let data = test_support::tempdir().unwrap();
-    let provider = test_support::tempdir().unwrap();
-    let source = data.path().join("portrait.png");
-    let png = include_bytes!("../test_support/fixtures/source32.png");
-    std::fs::write(&source, png).unwrap();
-    let thread = "01234567-89ab-7cde-8f01-23456789abcd";
-    let output = provider.path().join("generated_images").join(thread);
-    std::fs::create_dir_all(&output).unwrap();
-    std::fs::write(output.join("result.png"), png).unwrap();
-    let executable = provider.path().join("codex");
-    std::fs::write(&executable, format!("#!/bin/sh\nif [ \"$1\" = login ]; then printf 'Logged in using ChatGPT\\n'; exit 0; fi\nprintf x >> \"$CODEX_HOME/provider-calls\"\nprintf '%s\\n' '{{\"type\":\"thread.started\",\"thread_id\":\"{thread}\"}}' '{{\"type\":\"turn.completed\"}}'\n")).unwrap();
-    std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).unwrap();
-    let missing_directory = data.path().join("not-created-by-generation");
-    let mut backend = Backend::start_with_env(data.path(), &[("CODEX_HOME", provider.path())]);
-    backend.ready(vec![]);
-    let operation_id = "0123456789abcdef0123456789abcdef";
-    let start = json!({"kind":"openai-image","operationId":operation_id,"jobId":777,"request":{
-        "backend":"codex", "codexPath":executable, "sourcePath":source, "referencePaths":[],
-        "prompt":"Make the background blue", "outputDir":missing_directory, "outputFilename":"ignored.png",
-        "model":"gpt-image-2", "size":"auto", "quality":"auto", "background":"auto"
-    }, "apiKey":""});
-    let mut unowned = start.clone();
-    unowned.as_object_mut().unwrap().remove("operationId");
-    assert!(backend.call("jobs.start", unowned).get("error").is_some());
-    let mut unowned = start.clone();
-    unowned.as_object_mut().unwrap().remove("jobId");
-    assert!(backend.call("jobs.start", unowned).get("error").is_some());
-    assert!(backend
-        .call("start_openai_image_job", start.clone())
-        .get("error")
-        .is_some());
-    let reply = backend.call("jobs.start", start.clone());
-    assert_eq!(reply["result"], 777, "{reply}");
-    let mut retry = start.clone();
-    retry["jobId"] = json!(888);
-    assert_eq!(backend.call("jobs.start", retry.clone())["result"], 777);
-    let complete = backend.event("openai-image-complete");
-    assert_eq!(complete["jobId"], 777);
-    assert_eq!(
-        std::fs::read(provider.path().join("provider-calls")).unwrap(),
-        b"x"
-    );
-    let saved = std::path::PathBuf::from(complete["outputPath"].as_str().unwrap());
-    assert!(saved.starts_with(data.path().join("generated")));
-    assert_eq!(saved.file_name().unwrap(), "portrait_edit.png");
-    assert_eq!(std::fs::read(&saved).unwrap(), png);
-    assert!(!missing_directory.exists());
-    let graph = backend.call("trace_for_image", json!({"path":saved}))["result"].clone();
-    assert!(graph["artifacts"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .any(|artifact| artifact["temporary"] == true));
-    drop(backend);
-    let mut backend = Backend::start(data.path());
-    backend.ready(vec![]);
-    let status = backend.call("jobs.status", json!({"operationId":operation_id}))["result"].clone();
-    assert_eq!(status["jobId"], 777);
-    assert_eq!(status["status"], "succeeded");
-    assert_eq!(status["outputPath"], saved.to_str().unwrap());
-    assert_eq!(backend.call("jobs.start", retry.clone())["result"], 777);
-    assert_eq!(
-        std::fs::read(provider.path().join("provider-calls")).unwrap(),
-        b"x"
-    );
-    retry["request"]["prompt"] = json!("A different edit");
-    assert!(backend.call("jobs.start", retry).get("error").is_some());
-    assert_eq!(
-        std::fs::read(provider.path().join("provider-calls")).unwrap(),
-        b"x"
-    );
-    assert_eq!(std::fs::read(&saved).unwrap(), png);
-    assert_eq!(
-        backend.call("trace_for_image", json!({"path":saved}))["result"],
-        graph
-    );
-    let id = graph["currentArtifactId"].clone();
-    let permanent = data.path().join("portrait_edit.png");
-    let result = backend.call(
-        "save_generated_image",
-        json!({"artifactId":id,"target":permanent}),
-    );
-    assert_eq!(
-        result["result"]["path"],
-        permanent.to_str().unwrap(),
-        "{result}"
-    );
-    assert_eq!(std::fs::read(&permanent).unwrap(), png);
-    let final_graph = backend.call("trace_for_image", json!({"path":permanent}))["result"].clone();
-    assert_eq!(final_graph["currentArtifactId"], id);
-    assert_eq!(
-        final_graph["artifacts"].as_array().unwrap().len(),
-        graph["artifacts"].as_array().unwrap().len()
-    );
-    assert!(!final_graph["artifacts"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .any(|artifact| artifact["temporary"] == true));
-    drop(backend);
-    let mut backend = Backend::start(data.path());
-    backend.ready(vec![]);
-    assert_eq!(
-        backend.call("trace_for_image", json!({"path":permanent}))["result"],
-        final_graph
-    );
+fn shared_service_images_adopt_exact_bytes_and_recover_without_repeating_start() {
+    let output=Command::new("python3").arg(concat!(env!("CARGO_MANIFEST_DIR"),"/test_support/service_images_protocol.py"))
+        .arg(env!("CARGO_BIN_EXE_trace-explorer-backend")).output().unwrap();
+    assert!(output.status.success(),"{}\n{}",String::from_utf8_lossy(&output.stdout),String::from_utf8_lossy(&output.stderr));
+    assert!(String::from_utf8_lossy(&output.stdout).contains("PASS actual-native-stdio restart-delivery-restoration"));
+}
+
+/// The actual Image Generation provider executable. `TE_IMAGE_GENERATION_BACKEND`
+/// may name a prebuilt one; otherwise it is built into this test's own target
+/// directory so the outer build's lock and artifacts are untouched.
+#[cfg(unix)]
+fn image_generation_backend() -> std::path::PathBuf {
+    if let Some(path) = std::env::var_os("TE_IMAGE_GENERATION_BACKEND") {
+        return path.into();
+    }
+    let target = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("image-generation-provider");
+    let status = Command::new(option_env!("CARGO").unwrap_or("cargo"))
+        .args(["build", "--locked", "--manifest-path"])
+        .arg(concat!(env!("CARGO_MANIFEST_DIR"), "/../plugins/image-generation/backend/Cargo.toml"))
+        .arg("--target-dir")
+        .arg(&target)
+        .status()
+        .unwrap();
+    assert!(status.success(), "Could not build the Image Generation provider");
+    target.join("debug/image-generation-backend")
+}
+
+/// Real Trace and real provider executables joined by a host-shaped broker:
+/// ordered immutable inputs reach a loopback endpoint byte-for-byte, the effective
+/// prompt/task is durable in Trace before the provider invokes anything, a >4 MiB
+/// random-pixel PNG arrives by artifact path under the 1 MiB frame bound, and a
+/// profile change or provider restart between prepare and start never dispatches.
+#[cfg(unix)]
+#[test]
+fn shared_ai_end_to_end_preserves_ordered_inputs_durable_recipe_and_large_output_by_artifact() {
+    let output = Command::new("python3")
+        .arg(concat!(env!("CARGO_MANIFEST_DIR"), "/test_support/shared_ai_end_to_end.py"))
+        .arg(env!("CARGO_BIN_EXE_trace-explorer-backend"))
+        .arg(image_generation_backend())
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(output.status.success(), "{stdout}\n{}", String::from_utf8_lossy(&output.stderr));
+    for scenario in ["ordered-large-http", "profile-change", "provider-restart", "cli-task"] {
+        assert!(stdout.contains(&format!("PASS {scenario}:")), "{stdout}");
+    }
 }
 
 #[test]
@@ -586,11 +554,11 @@ fn upgrade_preflight_retains_publication_proof_until_commit_or_rollback() {
         } else {
             assert_eq!(
                 candidate.call("lifecycle.activate", json!({}))["result"],
-                Value::Null
+                json!({"ready":true})
             );
             assert_eq!(
                 candidate.call("lifecycle.activate", json!({}))["result"],
-                Value::Null
+                json!({"ready":true})
             );
         }
         let graph = candidate.call("trace_for_image", json!({"path":target}))["result"].clone();

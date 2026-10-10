@@ -80,6 +80,8 @@ async fn execute(app: EventEmitter, request: &Request) -> Result<Value, AppError
                     .and_then(Value::as_bool)
                     .unwrap_or(false),
             );
+            crate::host_text::enable(&p["textService"]);
+            crate::host_image::enable(&p["serviceService"],&p["artifactService"]);
             if trace::owner_ready() {
                 let _ = app.emit("trace:changed", ());
             }
@@ -88,13 +90,20 @@ async fn execute(app: EventEmitter, request: &Request) -> Result<Value, AppError
             )
         }
         "lifecycle.activate" => {
-            trace::activate_owner()?;
+            tokio::task::spawn_blocking(trace::activate_owner).await
+                .map_err(|_|AppError::Other("Trace activation interrupted".into()))??;
+            trace::service_images::resume(app.clone())?;
             let _ = app.emit("trace:changed", ());
-            Ok(Value::Null)
+            Ok(json!({"ready":true}))
         }
+        "lifecycle.quiesce" => {tokio::task::spawn_blocking(trace::quiesce_owner).await.map_err(|_|AppError::Other("Trace quiesce interrupted".into()))??;Ok(json!({"ready":false,"idle":true,"checkpoint":true}))}
         "folder_has_trace" => Ok(json!(
             trace::folders::has_trace(field(p, "directory")?).await?
         )),
+        "image_service_describe" => {
+            to_json(tokio::task::spawn_blocking(||crate::host_image::describe(&crate::host_image::NativeHost)).await
+                .map_err(|_|AppError::Other("Image service configuration read interrupted".into()))??)
+        }
         "trace_for_job" => Ok(serde_json::to_value(
             trace::trace_for_job(field(p, "jobId")?).await?,
         )
@@ -149,24 +158,22 @@ async fn execute(app: EventEmitter, request: &Request) -> Result<Value, AppError
         "trace_prompt_title" => Ok(json!(
             trace::titles::title(
                 field(p, "runId")?,
-                p.get("codexPath")
-                    .and_then(Value::as_str)
-                    .unwrap_or("")
-                    .to_owned()
+                field(p, "requestId")?,
+                field(p, "expectedConfigurationRevision")?
             )
             .await?
         )),
-        "trace_title_connection" => {
-            let executable = p
-                .get("codexPath")
-                .and_then(Value::as_str)
-                .unwrap_or("")
-                .to_owned();
-            Ok(json!(tokio::task::spawn_blocking(move || {
-                crate::openai_image::title_connection(&executable)
-            })
-            .await
-            .map_err(|error| AppError::WorkerFailed(error.to_string()))?))
+        "trace_title_context" => Ok(json!(tokio::task::spawn_blocking(move || {
+            crate::host_text::describe()
+        })
+        .await
+        .map_err(|error| AppError::WorkerFailed(error.to_string()))??)),
+        "trace_cancel_prompt_title" => {
+            let request_id: String = field(p, "requestId")?;
+            trace::titles::cancel(&request_id);
+            tokio::task::spawn_blocking(move || crate::host_text::cancel(&request_id))
+                .await
+                .map_err(|error| AppError::WorkerFailed(error.to_string()))?
         }
         "discard_generated_image" => {
             let view_path = trace::save::discard(field(p, "artifactId")?).await?;
@@ -174,7 +181,7 @@ async fn execute(app: EventEmitter, request: &Request) -> Result<Value, AppError
             Ok(json!({"viewPath":view_path}))
         }
         "openai_image_inputs" => Ok(serde_json::to_value(
-            crate::openai_image::describe_inputs(field(p, "paths")?).await?,
+            crate::image_inputs::describe_inputs(field(p, "paths")?).await?,
         )
         .map_err(|error| AppError::Other(error.to_string()))?),
         "openai_image_run_for_job" => Ok(serde_json::to_value(
@@ -190,20 +197,35 @@ async fn execute(app: EventEmitter, request: &Request) -> Result<Value, AppError
                 return Err(AppError::Other("Unsupported image job kind".into()));
             }
             Ok(json!(
-                crate::openai_image::start_openai_image_job(
+                trace::service_images::start(
                     app,
                     field(p, "request")?,
-                    field(p, "apiKey")?,
                     field(p, "jobId")?,
-                    field(p, "operationId")?
+                    field(p, "operationId")?,
+                    p.get("operationDeadlineAtMs").map(|_|field(p,"operationDeadlineAtMs")).transpose()?
                 )
                 .await?
             ))
         }
-        "jobs.status" => Ok(serde_json::to_value(
-            trace::jobs::status(field(p, "operationId")?).await?,
-        )
-        .map_err(|error| AppError::Other(error.to_string()))?),
+        "jobs.status" => {
+            let id:String=field(p,"operationId")?;
+            let lookup_id=id.clone();
+            if let Some(status)=tokio::task::spawn_blocking(move||trace::service_images::status(&lookup_id)).await.map_err(|_|AppError::Other("Image status read interrupted".into()))?? {Ok(status)}
+            else {to_json(trace::jobs::status(id).await?)}
+        }
+        "jobs.resumeOperation" => {
+            let operation:String=field(p,"operationId")?;
+            let current=tokio::task::spawn_blocking(move||trace::service_images::status(&operation)).await.map_err(|_|AppError::Other("Image recovery lookup interrupted".into()))??;
+            if current.is_none(){return Err(AppError::Other("Original image operation was not accepted".into()));}
+            // resume only queues existing durable operations; it never calls start.
+            trace::service_images::resume(app.clone())?;
+            Ok(Value::Null)
+        }
+        "jobs.cancelOperation" => {
+            let id:String=field(p,"operationId")?;
+            tokio::task::spawn_blocking(move||trace::service_images::cancel_operation(&id)).await.map_err(|_|AppError::Other("Image cancellation checkpoint interrupted".into()))??;
+            Ok(json!({"cancelRequested":true}))
+        }
         "provenance.begin" => Ok(
             serde_json::to_value(trace::begin_operation(field(p, "start")?)?)
                 .map_err(|error| AppError::Other(error.to_string()))?,
@@ -272,7 +294,7 @@ pub async fn dispatch(app: EventEmitter, request: Request) -> Value {
     match execute(app, &request).await {
         Ok(result) => json!({"jsonrpc":"2.0", "id":id, "result":result}),
         Err(error) => {
-            json!({"jsonrpc":"2.0", "id":id, "error":{"code":-32000,"message":error.to_string(),"data":error}})
+            {let data=serde_json::to_value(&error).unwrap_or_else(|_|json!({"kind":"other"}));json!({"jsonrpc":"2.0", "id":id, "error":{"code":-32000,"message":error.to_string(),"data":{"code":data["kind"],"kind":data["kind"]}}})}
         }
     }
 }

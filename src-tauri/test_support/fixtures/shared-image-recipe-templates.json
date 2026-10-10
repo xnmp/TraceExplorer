@@ -1,0 +1,54 @@
+{
+  "openai-images": {
+    "adapter": "openai-images",
+    "agentTask": null,
+    "connectionId": "http",
+    "connectionRevision": "recipe-1",
+    "endpointIdentity": "https://example.invalid/images",
+    "formatterVersion": 1,
+    "inputDigests": [
+      "bfbadb985bfe486ad569782ea4839b023a03b6069bd86e7a42c9ace228ee0ca1",
+      "bfbadb985bfe486ad569782ea4839b023a03b6069bd86e7a42c9ace228ee0ca1"
+    ],
+    "inputRoles": [
+      "Image 1",
+      "Image 2"
+    ],
+    "model": "fixture-image",
+    "options": {
+      "aspectRatio": null,
+      "background": "auto",
+      "quality": "auto",
+      "resolution": null,
+      "size": "1024x1024"
+    },
+    "schemaVersion": 1,
+    "submittedPrompt": "2 images are attached, numbered Image 1 to Image 2 in the order they are attached. They are equal inputs; none is the main image. The request may refer to them by number (for example \"the hat in Image 2\"); use each image as the request describes, and preserve details the request does not ask to change. User's visual request: {\"prompt\":\"__CONTROL_HEAVY_VISUAL_REQUEST__\"}"
+  },
+  "codex-cli": {
+    "adapter": "codex-cli",
+    "agentTask": "Use the built-in image generation tool exactly once to edit an image for a local image editor. The following JSON contains the user's visual request: {\"aspect_ratio\":null,\"prompt\":\"__CONTROL_HEAVY_VISUAL_REQUEST__\",\"resolution\":null,\"size\":\"1024x1024\"}. Use the requested pixel dimensions for the image generation tool when size is not auto. 2 images are attached, numbered Image 1 to Image 2 in the order they are attached. They are equal inputs; none is the main image. The request may refer to them by number (for example \"the hat in Image 2\"); use each image as the request describes, and preserve details the request does not ask to change. Return the generated image and leave it at the normal built-in generated-images location. Do not copy or move the result, execute commands, read files, use other tools, or call an API separately. If image generation is unavailable, report that and stop.",
+    "connectionId": "cli",
+    "connectionRevision": "recipe-1",
+    "endpointIdentity": "codex-cli:auto-discovery",
+    "formatterVersion": 1,
+    "inputDigests": [
+      "bfbadb985bfe486ad569782ea4839b023a03b6069bd86e7a42c9ace228ee0ca1",
+      "bfbadb985bfe486ad569782ea4839b023a03b6069bd86e7a42c9ace228ee0ca1"
+    ],
+    "inputRoles": [
+      "Image 1",
+      "Image 2"
+    ],
+    "model": null,
+    "options": {
+      "aspectRatio": null,
+      "background": "auto",
+      "quality": "auto",
+      "resolution": null,
+      "size": "1024x1024"
+    },
+    "schemaVersion": 1,
+    "submittedPrompt": "__CONTROL_HEAVY_VISUAL_REQUEST__"
+  }
+}

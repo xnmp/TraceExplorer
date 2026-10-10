@@ -1,7 +1,7 @@
 declare module "*.css";
 declare module "$lib/components/Modal.svelte" {
   import type { Component, Snippet } from "svelte";
-  const Modal: Component<{open: boolean; onClose: () => void; overlayClass?: string; labelledby?: string; label?: string; children?: Snippet}>;
+  const Modal: Component<{open: boolean; onClose: () => void; canClose?: () => boolean; overlayClass?: string; labelledby?: string; label?: string; children?: Snippet}>;
   export default Modal;
 }
 declare module "$lib/components/ImageCropEditor.svelte" {

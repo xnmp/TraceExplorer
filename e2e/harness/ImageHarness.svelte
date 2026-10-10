@@ -5,7 +5,7 @@
    * panel rows (tauri-explorer ProgressDialog) so its error text can be seen.
    */
   import OpenAIImageHistory from "$lib/plugins/openai-image/OpenAIImageHistory.svelte";
-  import type { PluginJobs, PluginStorage } from "../../integration/plugin-sdk";
+  import type { PluginJobs } from "../../integration/plugin-sdk";
   import { OLD_PANEL_MESSAGE, PANEL_MESSAGE, PROMPT, started } from "./image-fixture";
 
   type Job = { id: number; label: string; detail: string; status: "running" | "error"; error?: string; retry?: () => Promise<{ ok: true; data: number } | { ok: false; error: string }>; retrying?: boolean };
@@ -14,8 +14,6 @@
     { id: 1, label: "img-20260923-160059_edit_2_edit_2_edit.png", detail: PROMPT, status: "error", error: query.get("panel") === "old" ? OLD_PANEL_MESSAGE : PANEL_MESSAGE },
   ] : []);
   let historyOpen = $state(!query.has("panel"));
-  const settings: Record<string, unknown> = { backend: "codex", codexPath: "/opt/codex/bin/codex", apiKey: "" };
-  const storage: PluginStorage = { get: async () => ({ ...settings }), set: async () => {} };
   const service: PluginJobs = {
     async accept(registration, start) {
       const result = await start();
@@ -63,7 +61,7 @@
     {/each}
   </div>
 {/if}
-<OpenAIImageHistory open={historyOpen} onClose={() => { historyOpen = false; }} jobs={service} {storage} />
+<OpenAIImageHistory open={historyOpen} onClose={() => { historyOpen = false; }} jobs={service} />
 
 <style>
   :global(body) { margin: 0; font-family: system-ui, sans-serif; background: var(--background-solid); color: var(--text-primary); }

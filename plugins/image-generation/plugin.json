@@ -1,0 +1,15 @@
+{
+  "formatVersion": 1,
+  "id": "xnmp.image-generation",
+  "name": "Image Generation",
+  "description": "Reusable image generation and editing connections for Tauri Explorer",
+  "version": "0.1.0",
+  "sdkVersion": 3,
+  "svelteVersion": "5.56.3",
+  "frontend": "frontend/index.js",
+  "styles": "frontend/index.css",
+  "contributions": ["image-generation"],
+  "services": [{"id": "image-generation", "major": 1, "methods": ["describe", "prepare", "start", "status", "cancel", "acknowledge"]}],
+  "serviceDependencies": [],
+  "stateFiles": ["operations.sqlite", "operations.sqlite-wal", "operations.sqlite-shm", "operations.initialized", "profiles.json"]
+}

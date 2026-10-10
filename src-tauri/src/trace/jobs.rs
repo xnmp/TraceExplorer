@@ -104,6 +104,22 @@ fn accept_at(
     job_id: u64,
     request_digest: &str,
 ) -> Result<(TraceRunHandle, bool, u64), AppError> {
+    accept_at_with_link(database,start,id,job_id,request_digest,|_,_|Ok(()))
+}
+
+/// The image consumer commits its service link and exact prepared recipe in
+/// the same transaction as the Trace run/job. This callback is local SQL only.
+pub(super) fn accept_at_with_link(
+    database:&Path,
+    start:OperationStart,
+    id:&str,
+    job_id:u64,
+    request_digest:&str,
+    link:impl FnOnce(&rusqlite::Transaction<'_>,i64)->Result<(),AppError>,
+) -> Result<(TraceRunHandle,bool,u64),AppError> {
+    validate_id(id)?;
+    validate_start(&start)?;
+    if job_id == 0 || job_id > 9_007_199_254_740_991 || !valid_digest(request_digest) {return Err(AppError::Other("Invalid image acceptance record".into()));}
     if let Some(existing) = lookup_at(database, id, Some(request_digest))? {
         return Ok((
             TraceRunHandle {
@@ -163,6 +179,7 @@ fn accept_at(
         params![id, job_id as i64, request_digest, run],
     )
     .map_err(sql)?;
+    link(&tx,run)?;
     tx.commit().map_err(sql)?;
     Ok((
         TraceRunHandle {
@@ -178,6 +195,13 @@ fn accept_at(
 mod tests {
     use super::*;
     const BATCH: &str = "01234567-89ab-7cde-8f01-23456789abcd";
+    #[test]
+    fn service_link_commit_failure_cannot_accept_a_run_without_its_paid_intent() {
+        let root=crate::test_support::tempdir().unwrap();let db=root.path().join("trace.sqlite");let op="e".repeat(32);
+        assert!(accept_at_with_link(&db,start(0,"fixture"),&op,10,&"a".repeat(64),|_,_|Err(AppError::Other("injected service-link failure".into()))).is_err());
+        assert!(lookup_at(&db,&op,None).unwrap().is_none());
+        let (_,created,_)=accept_at(&db,start(0,"fixture"),&op,10,&"a".repeat(64)).unwrap();assert!(created);
+    }
     fn start(index: u32, prompt: &str) -> OperationStart {
         OperationStart {
             operation: "openai.image.generate".into(),

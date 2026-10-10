@@ -15,32 +15,52 @@ function fixture(initial:Record<string,unknown>={}){
   const commands:Parameters<PluginContext["registerCommand"]>[0][]=[];
   const menus:Parameters<PluginContext["registerContextMenuItem"]>[0][]=[];
   const tools:Parameters<PluginContext["registerImageEditorTool"]>[0][]=[];
+  const settings:Parameters<PluginContext["registerSettingsSection"]>[0][]=[];
   const opened:{id:string;props:Record<string,unknown>}[]=[];
   const ctx:PluginContext={
     registerCommand:command=>{commands.push(command);},registerContextMenuItem:item=>{menus.push(item);},
-    registerImageEditorTool:tool=>{tools.push(tool);},registerSettingsSection:()=>{},registerInspector:()=>{},registerDialog:()=>{},
+    registerImageEditorTool:tool=>{tools.push(tool);},registerSettingsSection:section=>{settings.push(section);},registerInspector:()=>{},registerDialog:()=>{},
     openDialog:(id,props)=>{opened.push({id,props:props??{}});},closeDialog:()=>{},
     toast:{show:()=>{},error:()=>{}},jobs:{accept:(_registration,start)=>start()},events:{listen:()=>{}},
     storage:{get:async()=>({...stored}),set:async next=>{stored={...next};}},saveSettings:async patch=>{stored={...stored,...patch};},
     workspace:{getSelection:()=>selection,captureSelection:()=>()=>true,selectFile:async()=>{},onFilesChanged:()=>{}},
   };
-  return {ctx,commands,menus,tools,opened,setSelection:(entries:FileEntry[])=>{selection=entries;}};
+  return {ctx,commands,menus,tools,settings,opened,setSelection:(entries:FileEntry[])=>{selection=entries;}};
 }
 describe("OpenAI plugin SDK contributions",()=>{
-  it("opens the selected edit using freshly loaded connection settings",async()=>{
+  it("contributes only a shared configuration action and awaits managed dialog closure",async()=>{
+    const f=fixture();
+    let close:()=>void=()=>{};
+    const openDialog=vi.fn(()=>new Promise<{reason:"closed"}>(resolve=>{close=()=>resolve({reason:"closed"});}));
+    await openAIImagePlugin.activate({...f.ctx,presentation:{openDialog}});
+    expect(f.settings[0].rows).toEqual([]);
+    let finished=false;
+    const opening=Promise.resolve(f.settings[0].actions![0].run()).then(()=>{finished=true;});
+    expect(openDialog).toHaveBeenCalledWith("image-generation.connections");
+    await Promise.resolve();expect(finished).toBe(false);
+    close();await opening;expect(finished).toBe(true);
+    expect(f.opened).toEqual([]);
+  });
+  it("does not fall back to raw provider dialogs on unsupported hosts",async()=>{
+    const f=fixture();await openAIImagePlugin.activate(f.ctx);
+    await expect(f.settings[0].actions![0].run()).rejects.toThrow("Update the host");
+    expect(f.opened).toEqual([]);
+  });
+  it("opens the selected edit without loading legacy credentials",async()=>{
     const f=fixture({apiKey:"first-key"});await openAIImagePlugin.activate(f.ctx);
     await f.ctx.storage.set({apiKey:"current-key"});f.setSelection([image]);
     const command=f.commands.find(command=>command.id==="plugin.openai-image.edit")!;
     expect(command.shortcut).toBe("Ctrl+E");expect(command.when?.()).toBe(true);await command.handler();
-    expect(f.opened.at(-1)).toMatchObject({id:"openai-image.create",props:{inputs:[{path:image.path}],outputDir:"/media",apiKey:"current-key",initialBackend:"codex"}});
-    expect(f.opened.at(-1)?.props.onSaveSettings).toBe(f.ctx.saveSettings);
+    expect(f.opened.at(-1)).toMatchObject({id:"openai-image.create",props:{inputs:[{path:image.path}],outputDir:"/media",configureConnections:expect.any(Function)}});
+    expect(f.opened.at(-1)?.props).not.toHaveProperty("apiKey");
+    expect(f.opened.at(-1)?.props).not.toHaveProperty("codexPath");
   });
   it("sends every selected image as an equal, numbered input",async()=>{
     const f=fixture({backend:"api_key"});await openAIImagePlugin.activate(f.ctx);
     const reference={...image,name:"reference.png",path:"/media/reference.png"};
     const menu=f.menus.find(menu=>menu.id==="openai-image.edit")!;
     expect(menu.when([image,reference])).toBe(true);await menu.handler([image,reference]);
-    expect(f.opened.at(-1)?.props).toMatchObject({inputs:[{path:image.path},{path:reference.path}],initialBackend:"api_key"});
+    expect(f.opened.at(-1)?.props).toMatchObject({inputs:[{path:image.path},{path:reference.path}],configureConnections:expect.any(Function)});
     for(const invalid of [[image,folder],[{...image,path:"demo://photo.png"}],[{...image,name:"animated.gif"}],Array.from({length:9},(_,i)=>({...image,path:`/media/${i}.png`}))])expect(menu.when(invalid)).toBe(false);
     expect(f.tools.some(tool=>tool.when({path:image.path,name:image.name,digest:"a".repeat(64),format:"PNG",referencePaths:[]}))).toBe(true);
   });
@@ -59,10 +79,10 @@ describe("OpenAI plugin SDK contributions",()=>{
     const f=fixture({codexPath:"/opt/custom tools/codex"});await openAIImagePlugin.activate(f.ctx);
     const menu=f.menus.find(menu=>menu.id==="openai-image.generate")!;
     expect(menu.when([folder])).toBe(true);await menu.handler([folder]);
-    expect(f.opened.at(-1)).toMatchObject({id:"openai-image.create",props:{inputs:[],outputDir:"/media",codexPath:"/opt/custom tools/codex"}});
+    expect(f.opened.at(-1)).toMatchObject({id:"openai-image.create",props:{inputs:[],outputDir:"/media",configureConnections:expect.any(Function)}});
     await f.commands.find(command=>command.id==="plugin.openai-image.history")!.handler();
     expect(f.opened.at(-1)?.id).toBe("openai-image.history");
-    expect(f.opened.at(-1)?.props).toMatchObject({jobs:f.ctx.jobs,storage:f.ctx.storage});
+    expect(f.opened.at(-1)?.props).toMatchObject({jobs:f.ctx.jobs});
   });
   it("in an active Trace view, Ctrl+E takes its ordered picks, including images the host cannot select",async()=>{
     const f=fixture();await openAIImagePlugin.activate(f.ctx);

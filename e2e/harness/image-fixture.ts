@@ -1,3 +1,4 @@
+import { imageAvailability } from "../../tests/fixtures/image-connections";
 /**
  * In-memory backend for the AI image harness: a recorded failed Codex edit
  * (Codex replied in text instead of generating), a succeeded run, and a
@@ -5,7 +6,7 @@
  */
 import { configureBackend } from "$lib/api/common";
 import type { OpenAIImageRunHistory } from "$lib/api/openai-image";
-import { excerpt } from "$lib/domain/image-retry";
+import { excerpt, retryable } from "$lib/domain/image-retry";
 
 export const REPLY = "I can’t make that edit: it depicts copyrighted characters (Charizard and Alakazam) in a new scene, and I can’t generate images of them. "
   + "I can make an original fire-type dragon unleashing a spiral of flame while a psychic fox-like creature teleports out of the way instead, keeping your composition, lighting and colours. "
@@ -42,10 +43,36 @@ export function runs(): OpenAIImageRunHistory[] {
         details: { stage: "image_validated" },
       },
     },
+    unconfirmed(85, "2026-10-09T07:55:00Z", { outcome: "unknown", provider_execution: { state: "unknown", error: { code: "provider_restarted", message: "Interrupted" } } }),
+    unconfirmed(84, null, { provider_execution: { state: "running" } }),
   ];
+}
+export const UNCONFIRMED_PROMPT = "A lighthouse in fog";
+/** A linked Codex generation whose outcome was settled unknown, or (unfinished) is still being recovered. */
+function unconfirmed(id: number, finishedAt: string | null, details: Record<string, unknown>): OpenAIImageRunHistory {
+  const options = { size: "1024x1024", resolution: null, aspectRatio: null, quality: "auto", background: "auto" };
+  return {
+    outputPath: null, inputs: [],
+    run: {
+      id, operation: "openai.image.generate", createdAt: "2026-10-09T07:50:00Z", status: "uncertain", finishedAt, recovered: false, inputIds: [],
+      error: finishedAt ? "The image generation outcome could not be confirmed: the provider reported it unknown. Retry starts a new, separately charged generation." : "image_recovery_pending",
+      parameters: { prompt: UNCONFIRMED_PROMPT, model: null, size: "1024x1024", quality: "auto", background: "auto", resolution: null, aspect_ratio: null,
+        connection_id: "saved-login", connection_revision: "old-revision", effective_recipe_digest: "a".repeat(64), operation_id: "e".repeat(31) + id % 10,
+        effective_recipe: { schemaVersion: 1, formatterVersion: 1, connectionId: "saved-login", connectionRevision: "old-revision", adapter: "codex-cli",
+          endpointIdentity: "codex-cli:auto-discovery", model: null, options, inputDigests: [], inputRoles: [], submittedPrompt: UNCONFIRMED_PROMPT, agentTask: "Recorded fixture task" },
+        output_storage: "temporary", save_directory_hint: "/pictures" },
+      details,
+    },
+  };
 }
 
 export const started: Array<Record<string, unknown>> = [];
+let availability = imageAvailability();
+export function removeRecordedConnection(): void {
+  availability = imageAvailability();
+  availability.description!.defaultConnectionId = "custom-http";
+  availability.description!.profiles = availability.description!.profiles.filter((p) => p.id !== "saved-login");
+}
 let nextJob = 500;
 /** Each started job's request, by job id: what the native backend records as its run. */
 const jobRequests = new Map<number, { runId: number; request: Record<string, any> }>();
@@ -62,7 +89,12 @@ function runForJob(jobId: number): OpenAIImageRunHistory | null {
     run: {
       id: runId, operation: paths.length ? "openai.image.edit" : "openai.image.generate", createdAt: "2026-10-09T09:00:00Z", status: "failed",
       finishedAt: "2026-10-09T09:01:00Z", error: "image_operation_failed", recovered: false, inputIds: [],
-      parameters: { provider: request.backend === "codex" ? "codex-cli" : "openai", prompt: request.prompt, model: request.backend === "codex" ? null : request.model,
+      parameters: { provider: request.model === null ? "codex-cli" : "openai", prompt: request.prompt, model: request.model === null ? null : request.model,
+        connection_id: request.connectionId, connection_revision: request.expectedConnectionRevision, effective_recipe_digest: "a".repeat(64),
+        effective_recipe: { schemaVersion: 1, formatterVersion: 1, connectionId: request.connectionId, connectionRevision: request.expectedConnectionRevision,
+          adapter: "codex-cli", endpointIdentity: "codex-cli:auto-discovery", model: null,
+          options: { size: request.size, resolution: request.resolution ?? null, aspectRatio: request.aspectRatio ?? null, quality: request.quality, background: request.background },
+          inputDigests: digests, inputRoles: paths.map((_, i) => `Image ${i + 1}`), submittedPrompt: request.prompt, agentTask: "Recorded fixture task" },
         size: request.size, resolution: request.resolution, aspect_ratio: request.aspectRatio, quality: request.quality, background: request.background,
         output_storage: "temporary", save_directory_hint: request.outputDir, ...(request.retryOf ? { retry_of: request.retryOf } : {}) },
       details: { stage: "no_image", codex_reply: { text: REPLY, truncated: false } },
@@ -72,8 +104,15 @@ function runForJob(jobId: number): OpenAIImageRunHistory | null {
 
 configureBackend({
   async invoke<T>(method: string, params?: Record<string, unknown>): Promise<T> {
+    if (method === "image_service_describe") return availability as T;
     if (method === "recent_openai_image_runs") return runs() as T;
     if (method === "jobs.start") {
+      // Like the native backend: only an explicitly failed image run is a Retry source.
+      const retryOf = (params as any)?.request?.retryOf;
+      if (retryOf !== undefined && retryOf !== null) {
+        const source = [...runs(), ...[...jobRequests.keys()].map(runForJob)].find((history) => history?.run.id === retryOf);
+        if (!source || !retryable(source)) throw new Error("Only an explicitly failed image run can be retried");
+      }
       started.push(structuredClone(params ?? {}));
       const jobId = nextJob++;
       jobRequests.set(jobId, { runId: 200 + jobRequests.size, request: structuredClone((params as any).request) });

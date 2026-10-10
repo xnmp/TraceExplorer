@@ -385,7 +385,7 @@ test.describe("titles", () => {
     await page.mouse.move(2, 2);
     await (await card(page, "warm")).hover();
     await expect(page.locator("#trace-tile-tooltip .text")).toHaveText("warm prompt");
-    await page.evaluate(async () => await (window as any).trace.configureTitles({ titleGenerator: "disabled" }));
+    await page.evaluate(async () => await (window as any).trace.configureTitles({ summarizePrompts: false }));
     await expect(page.getByRole("status", { name: "Generating title" })).toHaveCount(0);
   });
 });

@@ -27,11 +27,21 @@ export function mockupNodes(): TraceNode[] {
   ];
 }
 
-/** Node endpoints from which some route chain reaches `child`. */
-export function sourcesReaching(plan: Pick<JunctionPlan, "routes">, child: NodeKey): Set<NodeKey> {
+const incomingByRoutes = new WeakMap<object, Map<string, string[]>>();
+/** Edges into each endpoint, built once per route list (callers ask for every node of one layout). */
+function incomingEdges(routes: JunctionPlan["routes"]): Map<string, string[]> {
+  const cached = incomingByRoutes.get(routes);
+  if (cached) return cached;
   const incoming = new Map<string, string[]>();
   // A trunk (to === from) is drawing shared by routes, not an edge.
-  for (const route of plan.routes) if (endpointKey(route.from) !== endpointKey(route.to)) incoming.set(endpointKey(route.to), [...(incoming.get(endpointKey(route.to)) ?? []), endpointKey(route.from)]);
+  for (const route of routes) if (endpointKey(route.from) !== endpointKey(route.to)) incoming.set(endpointKey(route.to), [...(incoming.get(endpointKey(route.to)) ?? []), endpointKey(route.from)]);
+  incomingByRoutes.set(routes, incoming);
+  return incoming;
+}
+
+/** Node endpoints from which some route chain reaches `child`. */
+export function sourcesReaching(plan: Pick<JunctionPlan, "routes">, child: NodeKey): Set<NodeKey> {
+  const incoming = incomingEdges(plan.routes);
   const seen = new Set<string>();
   const pending = [`node:${child}`];
   const sources = new Set<NodeKey>();
@@ -78,14 +88,26 @@ export function samplePath(path: string, steps = 24): Point[] {
   return points;
 }
 
+function bounds(points: readonly Point[]) {
+  const box = { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity };
+  for (const { x, y } of points) {
+    box.minX = Math.min(box.minX, x); box.maxX = Math.max(box.maxX, x);
+    box.minY = Math.min(box.minY, y); box.maxY = Math.max(box.maxY, y);
+  }
+  return box;
+}
+
 /** Route points that fall inside a tile other than the route's own endpoints. */
 export function routeCollisions(layout: GraphLayout): string[] {
   const problems: string[] = [];
   for (const route of layout.routes) {
     const own = new Set([route.from.kind === "node" ? route.from.id : "", route.to.kind === "node" ? route.to.id : ""]);
-    for (const point of samplePath(route.path)) {
-      for (const tile of layout.nodes.values()) {
-        if (own.has(tile.key)) continue;
+    const points = samplePath(route.path);
+    // Only tiles whose box meets the route's bounding box can contain a sample.
+    const box = bounds(points);
+    const tiles = [...layout.nodes.values()].filter((tile) => !own.has(tile.key) && tile.x < box.maxX && tile.x + tile.width > box.minX && tile.y < box.maxY && tile.y + tile.height > box.minY);
+    for (const point of points) {
+      for (const tile of tiles) {
         if (point.x > tile.x + 0.5 && point.x < tile.x + tile.width - 0.5 && point.y > tile.y + 0.5 && point.y < tile.y + tile.height - 0.5) {
           problems.push(`${route.id} crosses ${tile.key} at ${point.x.toFixed(1)},${point.y.toFixed(1)}`);
         }
@@ -100,8 +122,11 @@ export function foreignJunctionContacts(layout: GraphLayout, distance: number): 
   const problems: string[] = [];
   for (const route of layout.routes) {
     const points = samplePath(route.path, 60);
+    const box = bounds(points);
     for (const junction of layout.junctions.values()) {
       if (route.from.id === junction.id || route.to.id === junction.id) continue;
+      // Beyond `distance` of the route's bounding box, no sample can be close enough.
+      if (junction.x < box.minX - distance || junction.x > box.maxX + distance || junction.y < box.minY - distance || junction.y > box.maxY + distance) continue;
       const closest = points.reduce((best, point) => Math.min(best, Math.hypot(point.x - junction.x, point.y - junction.y)), Infinity);
       if (closest < distance) problems.push(`${route.id} passes ${closest.toFixed(1)}px from ${junction.id}`);
     }
@@ -132,7 +157,9 @@ export function sharedLanes(layout: GraphLayout): string[] {
     }
   }
   const problems: string[] = [];
-  for (let i = 0; i < runs.length; i++) for (let j = i + 1; j < runs.length; j++) {
+  // Only runs less than 1 px apart across the flow can share a lane: sweep them in order of `x`.
+  runs.sort((a, b) => a.x - b.x);
+  for (let i = 0; i < runs.length; i++) for (let j = i + 1; j < runs.length && runs[j].x - runs[i].x < 1; j++) {
     const a = runs[i], b = runs[j];
     if (endpointKey(a.route.from) === endpointKey(b.route.from) || endpointKey(a.route.to) === endpointKey(b.route.to)) continue;
     if (Math.abs(a.x - b.x) < 1 && Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top) > 4) problems.push(`${a.route.id} and ${b.route.id} share x=${a.x}`);

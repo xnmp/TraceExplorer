@@ -428,14 +428,21 @@ test.describe("tile size", () => {
     const warm = await key(page, "warm");
     let previous = 92;
     for (const preset of ["large", "medium", "xlarge", "small"] as const) {
-      await setTileSize(page, preset);
-      // The tiles grow or shrink in motion, from the size shown to the new one.
-      const resizing = await page.evaluate(async (k) => {
-        await new Promise((resolve) => requestAnimationFrame(resolve));
-        const element = document.querySelector(`[data-tile-key="${CSS.escape(k)}"]`)!;
-        return element.getAnimations().map((animation) => (animation.effect as KeyframeEffect).getKeyframes().map((frame) => frame.width).filter(Boolean));
+      // Record the tile's animations as they are created: polling getAnimations() after a frame misses
+      // them when a loaded machine runs the whole motion (or starts it) outside that frame.
+      await page.evaluate((k) => {
+        const w = window as any, original = Element.prototype.animate;
+        w.__resizes = [];
+        w.__restoreAnimate = () => { Element.prototype.animate = original; };
+        Element.prototype.animate = function (this: Element, keyframes: any, options: any) {
+          if (this.getAttribute("data-tile-key") === k) w.__resizes.push((keyframes as Keyframe[]).map((frame) => frame.width).filter(Boolean));
+          return original.call(this, keyframes, options);
+        };
       }, warm);
+      await setTileSize(page, preset);
       await settle(page);
+      // The tiles grow or shrink in motion, from the size shown to the new one.
+      const resizing = await page.evaluate(() => { const w = window as any; w.__restoreAnimate(); return w.__resizes as string[][]; });
       const shown = await sizes(page);
       // One width for every Trace tile: the host's thumbnail edge plus its tile chrome, as wide as the host's own tiles.
       expect(shown.preset, preset).toBe(preset);

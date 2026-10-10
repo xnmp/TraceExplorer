@@ -16,7 +16,7 @@ export interface TraceRun {
   readonly operation: string;
   readonly parameters: Record<string, unknown> & { rect?: { left: number; top: number; right: number; bottom: number }; viewport?: { width: number; height: number } };
   readonly createdAt: string;
-  readonly status: "running" | "succeeded" | "failed" | "interrupted" | "uncertain" | "untraced" | "cancelled";
+  readonly status: "running" | "succeeded" | "failed" | "interrupted" | "uncertain" | "untraced" | "cancelled" | "discarded";
   readonly finishedAt: string | null;
   readonly error: string | null;
   readonly recovered: boolean;

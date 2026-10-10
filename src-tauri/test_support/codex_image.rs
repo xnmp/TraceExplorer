@@ -252,26 +252,6 @@ fn requested_image_settings_reach_codex_and_the_recorded_recipe() {
     assert_eq!(recorded.parameters["aspect_ratio"], "4:3");
 }
 
-#[test]
-fn prompt_titles_accept_only_a_valid_completed_final_json_message() {
-    let stream = |title: Value| {
-        format!("{}\n{}\n{}\n{}\n",json!({"type":"thread.started","thread_id":THREAD}),json!({"type":"item.completed","item":{"type":"agent_message","text":"Preparing a short title"}}),json!({"type":"item.completed","item":{"type":"agent_message","text":title.to_string()}}),json!({"type":"turn.completed","usage":{}})).into_bytes()
-    };
-    assert_eq!(
-        parse_prompt_title(&stream(json!({"title":"Daytime scene"}))).unwrap(),
-        "Daytime scene"
-    );
-    for title in [
-        json!({"title":""}),
-        json!({"title":"x".repeat(65)}),
-        json!({"title":"hidden\ncontrol"}),
-        json!({"title":12}),
-    ] {
-        assert!(parse_prompt_title(&stream(title)).is_err());
-    }
-    assert!(parse_prompt_title(&b"{}\n"[..]).is_err());
-}
-
 /// A fake `codex` that prints a recorded `--json` stream and exits with `code`.
 #[cfg(unix)]
 fn recorded_codex(

@@ -23,10 +23,20 @@ export const tracePlugin: Plugin = {
     tracePanes.clear();
     traceFolderVisibility.clear();
     traceThumbnails.clear();
-    promptTitles.clear();
+    promptTitles.unbind();
     previewData.clear();
   },
   activate(ctx) {
+    promptTitles.bind(ctx);
+    ctx.registerSettingsSection({
+      id: "trace.summaries", title: "Trace / Prompt titles",
+      rows: [{ id: "summarizePrompts", label: "Summarize prompts", type: "toggle", default: true,
+        description: "Use the global language model in Settings → AI → Language models. The full prompt remains available." }],
+    });
+    if (ctx.text) ctx.registerCommand({
+      id: "plugin.trace.language-models", label: "Trace: Configure language model", category: "plugins",
+      handler: () => ctx.text?.openSettings(),
+    });
     traceFolderVisibility.clear();
     ctx.registerFileView?.({
       id: TRACE_VIEW_ID,
