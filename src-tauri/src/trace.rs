@@ -2025,8 +2025,8 @@ mod tests {
                 )
                 .unwrap();
         }
-        connection.execute_batch("DROP TABLE image_batch_members; DROP TABLE image_folder_contexts; DROP TABLE image_prompt_titles; DROP TABLE image_discards;").unwrap();
-        // A genuine v6 journal predates the image-service ownership header.
+        connection.execute_batch("DROP TABLE image_batch_members; DROP TABLE image_folder_contexts; DROP TABLE image_prompt_titles; DROP TABLE image_discards; DROP TABLE image_service_cancellations; DROP TABLE image_service_operations; DROP TABLE image_service_schema;").unwrap();
+        // A genuine v6 journal predates the image-service ownership header and tables.
         connection.pragma_update(None, "user_version", 6).unwrap();
         connection.pragma_update(None, "application_id", 0).unwrap();
         drop(connection);
