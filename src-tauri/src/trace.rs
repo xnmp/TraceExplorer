@@ -371,6 +371,13 @@ enum SelectedRevisionStatus {
     Unverified,
 }
 
+/// A consistent read that never blocks writers. Write transactions on
+/// `connection_at` connections default to IMMEDIATE instead.
+fn read_snapshot(connection: &Connection) -> Result<rusqlite::Transaction<'_>, AppError> {
+    rusqlite::Transaction::new_unchecked(connection, rusqlite::TransactionBehavior::Deferred)
+        .map_err(sql)
+}
+
 fn sql(error: rusqlite::Error) -> AppError {
     AppError::Other(format!("Trace database: {error}"))
 }
@@ -418,10 +425,14 @@ fn connection_at(path: &Path) -> Result<Connection, AppError> {
             fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
         }
     }
-    let connection = Connection::open(path).map_err(sql)?;
+    let mut connection = Connection::open(path).map_err(sql)?;
     connection
         .busy_timeout(Duration::from_secs(5))
         .map_err(sql)?;
+    // Writers take the lock up front. A DEFERRED transaction that reads and
+    // then writes gets SQLITE_BUSY without the busy handler when another
+    // writer won meanwhile; concurrent image workers hit exactly that.
+    connection.set_transaction_behavior(rusqlite::TransactionBehavior::Immediate);
     let schema_version: i64 = connection
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .map_err(sql)?;

@@ -783,10 +783,7 @@ fn mark_initialized(directory: &Path) -> Result<()> {
     temporary
         .persist_noclobber(directory.join("operations.initialized"))
         .map_err(storage)?;
-    #[cfg(unix)]
-    std::fs::File::open(directory)
-        .and_then(|file| file.sync_all())
-        .map_err(storage)?;
+    te_plugin_runtime::durable_dir::sync(directory).map_err(storage)?;
     Ok(())
 }
 fn validate_schema(connection: &Connection) -> Result<i64> {

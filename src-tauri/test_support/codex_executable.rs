@@ -119,11 +119,23 @@ fn desktop_child_can_run_a_launcher_requiring_its_sibling_runtime() {
     std::fs::write(&runtime, b"#!/bin/sh\nprintf 'codex-cli fixture\\n'\n").unwrap();
     std::fs::set_permissions(&runtime, std::fs::Permissions::from_mode(0o700)).unwrap();
     let resolved = resolve_in("", &environment(&[], vec![dir.path().to_path_buf()])).unwrap();
-    let output = std::process::Command::new(&resolved.program)
-        .env("PATH", &resolved.search_path)
-        .arg("--version")
-        .output()
-        .unwrap();
+    // A fork in a concurrent test thread can briefly inherit the write fd of
+    // a script written above; exec then fails with ETXTBSY until it closes.
+    let output = (0..50)
+        .find_map(|_| {
+            match std::process::Command::new(&resolved.program)
+                .env("PATH", &resolved.search_path)
+                .arg("--version")
+                .output()
+            {
+                Err(e) if e.kind() == std::io::ErrorKind::ExecutableFileBusy => {
+                    std::thread::sleep(std::time::Duration::from_millis(20));
+                    None
+                }
+                result => Some(result.unwrap()),
+            }
+        })
+        .expect("script stayed busy");
     assert!(output.status.success());
     assert_eq!(output.stdout, b"codex-cli fixture\n");
 }

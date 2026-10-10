@@ -543,7 +543,8 @@ fn mark_initialized(database: &Path) -> Result<(), AppError> {
                     "Image consumer initialization evidence is malformed",
                 ));
             }
-            file.sync_all()?;
+            drop(file);
+            sync_regular(&path)?;
         }
         Err(e) => return Err(e.into()),
     };
@@ -630,6 +631,19 @@ fn regular(path: &Path) -> Result<File, AppError> {
             return Err(invalid("Image evidence must be a regular file"));
         }
         Ok(file)
+    }
+}
+/// Flushes an existing regular file. Unix fsyncs the no-follow handle from
+/// `regular`; Windows needs a writable handle to flush.
+fn sync_regular(path: &Path) -> Result<(), AppError> {
+    #[cfg(unix)]
+    {
+        regular(path)?.sync_all()?;
+        Ok(())
+    }
+    #[cfg(not(unix))]
+    {
+        Ok(te_plugin_runtime::durable_dir::sync_file(path)?)
     }
 }
 fn sync_ancestors(path: &Path) -> Result<(), AppError> {
@@ -1288,7 +1302,7 @@ fn copy_exact(
         // exact previously prepared inode. Never copy or replace a racing file.
         control.check()?;
         fs::hard_link(&anchor, &link.target)?;
-        regular(&link.target)?.sync_all()?;
+        sync_regular(&link.target)?;
         sync_ancestors(
             link.target
                 .parent()
@@ -1390,7 +1404,7 @@ fn copy_exact(
         Ok(())
     })?;
     let anchor = stage.trace_anchor()?;
-    regular(&anchor)?.sync_all()?;
+    sync_regular(&anchor)?;
     sync_ancestors(
         anchor
             .parent()
@@ -1406,7 +1420,7 @@ fn copy_exact(
     // shutdown still interrupts byte IO, leaving the immutable proof recoverable.
     control.check()?;
     stage.publish(&link.target)?;
-    regular(&link.target)?.sync_all()?;
+    sync_regular(&link.target)?;
     sync_ancestors(parent)?;
     if !published_owned(database, link, output)? {
         return Err(invalid("Published image identity could not be verified"));

@@ -1340,7 +1340,7 @@ fn current_index(database: &Path, directory: &Path) -> Result<Current, AppError>
     }
     let connection = connection_at(database)?;
     let head = {
-        let snapshot = connection.unchecked_transaction().map_err(sql)?;
+        let snapshot = super::read_snapshot(&connection)?;
         read_head(&snapshot, &folder)?
     };
     let token = token_of(Some(&head));
@@ -1357,7 +1357,7 @@ fn current_index(database: &Path, directory: &Path) -> Result<Current, AppError>
         home: home.as_deref(),
         case_insensitive: CASE_INSENSITIVE_PATHS,
     };
-    let snapshot = connection.unchecked_transaction().map_err(sql)?;
+    let snapshot = super::read_snapshot(&connection)?;
     let built_from = read_head(&snapshot, &folder)?;
     let loaded = load_snapshot(&snapshot, &folder, &layout)?;
     drop(snapshot);
@@ -1580,7 +1580,7 @@ fn run_details_at(database: &Path, run_ids: &[i64]) -> Result<Vec<Run>, AppError
         return Ok(Vec::new());
     }
     let connection = connection_at(database)?;
-    let snapshot = connection.unchecked_transaction().map_err(sql)?;
+    let snapshot = super::read_snapshot(&connection)?;
     let mut runs: HashMap<i64, Run> = batched(
         &snapshot,
         "SELECT id,operation,parameters,created_at,status,finished_at,error,recovered,result_details FROM runs WHERE id IN ({})",

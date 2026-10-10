@@ -47,6 +47,48 @@ pub fn sync(directory: &Path) -> io::Result<()> {
     }
 }
 
+/// Flushes an existing regular file by path. Windows only flushes through a
+/// writable handle, so a read-only handle used to verify bytes cannot also
+/// serve as the durability barrier there.
+pub fn sync_file(path: &Path) -> io::Result<()> {
+    let mut options = std::fs::OpenOptions::new();
+    #[cfg(not(windows))]
+    {
+        if std::fs::symlink_metadata(path)?.file_type().is_symlink() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "durable file must not be a link",
+            ));
+        }
+        options.read(true);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        options
+            .read(true)
+            .write(true)
+            .share_mode(0x1 | 0x2 | 0x4)
+            .custom_flags(0x0020_0000);
+    }
+    let handle = options.open(path)?;
+    let metadata = handle.metadata()?;
+    #[cfg(windows)]
+    let reparse = {
+        use std::os::windows::fs::MetadataExt;
+        metadata.file_attributes() & 0x400 != 0
+    };
+    #[cfg(not(windows))]
+    let reparse = false;
+    if !metadata.is_file() || reparse {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "durable file must be a regular file",
+        ));
+    }
+    handle.sync_all()
+}
+
 #[cfg(any(unix, windows))]
 fn not_a_directory() -> io::Error {
     io::Error::new(
@@ -93,6 +135,15 @@ mod tests {
         std::fs::write(&file, b"bytes").unwrap();
         assert!(sync(&file).is_err());
         assert!(sync(&root.0.join("absent")).is_err());
+    }
+    #[test]
+    fn flushes_a_regular_file_but_not_a_directory() {
+        let root = Scratch::new("file");
+        let file = root.0.join("file");
+        std::fs::write(&file, b"bytes").unwrap();
+        super::sync_file(&file).unwrap();
+        assert!(super::sync_file(&root.0).is_err());
+        assert!(super::sync_file(&root.0.join("absent")).is_err());
     }
     #[cfg(windows)]
     #[test]
