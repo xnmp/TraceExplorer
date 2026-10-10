@@ -1526,6 +1526,17 @@ fn claim_dispatch(database: &Path, operation: &str, fresh: bool) -> Result<(Link
 /// `scoped_target` rebases the link. Only the profile root may differ: the
 /// destination's directory and file name, and the stage directory and anchor
 /// names, must be unchanged. Terminal links keep their history as stored.
+/// The managed target in the form prepared evidence is stored and completed
+/// in (`prepare_output_at`, `complete_run_at`). Only its directory is
+/// resolved: the target itself is never followed, so something placed at the
+/// target cannot redirect evidence.
+fn stored_target(target: &Path) -> Option<String> {
+    let dir = normalize_path(target.parent()?).ok()?;
+    Path::new(&dir)
+        .join(target.file_name()?)
+        .to_str()
+        .map(str::to_owned)
+}
 fn prepared_evidence(
     database: &Path,
     link: &Link,
@@ -1535,7 +1546,7 @@ fn prepared_evidence(
     let Some((path, digest, identity, anchor)) = row else {
         return Ok(None);
     };
-    if terminal(&link.phase) || Path::new(&path) == link.target {
+    if terminal(&link.phase) || stored_target(&link.target).as_deref() == Some(path.as_str()) {
         return Ok(Some((path, digest, identity, anchor)));
     }
     let tail = |p: &Path, n: usize| -> Option<Vec<std::ffi::OsString>> {
@@ -1555,7 +1566,7 @@ fn prepared_evidence(
     // Stored evidence is normalized when first recorded (`prepare_output_at`),
     // and completion compares it as text, so the rebased paths take the same
     // form.
-    let (Some(parent), Ok(new_path)) = (link.target.parent(), normalize_path(&link.target)) else {
+    let (Some(parent), Some(new_path)) = (link.target.parent(), stored_target(&link.target)) else {
         return Ok(Some((path, digest, identity, anchor)));
     };
     // The anchor sits at `<dir>/<stage>/trace-anchor` next to the destination.
@@ -1596,7 +1607,7 @@ fn published_owned(
     output: &ArtifactDescriptor,
 ) -> Result<bool, AppError> {
     if let Some((path, digest, identity, anchor)) = prepared_evidence(database, link)? {
-        if Path::new(&path) != link.target || digest != output.sha256 {
+        if stored_target(&link.target).as_deref() != Some(path.as_str()) || digest != output.sha256 {
             return Err(invalid(
                 "Local image publication evidence conflicts with the output",
             ));
@@ -1704,7 +1715,7 @@ fn copy_exact(
         return Ok(());
     }
     if let Some((path, digest, identity, anchor)) = prepared_evidence(database, link)? {
-        if Path::new(&path) != link.target || digest != output.sha256 {
+        if stored_target(&link.target).as_deref() != Some(path.as_str()) || digest != output.sha256 {
             return Err(invalid("Prepared publication changed its output"));
         }
         let mut source = regular(Path::new(&anchor))?;
@@ -3304,6 +3315,21 @@ mod tests {
             .unwrap();
         assert_eq!(Path::new(&path), rebased);
         assert!(retained.is_none_or(|a| Path::new(&a).starts_with(&new_root)));
+    }
+    #[cfg(unix)]
+    #[test]
+    fn stored_target_resolves_its_directory_but_never_follows_the_target() {
+        let root = crate::test_support::tempdir().unwrap();
+        let real = root.path().join("real");
+        let elsewhere = root.path().join("elsewhere.png");
+        fs::create_dir(&real).unwrap();
+        fs::write(&elsewhere, b"other").unwrap();
+        std::os::unix::fs::symlink(&real, root.path().join("alias")).unwrap();
+        // Something placed a link at the managed target.
+        std::os::unix::fs::symlink(&elsewhere, real.join("out.png")).unwrap();
+        let stored = stored_target(&root.path().join("alias/./out.png")).unwrap();
+        assert_eq!(Path::new(&stored), real.join("out.png"));
+        assert!(stored_target(Path::new("/")).is_none());
     }
     #[test]
     fn moved_profile_leaves_a_malformed_anchor_row_unrebased() {
