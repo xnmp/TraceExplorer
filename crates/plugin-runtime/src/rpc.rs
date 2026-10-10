@@ -12,6 +12,10 @@ use std::{
 };
 
 type Reply = Result<Value, AppError>;
+/// Largest outbound frame body; the host reads at most this much per line.
+pub(crate) const MAX_FRAME_BYTES: usize = 1024 * 1024;
+/// Headroom for the JSON-RPC envelope around a request's params.
+pub(crate) const ENVELOPE_BYTES: usize = 256;
 type SendFrame = dyn Fn(Value) -> Result<(), AppError> + Send + Sync;
 struct Pending {
     sender: mpsc::Sender<Reply>,
@@ -120,7 +124,7 @@ impl HostRpcClient {
         if serde_json::to_vec(&frame)
             .map_err(|_| AppError::Other("Invalid host request".into()))?
             .len()
-            > 1024 * 1024
+            > MAX_FRAME_BYTES
         {
             return Err(AppError::Other("Host request exceeds 1 MiB".into()));
         }

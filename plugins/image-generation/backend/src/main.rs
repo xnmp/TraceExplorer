@@ -123,6 +123,7 @@ fn execute(
                 "Initialization validation mode cannot change",
             ));
         }
+        image_generation_backend::host::initialize(&request.params);
         initialized.store(true, Ordering::Release);
         return Ok(
             json!({"protocolVersion":1,"ready":false,"pluginVersion":env!("CARGO_PKG_VERSION")}),

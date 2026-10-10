@@ -2,15 +2,32 @@
 use crate::error::{error, Result};
 use serde_json::Value;
 use std::{
-    sync::atomic::{AtomicBool, Ordering},
+    sync::atomic::{AtomicBool, AtomicUsize, Ordering},
     time::{Duration, Instant},
 };
 pub trait Host: Send + Sync {
     fn call(&self, method: &str, params: Value, cancelled: &AtomicBool) -> Result<Value>;
     fn event(&self, name: &str, payload: Value) -> Result<()>;
+    /// Bytes of stdin `host.process.run` accepts, or `None` when the host
+    /// predates stdin. Learned from initialization, never from a version.
+    fn process_stdin_bound(&self) -> Option<usize> {
+        None
+    }
+}
+/// The connection's `processStdin` bound; zero until a host advertises one.
+static PROCESS_STDIN: AtomicUsize = AtomicUsize::new(0);
+/// Record the host's process capabilities from `initialize` params.
+pub fn initialize(params: &Value) {
+    PROCESS_STDIN.store(
+        te_plugin_runtime::process::stdin_bound(params).unwrap_or(0),
+        Ordering::Release,
+    );
 }
 pub struct NativeHost;
 impl Host for NativeHost {
+    fn process_stdin_bound(&self) -> Option<usize> {
+        Some(PROCESS_STDIN.load(Ordering::Acquire)).filter(|bytes| *bytes > 0)
+    }
     fn call(&self, method: &str, params: Value, cancelled: &AtomicBool) -> Result<Value> {
         te_plugin_runtime::invoke(
             method,

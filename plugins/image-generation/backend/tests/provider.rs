@@ -26,15 +26,21 @@ struct FakeHost {
     secrets: Mutex<HashMap<(String, String), String>>,
     events: Mutex<Vec<Value>>,
     processes: Mutex<Vec<Value>>,
+    /// The advertised `processStdin` bound; `None` mirrors an older host.
+    stdin_bound: Option<usize>,
 }
 impl FakeHost {
     fn new() -> Arc<Self> {
+        Self::with_stdin(None)
+    }
+    fn with_stdin(stdin_bound: Option<usize>) -> Arc<Self> {
         Arc::new(Self {
             directory: tempfile::tempdir().unwrap(),
             artifacts: Mutex::new(HashMap::new()),
             secrets: Mutex::new(HashMap::new()),
             events: Mutex::new(vec![]),
             processes: Mutex::new(vec![]),
+            stdin_bound,
         })
     }
     fn input(&self, color: u8) -> ArtifactDescriptor {
@@ -56,6 +62,9 @@ impl FakeHost {
     }
 }
 impl Host for FakeHost {
+    fn process_stdin_bound(&self) -> Option<usize> {
+        self.stdin_bound
+    }
     fn call(&self, method: &str, p: Value, _: &AtomicBool) -> Result<Value> {
         match method {
             "host.artifacts.read" => {
@@ -153,6 +162,24 @@ impl Host for FakeHost {
                 Ok(json!({"accepted":true}))
             }
             "host.process.run" => {
+                // Like the native host: a host without stdin refuses the
+                // unknown field (untyped on such hosts); a supporting host
+                // bounds it before spawning.
+                let stdin = p
+                    .get("stdin")
+                    .map(|stdin| stdin.as_str().unwrap().to_owned());
+                match (&stdin, self.stdin_bound) {
+                    (Some(_), None) => {
+                        return Err(error("service_unavailable", "Invalid host process request"))
+                    }
+                    (Some(stdin), Some(bound)) if stdin.len() > bound => {
+                        return Err(error(
+                            "invalid_request",
+                            "Host process request exceeds its limits",
+                        ))
+                    }
+                    _ => {}
+                }
                 self.processes.lock().unwrap().push(p.clone());
                 let mut command = std::process::Command::new(p["program"].as_str().unwrap());
                 command
@@ -172,7 +199,24 @@ impl Host for FakeHost {
                         command.env_remove(key);
                     }
                 }
-                let output = command.output().unwrap();
+                let output = match stdin {
+                    None => command.output().unwrap(),
+                    Some(stdin) => {
+                        let mut child = command
+                            .stdin(std::process::Stdio::piped())
+                            .stdout(std::process::Stdio::piped())
+                            .stderr(std::process::Stdio::piped())
+                            .spawn()
+                            .unwrap();
+                        let mut pipe = child.stdin.take().unwrap();
+                        let writer = std::thread::spawn(move || {
+                            let _ = pipe.write_all(stdin.as_bytes());
+                        });
+                        let output = child.wait_with_output().unwrap();
+                        writer.join().unwrap();
+                        output
+                    }
+                };
                 let index = self.processes.lock().unwrap().len();
                 let stdout = self.directory.path().join(format!("stdout-{index}"));
                 let stderr = self.directory.path().join(format!("stderr-{index}"));
@@ -1048,9 +1092,18 @@ async fn sealed_output_corrupted_in_place_is_unavailable_without_replay() {
 /// the provider's own environment. The child observes them cleared, no auth
 /// switch is attempted, and the exact fresh thread's image is selected even when
 /// a newer unrelated thread image exists.
+///
+/// The task travels as `-` plus stdin when the host advertises stdin, and as
+/// the last argument when it does not. Both runs share one test because they
+/// set the process-wide CODEX_HOME.
 #[cfg(unix)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn fake_cli_preserves_launcher_runtime_order_saved_login_and_managed_image_model() {
+    fake_cli_generation(None).await;
+    fake_cli_generation(Some(256 * 1024)).await;
+}
+#[cfg(unix)]
+async fn fake_cli_generation(stdin_bound: Option<usize>) {
     use std::os::unix::fs::PermissionsExt;
     let installation = tempfile::tempdir().unwrap();
     let bin = installation.path().join("bin");
@@ -1088,11 +1141,11 @@ async fn fake_cli_preserves_launcher_runtime_order_saved_login_and_managed_image
     std::fs::set_permissions(&launcher, std::fs::Permissions::from_mode(0o700)).unwrap();
     let runtime = bin.join("fake-node");
     let invocations = bin.join("invocations.jsonl");
-    let script=format!("#!/usr/bin/env python3\nimport os,sys,json,base64,time\nargs=sys.argv[2:]\nenv={{k:v for k,v in os.environ.items() if k in {auth:?} or 'te-env-canary' in v}}\nopen(os.path.join(os.path.dirname(os.path.realpath(__file__)),'invocations.jsonl'),'a').write(json.dumps({{'args':args,'env':env}})+'\\n')\nif args==['login','status']:\n print('Logged in using ChatGPT',file=sys.stderr)\nelse:\n assert '--ignore-user-config' in args and '--ephemeral' in args\n assert '--model' not in args and '-m' not in args\n assert args[-2]=='--'\n paths=[args[i+1] for i,a in enumerate(args) if a=='--image']\n assert len(paths)==2 and paths[0].endswith('source-1.png') and paths[1].endswith('source-2.png')\n assert 'equal inputs; none is the main image' in args[-1]\n thread='12345678-1234-1234-1234-123456789abc'\n images=os.path.join(os.environ['CODEX_HOME'],'generated_images')\n target=os.path.join(images,thread)\n os.makedirs(target)\n open(os.path.join(target,'output.png'),'wb').write(base64.b64decode('{right}'))\n other=os.path.join(images,'87654321-4321-4321-4321-cba987654321')\n os.makedirs(other)\n newer=os.path.join(other,'output.png')\n open(newer,'wb').write(base64.b64decode('{wrong}'))\n later=time.time()+3600\n os.utime(newer,(later,later))\n os.utime(other,(later,later))\n print(json.dumps({{'type':'thread.started','thread_id':thread}}))\n print(json.dumps({{'type':'item.completed','item':{{'type':'agent_message','text':'Successful transcript must never be persisted'}}}}))\n print(json.dumps({{'type':'turn.completed','usage':{{}}}}))\n",auth=AUTH.to_vec(),right=STANDARD.encode(png(99)),wrong=STANDARD.encode(png(7)));
+    let script=format!("#!/usr/bin/env python3\nimport os,sys,json,base64,time\nargs=sys.argv[2:]\nenv={{k:v for k,v in os.environ.items() if k in {auth:?} or 'te-env-canary' in v}}\nopen(os.path.join(os.path.dirname(os.path.realpath(__file__)),'invocations.jsonl'),'a').write(json.dumps({{'args':args,'env':env}})+'\\n')\nif args==['login','status']:\n print('Logged in using ChatGPT',file=sys.stderr)\nelse:\n assert '--ignore-user-config' in args and '--ephemeral' in args\n assert '--model' not in args and '-m' not in args\n assert args[-2]=='--'\n paths=[args[i+1] for i,a in enumerate(args) if a=='--image']\n assert len(paths)==2 and paths[0].endswith('source-1.png') and paths[1].endswith('source-2.png')\n task=sys.stdin.read() if args[-1]=='-' else args[-1]\n open(os.path.join(os.path.dirname(os.path.realpath(__file__)),'tasks.jsonl'),'a').write(json.dumps(task)+'\\n')\n assert 'equal inputs; none is the main image' in task\n thread='12345678-1234-1234-1234-123456789abc'\n images=os.path.join(os.environ['CODEX_HOME'],'generated_images')\n target=os.path.join(images,thread)\n os.makedirs(target)\n open(os.path.join(target,'output.png'),'wb').write(base64.b64decode('{right}'))\n other=os.path.join(images,'87654321-4321-4321-4321-cba987654321')\n os.makedirs(other)\n newer=os.path.join(other,'output.png')\n open(newer,'wb').write(base64.b64decode('{wrong}'))\n later=time.time()+3600\n os.utime(newer,(later,later))\n os.utime(other,(later,later))\n print(json.dumps({{'type':'thread.started','thread_id':thread}}))\n print(json.dumps({{'type':'item.completed','item':{{'type':'agent_message','text':'Successful transcript must never be persisted'}}}}))\n print(json.dumps({{'type':'turn.completed','usage':{{}}}}))\n",auth=AUTH.to_vec(),right=STANDARD.encode(png(99)),wrong=STANDARD.encode(png(7)));
     std::fs::write(&runtime, script).unwrap();
     std::fs::set_permissions(&runtime, std::fs::Permissions::from_mode(0o700)).unwrap();
     let directory = tempfile::tempdir().unwrap();
-    let host = FakeHost::new();
+    let host = FakeHost::with_stdin(stdin_bound);
     let service = Service::new(directory.path(), host.clone()).unwrap();
     service.activate().unwrap();
     let mut config = configuration("https://unused.test/images");
@@ -1168,21 +1221,40 @@ async fn fake_cli_preserves_launcher_runtime_order_saved_login_and_managed_image
         .as_str()
         .unwrap()
         .starts_with(bin.to_str().unwrap()));
-    assert_eq!(
-        processes[1]["args"]
-            .as_array()
-            .unwrap()
-            .last()
-            .unwrap()
-            .as_str()
-            .unwrap(),
-        service
-            .prepare(caller(), request.prepared())
-            .unwrap()
-            .effective_recipe
-            .agent_task
-            .unwrap()
+    let task = service
+        .prepare(caller(), request.prepared())
+        .unwrap()
+        .effective_recipe
+        .agent_task
+        .unwrap();
+    let last = processes[1]["args"]
+        .as_array()
+        .unwrap()
+        .last()
+        .unwrap()
+        .clone();
+    match stdin_bound {
+        // `-` as the prompt argument, and the task byte for byte on stdin.
+        Some(_) => {
+            assert_eq!(last, "-");
+            assert_eq!(processes[1]["stdin"], task);
+        }
+        // An older host: argv only, and no field it would refuse.
+        None => {
+            assert_eq!(last, task.as_str());
+            assert!(processes[1].get("stdin").is_none());
+        }
+    }
+    assert!(
+        processes[0].get("stdin").is_none(),
+        "login status needs no input"
     );
+    let received: Vec<String> = std::fs::read_to_string(bin.join("tasks.jsonl"))
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert_eq!(received, vec![task], "Codex did not receive the exact task");
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn explicit_settings_test_uses_owned_host_admission_and_remains_idempotent() {
@@ -3202,15 +3274,22 @@ impl Host for CodexHostFailure {
 }
 /// After `codex exec` may have started, only a host rejection proven to precede
 /// spawning is a definite failure; anything else could have run a paid turn and
-/// stays unknown. `login status` never starts a turn, so its failures and
-/// cancellation are definite non-executions.
+/// stays unknown. The host's typed pre-spawn refusals are definite; an older
+/// host's untyped `service_unavailable` and post-spawn `interrupted` are not.
+/// `login status` never starts a turn, so its failures and cancellation are
+/// definite non-executions.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn codex_host_failures_are_unknown_after_the_turn_starts_and_definite_before_it() {
     for (login, turn, expected) in [
         (None, "service_unavailable", "unknown"),
         (None, "interrupted", "unknown"),
+        (None, "protocol_error", "unknown"),
         (None, "storage_unavailable", "unknown"),
         (None, "capacity_reached", "failed"),
+        (None, "not_found", "failed"),
+        (None, "permission_denied", "failed"),
+        (None, "invalid_request", "failed"),
+        (None, "not_started", "failed"),
         (Some("host_unavailable"), "service_unavailable", "failed"),
         (Some("service_unavailable"), "service_unavailable", "failed"),
         (Some("cancel"), "service_unavailable", "cancelled"),
@@ -3265,7 +3344,9 @@ async fn codex_host_failures_are_unknown_after_the_turn_starts_and_definite_befo
                 assert_eq!(error.code, "remote_outcome_unknown", "{case}")
             }
             ("failed", Execution::Failed { error }) => {
-                assert_ne!(error.code, "remote_outcome_unknown", "{case}")
+                // The host's own refusal is kept; a login failure is unavailable.
+                let code = if login.is_none() { turn } else { "unavailable" };
+                assert_eq!(error.code, code, "{case}")
             }
             ("cancelled", Execution::Cancelled {}) => {}
             _ => panic!("{case}: expected {expected}, got {status:?}"),

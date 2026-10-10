@@ -20,6 +20,10 @@ struct Provider {
     generation_calls: usize,
     stages: usize,
     case: &'static str,
+    /// Whether initialization advertises `processStdin`, as newer hosts do.
+    stdin_host: bool,
+    /// The image turn's prompt argument and stdin, per request.
+    prompts: Vec<(String, Option<String>)>,
 }
 impl Drop for Provider {
     fn drop(&mut self) {
@@ -29,6 +33,9 @@ impl Drop for Provider {
 }
 impl Provider {
     fn new(root: &Path, case: &'static str) -> Self {
+        Self::start(root, case, false)
+    }
+    fn start(root: &Path, case: &'static str, stdin_host: bool) -> Self {
         let bin = root.join("bin");
         std::fs::create_dir_all(&bin).unwrap();
         let executable = bin.join(if cfg!(windows) { "codex.exe" } else { "codex" });
@@ -74,8 +81,14 @@ impl Provider {
             generation_calls: 0,
             stages: 0,
             case,
+            stdin_host,
+            prompts: vec![],
         };
-        assert_eq!(provider.rpc("initialize",json!({"protocolVersion":1,"validationOnly":false,"deferRecovery":true,"processService":true,"serviceService":{"version":1},"artifactService":{"version":1},"credentialService":{"version":1},"jobService":{"version":1},"hostControl":{"token":"a".repeat(64)}}))["ready"],false);
+        let mut initialize = json!({"protocolVersion":1,"validationOnly":false,"deferRecovery":true,"processService":true,"serviceService":{"version":1},"artifactService":{"version":1},"credentialService":{"version":1},"jobService":{"version":1},"hostControl":{"token":"a".repeat(64)}});
+        if stdin_host {
+            initialize["processStdin"] = json!({"version":1,"maxBytes":256 * 1024});
+        }
+        assert_eq!(provider.rpc("initialize", initialize)["ready"], false);
         assert_eq!(provider.rpc("lifecycle.activate", json!({}))["ready"], true);
         provider
     }
@@ -134,6 +147,19 @@ impl Provider {
                     "Logged in using ChatGPT\n".into()
                 } else {
                     self.generation_calls += 1;
+                    // An older host refuses the unknown field outright.
+                    assert!(self.stdin_host || p.get("stdin").is_none(), "{p}");
+                    self.prompts.push((
+                        p["args"]
+                            .as_array()
+                            .unwrap()
+                            .last()
+                            .unwrap()
+                            .as_str()
+                            .unwrap()
+                            .into(),
+                        p["stdin"].as_str().map(str::to_owned),
+                    ));
                     assert!(p["args"]
                         .as_array()
                         .unwrap()
@@ -303,8 +329,14 @@ impl Provider {
 #[cfg(unix)]
 #[test]
 fn native_path_discovery_success_retains_safe_turn_facts_without_transcript() {
+    for stdin_host in [false, true] {
+        discovery_success(stdin_host);
+    }
+}
+/// The task travels on stdin only when initialization advertised it.
+fn discovery_success(stdin_host: bool) {
     let directory = tempfile::tempdir().unwrap();
-    let mut provider = Provider::new(directory.path(), "success");
+    let mut provider = Provider::start(directory.path(), "success", stdin_host);
     let request = provider.prepare();
     provider.service("start", request.clone());
     let status = provider.terminal(request["operationId"].as_str().unwrap());
@@ -316,9 +348,17 @@ fn native_path_discovery_success_retains_safe_turn_facts_without_transcript() {
     assert!(!status.to_string().contains("Successful transcript"));
     assert_eq!(provider.generation_calls, 1);
     assert_eq!(provider.stages, 1);
+    let (argument, stdin) = provider.prompts[0].clone();
+    if stdin_host {
+        assert_eq!(argument, "-");
+        assert!(stdin.unwrap().contains("Safe fixture prompt"));
+    } else {
+        assert!(argument.contains("Safe fixture prompt"));
+        assert_eq!(stdin, None);
+    }
     provider.quiesce();
     drop(provider);
-    let mut recovered = Provider::new(directory.path(), "success");
+    let mut recovered = Provider::start(directory.path(), "success", stdin_host);
     assert_eq!(recovered.service("start", request), status);
     assert_eq!(recovered.generation_calls, 0);
     assert_eq!(recovered.stages, 0);
