@@ -46,17 +46,7 @@ fn imported(receipt: &ImportReceipt) -> serde_json::Value {
 pub type DirectorySync = Arc<dyn Fn(&Path) -> std::io::Result<()> + Send + Sync>;
 
 pub fn directory_sync() -> DirectorySync {
-    Arc::new(|directory| {
-        #[cfg(unix)]
-        {
-            File::open(directory)?.sync_all()
-        }
-        #[cfg(not(unix))]
-        {
-            let _ = directory;
-            Ok(())
-        }
-    })
+    Arc::new(te_plugin_runtime::durable_dir::sync)
 }
 
 pub struct Profiles {

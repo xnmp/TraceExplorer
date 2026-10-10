@@ -130,7 +130,9 @@ class Backend:
 
 def scenario(unavailable):
     with tempfile.TemporaryDirectory(prefix='trace-image-native-') as name:
-        root = Path(name)
+        # The real host returns paths under its canonicalized store root; macOS
+        # temp dirs sit behind the /var -> /private/var alias.
+        root = Path(name).resolve()
         host = Host(root, unavailable)
         backend = Backend(host)
         try:

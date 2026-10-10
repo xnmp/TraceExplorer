@@ -1,5 +1,6 @@
 //! Narrow stdio/reverse host transport shared by independent native packages.
 //! No Tauri, Trace persistence, image policy or provider adapter dependency.
+pub mod durable_dir;
 mod rpc;
 pub use rpc::{configure, deliver, disconnected, invoke, notify, HostRpcClient};
 #[derive(Debug, thiserror::Error)]

@@ -645,13 +645,12 @@ fn sync_ancestors(path: &Path) -> Result<(), AppError> {
         }
         Ok(())
     }
+    // NTFS journals namespace changes in order, so flushing the deepest
+    // directory also commits the earlier creation of its ancestors. Ancestors
+    // such as a drive root are not writable by ordinary users anyway.
     #[cfg(not(unix))]
     {
-        let _ = path;
-        Err(AppError::Service {
-            code: "unsupported_platform".into(),
-            message: "Durable shared image publication is unavailable on this platform".into(),
-        })
+        Ok(te_plugin_runtime::durable_dir::sync(path)?)
     }
 }
 fn inherited_hint(database: &Path, captured: &Captured) -> Result<Option<String>, AppError> {

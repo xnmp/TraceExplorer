@@ -2015,8 +2015,14 @@ mod tests {
                 .unwrap();
         }
         connection.execute_batch("DROP TABLE image_batch_members; DROP TABLE image_folder_contexts; DROP TABLE image_prompt_titles; DROP TABLE image_discards;").unwrap();
+        // A genuine v6 journal predates the image-service ownership header.
         connection.pragma_update(None, "user_version", 6).unwrap();
+        connection.pragma_update(None, "application_id", 0).unwrap();
         drop(connection);
+        let marker = database.with_file_name(".image-service-initialized");
+        if marker.exists() {
+            std::fs::remove_file(marker).unwrap();
+        }
         let migrated = connection_at(&database).unwrap();
         assert_eq!(
             artifact_for_locator(&migrated, r"C:\missing\result.png", Some(&digest)).unwrap(),
