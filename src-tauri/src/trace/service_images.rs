@@ -1555,8 +1555,21 @@ fn prepared_evidence(
     let (Some(parent), Some(new_path)) = (link.target.parent(), link.target.to_str()) else {
         return Ok(Some((path, digest, identity, anchor)));
     };
-    // The anchor sits at `<dir>/<stage>/<anchor>` next to the destination.
-    if old_target != new_target || old_anchor[0] != old_target[0] {
+    // The anchor sits at `<dir>/<stage>/trace-anchor` next to the destination.
+    // Anything else (a `..`, a root, another leaf) is left as stored and fails
+    // safely where it is used.
+    let plain = |p: &Path| {
+        p.components()
+            .rev()
+            .take(3)
+            .all(|c| matches!(c, std::path::Component::Normal(_)))
+    };
+    if old_target != new_target
+        || old_anchor[0] != old_target[0]
+        || old_anchor[2] != "trace-anchor"
+        || !plain(Path::new(&path))
+        || !plain(Path::new(&anchor))
+    {
         return Ok(Some((path, digest, identity, anchor)));
     }
     let new_anchor = parent.join(&old_anchor[1]).join(&old_anchor[2]);
@@ -2568,6 +2581,11 @@ mod tests {
         /// with its capacity error before any provider dispatch.
         fn admit(&self, operation: &str) -> Result<(), AppError> {
             let mut claims = self.claims.lock().unwrap();
+            if claims.released.contains(operation) {
+                return Err(AppError::Other(
+                    "Service state: released preparation ID cannot be reused".into(),
+                ));
+            }
             if claims.admitted.contains(operation) {
                 return Ok(());
             }
@@ -2584,10 +2602,34 @@ mod tests {
             claims.admitted.insert(operation.into());
             Ok(())
         }
-        /// The host releases this operation's execution claim: the user
-        /// stopped its recovery, or its preparation was never forwarded.
-        fn release_claim(&self, operation: &str) {
-            self.claims.lock().unwrap().released.insert(operation.into());
+        /// The host releases an admitted operation's claim for good. An ID the
+        /// host never admitted (a quota-refused acceptance) has nothing to
+        /// release and stays free to be admitted later.
+        fn release_claim(&self, operation: &str) -> bool {
+            let mut claims = self.claims.lock().unwrap();
+            claims.admitted.contains(operation) && {
+                claims.released.insert(operation.into());
+                true
+            }
+        }
+        /// The user stops recovery in AI Operations. The host releases only an
+        /// operation that is terminal unknown (needs attention, no output): one
+        /// whose receipt says unknown, or whose recovery the host settled
+        /// without any receipt.
+        fn stop_recovery(&self, operation: &str) -> bool {
+            let stoppable = self
+                .states
+                .lock()
+                .unwrap()
+                .get(operation)
+                .is_none_or(|r| matches!(r.execution, Execution::Unknown { .. }));
+            stoppable && self.release_claim(operation)
+        }
+        /// A never-forwarded preparation is released; a forwarded one is not.
+        fn release_preparation(&self, operation: &str) {
+            if !self.states.lock().unwrap().contains_key(operation) {
+                self.release_claim(operation);
+            }
         }
         fn count(&self, method: &str) -> usize {
             self.calls
@@ -2774,7 +2816,7 @@ mod tests {
                         return Err(invalid("Fixture provider is unreachable"));
                     }
                     if action == "status" && behavior.stop_recovery {
-                        self.release_claim(p["operationId"].as_str().unwrap());
+                        self.stop_recovery(p["operationId"].as_str().unwrap());
                         return Err(AppError::Service {
                             code: "recovery_stopped".into(),
                             message: "Fixture recovery stopped".into(),
@@ -2860,7 +2902,7 @@ mod tests {
                         b.lost_release = false;
                         return Err(invalid("Fixture preparation cleanup reply lost"));
                     }
-                    self.release_claim(p["operationId"].as_str().unwrap());
+                    self.release_preparation(p["operationId"].as_str().unwrap());
                     Ok(json!({"released":true}))
                 }
                 _ => panic!("Unexpected fake host call {action}"),
@@ -2939,6 +2981,8 @@ mod tests {
         }
     }
     const OP: &str = "11111111111111111111111111111111";
+    /// An operation ID whose attempt the host rejects and releases for good.
+    const REJECTED: &str = "99999999999999999999999999999999";
     #[test]
     fn sealed_png_is_adopted_and_acquired_before_provider_acknowledgement() {
         let f = Fixture::new();
@@ -3254,6 +3298,57 @@ mod tests {
         assert!(retained.is_none_or(|a| Path::new(&a).starts_with(&new_root)));
     }
     #[test]
+    fn moved_profile_leaves_a_malformed_anchor_row_unrebased() {
+        let f = Fixture::new();
+        let link = f.accept(OP);
+        let moved = crate::test_support::tempdir().unwrap();
+        let new_root = moved.path().join("renamed-user/profile");
+        fs::create_dir_all(new_root.parent().unwrap()).unwrap();
+        fs::rename(f._root.path(), &new_root).unwrap();
+        let database = new_root.join("trace.sqlite");
+        let live = read_link(&database, OP).unwrap().unwrap();
+        let dir = link.target.parent().unwrap();
+        let stored = |anchor: &Path| {
+            connection_at(&database)
+                .unwrap()
+                .execute(
+                    "UPDATE runs SET prepared_output_path=?2,prepared_output_digest=?3,prepared_object_identity='id',prepared_anchor_path=?4 WHERE id=?1",
+                    params![link.run_id, link.target.to_str().unwrap(), "a".repeat(64), anchor.to_str().unwrap()],
+                )
+                .unwrap();
+        };
+        let row = || {
+            connection_at(&database)
+                .unwrap()
+                .query_row(
+                    "SELECT prepared_output_path,prepared_anchor_path FROM runs WHERE id=?1",
+                    [link.run_id],
+                    |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
+                )
+                .unwrap()
+        };
+        for bad in [
+            dir.join(".tauri-explorer-stage-x").join("payload"),
+            dir.join("..").join("trace-anchor"),
+            dir.join("trace-anchor").join("..").join("..").join("trace-anchor"),
+        ] {
+            stored(&bad);
+            let (path, _, _, anchor) = prepared_evidence(&database, &live).unwrap().unwrap();
+            assert_eq!(Path::new(&path), link.target, "{bad:?}");
+            assert_eq!(Path::new(&anchor), bad, "{bad:?}");
+            assert_eq!(row(), (path, anchor), "{bad:?}");
+        }
+        // The well-formed anchor of the same row does rebase.
+        stored(&dir.join(".tauri-explorer-stage-x").join("trace-anchor"));
+        let (path, _, _, anchor) = prepared_evidence(&database, &live).unwrap().unwrap();
+        assert_eq!(Path::new(&path), live.target);
+        assert_eq!(
+            Path::new(&anchor),
+            live.target.parent().unwrap().join(".tauri-explorer-stage-x").join("trace-anchor")
+        );
+        assert_eq!(row(), (path, anchor));
+    }
+    #[test]
     fn one_invalid_live_target_fails_only_its_own_operation() {
         let f = Fixture::new();
         let other = "22222222222222222222222222222222";
@@ -3566,14 +3661,14 @@ mod tests {
             &f.generated,
             r,
             9,
-            OP.into(),
+            REJECTED.into(),
             &crate::plugin_job::JobControl::new(),
             false
         )
         .is_err());
         assert_eq!(f.host.count("prepare"), 0);
         assert_eq!(f.host.count("start"), 0);
-        assert!(read_link(&f.database, OP).unwrap().is_none());
+        assert!(read_link(&f.database, REJECTED).unwrap().is_none());
         let mut r = request();
         r.source_path = Some(f.host.path.to_string_lossy().into());
         r.expected_source_digest = Some(f.host.output.sha256.clone());
@@ -3921,14 +4016,16 @@ mod tests {
             &f.generated,
             request,
             9,
-            OP.into(),
+            // A released preparation ID cannot be reused, so the rejected
+            // attempt has its own.
+            REJECTED.into(),
             &crate::plugin_job::JobControl::new(),
             false
         )
         .is_err());
         assert_eq!(f.host.count("start"), 0);
         assert_eq!(f.host.count("prepare"), 0);
-        assert!(read_link(&f.database, OP).unwrap().is_none());
+        assert!(read_link(&f.database, REJECTED).unwrap().is_none());
         let link = f.accept(OP);
         f.run(OP, true);
         assert_eq!(f.snapshot(OP)["status"], "uncertain");
@@ -4910,8 +5007,18 @@ mod tests {
         assert_eq!((run_count(&f), link_count(&f)), (runs, links));
         assert!(snapshot_at(&f.database, refused).unwrap().is_none());
         assert_eq!(event_count(&f, "openai-image-error"), 0);
-        // Stopping recovery on one unknown outcome frees one slot.
-        f.host.release_claim(&operations[0]);
+        // Trace's cleanup released nothing for the refused ID, so the same ID
+        // is still free to be admitted and then counts against the quota.
+        assert!(!f.host.stop_recovery(refused));
+        // Stopping recovery on one unknown outcome frees one slot, which the
+        // previously refused ID takes; that admission then counts.
+        assert!(f.host.stop_recovery(&operations[0]));
+        accept_job(&f, refused, 98, request()).unwrap();
+        f.run(refused, true);
+        assert_eq!(f.snapshot(refused)["outcomeUnknown"], true);
+        let error = accept_job(&f, &"d".repeat(32), 97, request()).err().expect("quota full again").to_string();
+        assert!(error.contains("operation capacity reached"), "{error}");
+        assert!(f.host.stop_recovery(&operations[1]));
         f.host.behavior.lock().unwrap().unknown = false;
         f.host.behavior.lock().unwrap().ack_down = true;
         let pending = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_owned();
@@ -4929,7 +5036,7 @@ mod tests {
         })
         .await;
         assert_eq!(f.host.count("status"), status + 1);
-        assert_eq!(f.host.count("start"), MAX_LIVE + 1);
+        assert_eq!(f.host.count("start"), MAX_LIVE + 2);
         for op in &operations {
             assert_eq!(f.snapshot(op)["outcomeUnknown"], true);
         }
