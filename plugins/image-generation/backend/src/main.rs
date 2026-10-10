@@ -348,11 +348,13 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
                 let normal_handlers = normal.clone();
                 let control_handlers = control.clone();
                 handle.spawn_blocking(move || {
-                    let _permit = permit;
                     let response = match execute(&service, &initialized, &control_token, &validation_only, &normal_handlers, &control_handlers, request) {
                         Ok(result) => json!({"jsonrpc":"2.0","id":id,"result":result}),
                         Err(failure) => json!({"jsonrpc":"2.0","id":id,"error":{"code":-32000,"message":failure.message,"data":failure}}),
                     };
+                    // The handler's work is over before its reply is visible, so a
+                    // caller that quiesces right after this reply sees it idle.
+                    drop(permit);
                     let _ = send(&output, &response);
                     active.lock().unwrap().remove(&id);
                 });

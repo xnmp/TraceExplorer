@@ -550,9 +550,13 @@ impl Service {
                         .await;
                     }
                     drop(deadline_done);
-                    let mut controls = service.controls.lock().unwrap_or_else(|e| e.into_inner());
+                    service
+                        .controls
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .remove(&identity);
+                    drop(service);
                     drop(admission);
-                    controls.remove(&identity);
                 });
                 return failed;
             }
@@ -576,9 +580,15 @@ impl Service {
             // Receipt terminality can precede metadata IO completion. Host
             // recovery controls report idle only after actual IO and leases end.
             drop(slot);
-            let mut controls = service.controls.lock().unwrap_or_else(|e| e.into_inner());
+            service
+                .controls
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(&identity);
+            // The admission permit is released last: once wait_idle observes it,
+            // no worker retains this instance (or its state-directory lease).
+            drop(service);
             drop(admission);
-            controls.remove(&identity);
         });
         Ok(status)
     }
@@ -930,40 +940,43 @@ impl Service {
             json!({"consumerPackageId":caller,"operationId":operation,"artifact":output}),
             &AtomicBool::new(false),
         );
-        match readback(&read, &output) {
+        let verdict = readback(&read, &output);
+        match verdict {
             Readback::Intact => {
                 if matches!(status.delivery, Delivery::Unavailable { .. }) {
                     status = self.journal.delivery_restored(caller, operation, output)?;
                 }
+                return Ok(status);
             }
-            // Status stays read-only for transient host conditions: durable
-            // unavailability is already honest, durable availability is kept
-            // and the caller is told to ask again.
-            Readback::Transient => {
-                if matches!(status.delivery, Delivery::Available { .. }) {
-                    return Err(error(
-                        "storage_unavailable",
-                        "Sealed image output is temporarily unreadable; its delivery state is unchanged",
-                    ));
-                }
+            // A transient host condition says nothing about sealed bytes:
+            // durable availability is kept and the caller is told to ask again.
+            Readback::Transient if matches!(status.delivery, Delivery::Available { .. }) => {
+                return Err(error(
+                    "storage_unavailable",
+                    "Sealed image output is temporarily unreadable; its delivery state is unchanged",
+                ));
             }
-            Readback::Lost(reason) => {
-                // Only the original owned stage is retried. Native seal is
-                // idempotent and checks proof, pins and bytes; never generate.
-                let restored = self.host.call(
-                    "host.artifacts.seal",
-                    json!({"consumerPackageId":caller,"operationId":operation,"handle":output.handle,"mediaType":"image/png"}),
-                    &AtomicBool::new(false),
-                ).and_then(|value| serde_json::from_value::<ArtifactDescriptor>(value).map_err(|_| invalid("Invalid recovered image descriptor")))
-                .ok().filter(|returned| returned == &output);
-                status = match restored {
-                    Some(restored) => self
-                        .journal
-                        .delivery_restored(caller, operation, restored)?,
-                    None => self.journal.delivery_missing(caller, operation, reason)?,
-                };
-            }
+            _ => {}
         }
+        // Only the original owned stage is retried. Native seal is idempotent
+        // and checks proof, pins and bytes; never generate. A candidate whose
+        // seal reply was lost reads as an ungranted handle until this succeeds.
+        let restored = self.host.call(
+            "host.artifacts.seal",
+            json!({"consumerPackageId":caller,"operationId":operation,"handle":output.handle,"mediaType":"image/png"}),
+            &AtomicBool::new(false),
+        ).and_then(|value| serde_json::from_value::<ArtifactDescriptor>(value).map_err(|_| invalid("Invalid recovered image descriptor")))
+        .ok().filter(|returned| returned == &output);
+        status = match (restored, verdict) {
+            (Some(restored), _) => self
+                .journal
+                .delivery_restored(caller, operation, restored)?,
+            // Only a verified missing/corrupt answer changes durable delivery.
+            (None, Readback::Lost(reason)) => {
+                self.journal.delivery_missing(caller, operation, reason)?
+            }
+            (None, _) => status,
+        };
         Ok(status)
     }
     pub fn cancel(&self, caller: &str, operation: &str) -> Result<OperationStatus> {

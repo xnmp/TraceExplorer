@@ -262,8 +262,20 @@ async fn completed_http_image_survives_all_normal_reverse_slots_being_occupied()
         let frame = receive(&frames);
         assert_eq!(frame["result"]["available"], true, "{frame}");
     }
-    assert_eq!(
-        rpc(&mut stdin, &frames, 5, "lifecycle.quiesce", json!({}))["idle"],
-        true
-    );
+    // The terminal event precedes the worker's lease release, so quiesce may
+    // briefly report busy; it must drain without any further reverse IO.
+    for id in 5.. {
+        write(
+            &mut stdin,
+            json!({"jsonrpc":"2.0","id":id,"method":"lifecycle.quiesce","params":{}}),
+        );
+        let frame = receive(&frames);
+        assert_eq!(frame["id"], id, "Unexpected reverse IO: {frame}");
+        if frame["result"]["idle"] == true {
+            break;
+        }
+        assert_eq!(frame["error"]["data"]["code"], "busy", "{frame}");
+        assert!(id < 200, "Completed image worker never drained");
+        std::thread::sleep(Duration::from_millis(5));
+    }
 }

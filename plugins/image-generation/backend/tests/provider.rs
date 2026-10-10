@@ -61,12 +61,20 @@ impl Host for FakeHost {
             "host.artifacts.read" => {
                 let descriptor: ArtifactDescriptor =
                     serde_json::from_value(p["artifact"].clone()).unwrap();
+                // Like the native store: an unknown or unsealed handle is a
+                // generic refusal; only sealed bytes are typed missing/corrupt.
                 let entries = self.artifacts.lock().unwrap();
                 let (path, stored) = entries
                     .get(&descriptor.handle)
-                    .ok_or_else(|| error("not_found", "Missing artifact"))?;
-                if stored != &descriptor {
-                    return Err(error("corrupt", "Descriptor mismatch"));
+                    .filter(|(_, stored)| stored == &descriptor)
+                    .ok_or_else(|| {
+                        error(
+                            "service_unavailable",
+                            "Service state: artifact read is not granted to this operation owner",
+                        )
+                    })?;
+                if !path.exists() {
+                    return Err(error("not_found", "Sealed artifact is missing"));
                 }
                 adapters::read_input(path, &descriptor)
                     .map_err(|_| error("corrupt", "Corrupt sealed bytes"))?;
@@ -880,12 +888,7 @@ async fn missing_and_restored_delivery_does_not_change_proven_execution() {
         Delivery::Available { output } => output.clone(),
         _ => panic!("No image"),
     };
-    let record = host
-        .artifacts
-        .lock()
-        .unwrap()
-        .remove(&descriptor.handle)
-        .unwrap();
+    let record = host.artifacts.lock().unwrap()[&descriptor.handle].clone();
     let bytes = std::fs::read(&record.0).unwrap();
     std::fs::remove_file(&record.0).unwrap();
     let missing = service
@@ -899,10 +902,6 @@ async fn missing_and_restored_delivery_does_not_change_proven_execution() {
         }
     );
     std::fs::write(&record.0, bytes).unwrap();
-    host.artifacts
-        .lock()
-        .unwrap()
-        .insert(descriptor.handle.clone(), record);
     assert_eq!(
         service
             .status("test.consumer", &request.operation_id)
@@ -1660,17 +1659,13 @@ async fn valid_admission_rejections_are_durable_and_never_dispatch() {
 struct HeldInputGrants {
     inner: Arc<FakeHost>,
     entered: std::sync::mpsc::Sender<()>,
-    released: Mutex<bool>,
-    wake: std::sync::Condvar,
+    released: Arc<Gate>,
 }
 impl Host for HeldInputGrants {
     fn call(&self, method: &str, params: Value, cancel: &AtomicBool) -> Result<Value> {
         if method == "host.artifacts.read" {
             self.entered.send(()).unwrap();
-            let mut released = self.released.lock().unwrap();
-            while !*released {
-                released = self.wake.wait(released).unwrap();
-            }
+            self.released.wait();
             return Err(error("input_changed", "Fixture input grant changed"));
         }
         self.inner.call(method, params, cancel)
@@ -1686,8 +1681,7 @@ async fn full_admission_capacity_returns_a_durable_rejection_without_dispatch() 
     let host = Arc::new(HeldInputGrants {
         inner: FakeHost::new(),
         entered: tx,
-        released: Mutex::new(false),
-        wake: std::sync::Condvar::new(),
+        released: Gate::new(),
     });
     let service = Service::new(directory.path(), host.clone()).unwrap();
     service.activate().unwrap();
@@ -1722,8 +1716,7 @@ async fn full_admission_capacity_returns_a_durable_rejection_without_dispatch() 
     );
     let rejected = service.start(caller(), request.clone(), false).unwrap();
     assert!(matches!(&rejected.execution, Execution::Failed { error } if error.code == "busy"));
-    *host.released.lock().unwrap() = true;
-    host.wake.notify_all();
+    host.released.open();
     for task in tasks {
         assert!(matches!(
             task.await.unwrap().unwrap().execution,
@@ -2337,17 +2330,16 @@ async fn restart_recovers_original_seal_candidate_without_generation_or_new_stag
 struct HeldOutputStage {
     inner: Arc<FakeHost>,
     entered: AtomicUsize,
-    released: (Mutex<bool>, std::sync::Condvar),
+    all_entered: Arc<Gate>,
+    released: Arc<Gate>,
 }
 impl Host for HeldOutputStage {
     fn call(&self, method: &str, params: Value, cancelled: &AtomicBool) -> Result<Value> {
         if method == "host.artifacts.stage" {
-            self.entered.fetch_add(1, Ordering::SeqCst);
-            let (released, ready) = &self.released;
-            let mut released = released.lock().unwrap();
-            while !*released {
-                released = ready.wait(released).unwrap();
+            if self.entered.fetch_add(1, Ordering::SeqCst) + 1 == 4 {
+                self.all_entered.open();
             }
+            self.released.wait();
         }
         self.inner.call(method, params, cancelled)
     }
@@ -2365,15 +2357,21 @@ async fn expired_queue_never_dispatches_and_live_io_retains_worker_leases() {
     let host = Arc::new(HeldOutputStage {
         inner: FakeHost::new(),
         entered: AtomicUsize::new(0),
-        released: (Mutex::new(false), std::sync::Condvar::new()),
+        all_entered: Gate::new(),
+        released: Gate::new(),
     });
+    struct Release(Arc<Gate>);
+    impl Drop for Release {
+        fn drop(&mut self) {
+            self.0.open()
+        }
+    }
+    let _release = Release(host.released.clone());
+    // Deadlines apply only once every worker holds its proven output in stage.
     let service = Service::with_policy(
         directory.path(),
         host.clone(),
-        image_generation_backend::service::ServicePolicy {
-            operation_budget: Duration::from_millis(500),
-            ..Default::default()
-        },
+        gated_deadline(host.all_entered.clone()),
     )
     .unwrap();
     service.activate().unwrap();
@@ -2396,13 +2394,7 @@ async fn expired_queue_never_dispatches_and_live_io_retains_worker_leases() {
         service.start(caller(), request.clone(), false).unwrap();
         active.push(request);
     }
-    tokio::time::timeout(Duration::from_secs(2), async {
-        while host.entered.load(Ordering::SeqCst) < 4 {
-            tokio::time::sleep(Duration::from_millis(5)).await;
-        }
-    })
-    .await
-    .unwrap();
+    tokio::task::block_in_place(|| assert!(host.all_entered.wait()));
     let prepared = request(&config.profiles[0], vec![]);
     let queued = start(
         prepared.clone(),
@@ -2413,14 +2405,19 @@ async fn expired_queue_never_dispatches_and_live_io_retains_worker_leases() {
         .journal
         .deadline("test.consumer", &queued.operation_id)
         .unwrap();
-    tokio::time::sleep(Duration::from_millis(650)).await;
-    assert_eq!(
-        service
+    // The queued operation's own deadline cancels it while every slot is held.
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while service
             .status("test.consumer", &queued.operation_id)
             .unwrap()
-            .execution,
-        Execution::Cancelled {}
-    );
+            .execution
+            != (Execution::Cancelled {})
+        {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
     assert_eq!(service.quiesce().unwrap_err().code, "busy");
     assert!(service.ready());
     assert_eq!(host.entered.load(Ordering::SeqCst), 4);
@@ -2439,8 +2436,7 @@ async fn expired_queue_never_dispatches_and_live_io_retains_worker_leases() {
             .unwrap(),
         deadline
     );
-    *host.released.0.lock().unwrap() = true;
-    host.released.1.notify_all();
+    host.released.open();
     service.wait_idle().await;
     for request in active {
         assert!(matches!(
