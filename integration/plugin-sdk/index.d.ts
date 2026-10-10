@@ -86,7 +86,11 @@ export interface PreviewInfoContribution { id: string; component: Component<any>
 
 export interface PluginContext {
   /** Host-managed modal navigation retains the caller's mounted draft. */
-  presentation?: {openDialog(id:string,props?:Record<string,unknown>):Promise<{reason:"closed"|"caller-closed"|"owner-disposed"}>};
+  presentation?: {
+    openDialog(id:string,props?:Record<string,unknown>):Promise<{reason:"closed"|"caller-closed"|"owner-disposed"}>;
+    /** Opens the host image editor directly in one of this plugin's editor tools; settles when it closes. */
+    openImageEditor?(request:{path:string;tool:string}):Promise<void>;
+  };
   /** Present on hosts with the textGeneration capability. Text execution is backend-owned. */
   text?: {
     subscribe(listener: (revision: number) => void): () => void;

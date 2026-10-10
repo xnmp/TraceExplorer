@@ -59,12 +59,25 @@
   /** The AI edit tool in a stand-in for the host's image editor: it stays mounted while the editor's source fills in. */
   let editorTool = $state.raw<{ component: Component<any>; props?: Record<string, unknown> } | null>(null);
   let editorSource = $state.raw<ImageEditorSource | null>(null);
+  let editorToolId: string | null = null;
+  /** `?editorApi=0` simulates a host without `presentation.openImageEditor`. */
+  const editorApi = new URLSearchParams(location.search).get("editorApi") !== "0";
+  const editorCalls: Array<{ path: string; tool: string }> = [];
+  let editorClosed: (() => void) | undefined;
+  const menuItems = new Map<string, { label: string; group: string; when: (entries: FileEntry[]) => boolean; handler: (entries: FileEntry[]) => void | Promise<void> }>();
+  /** As the host's imageEditorRequestError: only this plugin's registered tool, an absolute path, one editor at a time. */
+  function imageEditorRequestError(request: { path: string; tool: string }): string | null {
+    if (editorToolId === null || request.tool !== editorToolId) return `Unknown image editor tool: ${request.tool}`;
+    if (!/^(\/|[A-Za-z]:[\\/])/.test(request.path)) return "Image editor path must be absolute";
+    if (editorSource) return "An image editor is already open";
+    return null;
+  }
 
   let configureOpen = $state(false);
   let closeConfiguration: (() => void) | undefined;
   let configureFailure: string | null = null;
   function activate() {
-    views = []; sections = []; commands.clear(); conditions.clear(); listeners.clear(); fileListeners.length = 0;
+    views = []; sections = []; commands.clear(); conditions.clear(); listeners.clear(); fileListeners.length = 0; menuItems.clear(); editorToolId = null;
     const ctx = {
       registerSettingsSection: () => {},
       registerFileView: (view: FileViewContribution) => { views = [...views, view]; },
@@ -83,12 +96,18 @@
     tracePlugin.activate(ctx);
     if (ai) openAIImagePlugin.activate({
       ...ctx,
-      registerContextMenuItem: () => {}, registerSettingsSection: () => {},
-      registerImageEditorTool: (tool: { component: Component<any>; props?: Record<string, unknown> }) => { editorTool = tool; },
+      registerContextMenuItem: (item: { id: string; label: string; group: string; when: (entries: FileEntry[]) => boolean; handler: (entries: FileEntry[]) => void | Promise<void> }) => { menuItems.set(item.id, item); }, registerSettingsSection: () => {},
+      registerImageEditorTool: (tool: { id: string; component: Component<any>; props?: Record<string, unknown> }) => { editorTool = tool; editorToolId = tool.id; },
       registerDialog: (dialog: { id: string; component: Component<any> }) => { dialogs.set(dialog.id, dialog.component); },
       openDialog: (id: string, props: Record<string, unknown> = {}) => { opened_dialogs = [...opened_dialogs, { id, props }]; },
       closeDialog: (id: string) => { opened_dialogs = opened_dialogs.filter((dialog) => dialog.id !== id); },
-      presentation: { openDialog: async (id: string) => {
+      presentation: { ...(editorApi ? { openImageEditor: async (request: { path: string; tool: string }) => {
+        editorCalls.push({ ...request });
+        const refused = imageEditorRequestError(request);
+        if (refused) throw new Error(refused);
+        editorSource = { path: request.path, name: request.path.split(/[\\/]/).at(-1)!, digest: "0".repeat(64), format: "PNG", referencePaths: [] };
+        await new Promise<void>((resolve) => { editorClosed = resolve; });
+      } } : {}), openDialog: async (id: string) => {
         if (configureFailure) throw new Error(configureFailure);
         if (id !== "image-generation.connections") throw new Error("Unknown provider dialog");
         configureOpen = true;
@@ -191,6 +210,10 @@
     openEditor(path: string, digest: string) { editorSource = { path, name: path.split("/").at(-1)!, digest, format: "PNG", referencePaths: [] }; },
     /** The editor's preview loaded: its source now has a size, as the host's derived source does. */
     editorLoaded(width: number, height: number) { if (editorSource) editorSource = { ...editorSource, size: { width, height } }; },
+    /** The context-menu items the host would show for the selected paths, as `[id, label]`. */
+    menuFor(paths: string[]) { const chosen = entries.filter((entry) => paths.includes(entry.path)); return [...menuItems].filter(([, item]) => item.when(chosen)).map(([id, item]) => [id, item.label]); },
+    invokeMenu(id: string, paths: string[]) { return menuItems.get(id)?.handler(entries.filter((entry) => paths.includes(entry.path))); },
+    editorCalls: () => editorCalls.map((call) => ({ ...call })),
     enabled: (id: string) => conditions.get(id)?.() ?? false,
     accepted: () => [...accepted],
   };
@@ -248,7 +271,7 @@
   <section class="plugin-dialog" role="dialog" aria-label="AI edit">
     {#key editorTool}
       {@const Tool = editorTool.component}
-      <Tool {...editorTool.props} source={editorSource} onClose={() => { editorSource = null; }} onBusyChange={() => {}} />
+      <Tool {...editorTool.props} source={editorSource} onClose={() => { editorSource = null; editorClosed?.(); editorClosed = undefined; }} onBusyChange={() => {}} />
     {/key}
   </section>
 {/if}

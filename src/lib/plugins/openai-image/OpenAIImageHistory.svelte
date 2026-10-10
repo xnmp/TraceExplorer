@@ -55,14 +55,14 @@
 
 <Modal {open} {onClose} overlayClass="dialog-overlay" labelledby="openai-history-title">
   <div class="dialog plugin-dialog">
-    <header class="dialog-header"><h2 id="openai-history-title">OpenAI image history</h2><button class="close-btn" type="button" onclick={onClose} aria-label="Close">×</button></header>
+    <header class="dialog-header"><h2 id="openai-history-title">AI image history</h2><button class="close-btn" type="button" onclick={onClose} aria-label="Close">×</button></header>
     <div class="dialog-body">
       {#if loading}<p role="status">Loading image runs…</p>
       {:else if error}<p role="alert">{error}</p>
-      {:else if !runs.length}<p>No OpenAI image runs recorded yet.</p>
+      {:else if !runs.length}<p>No AI image runs recorded yet.</p>
       {:else}
         <p class="note">Most recent 64 runs. Failed generations remain here even when they produced no image.</p>
-        <ol aria-label="OpenAI image runs">
+        <ol aria-label="AI image runs">
           {#each runs as item (item.run.id)}
             {@const explanation = item.run.status === "failed" ? codexExplanation(item.run.details) : null}
             {@const attempt = retries[item.run.id]}

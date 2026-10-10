@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { describeInputs, imageInputPaths, inputRequestFields, moveInput, removeInput, withLiveInputs, type ImageInput } from "$lib/domain/image-inputs";
+import { describeInputs, imageInputPaths, inputRequestFields, moveInput, removeInput, singleImagePath, withLiveInputs, type ImageInput } from "$lib/domain/image-inputs";
 
 const inputs: ImageInput[] = ["/a.png", "/b.jpg", "/c.webp"].map((path) => ({ path }));
 const paths = (list: readonly ImageInput[]) => list.map((input) => input.path);
@@ -74,5 +74,22 @@ describe("AI edit inputs", () => {
       { path: "/b.jpg", error: "Path not found" },
       { path: "/c.webp" },
     ]);
+  });
+});
+
+describe("single image for the host editor", () => {
+  const file = (path: string) => ({ path, kind: "file" as const });
+  it("returns the path of exactly one local PNG, JPEG or WebP file", () => {
+    expect(singleImagePath([file("/m/a.png")])).toBe("/m/a.png");
+    expect(singleImagePath([file("/m/a.JPG")])).toBe("/m/a.JPG");
+    expect(singleImagePath([file("C:\\m\\a.WebP")])).toBe("C:\\m\\a.WebP");
+  });
+  it("is null for none, several, a directory, a non-image or a virtual-filesystem entry", () => {
+    expect(singleImagePath([])).toBeNull();
+    expect(singleImagePath([file("/m/a.png"), file("/m/b.png")])).toBeNull();
+    expect(singleImagePath([{ path: "/m/dir.png", kind: "directory" }])).toBeNull();
+    expect(singleImagePath([file("/m/a.gif")])).toBeNull();
+    expect(singleImagePath([file("/m/a")])).toBeNull();
+    expect(singleImagePath([file("demo://a.png")])).toBeNull();
   });
 });

@@ -26,9 +26,9 @@ describe("tileTooltipContent", () => {
 
   it("adds the operation and model once run details are known", () => {
     const content = tileTooltipContent(node({ prompt: "p" }), run({ parameters: { model: " gpt-image-2 " } }));
-    expect(content.details).toEqual(["out.png · OpenAI edit · gpt-image-2"]);
+    expect(content.details).toEqual(["out.png · AI edit · gpt-image-2"]);
     // A non-string model is ignored.
-    expect(tileTooltipContent(node({ prompt: "p" }), run({ parameters: { model: 42 } })).details).toEqual(["out.png · OpenAI edit"]);
+    expect(tileTooltipContent(node({ prompt: "p" }), run({ parameters: { model: 42 } })).details).toEqual(["out.png · AI edit"]);
   });
 
   it("says when an image is unsaved, missing or elsewhere", () => {

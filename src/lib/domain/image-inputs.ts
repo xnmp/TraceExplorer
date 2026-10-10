@@ -86,3 +86,9 @@ export function inputRequestFields(inputs: readonly ImageInput[]): {
     ...(rest.length && rest.every((input) => !!input.digest) ? { expectedReferenceDigests: rest.map((input) => input.digest!) } : {}),
   };
 }
+
+/** The path of the one local PNG, JPEG or WebP file in `entries`, which the host image editor can open; otherwise null. */
+export function singleImagePath(entries: readonly { readonly path: string; readonly kind: "file" | "directory" }[]): string | null {
+  const [entry] = entries;
+  return entries.length === 1 && entry.kind === "file" ? imageInputPaths([entry.path])[0] ?? null : null;
+}

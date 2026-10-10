@@ -128,7 +128,7 @@ describe("runSettings", () => {
 
   it("labels the recorded settings in display order, ending with the actual size", () => {
     expect(runSettings(edit({ prompt: "p", resolution: "2k", aspect_ratio: "3:2", quality: "high", seed: 7 }, { actual_size: { width: 1536, height: 1024 } }))).toEqual([
-      { label: "Operation", value: "OpenAI edit" },
+      { label: "Operation", value: "AI edit" },
       { label: "Resolution", value: "2K" },
       { label: "Aspect ratio", value: "3:2" },
       { label: "Quality", value: "high" },
@@ -142,7 +142,7 @@ describe("runSettings", () => {
   });
 
   it("leaves out missing, empty, automatic and non-scalar values", () => {
-    expect(runSettings(edit({ resolution: "AUTO", aspect_ratio: "auto", quality: "", seed: null, rect: { left: 0 } }))).toEqual([{ label: "Operation", value: "OpenAI edit" }]);
+    expect(runSettings(edit({ resolution: "AUTO", aspect_ratio: "auto", quality: "", seed: null, rect: { left: 0 } }))).toEqual([{ label: "Operation", value: "AI edit" }]);
     expect(runSettings(edit({ quality: { level: 3 }, seed: Number.NaN })).map((row) => row.label)).toEqual(["Operation"]);
   });
 
