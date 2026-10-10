@@ -1,61 +1,46 @@
-# Shared AI services: continuation status (2026-10-10, late)
+# Shared AI services: final status (2026-10-11)
 
-This supersedes earlier status notes. Nothing is merged into `dev`/`main` or released. Paired draft PRs: host #1048 (into `dev`), Trace #12 (into `main`), issue #1047.
+This supersedes earlier status notes. The plan in `docs/shared-ai-services-implementation-plan.md` is implemented, reviewed and natively verified. Paired PRs: host #1048 (into `dev`) and Trace #12 (into `main`), for issue #1047. Nothing is released or installed: neither is authorized.
 
 ## Branches
 
-| Repo | Checkout | Branch | Tip | CI |
-|---|---|---|---|---|
-| Host | `/tmp/te-shared-ai-host` | `feat/shared-ai-services` | `37a3579a` (pushed) | running |
-| Trace | `.worktrees/shared-ai-services` | `feat/shared-ai-services` | `8a99e61` (pushed) | green on all 5 targets |
+| Repo | Checkout | Branch | Final tip |
+|---|---|---|---|
+| Host | `/tmp/te-shared-ai-host` | `feat/shared-ai-services` | `abe6bc35` (code `890aaf64`) |
+| Trace | `.worktrees/shared-ai-services` | `feat/shared-ai-services` | `52af23a` |
 
-Agent worktrees and logs live under `/var/tmp/te-wt/`. Summarise a CI run with `/var/tmp/te-wt/ci.sh <repo> <sha>`.
+Agent worktrees, build targets and logs live under `/var/tmp/te-wt/`. Summarise a CI run with `/var/tmp/te-wt/ci.sh <repo> <sha>`.
 
 ## Done since the previous status
 
-- **Acceptance gaps closed.**
-  - Native consumer-kill fixture (3.20).
-  - Native e2e for §14.4: titles/default profile, slow-profile isolation, text/image config isolation, selection and folder generation with ordered inputs, retry lineage, progress panel, Save/Discard.
-  - §21.3 #12: Plugins-page modal.
-  - 21.1, 21.3 and 2.6 were covered by earlier merges.
-- **Review round 1.** Four independent reviewers covered host lifecycle, host store/AI, Trace consumer and provider. Every confirmed defect is fixed with tests:
-  - unknown outcomes are terminal and retryable;
-  - publication happens before the provider ack;
-  - moved profiles;
-  - cancellation-intent leak;
-  - sealing reported as Running;
-  - Codex host-error classification;
-  - first-run journal and ledger recovery;
-  - unaccepted jobs settle;
-  - parked jobs are dismissable;
-  - a refused drain restores ACTIVE;
-  - cross-platform profile lock;
-  - degraded store open;
-  - best-effort byte GC;
-  - malformed config repair;
-  - temp-file sweep;
-  - keyring orphans.
-- **CLI text adapters.** Codex and Claude Code are enabled behind isolation checks, a decision the user made on 2026-10-10. See host `docs/shared-ai-cli-text-isolation.md`.
-- **Review round 2, host.** It found two low-severity issues (parked-job reactivation, keyring deletion on a failed dir sync) plus Codex `todo_list`. All are fixed in `37a3579a`.
-- **Flaky tests made deterministic.** Trace deadline/FIFO/layout/Playwright tests, the host mutation matrix (a real ArtifactLease fork bug), and `ai/tests.rs` semaphore contention.
+- **Round-2 Trace review fixed.**
+  - The fake host in the tests now enforces the real host's per-consumer quota. Terminal unknown outcomes hold their slot until "Stop active recovery" in AI Operations, as plan §7.3 and §21 intend. The host's capacity error now names that resolution.
+  - Rebased prepared output and anchor paths after a profile move.
+  - The provider commits a proven success in the same transaction as its snapshot.
+  - The prompt-titles filter drops only exact repeats.
+  - Follow-ups:
+    - the fake host refuses reuse of a released ID;
+    - the provider's read-fault hook sits behind the `test-hooks` feature;
+    - a malformed anchor row is left unrebased.
+- **Windows races found by CI, fixed at the root.**
+  - The ledger keeps its WAL sidecars across connections, and every ledger open goes through `open_ledger`, which sets `PERSIST_WAL` and `journal_size_limit=0`. Before this, a concurrent connect could observe a delete-pending sidecar.
+  - Rebased prepared paths use one normalized form (`stored_target`) in every comparison.
+  - The cmd-shim cancellation test gives nested PowerShell more time to start.
+- **Native acceptance isolates CLI logins.**
+  - The host's default text profile is the Codex CLI. One acceptance attempt on 2026-10-11 therefore made a few real title requests through the developer's saved Codex login.
+  - The runner now points `CODEX_HOME` and `CLAUDE_CONFIG_DIR` at empty private homes, puts refusing `codex`/`claude` shims first on `PATH`, and reports how many invocations the shims refused.
+  - Final runs on the final tips: absent provider 2/2, present provider 3/3, generation 9/9 twice. The shims refused only `codex exec --help` probes. Hashes are in host `docs/shared-ai-native-acceptance.md`.
 
-## In flight
+## Remaining
 
-- **Review round 2, Trace.** It reviews `554f8e9..c0a2715`.
-- **Paired change: typed pre-spawn refusal codes and bounded stdin for `host.process.run`.**
-  - Worktrees: `/var/tmp/te-wt/host-process-api` and `/var/tmp/te-wt/trace-process-api`.
-  - Codex image prompts go via stdin when the host supports it, which removes the Windows cmd.exe 8191-character limit.
+1. Confirm CI is green on both final tips, then update the PR descriptions, mark both PRs ready, and merge: host into `dev` first, then Trace into `main`.
+2. Clean up `/var/tmp/te-wt` worktrees, branches and build targets after merge, checking each one first.
 
-## Remaining before merge
+## Known limits and follow-ups
 
-1. Merge the in-flight branches. Get CI green on both repos on all platforms.
-2. Rebuild the host e2e binary and the Trace/provider archives from the final tips. Re-run `e2e-tauri/run-shared-ai-services.sh` with the absent and present profiles, including `SHARED_AI_NATIVE_GENERATE=1`. Record the hashes in host `docs/shared-ai-native-acceptance.md`.
-3. Re-fetch `origin/dev` and `origin/main`, and merge them in if they moved. Update the PR #1048 and #12 descriptions, mark them ready, and merge once CI is green. No release and no install: neither is authorized.
-4. Clean up `/var/tmp/te-wt` worktrees and branches after merge, checking each one first.
-
-## Known gaps and decisions
-
-- **Image-editor tool entry point is unreachable.** The host image editor always opens in crop mode, so Trace's "AI edit" editor tool can't be reached. This predates the work on host `dev`, and fixing it needs a host editor tool switcher.
-- **The provider keeps a durable Failed receipt for transient admission refusals.** This deviates from plan §8.5. Trace's status polling needs that receipt to settle a never-dispatched start.
-- **Possible remaining Codex CLI risk.** A future default-on Codex tool would run before the event backstop rejects the turn. This is documented.
+- **The image-editor tool entry point can't be reached.** The host image editor always opens in crop mode. This predates this work.
+- **The provider keeps a durable Failed receipt for transient admission refusals.** This deviates from plan §8.5. Trace's status polling needs that receipt to settle a start that was never dispatched.
+- **A future default-on Codex tool would run before the event backstop rejects the turn.** This is documented in the host's `docs/shared-ai-cli-text-isolation.md`.
+- **Unacknowledged deliveries hold the host quota.** If the provider stays unreachable after publication, 16 links waiting for acknowledgement block new Trace generation through the host quota until acknowledgement resumes. Plan §7.3 intends the pinning. The provider can't be disabled or removed while it is busy.
+- **An intermittent browser test predates this branch.** `e2e/graph.spec.ts` "the clicked tile stays where it was on screen while its graph relayouts" once saw a 26 px shift, against a limit of 2, on CI for `52af23a`. The view code is unchanged from `main`. It may be a real anchoring race and is worth investigating separately.
 - **One host test always fails locally:** `file_mutation::...creation_is_lazy_and_competing_entry_plans...`. It also fails on base and passes in CI.
