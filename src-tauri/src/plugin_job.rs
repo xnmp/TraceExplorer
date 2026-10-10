@@ -43,6 +43,9 @@ pub fn shutdown_jobs() {
         }
     }
 }
+pub(crate) fn has_live_jobs() -> bool {
+    JOBS.get().is_some_and(|jobs| !jobs.lock().unwrap_or_else(|error| error.into_inner()).is_empty())
+}
 
 /// Generous upper bound for a single plugin job; external tools/APIs can be
 /// slow but must never run forever.

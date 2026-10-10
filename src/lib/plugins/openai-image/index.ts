@@ -28,16 +28,18 @@ function selectedImages(ctx: PluginContext, entries: FileEntry[] = ctx.workspace
 }
 
 async function open(ctx: PluginContext, inputs: readonly string[], outputDir: string): Promise<void> {
-  const settings = await ctx.storage.get();
   ctx.openDialog(DIALOG_ID, {
     inputs: inputs.map((path) => ({ path })), outputDir,
-    apiKey: typeof settings.apiKey === "string" ? settings.apiKey : "",
-    codexPath: typeof settings.codexPath === "string" ? settings.codexPath : "",
-    initialBackend: settings.backend === "api_key" ? "api_key" : "codex",
     jobs: ctx.jobs, toast: ctx.toast,
-    storage: ctx.storage, onSaveSettings: ctx.saveSettings,
+    configureConnections: () => configureConnections(ctx),
     captureSelection: ctx.workspace.captureSelection,
   });
+}
+
+/** Await the provider-owned modal so callers can refresh capability state after closure. */
+async function configureConnections(ctx: PluginContext): Promise<void> {
+  if (!ctx.presentation?.openDialog) throw new Error("This host cannot open shared image settings. Update the host, then configure Image Generation in Plugins.");
+  await ctx.presentation.openDialog("image-generation.connections");
 }
 
 export const openAIImagePlugin: Plugin = {
@@ -48,24 +50,18 @@ export const openAIImagePlugin: Plugin = {
   activate(ctx) {
     ctx.registerSettingsSection({
       id: "openai-image", title: "AI / OpenAI Images",
-      rows: [{ id: "backend", label: "Image connection", type: "select", default: "codex",
-        options: [{ value: "codex", label: "Codex ChatGPT sign-in" }, { value: "api_key", label: "OpenAI API key" }],
-        description: "Codex mode uses the installed Codex CLI and its existing ChatGPT sign-in." },
-        { id: "codexPath", label: "Codex executable path", type: "text", default: "",
-        description: "Optional full executable path. Leave blank to search PATH and common installations, including NVM. Find it with command -v codex (Windows: where codex)." },
-        { id: "apiKey", label: "OpenAI API Key", type: "password",
-        description: "Used in API key mode. Leave blank to use OPENAI_API_KEY from the app environment." }],
+      rows: [], actions: [{ id: "configure-connections", label: "Configure connections", description: "Image connections belong to the Image Generation package. Enable its settings contribution in Plugins.", run: () => configureConnections(ctx) }],
     });
     ctx.registerImageEditorTool({
       id: "openai-image", title: "AI edit", component: OpenAIImageEditorTool,
       when: (source) => ["PNG", "JPEG", "WebP"].includes(source.format),
-      props: { storage: ctx.storage, onSaveSettings: ctx.saveSettings, jobs: ctx.jobs, toast: ctx.toast, captureSelection: ctx.workspace.captureSelection },
+      props: { configureConnections: () => configureConnections(ctx), jobs: ctx.jobs, toast: ctx.toast, captureSelection: ctx.workspace.captureSelection },
     });
     ctx.registerDialog({ id: DIALOG_ID, component: OpenAIImageDialog });
     ctx.registerDialog({ id: "openai-image.history", component: OpenAIImageHistory });
     ctx.registerCommand({
       id: "plugin.openai-image.history", label: "OpenAI: Image Run History", category: "plugins",
-      handler: () => ctx.openDialog("openai-image.history", { jobs: ctx.jobs, storage: ctx.storage }),
+      handler: () => ctx.openDialog("openai-image.history", { jobs: ctx.jobs }),
     });
     ctx.registerContextMenuItem({
       id: "openai-image.edit", label: "Edit with OpenAI", group: "ai",

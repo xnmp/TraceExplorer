@@ -7,6 +7,9 @@
   "scripts": {
     "build:frontend": "vite build",
     "build:backend": "cargo build --release --locked --manifest-path src-tauri/Cargo.toml",
+    "build:image-generation:frontend": "vite build --config vite.image-generation.config.ts",
+    "build:image-generation:backend": "cargo build --release --locked --manifest-path plugins/image-generation/backend/Cargo.toml",
+    "test:image-generation": "cargo test --locked --manifest-path plugins/image-generation/backend/Cargo.toml",
     "test:backend": "cargo test --locked --manifest-path src-tauri/Cargo.toml",
     "check": "svelte-check --tsconfig ./tsconfig.json",
     "test": "vitest run",

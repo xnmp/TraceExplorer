@@ -1,0 +1,25 @@
+[package]
+name = "image-generation-backend"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+[dependencies]
+te-plugin-runtime = { path = "../../../crates/plugin-runtime" }
+te-image-generation-contract = { path = "../../../crates/image-generation-contract" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+rusqlite = { version = "0.40.2", features = ["bundled"] }
+sha2 = "0.11"
+hex = "0.4"
+base64 = "0.23"
+getrandom = "0.4"
+url = "2"
+fs2 = "0.4"
+tempfile = "3"
+dunce = "1"
+dirs = "7"
+libc = "0.2"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "json", "multipart", "stream"] }
+futures-util = "0.3"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }

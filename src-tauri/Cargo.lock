@@ -952,6 +952,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "te-image-generation-contract"
+version = "0.1.0"
+dependencies = [
+ "hex",
+ "serde",
+ "serde_json",
+ "sha2",
+]
+
+[[package]]
+name = "te-plugin-runtime"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
 name = "tempfile"
 version = "3.27.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1061,6 +1079,8 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "te-image-generation-contract",
+ "te-plugin-runtime",
  "tempfile",
  "thiserror",
  "tokio",

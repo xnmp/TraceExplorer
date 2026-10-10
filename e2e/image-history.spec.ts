@@ -42,11 +42,11 @@ test("Retry starts a new job with the same ordered inputs, prompt and settings",
   await page.getByRole("button", { name: "Retry run #87" }).click();
   await expect(page.locator('li[data-run-id="87"]').getByRole("status")).toHaveText("Retry started as a new job");
   const started = await page.evaluate(() => (window as any).image.started());
-  expect(started).toEqual([{ kind: "openai-image", apiKey: "", request: {
+  expect(started).toEqual([{ kind: "openai-image", request: {
     sourcePath: inputs[0].path, expectedSourceDigest: inputs[0].digest,
     referencePaths: inputs.slice(1).map((input) => input.path), expectedReferenceDigests: inputs.slice(1).map((input) => input.digest),
-    prompt, outputDir: "/pictures", outputFilename: "img-20260923-160059_edit_edit.png", backend: "codex", codexPath: "/opt/codex/bin/codex",
-    model: "gpt-image-2", size: "2048x1536", resolution: "2k", aspectRatio: "keep", quality: "auto", background: "auto", retryOf: 87,
+    prompt, outputDir: "/pictures", outputFilename: "img-20260923-160059_edit_edit.png", connectionId: "saved-login", expectedConnectionRevision: "cli-revision",
+    model: null, size: "2048x1536", resolution: "2k", aspectRatio: "keep", quality: "auto", background: "auto", retryOf: 87,
   } }]);
   // The host registers it as a new image job, labelled like any other edit.
   const panel = page.getByRole("region", { name: "Image generation" });
@@ -94,4 +94,21 @@ test("on hosts with jobRetry, a failed job's Retry in the Image generation panel
   expect(first).toBe(87);
   expect(second).toBe(200);
   expect(await page.evaluate(() => (window as any).image.errors)).toEqual([]);
+});
+
+test("a missing recorded connection refuses paid Retry even when another default is available", async ({ page }) => {
+  await open(page);
+  await page.getByRole("button", { name: "Retry run #87" }).click();
+  const panel = page.getByRole("region", { name: "Image generation" });
+  const label = "img-20260923-160059_edit_edit.png";
+  await expect(panel.locator("[data-job-id='500']")).toContainText(label);
+  await page.evaluate(async () => {
+    const fixture = await import("/image-fixture.ts" as string);
+    fixture.removeRecordedConnection();
+    (window as any).image.fail(500, "Provider failed");
+  });
+  await panel.getByRole("button", { name: `Retry ${label}` }).click();
+  await expect(panel.locator("[data-job-id='500']").getByRole("status")).toHaveText("The recorded image connection is unavailable. Choose a connection in a new generation request.");
+  expect(await page.evaluate(() => (window as any).image.started())).toHaveLength(1);
+  expect(await page.evaluate(() => (window as any).image.jobs())).toMatchObject([{ id: 500, status: "error" }]);
 });

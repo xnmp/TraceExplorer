@@ -5,6 +5,7 @@ use crate::{config, error::AppError, image_crop};
 pub(crate) mod folder_graph;
 pub(crate) mod folders;
 pub(crate) mod jobs;
+pub(crate) mod service_images;
 pub(crate) mod save;
 pub(crate) mod titles;
 use rusqlite::{params, Connection, OptionalExtension};
@@ -80,7 +81,22 @@ pub(crate) fn initialize_owner(
         .set(active)
         .map_err(|_| AppError::Other("Backend already initialized".into()))?;
     if defer_recovery {
-        with_trace_owner(|database| connection_at(database).map(drop))
+        // Candidate preflight reads existing state only. Creating a database,
+        // schema extension or publisher lock belongs to committed activation.
+        let database=database_path()?;
+        match fs::symlink_metadata(&database) {
+            Err(cause) if cause.kind()==std::io::ErrorKind::NotFound=>Ok(()),
+            Ok(meta) if meta.is_file() && !meta.file_type().is_symlink()=>{
+                let connection=Connection::open_with_flags(&database,rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).map_err(sql)?;
+                let version:i64=connection.pragma_query_value(None,"user_version",|row|row.get(0)).map_err(sql)?;
+                if !(1..=8).contains(&version) {return Err(AppError::Other("Trace database schema is unsupported or incomplete".into()));}
+                let integrity:String=connection.query_row("PRAGMA quick_check(1)",[],|row|row.get(0)).map_err(sql)?;
+                if integrity!="ok" {return Err(AppError::Other("Trace database is corrupt".into()));}
+                connection.prepare("SELECT id FROM runs LIMIT 0").map_err(sql)?;
+                Ok(())
+            }
+            _=>Err(AppError::Other("Trace database must be a regular private file".into()))
+        }
     } else {
         activate_owner()
     }
@@ -92,6 +108,21 @@ pub(crate) fn activate_owner() -> Result<(), AppError> {
     reconcile_unfinished()?;
     READY.store(true, std::sync::atomic::Ordering::Release);
     Ok(())
+}
+pub(crate) fn quiesce_owner() -> Result<(), AppError> {
+    READY.store(false,std::sync::atomic::Ordering::Release);
+    let result=(||{
+        if crate::plugin_job::has_live_jobs() {return Err(AppError::Other("Trace image workers are still active".into()));}
+        with_trace_owner(|database|{
+            let connection=Connection::open_with_flags(database,rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE).map_err(sql)?;
+            connection.busy_timeout(Duration::from_secs(5)).map_err(sql)?;
+            let (busy,log,checkpointed):(i64,i64,i64)=connection.query_row("PRAGMA wal_checkpoint(TRUNCATE)",[],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?))).map_err(sql)?;
+            if busy != 0 || log != checkpointed {return Err(AppError::Other("Trace checkpoint is busy; retry the package change after readers finish".into()));}
+            Ok(())
+        })
+    })();
+    if result.is_err() {READY.store(true,std::sync::atomic::Ordering::Release);}
+    result
 }
 
 #[derive(Deserialize, Serialize)]
@@ -230,24 +261,26 @@ pub(crate) fn recent_image_runs_at(database: &Path) -> Result<Vec<ImageRunHistor
     }
     let connection = connection_at(database)?;
     let mut statement = connection.prepare(
-        "SELECT id,operation,parameters,created_at,status,finished_at,error,recovered,result_details FROM runs WHERE operation IN ('openai.image.edit','openai.image.generate') ORDER BY id DESC LIMIT 64"
+        "SELECT id,operation,CASE WHEN length(CAST(parameters AS BLOB))<=1048576 THEN parameters ELSE NULL END,created_at,status,finished_at,error,recovered,CASE WHEN length(CAST(result_details AS BLOB))<=1048576 THEN result_details ELSE NULL END FROM runs WHERE operation IN ('openai.image.edit','openai.image.generate') ORDER BY id DESC LIMIT 64"
     ).map_err(sql)?;
-    let runs = statement
-        .query_map([], read_run)
-        .map_err(sql)?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(sql)?;
-    drop(statement);
-    runs.into_iter()
-        .map(|run| image_run_history(&connection, run))
-        .collect()
+    let mut history=Vec::new();let mut bytes=2usize;
+    for run in statement.query_map([],read_run).map_err(sql)? {
+        let entry=image_run_history(&connection,run.map_err(sql)?)?;
+        let length=serde_json::to_vec(&entry).map_err(|_|AppError::Other("Image history cannot be encoded".into()))?.len()+1;
+        // Leave room for the protocol envelope and escaping inside the host
+        // response. Keep every returned recipe complete for honest Retry.
+        if bytes.saturating_add(length)>12*1024*1024 {break;}
+        bytes+=length;history.push(entry);
+    }
+    Ok(history)
 }
 
 /// A recorded AI image run with its output and ordered inputs.
 fn image_run_history(connection: &Connection, mut run: Run) -> Result<ImageRunHistory, AppError> {
+    service_images::validate_history_run(connection, run.id)?;
     let output_path = connection
         .query_row(
-            "SELECT path FROM artifacts WHERE generating_run=?1 ORDER BY id DESC LIMIT 1",
+            "SELECT CASE WHEN length(CAST(path AS BLOB))<=4096 THEN path ELSE NULL END FROM artifacts WHERE generating_run=?1 ORDER BY id DESC LIMIT 1",
             [run.id],
             |row| row.get(0),
         )
@@ -257,7 +290,7 @@ fn image_run_history(connection: &Connection, mut run: Run) -> Result<ImageRunHi
         if output_path.is_none() && matches!(run.status.as_str(), "pending" | "uncertain") {
             connection
                 .query_row(
-                    "SELECT prepared_output_path FROM runs WHERE id=?1",
+                    "SELECT prepared_output_path FROM runs WHERE id=?1 AND (prepared_output_path IS NULL OR length(CAST(prepared_output_path AS BLOB))<=4096)",
                     [run.id],
                     |row| row.get(0),
                 )
@@ -266,7 +299,7 @@ fn image_run_history(connection: &Connection, mut run: Run) -> Result<ImageRunHi
             None
         };
     let mut inputs = connection
-        .prepare("SELECT i.artifact_id,a.path,a.digest FROM run_inputs i JOIN artifacts a ON a.id=i.artifact_id WHERE i.run_id=?1 ORDER BY i.position")
+        .prepare("SELECT i.artifact_id,CASE WHEN length(CAST(a.path AS BLOB))<=4096 THEN a.path ELSE NULL END,CASE WHEN length(CAST(a.digest AS BLOB))<=64 THEN a.digest ELSE NULL END FROM run_inputs i JOIN artifacts a ON a.id=i.artifact_id WHERE i.run_id=?1 ORDER BY i.position LIMIT 1025")
         .map_err(sql)?;
     let rows = inputs
         .query_map([run.id], |row| {
@@ -281,7 +314,8 @@ fn image_run_history(connection: &Connection, mut run: Run) -> Result<ImageRunHi
         .map_err(sql)?
         .collect::<Result<Vec<_>, _>>()
         .map_err(sql)?;
-    let (input_ids, inputs) = rows.into_iter().unzip();
+    let (input_ids, inputs):(Vec<i64>,Vec<OperationInput>) = rows.into_iter().unzip();
+    if inputs.len()>1024 {return Err(AppError::Other("Image history exceeds the Trace graph input bound".into()));}
     run.input_ids = input_ids;
     Ok(ImageRunHistory {
         run,
@@ -345,6 +379,22 @@ fn connection_at(path: &Path) -> Result<Connection, AppError> {
     let _schema = SCHEMA_SETUP
         .lock()
         .map_err(|_| AppError::Other("Trace schema initialization lock is unavailable".into()))?;
+    let marker=path.with_file_name(".image-service-initialized");
+    let initialized=match fs::symlink_metadata(&marker) {
+        Ok(meta)=>{
+            if !meta.is_file() || meta.file_type().is_symlink() || meta.len()!=6 {return Err(AppError::Other("Trace image-service ownership marker is invalid".into()));}
+            let mut options=OpenOptions::new();options.read(true);
+            #[cfg(unix)] {use std::os::unix::fs::OpenOptionsExt;options.custom_flags(libc::O_NOFOLLOW|libc::O_NONBLOCK);}
+            let mut bytes=Vec::new();options.open(&marker)?.take(7).read_to_end(&mut bytes)?;
+            if bytes!=b"TEIC1\n" {return Err(AppError::Other("Trace image-service ownership marker is unsupported".into()));}
+            true
+        }
+        Err(error) if error.kind()==std::io::ErrorKind::NotFound=>false,
+        Err(error)=>return Err(error.into()),
+    };
+    if initialized && !fs::symlink_metadata(path).is_ok_and(|meta|meta.is_file()&&!meta.file_type().is_symlink()) {
+        return Err(AppError::Other("Trace image-service journal is missing; restore its original history before generating".into()));
+    }
     #[cfg(unix)]
     {
         use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
@@ -379,6 +429,12 @@ fn connection_at(path: &Path) -> Result<Connection, AppError> {
         return Err(AppError::Other(format!(
             "Trace database schema {schema_version} is newer than this app supports"
         )));
+    }
+    let application_id:i64=connection.pragma_query_value(None,"application_id",|row|row.get(0)).map_err(sql)?;
+    if initialized && application_id!=0x54454943 {return Err(AppError::Other("Initialized Trace image-service ownership header is missing or unsupported".into()));}
+    if initialized || application_id != 0 {
+        let tables:i64=connection.query_row("SELECT count(*) FROM sqlite_schema WHERE type='table' AND name IN('runs','artifacts','run_inputs','image_jobs')",[],|row|row.get(0)).map_err(sql)?;
+        if schema_version != 8 || tables != 4 {return Err(AppError::Other("Initialized Trace journal core schema is missing or unsupported".into()));}
     }
     connection
         .execute_batch(
@@ -502,6 +558,7 @@ fn connection_at(path: &Path) -> Result<Connection, AppError> {
     // Additive presentation cache: old releases can still read schema 8 and
     // the legacy Codex cache is never relabelled as another provider's output.
     connection.execute_batch("CREATE TABLE IF NOT EXISTS image_prompt_titles_v1 (prompt_digest TEXT NOT NULL,recipe_version INTEGER NOT NULL,context_fingerprint TEXT NOT NULL,title TEXT NOT NULL,profile_id TEXT NOT NULL,requested_model TEXT NOT NULL,actual_model TEXT,PRIMARY KEY(prompt_digest,recipe_version,context_fingerprint));").map_err(sql)?;
+    service_images::ensure_schema(&connection)?;
     folder_graph::ensure_change_counter(&connection)?;
     Ok(connection)
 }
@@ -1320,12 +1377,13 @@ fn reconcile_unfinished_except_at(
         .map_err(sql)?
         .collect::<Result<Vec<_>, _>>()
         .map_err(sql)?;
+    let service_runs = service_images::protected_runs(&connection)?;
     drop(statement);
     drop(connection);
     for (run_id, path, expected, identity, anchor) in pending {
         // The publisher lives in the host, so a backend restart cannot prove
         // this attempt died. Its host-owned lease survives that restart.
-        if protected.contains(&run_id) {
+        if protected.contains(&run_id) || service_runs.contains(&run_id) {
             continue;
         }
         let observation = match (&path, &expected, &identity, &anchor) {
@@ -1702,6 +1760,21 @@ fn graph_for_job_at(database: &Path, job_id: u64) -> Result<Option<TraceGraph>, 
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn recent_image_history_bounds_the_reply_without_truncating_returned_recipes() {
+        use super::*;
+        let root=crate::test_support::tempdir().unwrap();let database=root.path().join("trace.sqlite");let connection=connection_at(&database).unwrap();
+        // One record stays within the native metadata contract; an aggregate
+        // of many complete records must stay under the transport reply bound.
+        let prompt="x".repeat(500_000);let parameters=serde_json::json!({"prompt":prompt,"submitted_prompt":prompt}).to_string();
+        for _ in 0..40 {connection.execute("INSERT INTO runs(operation,parameters,status)VALUES('openai.image.generate',?1,'failed')",[&parameters]).unwrap();}
+        let history=recent_image_runs_at(&database).unwrap();
+        assert!(!history.is_empty());assert!(history.len()<40);assert_eq!(history[0].run.id,40);
+        assert!(history.windows(2).all(|pair|pair[0].run.id>pair[1].run.id));
+        assert!(serde_json::to_vec(&history).unwrap().len()<=12*1024*1024);
+        assert!(history.iter().all(|item|item.run.parameters["prompt"]==prompt&&item.run.parameters["submitted_prompt"]==prompt));
+        let retained:i64=connection.query_row("SELECT count(*) FROM runs",[],|row|row.get(0)).unwrap();assert_eq!(retained,40);
+    }
     use super::*;
 
     fn crop(source: &Path) -> CropMetadata {

@@ -35,7 +35,9 @@ The installed CLI versions cannot establish the plan's strict no-tools/no-manage
 
 Codex can force managed features on despite CLI opt-outs; Claude safe mode retains managed hooks from server/MDM/registry policies. A separate inspection followed by a new exec process would race configuration changes. See the host's `docs/shared-ai-native-text-evidence.md` for pinned official source and the required same-instance policy/admission boundary.
 
-Stages D–G remain unimplemented: declared cross-plugin service routing, durable service admission/lifecycle claims, artifact store, qualified job snapshots/recovery/cancellation, managed modal navigation, independent Image Generation package, credential migration/cutover, Trace image-service consumption, paired five-target artifacts and packaged host acceptance. The current image code still lives in TraceExplorer. Do not claim extraction or replay/recovery guarantees beyond the existing image implementation.
+Stages D–F are implemented in the paired working branches: declared routing and lifecycle admission; durable artifact/receipt/job ledgers; host-owned recovery and operation controls; managed dialogs; the independent Image Generation package; native credential cutover; and the credential-free Trace consumer. Their remaining work is independent review and qualification, not a replacement paid fallback. Stage G packaging now builds both packages on five targets and verifies both frontend build orders.
+
+The user requires Windows shared-image support before merge. Windows artifact namespace implementation and native qualification are in progress; the current unsupported-platform guard remains until that qualification passes. Both PRs remain unmerged. Final packaged native acceptance must use the final source and archive hashes; earlier Linux evidence records explicit intermediate checkpoints.
 
 ## Verification and limits
 
@@ -51,8 +53,13 @@ Stages D–G remain unimplemented: declared cross-plugin service routing, durabl
 - Independent adversarial review found and fixed ID mismatch, lost pre-admission cancellation, secret cleanup after replacement uncertainty, truncation/refusal acceptance, discovery/migration omissions, config-write migration races, cross-window save/event races and describe worker capacity. CLI isolation remains unsupported rather than silently weakened.
 - Real Linux/macOS/Windows secret stores and macOS/Windows process/replacement behavior were not qualified. No paid/live provider requests, releases, PRs, merges or user-app installation occurred.
 
-## Publication block
+## Current evidence and remaining work
 
-Automatic approval review rejected creating the required host GitHub issue: it stated that implementing the plan did not authorize publishing requirements externally. A reviewable issue body remains at `/tmp/shared-ai-issue.md`. No issue was created and no approval was bypassed. Local work proceeded in isolated worktrees.
-
-The complete host WIP (including new source files and screenshots) is preserved as `docs/shared-ai-host-wip.patch` beside this record. Apply against the recorded host baseline with `git apply --binary`; do not apply over unrelated changes.
+- Host requirement issue: [tauri-explorer#1047](https://github.com/xnmp/tauri-explorer/issues/1047). The user authorized implementation, thorough tests and merging the paired changes; releases and user-app installation remain outside this task.
+- Host frontend presentation: 3,574 unit tests, 29 performance tests, 10 focused browser cases and clean check at the recorded checkpoint. Native jobs subscribe before snapshot, merge revisions and retain origin-scoped notifications; unresolved operations have explicit resume/discard/Stop controls.
+- Provider: 65 native behavior cases at the latest checkpoint. Proven image success is committed before stage RPC, recovery does not race a live stage writer, and restart/duplicate Start never resubmit an Unknown or successful operation. Private import epochs preserve historical receipts and destination defaults.
+- Trace consumer: 47 focused native cases pass, including held preparation consuming the original host deadline. Full native regression is recorded in `/tmp/te-trace-native-final-with-loopback.log`; loopback fixture listeners need sandbox network permission.
+- Host ledger: 61 focused cases passed before the latest first-stage fixture. Stop commits execution release and presentation policy atomically; late consumer observations cannot undo it. Queued recovery observes explicit Stop/discard before any provider RPC.
+- Linux owned-process supervisor: 14 real process fixtures and three independent handshake/forgery cases passed. A real provider stdio regression proves that an interrupted host process result persists Unknown across restart and duplicate Start, with no new generation.
+- Bounded native recovery actor: five actual worker fixtures passed independently; two workers, 512 pending owners, exact generation dedup and original 60-second budgets including queue time, with a five-second metadata tail.
+- Remaining: Windows platform implementation/qualification; final native job/migration/orphan acceptance; final five-target CI and source/archive qualification; code-map/documentation updates; reviewed PRs and green-CI merges. No live or paid provider calls are used.

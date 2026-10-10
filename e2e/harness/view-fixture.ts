@@ -1,3 +1,4 @@
+import { imageAvailability } from "../../tests/fixtures/image-connections";
 /**
  * In-memory Trace backend for the view harness. It answers the folder-scoped
  * protocol from a mutable node list (components are derived with the same
@@ -202,7 +203,19 @@ configureBackend({
         return reply((params.paths as string[]).map((path) => state.nodes.some((node) => node.path === path) || entryExtras.some((entry) => entry.path === path)
         ? { path, digest: [...path].reduce((hash, char) => (hash * 33 + char.charCodeAt(0)) % 1e9, 5381).toString(16).padStart(64, "0"), width: 160, height: 96 }
         : { path, error: "Path not found" }));
-      case "jobs.start": return reply(900 + calls.filter((call) => call.method === "jobs.start").length);
+      case "image_service_describe": {
+        const snapshot = structuredClone(imageService);
+        return imageDescriptionsHeld ? new Promise<T>((resolve) => { imageDescriptionWaiters.push(() => resolve(snapshot as T)); }) : reply(snapshot);
+      }
+      case "jobs.start": {
+        const request = params.request as Record<string, unknown>;
+        const profile = imageService.description?.profiles.find((p) => p.id === request.connectionId);
+        if ("apiKey" in params || "backend" in request || "codexPath" in request) return Promise.reject(new Error("Credentials are not accepted by shared image jobs"));
+        if (!imageService.available || !profile) return Promise.reject(new Error("Image connection unavailable"));
+        if (request.expectedConnectionRevision !== profile.recipeRevision) return Promise.reject(new Error("Image connection changed; prepare again"));
+        if (profile.transport === "codex-cli" ? request.model !== null : typeof request.model !== "string" || !request.model.trim()) return Promise.reject(new Error("Invalid image model"));
+        return reply(900 + calls.filter((call) => call.method === "jobs.start").length);
+      }
       case "trace_prompt_title": return new Promise<T>((resolve) => { titleCalls.push(params.runId); titleWaiters.set(params.runId, (title) => resolve({title,configurationRevision:1,fingerprint:"f".repeat(64)} as T)); });
       default: return Promise.reject(new Error(`Unexpected method ${method}`));
     }
@@ -225,7 +238,16 @@ const color = (path: string) => `hsl(${[...path].reduce((sum, char) => (sum * 31
   ], { type: "image/svg+xml" })) }),
 };
 
+let imageService = imageAvailability();
+let imageDescriptionsHeld = false;
+let imageDescriptionWaiters: Array<() => void> = [];
+
 export const backend = {
+  holdImageDescriptions() { imageDescriptionsHeld = true; },
+  releaseImageDescriptions() { imageDescriptionsHeld = false; for (const resolve of imageDescriptionWaiters) resolve(); imageDescriptionWaiters = []; },
+  imageService: () => structuredClone(imageService),
+  setImageService(value: typeof imageService) { imageService = structuredClone(value); },
+  configureImages() { const next = imageAvailability(); next.description!.configurationRevision = 2; next.description!.defaultConnectionId = "custom-http"; next.description!.profiles = next.description!.profiles.map((p) => p.id === "custom-http" ? { ...p, recipeRevision: "configured-revision" } : p); imageService = next; },
   key: (name: string) => state.names.get(name)!,
   path: (name: string) => state.nodes.find((node) => node.key === state.names.get(name))?.path ?? null,
   node: (name: string) => structuredClone(state.nodes.find((node) => node.key === state.names.get(name)) ?? null),

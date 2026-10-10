@@ -15,3 +15,5 @@ target/
 
 /test-results/
 /playwright-report/
+
+/plugins/image-generation/dist/

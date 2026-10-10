@@ -195,7 +195,7 @@ fn schema_upgrade_keeps_unsaved_folder_context_when_its_volume_is_unavailable() 
     let database = data.path().join("trace.sqlite");
     seed_unsaved_output(&database, &folder, &output);
     let connection = rusqlite::Connection::open(&database).unwrap();
-    connection.execute_batch("DROP TABLE image_folder_contexts; DROP TABLE image_batch_members; DROP TABLE image_prompt_titles; DROP TABLE image_discards; PRAGMA user_version=7;").unwrap();
+    connection.execute_batch("DROP TABLE image_service_operations; DROP TABLE image_service_cancellations; DROP TABLE image_service_schema; PRAGMA application_id=0; DROP TABLE image_folder_contexts; DROP TABLE image_batch_members; DROP TABLE image_prompt_titles; DROP TABLE image_discards; PRAGMA user_version=7;").unwrap();
     drop(connection);
     let offline = data.path().join("Pictures-offline");
     std::fs::rename(&folder, &offline).unwrap();
@@ -237,7 +237,7 @@ fn schema_upgrade_resolves_an_offline_folder_alias_when_its_volume_returns() {
     let database = data.path().join("trace.sqlite");
     seed_unsaved_output(&database, &alias, &output);
     let connection = rusqlite::Connection::open(&database).unwrap();
-    connection.execute_batch("DROP TABLE image_folder_contexts; DROP TABLE image_batch_members; DROP TABLE image_prompt_titles; DROP TABLE image_discards; PRAGMA user_version=7;").unwrap();
+    connection.execute_batch("DROP TABLE image_service_operations; DROP TABLE image_service_cancellations; DROP TABLE image_service_schema; PRAGMA application_id=0; DROP TABLE image_folder_contexts; DROP TABLE image_batch_members; DROP TABLE image_prompt_titles; DROP TABLE image_discards; PRAGMA user_version=7;").unwrap();
     drop(connection);
     let offline = data.path().join("volume-offline");
     std::fs::rename(&volume, &offline).unwrap();
@@ -339,116 +339,33 @@ fn title_admission_rejects_busy_work_and_reuses_the_completed_prompt_cache() {
     }
 }
 
+#[test]
+fn image_generation_requires_shared_services_and_rejects_legacy_credentials() {
+    let data = test_support::tempdir().unwrap();
+    let mut backend = Backend::start(data.path());
+    backend.ready(vec![]);
+    let op = "0123456789abcdef0123456789abcdef";
+    let legacy = json!({"kind":"openai-image","operationId":op,"jobId":777,"request":{
+        "backend":"codex","codexPath":"/not/invoked/codex","sourcePath":null,"prompt":"Fixture",
+        "outputDir":"","outputFilename":"image.png","model":"gpt-image-2","size":"auto","quality":"auto","background":"auto"
+    },"apiKey":"private-value-must-never-be-a-consumer-parameter"});
+    assert!(backend.call("jobs.start", legacy).get("error").is_some());
+    let request = json!({"kind":"openai-image","operationId":op,"jobId":777,"request":{
+        "connectionId":"fixture","expectedConnectionRevision":"revision-1","model":null,"sourcePath":null,
+        "prompt":"Fixture","outputDir":"","outputFilename":"image.png","size":"auto","quality":"auto","background":"auto"
+    }});
+    let reply = backend.call("jobs.start",request);
+    assert!(reply["error"]["message"].as_str().unwrap().contains("Update Tauri Explorer"),"{reply}");
+    assert!(backend.call("jobs.status",json!({"operationId":op}))["result"].is_null());
+}
+
 #[cfg(unix)]
 #[test]
-fn generation_uses_managed_temporary_storage_and_survives_restart() {
-    use std::os::unix::fs::PermissionsExt;
-    let data = test_support::tempdir().unwrap();
-    let provider = test_support::tempdir().unwrap();
-    let source = data.path().join("portrait.png");
-    let png = include_bytes!("../test_support/fixtures/source32.png");
-    std::fs::write(&source, png).unwrap();
-    let thread = "01234567-89ab-7cde-8f01-23456789abcd";
-    let output = provider.path().join("generated_images").join(thread);
-    std::fs::create_dir_all(&output).unwrap();
-    std::fs::write(output.join("result.png"), png).unwrap();
-    let executable = provider.path().join("codex");
-    std::fs::write(&executable, format!("#!/bin/sh\nif [ \"$1\" = login ]; then printf 'Logged in using ChatGPT\\n'; exit 0; fi\nprintf x >> \"$CODEX_HOME/provider-calls\"\nprintf '%s\\n' '{{\"type\":\"thread.started\",\"thread_id\":\"{thread}\"}}' '{{\"type\":\"turn.completed\"}}'\n")).unwrap();
-    std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).unwrap();
-    let missing_directory = data.path().join("not-created-by-generation");
-    let mut backend = Backend::start_with_env(data.path(), &[("CODEX_HOME", provider.path())]);
-    backend.ready(vec![]);
-    let operation_id = "0123456789abcdef0123456789abcdef";
-    let start = json!({"kind":"openai-image","operationId":operation_id,"jobId":777,"request":{
-        "backend":"codex", "codexPath":executable, "sourcePath":source, "referencePaths":[],
-        "prompt":"Make the background blue", "outputDir":missing_directory, "outputFilename":"ignored.png",
-        "model":"gpt-image-2", "size":"auto", "quality":"auto", "background":"auto"
-    }, "apiKey":""});
-    let mut unowned = start.clone();
-    unowned.as_object_mut().unwrap().remove("operationId");
-    assert!(backend.call("jobs.start", unowned).get("error").is_some());
-    let mut unowned = start.clone();
-    unowned.as_object_mut().unwrap().remove("jobId");
-    assert!(backend.call("jobs.start", unowned).get("error").is_some());
-    assert!(backend
-        .call("start_openai_image_job", start.clone())
-        .get("error")
-        .is_some());
-    let reply = backend.call("jobs.start", start.clone());
-    assert_eq!(reply["result"], 777, "{reply}");
-    let mut retry = start.clone();
-    retry["jobId"] = json!(888);
-    assert_eq!(backend.call("jobs.start", retry.clone())["result"], 777);
-    let complete = backend.event("openai-image-complete");
-    assert_eq!(complete["jobId"], 777);
-    assert_eq!(
-        std::fs::read(provider.path().join("provider-calls")).unwrap(),
-        b"x"
-    );
-    let saved = std::path::PathBuf::from(complete["outputPath"].as_str().unwrap());
-    assert!(saved.starts_with(data.path().join("generated")));
-    assert_eq!(saved.file_name().unwrap(), "portrait_edit.png");
-    assert_eq!(std::fs::read(&saved).unwrap(), png);
-    assert!(!missing_directory.exists());
-    let graph = backend.call("trace_for_image", json!({"path":saved}))["result"].clone();
-    assert!(graph["artifacts"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .any(|artifact| artifact["temporary"] == true));
-    drop(backend);
-    let mut backend = Backend::start(data.path());
-    backend.ready(vec![]);
-    let status = backend.call("jobs.status", json!({"operationId":operation_id}))["result"].clone();
-    assert_eq!(status["jobId"], 777);
-    assert_eq!(status["status"], "succeeded");
-    assert_eq!(status["outputPath"], saved.to_str().unwrap());
-    assert_eq!(backend.call("jobs.start", retry.clone())["result"], 777);
-    assert_eq!(
-        std::fs::read(provider.path().join("provider-calls")).unwrap(),
-        b"x"
-    );
-    retry["request"]["prompt"] = json!("A different edit");
-    assert!(backend.call("jobs.start", retry).get("error").is_some());
-    assert_eq!(
-        std::fs::read(provider.path().join("provider-calls")).unwrap(),
-        b"x"
-    );
-    assert_eq!(std::fs::read(&saved).unwrap(), png);
-    assert_eq!(
-        backend.call("trace_for_image", json!({"path":saved}))["result"],
-        graph
-    );
-    let id = graph["currentArtifactId"].clone();
-    let permanent = data.path().join("portrait_edit.png");
-    let result = backend.call(
-        "save_generated_image",
-        json!({"artifactId":id,"target":permanent}),
-    );
-    assert_eq!(
-        result["result"]["path"],
-        permanent.to_str().unwrap(),
-        "{result}"
-    );
-    assert_eq!(std::fs::read(&permanent).unwrap(), png);
-    let final_graph = backend.call("trace_for_image", json!({"path":permanent}))["result"].clone();
-    assert_eq!(final_graph["currentArtifactId"], id);
-    assert_eq!(
-        final_graph["artifacts"].as_array().unwrap().len(),
-        graph["artifacts"].as_array().unwrap().len()
-    );
-    assert!(!final_graph["artifacts"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .any(|artifact| artifact["temporary"] == true));
-    drop(backend);
-    let mut backend = Backend::start(data.path());
-    backend.ready(vec![]);
-    assert_eq!(
-        backend.call("trace_for_image", json!({"path":permanent}))["result"],
-        final_graph
-    );
+fn shared_service_images_adopt_exact_bytes_and_recover_without_repeating_start() {
+    let output=Command::new("python3").arg(concat!(env!("CARGO_MANIFEST_DIR"),"/test_support/service_images_protocol.py"))
+        .arg(env!("CARGO_BIN_EXE_trace-explorer-backend")).output().unwrap();
+    assert!(output.status.success(),"{}\n{}",String::from_utf8_lossy(&output.stdout),String::from_utf8_lossy(&output.stderr));
+    assert!(String::from_utf8_lossy(&output.stdout).contains("PASS actual-native-stdio restart-delivery-restoration"));
 }
 
 #[test]
@@ -596,11 +513,11 @@ fn upgrade_preflight_retains_publication_proof_until_commit_or_rollback() {
         } else {
             assert_eq!(
                 candidate.call("lifecycle.activate", json!({}))["result"],
-                Value::Null
+                json!({"ready":true})
             );
             assert_eq!(
                 candidate.call("lifecycle.activate", json!({}))["result"],
-                Value::Null
+                json!({"ready":true})
             );
         }
         let graph = candidate.call("trace_for_image", json!({"path":target}))["result"].clone();

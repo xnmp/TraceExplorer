@@ -1,14 +1,17 @@
 <script lang="ts">
   import Modal from "$lib/components/Modal.svelte";
   import "../plugin-dialog.css";
-  import type { PluginJobs, PluginStorage } from "../api";
+  import type { PluginJobs } from "../api";
   import { recentOpenAIImageRuns, type OpenAIImageRunHistory } from "$lib/api/openai-image";
   import { retryRun } from "./image-jobs";
   import { traceOperationLabel } from "$lib/domain/trace-operation";
   import { codexExplanation, excerpt, retryable } from "$lib/domain/image-retry";
   import { traceInvalidation } from "../trace/invalidation.svelte";
 
-  let { open, onClose, jobs, storage }: { open: boolean; onClose: () => void; jobs?: PluginJobs; storage?: PluginStorage } = $props();
+  let { open, onClose, jobs }: { open: boolean; onClose: () => void; jobs?: PluginJobs } = $props();
+  let alive = true;
+  import { onDestroy } from "svelte";
+  onDestroy(() => { alive = false; });
   let runs = $state<OpenAIImageRunHistory[]>([]);
   let loading = $state(true);
   let error = $state("");
@@ -38,11 +41,11 @@
 
   async function retry(item: OpenAIImageRunHistory): Promise<void> {
     const id = item.run.id;
-    if (!jobs || !storage || retries[id]?.busy) return;
-    const report = (message: string, failed: boolean, busy = false) => { retries = { ...retries, [id]: { busy, message, failed } }; };
+    if (!jobs || retries[id]?.busy) return;
+    const report = (message: string, failed: boolean, busy = false) => { if (alive) retries = { ...retries, [id]: { busy, message, failed } }; };
     report("Starting…", false, true);
     try {
-      const result = await retryRun({ jobs, storage }, item);
+      const result = await retryRun({ jobs }, item);
       report(result.ok ? "Retry started as a new job" : result.error, !result.ok);
     } catch (cause) {
       report(cause instanceof Error ? cause.message : String(cause), true);
@@ -76,20 +79,20 @@
                 </dl>
                 <pre>{JSON.stringify({ parameters: item.run.parameters, result: item.run.details ?? null }, null, 2)}</pre>
               </details>
-              {#if explanation || (jobs && storage && retryable(item))}
+              {#if explanation || (jobs && retryable(item))}
                 <div class="failure">
                   {#if explanation}
                     {@const full = expanded.has(item.run.id)}
                     {@const short = excerpt(explanation.text)}
                     <p class="explanation" data-testid="codex-explanation">
                       <span class="label">{explanation.label}:</span>
-                      {#if full}<span class="full">{explanation.text}</span>{#if explanation.truncated}<span class="cut"> (cut at 2 KB)</span>{/if}{:else}{short}{/if}
+                      {#if full}<span class="full">{explanation.text}</span>{#if explanation.truncated}<span class="cut"> (truncated)</span>{/if}{:else}{short}{/if}
                     </p>
                     {#if short !== explanation.text.trim() || explanation.truncated}
                       <button type="button" class="link-btn more" aria-expanded={full} onclick={() => toggle(item.run.id)}>{full ? "Show less" : `Show full ${explanation.label === "Codex reply" ? "reply" : "error"}`}</button>
                     {/if}
                   {/if}
-                  {#if jobs && storage && retryable(item)}
+                  {#if jobs && retryable(item)}
                     <div class="retry-row">
                       <button type="button" class="btn btn-secondary retry" disabled={attempt?.busy} onclick={() => void retry(item)} aria-label={`Retry run #${item.run.id}`}>Retry</button>
                       {#if attempt}<span class="retry-status" class:failed={attempt.failed} role="status">{attempt.message}</span>{/if}

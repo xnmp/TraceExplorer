@@ -4,7 +4,7 @@
   "name": "TraceExplorer",
   "description": "Image editing and visual provenance for Tauri Explorer",
   "version": "0.2.3",
-  "sdkVersion": 2,
+  "sdkVersion": 3,
   "svelteVersion": "5.56.3",
   "frontend": "frontend/index.js",
   "styles": "frontend/index.css",
@@ -13,10 +13,12 @@
     "openai-image"
   ],
   "provenance": true,
+  "serviceDependencies": [{"packageId":"xnmp.image-generation","serviceId":"image-generation","major":1,"optional":true}],
   "initialDataFiles": [
     "trace.sqlite"
   ],
   "stateFiles": [
-    "trace.sqlite"
+    "trace.sqlite",
+    ".image-service-initialized"
   ]
 }

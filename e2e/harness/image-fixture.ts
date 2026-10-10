@@ -1,3 +1,4 @@
+import { imageAvailability } from "../../tests/fixtures/image-connections";
 /**
  * In-memory backend for the AI image harness: a recorded failed Codex edit
  * (Codex replied in text instead of generating), a succeeded run, and a
@@ -46,6 +47,12 @@ export function runs(): OpenAIImageRunHistory[] {
 }
 
 export const started: Array<Record<string, unknown>> = [];
+let availability = imageAvailability();
+export function removeRecordedConnection(): void {
+  availability = imageAvailability();
+  availability.description!.defaultConnectionId = "custom-http";
+  availability.description!.profiles = availability.description!.profiles.filter((p) => p.id !== "saved-login");
+}
 let nextJob = 500;
 /** Each started job's request, by job id: what the native backend records as its run. */
 const jobRequests = new Map<number, { runId: number; request: Record<string, any> }>();
@@ -62,7 +69,12 @@ function runForJob(jobId: number): OpenAIImageRunHistory | null {
     run: {
       id: runId, operation: paths.length ? "openai.image.edit" : "openai.image.generate", createdAt: "2026-10-09T09:00:00Z", status: "failed",
       finishedAt: "2026-10-09T09:01:00Z", error: "image_operation_failed", recovered: false, inputIds: [],
-      parameters: { provider: request.backend === "codex" ? "codex-cli" : "openai", prompt: request.prompt, model: request.backend === "codex" ? null : request.model,
+      parameters: { provider: request.model === null ? "codex-cli" : "openai", prompt: request.prompt, model: request.model === null ? null : request.model,
+        connection_id: request.connectionId, connection_revision: request.expectedConnectionRevision, effective_recipe_digest: "a".repeat(64),
+        effective_recipe: { schemaVersion: 1, formatterVersion: 1, connectionId: request.connectionId, connectionRevision: request.expectedConnectionRevision,
+          adapter: "codex-cli", endpointIdentity: "codex-cli:auto-discovery", model: null,
+          options: { size: request.size, resolution: request.resolution ?? null, aspectRatio: request.aspectRatio ?? null, quality: request.quality, background: request.background },
+          inputDigests: digests, inputRoles: paths.map((_, i) => `Image ${i + 1}`), submittedPrompt: request.prompt, agentTask: "Recorded fixture task" },
         size: request.size, resolution: request.resolution, aspect_ratio: request.aspectRatio, quality: request.quality, background: request.background,
         output_storage: "temporary", save_directory_hint: request.outputDir, ...(request.retryOf ? { retry_of: request.retryOf } : {}) },
       details: { stage: "no_image", codex_reply: { text: REPLY, truncated: false } },
@@ -72,6 +84,7 @@ function runForJob(jobId: number): OpenAIImageRunHistory | null {
 
 configureBackend({
   async invoke<T>(method: string, params?: Record<string, unknown>): Promise<T> {
+    if (method === "image_service_describe") return availability as T;
     if (method === "recent_openai_image_runs") return runs() as T;
     if (method === "jobs.start") {
       started.push(structuredClone(params ?? {}));

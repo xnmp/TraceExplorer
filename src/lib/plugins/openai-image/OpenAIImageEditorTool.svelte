@@ -1,25 +1,14 @@
 <script lang="ts">
-  import { onMount } from "svelte";
   import OpenAIImageForm from "./OpenAIImageForm.svelte";
-  import type { PluginJobs, PluginStorage, PluginToast } from "../api";
+  import type { PluginJobs, PluginToast } from "../api";
   import type { ImageEditorSource } from "../image-editor-registry.svelte";
   import { parentDir } from "$lib/domain/path";
-  let { source, storage, onSaveSettings, jobs, toast, onClose, onBusyChange, captureSelection }: {
+  let { source, configureConnections, jobs, toast, onClose, onBusyChange, captureSelection }: {
     captureSelection?:()=>()=>boolean;
-    onSaveSettings: (patch: Record<string, unknown>) => Promise<void>;
-    source: ImageEditorSource; storage: PluginStorage; jobs: PluginJobs; toast: PluginToast;
+    configureConnections: () => Promise<void>;
+    source: ImageEditorSource; jobs: PluginJobs; toast: PluginToast;
     onClose: () => void; onBusyChange: (busy: boolean) => void;
   } = $props();
-  let settings = $state<Record<string, unknown> | null>(null);
-  onMount(() => {
-    let active = true;
-    void storage.get().then((value) => { if (active) settings = value; });
-    return () => { active = false; };
-  });
 </script>
-{#if settings}
-  <OpenAIImageForm open={true} inputs={[{ path: source.path, digest: source.digest, size: source.size }, ...source.referencePaths.map((path) => ({ path }))]} outputDir={parentDir(source.path)}
-    apiKey={typeof settings.apiKey === "string" ? settings.apiKey : ""} initialBackend={settings.backend === "api_key" ? "api_key" : "codex"}
-    codexPath={typeof settings.codexPath === "string" ? settings.codexPath : ""}
-    {storage} {onSaveSettings} {jobs} {toast} {onClose} {onBusyChange} {captureSelection} />
-{:else}<p role="status">Loading image connection…</p>{/if}
+<OpenAIImageForm open={true} inputs={[{ path: source.path, digest: source.digest, size: source.size }, ...source.referencePaths.map((path) => ({ path }))]} outputDir={parentDir(source.path)}
+  {configureConnections} {jobs} {toast} {onClose} {onBusyChange} {captureSelection} />

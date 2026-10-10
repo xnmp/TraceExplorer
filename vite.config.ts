@@ -4,7 +4,7 @@ import { resolve } from "node:path";
 
 // Compiled components must use the exact host runtime instance. Virtual
 // bindings contain references only, so no Svelte runtime enters the package.
-function sharedHostModules(): VitePlugin {
+export function sharedHostModules(): VitePlugin {
   const special: Record<string, {key: string; names: string[]}> = {
     "$lib/components/Modal.svelte": {key: "ui/modal", names: ["default"]},
     "$lib/components/ImageCropEditor.svelte": {key: "ui/image-editor", names: ["default"]},

@@ -1,0 +1,47 @@
+# Image Generation backend
+
+Independent SDK 3 stdio provider for `xnmp.image-generation`. It imports only the shared image contract and shared plugin runtime, and owns `operations.sqlite` plus its WAL/SHM, the durable `operations.initialized` identity marker and `profiles.json`. It has no Trace database dependency.
+
+## Layers
+
+- `domain.rs`: profile/request validation, exact submitted prompt/task, canonical logical request hash and adapter capabilities.
+- `profiles.rs`: CAS metadata, immutable execution revisions, retired IDs and trusted migration receipts in one atomic private envelope. Generic settings saves cannot create secret references. A post-replacement directory-sync failure reports `mutation_uncertain`; credential rotation retains the newly referenced secret because the profile may already be committed.
+- `journal.rs`: authoritative idempotent receipts and conditional execution transitions. Receipt lookup precedes current configuration, preparation token or credential checks. Valid admission failures create durable Failed receipts; their stored recipe is JSON `null` because nothing was dispatched.
+- `service.rs`: bounded preparation tokens (128, five minutes), admissions (four workers plus 32 queued), memory-only credential snapshots, profile admission fence, cancellation and host artifact delivery.
+- `adapters/`: bounded HTTP and host-owned Codex CLI; no redirects, automatic retry or URL result download. CLI image model is adapter-managed and does not reuse the orchestration model label.
+- `main.rs`: one bounded stdio reader, shared reverse-call allocator, reserved receipt/cancellation capacity, local initialize/activation handshake and immutable native migration control token.
+
+No profile/journal transaction spans host or provider IO. Accepted admission is serialized with relevant profile changes after credential capture. Captured credentials remain in the worker's memory; rotation/deletion cannot silently change an admitted request.
+
+## Recovery and delivery
+
+Initialization reads/checks schemas; absent state directories are not created until activation. An initialized marker or historical owner file prevents a missing ledger from being replaced with an empty one. Existing ledgers must retain both operation and cancellation schemas and idempotency keys; activation never heals schema loss. A fully validated schema-one ledger migrates locally to schema two before readiness, preserving receipts. Candidate preflight additionally rejects invalid profiles. Normal startup retains journal status/control access when profiles are corrupt. Activation reconciles Accepted to Cancelled and Running to Unknown before declaring ready; it never resubmits either state.
+
+Startup and hot receipt reads slice persisted text in SQL before allocating it: status is at most 32 KiB, canonical recipe 256 KiB, context/output descriptor 1 KiB, and identifiers/digests use their contract bounds. Pure validation checks owner and operation identity, semantic and recipe digests, bounded errors/diagnostics, execution/delivery consistency, exact output evidence, persisted deadlines and the maximum 36 live admissions. Corrupt or oversized rows refuse startup or the affected control request without replacing the ledger. Local mutations validate before commit; malformed peer errors are bounded before entering receipts. Historical tombstone validation streams one row at a time, but a fixed startup-time bound for very large journals remains a qualification gap.
+
+`lifecycle.quiesce` closes readiness before inspecting worker/admission/stdio-handler activity. It returns `{ready:false,idle:true,checkpoint:true}` only after the journal reports a complete TRUNCATE checkpoint; active work or a blocked checkpoint restores the prior readiness and returns busy. It performs no reverse/provider IO. Explicit activation of this same quiesced instance resumes readiness without crash reconciliation or replay.
+
+Each accepted operation persists its admission time and original 900-second deadline. Queue time and subsequent provider/host work consume that budget; repeats and restarts never extend it. The live timer clamps wall-clock remaining time to the original operation budget, so clock rollback cannot extend it. Expiry durably requests cancellation and sets the worker cancellation flag. Deadline cancellation metadata IO acquires an independent operation lease while its original Work still owns controls; that lease survives Work completion until the actual timer IO ends. Blocking IO keeps its worker and admission leases until it actually ends, so expiry cannot free capacity while old work remains alive. Proven outputs may complete a bounded unpaid metadata handoff after expiry; receipt controls and local recovery remain available.
+
+Before acceptance cancellation prevents dispatch. Cancellation after an HTTP dispatch stops local work and reports Unknown unless a result is proven. Success cannot be overwritten by cancellation. Before the first seal RPC, the journal commits proven success and the exact original stage handle, output hash, length and media type. A lost seal reply preserves those bytes’ recovery identity. Status can read the exact owned output or retry sealing that same handle through the native host; it never stages another output or repeats generation. Invalid/missing sealed output bytes affect delivery independently of proven execution. Acquired or discarded dispositions are committed before native host release and remain readable after byte deletion.
+
+Private settings tests resolve native self-caller identity, persist local Accepted, obtain native test admission, then enqueue. A rejected/lost admission reply never dispatches. Repeating an existing request ID returns its original receipt; closing a settings dialog is not discard.
+
+Migration methods are host-only, require the exact per-instance control token and active lifecycle, and are not public service exports. Import appends profiles without overwriting destination state and commits its receipt in the same atomic envelope. Same-source/same-digest replay returns the original receipt even after imported profiles are deleted.
+
+The native host also has private `control.operationIdle` and `control.discardOperation`, both accepting `{controlToken,consumerPackage,operationId}` with the immutable initialization token and active lifecycle. Idle includes held pre-admission IO and queued/running workers through final metadata IO and actual lease release; a terminal Unknown receipt alone is insufficient. Discard reads the original successful output digest locally, commits the existing acknowledgement transition, then emits the canonical operation event. It needs no generation, new stage or artifact read, works for Succeeded/Unavailable, is idempotent, and cannot overwrite acquisition. Read-only preflight cannot activate or change initialization mode. Renderer access is blocked by the host broker; these controls are not service exports or frontend commands.
+
+Codex blank executable paths retain PATH/NVM discovery with canonical endpoint identity `codex-cli:auto-discovery`. The adapter durably checkpoints safe UUID thread identity, turn state and bounded token usage before searching the generated-images directory. Interrupted or failed discovery therefore retains its turn receipt across restart. Only failed/unknown turns may add a bounded reply/error explanation (4096 UTF8 bytes); successful transcripts are never persisted or returned. Valid turn evidence from a nonzero process exit is retained without claiming proven image success.
+
+## Verification
+
+From the repository worktree:
+
+```sh
+CARGO_BUILD_JOBS=2 CARGO_TARGET_DIR=src-tauri/target cargo test --locked --offline --manifest-path plugins/image-generation/backend/Cargo.toml
+CARGO_BUILD_JOBS=2 CARGO_TARGET_DIR=src-tauri/target cargo check --locked --offline --manifest-path plugins/image-generation/backend/Cargo.toml
+```
+
+The suite has 59 behavior tests using fake host services, localhost HTTP and fake CLI executables. It proves actual body/argv ordering, PATH discovery, saved-login environment clearing, safe turn checkpoint/restart and failed explanations, duplicate single invocation, pre-dispatch cancellation, admission/profile races, restart without replay, terminal delivery restoration, lost/invalid seal replies, deadline-expired queues, clock rollback clamping and held worker/timer IO leases, missing-ledger/schema/oversized-receipt refusal, uncertain profile commits, receipt commit failure, CAS/secret behavior, migration atomicity/control authentication, private host discard/idle/preflight behavior, and reverse replies/cancellation with saturated real stdio.
+
+No live or paid provider calls, user credentials or user application installations were used. The manifest's frontend paths are built by the separate settings-UI integration; native-only completion does not make this package installable by itself. Platform artifact durability and process ownership remain governed by native host capability qualification, which rejects unqualified generation before dispatch.
