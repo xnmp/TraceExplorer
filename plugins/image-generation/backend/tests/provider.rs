@@ -83,6 +83,16 @@ impl Host for FakeHost {
                 let path = self.directory.path().join(&handle);
                 let bytes =
                     std::fs::read(&path).map_err(|_| error("not_found", "Missing output stage"))?;
+                // Like the native store, resealing an already sealed handle is
+                // idempotent and re-verifies its bytes; it never re-describes them.
+                if let Some((_, sealed)) = self.artifacts.lock().unwrap().get(&handle) {
+                    if bytes.len() as u64 != sealed.byte_length
+                        || hex::encode(Sha256::digest(&bytes)) != sealed.sha256
+                    {
+                        return Err(error("corrupt", "Sealed artifact is missing or corrupt"));
+                    }
+                    return Ok(json!(sealed));
+                }
                 adapters::validate_image(&bytes, image::ImageFormat::Png)?;
                 let descriptor = ArtifactDescriptor {
                     handle: handle.clone(),
@@ -242,7 +252,10 @@ fn start(request: PrepareRequest, preparation: Preparation) -> StartRequest {
 async fn terminal(service: &Service, operation: &str) -> OperationStatus {
     for _ in 0..300 {
         let status = service.status("test.consumer", operation).unwrap();
-        if !matches!(status.execution, Execution::Accepted {} | Execution::Running {}) {
+        if !matches!(
+            status.execution,
+            Execution::Accepted {} | Execution::Running {}
+        ) {
             service.wait_idle().await;
             return service.status("test.consumer", operation).unwrap();
         }
@@ -590,6 +603,153 @@ fn malformed_config_and_recipe_boundaries_fail_closed() {
         assert!(image_generation_backend::domain::root(root, false).is_err());
     }
 }
+/// Plan §14.1 "Profile validation": the provider's own store rejects an unknown
+/// transport, null/wrong-typed fields and duplicate profile IDs, whether they
+/// arrive from Settings, a migration import or a hand-edited document, and a
+/// rejection never writes, bumps the revision or resets to defaults.
+#[tokio::test]
+async fn unknown_transport_wrong_types_and_duplicate_ids_are_rejected_without_any_write() {
+    let directory = tempfile::tempdir().unwrap();
+    let host = FakeHost::new();
+    let service = Service::new(directory.path(), host.clone()).unwrap();
+    service.activate().unwrap();
+    let valid = || json!({"transport":"openai-images","id":"http","name":"Custom","recipeRevision":"","baseUrl":"https://custom.test/v1/images","defaultModel":"custom-image-model","allowInsecureHttp":false,"credential":{"kind":"none"}});
+    let with = |field: &str, value: Value| {
+        let mut profile = valid();
+        if let Some(removed) = field.strip_prefix('-') {
+            profile.as_object_mut().unwrap().remove(removed);
+        } else {
+            profile[field] = value;
+        }
+        profile
+    };
+    let document = |profiles: Vec<Value>| json!({"schemaVersion":1,"documentRevision":0,"defaultConnectionId":null,"profiles":profiles});
+    let codex = json!({"transport":"codex-cli","id":"http","name":"Codex","recipeRevision":"","executablePath":"","modelSelection":false,"credential":{"kind":"cli_saved_login"}});
+    let mut rejected = vec![
+        (
+            "unknown transport",
+            document(vec![with("transport", json!("gemini-images"))]),
+        ),
+        (
+            "missing transport",
+            document(vec![with("-transport", Value::Null)]),
+        ),
+        (
+            "numeric transport",
+            document(vec![with("transport", json!(1))]),
+        ),
+        (
+            "boolean as string",
+            document(vec![with("allowInsecureHttp", json!("false"))]),
+        ),
+        (
+            "numeric model",
+            document(vec![with("defaultModel", json!(42))]),
+        ),
+        ("null name", document(vec![with("name", Value::Null)])),
+        (
+            "missing base URL",
+            document(vec![with("-baseUrl", Value::Null)]),
+        ),
+        (
+            "null credential",
+            document(vec![with("credential", Value::Null)]),
+        ),
+        (
+            "unknown credential kind",
+            document(vec![with("credential", json!({"kind":"keychain"}))]),
+        ),
+        (
+            "numeric secret reference",
+            document(vec![with("credential", json!({"kind":"secret","id":7}))]),
+        ),
+        (
+            "inline key field",
+            document(vec![with("apiKey", json!("sk-inline-secret"))]),
+        ),
+        ("profile is a string", document(vec![json!("http")])),
+        (
+            "duplicate HTTP IDs",
+            document(vec![valid(), with("name", json!("Second"))]),
+        ),
+        (
+            "duplicate across transports",
+            document(vec![valid(), codex]),
+        ),
+    ];
+    for (field, value) in [
+        ("profiles", Value::Null),
+        ("profiles", json!({"http":valid()})),
+        ("schemaVersion", json!("1")),
+        ("documentRevision", json!(-1)),
+        ("defaultConnectionId", json!(5)),
+    ] {
+        let mut config = document(vec![valid()]);
+        config[field] = value;
+        rejected.push(("wrong document field", config));
+    }
+    for (case, configuration) in &rejected {
+        let failure = service
+            .settings(
+                "save",
+                json!({"expectedRevision":0,"configuration":configuration}),
+            )
+            .expect_err(case);
+        assert_eq!(failure.code, "invalid_request", "{case}");
+        assert!(!failure.message.contains("sk-inline-secret"), "{case}");
+        assert!(
+            !directory.path().join("profiles.json").exists(),
+            "{case} wrote profiles"
+        );
+    }
+    // Migration imports are validated by the same provider-native rules.
+    for profiles in [
+        json!([with("transport", json!("gemini-images"))]),
+        json!([with("allowInsecureHttp", json!(1))]),
+        json!([valid(), with("name", json!("Second"))]),
+    ] {
+        let failure = service
+            .migration(
+                "import",
+                json!({"sourceId":"trace-openai-image-v1","sourceDigest":"a".repeat(64),"expectedRevision":0,"defaultConnectionId":"http","profiles":profiles}),
+            )
+            .unwrap_err();
+        assert_eq!(failure.code, "invalid_request");
+        assert!(!directory.path().join("profiles.json").exists());
+    }
+    assert!(host.events.lock().unwrap().is_empty());
+    // Nothing was consumed: the first valid save is still revision 0 -> 1.
+    let saved = service
+        .settings(
+            "save",
+            json!({"expectedRevision":0,"configuration":document(vec![valid()])}),
+        )
+        .unwrap();
+    assert_eq!(saved["documentRevision"], 1);
+    // A hand-edited document with the same defects fails closed on read and is
+    // left byte-for-byte for repair rather than reset to an empty default.
+    let path = directory.path().join("profiles.json");
+    let good: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    for (case, configuration) in rejected {
+        let mut corrupt = good.clone();
+        corrupt["configuration"] = configuration;
+        let bytes = serde_json::to_vec(&corrupt).unwrap();
+        std::fs::write(&path, &bytes).unwrap();
+        assert_eq!(
+            service.settings("read", json!({})).unwrap_err().code,
+            "unavailable",
+            "{case}"
+        );
+        assert!(service.validate_preflight().is_err(), "{case}");
+        assert!(service
+            .settings(
+                "save",
+                json!({"expectedRevision":1,"configuration":document(vec![])})
+            )
+            .is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), bytes, "{case}");
+    }
+}
 
 #[tokio::test]
 async fn preflight_is_read_only_and_activation_has_one_process_owner() {
@@ -670,6 +830,137 @@ async fn missing_and_restored_delivery_does_not_change_proven_execution() {
         succeeded.execution
     );
 }
+/// Records every reverse call so a test can prove no new stage or generation.
+struct CallLog {
+    inner: Arc<FakeHost>,
+    calls: Mutex<Vec<String>>,
+}
+impl CallLog {
+    fn count(&self, method: &str) -> usize {
+        self.calls
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|m| *m == method)
+            .count()
+    }
+}
+impl Host for CallLog {
+    fn call(&self, method: &str, params: Value, cancelled: &AtomicBool) -> Result<Value> {
+        self.calls.lock().unwrap().push(method.into());
+        self.inner.call(method, params, cancelled)
+    }
+    fn event(&self, name: &str, payload: Value) -> Result<()> {
+        self.inner.event(name, payload)
+    }
+}
+/// Plan §21.3 #7 (provider): a sealed output corrupted in place (same length,
+/// different bytes) after success leaves the proven execution untouched and
+/// reports delivery as unavailable, never failed, with no replay, stage or
+/// generation. Repairing the bytes restores the same delivery; once acquired,
+/// later corruption cannot regress the acquisition.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sealed_output_corrupted_in_place_is_unavailable_without_replay() {
+    let (root, count, _, server) = server(Duration::ZERO);
+    let directory = tempfile::tempdir().unwrap();
+    let fake = FakeHost::new();
+    let host = Arc::new(CallLog {
+        inner: fake.clone(),
+        calls: Mutex::new(vec![]),
+    });
+    let service = Service::new(directory.path(), host.clone()).unwrap();
+    service.activate().unwrap();
+    let config = service
+        .profiles
+        .save(configuration(&root), 0, None, None)
+        .unwrap();
+    let prepared = request(&config.profiles[0], vec![]);
+    let request = start(
+        prepared.clone(),
+        service.prepare(caller(), prepared).unwrap(),
+    );
+    service.start(caller(), request.clone(), false).unwrap();
+    let succeeded = terminal(&service, &request.operation_id).await;
+    server.join().unwrap();
+    let output = match &succeeded.delivery {
+        Delivery::Available { output } => output.clone(),
+        state => panic!("No sealed image: {state:?}"),
+    };
+    assert!(matches!(succeeded.execution, Execution::Succeeded { .. }));
+    let stages = host.count("host.artifacts.stage");
+    assert_eq!(stages, 1);
+    let path = fake.artifacts.lock().unwrap()[&output.handle].0.clone();
+    let original = std::fs::read(&path).unwrap();
+    let mut corrupt = original.clone();
+    let middle = corrupt.len() / 2;
+    corrupt[middle] ^= 0xff;
+    assert_eq!(corrupt.len() as u64, output.byte_length);
+    std::fs::write(&path, &corrupt).unwrap();
+    for _ in 0..2 {
+        let observed = service
+            .status("test.consumer", &request.operation_id)
+            .unwrap();
+        assert_eq!(observed.execution, succeeded.execution);
+        assert!(
+            matches!(observed.delivery, Delivery::Unavailable { .. }),
+            "corrupt output was reported as {:?}",
+            observed.delivery
+        );
+    }
+    let duplicate = service.start(caller(), request.clone(), false).unwrap();
+    assert_eq!(duplicate.execution, succeeded.execution);
+    assert!(matches!(duplicate.delivery, Delivery::Unavailable { .. }));
+    assert_eq!(
+        service
+            .cancel("test.consumer", &request.operation_id)
+            .unwrap()
+            .execution,
+        succeeded.execution
+    );
+    service.wait_idle().await;
+    assert_eq!(count.load(Ordering::SeqCst), 1);
+    assert_eq!(host.count("host.artifacts.stage"), stages);
+    // The recovery attempt re-verified the original handle; it did not reseal
+    // different bytes under a new identity.
+    assert_eq!(fake.artifacts.lock().unwrap()[&output.handle].1, output);
+    std::fs::write(&path, &original).unwrap();
+    assert_eq!(
+        service
+            .status("test.consumer", &request.operation_id)
+            .unwrap()
+            .delivery,
+        Delivery::Available {
+            output: output.clone()
+        }
+    );
+    service
+        .journal
+        .acknowledge(
+            "test.consumer",
+            &request.operation_id,
+            &output.sha256,
+            "acquired",
+            Some("fixture-transfer"),
+        )
+        .unwrap();
+    std::fs::write(&path, &corrupt).unwrap();
+    let after_ack = service
+        .status("test.consumer", &request.operation_id)
+        .unwrap();
+    assert_eq!(after_ack.execution, succeeded.execution);
+    assert_eq!(
+        after_ack.delivery,
+        Delivery::Acquired {
+            transfer_receipt: "fixture-transfer".into()
+        }
+    );
+    assert_eq!(count.load(Ordering::SeqCst), 1);
+    assert_eq!(host.count("host.artifacts.stage"), stages);
+}
+/// Plan §21.3 #11: saved-login Codex runs with API-key variables populated in
+/// the provider's own environment. The child observes them cleared, no auth
+/// switch is attempted, and the exact fresh thread's image is selected even when
+/// a newer unrelated thread image exists.
 #[cfg(unix)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn fake_cli_preserves_launcher_runtime_order_saved_login_and_managed_image_model() {
@@ -679,24 +970,38 @@ async fn fake_cli_preserves_launcher_runtime_order_saved_login_and_managed_image
     std::fs::create_dir(&bin).unwrap();
     let home = installation.path().join("home");
     std::fs::create_dir(&home).unwrap();
-    let previous = std::env::var_os("CODEX_HOME");
-    std::env::set_var("CODEX_HOME", &home);
-    struct Restore(Option<std::ffi::OsString>);
+    const AUTH: [&str; 3] = ["OPENAI_API_KEY", "CODEX_API_KEY", "CODEX_ACCESS_TOKEN"];
+    let canary = format!(
+        "sk-te-env-canary-{}",
+        image_generation_backend::profiles::nonce().unwrap()
+    );
+    struct Restore(Vec<(&'static str, Option<std::ffi::OsString>)>);
     impl Drop for Restore {
         fn drop(&mut self) {
-            if let Some(value) = &self.0 {
-                std::env::set_var("CODEX_HOME", value)
-            } else {
-                std::env::remove_var("CODEX_HOME")
+            for (key, value) in &self.0 {
+                match value {
+                    Some(value) => std::env::set_var(key, value),
+                    None => std::env::remove_var(key),
+                }
             }
         }
     }
-    let _restore = Restore(previous);
+    let _restore = Restore(
+        std::iter::once("CODEX_HOME")
+            .chain(AUTH)
+            .map(|key| (key, std::env::var_os(key)))
+            .collect(),
+    );
+    std::env::set_var("CODEX_HOME", &home);
+    for key in AUTH {
+        std::env::set_var(key, format!("{canary}-{key}"));
+    }
     let launcher = bin.join("codex");
     std::fs::write(&launcher, b"#!/usr/bin/env fake-node\n").unwrap();
     std::fs::set_permissions(&launcher, std::fs::Permissions::from_mode(0o700)).unwrap();
     let runtime = bin.join("fake-node");
-    let script=format!("#!/usr/bin/env python3\nimport os,sys,json,base64\nargs=sys.argv[2:]\nassert not any(os.environ.get(k) for k in ['OPENAI_API_KEY','CODEX_API_KEY','CODEX_ACCESS_TOKEN'])\nif args==['login','status']:\n print('Logged in using ChatGPT',file=sys.stderr)\nelse:\n assert '--ignore-user-config' in args and '--ephemeral' in args\n assert '--model' not in args and '-m' not in args\n assert args[-2]=='--'\n paths=[args[i+1] for i,a in enumerate(args) if a=='--image']\n assert len(paths)==2 and paths[0].endswith('source-1.png') and paths[1].endswith('source-2.png')\n assert 'equal inputs; none is the main image' in args[-1]\n thread='12345678-1234-1234-1234-123456789abc'\n target=os.path.join(os.environ['CODEX_HOME'],'generated_images',thread)\n os.makedirs(target)\n open(os.path.join(target,'output.png'),'wb').write(base64.b64decode('{}'))\n print(json.dumps({{'type':'thread.started','thread_id':thread}}))\n print(json.dumps({{'type':'item.completed','item':{{'type':'agent_message','text':'Successful transcript must never be persisted'}}}}))\n print(json.dumps({{'type':'turn.completed','usage':{{}}}}))\n",STANDARD.encode(png(99)));
+    let invocations = bin.join("invocations.jsonl");
+    let script=format!("#!/usr/bin/env python3\nimport os,sys,json,base64,time\nargs=sys.argv[2:]\nenv={{k:v for k,v in os.environ.items() if k in {auth:?} or 'te-env-canary' in v}}\nopen(os.path.join(os.path.dirname(os.path.realpath(__file__)),'invocations.jsonl'),'a').write(json.dumps({{'args':args,'env':env}})+'\\n')\nif args==['login','status']:\n print('Logged in using ChatGPT',file=sys.stderr)\nelse:\n assert '--ignore-user-config' in args and '--ephemeral' in args\n assert '--model' not in args and '-m' not in args\n assert args[-2]=='--'\n paths=[args[i+1] for i,a in enumerate(args) if a=='--image']\n assert len(paths)==2 and paths[0].endswith('source-1.png') and paths[1].endswith('source-2.png')\n assert 'equal inputs; none is the main image' in args[-1]\n thread='12345678-1234-1234-1234-123456789abc'\n images=os.path.join(os.environ['CODEX_HOME'],'generated_images')\n target=os.path.join(images,thread)\n os.makedirs(target)\n open(os.path.join(target,'output.png'),'wb').write(base64.b64decode('{right}'))\n other=os.path.join(images,'87654321-4321-4321-4321-cba987654321')\n os.makedirs(other)\n newer=os.path.join(other,'output.png')\n open(newer,'wb').write(base64.b64decode('{wrong}'))\n later=time.time()+3600\n os.utime(newer,(later,later))\n os.utime(other,(later,later))\n print(json.dumps({{'type':'thread.started','thread_id':thread}}))\n print(json.dumps({{'type':'item.completed','item':{{'type':'agent_message','text':'Successful transcript must never be persisted'}}}}))\n print(json.dumps({{'type':'turn.completed','usage':{{}}}}))\n",auth=AUTH.to_vec(),right=STANDARD.encode(png(99)),wrong=STANDARD.encode(png(7)));
     std::fs::write(&runtime, script).unwrap();
     std::fs::set_permissions(&runtime, std::fs::Permissions::from_mode(0o700)).unwrap();
     let directory = tempfile::tempdir().unwrap();
@@ -736,8 +1041,39 @@ async fn fake_cli_preserves_launcher_runtime_order_saved_login_and_managed_image
     }
     let persisted = serde_json::to_string(&result).unwrap();
     assert!(!persisted.contains("Successful transcript must never be persisted"));
+    assert!(!persisted.contains("te-env-canary"));
     assert!(result.diagnostics.as_ref().unwrap().valid(true));
+    // The exact fresh thread's image was sealed, not the newer unrelated one.
+    let output = match &result.delivery {
+        Delivery::Available { output } => output.clone(),
+        state => panic!("No sealed CLI image: {state:?}"),
+    };
+    let sealed = host.artifacts.lock().unwrap()[&output.handle].0.clone();
+    assert_eq!(std::fs::read(sealed).unwrap(), png(99));
+    // The child saw the saved-login environment only, and no auth switch ran.
+    let observed: Vec<Value> = std::fs::read_to_string(&invocations)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert_eq!(observed.len(), 2);
+    assert_eq!(observed[0]["args"], json!(["login", "status"]));
+    for invocation in &observed {
+        assert_eq!(invocation["env"], json!({}), "API key reached Codex");
+    }
+    let exec = observed[1]["args"].as_array().unwrap();
+    assert_eq!(exec[0], "exec");
+    let (_task, options) = exec.split_last().unwrap();
+    for arg in options
+        .iter()
+        .map(|arg| arg.as_str().unwrap().to_ascii_lowercase())
+    {
+        for auth in ["login", "api-key", "api_key", "apikey", "auth", "token"] {
+            assert!(!arg.contains(auth), "auth switch argument {arg}");
+        }
+    }
     let processes = host.processes.lock().unwrap();
+    assert!(!json!(*processes).to_string().contains("te-env-canary"));
     assert_eq!(processes.len(), 2);
     assert_eq!(processes[0]["args"], json!(["login", "status"]));
     assert_eq!(processes[1]["program"], launcher.to_str().unwrap());
@@ -781,7 +1117,10 @@ async fn explicit_settings_test_uses_owned_host_admission_and_remains_idempotent
             .settings("test.status", json!({"requestId":operation}))
             .unwrap();
         let status: OperationStatus = serde_json::from_value(value).unwrap();
-        if !matches!(status.execution, Execution::Accepted {} | Execution::Running {}) {
+        if !matches!(
+            status.execution,
+            Execution::Accepted {} | Execution::Running {}
+        ) {
             break status;
         }
         tokio::time::sleep(Duration::from_millis(5)).await;

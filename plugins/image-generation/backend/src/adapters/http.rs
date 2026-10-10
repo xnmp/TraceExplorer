@@ -25,6 +25,10 @@ pub(super) async fn generate(
     key: Option<String>,
     cancel: Arc<AtomicBool>,
 ) -> Result<Output> {
+    // Inherited native configuration (plan §18.3): proxies come only from the
+    // HTTP_PROXY/HTTPS_PROXY/ALL_PROXY/NO_PROXY environment (curl semantics,
+    // loopback is not bypassed); OS proxy settings are not read. TLS trust is
+    // the platform verifier's OS store. Redirects and retries are never taken.
     let client = reqwest::Client::builder()
         .retry(reqwest::retry::never())
         .redirect(reqwest::redirect::Policy::none())
