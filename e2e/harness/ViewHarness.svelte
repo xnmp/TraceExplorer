@@ -60,16 +60,23 @@
   let editorTool = $state.raw<{ component: Component<any>; props?: Record<string, unknown> } | null>(null);
   let editorSource = $state.raw<ImageEditorSource | null>(null);
   let editorToolId: string | null = null;
+  let toasts = $state.raw<Array<{ message: string; variant: string }>>([]);
   /** `?editorApi=0` simulates a host without `presentation.openImageEditor`. */
   const editorApi = new URLSearchParams(location.search).get("editorApi") !== "0";
   const editorCalls: Array<{ path: string; tool: string }> = [];
   let editorClosed: (() => void) | undefined;
   const menuItems = new Map<string, { label: string; group: string; when: (entries: FileEntry[]) => boolean; handler: (entries: FileEntry[]) => void | Promise<void> }>();
-  /** As the host's imageEditorRequestError: only this plugin's registered tool, an absolute path, one editor at a time. */
-  function imageEditorRequestError(request: { path: string; tool: string }): string | null {
-    if (editorToolId === null || request.tool !== editorToolId) return `Unknown image editor tool: ${request.tool}`;
-    if (!/^(\/|[A-Za-z]:[\\/])/.test(request.path)) return "Image editor path must be absolute";
-    if (editorSource) return "An image editor is already open";
+  let disposed = false;
+  const absolutePath = (path: string) => path.startsWith("/") || /^[A-Za-z]:[\\/]/.test(path) || /^\\\\[^\\]+\\[^\\]+/.test(path);
+  /** Mirrors the host's imageEditorRequestError (plugin-image-editor.ts) and its dialog-store refusals, with the same messages. */
+  function imageEditorRequestError(request: unknown): string | null {
+    if (disposed) return "Plugin caller was disposed";
+    if (typeof request !== "object" || request === null) return "Image editor request must be an object";
+    const { path, tool } = request as Record<string, unknown>;
+    if (typeof tool !== "string" || tool !== editorToolId) return "Image editor tool is not registered by this plugin";
+    if (typeof path !== "string" || !path || path.length > 4096 || path.includes("\0") || !absolutePath(path)) return "Image editor path must be an absolute file path";
+    if (editorSource) return "Close the open image editor first";
+    if (opened_dialogs.length || configureOpen) return "Close the open dialog first";
     return null;
   }
 
@@ -77,7 +84,7 @@
   let closeConfiguration: (() => void) | undefined;
   let configureFailure: string | null = null;
   function activate() {
-    views = []; sections = []; commands.clear(); conditions.clear(); listeners.clear(); fileListeners.length = 0; menuItems.clear(); editorToolId = null;
+    views = []; sections = []; commands.clear(); conditions.clear(); listeners.clear(); fileListeners.length = 0; menuItems.clear(); editorToolId = null; disposed = false;
     const ctx = {
       registerSettingsSection: () => {},
       registerFileView: (view: FileViewContribution) => { views = [...views, view]; },
@@ -102,7 +109,8 @@
       openDialog: (id: string, props: Record<string, unknown> = {}) => { opened_dialogs = [...opened_dialogs, { id, props }]; },
       closeDialog: (id: string) => { opened_dialogs = opened_dialogs.filter((dialog) => dialog.id !== id); },
       presentation: { ...(editorApi ? { openImageEditor: async (request: { path: string; tool: string }) => {
-        editorCalls.push({ ...request });
+        // Recorded as asked, so tests see refused requests too.
+        editorCalls.push({ ...(request as object) } as { path: string; tool: string });
         const refused = imageEditorRequestError(request);
         if (refused) throw new Error(refused);
         editorSource = { path: request.path, name: request.path.split(/[\\/]/).at(-1)!, digest: "0".repeat(64), format: "PNG", referencePaths: [] };
@@ -115,7 +123,7 @@
         return { reason: "closed" };
       } },
       saveSettings: async () => {},
-      toast: { show: () => {}, error: () => {} },
+      toast: { show: (message: string, variant = "info") => { toasts = [...toasts, { message, variant }]; }, error: (message: string) => { toasts = [...toasts, { message, variant: "error" }]; } },
       jobs: { accept: async (registration: { label: string; detail: string }, start: () => Promise<{ ok: boolean }>) => {
         const result = await start();
         if (result.ok) accepted = [...accepted, { label: registration.label, detail: registration.detail }];
@@ -194,7 +202,7 @@
     /** Changes the pane's tile-size preset live, as the host's setting would; null removes it (an older host). */
     setTileSize(preset: TileSizePreset | null) { tilePreset = preset; },
     toggle() { return commands.get("plugin.trace.toggle")?.(); },
-    disable() { enabled = false; tracePlugin.deactivate?.(); },
+    disable() { enabled = false; disposed = true; tracePlugin.deactivate?.(); },
     enable() { enabled = true; activate(); },
     navigate(path: string) { directory = path; entries = path === DIRECTORY ? files() : []; selected = []; anchor = null; target = null; },
     state: () => ({ selected: [...selected], cursor, target: target ? { id: target.id, title: target.title, badge: target.badge ?? null } : null, fileView, opened: [...opened], menus: [...menus], navigations: [...navigations] }),
@@ -213,6 +221,9 @@
     /** The context-menu items the host would show for the selected paths, as `[id, label]`. */
     menuFor(paths: string[]) { const chosen = entries.filter((entry) => paths.includes(entry.path)); return [...menuItems].filter(([, item]) => item.when(chosen)).map(([id, item]) => [id, item.label]); },
     invokeMenu(id: string, paths: string[]) { return menuItems.get(id)?.handler(entries.filter((entry) => paths.includes(entry.path))); },
+    toasts: () => toasts.map((toast) => ({ ...toast })),
+    /** Closes the image editor stand-in, as the user closing the host editor would. */
+    closeEditor() { editorSource = null; editorClosed?.(); editorClosed = undefined; },
     editorCalls: () => editorCalls.map((call) => ({ ...call })),
     enabled: (id: string) => conditions.get(id)?.() ?? false,
     accepted: () => [...accepted],

@@ -92,4 +92,11 @@ describe("single image for the host editor", () => {
     expect(singleImagePath([file("/m/a")])).toBeNull();
     expect(singleImagePath([file("demo://a.png")])).toBeNull();
   });
+  it("follows a Trace view's picks when there are any", () => {
+    expect(singleImagePath([file("/m/a.png")], ["/m/a.png", "/tmp/unsaved.png"])).toBeNull();
+    expect(singleImagePath([file("/m/a.png")], ["/m/a.png"])).toBe("/m/a.png");
+    expect(singleImagePath([file("/m/a.png")], ["/m/b.png"])).toBeNull();
+    expect(singleImagePath([], ["/m/a.png"])).toBeNull();
+    expect(singleImagePath([file("/m/a.png")], [])).toBe("/m/a.png");
+  });
 });

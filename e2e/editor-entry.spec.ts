@@ -21,10 +21,21 @@ test("the menu entry and the command open the selected image in the host editor'
   await expect(page.getByRole("dialog", { name: "AI edit" })).toBeVisible();
   expect(await calls(page)).toEqual([{ path: warm, tool: "openai-image" }]);
 
-  // The host refuses a second editor while one is open: reported, not thrown.
-  await page.evaluate((id) => (window as any).trace.command(id), COMMAND);
+  // The command's promise settles only when the editor closes.
+  await page.evaluate(() => { (window as any).trace.closeEditor(); });
+  await expect(page.getByRole("dialog", { name: "AI edit" })).toHaveCount(0);
+  await page.evaluate((id) => { const w = window as any; w.settled = false; void Promise.resolve(w.trace.command(id)).then(() => { w.settled = true; }); }, COMMAND);
+  await expect(page.getByRole("dialog", { name: "AI edit" })).toBeVisible();
+  expect(await page.evaluate(() => (window as any).settled)).toBe(false);
   expect(await calls(page)).toHaveLength(2);
-  await expect(page.getByRole("dialog", { name: "AI edit" })).toHaveCount(1);
+
+  // The host refuses a second editor while one is open: reported as a toast, not thrown.
+  await page.evaluate((id) => (window as any).trace.command(id), COMMAND);
+  expect(await calls(page)).toHaveLength(3);
+  expect(await page.evaluate(() => (window as any).trace.toasts())).toEqual([{ message: "Close the open image editor first", variant: "error" }]);
+  expect(await page.evaluate(() => (window as any).settled)).toBe(false);
+  await page.evaluate(() => { (window as any).trace.closeEditor(); });
+  await expect.poll(() => page.evaluate(() => (window as any).settled)).toBe(true);
 });
 
 test("both entries are unavailable for no, several, non-image and directory selections", async ({ page }) => {

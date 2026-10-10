@@ -87,8 +87,17 @@ export function inputRequestFields(inputs: readonly ImageInput[]): {
   };
 }
 
-/** The path of the one local PNG, JPEG or WebP file in `entries`, which the host image editor can open; otherwise null. */
-export function singleImagePath(entries: readonly { readonly path: string; readonly kind: "file" | "directory" }[]): string | null {
+/**
+ * The path of the one local PNG, JPEG or WebP file the host image editor can open; otherwise null.
+ * `picks` are a Trace view's ordered picks, which can include images the host cannot select: when
+ * there are any, the editor follows them and proceeds only if they are exactly that one image.
+ */
+export function singleImagePath(
+  entries: readonly { readonly path: string; readonly kind: "file" | "directory" }[],
+  picks: readonly string[] = [],
+): string | null {
   const [entry] = entries;
-  return entries.length === 1 && entry.kind === "file" ? imageInputPaths([entry.path])[0] ?? null : null;
+  const path = entries.length === 1 && entry.kind === "file" ? imageInputPaths([entry.path])[0] ?? null : null;
+  if (picks.length === 0) return path;
+  return path !== null && picks.length === 1 && picks[0] === path ? path : null;
 }

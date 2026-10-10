@@ -92,20 +92,22 @@ export const openAIImagePlugin: Plugin = {
     // Feature-detected: older hosts have no direct editor entry, so neither contribution is offered there.
     const openInEditor = ctx.presentation?.openImageEditor?.bind(ctx.presentation);
     if (openInEditor) {
+      // A Trace view's picks win over the host selection: the editor opens a real file only when it is the sole pick.
+      const editable = (entries: FileEntry[]) => singleImagePath(entries, tracePanes.active()?.inputs() ?? []);
       const edit = async (path: string) => {
         try { await openInEditor({ path, tool: EDITOR_TOOL_ID }); }
         catch (error) { ctx.toast.show(error instanceof Error ? error.message : String(error), "error"); }
       };
       ctx.registerContextMenuItem({
         id: "openai-image.edit-in-editor", label: "Edit in image editor with AI…", group: "ai",
-        when: (entries) => singleImagePath(entries) !== null,
-        handler: (entries) => { const path = singleImagePath(entries); if (path) return edit(path); },
+        when: (entries) => editable(entries) !== null,
+        handler: (entries) => { const path = editable(entries); if (path) return edit(path); },
       });
       ctx.registerCommand({
         id: "plugin.openai-image.edit-in-editor", label: "AI Edit in Image Editor…", category: "plugins",
-        when: () => singleImagePath(ctx.workspace.getSelection()) !== null,
+        when: () => editable(ctx.workspace.getSelection()) !== null,
         handler: () => {
-          const path = singleImagePath(ctx.workspace.getSelection());
+          const path = editable(ctx.workspace.getSelection());
           if (path) return edit(path);
           ctx.toast.show("Select one PNG, JPEG, or WebP image first", "info");
         },
