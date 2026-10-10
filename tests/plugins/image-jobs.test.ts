@@ -98,12 +98,12 @@ describe("AI image jobs and the host's Retry", () => {
     expect(started).toHaveLength(1);
     expect(registrations).toHaveLength(1);
   });
-  it("refuses unknown outcomes before reading connections or starting work", async () => {
+  it("refuses an unknown outcome still being recovered before reading connections or starting work", async () => {
     configureBackend({ async invoke() { throw new Error("Unexpected backend IO"); } });
     const { jobs, registrations } = host();
     const result = await retryRun({ jobs }, { outputPath: null, run: { id: 8, operation: "openai.image.generate", status: "uncertain", createdAt: "", finishedAt: null,
       error: null, recovered: true, inputIds: [], parameters: { prompt: "Do not repeat" }, details: { provider_execution: "unknown" } } });
-    expect(result).toEqual({ ok: false, error: "Only failed AI image runs can be retried" });
+    expect(result).toEqual({ ok: false, error: "Only failed or unconfirmed AI image runs can be retried" });
     expect(registrations).toEqual([]);
   });
   it("registers a retry that starts a new job with the same ordered, pinned inputs, prompt and settings", async () => {

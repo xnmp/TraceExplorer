@@ -29,12 +29,26 @@ function providerExecution(history: OpenAIImageRunHistory): { present: boolean; 
   const value = "provider_execution" in details ? details.provider_execution : details.execution;
   return { present: true, state: value && typeof value === "object" ? (value as { state?: unknown }).state : value };
 }
-/** Only an explicit failure can become a new paid operation. */
+/**
+ * A run whose outcome nothing can confirm any more: the provider reported it
+ * unknown, or automatic recovery was stopped. The backend settles it as a
+ * finished `uncertain` run with `outcome: "unknown"`. A run still being
+ * recovered is `uncertain` too, but unfinished and unmarked.
+ */
+export function unconfirmedOutcome(history: OpenAIImageRunHistory): boolean {
+  const { run } = history;
+  const execution = providerExecution(history);
+  return run.status === "uncertain" && run.finishedAt !== null && run.details?.outcome === "unknown"
+    && OPERATIONS.has(run.operation)
+    && (!execution.present || ["unknown", "accepted", "running"].includes(execution.state as string));
+}
+/** Only an explicit failure, or an unconfirmed outcome, can become a new paid operation. */
 export function retryable(history: OpenAIImageRunHistory): boolean {
   const execution = providerExecution(history);
-  return history.run.status === "failed" && OPERATIONS.has(history.run.operation)
-    && (!execution.present || execution.state === "failed");
+  return (history.run.status === "failed" && OPERATIONS.has(history.run.operation)
+    && (!execution.present || execution.state === "failed")) || unconfirmedOutcome(history);
 }
+export const NOT_RETRYABLE = "Only failed or unconfirmed AI image runs can be retried";
 
 const NEW_REQUEST = "This run's connection cannot be reproduced safely. Choose a connection in a new generation request.";
 const recipeText = (value: unknown): value is string => typeof value === "string" && !!value && value.length <= 100 * 1024 && new TextEncoder().encode(value).length <= 100 * 1024;
@@ -86,7 +100,7 @@ export function retryConnectionProblem(history: OpenAIImageRunHistory, connectio
 
 export function retryPlan(history: OpenAIImageRunHistory, connection: ImageConnection): RetryPlan {
   const { run } = history;
-  if (!retryable(history)) return { ok: false, reason: "Only failed AI image runs can be retried" };
+  if (!retryable(history)) return { ok: false, reason: NOT_RETRYABLE };
   const parameters = run.parameters;
   const prompt = text(parameters.prompt) ?? "";
   if (!prompt.trim()) return { ok: false, reason: "This run has no recorded prompt" };

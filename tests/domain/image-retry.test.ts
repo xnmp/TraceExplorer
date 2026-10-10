@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { codexExplanation, excerpt, retryable, retryPlan } from "$lib/domain/image-retry";
+import { codexExplanation, excerpt, retryable, retryPlan, unconfirmedOutcome } from "$lib/domain/image-retry";
 import type { OpenAIImageRunHistory } from "$lib/api/openai-image";
 
 const A = "a".repeat(64), B = "b".repeat(64), C = "c".repeat(64);
@@ -36,6 +36,30 @@ describe("retrying a failed image run", () => {
     expect(retryable(history({ details: { provider_execution: { state: "failed" } } }))).toBe(true);
     expect(retryable(history({ status: "uncertain" }))).toBe(false);
   });
+  it("retries a settled unconfirmed outcome as a new request, but never a run still being recovered", () => {
+    const unknown = (overrides: Partial<OpenAIImageRunHistory["run"]> = {}, details: Record<string, unknown> = { outcome: "unknown", provider_execution: { state: "unknown" } }) =>
+      history({ status: "uncertain", finishedAt: "2026-10-09T00:01:00Z", error: "The image generation outcome could not be confirmed", details, ...overrides });
+    expect(unconfirmedOutcome(unknown())).toBe(true);
+    expect(retryable(unknown())).toBe(true);
+    // Automatic recovery stopped while the provider last reported it running, or before any receipt.
+    for (const details of [{ outcome: "unknown", provider_execution: { state: "running" } }, { outcome: "unknown", provider_execution: "accepted" }, { outcome: "unknown" }]) {
+      expect(retryable(unknown({}, details))).toBe(true);
+    }
+    const plan = retryPlan(unknown(), connection);
+    expect(plan.ok && plan.retry.request.retryOf).toBe(41);
+    // Still recovering: unfinished, or without the settlement marker.
+    expect(retryable(unknown({ finishedAt: null }))).toBe(false);
+    expect(retryable(unknown({}, { provider_execution: { state: "unknown" } }))).toBe(false);
+    expect(retryable(unknown({ details: null }))).toBe(false);
+    // A marker never overrides proven provider success or cancellation.
+    for (const state of ["succeeded", "cancelled", "failed", "unexpected"]) {
+      expect(retryable(unknown({}, { outcome: "unknown", provider_execution: { state } }))).toBe(false);
+    }
+    expect(retryable(unknown({}, { outcome: "failed" }))).toBe(false);
+    expect(retryable(unknown({ operation: "image.crop" }))).toBe(false);
+    for (const status of ["running", "succeeded", "cancelled", "discarded", "interrupted"] as const) expect(retryable(unknown({ status }))).toBe(false);
+  });
+
   it("resubmits the same ordered inputs, pinned to their recorded revisions, with the same prompt and settings", () => {
     const plan = retryPlan(history(), connection);
     expect(plan).toEqual({ ok: true, retry: {
@@ -119,7 +143,7 @@ describe("retrying a failed image run", () => {
     ].map((run) => retryPlan(run, connection));
     for (const plan of reasons) expect(plan.ok).toBe(false);
     expect(reasons.map((plan) => !plan.ok && plan.reason)).toEqual([
-      "Only failed AI image runs can be retried", "Only failed AI image runs can be retried", "Only failed AI image runs can be retried",
+      "Only failed or unconfirmed AI image runs can be retried", "Only failed or unconfirmed AI image runs can be retried", "Only failed or unconfirmed AI image runs can be retried",
       "This run has no recorded prompt",
       "This run's recorded inputs are incomplete", "This run's recorded inputs are incomplete", "This run has no recorded output folder",
     ]);

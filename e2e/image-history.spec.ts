@@ -112,3 +112,24 @@ test("a missing recorded connection refuses paid Retry even when another default
   expect(await page.evaluate(() => (window as any).image.started())).toHaveLength(1);
   expect(await page.evaluate(() => (window as any).image.jobs())).toMatchObject([{ id: 500, status: "error" }]);
 });
+
+test("an unconfirmed outcome says so and its Retry starts a new job, while a run still being recovered offers none", async ({ page }) => {
+  await open(page);
+  const unconfirmed = page.locator('li[data-run-id="85"]');
+  await unconfirmed.locator("summary").click();
+  await expect(unconfirmed).toContainText("Outcome could not be confirmed");
+  await expect(unconfirmed).toContainText("Retry starts a new, separately charged generation");
+  await expect(unconfirmed).not.toContainText("failed");
+  const recovering = page.locator('li[data-run-id="84"]');
+  await recovering.locator("summary").click();
+  await expect(recovering).toContainText("Publication needs reconciliation");
+  await expect(recovering.getByRole("button", { name: /Retry/ })).toHaveCount(0);
+  await unconfirmed.getByRole("button", { name: "Retry run #85" }).click();
+  await expect(unconfirmed.getByRole("status")).toHaveText("Retry started as a new job");
+  const started = await page.evaluate(() => (window as any).image.started());
+  expect(started).toEqual([{ kind: "openai-image", request: {
+    sourcePath: null, referencePaths: [], prompt: "A lighthouse in fog", outputDir: "/pictures", outputFilename: "generated.png",
+    connectionId: "saved-login", expectedConnectionRevision: "cli-revision", model: null, size: "1024x1024", quality: "auto", background: "auto", retryOf: 85,
+  } }]);
+  expect(await page.evaluate(() => (window as any).image.errors)).toEqual([]);
+});

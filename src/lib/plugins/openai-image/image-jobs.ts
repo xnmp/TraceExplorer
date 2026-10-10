@@ -1,5 +1,5 @@
 /**
- * Starting AI image jobs, and retrying failed ones.
+ * Starting AI image jobs, and retrying failed or unconfirmed ones.
  *
  * Every job is registered with a `retry`, which hosts with the `jobRetry`
  * capability offer on its failed entry (older hosts ignore it; the run
@@ -9,7 +9,7 @@
  */
 import type { ApiResult, PluginJobs } from "../api";
 import { describeImageService, openAIImageRunForJob, startOpenAIImageJob, type OpenAIImageRequest, type OpenAIImageRunHistory } from "$lib/api/openai-image";
-import { retryable, retryPlan } from "$lib/domain/image-retry";
+import { NOT_RETRYABLE, retryable, retryPlan } from "$lib/domain/image-retry";
 import { availabilityProblem, connectionFor } from "./connections";
 
 export interface ImageJobServices { readonly jobs: PluginJobs }
@@ -38,7 +38,7 @@ export async function retryJob(services: ImageJobServices, jobId: number): Promi
 
 /** Resubmits a failed run's recorded request as a new job, with the current connection settings. */
 export async function retryRun(services: ImageJobServices, history: OpenAIImageRunHistory): Promise<ApiResult<number>> {
-  if (!retryable(history)) return { ok: false, error: "Only failed AI image runs can be retried" };
+  if (!retryable(history)) return { ok: false, error: NOT_RETRYABLE };
   const available = await describeImageService();
   if (!available.ok) return available;
   const problem = availabilityProblem(available.data);

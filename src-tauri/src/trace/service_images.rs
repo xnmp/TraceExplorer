@@ -327,8 +327,39 @@ fn budget_expired(
 ) -> bool {
     elapsed >= remaining || wall_now_ms >= deadline_ms
 }
+/// `unknown` is terminal: the provider's durable receipt says its outcome is
+/// unknown, or the host stopped automatic recovery. Nothing can confirm it
+/// later, so it is settled for Trace and only an explicit user Retry, as a new
+/// operation, continues.
 fn terminal(phase: &str) -> bool {
-    matches!(phase, "succeeded" | "failed" | "cancelled" | "discarded")
+    matches!(
+        phase,
+        "succeeded" | "failed" | "cancelled" | "discarded" | "unknown"
+    )
+}
+/// Links whose paid provider work, or its local recovery, is unfinished. This
+/// is what MAX_LIVE bounds at admission and on resume.
+///
+/// `ack_pending` is left out on purpose. Its run is already published locally
+/// and the provider's paid execution already succeeded. All that remains is an
+/// idempotent acknowledgement that lets the provider release its retained
+/// copy, which costs no generation and holds no worker slot between attempts.
+/// If it counted, a provider that is removed or unreachable after publication
+/// would fail every acknowledgement, and 16 of them would block Trace image
+/// generation with nothing in Trace able to resolve it. The provider's retained
+/// bytes stay pinned by its own receipt and the host's delivery claims.
+fn holds_live_work(link: &Link) -> bool {
+    (!terminal(&link.phase) && link.phase != "ack_pending") || link.preparation_release_pending
+}
+/// The host's normalized job state reads `recoveryState`. It knows the shared
+/// outcome-unknown/needs-attention state only as `needs_attention`, so a
+/// terminal unknown outcome is reported that way, with `outcomeUnknown` set.
+fn host_recovery_state(phase: &str) -> &str {
+    if phase == "unknown" {
+        "needs_attention"
+    } else {
+        phase
+    }
 }
 fn load_link(
     connection: &Connection,
@@ -473,7 +504,7 @@ fn snapshot_at(database: &Path, operation: &str) -> Result<Option<Value>, AppErr
         .optional()
         .map_err(sql)?;
     Ok(Some(
-        json!({"jobId":link.job_id,"runId":link.run_id,"operationId":link.operation_id,"revision":link.revision,"preparationReleasePending":link.preparation_release_pending,"workerActive":worker_active(database,operation),"status":state,"outputPath":output,"error":link.error,"recoveryState":link.phase,"providerExecution":link.receipt.as_ref().map(|r|&r.execution),"providerDelivery":link.receipt.as_ref().map(|r|&r.delivery)}),
+        json!({"jobId":link.job_id,"runId":link.run_id,"operationId":link.operation_id,"revision":link.revision,"preparationReleasePending":link.preparation_release_pending,"workerActive":worker_active(database,operation),"status":state,"outputPath":output,"error":link.error,"recoveryState":host_recovery_state(&link.phase),"outcomeUnknown":link.phase=="unknown","providerExecution":link.receipt.as_ref().map(|r|&r.execution),"providerDelivery":link.receipt.as_ref().map(|r|&r.delivery)}),
     ))
 }
 pub(crate) fn status(operation: &str) -> Result<Option<Value>, AppError> {
@@ -550,6 +581,7 @@ fn validate_link(l: &Link) -> Result<(), AppError> {
                 | "failed"
                 | "cancelled"
                 | "discarded"
+                | "unknown"
         )
         || l.captured.len() > 8
         || l.captured.iter().any(|i| {
@@ -811,10 +843,12 @@ fn recorded_execution_state(details: &Value) -> Option<Option<&str>> {
     })
 }
 /// A Retry is a new paid operation, so its source must be an image run whose
-/// outcome was an explicit failure. Unknown, unavailable, cancelled, running
-/// and successful runs (and anything malformed) are refused before any IO.
-fn retry_source_failed(database: &Path, run_id: i64) -> Result<(), AppError> {
-    let refused = || invalid("Only an explicitly failed image run can be retried");
+/// outcome was an explicit failure, or a linked run settled as outcome unknown
+/// (plan: "Provider reports unknown: preserve uncertainty; expose explicit user
+/// retry as a new attempt"). Running, recoverable, unavailable, cancelled and
+/// successful runs, and anything malformed, are refused before any IO.
+fn retry_source_settled(database: &Path, run_id: i64) -> Result<(), AppError> {
+    let refused = || invalid("Only a failed or unconfirmed image run can be retried");
     let connection = connection_at(database)?;
     let Some((operation, status, details)) = connection
         .query_row(
@@ -830,27 +864,58 @@ fn retry_source_failed(database: &Path, run_id: i64) -> Result<(), AppError> {
     if !matches!(
         operation.as_str(),
         "openai.image.generate" | "openai.image.edit"
-    ) || status != "failed"
+    ) || !matches!(status.as_str(), "failed" | "uncertain")
     {
         return Err(refused());
     }
-    if let Some(details) = details {
-        let details: Value = parse(&details).map_err(|_| refused())?;
-        if recorded_execution_state(&details).is_some_and(|state| state != Some("failed")) {
-            return Err(refused());
-        }
-    }
-    let row=connection.query_row("SELECT CASE WHEN length(operation_id)<=128 THEN operation_id ELSE NULL END,run_id,job_id,CASE WHEN length(request_digest)=64 THEN request_digest ELSE NULL END,CASE WHEN length(CAST(body AS BLOB))<=1048576 THEN body ELSE NULL END FROM image_service_operations WHERE run_id=?1",[run_id],row_at).optional().map_err(sql)?;
-    if let Some(row) = row {
-        let link = checked_link(&connection, database, row).map_err(|_| refused())?;
-        if link.phase != "failed"
-            || !link
-                .receipt
-                .as_ref()
-                .is_some_and(|r| matches!(r.execution, Execution::Failed { .. }))
+    let details: Option<Value> = details
+        .map(|details| parse(&details).map_err(|_| refused()))
+        .transpose()?;
+    let execution = details.as_ref().and_then(recorded_execution_state);
+    let unknown = status == "uncertain";
+    if unknown {
+        // Only the linked terminal record below can settle an unknown outcome;
+        // the marker and execution evidence must agree with it.
+        if details.as_ref().map(|d| &d["outcome"]) != Some(&json!("unknown"))
+            || execution.is_some_and(|state| {
+                !matches!(state, Some("unknown" | "accepted" | "running"))
+            })
         {
             return Err(refused());
         }
+    } else if execution.is_some_and(|state| state != Some("failed")) {
+        return Err(refused());
+    }
+    let row=connection.query_row("SELECT CASE WHEN length(operation_id)<=128 THEN operation_id ELSE NULL END,run_id,job_id,CASE WHEN length(request_digest)=64 THEN request_digest ELSE NULL END,CASE WHEN length(CAST(body AS BLOB))<=1048576 THEN body ELSE NULL END FROM image_service_operations WHERE run_id=?1",[run_id],row_at).optional().map_err(sql)?;
+    match row {
+        Some(row) => {
+            let link = checked_link(&connection, database, row).map_err(|_| refused())?;
+            let settled = if unknown {
+                link.phase == "unknown"
+                    && link.output.is_none()
+                    && link.transfer_receipt.is_none()
+                    && link.receipt.as_ref().is_none_or(|r| {
+                        matches!(
+                            r.execution,
+                            Execution::Unknown { .. }
+                                | Execution::Accepted {}
+                                | Execution::Running {}
+                        )
+                    })
+            } else {
+                link.phase == "failed"
+                    && link
+                        .receipt
+                        .as_ref()
+                        .is_some_and(|r| matches!(r.execution, Execution::Failed { .. }))
+            };
+            if !settled {
+                return Err(refused());
+            }
+        }
+        // Legacy unlinked history has no durable unknown settlement.
+        None if unknown => return Err(refused()),
+        None => {}
     }
     Ok(())
 }
@@ -890,7 +955,7 @@ fn accept_with_deadline(
         return Ok(Acceptance { link, fresh: false });
     }
     if let Some(source) = request.retry_of {
-        retry_source_failed(database, source)?;
+        retry_source_settled(database, source)?;
     }
     check()?;
     if cancelled_at(&connection_at(database)?, &operation)? {
@@ -1064,7 +1129,7 @@ fn accept_with_deadline(
             check()?;
             if links_at(&connection_at(database)?)?
                 .iter()
-                .filter(|l| !terminal(&l.phase) || l.preparation_release_pending)
+                .filter(|l| holds_live_work(l))
                 .count()
                 >= MAX_LIVE
                 && read_link(database, &operation)?.is_none()
@@ -1323,16 +1388,62 @@ fn observe(database: &Path, operation: &str, value: Value) -> Result<Link, AppEr
         Ok(())
     })
 }
+/// Trace-internal recovery: non-terminal and resumed by `resume`. A published
+/// link awaiting only the provider acknowledgement keeps `ack_pending`; its run
+/// already succeeded and must not show an error.
 fn attention(database: &Path, operation: &str, reason: &str) -> Result<Link, AppError> {
+    update(database, operation, |tx, link| mark_attention(tx, link, reason))
+}
+fn mark_attention(
+    tx: &rusqlite::Transaction<'_>,
+    link: &mut Link,
+    reason: &str,
+) -> Result<(), AppError> {
+    if !terminal(&link.phase) && link.phase != "ack_pending" {
+        link.phase = "needs_attention".into();
+        link.error = Some(reason.into());
+        tx.execute("UPDATE runs SET status='uncertain',error=?2 WHERE id=?1 AND status IN('running','uncertain')",params![link.run_id,reason]).map_err(sql)?;
+    }
+    Ok(())
+}
+/// Settles an outcome nothing can confirm any more: the provider's durable
+/// receipt says unknown, or the host stopped automatic recovery. The run stays
+/// `uncertain` (never `failed`), is finished, keeps its receipt evidence in
+/// `result_details`, and gains the `outcome: unknown` marker that makes it an
+/// explicit Retry source. Proven provider success is never relabelled: it
+/// stays recoverable instead.
+fn settle_unknown(database: &Path, operation: &str, reason: &str) -> Result<Link, AppError> {
     update(database, operation, |tx, link| {
-        if !terminal(&link.phase) {
-            link.phase = "needs_attention".into();
-            link.error = Some(reason.into());
-            tx.execute("UPDATE runs SET status='uncertain',error=?2 WHERE id=?1 AND status IN('running','uncertain')",params![link.run_id,reason]).map_err(sql)?;
+        if terminal(&link.phase) || link.phase == "ack_pending" {
+            return Ok(());
         }
+        if link.output.is_some()
+            || link
+                .receipt
+                .as_ref()
+                .is_some_and(|r| matches!(r.execution, Execution::Succeeded { .. }))
+        {
+            return mark_attention(tx, link, "Provider generation succeeded; its image delivery can be recovered without generating again");
+        }
+        let raw: Option<String> = tx
+            .query_row("SELECT CASE WHEN length(CAST(result_details AS BLOB))<=1048576 THEN result_details ELSE NULL END FROM runs WHERE id=?1", [link.run_id], |r| r.get(0))
+            .map_err(sql)?;
+        let mut details = match raw {
+            Some(raw) => parse::<Value>(&raw)?,
+            None => json!({}),
+        };
+        let Some(fields) = details.as_object_mut() else {
+            return Err(invalid("Image run details are malformed; retain them for recovery"));
+        };
+        fields.insert("outcome".into(), json!("unknown"));
+        link.phase = "unknown".into();
+        link.error = Some(reason.into());
+        tx.execute("UPDATE runs SET status='uncertain',error=?2,result_details=?3,finished_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?1 AND status IN('running','uncertain')",params![link.run_id,reason,document(&details)?]).map_err(sql)?;
         Ok(())
     })
 }
+const PROVIDER_UNKNOWN: &str = "The image generation outcome could not be confirmed: the provider reported it unknown. Retry starts a new, separately charged generation.";
+const RECOVERY_STOPPED: &str = "The image generation outcome could not be confirmed: automatic recovery was stopped. Retry starts a new, separately charged generation.";
 fn progress(app: &EventEmitter, database: &Path, operation: &str) {
     if let Ok(Some(snapshot)) = snapshot_at(database, operation) {
         let _ = app.emit("openai-image-progress", snapshot);
@@ -1358,12 +1469,21 @@ fn finish(
         Ok(())
     })
 }
-fn emit_terminal(app: &EventEmitter, link: &Link) {
-    let _ = app.emit("trace:changed", ());
-    if link.phase == "succeeded" {
-        let _=app.emit("openai-image-complete",json!({"jobId":link.job_id,"runId":link.run_id,"outputPath":link.target,"operationId":link.operation_id}));
-    } else {
-        let _=app.emit("openai-image-error",json!({"jobId":link.job_id,"runId":link.run_id,"error":link.error.as_deref().unwrap_or(&link.phase),"operationId":link.operation_id}));
+/// The host settles SDK 3 jobs from `jobs.status`; these events tell it when.
+/// Success is announced at local publication (`ack_pending` included). An
+/// unknown outcome is not a failure, so it is announced as progress carrying
+/// the snapshot (needs attention, outcome unknown), never as an error.
+fn emit_terminal(app: &EventEmitter, database: &Path, link: &Link) {
+    match link.phase.as_str() {
+        "succeeded" | "ack_pending" => {
+            let _ = app.emit("trace:changed", ());
+            let _=app.emit("openai-image-complete",json!({"jobId":link.job_id,"runId":link.run_id,"outputPath":link.target,"operationId":link.operation_id}));
+        }
+        "unknown" => progress(app, database, &link.operation_id),
+        _ => {
+            let _ = app.emit("trace:changed", ());
+            let _=app.emit("openai-image-error",json!({"jobId":link.job_id,"runId":link.run_id,"error":link.error.as_deref().unwrap_or(&link.phase),"operationId":link.operation_id}));
+        }
     }
 }
 fn claim_dispatch(database: &Path, operation: &str, fresh: bool) -> Result<(Link, bool), AppError> {
@@ -1420,13 +1540,69 @@ fn published_owned(
     }
     Ok(false)
 }
+const LOCAL_BUSY: &str = "local_busy";
+/// The shared heavy-IO slots and how long to wait for one. A test thread can
+/// substitute its own, so holding them never starves parallel tests.
+fn heavy_io_slots() -> (Arc<tokio::sync::Semaphore>, Duration) {
+    #[cfg(test)]
+    if let Some(slots) = tests::HEAVY_IO_SLOTS.with(|slots| slots.borrow().clone()) {
+        return slots;
+    }
+    (
+        HEAVY_IO
+            .get_or_init(|| Arc::new(tokio::sync::Semaphore::new(4)))
+            .clone(),
+        Duration::from_secs(5),
+    )
+}
+/// Local contention that clears by itself: every shared heavy-IO slot stayed
+/// busy, or SQLite still reported busy/locked after its own busy timeout.
+fn transient_local(error: &AppError) -> bool {
+    match error {
+        AppError::Service { code, .. } => code == LOCAL_BUSY,
+        // `sql` keeps rusqlite's text; SQLITE_BUSY and SQLITE_LOCKED read so.
+        AppError::Other(message) => message
+            .strip_prefix("Trace database: ")
+            .is_some_and(|m| m.starts_with("database is locked") || m.starts_with("database table is locked")),
+        _ => false,
+    }
+}
+/// Repeats a local-only step after transient contention, with bounded
+/// exponential backoff, instead of parking a proven success until restart.
+/// Any other error, and shutdown, return at once. The step must be safe to
+/// repeat from any point, as restart recovery already requires of publication.
+fn retry_local<T>(
+    control: &crate::plugin_job::JobControl,
+    polling: Polling,
+    mut retrying: impl FnMut(),
+    mut step: impl FnMut() -> Result<T, AppError>,
+) -> Result<T, AppError> {
+    let mut attempt = 0u32;
+    loop {
+        match step() {
+            Err(error)
+                if transient_local(&error)
+                    && (attempt as usize) < polling.local_attempts
+                    && control.check().is_ok() =>
+            {
+                attempt += 1;
+                retrying();
+                std::thread::sleep(
+                    polling
+                        .local_backoff
+                        .saturating_mul(1 << attempt.min(5))
+                        .min(Duration::from_secs(2)),
+                );
+            }
+            result => return result,
+        }
+    }
+}
 fn heavy_io(
     control: &crate::plugin_job::JobControl,
 ) -> Result<tokio::sync::OwnedSemaphorePermit, AppError> {
-    let slots = HEAVY_IO
-        .get_or_init(|| Arc::new(tokio::sync::Semaphore::new(4)))
-        .clone();
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let (slots, wait) = heavy_io_slots();
+    let deadline = Instant::now() + wait;
     loop {
         control.check()?;
         match slots.clone().try_acquire_owned() {
@@ -1437,9 +1613,10 @@ fn heavy_io(
             Err(tokio::sync::TryAcquireError::NoPermits) => {}
         }
         if Instant::now() >= deadline {
-            return Err(invalid(
-                "Image byte IO is busy; the original output remains recoverable",
-            ));
+            return Err(AppError::Service {
+                code: LOCAL_BUSY.into(),
+                message: "Image byte IO is busy; the original output remains recoverable".into(),
+            });
         }
         std::thread::sleep(Duration::from_millis(10));
     }
@@ -1596,13 +1773,20 @@ fn copy_exact(
     }
     Ok(())
 }
-fn complete_local(database: &Path, operation: &str) -> Result<Link, AppError> {
+/// Publishes the run in Trace once its transfer receipt is durable. The link
+/// then waits only for the provider acknowledgement (`ack_pending`), unless
+/// that already landed. Returns whether this call first made the run's
+/// success visible, so it is announced once.
+fn complete_local(database: &Path, operation: &str) -> Result<(Link, bool), AppError> {
     let link =
         read_link(database, operation)?.ok_or_else(|| invalid("Image ownership is missing"))?;
     let output = link
         .output
         .as_ref()
         .ok_or_else(|| invalid("Successful image has no output descriptor"))?;
+    if link.transfer_receipt.is_none() {
+        return Err(invalid("Image publication has no durable acquisition"));
+    }
     let state: String = connection_at(database)?
         .query_row("SELECT status FROM runs WHERE id=?1", [link.run_id], |r| {
             r.get(0)
@@ -1623,18 +1807,44 @@ fn complete_local(database: &Path, operation: &str) -> Result<Link, AppError> {
                 .ok_or_else(|| invalid("Image destination is not UTF8"))?,
         )?;
     }
-    update(database, operation, |_, link| {
-        link.phase = "succeeded".into();
+    let mut first = false;
+    let link = update(database, operation, |_, link| {
+        first = !matches!(link.phase.as_str(), "ack_pending" | "succeeded");
+        if link.phase != "succeeded" {
+            link.phase = if acknowledged(link)? {
+                "succeeded"
+            } else {
+                "ack_pending"
+            }
+            .into();
+        }
         link.error = None;
         Ok(())
-    })
+    })?;
+    Ok((link, first))
 }
+/// Whether the provider receipt records this link's own acquisition.
+fn acknowledged(link: &Link) -> Result<bool, AppError> {
+    match link.receipt.as_ref().map(|r| &r.delivery) {
+        Some(Delivery::Acquired { transfer_receipt }) => {
+            if link.transfer_receipt.as_ref() != Some(transfer_receipt) {
+                return Err(invalid("Provider acknowledged another image acquisition"));
+            }
+            Ok(true)
+        }
+        _ => Ok(false),
+    }
+}
+/// Local publication: exact copy, durable host acquisition, Trace completion.
+/// Every step is idempotent, so it can be repeated after local contention.
 fn handoff(
     host: &dyn ImageHost,
     database: &Path,
     link: &Link,
     control: &crate::plugin_job::JobControl,
-) -> Result<Link, AppError> {
+) -> Result<(Link, bool), AppError> {
+    let link = read_link(database, &link.operation_id)?
+        .ok_or_else(|| invalid("Image ownership is missing"))?;
     let output = link
         .output
         .as_ref()
@@ -1644,7 +1854,7 @@ fn handoff(
             link.phase = "copy_pending".into();
             Ok(())
         })?;
-        copy_exact(host, database, link, output, control)?;
+        copy_exact(host, database, &link, output, control)?;
         let result = host.call(
             "host.artifacts.acquired",
             json!({"operationId":link.operation_id,"artifact":output,"evidencePath":link.target}),
@@ -1657,43 +1867,64 @@ fn handoff(
             .to_owned();
         update(database, &link.operation_id, |_, link| {
             link.transfer_receipt = Some(proof);
-            link.phase = "ack_pending".into();
             link.error = None;
             Ok(())
         })?;
     }
-    let link = read_link(database, &link.operation_id)?
-        .ok_or_else(|| invalid("Image ownership is missing"))?;
-    if let Some(receipt) = &link.receipt {
-        if let Delivery::Acquired { transfer_receipt } = &receipt.delivery {
-            if link.transfer_receipt.as_ref() != Some(transfer_receipt) {
-                return Err(invalid("Provider acknowledged another image acquisition"));
-            }
-            return complete_local(database, &link.operation_id);
+    complete_local(database, &link.operation_id)
+}
+/// Settles `ack_pending` once the provider records the acquisition. A failure
+/// leaves the published run untouched for the worker and `resume` to retry.
+fn acknowledge(
+    host: &dyn ImageHost,
+    database: &Path,
+    operation: &str,
+    control: &crate::plugin_job::JobControl,
+) -> Result<Link, AppError> {
+    let link =
+        read_link(database, operation)?.ok_or_else(|| invalid("Image ownership is missing"))?;
+    if link.phase != "ack_pending" {
+        return Ok(link);
+    }
+    let link = if acknowledged(&link)? {
+        link
+    } else {
+        let output = link
+            .output
+            .as_ref()
+            .ok_or_else(|| invalid("Image output is unavailable"))?;
+        let value = host_image::invoke(
+            host,
+            "acknowledge",
+            json!({"operationId":link.operation_id,"outputSha256":output.sha256,"disposition":"acquired","transferReceipt":link.transfer_receipt}),
+            &|| control.check().is_err(),
+        )?;
+        observe(database, operation, value)?
+    };
+    if !acknowledged(&link)? {
+        return Err(invalid("Image acquisition acknowledgement remains pending"));
+    }
+    update(database, operation, |_, link| {
+        if link.phase == "ack_pending" {
+            link.phase = "succeeded".into();
         }
-    }
-    let value = host_image::invoke(
-        host,
-        "acknowledge",
-        json!({"operationId":link.operation_id,"outputSha256":output.sha256,"disposition":"acquired","transferReceipt":link.transfer_receipt}),
-        &|| control.check().is_err(),
-    )?;
-    let current = observe(database, &link.operation_id, value)?;
-    match current.receipt.as_ref().map(|r| &r.delivery) {
-        Some(Delivery::Acquired { .. }) => complete_local(database, &link.operation_id),
-        _ => Err(invalid("Image acquisition acknowledgement remains pending")),
-    }
+        Ok(())
+    })
 }
 #[derive(Clone, Copy)]
 struct Polling {
     interval: Duration,
     settlement: usize,
+    local_attempts: usize,
+    local_backoff: Duration,
 }
 impl Default for Polling {
     fn default() -> Self {
         Self {
             interval: Duration::from_millis(500),
             settlement: 8,
+            local_attempts: 6,
+            local_backoff: Duration::from_millis(100),
         }
     }
 }
@@ -1740,7 +1971,7 @@ fn run_worker(
                 Ok(())
             })?;
         }
-        emit_terminal(app, &link);
+        emit_terminal(app, database, &link);
         return Ok(());
     }
     if dispatch && !budget_expired(remaining, monotonic.elapsed(), link.deadline_ms, now_ms()) {
@@ -1769,7 +2000,7 @@ fn run_worker(
         match value {
             Ok(value) => link = observe(database, operation, value)?,
             Err(AppError::Service { code, .. }) if code == "recovery_stopped" => {
-                attention(database,operation,"Automatic recovery was stopped; retained operation requires explicit resolution")?;
+                settle_unknown(database, operation, RECOVERY_STOPPED)?;
                 progress(app, database, operation);
                 return Ok(());
             }
@@ -1812,8 +2043,40 @@ fn run_worker(
             match receipt.execution {
                 Execution::Succeeded { .. } => match receipt.delivery {
                     Delivery::Available { .. } | Delivery::Acquired { .. } => {
-                        let completed = handoff(host, database, &link, control)?;
-                        emit_terminal(app, &completed);
+                        let (published, first) = retry_local(
+                            control,
+                            polling,
+                            || progress(app, database, operation),
+                            || handoff(host, database, &link, control),
+                        )?;
+                        if first {
+                            emit_terminal(app, database, &published);
+                        }
+                        // The user-visible outcome is settled. Acknowledgement
+                        // failures only leave `ack_pending` for a later retry.
+                        let mut attempts = 0usize;
+                        loop {
+                            match acknowledge(host, database, operation, control) {
+                                Ok(_) => return Ok(()),
+                                Err(error) => {
+                                    attempts += 1;
+                                    if attempts >= polling.settlement || control.check().is_err() {
+                                        return Err(error);
+                                    }
+                                }
+                            }
+                            if !polling.interval.is_zero() {
+                                std::thread::sleep(polling.interval);
+                            }
+                        }
+                    }
+                    Delivery::Discarded {} if link.phase == "ack_pending" => {
+                        // Published locally; the provider released its copy,
+                        // which is all the acknowledgement was for.
+                        update(database, operation, |_, link| {
+                            link.phase = "succeeded".into();
+                            Ok(())
+                        })?;
                         return Ok(());
                     }
                     Delivery::Discarded {} => {
@@ -1823,7 +2086,7 @@ fn run_worker(
                             "discarded",
                             Some("Provider delivery was explicitly discarded".into()),
                         )?;
-                        emit_terminal(app, &done);
+                        emit_terminal(app, database, &done);
                         return Ok(());
                     }
                     // `storage_unavailable` is temporary (plan §8.2): the provider
@@ -1845,7 +2108,7 @@ fn run_worker(
                 },
                 Execution::Failed { error } => {
                     let done = finish(database, operation, "failed", Some(error.message))?;
-                    emit_terminal(app, &done);
+                    emit_terminal(app, database, &done);
                     return Ok(());
                 }
                 Execution::Cancelled {} => {
@@ -1855,12 +2118,12 @@ fn run_worker(
                         "cancelled",
                         Some("Provider cancelled image generation".into()),
                     )?;
-                    emit_terminal(app, &done);
+                    emit_terminal(app, database, &done);
                     return Ok(());
                 }
                 Execution::Unknown { .. } => {
-                    attention(database,operation,"Provider outcome is unknown; inspect this operation instead of retrying generation")?;
-                    progress(app, database, operation);
+                    let done = settle_unknown(database, operation, PROVIDER_UNKNOWN)?;
+                    emit_terminal(app, database, &done);
                     return Ok(());
                 }
                 _ => {}
@@ -1893,7 +2156,7 @@ fn run_worker(
                 progress(app, database, operation)
             }
             Err(AppError::Service { code, .. }) if code == "recovery_stopped" => {
-                attention(database,operation,"Automatic recovery was stopped; retained operation requires explicit resolution")?;
+                settle_unknown(database, operation, RECOVERY_STOPPED)?;
                 progress(app, database, operation);
                 return Ok(());
             }
@@ -2064,13 +2327,23 @@ async fn start_with_deadline(
     .map_err(|_| invalid("Image admission worker stopped; inspect the original operation"))?
 }
 pub(crate) fn resume(app: EventEmitter) -> Result<(), AppError> {
-    let database = database_path()?;
+    resume_with(database_path()?, app, || Arc::new(NativeHost))
+}
+fn resume_with(
+    database: PathBuf,
+    app: EventEmitter,
+    host: impl Fn() -> Arc<dyn ImageHost> + Send + Sync + 'static,
+) -> Result<(), AppError> {
+    let host = Arc::new(host);
     let links = links_at(&connection_at(&database)?)?;
     let recovering: Vec<_> = links
         .into_iter()
         .filter(|l| !terminal(&l.phase) || l.preparation_release_pending)
         .collect();
-    if recovering.len() > MAX_LIVE {
+    // Terminal unknown outcomes and published `ack_pending` links hold no
+    // unfinished paid work (see `holds_live_work`); only those that do are
+    // bounded. Every recovering link is still scheduled.
+    if recovering.iter().filter(|l| holds_live_work(l)).count() > MAX_LIVE {
         return Err(invalid(
             "Too many retained image operations; resolve existing recovery first",
         ));
@@ -2083,6 +2356,7 @@ pub(crate) fn resume(app: EventEmitter) -> Result<(), AppError> {
         let app = app.clone();
         let control = crate::plugin_job::JobControl::new();
         let job = job_owner(control.clone());
+        let host = host.clone();
         tokio::spawn(async move {
             let permit =
                 match tokio::time::timeout(Duration::from_secs(5), slots().acquire_owned()).await {
@@ -2101,7 +2375,7 @@ pub(crate) fn resume(app: EventEmitter) -> Result<(), AppError> {
                         return;
                     }
                 };
-            let host: Arc<dyn ImageHost> = Arc::new(NativeHost);
+            let host = host();
             let _ = tokio::task::spawn_blocking(move || {
                 worker_owned(
                     host,
@@ -2123,6 +2397,10 @@ pub(crate) fn resume(app: EventEmitter) -> Result<(), AppError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    thread_local! {
+        /// This thread's own heavy-IO slots and slot wait.
+        pub(super) static HEAVY_IO_SLOTS: std::cell::RefCell<Option<(Arc<tokio::sync::Semaphore>, Duration)>> = const { std::cell::RefCell::new(None) };
+    }
     const PNG: &[u8] = include_bytes!("../../test_support/fixtures/source32.png");
     #[derive(Default)]
     struct Behavior {
@@ -2141,6 +2419,9 @@ mod tests {
         /// Status reads that still report the provider's pre-seal
         /// `storage_unavailable` delivery before its sealing IO finishes.
         sealing_polls: Option<usize>,
+        /// The provider is unreachable after publication: status and
+        /// acknowledge fail without changing its receipt.
+        ack_down: bool,
     }
     #[derive(Default)]
     struct IoGate {
@@ -2185,7 +2466,6 @@ mod tests {
         output: ArtifactDescriptor,
         path: PathBuf,
         database: PathBuf,
-        proof: Mutex<Option<String>>,
         prepare_gate: Mutex<Option<Arc<std::sync::Barrier>>>,
         dimensions: (u32, u32),
         read_gate: Mutex<Option<Arc<IoGate>>>,
@@ -2208,7 +2488,6 @@ mod tests {
                 },
                 path,
                 database: database.into(),
-                proof: Mutex::new(None),
                 prepare_gate: Mutex::new(None),
                 dimensions: (32, 32),
                 read_gate: Mutex::new(None),
@@ -2378,6 +2657,9 @@ mod tests {
                 }
                 "status" | "cancel" => {
                     let mut behavior = self.behavior.lock().unwrap();
+                    if behavior.ack_down {
+                        return Err(invalid("Fixture provider is unreachable"));
+                    }
                     if action == "status" && behavior.stop_recovery {
                         return Err(AppError::Service {
                             code: "recovery_stopped".into(),
@@ -2424,7 +2706,6 @@ mod tests {
                     let target = Path::new(p["evidencePath"].as_str().unwrap());
                     assert_eq!(fs::read(target).unwrap(), fs::read(&self.path).unwrap());
                     let proof = format!("proof-{}", p["operationId"].as_str().unwrap());
-                    *self.proof.lock().unwrap() = Some(proof.clone());
                     let mut behavior = self.behavior.lock().unwrap();
                     if behavior.lost_acquired {
                         behavior.lost_acquired = false;
@@ -2433,21 +2714,25 @@ mod tests {
                     Ok(json!({"transferReceipt":proof}))
                 }
                 "acknowledge" => {
-                    let link =
-                        read_link(&self.database, p["operationId"].as_str().unwrap())?.unwrap();
+                    if self.behavior.lock().unwrap().ack_down {
+                        return Err(invalid("Fixture provider is unreachable"));
+                    }
+                    let op = p["operationId"].as_str().unwrap();
+                    let link = read_link(&self.database, op)?.unwrap();
                     assert!(link.transfer_receipt.is_some());
-                    assert_eq!(link.transfer_receipt, *self.proof.lock().unwrap());
+                    assert_eq!(link.transfer_receipt, Some(format!("proof-{op}")));
                     assert_eq!(p["transferReceipt"], json!(link.transfer_receipt));
-                    let mut state = self.state.lock().unwrap();
-                    let receipt = state.as_mut().unwrap();
-                    receipt.revision += 1;
-                    receipt.delivery = Delivery::Acquired {
-                        transfer_receipt: link.transfer_receipt.unwrap(),
+                    // One lock at a time: status holds `states` before `state`.
+                    let receipt = {
+                        let mut states = self.states.lock().unwrap();
+                        let receipt = states.get_mut(op).unwrap();
+                        receipt.revision += 1;
+                        receipt.delivery = Delivery::Acquired {
+                            transfer_receipt: link.transfer_receipt.unwrap(),
+                        };
+                        receipt.clone()
                     };
-                    self.states
-                        .lock()
-                        .unwrap()
-                        .insert(receipt.operation_id.clone(), receipt.clone());
+                    *self.state.lock().unwrap() = Some(receipt.clone());
                     let mut behavior = self.behavior.lock().unwrap();
                     if behavior.lost_ack {
                         behavior.lost_ack = false;
@@ -2525,6 +2810,8 @@ mod tests {
                 Polling {
                     interval: Duration::ZERO,
                     settlement: 2,
+                    local_attempts: 6,
+                    local_backoff: Duration::ZERO,
                 },
             )
             .is_err()
@@ -2665,13 +2952,16 @@ mod tests {
         f.host.behavior.lock().unwrap().lost_ack = true;
         f.accept(OP);
         f.run(OP, true);
-        assert_eq!(f.snapshot(OP)["status"], "uncertain");
+        // Publication never waited for the lost reply; the worker's own
+        // acknowledgement retry then reads the committed acquisition.
+        assert_eq!(f.snapshot(OP)["status"], "succeeded");
+        assert_eq!(f.snapshot(OP)["recoveryState"], "succeeded");
         f.run(OP, false);
         assert_eq!(f.snapshot(OP)["status"], "succeeded");
         assert_eq!(f.host.count("start"), 1);
         assert_eq!(f.host.count("host.artifacts.read"), 1);
         assert_eq!(f.host.count("host.artifacts.acquired"), 1);
-        assert_eq!(f.host.count("acknowledge"), 1);
+        assert_eq!(f.host.count("acknowledge"), 2);
     }
     #[test]
     fn unknown_or_malformed_provider_outcome_is_never_retryable_failure() {
@@ -3154,11 +3444,14 @@ mod tests {
         tokio::task::spawn_blocking(move || gate.wait())
             .await
             .unwrap();
-        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        // Publication precedes the provider acknowledgement, so wait for the
+        // acknowledged state. Heavy-IO contention from parallel tests is now
+        // retried by the worker, which can take longer than one slot wait.
+        let deadline = std::time::Instant::now() + Duration::from_secs(60);
         loop {
             if snapshot_at(&f.database, OP)
                 .unwrap()
-                .is_some_and(|s| s["status"] == "succeeded")
+                .is_some_and(|s| s["status"] == "succeeded" && s["recoveryState"] == "succeeded")
             {
                 break;
             }
@@ -3449,7 +3742,9 @@ mod tests {
             &f.app,
             Polling {
                 interval: Duration::ZERO,
-                settlement: 2
+                settlement: 2,
+                local_attempts: 6,
+                local_backoff: Duration::ZERO,
             }
         )
         .is_err());
@@ -3827,20 +4122,44 @@ mod tests {
         assert_eq!(f.snapshot(OP)["workerActive"], false);
     }
     #[test]
-    fn stopped_recovery_retains_attention_without_paid_replay_or_failure() {
+    fn stopped_recovery_settles_terminal_unknown_never_failed_without_paid_replay() {
         let f = Fixture::new();
-        f.accept(OP);
+        let link = f.accept(OP);
         claim_dispatch(&f.database, OP, true).unwrap();
         f.host.behavior.lock().unwrap().stop_recovery = true;
         f.run(OP, false);
+        let state = f.snapshot(OP);
+        assert_eq!(state["status"], "uncertain");
+        assert_eq!(state["recoveryState"], "needs_attention");
+        assert_eq!(state["outcomeUnknown"], true);
+        assert!(state["error"].as_str().unwrap().contains("could not be confirmed"));
+        assert!(state["error"].as_str().unwrap().contains("stopped"));
+        let (finished, details) = run_outcome(&f, link.run_id);
+        assert!(finished.is_some());
+        assert_eq!(details["outcome"], "unknown");
+        assert!(!f
+            .events
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|(n, _)| n == "openai-image-error"));
+        // Settled: later recovery neither polls nor dispatches it again.
+        f.host.behavior.lock().unwrap().stop_recovery = false;
+        f.run(OP, false);
         assert_eq!(f.snapshot(OP)["status"], "uncertain");
-        assert_eq!(f.snapshot(OP)["recoveryState"], "needs_attention");
         assert_eq!(f.host.count("status"), 1);
         assert_eq!(f.host.count("start"), 0);
-        assert!(f.snapshot(OP)["error"]
-            .as_str()
+    }
+    fn run_outcome(f: &Fixture, run: i64) -> (Option<String>, Value) {
+        let (finished, details): (Option<String>, Option<String>) = connection_at(&f.database)
             .unwrap()
-            .contains("stopped"));
+            .query_row(
+                "SELECT finished_at,result_details FROM runs WHERE id=?1",
+                [run],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        (finished, details.map_or(Value::Null, |d| parse(&d).unwrap()))
     }
     #[test]
     fn editing_exact_unsaved_revision_inherits_its_permanent_folder_suggestion() {
@@ -4134,26 +4453,60 @@ mod tests {
         assert_eq!(f.snapshot(OP)["status"], "failed");
     }
     #[test]
-    fn unknown_unavailable_cancelled_successful_or_foreign_runs_are_not_retry_sources() {
+    fn unavailable_cancelled_successful_recovering_or_forged_runs_are_not_retry_sources() {
         let mut sources = vec![];
-        for outcome in ["unknown", "unavailable", "succeeded", "cancelled", "running"] {
+        for outcome in [
+            "unavailable",
+            "succeeded",
+            "cancelled",
+            "running",
+            "recovering",
+            "published awaiting acknowledgement",
+        ] {
             let f = Fixture::new();
             {
                 let mut b = f.host.behavior.lock().unwrap();
-                b.unknown = outcome == "unknown";
                 b.unavailable = outcome == "unavailable";
+                b.ack_down = outcome == "published awaiting acknowledgement";
             }
             let link = f.accept(OP);
             if outcome == "cancelled" {
                 cancel_at(&f.database, OP).unwrap();
             }
-            if outcome == "running" {
-                claim_dispatch(&f.database, OP, true).unwrap();
-            } else {
-                f.run(OP, true);
+            match outcome {
+                "running" => {
+                    claim_dispatch(&f.database, OP, true).unwrap();
+                }
+                // Trace-internal needs-attention stays recoverable, not retryable.
+                "recovering" => f.run(OP, false),
+                _ => f.run(OP, true),
             }
             sources.push((outcome, f, link.run_id));
         }
+        // Forged unknown markers without the linked terminal settlement.
+        let f = Fixture::new();
+        let link = f.accept(OP);
+        f.run(OP, false);
+        connection_at(&f.database).unwrap().execute("UPDATE runs SET result_details=?2,finished_at='2026-10-10T00:00:00Z' WHERE id=?1",params![link.run_id,json!({"outcome":"unknown"}).to_string()]).unwrap();
+        sources.push(("unknown marker on a recoverable link", f, link.run_id));
+        let f = Fixture::new();
+        let legacy = begin_operation_at(
+            &f.database,
+            OperationStart {
+                operation: "openai.image.generate".into(),
+                parameters: json!({"prompt":"Legacy"}),
+                inputs: vec![],
+            },
+        )
+        .unwrap();
+        connection_at(&f.database).unwrap().execute("UPDATE runs SET status='uncertain',result_details=?2 WHERE id=?1",params![legacy,json!({"outcome":"unknown"}).to_string()]).unwrap();
+        sources.push(("unlinked unknown marker", f, legacy));
+        let f = Fixture::new();
+        f.host.behavior.lock().unwrap().unknown = true;
+        let link = f.accept(OP);
+        f.run(OP, true);
+        connection_at(&f.database).unwrap().execute("UPDATE runs SET result_details=?2 WHERE id=?1",params![link.run_id,json!({"provider_execution":{"state":"unknown"}}).to_string()]).unwrap();
+        sources.push(("unknown without its settlement marker", f, link.run_id));
         let f = Fixture::new();
         let crop = begin_operation_at(
             &f.database,
@@ -4235,6 +4588,274 @@ mod tests {
         )
         .unwrap();
         assert_eq!(run_parameters(&f, retry.link.run_id)["retry_of"], json!(legacy));
+    }
+    fn accept_job(f: &Fixture, op: &str, job: u64, request: ImageRequest) -> Result<Acceptance, AppError> {
+        accept_with(
+            f.host.as_ref(),
+            &f.database,
+            &f.generated,
+            request,
+            job,
+            op.into(),
+            &crate::plugin_job::JobControl::new(),
+            false,
+        )
+    }
+    fn artifact_rows(f: &Fixture, run: i64) -> i64 {
+        connection_at(&f.database)
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM artifacts WHERE generating_run=?1",
+                [run],
+                |r| r.get(0),
+            )
+            .unwrap()
+    }
+    fn event_count(f: &Fixture, name: &str) -> usize {
+        f.events.lock().unwrap().iter().filter(|(n, _)| n == name).count()
+    }
+    async fn wait_snapshot(f: &Fixture, operations: &[String], done: impl Fn(&Value) -> bool) {
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while !operations
+            .iter()
+            .all(|op| snapshot_at(&f.database, op).unwrap().is_some_and(|v| done(&v)))
+        {
+            assert!(Instant::now() < deadline, "Recovery did not settle");
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn provider_unknown_outcomes_are_terminal_and_never_block_admission_or_resume() {
+        let f = Fixture::new();
+        f.host.behavior.lock().unwrap().unknown = true;
+        let operations: Vec<String> = (0..=MAX_LIVE).map(|i| format!("{:032x}", i + 0x500)).collect();
+        for (index, op) in operations.iter().enumerate() {
+            // The 17th admission succeeds after 16 provider-unknown outcomes.
+            let link = accept_job(&f, op, index as u64 + 9, request()).unwrap().link;
+            f.run(op, true);
+            let state = f.snapshot(op);
+            assert_eq!(state["status"], "uncertain", "{op}");
+            assert_eq!(state["recoveryState"], "needs_attention", "{op}");
+            assert_eq!(state["outcomeUnknown"], true, "{op}");
+            assert_eq!(state["providerExecution"]["state"], "unknown", "{op}");
+            assert!(state["error"].as_str().unwrap().contains("could not be confirmed"));
+            let (finished, details) = run_outcome(&f, link.run_id);
+            assert!(finished.is_some(), "{op}");
+            assert_eq!(details["outcome"], "unknown");
+            assert_eq!(details["provider_execution"]["state"], "unknown");
+        }
+        assert_eq!(f.host.count("start"), MAX_LIVE + 1);
+        assert_eq!(event_count(&f, "openai-image-error"), 0);
+        // A published link awaiting acknowledgement is scheduled alongside
+        // more than 16 terminal unknown links.
+        f.host.behavior.lock().unwrap().unknown = false;
+        f.host.behavior.lock().unwrap().ack_down = true;
+        let pending = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_owned();
+        accept_job(&f, &pending, 99, request()).unwrap();
+        f.run(&pending, true);
+        assert_eq!(f.snapshot(&pending)["recoveryState"], "ack_pending");
+        f.host.behavior.lock().unwrap().ack_down = false;
+        let status = f.host.count("status");
+        let host: Arc<dyn ImageHost> = f.host.clone();
+        resume_with(f.database.clone(), f.app.clone(), move || host.clone()).unwrap();
+        wait_snapshot(&f, std::slice::from_ref(&pending), |v| {
+            v["recoveryState"] == "succeeded" && v["workerActive"] == false
+        })
+        .await;
+        assert_eq!(f.host.count("status"), status + 1);
+        assert_eq!(f.host.count("start"), MAX_LIVE + 2);
+        for op in &operations {
+            assert_eq!(f.snapshot(op)["outcomeUnknown"], true);
+        }
+    }
+    #[test]
+    fn retrying_an_unconfirmed_outcome_is_a_new_operation_with_durable_lineage() {
+        for stopped in [false, true] {
+            let f = Fixture::new();
+            let source = f.accept(OP);
+            if stopped {
+                claim_dispatch(&f.database, OP, true).unwrap();
+                f.host.behavior.lock().unwrap().stop_recovery = true;
+                f.run(OP, false);
+            } else {
+                f.host.behavior.lock().unwrap().unknown = true;
+                f.run(OP, true);
+            }
+            assert_eq!(f.snapshot(OP)["outcomeUnknown"], true);
+            let starts = f.host.count("start");
+            {
+                let mut b = f.host.behavior.lock().unwrap();
+                b.unknown = false;
+                b.stop_recovery = false;
+            }
+            let retry_op = "55555555555555555555555555555555";
+            let retry = accept_job(&f, retry_op, 10, retry_of(source.run_id)).unwrap();
+            assert!(retry.fresh);
+            assert_ne!(retry.link.run_id, source.run_id);
+            f.run(retry_op, true);
+            assert_eq!(f.snapshot(retry_op)["status"], "succeeded");
+            assert_eq!(f.host.count("start"), starts + 1);
+            assert!(f.host.states.lock().unwrap().contains_key(retry_op));
+            let lineage = run_parameters(&f, retry.link.run_id);
+            assert_eq!(lineage["retry_of"], json!(source.run_id));
+            assert_eq!(lineage["operation_id"], retry_op);
+            // The source keeps its unconfirmed outcome and evidence.
+            assert_eq!(f.snapshot(OP)["status"], "uncertain");
+            assert_eq!(f.snapshot(OP)["outcomeUnknown"], true);
+            assert_eq!(run_parameters(&f, source.run_id)["operation_id"], OP);
+        }
+    }
+    #[test]
+    fn provider_acknowledgement_failure_never_delays_or_regresses_publication() {
+        let f = Fixture::new();
+        f.host.behavior.lock().unwrap().ack_down = true;
+        let operations: Vec<String> = (0..MAX_LIVE).map(|i| format!("{:032x}", i + 0x700)).collect();
+        let mut links = vec![];
+        for (index, op) in operations.iter().enumerate() {
+            let link = accept_job(&f, op, index as u64 + 9, request()).unwrap().link;
+            f.run(op, true);
+            let state = f.snapshot(op);
+            assert_eq!(state["status"], "succeeded", "{op}");
+            assert_eq!(state["outputPath"], json!(link.target), "{op}");
+            assert_eq!(state["recoveryState"], "ack_pending", "{op}");
+            assert_eq!(state["error"], Value::Null);
+            assert_eq!(fs::read(&link.target).unwrap(), PNG);
+            assert_eq!(artifact_rows(&f, link.run_id), 1);
+            links.push(link);
+        }
+        assert_eq!(event_count(&f, "openai-image-complete"), MAX_LIVE);
+        assert_eq!(event_count(&f, "openai-image-error"), 0);
+        assert!(f.host.count("acknowledge") >= MAX_LIVE);
+        // Published links awaiting acknowledgement hold no paid work, so a
+        // 17th admission is still accepted.
+        let extra = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+        assert!(accept_job(&f, extra, 99, request()).unwrap().fresh);
+        f.host.behavior.lock().unwrap().ack_down = false;
+        // The recovery worker `resume` runs for each retained link (resume
+        // itself is exercised with the global worker slots elsewhere).
+        for op in &operations {
+            f.run(op, false);
+        }
+        for link in &links {
+            let state = f.snapshot(&link.operation_id);
+            assert_eq!(state["recoveryState"], "succeeded");
+            assert_eq!(state["status"], "succeeded");
+            assert_eq!(state["outputPath"], json!(link.target));
+            assert_eq!(artifact_rows(&f, link.run_id), 1);
+        }
+        assert_eq!(f.host.count("start"), MAX_LIVE);
+        assert_eq!(f.host.count("host.artifacts.acquired"), MAX_LIVE);
+        assert_eq!(f.host.count("host.artifacts.read"), MAX_LIVE);
+        // Success was announced once, at publication; nothing claimed failure.
+        assert_eq!(event_count(&f, "openai-image-complete"), MAX_LIVE);
+        assert_eq!(event_count(&f, "openai-image-error"), 0);
+    }
+    #[test]
+    fn held_heavy_io_slots_are_retried_in_the_worker_instead_of_parking_success() {
+        let mut f = Fixture::new();
+        // This thread's own slots: holding them cannot starve parallel tests.
+        let slots = Arc::new(tokio::sync::Semaphore::new(4));
+        HEAVY_IO_SLOTS.with(|own| *own.borrow_mut() = Some((slots.clone(), Duration::from_millis(20))));
+        let held = Arc::new(Mutex::new(Some(slots.try_acquire_many_owned(4).unwrap())));
+        let release = held.clone();
+        let sink = f.events.clone();
+        // The worker announces a local retry as progress; only then are the
+        // held slots released, so the first attempt deterministically failed.
+        f.app = EventEmitter::isolated(move |name, value| {
+            if name == "openai-image-progress" {
+                release.lock().unwrap().take();
+            }
+            sink.lock().unwrap().push((name.into(), value));
+            Ok(())
+        });
+        let link = f.accept(OP);
+        f.run(OP, true);
+        HEAVY_IO_SLOTS.with(|own| own.borrow_mut().take());
+        assert!(held.lock().unwrap().is_none(), "the held slots never caused a retry");
+        let state = f.snapshot(OP);
+        assert_eq!(state["status"], "succeeded");
+        assert_eq!(state["recoveryState"], "succeeded");
+        assert_eq!(fs::read(&link.target).unwrap(), PNG);
+        assert_eq!(f.host.count("start"), 1);
+        assert_eq!(f.host.count("host.artifacts.read"), 1);
+        assert_eq!(f.host.count("host.artifacts.acquired"), 1);
+        assert_eq!(event_count(&f, "openai-image-complete"), 1);
+    }
+    #[test]
+    fn only_local_contention_is_retried_and_retries_are_bounded() {
+        let root = crate::test_support::tempdir().unwrap();
+        let path = root.path().join("busy.sqlite");
+        let holder = Connection::open(&path).unwrap();
+        holder
+            .execute_batch("CREATE TABLE t(x); BEGIN IMMEDIATE; INSERT INTO t VALUES(1);")
+            .unwrap();
+        let writer = Connection::open(&path).unwrap();
+        writer.busy_timeout(Duration::ZERO).unwrap();
+        let busy = sql(writer.execute("INSERT INTO t VALUES(2)", []).unwrap_err());
+        assert!(transient_local(&busy), "{busy}");
+        let polling = Polling {
+            local_backoff: Duration::ZERO,
+            ..Polling::default()
+        };
+        let control = crate::plugin_job::JobControl::new();
+        let mut calls = 0;
+        let mut retried = 0;
+        let value = retry_local(&control, polling, || retried += 1, || {
+            calls += 1;
+            if calls < 3 {
+                Err(sql(writer.execute("INSERT INTO t VALUES(2)", []).unwrap_err()))
+            } else {
+                Ok(calls)
+            }
+        });
+        assert_eq!(value.unwrap(), 3);
+        assert_eq!(retried, 2);
+        for permanent in [
+            invalid("Sealed image bytes do not match their descriptor"),
+            AppError::Service {
+                code: "recovery_stopped".into(),
+                message: "stopped".into(),
+            },
+            AppError::Io(std::io::Error::other("disk")),
+        ] {
+            let mut calls = 0;
+            assert!(retry_local(&control, polling, || {}, || {
+                calls += 1;
+                Err::<(), _>(clone_error(&permanent))
+            })
+            .is_err());
+            assert_eq!(calls, 1, "{permanent}");
+        }
+        let mut calls = 0;
+        assert!(retry_local(&control, polling, || {}, || {
+            calls += 1;
+            Err::<(), _>(AppError::Service {
+                code: LOCAL_BUSY.into(),
+                message: "busy".into(),
+            })
+        })
+        .is_err());
+        assert_eq!(calls, polling.local_attempts + 1);
+        // Shutdown ends retries at once.
+        control.cancel();
+        let mut calls = 0;
+        assert!(retry_local(&control, polling, || {}, || {
+            calls += 1;
+            Err::<(), _>(clone_error(&busy))
+        })
+        .is_err());
+        assert_eq!(calls, 1);
+        drop(holder);
+    }
+    fn clone_error(error: &AppError) -> AppError {
+        match error {
+            AppError::Service { code, message } => AppError::Service {
+                code: code.clone(),
+                message: message.clone(),
+            },
+            AppError::Io(e) => AppError::Io(std::io::Error::new(e.kind(), e.to_string())),
+            other => AppError::Other(other.to_string()),
+        }
     }
     /// A directory link: a symlink on Unix, a junction on Windows (which needs
     /// no privilege, unlike a Windows symlink).
