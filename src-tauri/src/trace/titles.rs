@@ -48,8 +48,19 @@ pub(crate) struct PromptTitle {
     fingerprint: String,
 }
 
+/// Models often wrap a title in one matching pair of quotes; strip exactly one.
+fn unquote(text: &str) -> &str {
+    let mut chars = text.chars();
+    match (chars.next(), chars.next_back()) {
+        (Some('"'), Some('"'))
+        | (Some('\''), Some('\''))
+        | (Some('\u{201c}'), Some('\u{201d}'))
+        | (Some('\u{ab}'), Some('\u{bb}')) => chars.as_str().trim(),
+        _ => text,
+    }
+}
 fn validate_title(text: &str) -> Result<String, AppError> {
-    let text = text.trim();
+    let text = unquote(text.trim());
     if text.is_empty()
         || text.chars().count() > 120
         || text.chars().any(char::is_control)
@@ -152,6 +163,37 @@ mod tests {
         }
     }
     #[test]
+    fn strips_one_matching_pair_of_surrounding_quotes() {
+        for (wrapped, title) in [
+            ("\"Moonlit forest\"", "Moonlit forest"),
+            ("'Moonlit forest'", "Moonlit forest"),
+            ("\u{201c}Moonlit forest\u{201d}", "Moonlit forest"),
+            ("\u{ab}Moonlit forest\u{bb}", "Moonlit forest"),
+            ("  \"Moonlit forest\"  ", "Moonlit forest"),
+            ("\"He said \"hi\" twice\"", "He said \"hi\" twice"),
+            ("Dog's \"best\" day", "Dog's \"best\" day"),
+        ] {
+            assert_eq!(validate_title(wrapped).unwrap(), title, "{wrapped}");
+        }
+    }
+    #[test]
+    fn still_rejects_unbalanced_nested_or_empty_quoting() {
+        for text in [
+            "\"cat",
+            "cat\"",
+            "\"cat'",
+            "'cat\"",
+            "\"\"",
+            "\"  \"",
+            "\"\"cat\"\"",
+            "\"{\\\"title\\\":1}\"",
+            "\"two\nlines\"",
+            &format!("\"{}\"", "x".repeat(121)),
+        ] {
+            assert!(validate_title(text).is_err(), "{text}");
+        }
+    }
+    #[test]
     fn rejects_malformed_output_instead_of_truncating_it() {
         for text in [
             "",
@@ -161,7 +203,6 @@ mod tests {
             "{\"title\":\"cat\"}",
             "```cat```",
             "<think>reasoning</think>",
-            "\"cat\"",
             &"x".repeat(121),
         ] {
             assert!(validate_title(text).is_err(), "{text}");

@@ -150,6 +150,40 @@ fn managed_target(database: &Path, target: &Path) -> Result<(), AppError> {
     }
     Ok(())
 }
+/// Rebases a live operation's stored destination onto this profile's managed
+/// `generated` directory by its two trailing components, then validates it.
+/// Terminal links publish through runs/artifacts, so their stored destination
+/// is history and never fails on where the profile used to live.
+fn scoped_target(database: &Path, link: &mut Link) -> Result<(), AppError> {
+    if terminal(&link.phase) {
+        return Ok(());
+    }
+    let mut parts = link.target.components().rev();
+    let (
+        Some(std::path::Component::Normal(file)),
+        Some(std::path::Component::Normal(dir)),
+        Some(std::path::Component::Normal(root)),
+    ) = (parts.next(), parts.next(), parts.next())
+    else {
+        return Err(invalid(
+            "Image journal destination is not a native managed output",
+        ));
+    };
+    if root != "generated" {
+        return Err(invalid(
+            "Image journal destination is outside its managed storage",
+        ));
+    }
+    let rebased = database
+        .parent()
+        .ok_or_else(|| invalid("Image journal has no profile root"))?
+        .join("generated")
+        .join(dir)
+        .join(file);
+    managed_target(database, &rebased)?;
+    link.target = rebased;
+    Ok(())
+}
 type LinkRow = (String, i64, i64, String, String);
 fn row_at(row: &rusqlite::Row<'_>) -> rusqlite::Result<LinkRow> {
     Ok((
@@ -161,10 +195,24 @@ fn row_at(row: &rusqlite::Row<'_>) -> rusqlite::Result<LinkRow> {
     ))
 }
 fn checked_link(connection: &Connection, database: &Path, row: LinkRow) -> Result<Link, AppError> {
+    checked_link_with(connection, database, row, false)
+}
+/// `lenient_target` keeps a row with an invalid live destination in a list so
+/// one bad row cannot fail every operation; operating on that row still fails.
+fn checked_link_with(
+    connection: &Connection,
+    database: &Path,
+    row: LinkRow,
+    lenient_target: bool,
+) -> Result<Link, AppError> {
     let (operation, run, job, digest, raw) = row;
-    let link: Link = parse(&raw)?;
+    let mut link: Link = parse(&raw)?;
     validate_link(&link)?;
-    managed_target(database, &link.target)?;
+    if let Err(error) = scoped_target(database, &mut link) {
+        if !lenient_target {
+            return Err(error);
+        }
+    }
     if link.operation_id != operation
         || link.run_id != run
         || i64::try_from(link.job_id).ok() != Some(job)
@@ -233,7 +281,12 @@ fn links_at(connection: &Connection) -> Result<Vec<Link>, AppError> {
             .filter(|p| !p.is_empty())
             .map(Path::new)
             .ok_or_else(|| invalid("Image journal requires its native database owner"))?;
-        links.push(checked_link(connection, database, row.map_err(sql)?)?);
+        links.push(checked_link_with(
+            connection,
+            database,
+            row.map_err(sql)?,
+            true,
+        )?);
     }
     Ok(links)
 }
@@ -323,7 +376,9 @@ fn update(
             .ok_or_else(|| invalid("Image state revision overflow"))?;
     }
     validate_link(&link)?;
-    managed_target(database, &link.target)?;
+    if !terminal(&link.phase) {
+        managed_target(database, &link.target)?;
+    }
     if identity
         != (
             link.operation_id.clone(),
@@ -347,6 +402,22 @@ fn cancelled_at(connection: &Connection, operation: &str) -> Result<bool, AppErr
         )
         .map_err(sql)
 }
+/// Admission refused an operation because of its cancellation intent. The
+/// refusal consumes the intent so refused operations never accumulate them.
+fn refuse_cancelled(database: &Path, operation: &str) -> AppError {
+    let consumed = connection_at(database).and_then(|c| {
+        c.execute(
+            "DELETE FROM image_service_cancellations WHERE operation_id=?1",
+            [operation],
+        )
+        .map_err(sql)
+    });
+    match consumed {
+        Ok(_) => invalid("Image operation cancelled before acceptance"),
+        Err(error) => error,
+    }
+}
+const MAX_CANCELLATION_INTENTS: i64 = 128;
 fn cancel_at(database: &Path, operation: &str) -> Result<(), AppError> {
     if !te_image_generation_contract::valid_operation_id(operation) {
         return Err(invalid("Invalid image operation ID"));
@@ -363,8 +434,14 @@ fn cancel_at(database: &Path, operation: &str) -> Result<(), AppError> {
         )
         .map_err(sql)?;
     let pending:i64=tx.query_row("SELECT COUNT(*) FROM image_service_cancellations c WHERE NOT EXISTS(SELECT 1 FROM image_service_operations o WHERE o.operation_id=c.operation_id)",[],|r|r.get(0)).map_err(sql)?;
-    if !accepted && !cancelled_at(&tx, operation)? && pending >= 128 {
-        return Err(invalid("Too many pending image cancellation intents"));
+    if !accepted && !cancelled_at(&tx, operation)? && pending >= MAX_CANCELLATION_INTENTS {
+        // Bound storage by expiring the oldest unmatched intents (insertion
+        // order) rather than refusing a new Cancel after a lifetime count.
+        tx.execute(
+            "DELETE FROM image_service_cancellations WHERE rowid IN (SELECT c.rowid FROM image_service_cancellations c WHERE NOT EXISTS(SELECT 1 FROM image_service_operations o WHERE o.operation_id=c.operation_id) ORDER BY c.rowid LIMIT ?1)",
+            [pending - MAX_CANCELLATION_INTENTS + 1],
+        )
+        .map_err(sql)?;
     }
     tx.execute(
         "INSERT OR IGNORE INTO image_service_cancellations(operation_id)VALUES(?1)",
@@ -379,10 +456,7 @@ pub(crate) fn cancel_operation(operation: &str) -> Result<(), AppError> {
 }
 fn snapshot_at(database: &Path, operation: &str) -> Result<Option<Value>, AppError> {
     let connection = connection_at(database)?;
-    let Some(link) = links_at(&connection)?
-        .into_iter()
-        .find(|l| l.operation_id == operation)
-    else {
+    let Some(link) = load_link(&connection, database, operation)? else {
         return Ok(None);
     };
     let state: String = connection
@@ -663,11 +737,30 @@ fn sync_regular(path: &Path) -> Result<(), AppError> {
         Ok(te_plugin_runtime::durable_dir::sync_file(path)?)
     }
 }
+/// Directories whose entries this operation changed. `path` itself always;
+/// when it lies under a managed `generated` directory, also each directory
+/// created on the way down, up to the profile root that holds `generated`
+/// (which already existed). Ancestors beyond that never change and may be
+/// unreadable (`--x`), so they are not opened.
+#[cfg_attr(not(unix), allow(dead_code))]
+fn directories_to_sync(path: &Path) -> Vec<&Path> {
+    let mut chain = vec![];
+    for ancestor in path.ancestors() {
+        chain.push(ancestor);
+        if ancestor.file_name().is_some_and(|n| n == "generated") {
+            if let Some(root) = ancestor.parent() {
+                chain.push(root);
+            }
+            return chain;
+        }
+    }
+    vec![path]
+}
 fn sync_ancestors(path: &Path) -> Result<(), AppError> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
-        for ancestor in path.ancestors() {
+        for ancestor in directories_to_sync(path) {
             let fd = OpenOptions::new()
                 .read(true)
                 .custom_flags(libc::O_NOFOLLOW | libc::O_DIRECTORY | libc::O_NONBLOCK)
@@ -801,7 +894,7 @@ fn accept_with_deadline(
     }
     check()?;
     if cancelled_at(&connection_at(database)?, &operation)? {
-        return Err(invalid("Image operation cancelled before acceptance"));
+        return Err(refuse_cancelled(database, &operation));
     }
     let availability = host_image::describe(host)?;
     if !availability.available {
@@ -981,7 +1074,7 @@ fn accept_with_deadline(
                 ));
             }
             if cancelled_at(&connection_at(database)?, &operation)? {
-                return Err(invalid("Image operation cancelled before acceptance"));
+                return Err(refuse_cancelled(database, &operation));
             }
             let accepted = jobs::accept_at_with_link(
                 database,
@@ -2579,6 +2672,164 @@ mod tests {
         assert_eq!(f.host.count("cancel"), 0);
         assert_eq!(f.host.count("host.artifacts.release"), 1);
     }
+    fn copy_tree(from: &Path, to: &Path) {
+        fs::create_dir_all(to).unwrap();
+        for entry in fs::read_dir(from).unwrap() {
+            let entry = entry.unwrap();
+            let target = to.join(entry.file_name());
+            if entry.file_type().unwrap().is_dir() {
+                copy_tree(&entry.path(), &target);
+            } else {
+                fs::copy(entry.path(), target).unwrap();
+            }
+        }
+    }
+    #[test]
+    fn moved_profile_keeps_history_and_activation_working_and_rebases_live_targets() {
+        let f = Fixture::new();
+        let done = "22222222222222222222222222222222";
+        let old_done = f.accept(done);
+        f.run(done, true);
+        assert_eq!(f.snapshot(done)["status"], "succeeded");
+        let live = f.accept(OP);
+        let moved = crate::test_support::tempdir().unwrap();
+        let new_root = moved.path().join("renamed-user/profile");
+        copy_tree(f._root.path(), &new_root);
+        fs::remove_dir_all(f._root.path()).unwrap();
+        let database = new_root.join("trace.sqlite");
+        let connection = connection_at(&database).unwrap();
+        let protected = protected_runs(&connection).unwrap();
+        assert!(protected.contains(&live.run_id) && protected.contains(&old_done.run_id));
+        super::super::reconcile_unfinished_at(&database).unwrap();
+        assert_eq!(
+            super::super::recent_image_runs_at(&database).unwrap().len(),
+            2
+        );
+        assert_eq!(
+            snapshot_at(&database, done).unwrap().unwrap()["status"],
+            "succeeded"
+        );
+        let rebased = read_link(&database, OP).unwrap().unwrap().target;
+        assert_eq!(
+            rebased,
+            new_root
+                .join("generated")
+                .join(live.target.parent().unwrap().file_name().unwrap())
+                .join(live.target.file_name().unwrap())
+        );
+    }
+    #[test]
+    fn one_invalid_live_target_fails_only_its_own_operation() {
+        let f = Fixture::new();
+        let other = "22222222222222222222222222222222";
+        f.accept(other);
+        let live = f.accept(OP);
+        let mut body: Value = serde_json::from_str(
+            &Connection::open(&f.database)
+                .unwrap()
+                .query_row(
+                    "SELECT body FROM image_service_operations WHERE operation_id=?1",
+                    [OP],
+                    |r| r.get::<_, String>(0),
+                )
+                .unwrap(),
+        )
+        .unwrap();
+        body["target"] = json!(f._root.path().join("elsewhere/x/output.png"));
+        Connection::open(&f.database)
+            .unwrap()
+            .execute(
+                "UPDATE image_service_operations SET body=?2 WHERE operation_id=?1",
+                params![OP, body.to_string()],
+            )
+            .unwrap();
+        let protected = protected_runs(&connection_at(&f.database).unwrap()).unwrap();
+        assert!(protected.contains(&live.run_id));
+        assert!(snapshot_at(&f.database, OP).is_err());
+        assert!(snapshot_at(&f.database, other).unwrap().is_some());
+    }
+    #[test]
+    fn unmatched_cancellation_intents_never_exhaust_cancel() {
+        let f = Fixture::new();
+        for n in 0..200u32 {
+            let op = format!("{:032x}", n + 100);
+            cancel_at(&f.database, &op).unwrap();
+            assert!(accept_with(
+                f.host.as_ref(),
+                &f.database,
+                &f.generated,
+                request(),
+                9,
+                op,
+                &crate::plugin_job::JobControl::new(),
+                false
+            )
+            .is_err());
+        }
+        // A refused admission consumes its intent instead of leaving it behind.
+        let left: i64 = connection_at(&f.database)
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM image_service_cancellations", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(left, 0);
+        f.accept(OP);
+        cancel_at(&f.database, OP).unwrap();
+        f.run(OP, true);
+        assert_eq!(f.snapshot(OP)["status"], "cancelled");
+        assert_eq!(f.host.count("start"), 0);
+    }
+    #[test]
+    fn unrefused_unmatched_cancellation_intents_stay_bounded_and_new_cancel_still_records() {
+        let f = Fixture::new();
+        for n in 0..300u32 {
+            cancel_at(&f.database, &format!("{:032x}", n + 100)).unwrap();
+        }
+        let stored: i64 = connection_at(&f.database)
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM image_service_cancellations",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(stored <= 128);
+        cancel_at(&f.database, OP).unwrap();
+        assert!(accept_with(
+            f.host.as_ref(),
+            &f.database,
+            &f.generated,
+            request(),
+            9,
+            OP.into(),
+            &crate::plugin_job::JobControl::new(),
+            false
+        )
+        .is_err());
+    }
+    #[test]
+    fn sync_set_covers_created_directories_and_stops_at_the_profile_root() {
+        let profile = Path::new("/home/u/profile");
+        let leaf = profile.join("generated/generation-a");
+        assert_eq!(
+            directories_to_sync(&leaf),
+            vec![leaf.as_path(), profile.join("generated").as_path(), profile]
+        );
+        let stage = leaf.join(".tauri-explorer-stage-x");
+        assert_eq!(directories_to_sync(&stage).len(), 4);
+        assert_eq!(directories_to_sync(profile), vec![profile]);
+    }
+    #[cfg(unix)]
+    #[test]
+    fn publication_sync_ignores_unreadable_traverse_only_ancestors() {
+        use std::os::unix::fs::PermissionsExt;
+        let outer = crate::test_support::tempdir().unwrap();
+        let leaf = outer.path().join("profile/generated/generation-a");
+        fs::create_dir_all(&leaf).unwrap();
+        fs::set_permissions(outer.path(), fs::Permissions::from_mode(0o311)).unwrap();
+        let result = sync_ancestors(&leaf);
+        fs::set_permissions(outer.path(), fs::Permissions::from_mode(0o755)).unwrap();
+        result.unwrap();
+    }
     #[test]
     fn preaccept_cancel_and_changed_same_id_request_perform_no_new_provider_work() {
         let f = Fixture::new();
@@ -3156,7 +3407,7 @@ mod tests {
         .is_err());
         assert!(!outside.exists());
         assert_eq!(f.host.calls.lock().unwrap().len(), calls);
-        assert!(protected_runs(&connection_at(&f.database).unwrap()).is_err());
+        assert!(protected_runs(&connection_at(&f.database).unwrap()).is_ok());
         assert!(status_at_raw(&f.database, OP).is_err());
     }
     fn status_at_raw(database: &Path, operation: &str) -> Result<Option<Value>, AppError> {
