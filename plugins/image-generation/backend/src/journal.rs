@@ -15,6 +15,7 @@ pub struct Journal {
     directory: PathBuf,
     fresh: bool,
     /// Fault injection for tests: `get` fails as a storage read error would.
+    #[cfg(feature = "test-hooks")]
     read_fault: std::sync::atomic::AtomicBool,
 }
 impl Journal {
@@ -59,6 +60,7 @@ impl Journal {
             connection: Mutex::new(connection),
             directory: directory.into(),
             fresh,
+            #[cfg(feature = "test-hooks")]
             read_fault: std::sync::atomic::AtomicBool::new(false),
         })
     }
@@ -124,6 +126,7 @@ impl Journal {
     }
     /// Test hook: while set, `get` fails with a storage error. Writes and the
     /// transactional paths are unaffected, as for a transient failed read.
+    #[cfg(feature = "test-hooks")]
     #[doc(hidden)]
     pub fn fail_reads_for_test(&self, on: bool) {
         self.read_fault
@@ -135,6 +138,7 @@ impl Journal {
         operation: &str,
         semantic: Option<&str>,
     ) -> Result<Option<OperationStatus>> {
+        #[cfg(feature = "test-hooks")]
         if self.read_fault.load(std::sync::atomic::Ordering::SeqCst) {
             return Err(error(
                 "storage_unavailable",

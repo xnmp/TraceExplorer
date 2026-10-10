@@ -3,6 +3,9 @@ name = "image-generation-backend"
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
+[features]
+# Test-only fault injection; enabled for tests by the self dev-dependency below.
+test-hooks = []
 [dependencies]
 te-plugin-runtime = { path = "../../../crates/plugin-runtime" }
 te-image-generation-contract = { path = "../../../crates/image-generation-contract" }
@@ -23,3 +26,5 @@ image = { version = "0.25", default-features = false, features = ["png", "jpeg",
 reqwest = { version = "0.13", default-features = false, features = ["rustls", "json", "multipart", "stream"] }
 futures-util = "0.3"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
+[dev-dependencies]
+image-generation-backend = { path = ".", features = ["test-hooks"] }

@@ -684,6 +684,7 @@ dependencies = [
  "getrandom 0.4.3",
  "hex",
  "image",
+ "image-generation-backend",
  "libc",
  "reqwest",
  "rusqlite",
