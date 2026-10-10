@@ -15,6 +15,7 @@ use std::{
 use te_image_generation_contract::{ArtifactDescriptor, EffectiveRecipe, ImageMetadata};
 mod codex;
 mod codex_executable;
+mod codex_prompt;
 mod codex_turn;
 mod http;
 pub struct Input {

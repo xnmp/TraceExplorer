@@ -17,10 +17,10 @@ enum ProcessStep {
 ///
 /// `login status` never starts an image turn, so any failure there is a
 /// definite non-execution: cancelled when requested, otherwise failed. During
-/// the image turn only host rejections that are proven to precede spawning
-/// stay definite; every other host error (including the host's own output
-/// limits, supervision or reader failures after spawn, and local
-/// cancellation) leaves the remote outcome unknown, so it is never retried.
+/// the image turn only the host's typed pre-spawn refusals stay definite; every
+/// other host error (`interrupted` after spawn, a legacy host's untyped
+/// `service_unavailable`, and local cancellation) leaves the remote outcome
+/// unknown, so it is never retried.
 fn process_failure(
     step: ProcessStep,
     failure: te_image_generation_contract::SafeError,
@@ -39,10 +39,7 @@ fn process_failure(
             ),
         ),
         ProcessStep::ImageTurn
-            if matches!(
-                failure.code.as_str(),
-                "capacity_reached" | "not_found" | "permission_denied"
-            ) =>
+            if te_plugin_runtime::process::proves_not_started(&failure.code) =>
         {
             failure
         }
@@ -63,11 +60,38 @@ fn run(
     host: &dyn Host,
     executable: &super::codex_executable::CodexExecutable,
     args: Vec<String>,
+    stdin: Option<String>,
     cwd: &Path,
     cancel: &AtomicBool,
 ) -> Result<ProcessOutput> {
     let login = args == ["login", "status"];
-    let result=host.call("host.process.run",json!({"program":executable.program,"args":args,"cwd":cwd,"env":[["PATH",executable.search_path.to_string_lossy()],["OPENAI_API_KEY",null],["CODEX_API_KEY",null],["CODEX_ACCESS_TOKEN",null]],"stdoutLimit":16*1024*1024,"stderrLimit":64*1024}),cancel)?;
+    let request = te_plugin_runtime::process::ProcessRequest {
+        program: executable.program.to_string_lossy().into_owned(),
+        args: args.clone(),
+        cwd: Some(cwd.to_string_lossy().into_owned()),
+        env: [
+            (
+                "PATH",
+                Some(executable.search_path.to_string_lossy().into_owned()),
+            ),
+            ("OPENAI_API_KEY", None),
+            ("CODEX_API_KEY", None),
+            ("CODEX_ACCESS_TOKEN", None),
+        ]
+        .map(|(key, value)| (key.to_owned(), value))
+        .to_vec(),
+        stdout_limit: 16 * 1024 * 1024,
+        stderr_limit: 64 * 1024,
+        stdin,
+    };
+    if !request.fits_frame() {
+        // Never sent, so nothing ran: a definite refusal on either step.
+        return Err(error(
+            "invalid_request",
+            "Codex request is too large for the host connection",
+        ));
+    }
+    let result = host.call("host.process.run", request.params(), cancel)?;
     let read = (|| {
         let exit_status = result["status"]
             .as_i64()
@@ -135,6 +159,7 @@ fn generate_at(
         host,
         executable,
         vec!["login".into(), "status".into()],
+        None,
         work.path(),
         cancel,
     )
@@ -202,13 +227,27 @@ fn generate_at(
         args.extend(["--image".into(), path.to_string_lossy().into_owned()]);
     }
     args.push("--".into());
-    args.push(
-        recipe
-            .agent_task
-            .clone()
-            .ok_or_else(|| error("invalid_request", "Missing prepared Codex task"))?,
-    );
-    let process = run(host, executable, args, work.path(), cancel).map_err(|failure| {
+    let task = recipe
+        .agent_task
+        .clone()
+        .ok_or_else(|| error("invalid_request", "Missing prepared Codex task"))?;
+    let stdin = match super::codex_prompt::prompt_transport(
+        &task,
+        host.process_stdin_bound(),
+        cfg!(windows),
+        &executable.program,
+        &args,
+    )? {
+        super::codex_prompt::PromptTransport::Stdin => {
+            args.push(super::codex_prompt::STDIN_PROMPT.into());
+            Some(task)
+        }
+        super::codex_prompt::PromptTransport::Argv => {
+            args.push(task);
+            None
+        }
+    };
+    let process = run(host, executable, args, stdin, work.path(), cancel).map_err(|failure| {
         process_failure(
             ProcessStep::ImageTurn,
             failure,
