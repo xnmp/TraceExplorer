@@ -909,6 +909,56 @@ async fn preflight_is_read_only_and_activation_has_one_process_owner() {
     let second = Service::new(directory.path(), host).unwrap();
     assert_eq!(second.activate().unwrap_err().code, "busy");
 }
+/// A storage read error after the provider proved success must not downgrade
+/// the paid result to unknown: the proof is committed by one transaction that
+/// needs no separate prior read.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn read_failure_after_proven_success_never_downgrades_it_to_unknown() {
+    let mut held = HeldServer::new();
+    let root = held.root.clone();
+    let directory = tempfile::tempdir().unwrap();
+    let service = Service::new(directory.path(), FakeHost::new()).unwrap();
+    service.activate().unwrap();
+    let config = service
+        .profiles
+        .save(configuration(&root), 0, None, None)
+        .unwrap();
+    let prepared = request(&config.profiles[0], vec![]);
+    let request = start(
+        prepared.clone(),
+        service.prepare(caller(), prepared).unwrap(),
+    );
+    service.start(caller(), request.clone(), false).unwrap();
+    tokio::task::block_in_place(|| held.wire.recv_timeout(Duration::from_secs(5)).unwrap());
+    // Journal reads fail from the moment the provider answers.
+    service.journal.fail_reads_for_test(true);
+    held.finish();
+    // Journal reads are down, so observe the durable receipt directly.
+    let db = rusqlite::Connection::open(directory.path().join("operations.sqlite")).unwrap();
+    let mut state = String::new();
+    for _ in 0..500 {
+        let status: String = db
+            .query_row(
+                "SELECT status FROM operations WHERE operation=?",
+                [&request.operation_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        state = serde_json::from_str::<Value>(&status).unwrap()["execution"]["state"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        if state != "running" && state != "accepted" {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    service.journal.fail_reads_for_test(false);
+    assert_eq!(state, "succeeded");
+    let status = terminal(&service, &request.operation_id).await;
+    assert!(matches!(status.execution, Execution::Succeeded { .. }));
+    assert_eq!(held.count.load(Ordering::SeqCst), 1);
+}
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn missing_and_restored_delivery_does_not_change_proven_execution() {
     let (root, _, _, server) = server(Duration::ZERO);

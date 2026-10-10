@@ -778,18 +778,12 @@ impl Service {
             }
         };
         let sha = hex::encode(Sha256::digest(&output.bytes));
-        // Readers keep seeing this running receipt until the seal outcome is
-        // committed below; the guard outlives that final write on every path.
-        let running = self
-            .journal
-            .get(&work.caller.package_id, &work.request.operation_id, None)?
-            .ok_or_else(|| invalid("Image receipt disappeared"))?;
-        let _unannounced =
-            self.hold_unannounced(&work.caller.package_id, &work.request.operation_id, running)?;
         // Commit proven execution before stage allocation: stage/lifecycle IO
         // can fail or outlive generation's deadline without erasing paid success.
         // A crash from here on recovers this proof, never a second generation.
-        self.journal.record_success(
+        // Readers keep seeing the replaced running receipt until the seal outcome
+        // is committed below; the guard outlives that final write on every path.
+        let _unannounced = self.record_unannounced_success(
             &work.caller.package_id,
             &work.request.operation_id,
             output.metadata.clone(),
@@ -864,18 +858,25 @@ impl Service {
             ),
         }
     }
-    /// Register a proven success as unannounced before its proof is committed.
-    fn hold_unannounced(
+    /// Commit a proven success while registering the receipt it replaced as the
+    /// still-visible one. The registry lock is taken before the journal's, as
+    /// `observe` does, and held across the commit, so a reader sees either the
+    /// replaced receipt or the committed seal outcome, never the interim proof.
+    /// The replaced receipt is read inside the commit's own transaction, so no
+    /// separate storage read can downgrade the proven success to unknown.
+    fn record_unannounced_success(
         self: &Arc<Self>,
         caller: &str,
         operation: &str,
-        visible: OperationStatus,
+        metadata: te_image_generation_contract::ImageMetadata,
+        sha256: &str,
     ) -> Result<Unannounced> {
         let identity: OperationKey = (caller.into(), operation.into());
-        self.unannounced
-            .lock()
-            .map_err(storage)?
-            .insert(identity.clone(), visible);
+        let mut unannounced = self.unannounced.lock().map_err(storage)?;
+        let (visible, _) = self
+            .journal
+            .record_success_observing(caller, operation, metadata, sha256)?;
+        unannounced.insert(identity.clone(), visible);
         Ok(Unannounced {
             service: self.clone(),
             identity,

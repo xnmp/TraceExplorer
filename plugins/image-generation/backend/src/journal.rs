@@ -14,6 +14,8 @@ pub struct Journal {
     connection: Mutex<Connection>,
     directory: PathBuf,
     fresh: bool,
+    /// Fault injection for tests: `get` fails as a storage read error would.
+    read_fault: std::sync::atomic::AtomicBool,
 }
 impl Journal {
     pub fn open(directory: &Path) -> Result<Self> {
@@ -57,6 +59,7 @@ impl Journal {
             connection: Mutex::new(connection),
             directory: directory.into(),
             fresh,
+            read_fault: std::sync::atomic::AtomicBool::new(false),
         })
     }
     pub fn activate(&self) -> Result<()> {
@@ -119,12 +122,25 @@ impl Journal {
         *self.connection.lock().map_err(storage)? = connection;
         Ok(())
     }
+    /// Test hook: while set, `get` fails with a storage error. Writes and the
+    /// transactional paths are unaffected, as for a transient failed read.
+    #[doc(hidden)]
+    pub fn fail_reads_for_test(&self, on: bool) {
+        self.read_fault
+            .store(on, std::sync::atomic::Ordering::SeqCst);
+    }
     pub fn get(
         &self,
         caller: &str,
         operation: &str,
         semantic: Option<&str>,
     ) -> Result<Option<OperationStatus>> {
+        if self.read_fault.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err(error(
+                "storage_unavailable",
+                "Injected journal read failure",
+            ));
+        }
         let connection = self.connection.lock().map_err(storage)?;
         load_receipt(&connection, caller, operation)?
             .map(|stored| {
@@ -475,8 +491,22 @@ impl Journal {
         metadata: te_image_generation_contract::ImageMetadata,
         sha256: &str,
     ) -> Result<OperationStatus> {
+        self.record_success_observing(caller, operation, metadata, sha256)
+            .map(|(_, status)| status)
+    }
+    /// `record_success`, also returning the receipt it replaced. That snapshot
+    /// and the conflict check are taken inside the one transaction that commits
+    /// the proof, so no separate storage read can fail between the provider's
+    /// proven success and its commit.
+    pub fn record_success_observing(
+        &self,
+        caller: &str,
+        operation: &str,
+        metadata: te_image_generation_contract::ImageMetadata,
+        sha256: &str,
+    ) -> Result<(OperationStatus, OperationStatus)> {
         let execution = Execution::Succeeded { metadata };
-        let status = self.finish(
+        let (prior, status, durable_sha) = self.finish_with_prior(
             caller,
             operation,
             execution.clone(),
@@ -484,16 +514,15 @@ impl Journal {
                 reason: "storage_unavailable".into(),
             },
             Some(sha256),
+            None,
         )?;
-        if status.execution != execution
-            || self.output_sha256(caller, operation)?.as_deref() != Some(sha256)
-        {
+        if status.execution != execution || durable_sha.as_deref() != Some(sha256) {
             return Err(error(
                 "operation_conflict",
                 "Successful output conflicts with durable execution proof",
             ));
         }
-        Ok(status)
+        Ok((prior, status))
     }
     pub fn seal_candidate(
         &self,
@@ -522,12 +551,29 @@ impl Journal {
         sha256: Option<&str>,
         candidate: Option<&te_image_generation_contract::ArtifactDescriptor>,
     ) -> Result<OperationStatus> {
+        self.finish_with_prior(caller, operation, execution, delivery, sha256, candidate)
+            .map(|(_, status, _)| status)
+    }
+    /// Returns the receipt as it was before this call, the receipt now, and the
+    /// durable output digest, all from one transaction.
+    fn finish_with_prior(
+        &self,
+        caller: &str,
+        operation: &str,
+        execution: Execution,
+        delivery: Delivery,
+        sha256: Option<&str>,
+        candidate: Option<&te_image_generation_contract::ArtifactDescriptor>,
+    ) -> Result<(OperationStatus, OperationStatus, Option<String>)> {
         let mut connection = self.connection.lock().map_err(storage)?;
         let transaction = connection.transaction().map_err(storage)?;
         let stored = load_receipt(&transaction, caller, operation)?
             .ok_or_else(|| error("not_found", "Unknown image operation"))?;
         let mut status = stored.status;
+        let prior = status.clone();
+        let mut durable_sha = stored.output_sha.clone();
         if status.execution == (Execution::Running {}) {
+            durable_sha = sha256.map(str::to_owned);
             status.execution = execution;
             status.delivery = delivery;
             status.revision += 1;
@@ -583,7 +629,7 @@ impl Journal {
         }
         load_receipt(&transaction, caller, operation)?;
         transaction.commit().map_err(storage)?;
-        Ok(status)
+        Ok((prior, status, durable_sha))
     }
 
     pub fn acknowledge(
