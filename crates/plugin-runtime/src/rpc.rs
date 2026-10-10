@@ -290,6 +290,175 @@ mod tests {
         assert_eq!(release["params"]["handle"], request["id"]);
     }
 
+    /// Plan §21.3 #5: process, text, artifact and service reverse requests share
+    /// one id space and one bounded ordinary lane. Cancelled and late replies
+    /// neither leak pending slots nor reach another waiter, and control and
+    /// completion requests stay admissible while every ordinary slot is held.
+    #[test]
+    fn mixed_kind_reverse_requests_with_cancelled_and_late_replies_stay_correlated_and_bounded() {
+        use std::sync::atomic::AtomicBool;
+        type Worker = std::thread::JoinHandle<Reply>;
+        let (sent, frames) = mpsc::channel::<Value>();
+        let client = Arc::new(HostRpcClient::new(move |frame| {
+            sent.send(frame).unwrap();
+            Ok(())
+        }));
+        let next = || frames.recv_timeout(Duration::from_secs(2)).unwrap();
+        let spawn = |method: &'static str, params: Value, cancel: Arc<AtomicBool>| -> Worker {
+            let client = client.clone();
+            std::thread::spawn(move || {
+                client.invoke(
+                    method,
+                    params,
+                    &|| cancel.load(Ordering::Acquire),
+                    None,
+                    (method == "host.process.run").then_some(("host.process.cancel", Value::Null)),
+                )
+            })
+        };
+        let kinds: [(&'static str, Value); 4] = [
+            ("host.process.run", json!({"program":"fixture"})),
+            ("host.text.generate", json!({"prompt":"fixture"})),
+            (
+                "host.artifacts.read",
+                json!({"artifact":{"handle":"fixture"}}),
+            ),
+            ("host.services.invoke", json!({"method":"start"})),
+        ];
+        let mut ids = std::collections::HashSet::new();
+        let mut unique = |frame: &Value| {
+            let id = frame["id"]
+                .as_str()
+                .expect("reverse request has a string id");
+            assert!(ids.insert(id.to_owned()), "reverse id {id} was reused");
+        };
+        // Fill the ordinary lane with every kind; some of each kind are cancelled.
+        let mut ordinary = vec![];
+        for index in 0..28 {
+            let (method, params) = kinds[index % 4].clone();
+            let cancel = Arc::new(AtomicBool::new(false));
+            let worker = spawn(method, params, cancel.clone());
+            let frame = next();
+            assert_eq!(frame["method"], method);
+            unique(&frame);
+            ordinary.push((frame, cancel, worker, (index / 4) % 2 == 1));
+        }
+        for (method, params) in kinds.clone() {
+            let probe = Some(Instant::now() + Duration::from_millis(200));
+            let refused = client.invoke(method, params, &|| false, probe, None);
+            assert!(
+                matches!(&refused, Err(AppError::Other(m)) if m.contains("capacity")),
+                "{method} was admitted beyond the ordinary bound"
+            );
+        }
+        // Control and completion lanes remain live while ordinary slots are full.
+        let mut priority = vec![];
+        for (method, params) in [
+            ("host.services.invoke", json!({"method":"status"})),
+            ("host.services.invoke", json!({"method":"cancel"})),
+            ("host.services.invoke", json!({"method":"acknowledge"})),
+            ("host.artifacts.stage", json!({})),
+            ("host.artifacts.seal", json!({})),
+            ("host.services.provider.update", json!({})),
+        ] {
+            let worker = spawn(method, params.clone(), Arc::new(AtomicBool::new(false)));
+            let frame = next();
+            assert_eq!(
+                (&frame["method"], &frame["params"]),
+                (&json!(method), &params)
+            );
+            unique(&frame);
+            priority.push((frame, worker));
+        }
+        for (frame, worker) in priority.into_iter().rev() {
+            assert!(client
+                .deliver(&json!({"jsonrpc":"2.0","id":frame["id"],"result":{"for":frame["id"]}})));
+            assert_eq!(worker.join().unwrap().unwrap(), json!({"for":frame["id"]}));
+        }
+        // Cancel half; owned process work announces cancellation of its own id.
+        let mut cancelled = vec![];
+        let mut live = vec![];
+        for (frame, cancel, worker, cancelled_here) in ordinary {
+            if cancelled_here {
+                cancel.store(true, Ordering::Release);
+                let failure = worker.join().unwrap().unwrap_err();
+                assert!(matches!(failure, AppError::Other(m) if m.contains("cancelled")));
+                if frame["method"] == "host.process.run" {
+                    let notice = next();
+                    unique(&notice);
+                    assert_eq!(notice["method"], "host.process.cancel");
+                    assert_eq!(notice["params"]["requestId"], frame["id"]);
+                }
+                cancelled.push(frame);
+            } else {
+                live.push((frame, worker));
+            }
+        }
+        // Cancellation alone frees exactly the cancelled slots, before any reply.
+        let mut filler = vec![];
+        for index in 0..cancelled.len() {
+            let (method, params) = kinds[index % 4].clone();
+            let worker = spawn(method, params, Arc::new(AtomicBool::new(false)));
+            let frame = next();
+            unique(&frame);
+            filler.push((frame, worker));
+        }
+        let probe = Some(Instant::now() + Duration::from_millis(200));
+        assert!(matches!(
+            client.invoke("host.artifacts.read", json!({}), &|| false, probe, None),
+            Err(AppError::Other(m)) if m.contains("capacity")
+        ));
+        // Late replies to cancelled work never reach a live waiter; a late
+        // process reply still releases its spooled output.
+        for frame in &cancelled {
+            let reply = if frame["method"] == "host.process.run" {
+                json!({"handle":frame["id"]})
+            } else {
+                json!({"late":frame["id"]})
+            };
+            assert!(client.deliver(&json!({"jsonrpc":"2.0","id":frame["id"],"result":reply})));
+            if frame["method"] == "host.process.run" {
+                let release = next();
+                assert_eq!(release["method"], "host.process.release");
+                assert_eq!(release["params"]["handle"], frame["id"]);
+                assert!(release.get("id").is_none());
+            }
+        }
+        // Live work is answered out of order; each waiter gets only its own reply,
+        // and a duplicate reply is absorbed without affecting anyone else.
+        for (frame, _) in live.iter().chain(&filler).rev() {
+            let reply = json!({"jsonrpc":"2.0","id":frame["id"],"result":{"for":frame["id"],"method":frame["method"]}});
+            assert!(client.deliver(&reply));
+            assert!(client.deliver(&reply));
+        }
+        for (frame, worker) in filler.into_iter().chain(live) {
+            assert_eq!(
+                worker.join().unwrap().unwrap(),
+                json!({"for":frame["id"],"method":frame["method"]})
+            );
+        }
+        assert!(frames.try_recv().is_err(), "unexpected extra reverse frame");
+        // Every cancelled, late or answered request released its slot: the full
+        // ordinary bound is available again, and still bounded.
+        let mut refill = vec![];
+        for index in 0..28 {
+            let (method, params) = kinds[index % 4].clone();
+            let worker = spawn(method, params, Arc::new(AtomicBool::new(false)));
+            let frame = next();
+            unique(&frame);
+            refill.push((frame, worker));
+        }
+        let probe = Some(Instant::now() + Duration::from_millis(200));
+        assert!(matches!(
+            client.invoke("host.text.generate", json!({}), &|| false, probe, None),
+            Err(AppError::Other(m)) if m.contains("capacity")
+        ));
+        for (frame, worker) in refill {
+            client.deliver(&json!({"jsonrpc":"2.0","id":frame["id"],"result":frame["id"]}));
+            assert_eq!(worker.join().unwrap().unwrap(), frame["id"]);
+        }
+    }
+
     #[test]
     fn saturated_configuration_reads_preserve_completion_and_cancellation_capacity() {
         let (sent, frames) = mpsc::channel();

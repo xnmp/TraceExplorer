@@ -242,7 +242,10 @@ fn start(request: PrepareRequest, preparation: Preparation) -> StartRequest {
 async fn terminal(service: &Service, operation: &str) -> OperationStatus {
     for _ in 0..300 {
         let status = service.status("test.consumer", operation).unwrap();
-        if !matches!(status.execution, Execution::Accepted {} | Execution::Running {}) {
+        if !matches!(
+            status.execution,
+            Execution::Accepted {} | Execution::Running {}
+        ) {
             service.wait_idle().await;
             return service.status("test.consumer", operation).unwrap();
         }
@@ -590,6 +593,153 @@ fn malformed_config_and_recipe_boundaries_fail_closed() {
         assert!(image_generation_backend::domain::root(root, false).is_err());
     }
 }
+/// Plan §14.1 "Profile validation": the provider's own store rejects an unknown
+/// transport, null/wrong-typed fields and duplicate profile IDs, whether they
+/// arrive from Settings, a migration import or a hand-edited document, and a
+/// rejection never writes, bumps the revision or resets to defaults.
+#[tokio::test]
+async fn unknown_transport_wrong_types_and_duplicate_ids_are_rejected_without_any_write() {
+    let directory = tempfile::tempdir().unwrap();
+    let host = FakeHost::new();
+    let service = Service::new(directory.path(), host.clone()).unwrap();
+    service.activate().unwrap();
+    let valid = || json!({"transport":"openai-images","id":"http","name":"Custom","recipeRevision":"","baseUrl":"https://custom.test/v1/images","defaultModel":"custom-image-model","allowInsecureHttp":false,"credential":{"kind":"none"}});
+    let with = |field: &str, value: Value| {
+        let mut profile = valid();
+        if let Some(removed) = field.strip_prefix('-') {
+            profile.as_object_mut().unwrap().remove(removed);
+        } else {
+            profile[field] = value;
+        }
+        profile
+    };
+    let document = |profiles: Vec<Value>| json!({"schemaVersion":1,"documentRevision":0,"defaultConnectionId":null,"profiles":profiles});
+    let codex = json!({"transport":"codex-cli","id":"http","name":"Codex","recipeRevision":"","executablePath":"","modelSelection":false,"credential":{"kind":"cli_saved_login"}});
+    let mut rejected = vec![
+        (
+            "unknown transport",
+            document(vec![with("transport", json!("gemini-images"))]),
+        ),
+        (
+            "missing transport",
+            document(vec![with("-transport", Value::Null)]),
+        ),
+        (
+            "numeric transport",
+            document(vec![with("transport", json!(1))]),
+        ),
+        (
+            "boolean as string",
+            document(vec![with("allowInsecureHttp", json!("false"))]),
+        ),
+        (
+            "numeric model",
+            document(vec![with("defaultModel", json!(42))]),
+        ),
+        ("null name", document(vec![with("name", Value::Null)])),
+        (
+            "missing base URL",
+            document(vec![with("-baseUrl", Value::Null)]),
+        ),
+        (
+            "null credential",
+            document(vec![with("credential", Value::Null)]),
+        ),
+        (
+            "unknown credential kind",
+            document(vec![with("credential", json!({"kind":"keychain"}))]),
+        ),
+        (
+            "numeric secret reference",
+            document(vec![with("credential", json!({"kind":"secret","id":7}))]),
+        ),
+        (
+            "inline key field",
+            document(vec![with("apiKey", json!("sk-inline-secret"))]),
+        ),
+        ("profile is a string", document(vec![json!("http")])),
+        (
+            "duplicate HTTP IDs",
+            document(vec![valid(), with("name", json!("Second"))]),
+        ),
+        (
+            "duplicate across transports",
+            document(vec![valid(), codex]),
+        ),
+    ];
+    for (field, value) in [
+        ("profiles", Value::Null),
+        ("profiles", json!({"http":valid()})),
+        ("schemaVersion", json!("1")),
+        ("documentRevision", json!(-1)),
+        ("defaultConnectionId", json!(5)),
+    ] {
+        let mut config = document(vec![valid()]);
+        config[field] = value;
+        rejected.push(("wrong document field", config));
+    }
+    for (case, configuration) in &rejected {
+        let failure = service
+            .settings(
+                "save",
+                json!({"expectedRevision":0,"configuration":configuration}),
+            )
+            .expect_err(case);
+        assert_eq!(failure.code, "invalid_request", "{case}");
+        assert!(!failure.message.contains("sk-inline-secret"), "{case}");
+        assert!(
+            !directory.path().join("profiles.json").exists(),
+            "{case} wrote profiles"
+        );
+    }
+    // Migration imports are validated by the same provider-native rules.
+    for profiles in [
+        json!([with("transport", json!("gemini-images"))]),
+        json!([with("allowInsecureHttp", json!(1))]),
+        json!([valid(), with("name", json!("Second"))]),
+    ] {
+        let failure = service
+            .migration(
+                "import",
+                json!({"sourceId":"trace-openai-image-v1","sourceDigest":"a".repeat(64),"expectedRevision":0,"defaultConnectionId":"http","profiles":profiles}),
+            )
+            .unwrap_err();
+        assert_eq!(failure.code, "invalid_request");
+        assert!(!directory.path().join("profiles.json").exists());
+    }
+    assert!(host.events.lock().unwrap().is_empty());
+    // Nothing was consumed: the first valid save is still revision 0 -> 1.
+    let saved = service
+        .settings(
+            "save",
+            json!({"expectedRevision":0,"configuration":document(vec![valid()])}),
+        )
+        .unwrap();
+    assert_eq!(saved["documentRevision"], 1);
+    // A hand-edited document with the same defects fails closed on read and is
+    // left byte-for-byte for repair rather than reset to an empty default.
+    let path = directory.path().join("profiles.json");
+    let good: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    for (case, configuration) in rejected {
+        let mut corrupt = good.clone();
+        corrupt["configuration"] = configuration;
+        let bytes = serde_json::to_vec(&corrupt).unwrap();
+        std::fs::write(&path, &bytes).unwrap();
+        assert_eq!(
+            service.settings("read", json!({})).unwrap_err().code,
+            "unavailable",
+            "{case}"
+        );
+        assert!(service.validate_preflight().is_err(), "{case}");
+        assert!(service
+            .settings(
+                "save",
+                json!({"expectedRevision":1,"configuration":document(vec![])})
+            )
+            .is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), bytes, "{case}");
+    }
+}
 
 #[tokio::test]
 async fn preflight_is_read_only_and_activation_has_one_process_owner() {
@@ -781,7 +931,10 @@ async fn explicit_settings_test_uses_owned_host_admission_and_remains_idempotent
             .settings("test.status", json!({"requestId":operation}))
             .unwrap();
         let status: OperationStatus = serde_json::from_value(value).unwrap();
-        if !matches!(status.execution, Execution::Accepted {} | Execution::Running {}) {
+        if !matches!(
+            status.execution,
+            Execution::Accepted {} | Execution::Running {}
+        ) {
             break status;
         }
         tokio::time::sleep(Duration::from_millis(5)).await;
