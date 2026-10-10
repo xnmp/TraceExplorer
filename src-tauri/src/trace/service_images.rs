@@ -338,7 +338,13 @@ fn terminal(phase: &str) -> bool {
     )
 }
 /// Links whose paid provider work, or its local recovery, is unfinished. This
-/// is what MAX_LIVE bounds at admission and on resume.
+/// is what MAX_LIVE bounds at admission and on resume. It is Trace's own
+/// limit only: the host's separate per-consumer operation quota (16) still
+/// counts the operations left out here. A terminal unknown outcome keeps its
+/// host execution claim until the user stops its recovery in AI Operations,
+/// and an `ack_pending` operation until its acknowledgement completes. The
+/// host refuses a further acceptance at capture/prepare, before any provider
+/// start, with an "operation capacity reached" error.
 ///
 /// `ack_pending` is left out on purpose. Its run is already published locally
 /// and the provider's paid execution already succeeded. All that remains is an
@@ -2472,7 +2478,21 @@ mod tests {
         dimensions: (u32, u32),
         read_gate: Mutex<Option<Arc<IoGate>>>,
         prepared_recipe: Mutex<Option<EffectiveRecipe>>,
+        /// The host's per-consumer operation quota ledger.
+        claims: Mutex<Claims>,
     }
+    /// Mirrors the host store's `quota()`: every operation created at capture
+    /// or prepare counts until its provider receipt releases it (failure,
+    /// cancellation, discard, acquisition) or its execution claim is released.
+    /// A terminal unknown outcome keeps its claim until the user stops its
+    /// recovery in AI Operations; a never-forwarded preparation is released.
+    #[derive(Default)]
+    struct Claims {
+        admitted: std::collections::HashSet<String>,
+        released: std::collections::HashSet<String>,
+    }
+    /// The host's per-consumer operation quota.
+    const HOST_OPERATION_QUOTA: usize = 16;
     impl Fake {
         fn new(root: &Path, database: &Path) -> Self {
             let path = root.join("sealed.png");
@@ -2495,7 +2515,33 @@ mod tests {
                 dimensions: (32, 32),
                 read_gate: Mutex::new(None),
                 prepared_recipe: Mutex::new(None),
+                claims: Mutex::new(Claims::default()),
             }
+        }
+        /// The host records a new operation at capture/prepare and refuses it
+        /// with its capacity error before any provider dispatch.
+        fn admit(&self, operation: &str) -> Result<(), AppError> {
+            let mut claims = self.claims.lock().unwrap();
+            if claims.admitted.contains(operation) {
+                return Ok(());
+            }
+            let states = self.states.lock().unwrap();
+            let live = claims
+                .admitted
+                .iter()
+                .filter(|op| !claims.released.contains(*op) && !released_by_receipt(states.get(*op)))
+                .count();
+            drop(states);
+            if live >= HOST_OPERATION_QUOTA {
+                return Err(AppError::Other("Service state: operation capacity reached; wait for running AI work or resolve unconfirmed operations in AI Operations".into()));
+            }
+            claims.admitted.insert(operation.into());
+            Ok(())
+        }
+        /// The host releases this operation's execution claim: the user
+        /// stopped its recovery, or its preparation was never forwarded.
+        fn release_claim(&self, operation: &str) {
+            self.claims.lock().unwrap().released.insert(operation.into());
         }
         fn count(&self, method: &str) -> usize {
             self.calls
@@ -2534,6 +2580,16 @@ mod tests {
                 .insert(r.operation_id.clone(), r.clone());
         }
     }
+    /// The host releases an operation when its provider receipt reports
+    /// failure, cancellation, discard or acquisition. Success whose output is
+    /// not yet acknowledged, and unknown outcomes, stay counted.
+    fn released_by_receipt(receipt: Option<&OperationStatus>) -> bool {
+        receipt.is_some_and(|r| {
+            matches!(r.execution, Execution::Failed { .. } | Execution::Cancelled {})
+                && r.delivery == (Delivery::None {})
+                || matches!(r.delivery, Delivery::Discarded {} | Delivery::Acquired { .. })
+        })
+    }
     impl ImageHost for Fake {
         fn call(
             &self,
@@ -2558,10 +2614,12 @@ mod tests {
                 }
                 "describe" => Ok(json!({"version":1,"configurationRevision":1,"profiles":[]})),
                 "host.artifacts.capture" => {
+                    self.admit(p["operationId"].as_str().unwrap())?;
                     let values=p["inputs"].as_array().unwrap().iter().map(|i|json!({"sourcePath":i["path"],"artifact":ArtifactDescriptor{handle:"captured-input".into(),sha256:self.output.sha256.clone(),byte_length:self.output.byte_length,media_type:"image/png".into()},"width":self.dimensions.0,"height":self.dimensions.1})).collect::<Vec<_>>();
                     Ok(json!({"inputs":values}))
                 }
                 "prepare" => {
+                    self.admit(p["operationId"].as_str().unwrap())?;
                     let gate = self.prepare_gate.lock().unwrap().clone();
                     if let Some(gate) = gate {
                         gate.wait();
@@ -2670,6 +2728,7 @@ mod tests {
                         return Err(invalid("Fixture provider is unreachable"));
                     }
                     if action == "status" && behavior.stop_recovery {
+                        self.release_claim(p["operationId"].as_str().unwrap());
                         return Err(AppError::Service {
                             code: "recovery_stopped".into(),
                             message: "Fixture recovery stopped".into(),
@@ -2755,6 +2814,7 @@ mod tests {
                         b.lost_release = false;
                         return Err(invalid("Fixture preparation cleanup reply lost"));
                     }
+                    self.release_claim(p["operationId"].as_str().unwrap());
                     Ok(json!({"released":true}))
                 }
                 _ => panic!("Unexpected fake host call {action}"),
@@ -4680,13 +4740,21 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
     }
+    fn run_count(f: &Fixture) -> i64 {
+        connection_at(&f.database)
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM runs", [], |r| r.get(0))
+            .unwrap()
+    }
+    fn link_count(f: &Fixture) -> usize {
+        links_at(&connection_at(&f.database).unwrap()).unwrap().len()
+    }
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn provider_unknown_outcomes_are_terminal_and_never_block_admission_or_resume() {
+    async fn unknown_outcomes_hold_the_host_quota_until_recovery_is_stopped_but_never_trace_admission_or_resume() {
         let f = Fixture::new();
         f.host.behavior.lock().unwrap().unknown = true;
-        let operations: Vec<String> = (0..=MAX_LIVE).map(|i| format!("{:032x}", i + 0x500)).collect();
+        let operations: Vec<String> = (0..MAX_LIVE).map(|i| format!("{:032x}", i + 0x500)).collect();
         for (index, op) in operations.iter().enumerate() {
-            // The 17th admission succeeds after 16 provider-unknown outcomes.
             let link = accept_job(&f, op, index as u64 + 9, request()).unwrap().link;
             f.run(op, true);
             let state = f.snapshot(op);
@@ -4700,16 +4768,30 @@ mod tests {
             assert_eq!(details["outcome"], "unknown");
             assert_eq!(details["provider_execution"]["state"], "unknown");
         }
-        assert_eq!(f.host.count("start"), MAX_LIVE + 1);
+        assert_eq!(f.host.count("start"), MAX_LIVE);
         assert_eq!(event_count(&f, "openai-image-error"), 0);
-        // A published link awaiting acknowledgement is scheduled alongside
-        // more than 16 terminal unknown links.
+        // Trace's own limit does not count the unknown outcomes, but the host's
+        // per-consumer quota does: the next acceptance is refused cleanly at
+        // prepare, before any provider start, and leaves nothing half-created.
+        let (runs, links) = (run_count(&f), link_count(&f));
+        let refused = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+        let error = accept_job(&f, refused, 98, request()).err().expect("refused").to_string();
+        assert!(error.contains("operation capacity reached"), "{error}");
+        assert!(!error.contains("Resolve retained image operations"), "{error}");
+        assert_eq!(f.host.count("start"), MAX_LIVE);
+        assert_eq!((run_count(&f), link_count(&f)), (runs, links));
+        assert!(snapshot_at(&f.database, refused).unwrap().is_none());
+        assert_eq!(event_count(&f, "openai-image-error"), 0);
+        // Stopping recovery on one unknown outcome frees one slot.
+        f.host.release_claim(&operations[0]);
         f.host.behavior.lock().unwrap().unknown = false;
         f.host.behavior.lock().unwrap().ack_down = true;
         let pending = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_owned();
         accept_job(&f, &pending, 99, request()).unwrap();
         f.run(&pending, true);
         assert_eq!(f.snapshot(&pending)["recoveryState"], "ack_pending");
+        // A published link awaiting acknowledgement is scheduled alongside the
+        // terminal unknown links.
         f.host.behavior.lock().unwrap().ack_down = false;
         let status = f.host.count("status");
         let host: Arc<dyn ImageHost> = f.host.clone();
@@ -4719,7 +4801,7 @@ mod tests {
         })
         .await;
         assert_eq!(f.host.count("status"), status + 1);
-        assert_eq!(f.host.count("start"), MAX_LIVE + 2);
+        assert_eq!(f.host.count("start"), MAX_LIVE + 1);
         for op in &operations {
             assert_eq!(f.snapshot(op)["outcomeUnknown"], true);
         }
@@ -4782,10 +4864,13 @@ mod tests {
         assert_eq!(event_count(&f, "openai-image-complete"), MAX_LIVE);
         assert_eq!(event_count(&f, "openai-image-error"), 0);
         assert!(f.host.count("acknowledge") >= MAX_LIVE);
-        // Published links awaiting acknowledgement hold no paid work, so a
-        // 17th admission is still accepted.
+        // Published links awaiting acknowledgement hold no paid work for Trace's
+        // own limit, but the host keeps their operation claims until each
+        // acknowledgement completes, so its quota refuses a 17th acceptance.
         let extra = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
-        assert!(accept_job(&f, extra, 99, request()).unwrap().fresh);
+        let error = accept_job(&f, extra, 99, request()).err().expect("refused").to_string();
+        assert!(error.contains("operation capacity reached"), "{error}");
+        assert!(snapshot_at(&f.database, extra).unwrap().is_none());
         f.host.behavior.lock().unwrap().ack_down = false;
         // The recovery worker `resume` runs for each retained link (resume
         // itself is exercised with the global worker slots elsewhere).
@@ -4802,6 +4887,9 @@ mod tests {
         assert_eq!(f.host.count("start"), MAX_LIVE);
         assert_eq!(f.host.count("host.artifacts.acquired"), MAX_LIVE);
         assert_eq!(f.host.count("host.artifacts.read"), MAX_LIVE);
+        // Acknowledged operations released their claims: the refused
+        // acceptance now goes through.
+        assert!(accept_job(&f, extra, 99, request()).unwrap().fresh);
         // Success was announced once, at publication; nothing claimed failure.
         assert_eq!(event_count(&f, "openai-image-complete"), MAX_LIVE);
         assert_eq!(event_count(&f, "openai-image-error"), 0);
