@@ -499,6 +499,9 @@ fn connection_at(path: &Path) -> Result<Connection, AppError> {
             .execute_batch("PRAGMA user_version=8; COMMIT;")
             .map_err(sql)?;
     }
+    // Additive presentation cache: old releases can still read schema 8 and
+    // the legacy Codex cache is never relabelled as another provider's output.
+    connection.execute_batch("CREATE TABLE IF NOT EXISTS image_prompt_titles_v1 (prompt_digest TEXT NOT NULL,recipe_version INTEGER NOT NULL,context_fingerprint TEXT NOT NULL,title TEXT NOT NULL,profile_id TEXT NOT NULL,requested_model TEXT NOT NULL,actual_model TEXT,PRIMARY KEY(prompt_digest,recipe_version,context_fingerprint));").map_err(sql)?;
     folder_graph::ensure_change_counter(&connection)?;
     Ok(connection)
 }

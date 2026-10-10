@@ -9,7 +9,6 @@
   import { basename } from "$lib/domain/path";
   import { imageOutputFilename } from "$lib/domain/image-output-filename";
   import { imageGenerationSize, type ImageResolution, type ImageAspectRatio } from "$lib/domain/image-generation-settings";
-  import { promptTitles } from "../trace/prompt-titles.svelte";
 
   interface Props {
     open: boolean;
@@ -54,9 +53,6 @@
   let executable = $state(untrack(() => codexPath));
   let draftKey = $state("");
   let draftExecutable = $state("");
-  let titleGenerator = $state("codex");
-  let titleExecutable = $state("");
-  let titleSettingsReady = $state(false);
   let formRef = $state<HTMLFormElement | null>(null);
   let promptRef = $state<HTMLTextAreaElement | null>(null);
   $effect(() => { onBusyChange(submitting || savingSettings); });
@@ -152,23 +148,15 @@
     draftExecutable = executable;
     error = "";
     settingsOpen = true;
-    titleSettingsReady = false;
-    void storage.get().then(settings=>{
-      if (settingsOpen) {
-        titleGenerator = settings.titleGenerator === "disabled" ? "disabled" : "codex";
-        titleExecutable = typeof settings.titleCodexPath === "string" ? settings.titleCodexPath : "";
-        titleSettingsReady = true;
-      }
-    }).catch(()=>{ error = "Could not load title generator settings"; });
+
   }
   async function saveSettings(): Promise<void> {
-    if (savingSettings || !titleSettingsReady) return;
+    if (savingSettings) return;
     savingSettings = true;
     error = "";
-    const patch = { apiKey: draftKey.trim(), codexPath: draftExecutable.trim(), backend: selectedModel === "codex" ? "codex" : "api_key", titleGenerator, titleCodexPath: titleExecutable.trim() };
+    const patch = { apiKey: draftKey.trim(), codexPath: draftExecutable.trim(), backend: selectedModel === "codex" ? "codex" : "api_key" };
     try {
       await onSaveSettings(patch);
-      if (!storage.subscribe) void promptTitles.configure(patch);
       connectionKey = patch.apiKey;
       executable = patch.codexPath;
       settingsOpen = false;
@@ -198,21 +186,12 @@
       <label class="prompt-field">OpenAI API key
         <input class="prompt-input" type="password" bind:value={draftKey} autocomplete="off" disabled={savingSettings} />
       </label>
-      <label class="prompt-field">Title generator
-        <select class="model-select" bind:value={titleGenerator} disabled={savingSettings || !titleSettingsReady}>
-          <option value="codex">Codex credentials (Luna, low effort)</option><option value="disabled">Off</option>
-        </select>
-      </label>
-      {#if titleGenerator === "codex"}
-        <label class="prompt-field">Title generator Codex path
-          <input class="prompt-input" bind:value={titleExecutable} placeholder="Use image connection" disabled={savingSettings || !titleSettingsReady}/>
-        </label>
-      {/if}
+      <p>Prompt titles use the global language model in Settings → AI → Language models. Enable summaries in Trace settings.</p>
       {#if error}<p class="error" role="alert">{error}</p>{/if}
     </div>
     <footer>
       <button type="button" class="btn btn-secondary" disabled={savingSettings} onclick={() => { settingsOpen = false; error = ""; }}>Back</button>
-      <button type="submit" class="btn btn-primary" disabled={savingSettings || !titleSettingsReady}>{savingSettings ? "Saving…" : "Save settings"}</button>
+      <button type="submit" class="btn btn-primary" disabled={savingSettings}>{savingSettings ? "Saving…" : "Save settings"}</button>
     </footer>
   </form>
 {:else}

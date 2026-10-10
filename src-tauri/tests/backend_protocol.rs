@@ -256,77 +256,87 @@ fn schema_upgrade_resolves_an_offline_folder_alias_when_its_volume_returns() {
     assert!(output.is_file());
 }
 
-#[cfg(unix)]
 #[test]
 fn title_admission_rejects_busy_work_and_reuses_the_completed_prompt_cache() {
-    use std::os::unix::fs::PermissionsExt;
-    struct ReleaseOnDrop(std::path::PathBuf);
-    impl Drop for ReleaseOnDrop {
-        fn drop(&mut self) {
-            let _ = std::fs::write(&self.0, b"release");
-        }
-    }
     let data = test_support::tempdir().unwrap();
-    let provider = test_support::tempdir().unwrap();
-    let executable = provider.path().join("title-codex");
-    let started = provider.path().join("started");
-    let release = provider.path().join("release");
-    let thread =
-        json!({"type":"thread.started","thread_id":"01234567-89ab-7cde-8f01-23456789abcd"});
-    let title = json!({"type":"item.completed","item":{"type":"agent_message","text":json!({"title":"Short title"}).to_string()}});
-    std::fs::write(&executable,format!("#!/bin/sh\nprintf x >> \"$TRACE_TITLE_TEST_STARTED\"\nwhile [ ! -f \"$TRACE_TITLE_TEST_RELEASE\" ]; do sleep .01; done\nprintf '%s\\n' '{thread}' '{title}' '{{\"type\":\"turn.completed\"}}'\n")).unwrap();
-    std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).unwrap();
-    let mut backend = Backend::start_with_env(
-        data.path(),
-        &[
-            ("TRACE_TITLE_TEST_STARTED", &started),
-            ("TRACE_TITLE_TEST_RELEASE", &release),
-        ],
+    let mut backend = Backend::start(data.path());
+    let initialized = backend.call(
+        "initialize",
+        json!({"protocolVersion":1,"activeRunIds":[],"textService":{"version":1}}),
     );
-    let _release_on_drop = ReleaseOnDrop(release.clone());
-    backend.ready(vec![]);
+    assert!(initialized.get("error").is_none(), "{initialized}");
     let begin = json!({"start":{"operation":"openai.image.generate","parameters":{"prompt":"Same cached prompt"},"inputs":[]}});
     let first = backend.call("provenance.begin", begin.clone())["result"]["id"].clone();
     let second = backend.call("provenance.begin", begin)["result"]["id"].clone();
+    let context = json!({"profileId":"fixture","configurationRevision":1,"fingerprint":"f".repeat(64),"transport":"openai-chat-completions","requestedModel":"fixture-model"});
+    let description = json!({"version":1,"enabled":true,"available":true,"configurationRevision":1,"context":context});
+    let respond = |backend: &mut Backend, request: &Value, result: Value| {
+        writeln!(
+            backend.child.stdin.as_mut().unwrap(),
+            "{}",
+            json!({"jsonrpc":"2.0","id":request["id"],"result":result})
+        )
+        .unwrap();
+    };
     backend.sequence += 1;
     let first_request = backend.sequence;
-    writeln!(backend.child.stdin.as_mut().unwrap(), "{}", json!({"jsonrpc":"2.0","id":first_request,"method":"trace_prompt_title","params":{"runId":first,"codexPath":executable}})).unwrap();
-    let deadline = std::time::Instant::now() + Duration::from_secs(5);
-    while !started.exists() && std::time::Instant::now() < deadline {
-        std::thread::sleep(Duration::from_millis(5));
-    }
-    assert!(started.exists(), "Title fixture did not start");
+    writeln!(backend.child.stdin.as_mut().unwrap(), "{}", json!({"jsonrpc":"2.0","id":first_request,"method":"trace_prompt_title","params":{"runId":first,"requestId":"title-first","expectedConfigurationRevision":1}})).unwrap();
+    let generation = loop {
+        let request = backend
+            .replies
+            .recv_timeout(Duration::from_secs(5))
+            .unwrap();
+        match request["method"].as_str() {
+            Some("host.text.describe") => respond(&mut backend, &request, description.clone()),
+            Some("host.text.generate") => break request,
+            _ => panic!("Unexpected frame before host generation: {request}"),
+        }
+    };
+    assert_eq!(generation["params"]["input"], "Same cached prompt");
+    assert_eq!(generation["params"]["requestId"], "title-first");
+    assert!(generation["params"].get("codexPath").is_none());
     let busy = backend.call(
         "trace_prompt_title",
-        json!({"runId":second,"codexPath":executable}),
+        json!({"runId":second,"requestId":"title-second","expectedConfigurationRevision":1}),
     );
     assert!(
         busy["error"]["message"].as_str().unwrap().contains("busy"),
         "{busy}"
     );
-    let independent = backend.call("recent_openai_image_runs", json!({}));
-    assert!(independent.get("result").is_some(), "{independent}");
-    std::fs::write(&release, b"release").unwrap();
+    assert!(backend
+        .call("recent_openai_image_runs", json!({}))
+        .get("result")
+        .is_some());
+    respond(
+        &mut backend,
+        &generation,
+        json!({"text":"Short title","context":context}),
+    );
+    let result = backend
+        .replies
+        .recv_timeout(Duration::from_secs(5))
+        .unwrap();
+    assert_eq!(result["id"], first_request);
+    assert_eq!(result["result"]["title"], "Short title", "{result}");
+    backend.sequence += 1;
+    let cached_id = backend.sequence;
+    writeln!(backend.child.stdin.as_mut().unwrap(), "{}", json!({"jsonrpc":"2.0","id":cached_id,"method":"trace_prompt_title","params":{"runId":second,"requestId":"title-cache","expectedConfigurationRevision":1}})).unwrap();
     loop {
-        let reply = backend
+        let request = backend
             .replies
             .recv_timeout(Duration::from_secs(5))
             .unwrap();
-        if reply["id"] == first_request {
-            assert_eq!(reply["result"], "Short title", "{reply}");
+        if request["method"] == "host.text.describe" {
+            respond(&mut backend, &request, description.clone());
+        } else {
+            assert_eq!(
+                request["id"], cached_id,
+                "Cache retry must not generate again: {request}"
+            );
+            assert_eq!(request["result"]["title"], "Short title", "{request}");
             break;
         }
     }
-    let cached = backend.call(
-        "trace_prompt_title",
-        json!({"runId":second,"codexPath":executable}),
-    );
-    assert_eq!(cached["result"], "Short title", "{cached}");
-    assert_eq!(
-        std::fs::read(started).unwrap(),
-        b"x",
-        "Cache retry contacted the title provider again"
-    );
 }
 
 #[cfg(unix)]

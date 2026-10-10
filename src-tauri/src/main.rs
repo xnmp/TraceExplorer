@@ -48,7 +48,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     trace_explorer_backend::initialize(&directory)?;
     let output = Arc::new(Mutex::new(io::stdout()));
     let callback_output = output.clone();
-    trace_explorer_backend::host_process::configure(move |value| {
+    trace_explorer_backend::host_rpc::configure(move |value| {
         send(&callback_output, &value).map_err(Into::into)
     });
     let event_output = output.clone();
@@ -99,7 +99,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 continue;
             }
         };
-        if trace_explorer_backend::host_process::deliver(&value) {
+        if trace_explorer_backend::host_rpc::deliver(&value) {
             continue;
         }
         let request = match serde_json::from_value::<Request>(value) {
@@ -150,7 +150,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         });
         while handlers.try_join_next().is_some() {}
     }
-    trace_explorer_backend::host_process::disconnected();
+    trace_explorer_backend::host_rpc::disconnected();
     trace_explorer_backend::shutdown_jobs();
     handlers.abort_all();
     // Accepted blocking workers can be inside HTTP calls. The host retains

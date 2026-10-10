@@ -85,6 +85,11 @@ export interface FileViewContribution { id: string; title: string; component: Co
 export interface PreviewInfoContribution { id: string; component: Component<any>; props?: Record<string, unknown>; when(subject: PreviewSubject): boolean }
 
 export interface PluginContext {
+  /** Present on hosts with the textGeneration capability. Text execution is backend-owned. */
+  text?: {
+    subscribe(listener: (revision: number) => void): () => void;
+    openSettings(): void;
+  };
   registerCommand(command: {id: string; label: string; category: string; shortcut?: string; when?: () => boolean; handler: () => void | Promise<void>}): void;
   registerContextMenuItem(item: {id: string; label: string; group: string; when: (entries: FileEntry[]) => boolean; handler: (entries: FileEntry[]) => void | Promise<void>}): void;
   registerSettingsSection(section: {id: string; title: string; rows: {id: string; label: string; type: "select" | "text" | "password" | "toggle"; default?: string | boolean; description?: string; options?: {value: string; label: string}[]}[]}): void;

@@ -63,6 +63,7 @@
   function activate() {
     views = []; sections = []; commands.clear(); conditions.clear(); listeners.clear(); fileListeners.length = 0;
     const ctx = {
+      registerSettingsSection: () => {},
       registerFileView: (view: FileViewContribution) => { views = [...views, view]; },
       registerPreviewInfo: (section: PreviewInfoContribution) => { sections = [...sections, section]; },
       registerCommand: (command: { id: string; handler: () => void | Promise<void>; when?: () => boolean }) => { commands.set(command.id, command.handler); conditions.set(command.id, command.when ?? (() => true)); },

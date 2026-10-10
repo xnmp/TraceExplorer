@@ -80,6 +80,7 @@ async fn execute(app: EventEmitter, request: &Request) -> Result<Value, AppError
                     .and_then(Value::as_bool)
                     .unwrap_or(false),
             );
+            crate::host_text::enable(&p["textService"]);
             if trace::owner_ready() {
                 let _ = app.emit("trace:changed", ());
             }
@@ -149,24 +150,22 @@ async fn execute(app: EventEmitter, request: &Request) -> Result<Value, AppError
         "trace_prompt_title" => Ok(json!(
             trace::titles::title(
                 field(p, "runId")?,
-                p.get("codexPath")
-                    .and_then(Value::as_str)
-                    .unwrap_or("")
-                    .to_owned()
+                field(p, "requestId")?,
+                field(p, "expectedConfigurationRevision")?
             )
             .await?
         )),
-        "trace_title_connection" => {
-            let executable = p
-                .get("codexPath")
-                .and_then(Value::as_str)
-                .unwrap_or("")
-                .to_owned();
-            Ok(json!(tokio::task::spawn_blocking(move || {
-                crate::openai_image::title_connection(&executable)
-            })
-            .await
-            .map_err(|error| AppError::WorkerFailed(error.to_string()))?))
+        "trace_title_context" => Ok(json!(tokio::task::spawn_blocking(move || {
+            crate::host_text::describe()
+        })
+        .await
+        .map_err(|error| AppError::WorkerFailed(error.to_string()))??)),
+        "trace_cancel_prompt_title" => {
+            let request_id: String = field(p, "requestId")?;
+            trace::titles::cancel(&request_id);
+            tokio::task::spawn_blocking(move || crate::host_text::cancel(&request_id))
+                .await
+                .map_err(|error| AppError::WorkerFailed(error.to_string()))?
         }
         "discard_generated_image" => {
             let view_path = trace::save::discard(field(p, "artifactId")?).await?;

@@ -27,13 +27,6 @@ mod codex;
 mod codex_executable;
 mod codex_turn;
 
-pub(crate) fn prompt_title(prompt: &str, executable: &str) -> Result<String, AppError> {
-    codex::prompt_title(prompt, executable)
-}
-pub(crate) fn title_connection(executable: &str) -> bool {
-    codex::title_connection(executable)
-}
-
 #[derive(Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum ImageBackend {

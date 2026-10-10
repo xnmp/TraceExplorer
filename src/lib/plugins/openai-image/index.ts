@@ -5,7 +5,6 @@ import { parentDir } from "$lib/domain/path";
 import OpenAIImageDialog from "./OpenAIImageDialog.svelte";
 import OpenAIImageEditorTool from "./OpenAIImageEditorTool.svelte";
 import OpenAIImageHistory from "./OpenAIImageHistory.svelte";
-import { promptTitles } from "../trace/prompt-titles.svelte";
 import { tracePanes } from "../trace/view/pane-registry.svelte";
 import { imageInputPaths } from "$lib/domain/image-inputs";
 
@@ -46,16 +45,12 @@ export const openAIImagePlugin: Plugin = {
   name: "OpenAI Images",
   description: "Generate and edit images with GPT Image, with durable Trace provenance.",
   enabledByDefault: true,
-  deactivate: () => promptTitles.unbind(),
   activate(ctx) {
-    promptTitles.bind(ctx.storage);
     ctx.registerSettingsSection({
       id: "openai-image", title: "AI / OpenAI Images",
       rows: [{ id: "backend", label: "Image connection", type: "select", default: "codex",
         options: [{ value: "codex", label: "Codex ChatGPT sign-in" }, { value: "api_key", label: "OpenAI API key" }],
         description: "Codex mode uses the installed Codex CLI and its existing ChatGPT sign-in." },
-        { id: "titleGenerator", label: "Title generator", type: "select", default: "codex", options: [{value:"codex",label:"Codex credentials (Luna, low effort)"},{value:"disabled",label:"Off"}] },
-        { id: "titleCodexPath", label: "Title generator Codex path", type: "text", default: "", description: "Uses the image connection’s Codex executable when empty." },
         { id: "codexPath", label: "Codex executable path", type: "text", default: "",
         description: "Optional full executable path. Leave blank to search PATH and common installations, including NVM. Find it with command -v codex (Windows: where codex)." },
         { id: "apiKey", label: "OpenAI API Key", type: "password",
