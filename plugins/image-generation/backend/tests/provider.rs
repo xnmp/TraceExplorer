@@ -263,14 +263,77 @@ async fn terminal(service: &Service, operation: &str) -> OperationStatus {
     }
     panic!("Image did not settle")
 }
-fn server(
-    delay: Duration,
-) -> (
+/// A one-shot test signal. Waits are bounded so a failing test reports instead
+/// of leaving a blocked thread that hangs runtime shutdown.
+struct Gate(Mutex<bool>, std::sync::Condvar);
+impl Gate {
+    fn new() -> Arc<Self> {
+        Arc::new(Self(Mutex::new(false), std::sync::Condvar::new()))
+    }
+    fn open(&self) {
+        *self.0.lock().unwrap() = true;
+        self.1.notify_all();
+    }
+    fn wait(&self) -> bool {
+        let (open, _) = self
+            .1
+            .wait_timeout_while(self.0.lock().unwrap(), Duration::from_secs(10), |open| {
+                !*open
+            })
+            .unwrap();
+        *open
+    }
+}
+type Server = (
     String,
     Arc<AtomicUsize>,
     std::sync::mpsc::Receiver<String>,
     std::thread::JoinHandle<()>,
-) {
+);
+fn server(delay: Duration) -> Server {
+    serve(Gate::new(), move || std::thread::sleep(delay))
+}
+/// The server answers only when `release` is used or dropped, and opens
+/// `received` once a complete request is on the wire, so wall-clock budgets
+/// cannot cut a request short or answer it before the test is ready.
+struct HeldServer {
+    root: String,
+    count: Arc<AtomicUsize>,
+    wire: std::sync::mpsc::Receiver<String>,
+    received: Arc<Gate>,
+    release: Option<std::sync::mpsc::Sender<()>>,
+    worker: Option<std::thread::JoinHandle<()>>,
+}
+impl HeldServer {
+    fn new() -> Self {
+        let (release, held) = std::sync::mpsc::channel::<()>();
+        let received = Gate::new();
+        let (root, count, wire, worker) = serve(received.clone(), move || {
+            let _ = held.recv_timeout(Duration::from_secs(10));
+        });
+        Self {
+            root,
+            count,
+            wire,
+            received,
+            release: Some(release),
+            worker: Some(worker),
+        }
+    }
+    /// Answer the held request and wait for the server to finish.
+    fn finish(&mut self) {
+        drop(self.release.take());
+        if let Some(worker) = self.worker.take() {
+            worker.join().unwrap();
+        }
+    }
+}
+impl Drop for HeldServer {
+    fn drop(&mut self) {
+        drop(self.release.take());
+    }
+}
+fn serve(received: Arc<Gate>, hold: impl FnOnce() + Send + 'static) -> Server {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let root = format!(
         "http://{}/vendor/v1/images/",
@@ -280,16 +343,42 @@ fn server(
     let observed = count.clone();
     let (tx, rx) = std::sync::mpsc::channel();
     let worker = std::thread::spawn(move || {
-        let (mut stream, _) = listener.accept().unwrap();
+        // Bounded accept: a test that never dispatches must not hang its join.
+        listener.set_nonblocking(true).unwrap();
+        let started = std::time::Instant::now();
+        let mut stream = loop {
+            match listener.accept() {
+                Ok((stream, _)) => break stream,
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    if started.elapsed() > Duration::from_secs(10) {
+                        return;
+                    }
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+                Err(e) => panic!("{e}"),
+            }
+        };
+        stream.set_nonblocking(false).unwrap();
         stream
             .set_read_timeout(Some(Duration::from_secs(3)))
             .unwrap();
         let mut bytes = vec![];
-        let header_end = loop {
+        // A client that hangs up early is reported through `count`/`wire`
+        // by the test, not by a panic on this thread.
+        let mut fill = |bytes: &mut Vec<u8>| {
             let mut buffer = [0; 8192];
-            let n = stream.read(&mut buffer).unwrap();
-            assert!(n > 0);
-            bytes.extend_from_slice(&buffer[..n]);
+            match stream.read(&mut buffer) {
+                Ok(n) if n > 0 => {
+                    bytes.extend_from_slice(&buffer[..n]);
+                    true
+                }
+                _ => false,
+            }
+        };
+        let header_end = loop {
+            if !fill(&mut bytes) {
+                return;
+            }
             if let Some(index) = bytes.windows(4).position(|w| w == b"\r\n\r\n") {
                 break index + 4;
             }
@@ -304,14 +393,14 @@ fn server(
             })
             .unwrap();
         while bytes.len() - header_end < length {
-            let mut buffer = [0; 8192];
-            let n = stream.read(&mut buffer).unwrap();
-            assert!(n > 0);
-            bytes.extend_from_slice(&buffer[..n]);
+            if !fill(&mut bytes) {
+                return;
+            }
         }
         observed.fetch_add(1, Ordering::SeqCst);
         let _ = tx.send(String::from_utf8_lossy(&bytes).to_string());
-        std::thread::sleep(delay);
+        received.open();
+        hold();
         let body =
             json!({"data":[{"b64_json":STANDARD.encode(png(42))}],"model":"actual-image-model"})
                 .to_string();
@@ -426,7 +515,8 @@ async fn custom_http_duplicates_and_ordered_inputs_produce_one_durable_result() 
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn cancelling_dispatched_http_reports_unknown_without_retry() {
-    let (root, count, wire, server) = server(Duration::from_millis(100));
+    let mut held = HeldServer::new();
+    let root = held.root.clone();
     let directory = tempfile::tempdir().unwrap();
     let service = Service::new(directory.path(), FakeHost::new()).unwrap();
     service.activate().unwrap();
@@ -437,20 +527,18 @@ async fn cancelling_dispatched_http_reports_unknown_without_retry() {
     let request = request(&config.profiles[0], vec![]);
     let request = start(request.clone(), service.prepare(caller(), request).unwrap());
     service.start(caller(), request.clone(), false).unwrap();
-    tokio::task::spawn_blocking(move || wire.recv().unwrap())
-        .await
-        .unwrap();
+    tokio::task::block_in_place(|| held.wire.recv_timeout(Duration::from_secs(5)).unwrap());
     service
         .cancel("test.consumer", &request.operation_id)
         .unwrap();
     let status = terminal(&service, &request.operation_id).await;
     assert!(matches!(status.execution, Execution::Unknown { .. }));
-    assert_eq!(count.load(Ordering::SeqCst), 1);
     assert!(matches!(
         service.start(caller(), request, false).unwrap().execution,
         Execution::Unknown { .. }
     ));
-    server.join().unwrap();
+    held.finish();
+    assert_eq!(held.count.load(Ordering::SeqCst), 1);
 }
 #[tokio::test]
 async fn cancellation_before_admission_prevents_all_provider_io() {
@@ -1842,7 +1930,8 @@ async fn http_rejects_redirects_and_invalid_results_without_followup_requests() 
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn quiesce_refuses_held_workers_then_checkpoints_without_reverse_io_or_replay() {
-    let (root, count, wire, server) = server(Duration::from_millis(120));
+    let mut held = HeldServer::new();
+    let root = held.root.clone();
     let directory = tempfile::tempdir().unwrap();
     let host = FakeHost::new();
     let service = Service::new(directory.path(), host.clone()).unwrap();
@@ -1857,11 +1946,10 @@ async fn quiesce_refuses_held_workers_then_checkpoints_without_reverse_io_or_rep
         service.prepare(caller(), prepared).unwrap(),
     );
     service.start(caller(), request.clone(), false).unwrap();
-    tokio::task::spawn_blocking(move || wire.recv_timeout(Duration::from_secs(3)).unwrap())
-        .await
-        .unwrap();
+    tokio::task::block_in_place(|| held.wire.recv_timeout(Duration::from_secs(5)).unwrap());
     assert_eq!(service.quiesce().unwrap_err().code, "busy");
     assert!(service.ready());
+    drop(held.release.take());
     let result = terminal(&service, &request.operation_id).await;
     assert!(matches!(result.execution, Execution::Succeeded { .. }));
     service.wait_idle().await;
@@ -1872,7 +1960,7 @@ async fn quiesce_refuses_held_workers_then_checkpoints_without_reverse_io_or_rep
     );
     assert!(!service.ready());
     assert_eq!(host.events.lock().unwrap().len(), events);
-    assert_eq!(count.load(Ordering::Acquire), 1);
+    assert_eq!(held.count.load(Ordering::Acquire), 1);
     assert!(
         std::fs::metadata(directory.path().join("operations.sqlite-wal"))
             .unwrap()
@@ -1887,8 +1975,8 @@ async fn quiesce_refuses_held_workers_then_checkpoints_without_reverse_io_or_rep
             .unwrap(),
         result
     );
-    assert_eq!(count.load(Ordering::Acquire), 1);
-    server.join().unwrap();
+    held.finish();
+    assert_eq!(held.count.load(Ordering::Acquire), 1);
 }
 #[tokio::test]
 async fn quiesce_reports_busy_checkpoint_and_restores_admissions_until_reader_drains() {
@@ -2002,7 +2090,7 @@ async fn committed_but_uncertain_profile_write_retains_its_new_secret() {
 async fn missing_initialized_journal_or_required_schema_never_recreates_receipts() {
     for corruption in [
         "missing",
-        "missing_without_marker",
+        "empty_with_marker",
         "cancellations",
         "operations",
         "marker",
@@ -2014,7 +2102,7 @@ async fn missing_initialized_journal_or_required_schema_never_recreates_receipts
         drop(service);
         assert!(directory.path().join("operations.initialized").is_file());
         match corruption {
-            "missing" | "missing_without_marker" => {
+            "missing" | "empty_with_marker" => {
                 for name in [
                     "operations.sqlite",
                     "operations.sqlite-wal",
@@ -2022,8 +2110,11 @@ async fn missing_initialized_journal_or_required_schema_never_recreates_receipts
                 ] {
                     let _ = std::fs::remove_file(directory.path().join(name));
                 }
-                if corruption == "missing_without_marker" {
-                    std::fs::remove_file(directory.path().join("operations.initialized")).unwrap();
+                if corruption == "empty_with_marker" {
+                    rusqlite::Connection::open(directory.path().join("operations.sqlite"))
+                        .unwrap()
+                        .execute_batch("PRAGMA journal_mode=WAL;")
+                        .unwrap();
                 }
             }
             "marker" => std::fs::write(
@@ -2043,10 +2134,66 @@ async fn missing_initialized_journal_or_required_schema_never_recreates_receipts
             Service::new(directory.path(), FakeHost::new()).is_err(),
             "{corruption}"
         );
-        if corruption.starts_with("missing") {
+        if corruption == "missing" {
             assert!(!directory.path().join("operations.sqlite").exists());
         }
     }
+}
+/// Only `operations.initialized` proves receipts existed. A first activation
+/// interrupted after taking the owner lock, or before its schema committed,
+/// leaves a fresh journal that a later activation initializes.
+#[tokio::test]
+async fn interrupted_first_activation_is_fresh_until_the_marker_proves_receipts() {
+    let usable = |directory: &std::path::Path| {
+        let service = Service::new(directory, FakeHost::new()).unwrap();
+        service.activate().unwrap();
+        let config = service
+            .profiles
+            .save(configuration("https://images.test/v1/"), 0, None, None)
+            .unwrap();
+        let profile = &config.profiles[0];
+        let recipe =
+            image_generation_backend::domain::recipe(profile, &request(profile, vec![])).unwrap();
+        let receipt = service
+            .journal
+            .accept(
+                &caller(),
+                "first-operation",
+                &"c".repeat(64),
+                &recipe,
+                false,
+            )
+            .unwrap();
+        assert!(receipt.1, "fresh journal must accept a new operation");
+        assert!(directory.join("operations.initialized").is_file());
+        service.quiesce().unwrap();
+    };
+    // An obstacle makes the first activation fail after the owner lock exists.
+    let directory = tempfile::tempdir().unwrap();
+    let obstacle = directory.path().join("operations.sqlite-wal");
+    std::fs::create_dir(&obstacle).unwrap();
+    let service = Service::new(directory.path(), FakeHost::new()).unwrap();
+    assert!(service.activate().is_err());
+    drop(service);
+    assert!(directory.path().join("operations.owner.lock").exists());
+    assert!(!directory.path().join("operations.initialized").exists());
+    std::fs::remove_dir(&obstacle).unwrap();
+    usable(directory.path());
+    // A database whose schema transaction never committed is empty.
+    let directory = tempfile::tempdir().unwrap();
+    std::fs::write(directory.path().join("operations.owner.lock"), b"").unwrap();
+    rusqlite::Connection::open(directory.path().join("operations.sqlite"))
+        .unwrap()
+        .execute_batch("PRAGMA journal_mode=WAL;")
+        .unwrap();
+    usable(directory.path());
+    // Without a marker, any schema object still means a journal to validate.
+    let directory = tempfile::tempdir().unwrap();
+    rusqlite::Connection::open(directory.path().join("operations.sqlite"))
+        .unwrap()
+        .execute_batch("CREATE TABLE unrelated(x);")
+        .unwrap();
+    assert!(Service::new(directory.path(), FakeHost::new()).is_err());
 }
 #[tokio::test]
 async fn validated_schema_one_migrates_locally_without_replaying_or_extending_receipts() {
@@ -2333,18 +2480,27 @@ async fn expired_queue_never_dispatches_and_live_io_retains_worker_leases() {
     assert!(matches!(untouched.accept(), Err(e) if e.kind() == std::io::ErrorKind::WouldBlock));
 }
 
+/// The automatic deadline really expires, but its cancellation is applied only
+/// after `ready` opens: a loaded machine cannot cut the request short or let
+/// the deadline win before the state under test exists. The budget leaves
+/// room for admission and claim commits before dispatch.
+fn gated_deadline(ready: Arc<Gate>) -> image_generation_backend::service::ServicePolicy {
+    image_generation_backend::service::ServicePolicy {
+        operation_budget: Duration::from_millis(1000),
+        before_deadline_cancel: Arc::new(move || assert!(ready.wait())),
+        ..Default::default()
+    }
+}
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn automatic_deadline_stops_local_http_with_uncertain_remote_outcome_and_no_retry() {
-    let (root, count, wire, server) = server(Duration::from_millis(350));
+    let mut held = HeldServer::new();
+    let root = held.root.clone();
     let directory = tempfile::tempdir().unwrap();
     let host = FakeHost::new();
     let service = Service::with_policy(
         directory.path(),
         host.clone(),
-        image_generation_backend::service::ServicePolicy {
-            operation_budget: Duration::from_millis(150),
-            ..Default::default()
-        },
+        gated_deadline(held.received.clone()),
     )
     .unwrap();
     service.activate().unwrap();
@@ -2358,7 +2514,7 @@ async fn automatic_deadline_stops_local_http_with_uncertain_remote_outcome_and_n
         service.prepare(caller(), prepared).unwrap(),
     );
     service.start(caller(), request.clone(), false).unwrap();
-    wire.recv_timeout(Duration::from_secs(2)).unwrap();
+    tokio::task::block_in_place(|| held.wire.recv_timeout(Duration::from_secs(5)).unwrap());
     let deadline = service
         .journal
         .deadline("test.consumer", &request.operation_id)
@@ -2393,23 +2549,20 @@ async fn automatic_deadline_stops_local_http_with_uncertain_remote_outcome_and_n
         deadline
     );
     assert_eq!(restored.start(caller(), request, false).unwrap(), status);
-    server.join().unwrap();
-    assert_eq!(count.load(Ordering::SeqCst), 1);
+    held.finish();
+    assert_eq!(held.count.load(Ordering::SeqCst), 1);
 }
 
 struct HeldTestUpdate {
     inner: Arc<FakeHost>,
     entered: AtomicBool,
-    released: (Mutex<bool>, std::sync::Condvar),
+    released: Arc<Gate>,
 }
 impl Host for HeldTestUpdate {
     fn call(&self, method: &str, params: Value, cancel: &AtomicBool) -> Result<Value> {
         if method == "host.services.test.update" {
             self.entered.store(true, Ordering::Release);
-            let mut released = self.released.0.lock().unwrap();
-            while !*released {
-                released = self.released.1.wait(released).unwrap();
-            }
+            self.released.wait();
         }
         self.inner.call(method, params, cancel)
     }
@@ -2419,20 +2572,27 @@ impl Host for HeldTestUpdate {
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn deadline_unknown_is_not_idle_until_actual_io_and_leases_end() {
-    let (root, count, wire, server) = server(Duration::from_millis(350));
+    let mut held = HeldServer::new();
+    let root = held.root.clone();
     let directory = tempfile::tempdir().unwrap();
     let host = Arc::new(HeldTestUpdate {
         inner: FakeHost::new(),
         entered: AtomicBool::new(false),
-        released: (Mutex::new(false), std::sync::Condvar::new()),
+        released: Gate::new(),
     });
+    // Released on every exit path, so a failed assertion cannot leave the
+    // blocking test-update worker parked during runtime shutdown.
+    struct Release(Arc<Gate>);
+    impl Drop for Release {
+        fn drop(&mut self) {
+            self.0.open()
+        }
+    }
+    let _release = Release(host.released.clone());
     let service = Service::with_policy(
         directory.path(),
         host.clone(),
-        image_generation_backend::service::ServicePolicy {
-            operation_budget: Duration::from_millis(150),
-            ..Default::default()
-        },
+        gated_deadline(held.received.clone()),
     )
     .unwrap();
     service.activate().unwrap();
@@ -2442,8 +2602,8 @@ async fn deadline_unknown_is_not_idle_until_actual_io_and_leases_end() {
         .unwrap();
     let operation = "12345678-1234-1234-1234-123456789abc";
     service.settings("test",json!({"requestId":operation,"profileId":"http","expectedConfigurationRevision":config.document_revision})).unwrap();
-    wire.recv_timeout(Duration::from_secs(2)).unwrap();
-    tokio::time::timeout(Duration::from_secs(2), async {
+    tokio::task::block_in_place(|| held.wire.recv_timeout(Duration::from_secs(5)).unwrap());
+    tokio::time::timeout(Duration::from_secs(5), async {
         while !host.entered.load(Ordering::Acquire) {
             tokio::time::sleep(Duration::from_millis(5)).await;
         }
@@ -2463,8 +2623,7 @@ async fn deadline_unknown_is_not_idle_until_actual_io_and_leases_end() {
     assert!(service
         .discard_operation("xnmp.image-generation", operation)
         .is_err());
-    *host.released.0.lock().unwrap() = true;
-    host.released.1.notify_all();
+    host.released.open();
     service.wait_idle().await;
     tokio::time::timeout(Duration::from_secs(2), async {
         while !service
@@ -2485,13 +2644,14 @@ async fn deadline_unknown_is_not_idle_until_actual_io_and_leases_end() {
         receipt
     );
     service.quiesce().unwrap();
-    server.join().unwrap();
-    assert_eq!(count.load(Ordering::SeqCst), 1);
+    held.finish();
+    assert_eq!(held.count.load(Ordering::SeqCst), 1);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn deadline_cancellation_io_retains_ownership_after_the_original_worker_ends() {
-    let (root, count, wire, server) = server(Duration::from_millis(350));
+    let mut held = HeldServer::new();
+    let root = held.root.clone();
     let directory = tempfile::tempdir().unwrap();
     let entered = Arc::new(AtomicBool::new(false));
     let gate = Arc::new((Mutex::new(false), std::sync::Condvar::new()));
@@ -2507,7 +2667,7 @@ async fn deadline_cancellation_io_retains_ownership_after_the_original_worker_en
         directory.path(),
         FakeHost::new(),
         image_generation_backend::service::ServicePolicy {
-            operation_budget: Duration::from_millis(150),
+            operation_budget: Duration::from_millis(1000),
             before_deadline_cancel: {
                 let entered = entered.clone();
                 let gate = gate.clone();
@@ -2534,8 +2694,8 @@ async fn deadline_cancellation_io_retains_ownership_after_the_original_worker_en
         service.prepare(caller(), prepared).unwrap(),
     );
     service.start(caller(), request.clone(), false).unwrap();
-    wire.recv_timeout(Duration::from_secs(2)).unwrap();
-    tokio::time::timeout(Duration::from_secs(2), async {
+    tokio::task::block_in_place(|| held.wire.recv_timeout(Duration::from_secs(5)).unwrap());
+    tokio::time::timeout(Duration::from_secs(5), async {
         while !entered.load(Ordering::Acquire) {
             tokio::time::sleep(Duration::from_millis(5)).await;
         }
@@ -2582,8 +2742,8 @@ async fn deadline_cancellation_io_retains_ownership_after_the_original_worker_en
         receipt
     );
     service.quiesce().unwrap();
-    server.join().unwrap();
-    assert_eq!(count.load(Ordering::SeqCst), 1);
+    held.finish();
+    assert_eq!(held.count.load(Ordering::SeqCst), 1);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -2686,15 +2846,26 @@ async fn native_discard_uses_original_unavailable_candidate_and_commits_before_e
 struct HeldKnownSuccessStage {
     inner: Arc<FakeHost>,
     entered: AtomicBool,
-    release: (Mutex<bool>, std::sync::Condvar),
+    held: Arc<Gate>,
+    released: Arc<Gate>,
     lose_reply: bool,
     hold_method: &'static str,
     seals: AtomicUsize,
 }
 impl HeldKnownSuccessStage {
+    fn new(hold_method: &'static str, lose_reply: bool) -> Arc<Self> {
+        Arc::new(Self {
+            inner: FakeHost::new(),
+            entered: AtomicBool::new(false),
+            held: Gate::new(),
+            released: Gate::new(),
+            lose_reply,
+            hold_method,
+            seals: AtomicUsize::new(0),
+        })
+    }
     fn release(&self) {
-        *self.release.0.lock().unwrap() = true;
-        self.release.1.notify_all();
+        self.released.open()
     }
 }
 impl Host for HeldKnownSuccessStage {
@@ -2703,10 +2874,8 @@ impl Host for HeldKnownSuccessStage {
             self.seals.fetch_add(1, Ordering::SeqCst);
         }
         if method == self.hold_method && !self.entered.swap(true, Ordering::AcqRel) {
-            let mut released = self.release.0.lock().unwrap();
-            while !*released {
-                released = self.release.1.wait(released).unwrap();
-            }
+            self.held.open();
+            self.released.wait();
             if self.lose_reply {
                 return Err(error("host_unavailable", "Fixture stage reply lost"));
             }
@@ -2730,22 +2899,13 @@ async fn known_success_is_durable_before_held_stage_and_survives_deadline_or_los
     for lose_reply in [false, true] {
         let (root, count, wire, server) = server(Duration::ZERO);
         let directory = tempfile::tempdir().unwrap();
-        let host = Arc::new(HeldKnownSuccessStage {
-            inner: FakeHost::new(),
-            entered: AtomicBool::new(false),
-            release: (Mutex::new(false), std::sync::Condvar::new()),
-            lose_reply,
-            hold_method: "host.artifacts.stage",
-            seals: AtomicUsize::new(0),
-        });
+        let host = HeldKnownSuccessStage::new("host.artifacts.stage", lose_reply);
         let _release_on_failure = ReleaseKnownStage(host.clone());
+        // The deadline expires during the held stage, never before success.
         let service = Service::with_policy(
             directory.path(),
             host.clone(),
-            image_generation_backend::service::ServicePolicy {
-                operation_budget: Duration::from_millis(150),
-                ..Default::default()
-            },
+            gated_deadline(host.held.clone()),
         )
         .unwrap();
         service.activate().unwrap();
@@ -2759,18 +2919,12 @@ async fn known_success_is_durable_before_held_stage_and_survives_deadline_or_los
             service.prepare(caller(), prepared).unwrap(),
         );
         service.start(caller(), prepared.clone(), false).unwrap();
-        wire.recv_timeout(Duration::from_secs(2)).unwrap();
-        tokio::time::timeout(Duration::from_secs(2), async {
-            while !host.entered.load(Ordering::Acquire) {
-                tokio::time::sleep(Duration::from_millis(5)).await
-            }
-        })
-        .await
-        .unwrap();
+        wire.recv_timeout(Duration::from_secs(5)).unwrap();
+        tokio::task::block_in_place(|| assert!(host.held.wait()));
         // Wait for the real short deadline cancellation transaction while byte
         // handoff remains held, not merely a fabricated cancelled flag.
         let db = rusqlite::Connection::open(directory.path().join("operations.sqlite")).unwrap();
-        tokio::time::timeout(Duration::from_secs(2), async {
+        tokio::time::timeout(Duration::from_secs(5), async {
             loop {
                 let cancelled: i64 = db
                     .query_row(
@@ -2863,19 +3017,307 @@ async fn known_success_is_durable_before_held_stage_and_survives_deadline_or_los
     }
 }
 
+/// What a consumer polling this operation accepts (Trace's receipt rules):
+/// revisions never go back, an equal revision is an identical receipt, and a
+/// terminal execution never changes or becomes non-terminal.
+fn assert_consumer_accepts(observed: &[OperationStatus]) {
+    let terminal = |status: &OperationStatus| {
+        !matches!(
+            status.execution,
+            Execution::Accepted {} | Execution::Running {}
+        )
+    };
+    for pair in observed.windows(2) {
+        let (old, new) = (&pair[0], &pair[1]);
+        assert!(new.revision >= old.revision, "revision regressed: {pair:?}");
+        if new.revision == old.revision {
+            assert_eq!(old, new, "revision reused for a different receipt");
+        }
+        if terminal(old) {
+            assert_eq!(old.execution, new.execution, "terminal changed: {pair:?}");
+        }
+    }
+}
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn successful_candidate_status_never_races_the_original_owned_seal_io() {
+async fn proven_success_reads_as_running_until_its_seal_outcome_is_committed() {
+    for lose_reply in [false, true] {
+        let (root, count, _, server) = server(Duration::ZERO);
+        let directory = tempfile::tempdir().unwrap();
+        let host = HeldKnownSuccessStage::new("host.artifacts.seal", lose_reply);
+        let _release_on_failure = ReleaseKnownStage(host.clone());
+        let service = Service::new(directory.path(), host.clone()).unwrap();
+        service.activate().unwrap();
+        let config = service
+            .profiles
+            .save(configuration(&root), 0, None, None)
+            .unwrap();
+        let prepared = request(&config.profiles[0], vec![]);
+        let prepared = start(
+            prepared.clone(),
+            service.prepare(caller(), prepared).unwrap(),
+        );
+        let mut observed = vec![service.start(caller(), prepared.clone(), false).unwrap()];
+        tokio::task::block_in_place(|| assert!(host.held.wait()));
+        // The proof of paid success and its exact candidate are durable...
+        let durable = service
+            .journal
+            .get("test.consumer", &prepared.operation_id, None)
+            .unwrap()
+            .unwrap();
+        assert!(matches!(durable.execution, Execution::Succeeded { .. }));
+        assert!(service
+            .journal
+            .output_descriptor("test.consumer", &prepared.operation_id)
+            .unwrap()
+            .is_some());
+        // ...but no reader is told about it while the original seal is held.
+        let events = host.inner.events.lock().unwrap().len();
+        for _ in 0..3 {
+            let status = service
+                .status("test.consumer", &prepared.operation_id)
+                .unwrap();
+            assert_eq!(status.execution, Execution::Running {}, "{status:?}");
+            assert_eq!(status.delivery, Delivery::None {});
+            observed.push(status);
+            observed.push(service.start(caller(), prepared.clone(), false).unwrap());
+            assert!(!service
+                .operation_idle("test.consumer", &prepared.operation_id)
+                .unwrap());
+        }
+        let cancelled = service
+            .cancel("test.consumer", &prepared.operation_id)
+            .unwrap();
+        assert_eq!(cancelled.execution, Execution::Running {});
+        observed.push(cancelled);
+        assert!(service
+            .discard_operation("test.consumer", &prepared.operation_id)
+            .is_err());
+        let sha = service
+            .journal
+            .output_sha256("test.consumer", &prepared.operation_id)
+            .unwrap()
+            .unwrap();
+        assert!(service
+            .acknowledge(
+                "test.consumer",
+                &prepared.operation_id,
+                &sha,
+                "discarded",
+                None
+            )
+            .is_err());
+        assert_eq!(host.inner.events.lock().unwrap().len(), events);
+        assert_eq!(service.quiesce().unwrap_err().code, "busy");
+        assert_eq!(
+            host.seals.load(Ordering::SeqCst),
+            1,
+            "Status raced the owned seal"
+        );
+        host.release();
+        service.wait_idle().await;
+        // The committed seal outcome is announced: available, or honestly
+        // unavailable when the original seal reply was lost.
+        let announced = service
+            .journal
+            .get("test.consumer", &prepared.operation_id, None)
+            .unwrap()
+            .unwrap();
+        assert!(matches!(announced.execution, Execution::Succeeded { .. }));
+        if lose_reply {
+            assert!(matches!(announced.delivery, Delivery::Unavailable { .. }));
+        } else {
+            assert!(matches!(announced.delivery, Delivery::Available { .. }));
+        }
+        let event = host.inner.events.lock().unwrap().last().cloned().unwrap();
+        assert_eq!(
+            event["payload"]["status"],
+            serde_json::to_value(&announced).unwrap()
+        );
+        observed.push(announced);
+        // Afterwards status may only restore delivery from the original seal.
+        let completed = service
+            .status("test.consumer", &prepared.operation_id)
+            .unwrap();
+        assert!(matches!(completed.delivery, Delivery::Available { .. }));
+        observed.push(completed);
+        assert_consumer_accepts(&observed);
+        assert_eq!(
+            host.seals.load(Ordering::SeqCst),
+            if lose_reply { 2 } else { 1 }
+        );
+        service.quiesce().unwrap();
+        server.join().unwrap();
+        assert_eq!(count.load(Ordering::SeqCst), 1, "Paid generation replayed");
+    }
+}
+
+/// Fakes the owned `codex` processes without running anything: login reports
+/// a saved login unless the case fails it; the image turn fails with a host error.
+struct CodexHostFailure {
+    inner: Arc<FakeHost>,
+    login: Option<&'static str>,
+    turn: &'static str,
+    logins: AtomicUsize,
+    turns: AtomicUsize,
+    login_entered: Arc<Gate>,
+}
+impl Host for CodexHostFailure {
+    fn call(&self, method: &str, params: Value, cancelled: &AtomicBool) -> Result<Value> {
+        if method != "host.process.run" {
+            return self.inner.call(method, params, cancelled);
+        }
+        if params["args"] != json!(["login", "status"]) {
+            self.turns.fetch_add(1, Ordering::SeqCst);
+            return Err(error(
+                self.turn,
+                "Fixture host failure during the image turn",
+            ));
+        }
+        let index = self.logins.fetch_add(1, Ordering::SeqCst);
+        match self.login {
+            None => {
+                let stdout = self.inner.directory.path().join(format!("login-{index}"));
+                std::fs::write(&stdout, "Logged in using ChatGPT\n").unwrap();
+                Ok(
+                    json!({"handle":format!("login-{index}"),"status":0,"stdout":stdout,"stderr":stdout}),
+                )
+            }
+            Some("cancel") => {
+                // Like the native runtime: a cancelled wait returns a local
+                // host failure, never a process result.
+                self.login_entered.open();
+                let started = std::time::Instant::now();
+                while !cancelled.load(Ordering::Acquire)
+                    && started.elapsed() < Duration::from_secs(10)
+                {
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+                Err(error(
+                    "host_unavailable",
+                    "Host service failed or was cancelled",
+                ))
+            }
+            Some(code) => Err(error(code, "Fixture host failure during login status")),
+        }
+    }
+    fn event(&self, name: &str, payload: Value) -> Result<()> {
+        self.inner.event(name, payload)
+    }
+}
+/// After `codex exec` may have started, only a host rejection proven to precede
+/// spawning is a definite failure; anything else could have run a paid turn and
+/// stays unknown. `login status` never starts a turn, so its failures and
+/// cancellation are definite non-executions.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn codex_host_failures_are_unknown_after_the_turn_starts_and_definite_before_it() {
+    for (login, turn, expected) in [
+        (None, "service_unavailable", "unknown"),
+        (None, "interrupted", "unknown"),
+        (None, "storage_unavailable", "unknown"),
+        (None, "capacity_reached", "failed"),
+        (Some("host_unavailable"), "service_unavailable", "failed"),
+        (Some("service_unavailable"), "service_unavailable", "failed"),
+        (Some("cancel"), "service_unavailable", "cancelled"),
+    ] {
+        let case = format!("{login:?}/{turn}");
+        let host = Arc::new(CodexHostFailure {
+            inner: FakeHost::new(),
+            login,
+            turn,
+            logins: AtomicUsize::new(0),
+            turns: AtomicUsize::new(0),
+            login_entered: Gate::new(),
+        });
+        let launcher = host.inner.directory.path().join("codex");
+        std::fs::write(&launcher, b"#!/bin/sh\nexit 99\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&launcher, std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        let directory = tempfile::tempdir().unwrap();
+        let service = Service::new(directory.path(), host.clone()).unwrap();
+        service.activate().unwrap();
+        let mut config = configuration("https://unused.test/images");
+        config.profiles = vec![Profile::Codex {
+            id: "http".into(),
+            name: "Codex".into(),
+            recipe_revision: "".into(),
+            executable_path: launcher.to_string_lossy().into_owned(),
+            model_selection: false,
+            credential: Credential::CliSavedLogin,
+        }];
+        let saved = service.profiles.save(config, 0, None, None).unwrap();
+        let mut prepared = request(&saved.profiles[0], vec![]);
+        prepared.model = None;
+        prepared.options.quality = "auto".into();
+        prepared.options.background = "auto".into();
+        let request = start(
+            prepared.clone(),
+            service.prepare(caller(), prepared).unwrap(),
+        );
+        service.start(caller(), request.clone(), false).unwrap();
+        if login == Some("cancel") {
+            tokio::task::block_in_place(|| assert!(host.login_entered.wait()));
+            service
+                .cancel("test.consumer", &request.operation_id)
+                .unwrap();
+        }
+        let status = terminal(&service, &request.operation_id).await;
+        match (expected, &status.execution) {
+            ("unknown", Execution::Unknown { error }) => {
+                assert_eq!(error.code, "remote_outcome_unknown", "{case}")
+            }
+            ("failed", Execution::Failed { error }) => {
+                assert_ne!(error.code, "remote_outcome_unknown", "{case}")
+            }
+            ("cancelled", Execution::Cancelled {}) => {}
+            _ => panic!("{case}: expected {expected}, got {status:?}"),
+        }
+        assert_eq!(status.delivery, Delivery::None {}, "{case}");
+        let turns = usize::from(login.is_none());
+        assert_eq!(host.turns.load(Ordering::SeqCst), turns, "{case}");
+        // Neither a duplicate start nor status ever runs another process.
+        assert_eq!(service.start(caller(), request, false).unwrap(), status);
+        assert_eq!(host.turns.load(Ordering::SeqCst), turns, "{case}");
+        assert_eq!(host.logins.load(Ordering::SeqCst), 1, "{case}");
+        service.quiesce().unwrap();
+    }
+}
+
+/// Reads and reseals of sealed outputs fail with `failure` while it is set.
+struct FlakyArtifacts {
+    inner: Arc<FakeHost>,
+    failure: Mutex<Option<&'static str>>,
+    seals: AtomicUsize,
+}
+impl Host for FlakyArtifacts {
+    fn call(&self, method: &str, params: Value, cancelled: &AtomicBool) -> Result<Value> {
+        if method == "host.artifacts.seal" {
+            self.seals.fetch_add(1, Ordering::SeqCst);
+        }
+        if matches!(method, "host.artifacts.read" | "host.artifacts.seal") {
+            if let Some(code) = *self.failure.lock().unwrap() {
+                return Err(error(code, "Fixture transient artifact failure"));
+            }
+        }
+        self.inner.call(method, params, cancelled)
+    }
+    fn event(&self, name: &str, payload: Value) -> Result<()> {
+        self.inner.event(name, payload)
+    }
+}
+/// Status is a read: a transient host condition is reported to the caller but
+/// never rewrites durable delivery; only a verified missing/corrupt answer may.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn transient_artifact_failures_never_rewrite_available_delivery() {
     let (root, count, _, server) = server(Duration::ZERO);
     let directory = tempfile::tempdir().unwrap();
-    let host = Arc::new(HeldKnownSuccessStage {
+    let host = Arc::new(FlakyArtifacts {
         inner: FakeHost::new(),
-        entered: AtomicBool::new(false),
-        release: (Mutex::new(false), std::sync::Condvar::new()),
-        lose_reply: false,
-        hold_method: "host.artifacts.seal",
+        failure: Mutex::new(None),
         seals: AtomicUsize::new(0),
     });
-    let _release_on_failure = ReleaseKnownStage(host.clone());
     let service = Service::new(directory.path(), host.clone()).unwrap();
     service.activate().unwrap();
     let config = service
@@ -2883,49 +3325,61 @@ async fn successful_candidate_status_never_races_the_original_owned_seal_io() {
         .save(configuration(&root), 0, None, None)
         .unwrap();
     let prepared = request(&config.profiles[0], vec![]);
-    let prepared = start(
+    let request = start(
         prepared.clone(),
         service.prepare(caller(), prepared).unwrap(),
     );
-    service.start(caller(), prepared.clone(), false).unwrap();
-    tokio::time::timeout(Duration::from_secs(2), async {
-        while !host.entered.load(Ordering::Acquire) {
-            tokio::time::sleep(Duration::from_millis(5)).await
-        }
-    })
-    .await
-    .unwrap();
-    assert!(service
-        .journal
-        .output_descriptor("test.consumer", &prepared.operation_id)
-        .unwrap()
-        .is_some());
-    for _ in 0..3 {
-        let status = service
-            .status("test.consumer", &prepared.operation_id)
-            .unwrap();
-        assert!(matches!(status.execution, Execution::Succeeded { .. }));
-        assert!(matches!(status.delivery, Delivery::Unavailable { .. }));
-        assert!(!service
-            .operation_idle("test.consumer", &prepared.operation_id)
-            .unwrap());
+    service.start(caller(), request.clone(), false).unwrap();
+    let available = terminal(&service, &request.operation_id).await;
+    assert!(matches!(available.delivery, Delivery::Available { .. }));
+    let seals = host.seals.load(Ordering::SeqCst);
+    for code in [
+        "capacity_reached",
+        "host_unavailable",
+        "busy",
+        "storage_unavailable",
+    ] {
+        *host.failure.lock().unwrap() = Some(code);
+        let failure = service
+            .status("test.consumer", &request.operation_id)
+            .unwrap_err();
+        assert_eq!(failure.code, "storage_unavailable", "{code}");
         assert_eq!(
-            host.seals.load(Ordering::SeqCst),
-            1,
-            "Status raced an already owned output seal"
+            service
+                .journal
+                .get("test.consumer", &request.operation_id, None)
+                .unwrap()
+                .unwrap(),
+            available,
+            "{code} rewrote durable delivery"
         );
+        assert_eq!(host.seals.load(Ordering::SeqCst), seals, "{code}");
     }
-    assert_eq!(service.quiesce().unwrap_err().code, "busy");
-    host.release();
-    service.wait_idle().await;
-    assert!(matches!(
+    *host.failure.lock().unwrap() = None;
+    assert_eq!(
         service
-            .status("test.consumer", &prepared.operation_id)
-            .unwrap()
-            .delivery,
-        Delivery::Available { .. }
-    ));
-    assert_eq!(host.seals.load(Ordering::SeqCst), 1);
+            .status("test.consumer", &request.operation_id)
+            .unwrap(),
+        available
+    );
+    // A verified answer still changes delivery, without generating again.
+    *host.failure.lock().unwrap() = Some("not_found");
+    let missing = service
+        .status("test.consumer", &request.operation_id)
+        .unwrap();
+    assert_eq!(
+        missing.delivery,
+        Delivery::Unavailable {
+            reason: "missing".into()
+        }
+    );
+    assert_eq!(missing.execution, available.execution);
+    *host.failure.lock().unwrap() = None;
+    let restored = service
+        .status("test.consumer", &request.operation_id)
+        .unwrap();
+    assert_eq!(restored.delivery, available.delivery);
+    assert_consumer_accepts(&[available, missing, restored]);
     service.quiesce().unwrap();
     server.join().unwrap();
     assert_eq!(count.load(Ordering::SeqCst), 1);

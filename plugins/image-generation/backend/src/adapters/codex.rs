@@ -6,6 +6,59 @@ struct ProcessOutput {
     stdout: Vec<u8>,
     exit_status: i64,
 }
+/// Which owned process a host failure interrupted. Only the image turn can
+/// have reached the remote service.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum ProcessStep {
+    LoginStatus,
+    ImageTurn,
+}
+/// Classify a failed owned-process step by what it proves about remote work.
+///
+/// `login status` never starts an image turn, so any failure there is a
+/// definite non-execution: cancelled when requested, otherwise failed. During
+/// the image turn only host rejections that are proven to precede spawning
+/// stay definite; every other host error (including the host's own output
+/// limits, supervision or reader failures after spawn, and local
+/// cancellation) leaves the remote outcome unknown, so it is never retried.
+fn process_failure(
+    step: ProcessStep,
+    failure: te_image_generation_contract::SafeError,
+    cancel_requested: bool,
+) -> te_image_generation_contract::SafeError {
+    match step {
+        ProcessStep::LoginStatus if cancel_requested => error(
+            "cancelled",
+            "Image generation cancelled before the Codex image turn started",
+        ),
+        ProcessStep::LoginStatus => error(
+            "unavailable",
+            &format!(
+                "Codex login check could not run; no image turn was started: {}",
+                failure.message
+            ),
+        ),
+        ProcessStep::ImageTurn
+            if matches!(
+                failure.code.as_str(),
+                "capacity_reached" | "not_found" | "permission_denied"
+            ) =>
+        {
+            failure
+        }
+        ProcessStep::ImageTurn if cancel_requested => error(
+            "cancelled_after_dispatch",
+            "Codex image turn was cancelled after it started; it will not be replayed",
+        ),
+        ProcessStep::ImageTurn => error(
+            "remote_outcome_unknown",
+            &format!(
+                "Codex image turn ended without a complete host result; it will not be replayed: {}",
+                failure.message
+            ),
+        ),
+    }
+}
 fn run(
     host: &dyn Host,
     executable: &super::codex_executable::CodexExecutable,
@@ -84,7 +137,20 @@ fn generate_at(
         vec!["login".into(), "status".into()],
         work.path(),
         cancel,
-    )?;
+    )
+    .map_err(|failure| {
+        process_failure(
+            ProcessStep::LoginStatus,
+            failure,
+            cancel.load(Ordering::Acquire),
+        )
+    })?;
+    if cancel.load(Ordering::Acquire) {
+        return Err(error(
+            "cancelled",
+            "Image generation cancelled before the Codex image turn started",
+        ));
+    }
     if login.exit_status != 0
         || !String::from_utf8_lossy(&login.stdout).contains("Logged in using ChatGPT")
     {
@@ -142,7 +208,13 @@ fn generate_at(
             .clone()
             .ok_or_else(|| error("invalid_request", "Missing prepared Codex task"))?,
     );
-    let process = run(host, executable, args, work.path(), cancel)?;
+    let process = run(host, executable, args, work.path(), cancel).map_err(|failure| {
+        process_failure(
+            ProcessStep::ImageTurn,
+            failure,
+            cancel.load(Ordering::Acquire),
+        )
+    })?;
     let turn = super::codex_turn::read_turn(&process.stdout)
         .map_err(|failure| error("invalid_response", failure.message()))?;
     let thread = turn.thread_id.clone().ok_or_else(|| {
@@ -185,7 +257,7 @@ fn generate_at(
             "Codex image turn did not complete reliably; it will not be replayed",
         ));
     }
-    let bytes = match discover(&home, &thread) {
+    let bytes = match discover(home, &thread) {
         Ok(bytes) => bytes,
         Err(failure) => return failed(failure),
     };
@@ -194,7 +266,7 @@ fn generate_at(
     Ok(Output { bytes, metadata })
 }
 fn discover(home: &Path, thread: &str) -> Result<Vec<u8>> {
-    let directory = home.join("generated_images").join(&thread);
+    let directory = home.join("generated_images").join(thread);
     let info = std::fs::symlink_metadata(&directory).map_err(storage)?;
     if !info.is_dir() || info.file_type().is_symlink() {
         return Err(error(
@@ -212,10 +284,9 @@ fn discover(home: &Path, thread: &str) -> Result<Vec<u8>> {
             .extension()
             .and_then(|s| s.to_str())
             .is_some_and(|s| s.eq_ignore_ascii_case("png"))
+            && selected.replace(path).is_some()
         {
-            if selected.replace(path).is_some() {
-                return Err(error("invalid_response", "Codex returned multiple images"));
-            }
+            return Err(error("invalid_response", "Codex returned multiple images"));
         }
     }
     let path = selected.ok_or_else(|| {
@@ -357,16 +428,13 @@ mod tests {
         let sink = |event| match event {
             Evidence::Turn(receipt) => {
                 journal.turn_checkpoint("test.consumer", "checkpoint-order", receipt)?;
-                assert_eq!(
-                    journal
-                        .get("test.consumer", "checkpoint-order", None)?
-                        .unwrap()
-                        .diagnostics
-                        .as_ref()
-                        .unwrap()
-                        .valid(false),
-                    true
-                );
+                assert!(journal
+                    .get("test.consumer", "checkpoint-order", None)?
+                    .unwrap()
+                    .diagnostics
+                    .as_ref()
+                    .unwrap()
+                    .valid(false));
                 // If discovery preceded this callback the adapter would have
                 // already read the valid PNG, rather than reporting it missing.
                 std::fs::remove_dir_all(home.path().join("generated_images").join(THREAD)).unwrap();

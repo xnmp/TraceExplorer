@@ -19,23 +19,32 @@ impl Journal {
     pub fn open(directory: &Path) -> Result<Self> {
         let path = directory.join("operations.sqlite");
         let initialized = initialized_marker(directory)?;
+        // Only the initialization marker proves receipts once existed. An owner
+        // lock, or an empty database left by an interrupted first activation,
+        // is a fresh journal that activation may (re)create.
+        let empty = || -> Result<(Connection, bool)> {
+            let connection = Connection::open_in_memory().map_err(storage)?;
+            schema(&connection)?;
+            Ok((connection, true))
+        };
         let (connection, fresh) = match std::fs::symlink_metadata(&path) {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                if initialized
-                    || std::fs::symlink_metadata(directory.join("operations.owner.lock")).is_ok()
-                {
+                if initialized {
                     return Err(error("unavailable", "Image operation journal is missing; restore its original receipts before using generation"));
                 }
-                let connection = Connection::open_in_memory().map_err(storage)?;
-                schema(&connection)?;
-                (connection, true)
+                empty()?
             }
             Ok(metadata) if metadata.is_file() && !metadata.file_type().is_symlink() => {
                 let connection =
                     Connection::open_with_flags(&path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
                         .map_err(storage)?;
-                validate_schema(&connection)?;
-                (connection, false)
+                if !initialized && never_initialized(&connection)? {
+                    drop(connection);
+                    empty()?
+                } else {
+                    validate_schema(&connection)?;
+                    (connection, false)
+                }
             }
             _ => {
                 return Err(error(
@@ -82,8 +91,9 @@ impl Journal {
             };
         let connection = Connection::open_with_flags(&path, flags).map_err(storage)?;
         // Existing databases are validated before any write. Schema loss is
-        // corruption, never an excuse to recreate idempotency evidence.
-        let version = if exists {
+        // corruption, never an excuse to recreate idempotency evidence; only a
+        // database that never committed a schema, before the marker, is fresh.
+        let version = if exists && (initialized || !never_initialized(&connection)?) {
             Some(validate_schema(&connection)?)
         } else {
             None
@@ -785,6 +795,17 @@ fn mark_initialized(directory: &Path) -> Result<()> {
         .map_err(storage)?;
     te_plugin_runtime::durable_dir::sync(directory).map_err(storage)?;
     Ok(())
+}
+/// A database file whose schema transaction never committed: no user version
+/// and no schema objects at all. Anything else is validated as a journal.
+fn never_initialized(connection: &Connection) -> Result<bool> {
+    let version: i64 = connection
+        .pragma_query_value(None, "user_version", |row| row.get(0))
+        .map_err(storage)?;
+    let objects: i64 = connection
+        .query_row("SELECT COUNT(*) FROM sqlite_master", [], |row| row.get(0))
+        .map_err(storage)?;
+    Ok(version == 0 && objects == 0)
 }
 fn validate_schema(connection: &Connection) -> Result<i64> {
     let version: i64 = connection

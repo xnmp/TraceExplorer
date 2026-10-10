@@ -227,7 +227,7 @@ fn execute(
             service.cancel(&caller.package_id, &text(&envelope.request, "operationId")?)?,
         )
         .unwrap(),
-        "acknowledge" => serde_json::to_value(service.journal.acknowledge(
+        "acknowledge" => serde_json::to_value(service.acknowledge(
             &caller.package_id,
             &text(&envelope.request, "operationId")?,
             &text(&envelope.request, "outputSha256")?,

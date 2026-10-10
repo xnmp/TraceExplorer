@@ -57,6 +57,48 @@ impl Drop for AdmissionIo {
         }
     }
 }
+type OperationKey = (String, String);
+/// A proven success whose output this process is still staging and sealing.
+/// Holds the last receipt consumers could have observed until the terminal
+/// receipt is committed (plan §8.3 step 8), then forgets it on any exit path.
+struct Unannounced {
+    service: Arc<Service>,
+    identity: OperationKey,
+}
+impl Drop for Unannounced {
+    fn drop(&mut self) {
+        self.service
+            .unannounced
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&self.identity);
+    }
+}
+/// Classified read-back of a durable output descriptor. Only a verified host
+/// answer may change durable delivery; anything else is reported, not stored.
+enum Readback {
+    Intact,
+    Lost(&'static str),
+    Transient,
+}
+fn readback(result: &Result<Value>, expected: &ArtifactDescriptor) -> Readback {
+    match result {
+        Ok(value) => {
+            if serde_json::from_value::<ArtifactDescriptor>(value["artifact"].clone())
+                .is_ok_and(|returned| &returned == expected)
+            {
+                Readback::Intact
+            } else {
+                Readback::Transient
+            }
+        }
+        Err(failure) => match failure.code.as_str() {
+            "not_found" | "missing" => Readback::Lost("missing"),
+            "corrupt" | "input_changed" => Readback::Lost("corrupt"),
+            _ => Readback::Transient,
+        },
+    }
+}
 /// Production policy is fixed; tests inject shorter budgets/durability failures.
 pub struct ServicePolicy {
     pub operation_budget: Duration,
@@ -79,6 +121,7 @@ pub struct Service {
     preparations: Mutex<HashMap<String, Prepared>>,
     controls: Mutex<HashMap<(String, String), Arc<AtomicBool>>>,
     admission_io: Mutex<HashMap<(String, String), usize>>,
+    unannounced: Mutex<HashMap<OperationKey, OperationStatus>>,
     admissions: Arc<tokio::sync::Semaphore>,
     workers: Arc<tokio::sync::Semaphore>,
     ready: AtomicBool,
@@ -113,6 +156,7 @@ impl Service {
             preparations: Mutex::new(HashMap::new()),
             controls: Mutex::new(HashMap::new()),
             admission_io: Mutex::new(HashMap::new()),
+            unannounced: Mutex::new(HashMap::new()),
             admissions: Arc::new(tokio::sync::Semaphore::new(36)),
             workers: Arc::new(tokio::sync::Semaphore::new(4)),
             ready: AtomicBool::new(false),
@@ -340,10 +384,10 @@ impl Service {
         test: bool,
     ) -> Result<OperationStatus> {
         let semantic = domain::semantic(&request);
-        if let Some(status) =
+        if let Some(status) = self.visible(&caller.package_id, &request.operation_id, || {
             self.journal
-                .get(&caller.package_id, &request.operation_id, Some(&semantic))?
-        {
+                .get(&caller.package_id, &request.operation_id, Some(&semantic))
+        })? {
             return Ok(status);
         }
         domain::validate_prepare(&request.prepared())?;
@@ -353,14 +397,20 @@ impl Service {
         match self.start_prepared(caller.clone(), request.clone(), test, semantic.clone()) {
             Ok(status) => Ok(status),
             Err(failure) if failure.code == "operation_conflict" => Err(failure),
-            Err(failure) => self.journal.reject(
-                &caller,
-                &request.operation_id,
-                &semantic,
-                &request.effective_recipe_digest,
-                failure,
-                test,
-            ),
+            Err(failure) => self
+                .visible(&caller.package_id, &request.operation_id, || {
+                    self.journal
+                        .reject(
+                            &caller,
+                            &request.operation_id,
+                            &semantic,
+                            &request.effective_recipe_digest,
+                            failure,
+                            test,
+                        )
+                        .map(Some)
+                })?
+                .ok_or_else(|| invalid("Image receipt disappeared")),
         }
     }
     fn start_prepared(
@@ -446,7 +496,16 @@ impl Service {
                 self.operation_budget,
             )
         })?;
-        if !accepted || status.execution != (Execution::Accepted {}) {
+        if !accepted {
+            // A concurrent duplicate won admission; report its external view.
+            return self
+                .visible(&caller.package_id, &request.operation_id, || {
+                    self.journal
+                        .get(&caller.package_id, &request.operation_id, Some(&semantic))
+                })?
+                .ok_or_else(|| invalid("Image receipt disappeared"));
+        }
+        if status.execution != (Execution::Accepted {}) {
             return Ok(status);
         }
         let deadline = self
@@ -709,8 +768,17 @@ impl Service {
             }
         };
         let sha = hex::encode(Sha256::digest(&output.bytes));
+        // Readers keep seeing this running receipt until the seal outcome is
+        // committed below; the guard outlives that final write on every path.
+        let running = self
+            .journal
+            .get(&work.caller.package_id, &work.request.operation_id, None)?
+            .ok_or_else(|| invalid("Image receipt disappeared"))?;
+        let _unannounced =
+            self.hold_unannounced(&work.caller.package_id, &work.request.operation_id, running)?;
         // Commit proven execution before stage allocation: stage/lifecycle IO
         // can fail or outlive generation's deadline without erasing paid success.
+        // A crash from here on recovers this proof, never a second generation.
         self.journal.record_success(
             &work.caller.package_id,
             &work.request.operation_id,
@@ -786,18 +854,66 @@ impl Service {
             ),
         }
     }
+    /// Register a proven success as unannounced before its proof is committed.
+    fn hold_unannounced(
+        self: &Arc<Self>,
+        caller: &str,
+        operation: &str,
+        visible: OperationStatus,
+    ) -> Result<Unannounced> {
+        let identity: OperationKey = (caller.into(), operation.into());
+        self.unannounced
+            .lock()
+            .map_err(storage)?
+            .insert(identity.clone(), visible);
+        Ok(Unannounced {
+            service: self.clone(),
+            identity,
+        })
+    }
+    /// The externally visible receipt and whether it masks an unannounced
+    /// success. The registry lock spans the durable read, so a reader observes
+    /// either the pre-success receipt or the committed seal outcome, never the
+    /// interim proof, and never a terminal receipt followed by a running one.
+    fn observe(
+        &self,
+        caller: &str,
+        operation: &str,
+        read: impl FnOnce() -> Result<Option<OperationStatus>>,
+    ) -> Result<Option<(OperationStatus, bool)>> {
+        let unannounced = self.unannounced.lock().map_err(storage)?;
+        let durable = read()?;
+        Ok(durable.map(|durable| {
+            match unannounced.get(&(caller.to_owned(), operation.to_owned())) {
+                Some(visible) => (visible.clone(), true),
+                None => (durable, false),
+            }
+        }))
+    }
+    fn visible(
+        &self,
+        caller: &str,
+        operation: &str,
+        read: impl FnOnce() -> Result<Option<OperationStatus>>,
+    ) -> Result<Option<OperationStatus>> {
+        Ok(self
+            .observe(caller, operation, read)?
+            .map(|(status, _)| status))
+    }
     pub fn status(&self, caller: &str, operation: &str) -> Result<OperationStatus> {
-        let mut status = self
-            .journal
-            .get(caller, operation, None)?
+        let (mut status, unannounced) = self
+            .observe(caller, operation, || {
+                self.journal.get(caller, operation, None)
+            })?
             .ok_or_else(|| error("not_found", "Unknown image operation"))?;
         if !valid_operation_id(operation) {
             return Err(invalid("Invalid operation ID"));
         }
         // Candidate bytes may still be written/sealed by this original worker.
         // Recovery is local and unpaid, but must not race that owned byte IO.
-        if matches!(status.delivery, Delivery::Unavailable { .. })
-            && self.operation_has_io(caller, operation)?
+        if unannounced
+            || matches!(status.delivery, Delivery::Unavailable { .. })
+                && self.operation_has_io(caller, operation)?
         {
             return Ok(status);
         }
@@ -806,44 +922,46 @@ impl Service {
             Delivery::Unavailable { .. } => self.journal.output_descriptor(caller, operation)?,
             _ => None,
         };
-        if let Some(output) = descriptor {
-            let read = self.host.call(
-                "host.artifacts.read",
-                json!({"consumerPackageId":caller,"operationId":operation,"artifact":output}),
-                &AtomicBool::new(false),
-            );
-            match read {
-                Ok(value)
-                    if serde_json::from_value::<ArtifactDescriptor>(value["artifact"].clone())
-                        .is_ok_and(|returned| returned == output) =>
-                {
-                    if matches!(status.delivery, Delivery::Unavailable { .. }) {
-                        status = self.journal.delivery_restored(caller, operation, output)?;
-                    }
+        let Some(output) = descriptor else {
+            return Ok(status);
+        };
+        let read = self.host.call(
+            "host.artifacts.read",
+            json!({"consumerPackageId":caller,"operationId":operation,"artifact":output}),
+            &AtomicBool::new(false),
+        );
+        match readback(&read, &output) {
+            Readback::Intact => {
+                if matches!(status.delivery, Delivery::Unavailable { .. }) {
+                    status = self.journal.delivery_restored(caller, operation, output)?;
                 }
-                result => {
-                    // Only the original owned stage is retried. Native seal is
-                    // idempotent and checks proof, pins and bytes; never generate.
-                    let restored = self.host.call(
-                        "host.artifacts.seal",
-                        json!({"consumerPackageId":caller,"operationId":operation,"handle":output.handle,"mediaType":"image/png"}),
-                        &AtomicBool::new(false),
-                    ).and_then(|value| serde_json::from_value::<ArtifactDescriptor>(value).map_err(|_| invalid("Invalid recovered image descriptor")))
-                    .ok().filter(|returned| returned == &output);
-                    if let Some(restored) = restored {
-                        status = self
-                            .journal
-                            .delivery_restored(caller, operation, restored)?;
-                    } else {
-                        let reason =
-                            match result.err().as_ref().map(|failure| failure.code.as_str()) {
-                                Some("not_found" | "missing") => "missing",
-                                Some("corrupt" | "input_changed") => "corrupt",
-                                _ => "storage_unavailable",
-                            };
-                        status = self.journal.delivery_missing(caller, operation, reason)?;
-                    }
+            }
+            // Status stays read-only for transient host conditions: durable
+            // unavailability is already honest, durable availability is kept
+            // and the caller is told to ask again.
+            Readback::Transient => {
+                if matches!(status.delivery, Delivery::Available { .. }) {
+                    return Err(error(
+                        "storage_unavailable",
+                        "Sealed image output is temporarily unreadable; its delivery state is unchanged",
+                    ));
                 }
+            }
+            Readback::Lost(reason) => {
+                // Only the original owned stage is retried. Native seal is
+                // idempotent and checks proof, pins and bytes; never generate.
+                let restored = self.host.call(
+                    "host.artifacts.seal",
+                    json!({"consumerPackageId":caller,"operationId":operation,"handle":output.handle,"mediaType":"image/png"}),
+                    &AtomicBool::new(false),
+                ).and_then(|value| serde_json::from_value::<ArtifactDescriptor>(value).map_err(|_| invalid("Invalid recovered image descriptor")))
+                .ok().filter(|returned| returned == &output);
+                status = match restored {
+                    Some(restored) => self
+                        .journal
+                        .delivery_restored(caller, operation, restored)?,
+                    None => self.journal.delivery_missing(caller, operation, reason)?,
+                };
             }
         }
         Ok(status)
@@ -860,7 +978,32 @@ impl Service {
         {
             cancel.store(true, Ordering::Release)
         }
-        self.journal.cancel(caller, operation)
+        // The request is still recorded durably; an unannounced success keeps
+        // reading as running and its committed proof cannot be erased.
+        self.visible(caller, operation, || {
+            self.journal.cancel(caller, operation).map(Some)
+        })?
+        .ok_or_else(|| error("not_found", "Unknown image operation"))
+    }
+    /// Consumers can only acknowledge an announced success; the registry lock
+    /// excludes a concurrent proof commit for the same operation.
+    pub fn acknowledge(
+        &self,
+        caller: &str,
+        operation: &str,
+        sha: &str,
+        disposition: &str,
+        receipt: Option<&str>,
+    ) -> Result<OperationStatus> {
+        let unannounced = self.unannounced.lock().map_err(storage)?;
+        if unannounced.contains_key(&(caller.to_owned(), operation.to_owned())) {
+            return Err(error(
+                "invalid_request",
+                "Only a successful result can be acknowledged",
+            ));
+        }
+        self.journal
+            .acknowledge(caller, operation, sha, disposition, receipt)
     }
     pub fn operation_idle(&self, caller: &str, operation: &str) -> Result<bool> {
         if !self.ready() {
@@ -897,8 +1040,9 @@ impl Service {
             return Err(invalid("Invalid operation owner or ID"));
         }
         let before = self
-            .journal
-            .get(caller, operation, None)?
+            .visible(caller, operation, || {
+                self.journal.get(caller, operation, None)
+            })?
             .ok_or_else(|| error("not_found", "Unknown image operation"))?;
         if !matches!(before.execution, Execution::Succeeded { .. }) {
             return Err(invalid("Only a proven successful image may be discarded"));
@@ -912,9 +1056,7 @@ impl Service {
                     "Successful image digest is unavailable",
                 )
             })?;
-        let status = self
-            .journal
-            .acknowledge(caller, operation, &sha, "discarded", None)?;
+        let status = self.acknowledge(caller, operation, &sha, "discarded", None)?;
         let _ = self.host.event(
             "image-generation:operation-changed",
             json!({"consumerPackageId":caller,"status":status}),
@@ -939,10 +1081,10 @@ impl Service {
                 let mut value = params["configuration"].clone();
                 if let Some(profiles) = value["profiles"].as_array_mut() {
                     for profile in profiles {
-                        profile.as_object_mut().map(|p| {
+                        if let Some(p) = profile.as_object_mut() {
                             p.remove("hasCredential");
                             p.remove("capabilities");
-                        });
+                        }
                     }
                 }
                 let configuration: Configuration = serde_json::from_value(value)
@@ -1064,13 +1206,8 @@ impl Service {
                     .journal
                     .output_sha256("xnmp.image-generation", &operation)?
                     .ok_or_else(|| invalid("Successful test output required for discard"))?;
-                let status = self.journal.acknowledge(
-                    "xnmp.image-generation",
-                    &operation,
-                    &sha,
-                    "discarded",
-                    None,
-                )?;
+                let status =
+                    self.acknowledge("xnmp.image-generation", &operation, &sha, "discarded", None)?;
                 self.host.call(
                     "host.services.test.update",
                     json!({"operationId":operation,"status":status}),
@@ -1109,11 +1246,10 @@ impl Service {
     }
     fn test(self: &Arc<Self>, params: Value) -> Result<Value> {
         let operation = text(&params, "requestId")?;
-        if let Some(status) = self
-            .journal
-            .get("xnmp.image-generation", &operation, None)?
-        {
-            return Ok(serde_json::to_value(status).map_err(storage)?);
+        if let Some(status) = self.visible("xnmp.image-generation", &operation, || {
+            self.journal.get("xnmp.image-generation", &operation, None)
+        })? {
+            return serde_json::to_value(status).map_err(storage);
         }
         let configuration = self.profiles.read()?;
         if configuration.document_revision != number(&params, "expectedConfigurationRevision")? {
@@ -1169,7 +1305,7 @@ impl Service {
             preparation_token: preparation.preparation_token,
             effective_recipe_digest: preparation.effective_recipe_digest,
         };
-        Ok(serde_json::to_value(self.start(caller, request, true)?).map_err(storage)?)
+        serde_json::to_value(self.start(caller, request, true)?).map_err(storage)
     }
 }
 pub fn text(value: &Value, name: &str) -> Result<String> {

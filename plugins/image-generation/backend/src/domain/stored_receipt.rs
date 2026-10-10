@@ -185,7 +185,9 @@ impl StoredReceipt {
                 Delivery::None {} => false,
             }
         } else {
-            status.delivery == (Delivery::None {}) && self.output.is_none() && self.output_sha.is_none()
+            status.delivery == (Delivery::None {})
+                && self.output.is_none()
+                && self.output_sha.is_none()
         }
     }
 }
