@@ -31,15 +31,14 @@ function checkLayout(items: readonly LayoutItem[], maxWidth: number, orientation
   expect(routeCollisions(layout)).toEqual([]);
   expect(junctionOverlaps(layout)).toEqual([]);
   // Everything drawn lies on the canvas (widening covers what the margins need).
+  const offCanvas: string[] = [];
   const onCanvas = (x: number, y: number, what: string) => {
-    expect(x, what).toBeGreaterThanOrEqual(0);
-    expect(x, what).toBeLessThanOrEqual(layout.width);
-    expect(y, what).toBeGreaterThanOrEqual(0);
-    expect(y, what).toBeLessThanOrEqual(layout.height);
+    if (!(x >= 0 && x <= layout.width && y >= 0 && y <= layout.height)) offCanvas.push(`${what} at ${x},${y} (canvas ${layout.width}x${layout.height})`);
   };
   for (const route of layout.routes) for (const [, x, y] of route.path.matchAll(/(-?\d+(?:\.\d+)?) (-?\d+(?:\.\d+)?)/g)) onCanvas(Number(x), Number(y), route.id);
   for (const tile of layout.nodes.values()) { onCanvas(tile.x, tile.y, tile.key); onCanvas(tile.x + tile.width, tile.y + tile.height, tile.key); }
   for (const junction of layout.junctions.values()) onCanvas(junction.x, junction.y, junction.id);
+  expect(offCanvas, "drawn off the canvas").toEqual([]);
   const ids = layout.routes.map((route) => route.id);
   expect(ids.filter((id, index) => ids.indexOf(id) !== index), "duplicate route ids").toEqual([]);
   // Every arrowhead sits on a straight stem into its tile, its tip on the edge.

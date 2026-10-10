@@ -880,18 +880,34 @@ mod tests {
         let path = std::ffi::CString::new(f.source.as_os_str().as_bytes()).unwrap();
         // SAFETY: the NUL-terminated private fixture path lives for this call.
         assert_eq!(unsafe { libc::mkfifo(path.as_ptr(), 0o600) }, 0);
+        // A blocking open of a FIFO with no writer never returns. A helper opens
+        // the write end after a long delay, which would unblock a naive reader;
+        // rejection must therefore be observed before that helper acts.
+        let release_after = Duration::from_secs(60);
         let (sender, receiver) = std::sync::mpsc::channel();
-        std::thread::spawn(move || {
-            let target = f.root.path().join("saved.png");
-            sender
-                .send(
-                    save_at(&f.database, &f.generated, f.id, &target).is_err() && !target.exists(),
-                )
-                .unwrap();
+        let target = f.root.path().join("saved.png");
+        let (database, generated, id) = (f.database.clone(), f.generated.clone(), f.id);
+        let save_target = target.clone();
+        let saver = std::thread::spawn(move || {
+            let rejected = save_at(&database, &generated, id, &save_target).is_err();
+            sender.send(rejected).unwrap();
         });
-        assert!(receiver
-            .recv_timeout(Duration::from_secs(2))
-            .expect("Save blocked on a FIFO"));
+        let (cancel, cancelled) = std::sync::mpsc::channel::<()>();
+        let source = f.source.clone();
+        let unblocker = std::thread::spawn(move || {
+            if cancelled.recv_timeout(release_after).is_err() {
+                // Only reached if the save call is still stuck: unblock it.
+                let _ = fs::OpenOptions::new().write(true).open(&source);
+                return true;
+            }
+            false
+        });
+        let rejected = receiver.recv().expect("save thread died");
+        let _ = cancel.send(());
+        let unblocked_by_helper = unblocker.join().unwrap();
+        saver.join().unwrap();
+        assert!(!unblocked_by_helper, "Save blocked on a FIFO until it was unblocked");
+        assert!(rejected && !target.exists());
     }
 
     #[test]

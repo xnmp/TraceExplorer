@@ -2467,6 +2467,8 @@ mod tests {
         path: PathBuf,
         database: PathBuf,
         prepare_gate: Mutex<Option<Arc<std::sync::Barrier>>>,
+        /// Signals `prepare` entry and parks it until released (or a hang guard).
+        prepare_hold: Mutex<Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>>,
         dimensions: (u32, u32),
         read_gate: Mutex<Option<Arc<IoGate>>>,
         prepared_recipe: Mutex<Option<EffectiveRecipe>>,
@@ -2489,6 +2491,7 @@ mod tests {
                 path,
                 database: database.into(),
                 prepare_gate: Mutex::new(None),
+                prepare_hold: Mutex::new(None),
                 dimensions: (32, 32),
                 read_gate: Mutex::new(None),
                 prepared_recipe: Mutex::new(None),
@@ -2563,6 +2566,12 @@ mod tests {
                     if let Some(gate) = gate {
                         gate.wait();
                         gate.wait();
+                    }
+                    if let Some((entered, release)) = self.prepare_hold.lock().unwrap().take() {
+                        entered.send(()).unwrap();
+                        release
+                            .recv_timeout(Duration::from_secs(120))
+                            .expect("held prepare was never released");
                     }
                     let request: PrepareRequest = serde_json::from_value(p.clone()).unwrap();
                     let recipe = self
@@ -3601,13 +3610,60 @@ mod tests {
     }
     #[test]
     fn host_deadline_includes_held_prepare_and_prevents_local_acceptance_or_paid_start() {
-        let f=Fixture::new();let gate=Arc::new(std::sync::Barrier::new(2));*f.host.prepare_gate.lock().unwrap()=Some(gate.clone());
-        let host=f.host.clone();let database=f.database.clone();let generated=f.generated.clone();
-        let deadline=now_ms().saturating_add(5_000);
-        let worker=std::thread::spawn(move||accept_with_deadline(host.as_ref(),&database,&generated,request(),9,OP.into(),&crate::plugin_job::JobControl::new(),false,deadline));
-        gate.wait();while now_ms()<=deadline {std::thread::sleep(Duration::from_millis(5));}gate.wait();
-        assert!(matches!(worker.join().unwrap(),Err(AppError::Service{ref code,..}) if code=="timed_out"));
-        assert!(read_link(&f.database,OP).unwrap().is_none());assert_eq!(f.host.count("start"),0);assert_eq!(f.host.count("host.artifacts.release"),1);
+        // The deadline is fixed when admission starts, so a loaded machine can
+        // expire it before `prepare` is reached. That attempt is discarded (it
+        // must still fail closed) and retried with a larger budget until the
+        // held-prepare scenario is actually exercised.
+        let mut budget_ms = 250u64;
+        for _ in 0..8 {
+            let f = Fixture::new();
+            let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+            let (release_tx, release_rx) = std::sync::mpsc::channel();
+            *f.host.prepare_hold.lock().unwrap() = Some((entered_tx, release_rx));
+            let host = f.host.clone();
+            let database = f.database.clone();
+            let generated = f.generated.clone();
+            let deadline = now_ms().saturating_add(budget_ms);
+            let worker = std::thread::spawn(move || {
+                accept_with_deadline(
+                    host.as_ref(),
+                    &database,
+                    &generated,
+                    request(),
+                    9,
+                    OP.into(),
+                    &crate::plugin_job::JobControl::new(),
+                    false,
+                    deadline,
+                )
+            });
+            let hang_guard = Instant::now() + Duration::from_secs(120);
+            let held = loop {
+                if entered_rx.recv_timeout(Duration::from_millis(5)).is_ok() {
+                    break true;
+                }
+                if worker.is_finished() {
+                    break false;
+                }
+                assert!(Instant::now() < hang_guard, "worker neither held prepare nor finished");
+            };
+            if !held {
+                assert!(matches!(worker.join().unwrap(), Err(AppError::Service{ref code,..}) if code=="timed_out"));
+                assert_eq!(f.host.count("start"), 0);
+                budget_ms *= 2;
+                continue;
+            }
+            while now_ms() <= deadline {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            release_tx.send(()).unwrap();
+            assert!(matches!(worker.join().unwrap(), Err(AppError::Service{ref code,..}) if code=="timed_out"));
+            assert!(read_link(&f.database, OP).unwrap().is_none());
+            assert_eq!(f.host.count("start"), 0);
+            assert_eq!(f.host.count("host.artifacts.release"), 1);
+            return;
+        }
+        panic!("admission never reached prepare within the largest budget");
     }
     #[test]
     fn admission_keeps_the_original_host_deadline_instead_of_renewing_after_prepare() {
