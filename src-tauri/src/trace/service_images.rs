@@ -1552,7 +1552,10 @@ fn prepared_evidence(
     ) else {
         return Ok(Some((path, digest, identity, anchor)));
     };
-    let (Some(parent), Some(new_path)) = (link.target.parent(), link.target.to_str()) else {
+    // Stored evidence is normalized when first recorded (`prepare_output_at`),
+    // and completion compares it as text, so the rebased paths take the same
+    // form.
+    let (Some(parent), Ok(new_path)) = (link.target.parent(), normalize_path(&link.target)) else {
         return Ok(Some((path, digest, identity, anchor)));
     };
     // The anchor sits at `<dir>/<stage>/trace-anchor` next to the destination.
@@ -1572,8 +1575,11 @@ fn prepared_evidence(
     {
         return Ok(Some((path, digest, identity, anchor)));
     }
-    let new_anchor = parent.join(&old_anchor[1]).join(&old_anchor[2]);
-    let Some(new_anchor) = new_anchor.to_str().map(str::to_owned) else {
+    // The stage may already be gone, so only the destination directory is
+    // resolved; the anchor itself is never followed.
+    let Some(new_anchor) = normalize_path(parent).ok().and_then(|dir| {
+        Path::new(&dir).join(&old_anchor[1]).join(&old_anchor[2]).to_str().map(str::to_owned)
+    }) else {
         return Ok(Some((path, digest, identity, anchor)));
     };
     connection
@@ -1582,7 +1588,7 @@ fn prepared_evidence(
             params![link.run_id, new_path, new_anchor, path, anchor],
         )
         .map_err(sql)?;
-    Ok(Some((new_path.to_owned(), digest, identity, new_anchor)))
+    Ok(Some((new_path, digest, identity, new_anchor)))
 }
 fn published_owned(
     database: &Path,
@@ -3258,7 +3264,9 @@ mod tests {
         drop(stage);
         // The whole profile moves, keeping its inodes.
         let moved = crate::test_support::tempdir().unwrap();
-        let new_root = moved.path().join("renamed-user/profile");
+        // A non-normalized spelling of the new root (on Windows, the `/` in the
+        // joined component) must still match normalized completion paths.
+        let new_root = moved.path().join("renamed-user/./profile");
         fs::create_dir_all(new_root.parent().unwrap()).unwrap();
         fs::rename(f._root.path(), &new_root).unwrap();
         let database = new_root.join("trace.sqlite");
