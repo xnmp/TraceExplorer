@@ -103,4 +103,40 @@ describe("OpenAI plugin SDK contributions",()=>{
       expect(command.when?.()).toBe(false);
     }finally{activeTrace=null;}
   });
+  describe("direct image editor entry",()=>{
+    const ids=["openai-image.edit-in-editor","plugin.openai-image.edit-in-editor"];
+    const withEditor=(openImageEditor:(request:{path:string;tool:string})=>Promise<void>,toasts:[string,string|undefined][]=[])=>{
+      const f=fixture();
+      const ctx={...f.ctx,toast:{show:(m:string,v?:string)=>{toasts.push([m,v]);},error:()=>{}},presentation:{openDialog:async()=>({reason:"closed" as const}),openImageEditor}};
+      return {f,ctx,toasts};
+    };
+    it("is not offered on hosts without openImageEditor",async()=>{
+      const f=fixture();await openAIImagePlugin.activate({...f.ctx,presentation:{openDialog:async()=>({reason:"closed"})}});
+      expect([...f.menus.map(m=>m.id),...f.commands.map(c=>c.id)].filter(id=>ids.includes(id))).toEqual([]);
+    });
+    it("opens the selected image in the AI edit tool from the menu and the command",async()=>{
+      const calls:{path:string;tool:string}[]=[];
+      const {f,ctx}=withEditor(async r=>{calls.push(r);});await openAIImagePlugin.activate(ctx);
+      const menu=f.menus.find(m=>m.id===ids[0])!,command=f.commands.find(c=>c.id===ids[1])!;
+      expect(menu).toMatchObject({label:"Edit in image editor with AI…",group:"ai"});
+      expect(command).toMatchObject({label:"AI Edit in Image Editor…",category:"plugins"});expect(command.shortcut).toBeUndefined();
+      await menu.handler([image]);f.setSelection([image]);expect(command.when?.()).toBe(true);await command.handler();
+      expect(calls).toEqual([{path:image.path,tool:"openai-image"},{path:image.path,tool:"openai-image"}]);
+      expect(f.tools.map(t=>t.id)).toContain("openai-image");
+    });
+    it("is unavailable for selections the host editor cannot open",async()=>{
+      const calls:unknown[]=[];const {f,ctx,toasts}=withEditor(async r=>{calls.push(r);});await openAIImagePlugin.activate(ctx);
+      const menu=f.menus.find(m=>m.id===ids[0])!,command=f.commands.find(c=>c.id===ids[1])!;
+      const second={...image,name:"b.png",path:"/media/b.png"};
+      for(const invalid of [[],[image,second],[folder],[{...image,name:"a.gif",path:"/media/a.gif"}],[{...image,path:"demo://photo.png"}]]){
+        expect(menu.when(invalid)).toBe(false);f.setSelection(invalid);expect(command.when?.()).toBe(false);await command.handler();
+      }
+      expect(calls).toEqual([]);expect(toasts.map(t=>t[1])).toEqual(Array(5).fill("info"));
+    });
+    it("reports a host refusal as a toast without throwing",async()=>{
+      const {f,ctx,toasts}=withEditor(async()=>{throw new Error("Image editor is already open");});await openAIImagePlugin.activate(ctx);
+      await expect(f.menus.find(m=>m.id===ids[0])!.handler([image])).resolves.toBeUndefined();
+      expect(toasts).toEqual([["Image editor is already open","error"]]);
+    });
+  });
 });

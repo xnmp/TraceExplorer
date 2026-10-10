@@ -59,12 +59,32 @@
   /** The AI edit tool in a stand-in for the host's image editor: it stays mounted while the editor's source fills in. */
   let editorTool = $state.raw<{ component: Component<any>; props?: Record<string, unknown> } | null>(null);
   let editorSource = $state.raw<ImageEditorSource | null>(null);
+  let editorToolId: string | null = null;
+  let toasts = $state.raw<Array<{ message: string; variant: string }>>([]);
+  /** `?editorApi=0` simulates a host without `presentation.openImageEditor`. */
+  const editorApi = new URLSearchParams(location.search).get("editorApi") !== "0";
+  const editorCalls: Array<{ path: string; tool: string }> = [];
+  let editorClosed: (() => void) | undefined;
+  const menuItems = new Map<string, { label: string; group: string; when: (entries: FileEntry[]) => boolean; handler: (entries: FileEntry[]) => void | Promise<void> }>();
+  let disposed = false;
+  const absolutePath = (path: string) => path.startsWith("/") || /^[A-Za-z]:[\\/]/.test(path) || /^\\\\[^\\]+\\[^\\]+/.test(path);
+  /** Mirrors the host's imageEditorRequestError (plugin-image-editor.ts) and its dialog-store refusals, with the same messages. */
+  function imageEditorRequestError(request: unknown): string | null {
+    if (disposed) return "Plugin caller was disposed";
+    if (typeof request !== "object" || request === null) return "Image editor request must be an object";
+    const { path, tool } = request as Record<string, unknown>;
+    if (typeof tool !== "string" || tool !== editorToolId) return "Image editor tool is not registered by this plugin";
+    if (typeof path !== "string" || !path || path.length > 4096 || path.includes("\0") || !absolutePath(path)) return "Image editor path must be an absolute file path";
+    if (editorSource) return "Close the open image editor first";
+    if (opened_dialogs.length || configureOpen) return "Close the open dialog first";
+    return null;
+  }
 
   let configureOpen = $state(false);
   let closeConfiguration: (() => void) | undefined;
   let configureFailure: string | null = null;
   function activate() {
-    views = []; sections = []; commands.clear(); conditions.clear(); listeners.clear(); fileListeners.length = 0;
+    views = []; sections = []; commands.clear(); conditions.clear(); listeners.clear(); fileListeners.length = 0; menuItems.clear(); editorToolId = null; disposed = false;
     const ctx = {
       registerSettingsSection: () => {},
       registerFileView: (view: FileViewContribution) => { views = [...views, view]; },
@@ -83,12 +103,19 @@
     tracePlugin.activate(ctx);
     if (ai) openAIImagePlugin.activate({
       ...ctx,
-      registerContextMenuItem: () => {}, registerSettingsSection: () => {},
-      registerImageEditorTool: (tool: { component: Component<any>; props?: Record<string, unknown> }) => { editorTool = tool; },
+      registerContextMenuItem: (item: { id: string; label: string; group: string; when: (entries: FileEntry[]) => boolean; handler: (entries: FileEntry[]) => void | Promise<void> }) => { menuItems.set(item.id, item); }, registerSettingsSection: () => {},
+      registerImageEditorTool: (tool: { id: string; component: Component<any>; props?: Record<string, unknown> }) => { editorTool = tool; editorToolId = tool.id; },
       registerDialog: (dialog: { id: string; component: Component<any> }) => { dialogs.set(dialog.id, dialog.component); },
       openDialog: (id: string, props: Record<string, unknown> = {}) => { opened_dialogs = [...opened_dialogs, { id, props }]; },
       closeDialog: (id: string) => { opened_dialogs = opened_dialogs.filter((dialog) => dialog.id !== id); },
-      presentation: { openDialog: async (id: string) => {
+      presentation: { ...(editorApi ? { openImageEditor: async (request: { path: string; tool: string }) => {
+        // Recorded as asked, so tests see refused requests too.
+        editorCalls.push({ ...(request as object) } as { path: string; tool: string });
+        const refused = imageEditorRequestError(request);
+        if (refused) throw new Error(refused);
+        editorSource = { path: request.path, name: request.path.split(/[\\/]/).at(-1)!, digest: "0".repeat(64), format: "PNG", referencePaths: [] };
+        await new Promise<void>((resolve) => { editorClosed = resolve; });
+      } } : {}), openDialog: async (id: string) => {
         if (configureFailure) throw new Error(configureFailure);
         if (id !== "image-generation.connections") throw new Error("Unknown provider dialog");
         configureOpen = true;
@@ -96,7 +123,7 @@
         return { reason: "closed" };
       } },
       saveSettings: async () => {},
-      toast: { show: () => {}, error: () => {} },
+      toast: { show: (message: string, variant = "info") => { toasts = [...toasts, { message, variant }]; }, error: (message: string) => { toasts = [...toasts, { message, variant: "error" }]; } },
       jobs: { accept: async (registration: { label: string; detail: string }, start: () => Promise<{ ok: boolean }>) => {
         const result = await start();
         if (result.ok) accepted = [...accepted, { label: registration.label, detail: registration.detail }];
@@ -175,7 +202,7 @@
     /** Changes the pane's tile-size preset live, as the host's setting would; null removes it (an older host). */
     setTileSize(preset: TileSizePreset | null) { tilePreset = preset; },
     toggle() { return commands.get("plugin.trace.toggle")?.(); },
-    disable() { enabled = false; tracePlugin.deactivate?.(); },
+    disable() { enabled = false; disposed = true; tracePlugin.deactivate?.(); },
     enable() { enabled = true; activate(); },
     navigate(path: string) { directory = path; entries = path === DIRECTORY ? files() : []; selected = []; anchor = null; target = null; },
     state: () => ({ selected: [...selected], cursor, target: target ? { id: target.id, title: target.title, badge: target.badge ?? null } : null, fileView, opened: [...opened], menus: [...menus], navigations: [...navigations] }),
@@ -191,6 +218,13 @@
     openEditor(path: string, digest: string) { editorSource = { path, name: path.split("/").at(-1)!, digest, format: "PNG", referencePaths: [] }; },
     /** The editor's preview loaded: its source now has a size, as the host's derived source does. */
     editorLoaded(width: number, height: number) { if (editorSource) editorSource = { ...editorSource, size: { width, height } }; },
+    /** The context-menu items the host would show for the selected paths, as `[id, label]`. */
+    menuFor(paths: string[]) { const chosen = entries.filter((entry) => paths.includes(entry.path)); return [...menuItems].filter(([, item]) => item.when(chosen)).map(([id, item]) => [id, item.label]); },
+    invokeMenu(id: string, paths: string[]) { return menuItems.get(id)?.handler(entries.filter((entry) => paths.includes(entry.path))); },
+    toasts: () => toasts.map((toast) => ({ ...toast })),
+    /** Closes the image editor stand-in, as the user closing the host editor would. */
+    closeEditor() { editorSource = null; editorClosed?.(); editorClosed = undefined; },
+    editorCalls: () => editorCalls.map((call) => ({ ...call })),
     enabled: (id: string) => conditions.get(id)?.() ?? false,
     accepted: () => [...accepted],
   };
@@ -248,7 +282,7 @@
   <section class="plugin-dialog" role="dialog" aria-label="AI edit">
     {#key editorTool}
       {@const Tool = editorTool.component}
-      <Tool {...editorTool.props} source={editorSource} onClose={() => { editorSource = null; }} onBusyChange={() => {}} />
+      <Tool {...editorTool.props} source={editorSource} onClose={() => { editorSource = null; editorClosed?.(); editorClosed = undefined; }} onBusyChange={() => {}} />
     {/key}
   </section>
 {/if}

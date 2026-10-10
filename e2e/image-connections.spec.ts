@@ -5,7 +5,7 @@ test("configuring shared connections retains the caller draft and submits the re
   await openView(page, 1400, "?ai=1");
   await click(page, "warm");
   await page.evaluate(() => (window as any).trace.command("plugin.openai-image.edit"));
-  const caller = page.getByRole("dialog", { name: "Edit with OpenAI" });
+  const caller = page.getByRole("dialog", { name: "Edit with AI" });
   await caller.getByRole("textbox", { name: "Edit prompt" }).fill("Keep the entire caller draft and all its images");
   await caller.getByRole("spinbutton", { name: "Images" }).fill("2");
   await expect(caller.getByText(/adapter-managed/)).toBeVisible();
@@ -44,7 +44,7 @@ test("a missing package blocks generation while a disabled settings contribution
     trace.setConfigureFailure("Enable the Image Generation settings contribution in Plugins.");
     return trace.command("plugin.openai-image.edit");
   });
-  const caller = page.getByRole("dialog", { name: "Edit with OpenAI" });
+  const caller = page.getByRole("dialog", { name: "Edit with AI" });
   await expect(caller.getByRole("status")).toHaveText("Install the Image Generation package in Plugins.");
   await caller.getByRole("textbox", { name: "Edit prompt" }).fill("Keep me while fixing settings");
   await expect(caller.getByRole("button", { name: "Generate", exact: true })).toBeDisabled();
@@ -59,7 +59,7 @@ test("a disabled configuration contribution does not disable an available native
   await openView(page, 1400, "?ai=1");
   await click(page, "warm");
   await page.evaluate(() => { (window as any).trace.setConfigureFailure("Enable the Image Generation settings contribution in Plugins."); return (window as any).trace.command("plugin.openai-image.edit"); });
-  const caller = page.getByRole("dialog", { name: "Edit with OpenAI" });
+  const caller = page.getByRole("dialog", { name: "Edit with AI" });
   await caller.getByRole("textbox", { name: "Edit prompt" }).fill("The existing native connection still works");
   await caller.getByRole("button", { name: "Configure connections" }).click();
   await expect(caller.getByRole("alert")).toContainText("settings contribution");
@@ -72,7 +72,7 @@ test("a description arriving after caller disposal cannot restore its connection
   await openView(page, 1400, "?ai=1");
   await click(page, "warm");
   await page.evaluate(() => { (window as any).trace.backend.holdImageDescriptions(); return (window as any).trace.command("plugin.openai-image.edit"); });
-  const caller = page.getByRole("dialog", { name: "Edit with OpenAI" });
+  const caller = page.getByRole("dialog", { name: "Edit with AI" });
   await expect.poll(() => page.evaluate(() => (window as any).trace.backend.calls("image_service_describe").length)).toBe(1);
   await caller.getByRole("textbox", { name: "Edit prompt" }).fill("Disposed draft");
   await caller.getByRole("button", { name: "Close", exact: true }).click();
@@ -90,7 +90,7 @@ test("reloading connections preserves a custom model draft and refreshes the rev
   await openView(page, 900, "?ai=1");
   await click(page, "warm");
   await page.evaluate(() => (window as any).trace.command("plugin.openai-image.edit"));
-  const caller = page.getByRole("dialog", { name: "Edit with OpenAI" });
+  const caller = page.getByRole("dialog", { name: "Edit with AI" });
   await caller.getByRole("combobox", { name: "Image connection" }).selectOption("custom-http");
   await caller.getByRole("textbox", { name: "Image model" }).fill("my-mobile-custom-model");
   await caller.getByRole("textbox", { name: "Edit prompt" }).fill("Preserve this narrow caller draft");
@@ -112,7 +112,7 @@ test("removing a pinned connection requires an explicit choice instead of switch
   await openView(page, 1400, "?ai=1");
   await click(page, "warm");
   await page.evaluate(() => (window as any).trace.command("plugin.openai-image.edit"));
-  const caller = page.getByRole("dialog", { name: "Edit with OpenAI" });
+  const caller = page.getByRole("dialog", { name: "Edit with AI" });
   await expect(caller.getByRole("combobox", { name: "Image connection" })).toHaveValue("saved-login");
   await caller.getByRole("textbox", { name: "Edit prompt" }).fill("Keep this draft until I choose");
   await page.evaluate(() => {
@@ -136,7 +136,7 @@ test("Ctrl+Enter cannot submit stale capabilities while Reload is pending", asyn
   await openView(page, 1400, "?ai=1");
   await click(page, "warm");
   await page.evaluate(() => (window as any).trace.command("plugin.openai-image.edit"));
-  const caller = page.getByRole("dialog", { name: "Edit with OpenAI" });
+  const caller = page.getByRole("dialog", { name: "Edit with AI" });
   await expect(caller.getByRole("combobox", { name: "Image connection" })).toHaveValue("saved-login");
   await caller.getByRole("textbox", { name: "Edit prompt" }).fill("Wait for the pending capability read");
   await page.evaluate(() => (window as any).trace.backend.holdImageDescriptions());

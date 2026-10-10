@@ -76,7 +76,7 @@ test.describe("Trace tile tooltip", () => {
     const lineHeight = await text.evaluate((element) => parseFloat(getComputedStyle(element).lineHeight));
     expect(box.height).toBeGreaterThan(lineHeight * 4);
     expect((await bubble(page).boundingBox())!.width).toBeLessThanOrEqual(381);
-    await expect(bubble(page).locator(".detail")).toHaveText("warm.png · OpenAI edit");
+    await expect(bubble(page).locator(".detail")).toHaveText("warm.png · AI edit");
     // The tile is described by the tooltip while it shows.
     await expect(await card(page, "warm")).toHaveAttribute("aria-describedby", "trace-tile-tooltip");
   });

@@ -7,7 +7,7 @@
 <Modal open={props.open} onClose={props.onClose} overlayClass="dialog-overlay" labelledby="openai-image-title">
   <div class="dialog plugin-dialog">
     <header class="dialog-header">
-      <h2 id="openai-image-title">{props.inputs?.length ? "Edit with OpenAI" : "Generate image with OpenAI"}</h2>
+      <h2 id="openai-image-title">{props.inputs?.length ? "Edit with AI" : "Generate image with AI"}</h2>
       <button class="close-btn" type="button" onclick={props.onClose} aria-label="Close">×</button>
     </header>
     <OpenAIImageForm {...props} />

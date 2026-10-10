@@ -6,8 +6,9 @@ import OpenAIImageDialog from "./OpenAIImageDialog.svelte";
 import OpenAIImageEditorTool from "./OpenAIImageEditorTool.svelte";
 import OpenAIImageHistory from "./OpenAIImageHistory.svelte";
 import { tracePanes } from "../trace/view/pane-registry.svelte";
-import { imageInputPaths } from "$lib/domain/image-inputs";
+import { imageInputPaths, singleImagePath } from "$lib/domain/image-inputs";
 
+const EDITOR_TOOL_ID = "openai-image";
 const DIALOG_ID = "openai-image.create";
 const singleLocal = (entries: FileEntry[]) => entries.length === 1 && !isVirtualPath(entries[0].path) ? entries[0] : null;
 const images = (entries: FileEntry[]): string[] => entries.every((entry) => entry.kind === "file" && /\.(png|jpe?g|webp)$/i.test(entry.name))
@@ -44,27 +45,27 @@ async function configureConnections(ctx: PluginContext): Promise<void> {
 
 export const openAIImagePlugin: Plugin = {
   id: "openai-image",
-  name: "OpenAI Images",
-  description: "Generate and edit images with GPT Image, with durable Trace provenance.",
+  name: "AI Images",
+  description: "Generate and edit images through your Image Generation connections, with durable Trace provenance.",
   enabledByDefault: true,
   activate(ctx) {
     ctx.registerSettingsSection({
-      id: "openai-image", title: "AI / OpenAI Images",
+      id: "openai-image", title: "AI / Images",
       rows: [], actions: [{ id: "configure-connections", label: "Configure connections", description: "Image connections belong to the Image Generation package. Enable its settings contribution in Plugins.", run: () => configureConnections(ctx) }],
     });
     ctx.registerImageEditorTool({
-      id: "openai-image", title: "AI edit", component: OpenAIImageEditorTool,
+      id: EDITOR_TOOL_ID, title: "AI edit", component: OpenAIImageEditorTool,
       when: (source) => ["PNG", "JPEG", "WebP"].includes(source.format),
       props: { configureConnections: () => configureConnections(ctx), jobs: ctx.jobs, toast: ctx.toast, captureSelection: ctx.workspace.captureSelection },
     });
     ctx.registerDialog({ id: DIALOG_ID, component: OpenAIImageDialog });
     ctx.registerDialog({ id: "openai-image.history", component: OpenAIImageHistory });
     ctx.registerCommand({
-      id: "plugin.openai-image.history", label: "OpenAI: Image Run History", category: "plugins",
+      id: "plugin.openai-image.history", label: "AI: Image Run History", category: "plugins",
       handler: () => ctx.openDialog("openai-image.history", { jobs: ctx.jobs }),
     });
     ctx.registerContextMenuItem({
-      id: "openai-image.edit", label: "Edit with OpenAI", group: "ai",
+      id: "openai-image.edit", label: "Edit with AI…", group: "ai",
       when: (entries) => selectedImages(ctx, entries).paths.length > 0,
       handler: (entries) => {
         const selected = selectedImages(ctx, entries);
@@ -72,7 +73,7 @@ export const openAIImagePlugin: Plugin = {
       },
     });
     ctx.registerContextMenuItem({
-      id: "openai-image.generate", label: "Generate image with OpenAI…", group: "ai",
+      id: "openai-image.generate", label: "Generate image with AI…", group: "ai",
       when: (entries) => singleLocal(entries)?.kind === "directory",
       handler: (entries) => {
         const selected = singleLocal(entries);
@@ -88,8 +89,32 @@ export const openAIImagePlugin: Plugin = {
         ctx.toast.show("Select one to eight PNG, JPEG, or WebP images first", "info");
       },
     });
+    // Feature-detected: older hosts have no direct editor entry, so neither contribution is offered there.
+    const openInEditor = ctx.presentation?.openImageEditor?.bind(ctx.presentation);
+    if (openInEditor) {
+      // A Trace view's picks win over the host selection: the editor opens a real file only when it is the sole pick.
+      const editable = (entries: FileEntry[]) => singleImagePath(entries, tracePanes.active()?.inputs() ?? []);
+      const edit = async (path: string) => {
+        try { await openInEditor({ path, tool: EDITOR_TOOL_ID }); }
+        catch (error) { ctx.toast.show(error instanceof Error ? error.message : String(error), "error"); }
+      };
+      ctx.registerContextMenuItem({
+        id: "openai-image.edit-in-editor", label: "Edit in image editor with AI…", group: "ai",
+        when: (entries) => editable(entries) !== null,
+        handler: (entries) => { const path = editable(entries); if (path) return edit(path); },
+      });
+      ctx.registerCommand({
+        id: "plugin.openai-image.edit-in-editor", label: "AI Edit in Image Editor…", category: "plugins",
+        when: () => editable(ctx.workspace.getSelection()) !== null,
+        handler: () => {
+          const path = editable(ctx.workspace.getSelection());
+          if (path) return edit(path);
+          ctx.toast.show("Select one PNG, JPEG, or WebP image first", "info");
+        },
+      });
+    }
     ctx.registerCommand({
-      id: "plugin.openai-image.generate", label: "OpenAI: Generate Image…", category: "plugins",
+      id: "plugin.openai-image.generate", label: "AI: Generate Image…", category: "plugins",
       handler: () => {
         const selected = singleLocal(ctx.workspace.getSelection());
         if (selected) return open(ctx, [], selected.kind === "directory" ? selected.path : parentDir(selected.path));
