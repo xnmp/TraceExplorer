@@ -83,6 +83,16 @@ impl Host for FakeHost {
                 let path = self.directory.path().join(&handle);
                 let bytes =
                     std::fs::read(&path).map_err(|_| error("not_found", "Missing output stage"))?;
+                // Like the native store, resealing an already sealed handle is
+                // idempotent and re-verifies its bytes; it never re-describes them.
+                if let Some((_, sealed)) = self.artifacts.lock().unwrap().get(&handle) {
+                    if bytes.len() as u64 != sealed.byte_length
+                        || hex::encode(Sha256::digest(&bytes)) != sealed.sha256
+                    {
+                        return Err(error("corrupt", "Sealed artifact is missing or corrupt"));
+                    }
+                    return Ok(json!(sealed));
+                }
                 adapters::validate_image(&bytes, image::ImageFormat::Png)?;
                 let descriptor = ArtifactDescriptor {
                     handle: handle.clone(),
@@ -819,6 +829,133 @@ async fn missing_and_restored_delivery_does_not_change_proven_execution() {
             .execution,
         succeeded.execution
     );
+}
+/// Records every reverse call so a test can prove no new stage or generation.
+struct CallLog {
+    inner: Arc<FakeHost>,
+    calls: Mutex<Vec<String>>,
+}
+impl CallLog {
+    fn count(&self, method: &str) -> usize {
+        self.calls
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|m| *m == method)
+            .count()
+    }
+}
+impl Host for CallLog {
+    fn call(&self, method: &str, params: Value, cancelled: &AtomicBool) -> Result<Value> {
+        self.calls.lock().unwrap().push(method.into());
+        self.inner.call(method, params, cancelled)
+    }
+    fn event(&self, name: &str, payload: Value) -> Result<()> {
+        self.inner.event(name, payload)
+    }
+}
+/// Plan §21.3 #7 (provider): a sealed output corrupted in place (same length,
+/// different bytes) after success leaves the proven execution untouched and
+/// reports delivery as unavailable, never failed, with no replay, stage or
+/// generation. Repairing the bytes restores the same delivery; once acquired,
+/// later corruption cannot regress the acquisition.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sealed_output_corrupted_in_place_is_unavailable_without_replay() {
+    let (root, count, _, server) = server(Duration::ZERO);
+    let directory = tempfile::tempdir().unwrap();
+    let fake = FakeHost::new();
+    let host = Arc::new(CallLog {
+        inner: fake.clone(),
+        calls: Mutex::new(vec![]),
+    });
+    let service = Service::new(directory.path(), host.clone()).unwrap();
+    service.activate().unwrap();
+    let config = service
+        .profiles
+        .save(configuration(&root), 0, None, None)
+        .unwrap();
+    let prepared = request(&config.profiles[0], vec![]);
+    let request = start(
+        prepared.clone(),
+        service.prepare(caller(), prepared).unwrap(),
+    );
+    service.start(caller(), request.clone(), false).unwrap();
+    let succeeded = terminal(&service, &request.operation_id).await;
+    server.join().unwrap();
+    let output = match &succeeded.delivery {
+        Delivery::Available { output } => output.clone(),
+        state => panic!("No sealed image: {state:?}"),
+    };
+    assert!(matches!(succeeded.execution, Execution::Succeeded { .. }));
+    let stages = host.count("host.artifacts.stage");
+    assert_eq!(stages, 1);
+    let path = fake.artifacts.lock().unwrap()[&output.handle].0.clone();
+    let original = std::fs::read(&path).unwrap();
+    let mut corrupt = original.clone();
+    let middle = corrupt.len() / 2;
+    corrupt[middle] ^= 0xff;
+    assert_eq!(corrupt.len() as u64, output.byte_length);
+    std::fs::write(&path, &corrupt).unwrap();
+    for _ in 0..2 {
+        let observed = service
+            .status("test.consumer", &request.operation_id)
+            .unwrap();
+        assert_eq!(observed.execution, succeeded.execution);
+        assert!(
+            matches!(observed.delivery, Delivery::Unavailable { .. }),
+            "corrupt output was reported as {:?}",
+            observed.delivery
+        );
+    }
+    let duplicate = service.start(caller(), request.clone(), false).unwrap();
+    assert_eq!(duplicate.execution, succeeded.execution);
+    assert!(matches!(duplicate.delivery, Delivery::Unavailable { .. }));
+    assert_eq!(
+        service
+            .cancel("test.consumer", &request.operation_id)
+            .unwrap()
+            .execution,
+        succeeded.execution
+    );
+    service.wait_idle().await;
+    assert_eq!(count.load(Ordering::SeqCst), 1);
+    assert_eq!(host.count("host.artifacts.stage"), stages);
+    // The recovery attempt re-verified the original handle; it did not reseal
+    // different bytes under a new identity.
+    assert_eq!(fake.artifacts.lock().unwrap()[&output.handle].1, output);
+    std::fs::write(&path, &original).unwrap();
+    assert_eq!(
+        service
+            .status("test.consumer", &request.operation_id)
+            .unwrap()
+            .delivery,
+        Delivery::Available {
+            output: output.clone()
+        }
+    );
+    service
+        .journal
+        .acknowledge(
+            "test.consumer",
+            &request.operation_id,
+            &output.sha256,
+            "acquired",
+            Some("fixture-transfer"),
+        )
+        .unwrap();
+    std::fs::write(&path, &corrupt).unwrap();
+    let after_ack = service
+        .status("test.consumer", &request.operation_id)
+        .unwrap();
+    assert_eq!(after_ack.execution, succeeded.execution);
+    assert_eq!(
+        after_ack.delivery,
+        Delivery::Acquired {
+            transfer_receipt: "fixture-transfer".into()
+        }
+    );
+    assert_eq!(count.load(Ordering::SeqCst), 1);
+    assert_eq!(host.count("host.artifacts.stage"), stages);
 }
 #[cfg(unix)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
