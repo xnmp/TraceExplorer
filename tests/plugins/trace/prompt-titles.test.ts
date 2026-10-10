@@ -213,6 +213,29 @@ describe("promptTitles", () => {
     expect(promptTitles.pending(1)).toBe(false);
   });
 
+  it("applies a lower or reset configuration revision instead of keeping stale titles", async () => {
+    await configured();
+    let changed!: (revision:number) => void;
+    promptTitles.bind({storage:{get:async()=>({summarizePrompts:true}),set:async()=>{}},text:{subscribe:listener=>{changed=listener;return ()=>{};},openSettings(){}}});
+    await flush();
+    changed(7);
+    await flush();
+    promptTitles.request(1,"Original");
+    await flush();
+    expect(promptTitles.labelFor(1,"Original")).toBe("A Title");
+    invoke.mockClear();
+    // The host's counter restarted: revision 1 is a real change.
+    changed(1);
+    expect(promptTitles.labelFor(1,"Original")).toBe("Original");
+    await flush();
+    expect(invoke.mock.calls.filter(call => call[0] === "trace_title_context")).toHaveLength(1);
+    // Its own repeat is still dropped.
+    invoke.mockClear();
+    changed(1);
+    await flush();
+    expect(invoke).not.toHaveBeenCalled();
+  });
+
   it("binds Trace preferences and invalidates labels on a global configuration notification", async () => {
     await configured();
     let changed!: (revision:number) => void;
@@ -232,7 +255,7 @@ describe("promptTitles", () => {
     expect(invoke).not.toHaveBeenCalled();
   });
 
-  it("ignores a repeated or older configuration revision: the host announces its own save and its watcher's reload", async () => {
+  it("ignores a repeated configuration revision: the host announces its own save and its watcher's reload", async () => {
     await configured();
     let changed!: (revision:number) => void;
     promptTitles.bind({storage:{get:async()=>({summarizePrompts:true}),set:async()=>{}},text:{subscribe:listener=>{changed=listener;return ()=>{};},openSettings(){}}});
@@ -248,7 +271,6 @@ describe("promptTitles", () => {
     await flush();
     invoke.mockClear();
     changed(2);
-    changed(1);
     await flush();
     // Nothing changed: the title stays, the in-flight request is neither cancelled nor repeated.
     expect(promptTitles.labelFor(1,"Original")).toBe("A Title");

@@ -88,9 +88,13 @@ export const promptTitles = {
     // The host announces one saved revision more than once (its save command
     // and its configuration watcher). Reconfiguring on a repeat would clear
     // shown titles and cancel in-flight requests for an unchanged context.
+    // Only an exact repeat is dropped: a lower revision is a host counter reset
+    // (or a late older announcement), and `configure` re-reads the current
+    // context either way, so ignoring it would leave stale titles until the
+    // counter climbed back past the old value.
     let textRevision = -1;
     subscriptions.push(ctx.text.subscribe((revision) => {
-      if (owner !== binding || revision <= textRevision) return;
+      if (owner !== binding || revision === textRevision) return;
       textRevision = revision;
       if (preferences) void this.configure(preferences);
     }));
