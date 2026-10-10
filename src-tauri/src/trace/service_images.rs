@@ -1519,18 +1519,64 @@ fn claim_dispatch(database: &Path, operation: &str, fresh: bool) -> Result<(Link
     })?;
     Ok((link, claimed))
 }
+/// The live link's prepared publication evidence (output path, digest,
+/// identity, anchor path). When the profile directory has moved, the stored
+/// output and anchor paths still name the old location, so they are rebased
+/// onto the link's own (already rebased) destination and persisted, the way
+/// `scoped_target` rebases the link. Only the profile root may differ: the
+/// destination's directory and file name, and the stage directory and anchor
+/// names, must be unchanged. Terminal links keep their history as stored.
 fn prepared_evidence(
     database: &Path,
-    run: i64,
+    link: &Link,
 ) -> Result<Option<(String, String, String, String)>, AppError> {
-    connection_at(database)?.query_row("SELECT prepared_output_path,prepared_output_digest,prepared_object_identity,prepared_anchor_path FROM runs WHERE id=?1 AND prepared_output_digest IS NOT NULL",[run],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).optional().map_err(sql)
+    let connection = connection_at(database)?;
+    let row: Option<(String, String, String, String)> = connection.query_row("SELECT prepared_output_path,prepared_output_digest,prepared_object_identity,prepared_anchor_path FROM runs WHERE id=?1 AND prepared_output_digest IS NOT NULL",[link.run_id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).optional().map_err(sql)?;
+    let Some((path, digest, identity, anchor)) = row else {
+        return Ok(None);
+    };
+    if terminal(&link.phase) || Path::new(&path) == link.target {
+        return Ok(Some((path, digest, identity, anchor)));
+    }
+    let tail = |p: &Path, n: usize| -> Option<Vec<std::ffi::OsString>> {
+        let mut parts: Vec<_> = p.components().rev().take(n).map(|c| c.as_os_str().to_owned()).collect();
+        (parts.len() == n).then(|| {
+            parts.reverse();
+            parts
+        })
+    };
+    let (Some(old_target), Some(new_target), Some(old_anchor)) = (
+        tail(Path::new(&path), 2),
+        tail(&link.target, 2),
+        tail(Path::new(&anchor), 3),
+    ) else {
+        return Ok(Some((path, digest, identity, anchor)));
+    };
+    let (Some(parent), Some(new_path)) = (link.target.parent(), link.target.to_str()) else {
+        return Ok(Some((path, digest, identity, anchor)));
+    };
+    // The anchor sits at `<dir>/<stage>/<anchor>` next to the destination.
+    if old_target != new_target || old_anchor[0] != old_target[0] {
+        return Ok(Some((path, digest, identity, anchor)));
+    }
+    let new_anchor = parent.join(&old_anchor[1]).join(&old_anchor[2]);
+    let Some(new_anchor) = new_anchor.to_str().map(str::to_owned) else {
+        return Ok(Some((path, digest, identity, anchor)));
+    };
+    connection
+        .execute(
+            "UPDATE runs SET prepared_output_path=?2,prepared_anchor_path=?3 WHERE id=?1 AND prepared_output_path=?4 AND prepared_anchor_path=?5",
+            params![link.run_id, new_path, new_anchor, path, anchor],
+        )
+        .map_err(sql)?;
+    Ok(Some((new_path.to_owned(), digest, identity, new_anchor)))
 }
 fn published_owned(
     database: &Path,
     link: &Link,
     output: &ArtifactDescriptor,
 ) -> Result<bool, AppError> {
-    if let Some((path, digest, identity, anchor)) = prepared_evidence(database, link.run_id)? {
+    if let Some((path, digest, identity, anchor)) = prepared_evidence(database, link)? {
         if Path::new(&path) != link.target || digest != output.sha256 {
             return Err(invalid(
                 "Local image publication evidence conflicts with the output",
@@ -1638,7 +1684,7 @@ fn copy_exact(
     if published_owned(database, link, output)? {
         return Ok(());
     }
-    if let Some((path, digest, identity, anchor)) = prepared_evidence(database, link.run_id)? {
+    if let Some((path, digest, identity, anchor)) = prepared_evidence(database, link)? {
         if Path::new(&path) != link.target || digest != output.sha256 {
             return Err(invalid("Prepared publication changed its output"));
         }
@@ -3124,6 +3170,88 @@ mod tests {
                 .join(live.target.parent().unwrap().file_name().unwrap())
                 .join(live.target.file_name().unwrap())
         );
+    }
+    #[test]
+    fn moved_profile_recovers_a_live_link_with_prepared_output_and_anchor_evidence() {
+        let f = Fixture::new();
+        let link = f.accept(OP);
+        claim_dispatch(&f.database, OP, true).unwrap();
+        let receipt = f
+            .host
+            .call(
+                "host.services.invoke",
+                json!({"method":"start","params":link.prepared}),
+                &|| false,
+            )
+            .unwrap();
+        let link = observe(&f.database, OP, receipt).unwrap();
+        let mut stage = crate::files::publication::StagedEntry::prepare(
+            link.target.parent().unwrap(),
+            |payload| {
+                let mut file = OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .open(payload)?;
+                file.write_all(PNG)?;
+                file.sync_all()?;
+                Ok(())
+            },
+        )
+        .unwrap();
+        let anchor = stage.trace_anchor().unwrap();
+        let original = crate::files::trace_file_identity(&anchor).unwrap();
+        prepare_operation_output(
+            &TraceRunHandle {
+                database: f.database.clone(),
+                id: link.run_id,
+            },
+            &link.target,
+            &f.host.output.sha256,
+            Some(&anchor),
+        )
+        .unwrap();
+        stage.retain_trace_anchor();
+        drop(stage);
+        // The whole profile moves, keeping its inodes.
+        let moved = crate::test_support::tempdir().unwrap();
+        let new_root = moved.path().join("renamed-user/profile");
+        fs::create_dir_all(new_root.parent().unwrap()).unwrap();
+        fs::rename(f._root.path(), &new_root).unwrap();
+        let database = new_root.join("trace.sqlite");
+        let host = Fake::new(&new_root, &database);
+        *host.states.lock().unwrap() = f.host.states.lock().unwrap().clone();
+        let rebased = read_link(&database, OP).unwrap().unwrap().target;
+        assert!(rebased.starts_with(&new_root));
+        run_worker(
+            &host,
+            &database,
+            OP,
+            false,
+            &crate::plugin_job::JobControl::new(),
+            &f.app,
+            Polling {
+                interval: Duration::ZERO,
+                settlement: 2,
+                local_attempts: 6,
+                local_backoff: Duration::ZERO,
+            },
+        )
+        .unwrap();
+        assert_eq!(snapshot_at(&database, OP).unwrap().unwrap()["status"], "succeeded");
+        // The retained anchor's original inode was published; nothing re-read.
+        assert_eq!(crate::files::trace_file_identity(&rebased).unwrap(), original);
+        assert_eq!(host.count("host.artifacts.read"), 0);
+        assert_eq!(host.count("start"), 0);
+        let (path, retained): (String, Option<String>) = connection_at(&database)
+            .unwrap()
+            .query_row(
+                "SELECT prepared_output_path,prepared_anchor_path FROM runs WHERE id=?1",
+                [link.run_id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(Path::new(&path), rebased);
+        assert!(retained.is_none_or(|a| Path::new(&a).starts_with(&new_root)));
     }
     #[test]
     fn one_invalid_live_target_fails_only_its_own_operation() {
