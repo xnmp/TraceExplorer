@@ -5,7 +5,7 @@
   import { recentOpenAIImageRuns, type OpenAIImageRunHistory } from "$lib/api/openai-image";
   import { retryRun } from "./image-jobs";
   import { traceOperationLabel } from "$lib/domain/trace-operation";
-  import { codexExplanation, excerpt, retryable } from "$lib/domain/image-retry";
+  import { codexExplanation, excerpt, retryable, unconfirmedOutcome } from "$lib/domain/image-retry";
   import { traceInvalidation } from "../trace/invalidation.svelte";
 
   let { open, onClose, jobs }: { open: boolean; onClose: () => void; jobs?: PluginJobs } = $props();
@@ -73,7 +73,7 @@
                   <dt>Started</dt><dd>{item.run.createdAt}</dd>
                   <dt>Model</dt><dd>{String(item.run.parameters.model ?? "Unknown")}</dd>
                   <dt>Prompt</dt><dd>{String(item.run.parameters.prompt ?? "")}</dd>
-                  <dt>Output</dt><dd>{item.outputPath ?? (item.run.status === "uncertain" ? "Publication needs reconciliation" : "No recorded output")}</dd>
+                  <dt>Output</dt><dd>{item.outputPath ?? (unconfirmedOutcome(item) ? "Outcome could not be confirmed" : item.run.status === "uncertain" ? "Publication needs reconciliation" : "No recorded output")}</dd>
                   {#if item.preparedOutputPath}<dt>Prepared</dt><dd>{item.preparedOutputPath} — publication not yet verified</dd>{/if}
                   {#if item.run.error}<dt>Reason</dt><dd>{item.run.error}</dd>{/if}
                 </dl>

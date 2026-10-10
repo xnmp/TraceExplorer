@@ -43,7 +43,27 @@ export function runs(): OpenAIImageRunHistory[] {
         details: { stage: "image_validated" },
       },
     },
+    unconfirmed(85, "2026-10-09T07:55:00Z", { outcome: "unknown", provider_execution: { state: "unknown", error: { code: "provider_restarted", message: "Interrupted" } } }),
+    unconfirmed(84, null, { provider_execution: { state: "running" } }),
   ];
+}
+export const UNCONFIRMED_PROMPT = "A lighthouse in fog";
+/** A linked Codex generation whose outcome was settled unknown, or (unfinished) is still being recovered. */
+function unconfirmed(id: number, finishedAt: string | null, details: Record<string, unknown>): OpenAIImageRunHistory {
+  const options = { size: "1024x1024", resolution: null, aspectRatio: null, quality: "auto", background: "auto" };
+  return {
+    outputPath: null, inputs: [],
+    run: {
+      id, operation: "openai.image.generate", createdAt: "2026-10-09T07:50:00Z", status: "uncertain", finishedAt, recovered: false, inputIds: [],
+      error: finishedAt ? "The image generation outcome could not be confirmed: the provider reported it unknown. Retry starts a new, separately charged generation." : "image_recovery_pending",
+      parameters: { prompt: UNCONFIRMED_PROMPT, model: null, size: "1024x1024", quality: "auto", background: "auto", resolution: null, aspect_ratio: null,
+        connection_id: "saved-login", connection_revision: "old-revision", effective_recipe_digest: "a".repeat(64), operation_id: "e".repeat(31) + id % 10,
+        effective_recipe: { schemaVersion: 1, formatterVersion: 1, connectionId: "saved-login", connectionRevision: "old-revision", adapter: "codex-cli",
+          endpointIdentity: "codex-cli:auto-discovery", model: null, options, inputDigests: [], inputRoles: [], submittedPrompt: UNCONFIRMED_PROMPT, agentTask: "Recorded fixture task" },
+        output_storage: "temporary", save_directory_hint: "/pictures" },
+      details,
+    },
+  };
 }
 
 export const started: Array<Record<string, unknown>> = [];
