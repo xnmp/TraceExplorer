@@ -957,6 +957,10 @@ async fn sealed_output_corrupted_in_place_is_unavailable_without_replay() {
     assert_eq!(count.load(Ordering::SeqCst), 1);
     assert_eq!(host.count("host.artifacts.stage"), stages);
 }
+/// Plan §21.3 #11: saved-login Codex runs with API-key variables populated in
+/// the provider's own environment. The child observes them cleared, no auth
+/// switch is attempted, and the exact fresh thread's image is selected even when
+/// a newer unrelated thread image exists.
 #[cfg(unix)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn fake_cli_preserves_launcher_runtime_order_saved_login_and_managed_image_model() {
@@ -966,24 +970,38 @@ async fn fake_cli_preserves_launcher_runtime_order_saved_login_and_managed_image
     std::fs::create_dir(&bin).unwrap();
     let home = installation.path().join("home");
     std::fs::create_dir(&home).unwrap();
-    let previous = std::env::var_os("CODEX_HOME");
-    std::env::set_var("CODEX_HOME", &home);
-    struct Restore(Option<std::ffi::OsString>);
+    const AUTH: [&str; 3] = ["OPENAI_API_KEY", "CODEX_API_KEY", "CODEX_ACCESS_TOKEN"];
+    let canary = format!(
+        "sk-te-env-canary-{}",
+        image_generation_backend::profiles::nonce().unwrap()
+    );
+    struct Restore(Vec<(&'static str, Option<std::ffi::OsString>)>);
     impl Drop for Restore {
         fn drop(&mut self) {
-            if let Some(value) = &self.0 {
-                std::env::set_var("CODEX_HOME", value)
-            } else {
-                std::env::remove_var("CODEX_HOME")
+            for (key, value) in &self.0 {
+                match value {
+                    Some(value) => std::env::set_var(key, value),
+                    None => std::env::remove_var(key),
+                }
             }
         }
     }
-    let _restore = Restore(previous);
+    let _restore = Restore(
+        std::iter::once("CODEX_HOME")
+            .chain(AUTH)
+            .map(|key| (key, std::env::var_os(key)))
+            .collect(),
+    );
+    std::env::set_var("CODEX_HOME", &home);
+    for key in AUTH {
+        std::env::set_var(key, format!("{canary}-{key}"));
+    }
     let launcher = bin.join("codex");
     std::fs::write(&launcher, b"#!/usr/bin/env fake-node\n").unwrap();
     std::fs::set_permissions(&launcher, std::fs::Permissions::from_mode(0o700)).unwrap();
     let runtime = bin.join("fake-node");
-    let script=format!("#!/usr/bin/env python3\nimport os,sys,json,base64\nargs=sys.argv[2:]\nassert not any(os.environ.get(k) for k in ['OPENAI_API_KEY','CODEX_API_KEY','CODEX_ACCESS_TOKEN'])\nif args==['login','status']:\n print('Logged in using ChatGPT',file=sys.stderr)\nelse:\n assert '--ignore-user-config' in args and '--ephemeral' in args\n assert '--model' not in args and '-m' not in args\n assert args[-2]=='--'\n paths=[args[i+1] for i,a in enumerate(args) if a=='--image']\n assert len(paths)==2 and paths[0].endswith('source-1.png') and paths[1].endswith('source-2.png')\n assert 'equal inputs; none is the main image' in args[-1]\n thread='12345678-1234-1234-1234-123456789abc'\n target=os.path.join(os.environ['CODEX_HOME'],'generated_images',thread)\n os.makedirs(target)\n open(os.path.join(target,'output.png'),'wb').write(base64.b64decode('{}'))\n print(json.dumps({{'type':'thread.started','thread_id':thread}}))\n print(json.dumps({{'type':'item.completed','item':{{'type':'agent_message','text':'Successful transcript must never be persisted'}}}}))\n print(json.dumps({{'type':'turn.completed','usage':{{}}}}))\n",STANDARD.encode(png(99)));
+    let invocations = bin.join("invocations.jsonl");
+    let script=format!("#!/usr/bin/env python3\nimport os,sys,json,base64,time\nargs=sys.argv[2:]\nenv={{k:v for k,v in os.environ.items() if k in {auth:?} or 'te-env-canary' in v}}\nopen(os.path.join(os.path.dirname(os.path.realpath(__file__)),'invocations.jsonl'),'a').write(json.dumps({{'args':args,'env':env}})+'\\n')\nif args==['login','status']:\n print('Logged in using ChatGPT',file=sys.stderr)\nelse:\n assert '--ignore-user-config' in args and '--ephemeral' in args\n assert '--model' not in args and '-m' not in args\n assert args[-2]=='--'\n paths=[args[i+1] for i,a in enumerate(args) if a=='--image']\n assert len(paths)==2 and paths[0].endswith('source-1.png') and paths[1].endswith('source-2.png')\n assert 'equal inputs; none is the main image' in args[-1]\n thread='12345678-1234-1234-1234-123456789abc'\n images=os.path.join(os.environ['CODEX_HOME'],'generated_images')\n target=os.path.join(images,thread)\n os.makedirs(target)\n open(os.path.join(target,'output.png'),'wb').write(base64.b64decode('{right}'))\n other=os.path.join(images,'87654321-4321-4321-4321-cba987654321')\n os.makedirs(other)\n newer=os.path.join(other,'output.png')\n open(newer,'wb').write(base64.b64decode('{wrong}'))\n later=time.time()+3600\n os.utime(newer,(later,later))\n os.utime(other,(later,later))\n print(json.dumps({{'type':'thread.started','thread_id':thread}}))\n print(json.dumps({{'type':'item.completed','item':{{'type':'agent_message','text':'Successful transcript must never be persisted'}}}}))\n print(json.dumps({{'type':'turn.completed','usage':{{}}}}))\n",auth=AUTH.to_vec(),right=STANDARD.encode(png(99)),wrong=STANDARD.encode(png(7)));
     std::fs::write(&runtime, script).unwrap();
     std::fs::set_permissions(&runtime, std::fs::Permissions::from_mode(0o700)).unwrap();
     let directory = tempfile::tempdir().unwrap();
@@ -1023,8 +1041,39 @@ async fn fake_cli_preserves_launcher_runtime_order_saved_login_and_managed_image
     }
     let persisted = serde_json::to_string(&result).unwrap();
     assert!(!persisted.contains("Successful transcript must never be persisted"));
+    assert!(!persisted.contains("te-env-canary"));
     assert!(result.diagnostics.as_ref().unwrap().valid(true));
+    // The exact fresh thread's image was sealed, not the newer unrelated one.
+    let output = match &result.delivery {
+        Delivery::Available { output } => output.clone(),
+        state => panic!("No sealed CLI image: {state:?}"),
+    };
+    let sealed = host.artifacts.lock().unwrap()[&output.handle].0.clone();
+    assert_eq!(std::fs::read(sealed).unwrap(), png(99));
+    // The child saw the saved-login environment only, and no auth switch ran.
+    let observed: Vec<Value> = std::fs::read_to_string(&invocations)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert_eq!(observed.len(), 2);
+    assert_eq!(observed[0]["args"], json!(["login", "status"]));
+    for invocation in &observed {
+        assert_eq!(invocation["env"], json!({}), "API key reached Codex");
+    }
+    let exec = observed[1]["args"].as_array().unwrap();
+    assert_eq!(exec[0], "exec");
+    let (_task, options) = exec.split_last().unwrap();
+    for arg in options
+        .iter()
+        .map(|arg| arg.as_str().unwrap().to_ascii_lowercase())
+    {
+        for auth in ["login", "api-key", "api_key", "apikey", "auth", "token"] {
+            assert!(!arg.contains(auth), "auth switch argument {arg}");
+        }
+    }
     let processes = host.processes.lock().unwrap();
+    assert!(!json!(*processes).to_string().contains("te-env-canary"));
     assert_eq!(processes.len(), 2);
     assert_eq!(processes[0]["args"], json!(["login", "status"]));
     assert_eq!(processes[1]["program"], launcher.to_str().unwrap());
