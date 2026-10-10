@@ -3996,4 +3996,43 @@ mod tests {
         assert_eq!(fs::read(&link.target).unwrap(), PNG);
         assert_eq!(f.host.count("start"), 1);
     }
+
+    #[test]
+    fn prepared_recipe_from_another_formatter_or_profile_revision_is_refused_before_acceptance() {
+        for variant in ["formatter", "schema", "profile"] {
+            let f = Fixture::new();
+            let mut recipe = Fake::recipe(&PrepareRequest {
+                operation_id: OP.into(),
+                connection_id: "fixture".into(),
+                expected_connection_revision: "recipe-1".into(),
+                model: Some("arbitrary-image-model".into()),
+                prompt: "Draw a landscape".into(),
+                inputs: vec![],
+                options: request().options(),
+            });
+            match variant {
+                "formatter" => recipe.formatter_version = 2,
+                "schema" => recipe.schema_version = 2,
+                _ => recipe.connection_revision = "recipe-2".into(),
+            }
+            *f.host.prepared_recipe.lock().unwrap() = Some(recipe);
+            assert!(
+                accept_with(
+                    f.host.as_ref(),
+                    &f.database,
+                    &f.generated,
+                    request(),
+                    9,
+                    OP.into(),
+                    &crate::plugin_job::JobControl::new(),
+                    false,
+                )
+                .is_err(),
+                "{variant}"
+            );
+            assert!(read_link(&f.database, OP).unwrap().is_none(), "{variant}");
+            assert_eq!(f.host.count("start"), 0, "{variant}");
+            assert_eq!(f.host.count("host.artifacts.release"), 1, "{variant}");
+        }
+    }
 }
