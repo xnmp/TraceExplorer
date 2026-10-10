@@ -618,6 +618,23 @@ fn regular(path: &Path) -> Result<File, AppError> {
     }
     #[cfg(not(unix))]
     {
+        if !path.is_absolute() {
+            return Err(invalid("Image evidence path must be absolute"));
+        }
+        // FILE_FLAG_OPEN_REPARSE_POINT covers only the final component; Windows
+        // still follows a junction or symlink substituted for an ancestor
+        // directory. `is_symlink` is true for every name-surrogate reparse
+        // point, junctions included, matching the Unix no-follow walk.
+        for ancestor in path.ancestors().skip(1) {
+            if ancestor.parent().is_none() {
+                break;
+            }
+            if fs::symlink_metadata(ancestor)?.file_type().is_symlink() {
+                return Err(invalid(
+                    "Image evidence ancestor must not be a link or junction",
+                ));
+            }
+        }
         let mut options = OpenOptions::new();
         options.read(true);
         #[cfg(windows)]
@@ -688,6 +705,62 @@ struct Acceptance {
     link: Link,
     fresh: bool,
 }
+/// Execution evidence recorded for a run: the shared-service receipt
+/// (`provider_execution`) or a legacy adapter's `execution`, as an object with
+/// a `state` or as a bare state string. `None` when the run recorded none.
+fn recorded_execution_state(details: &Value) -> Option<Option<&str>> {
+    let execution = details
+        .get("provider_execution")
+        .or_else(|| details.get("execution"))?;
+    Some(match execution {
+        Value::Object(fields) => fields.get("state").and_then(Value::as_str),
+        other => other.as_str(),
+    })
+}
+/// A Retry is a new paid operation, so its source must be an image run whose
+/// outcome was an explicit failure. Unknown, unavailable, cancelled, running
+/// and successful runs (and anything malformed) are refused before any IO.
+fn retry_source_failed(database: &Path, run_id: i64) -> Result<(), AppError> {
+    let refused = || invalid("Only an explicitly failed image run can be retried");
+    let connection = connection_at(database)?;
+    let Some((operation, status, details)) = connection
+        .query_row(
+            "SELECT operation,status,CASE WHEN length(CAST(result_details AS BLOB))<=1048576 THEN result_details ELSE NULL END FROM runs WHERE id=?1",
+            [run_id],
+            |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, Option<String>>(2)?)),
+        )
+        .optional()
+        .map_err(sql)?
+    else {
+        return Err(refused());
+    };
+    if !matches!(
+        operation.as_str(),
+        "openai.image.generate" | "openai.image.edit"
+    ) || status != "failed"
+    {
+        return Err(refused());
+    }
+    if let Some(details) = details {
+        let details: Value = parse(&details).map_err(|_| refused())?;
+        if recorded_execution_state(&details).is_some_and(|state| state != Some("failed")) {
+            return Err(refused());
+        }
+    }
+    let row=connection.query_row("SELECT CASE WHEN length(operation_id)<=128 THEN operation_id ELSE NULL END,run_id,job_id,CASE WHEN length(request_digest)=64 THEN request_digest ELSE NULL END,CASE WHEN length(CAST(body AS BLOB))<=1048576 THEN body ELSE NULL END FROM image_service_operations WHERE run_id=?1",[run_id],row_at).optional().map_err(sql)?;
+    if let Some(row) = row {
+        let link = checked_link(&connection, database, row).map_err(|_| refused())?;
+        if link.phase != "failed"
+            || !link
+                .receipt
+                .as_ref()
+                .is_some_and(|r| matches!(r.execution, Execution::Failed { .. }))
+        {
+            return Err(refused());
+        }
+    }
+    Ok(())
+}
 #[cfg(test)]
 fn accept_with(host:&dyn ImageHost,database:&Path,generated:&Path,request:ImageRequest,job_id:u64,operation:String,control:&crate::plugin_job::JobControl,production:bool)->Result<Acceptance,AppError> {
     accept_with_deadline(host,database,generated,request,job_id,operation,control,production,now_ms().saturating_add(600_000))
@@ -722,6 +795,9 @@ fn accept_with_deadline(
             ));
         }
         return Ok(Acceptance { link, fresh: false });
+    }
+    if let Some(source) = request.retry_of {
+        retry_source_failed(database, source)?;
     }
     check()?;
     if cancelled_at(&connection_at(database)?, &operation)? {
@@ -3656,5 +3732,268 @@ mod tests {
             assert_eq!(f.host.count("start"), 0);
             assert_eq!(f.host.count("host.artifacts.release"), 1);
         }
+    }
+
+    #[test]
+    fn accepted_never_forwarded_run_needs_attention_after_restart_with_zero_provider_starts() {
+        let f = Fixture::new();
+        let link = f.accept(OP);
+        assert_eq!(link.phase, "accepted");
+        // The process that committed acceptance died before it claimed
+        // forwarding. Its successor only recovers (fresh=false) after reopening.
+        drop(connection_at(&f.database).unwrap());
+        f.run(OP, false);
+        let state = f.snapshot(OP);
+        assert_eq!(state["recoveryState"], "needs_attention");
+        assert_eq!(state["status"], "uncertain");
+        assert_eq!(state["providerExecution"], Value::Null);
+        assert_eq!(f.host.count("start"), 0);
+        assert!(!f.events.lock().unwrap().iter().any(|(name, _)| {
+            name == "openai-image-error" || name == "openai-image-complete"
+        }));
+        // Another restart and a duplicate submission of the same operation
+        // still never dispatch the paid request.
+        f.run(OP, false);
+        let again = accept_with(
+            f.host.as_ref(),
+            &f.database,
+            &f.generated,
+            request(),
+            9,
+            OP.into(),
+            &crate::plugin_job::JobControl::new(),
+            false,
+        )
+        .unwrap();
+        assert!(!again.fresh);
+        assert_eq!(again.link.run_id, link.run_id);
+        assert_eq!(f.host.count("start"), 0);
+        assert_eq!(f.host.count("prepare"), 1);
+        assert_eq!(f.snapshot(OP)["status"], "uncertain");
+    }
+    fn run_parameters(f: &Fixture, run: i64) -> Value {
+        let raw: String = connection_at(&f.database)
+            .unwrap()
+            .query_row("SELECT parameters FROM runs WHERE id=?1", [run], |r| r.get(0))
+            .unwrap();
+        parse(&raw).unwrap()
+    }
+    fn retry_of(run: i64) -> ImageRequest {
+        let mut retry = request();
+        retry.retry_of = Some(run);
+        retry
+    }
+    #[test]
+    fn retry_of_an_explicit_failure_is_a_new_operation_with_durable_lineage() {
+        let f = Fixture::new();
+        f.host.behavior.lock().unwrap().failed = true;
+        let failed = f.accept(OP);
+        f.run(OP, true);
+        assert_eq!(f.snapshot(OP)["status"], "failed");
+        f.host.behavior.lock().unwrap().failed = false;
+        let calls = f.host.calls.lock().unwrap().len();
+        // The failed operation's identity cannot carry the retry.
+        assert!(accept_with(
+            f.host.as_ref(),
+            &f.database,
+            &f.generated,
+            retry_of(failed.run_id),
+            10,
+            OP.into(),
+            &crate::plugin_job::JobControl::new(),
+            false,
+        )
+        .is_err());
+        assert_eq!(f.host.calls.lock().unwrap().len(), calls);
+        let retry_op = "33333333333333333333333333333333";
+        let retry = accept_with(
+            f.host.as_ref(),
+            &f.database,
+            &f.generated,
+            retry_of(failed.run_id),
+            10,
+            retry_op.into(),
+            &crate::plugin_job::JobControl::new(),
+            false,
+        )
+        .unwrap();
+        assert!(retry.fresh);
+        assert_ne!(retry.link.run_id, failed.run_id);
+        f.run(retry_op, true);
+        assert_eq!(f.snapshot(retry_op)["status"], "succeeded");
+        assert_eq!(f.host.count("start"), 2);
+        let started = f.host.states.lock().unwrap();
+        assert!(started.contains_key(OP) && started.contains_key(retry_op));
+        drop(started);
+        drop(connection_at(&f.database).unwrap());
+        let lineage = run_parameters(&f, retry.link.run_id);
+        assert_eq!(lineage["retry_of"], json!(failed.run_id));
+        assert_eq!(lineage["operation_id"], retry_op);
+        let original = run_parameters(&f, failed.run_id);
+        assert_eq!(original["operation_id"], OP);
+        assert!(original.get("retry_of").is_none());
+        assert_eq!(f.snapshot(OP)["status"], "failed");
+    }
+    #[test]
+    fn unknown_unavailable_cancelled_successful_or_foreign_runs_are_not_retry_sources() {
+        let mut sources = vec![];
+        for outcome in ["unknown", "unavailable", "succeeded", "cancelled", "running"] {
+            let f = Fixture::new();
+            {
+                let mut b = f.host.behavior.lock().unwrap();
+                b.unknown = outcome == "unknown";
+                b.unavailable = outcome == "unavailable";
+            }
+            let link = f.accept(OP);
+            if outcome == "cancelled" {
+                cancel_at(&f.database, OP).unwrap();
+            }
+            if outcome == "running" {
+                claim_dispatch(&f.database, OP, true).unwrap();
+            } else {
+                f.run(OP, true);
+            }
+            sources.push((outcome, f, link.run_id));
+        }
+        let f = Fixture::new();
+        let crop = begin_operation_at(
+            &f.database,
+            OperationStart {
+                operation: "image.crop".into(),
+                parameters: json!({}),
+                inputs: vec![],
+            },
+        )
+        .unwrap();
+        fail_run_at(&f.database, crop, "crop_failed").unwrap();
+        sources.push(("non-image failure", f, crop));
+        let f = Fixture::new();
+        sources.push(("missing", f, 4242));
+        let f = Fixture::new();
+        let forged = begin_operation_at(
+            &f.database,
+            OperationStart {
+                operation: "openai.image.generate".into(),
+                parameters: json!({"prompt":"Legacy"}),
+                inputs: vec![],
+            },
+        )
+        .unwrap();
+        connection_at(&f.database).unwrap().execute("UPDATE runs SET status='failed',result_details=?2 WHERE id=?1",params![forged,json!({"execution":{"state":"unknown"}}).to_string()]).unwrap();
+        sources.push(("failed status with unknown execution", f, forged));
+        for (outcome, f, run) in sources {
+            let calls = f.host.calls.lock().unwrap().len();
+            let jobs: i64 = connection_at(&f.database)
+                .unwrap()
+                .query_row("SELECT COUNT(*) FROM image_jobs", [], |r| r.get(0))
+                .unwrap();
+            let retry_op = "44444444444444444444444444444444";
+            assert!(
+                accept_with(
+                    f.host.as_ref(),
+                    &f.database,
+                    &f.generated,
+                    retry_of(run),
+                    11,
+                    retry_op.into(),
+                    &crate::plugin_job::JobControl::new(),
+                    false,
+                )
+                .is_err(),
+                "{outcome} run was accepted as a Retry source"
+            );
+            assert_eq!(f.host.calls.lock().unwrap().len(), calls, "{outcome}");
+            assert!(read_link(&f.database, retry_op).unwrap().is_none());
+            let after: i64 = connection_at(&f.database)
+                .unwrap()
+                .query_row("SELECT COUNT(*) FROM image_jobs", [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(after, jobs, "{outcome}");
+        }
+    }
+    #[test]
+    fn legacy_failed_image_run_without_execution_evidence_remains_retryable() {
+        let f = Fixture::new();
+        let legacy = begin_operation_at(
+            &f.database,
+            OperationStart {
+                operation: "openai.image.generate".into(),
+                parameters: json!({"provider":"openai","prompt":"Legacy"}),
+                inputs: vec![],
+            },
+        )
+        .unwrap();
+        fail_run_at(&f.database, legacy, "provider_error").unwrap();
+        let retry = accept_with(
+            f.host.as_ref(),
+            &f.database,
+            &f.generated,
+            retry_of(legacy),
+            12,
+            OP.into(),
+            &crate::plugin_job::JobControl::new(),
+            false,
+        )
+        .unwrap();
+        assert_eq!(run_parameters(&f, retry.link.run_id)["retry_of"], json!(legacy));
+    }
+    /// A directory link: a symlink on Unix, a junction on Windows (which needs
+    /// no privilege, unlike a Windows symlink).
+    fn link_directory(target: &Path, link: &Path) {
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(target, link).unwrap();
+        #[cfg(windows)]
+        {
+            let status = std::process::Command::new("cmd")
+                .args(["/C", "mklink", "/J"])
+                .arg(link)
+                .arg(target)
+                .status()
+                .unwrap();
+            assert!(status.success(), "mklink /J failed");
+            assert!(fs::symlink_metadata(link).unwrap().file_type().is_symlink());
+        }
+    }
+    fn unlink_directory(link: &Path) {
+        #[cfg(unix)]
+        fs::remove_file(link).unwrap();
+        // Removing a junction removes only the reparse point, not its target.
+        #[cfg(windows)]
+        fs::remove_dir(link).unwrap();
+    }
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn linked_evidence_directory_is_refused_while_its_real_path_reads() {
+        let f = Fixture::new();
+        let real = f._root.path().join("evidence");
+        fs::create_dir(&real).unwrap();
+        fs::write(real.join("sealed.png"), PNG).unwrap();
+        let alias = f._root.path().join("evidence-link");
+        link_directory(&real, &alias);
+        assert!(regular(&real.join("sealed.png")).is_ok());
+        assert!(regular(&alias.join("sealed.png")).is_err());
+        assert!(sync_ancestors(&alias).is_err());
+    }
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn linked_publication_directory_is_never_published_through_and_recovers_after_restoration() {
+        let f = Fixture::new();
+        let link = f.accept(OP);
+        let directory = link.target.parent().unwrap().to_path_buf();
+        let moved = directory.with_file_name("substituted-real-directory");
+        fs::rename(&directory, &moved).unwrap();
+        link_directory(&moved, &directory);
+        f.run(OP, true);
+        assert_eq!(f.snapshot(OP)["status"], "uncertain");
+        assert_eq!(f.snapshot(OP)["providerExecution"]["state"], "succeeded");
+        assert_eq!(fs::read_dir(&moved).unwrap().count(), 0);
+        assert_eq!(f.host.count("host.artifacts.acquired"), 0);
+        assert_eq!(f.host.count("acknowledge"), 0);
+        unlink_directory(&directory);
+        fs::rename(&moved, &directory).unwrap();
+        f.run(OP, false);
+        assert_eq!(f.snapshot(OP)["status"], "succeeded");
+        assert_eq!(fs::read(&link.target).unwrap(), PNG);
+        assert_eq!(f.host.count("start"), 1);
     }
 }
