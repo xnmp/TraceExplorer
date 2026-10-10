@@ -232,6 +232,35 @@ describe("promptTitles", () => {
     expect(invoke).not.toHaveBeenCalled();
   });
 
+  it("ignores a repeated or older configuration revision: the host announces its own save and its watcher's reload", async () => {
+    await configured();
+    let changed!: (revision:number) => void;
+    promptTitles.bind({storage:{get:async()=>({summarizePrompts:true}),set:async()=>{}},text:{subscribe:listener=>{changed=listener;return ()=>{};},openSettings(){}}});
+    await flush();
+    changed(2);
+    await flush();
+    promptTitles.request(1,"Original");
+    await flush();
+    expect(promptTitles.labelFor(1,"Original")).toBe("A Title");
+    const work = deferred<unknown>();
+    invoke.mockImplementation(async (method: string) => (method === "trace_title_context" ? description : work.promise));
+    promptTitles.request(2,"Second");
+    await flush();
+    invoke.mockClear();
+    changed(2);
+    changed(1);
+    await flush();
+    // Nothing changed: the title stays, the in-flight request is neither cancelled nor repeated.
+    expect(promptTitles.labelFor(1,"Original")).toBe("A Title");
+    expect(promptTitles.pending(2)).toBe(true);
+    expect(invoke).not.toHaveBeenCalled();
+    work.resolve(result("Second Title"));
+    await flush();
+    expect(promptTitles.labelFor(2,"Second")).toBe("Second Title");
+    changed(3);
+    expect(promptTitles.labelFor(1,"Original")).toBe("Original");
+  });
+
   it("never regenerates loaded titles eagerly: configuration and preference changes request nothing until nodes ask again", async () => {
     const settle = async () => { for (let i = 0; i < 5; i++) await flush(); };
     await configured();

@@ -1779,6 +1779,7 @@ fn run_worker(
     let mut cancel_sent = false;
     let mut failures = 0usize;
     let mut expired_polls = 0usize;
+    let mut storage_polls = 0usize;
     let mut settlement: Option<Instant> = None;
     loop {
         if control.check().is_err() {
@@ -1824,6 +1825,16 @@ fn run_worker(
                         )?;
                         emit_terminal(app, &done);
                         return Ok(());
+                    }
+                    // `storage_unavailable` is temporary (plan §8.2): the provider
+                    // records success with it before its own sealing IO ends, and a
+                    // later status read restores availability. Keep polling within
+                    // the settlement budget; verified missing/corrupt bytes, or a
+                    // condition that persists, need the user's recovery.
+                    Delivery::Unavailable { reason }
+                        if reason == "storage_unavailable" && storage_polls < polling.settlement =>
+                    {
+                        storage_polls += 1;
                     }
                     Delivery::Unavailable { .. } => {
                         attention(database,operation,"Provider generation succeeded; image delivery is unavailable and can be recovered without generating again")?;
@@ -2127,6 +2138,9 @@ mod tests {
         lost_release: bool,
         running: bool,
         stop_recovery: bool,
+        /// Status reads that still report the provider's pre-seal
+        /// `storage_unavailable` delivery before its sealing IO finishes.
+        sealing_polls: Option<usize>,
     }
     #[derive(Default)]
     struct IoGate {
@@ -2326,6 +2340,10 @@ mod tests {
                         Delivery::Unavailable {
                             reason: "Fixture temporarily lost output".into(),
                         }
+                    } else if behavior.sealing_polls.is_some() {
+                        Delivery::Unavailable {
+                            reason: "storage_unavailable".into(),
+                        }
                     } else {
                         Delivery::Available {
                             output: self.output.clone(),
@@ -2359,7 +2377,7 @@ mod tests {
                     Ok(serde_json::to_value(receipt).unwrap())
                 }
                 "status" | "cancel" => {
-                    let behavior = self.behavior.lock().unwrap();
+                    let mut behavior = self.behavior.lock().unwrap();
                     if action == "status" && behavior.stop_recovery {
                         return Err(AppError::Service {
                             code: "recovery_stopped".into(),
@@ -2370,6 +2388,13 @@ mod tests {
                     let receipt = states
                         .get_mut(p["operationId"].as_str().unwrap())
                         .ok_or_else(|| invalid("Fixture operation not found"))?;
+                    if let Some(remaining) = behavior.sealing_polls.as_mut() {
+                        if action == "status" && *remaining == 0 && matches!(receipt.delivery, Delivery::Unavailable { .. }) {
+                            receipt.revision += 1;
+                            receipt.delivery = Delivery::Available { output: self.output.clone() };
+                        }
+                        *remaining = remaining.saturating_sub(1);
+                    }
                     if action == "cancel"
                         && matches!(receipt.execution, Execution::Accepted {} | Execution::Running {})
                     {
@@ -2590,6 +2615,29 @@ mod tests {
         f.run(OP, false);
         assert_eq!(f.snapshot(OP)["status"], "succeeded");
         assert_eq!(fs::read(link.target).unwrap(), PNG);
+        assert_eq!(f.host.count("start"), 1);
+    }
+    #[test]
+    fn provider_still_sealing_success_is_delivered_by_the_same_worker() {
+        // The provider records success with `storage_unavailable` delivery
+        // before its sealing IO completes, then restores availability.
+        let f = Fixture::new();
+        f.host.behavior.lock().unwrap().sealing_polls = Some(1);
+        let link = f.accept(OP);
+        f.run(OP, true);
+        assert_eq!(f.snapshot(OP)["status"], "succeeded");
+        assert_eq!(fs::read(&link.target).unwrap(), PNG);
+        assert_eq!(f.host.count("start"), 1);
+    }
+    #[test]
+    fn persistent_storage_unavailable_delivery_needs_attention_without_paid_replay() {
+        let f = Fixture::new();
+        f.host.behavior.lock().unwrap().sealing_polls = Some(usize::MAX);
+        let link = f.accept(OP);
+        f.run(OP, true);
+        assert_eq!(f.snapshot(OP)["status"], "uncertain");
+        assert_eq!(f.snapshot(OP)["providerExecution"]["state"], "succeeded");
+        assert!(!link.target.exists());
         assert_eq!(f.host.count("start"), 1);
     }
     #[test]
