@@ -103,7 +103,10 @@ export interface PreviewInfoContribution { id: string; component: Component<any>
 /** Capability "paneDialogs": a host-issued pane handle from `workspace.capturePane`. Never construct or serialize it. */
 export interface PluginDialogPane { readonly paneId: string }
 /** Omitted means a window modal; "pane" covers only the captured pane. */
-export type PluginDialogOptions = { readonly scope: "window" } | { readonly scope: "pane"; readonly pane: PluginDialogPane };
+export type PluginDialogOptions = ({ readonly scope: "window" } | { readonly scope: "pane"; readonly pane: PluginDialogPane }) & {
+  /** Capture before awaiting work to retain the requesting modal's lifetime, independently of the destination. */
+  readonly caller?: PluginDialogPane;
+};
 /** "pane": a verified explorer drag. "external": paths Tauri delivered from another application. */
 export type PluginFileDropSource = "pane" | "external";
 export type PluginFileDropHandler = (paths: readonly string[], source: PluginFileDropSource) => void | Promise<void>;
