@@ -280,22 +280,38 @@ test("clicking a closed in-place-edit stack selects its cover revision, as click
   expect(await uncaught(page)).toEqual([]);
 });
 
-test("a band wider than the pane scrolls sideways to reach every tile", async ({ page }) => {
+test("a band wider than the pane scrolls the view sideways, keeping routes attached to their cover", async ({ page }) => {
   await openView(page, 220, "?wideRoots=24", false);
   await stack(page, "wr-0").locator("[data-stack-toggle]").click(); await settle(page);
-  const band = stack(page, "wr-0").locator("[data-grid-band]");
-  const unreachable = await band.evaluate((element) => {
-    const box = element.getBoundingClientRect(), missed: string[] = [];
-    for (const tile of element.querySelectorAll<HTMLElement>("[data-tile-key]")) {
-      // Scroll so the tile's left edge meets the band's left edge, then it must lie inside the band.
-      element.scrollLeft += tile.getBoundingClientRect().left - box.left;
-      const rect = tile.getBoundingClientRect();
-      if (rect.left < box.left - 1 || rect.right > box.right + 1) missed.push(tile.dataset.tileKey!);
-    }
-    return missed;
-  });
-  expect(unreachable).toEqual([]);
-  expect(await band.evaluate((element) => element.scrollWidth > element.clientWidth)).toBe(true);
+  const cover = await key(page, "wr-0");
+  const view = page.getByTestId("trace-view");
+  expect(await view.evaluate((element) => element.scrollWidth > element.clientWidth)).toBe(true);
+  // Where the cover hangs its outgoing route, against the route's first point as drawn.
+  const attachment = () => page.evaluate((cover) => {
+    const tile = document.querySelector(`[data-tile-key="${cover}"]`)!.getBoundingClientRect();
+    const routes = [...document.querySelectorAll<SVGPathElement>(`path[data-route][data-from="node:${cover}"]`)];
+    return { center: tile.left + tile.width / 2, starts: routes.map((route) => {
+      const start = route.getPointAtLength(0), at = route.getScreenCTM()!;
+      return start.x * at.a + start.y * at.c + at.e;
+    }) };
+  }, cover);
+  const box = (await view.boundingBox())!;
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  const before = await attachment();
+  expect(before.starts.length).toBeGreaterThan(0);
+  for (const wheel of [100, 5000, -5000]) {
+    const left = await view.evaluate((element) => element.scrollLeft);
+    await page.mouse.wheel(wheel, 0);
+    await expect.poll(() => view.evaluate((element) => element.scrollLeft)).not.toBe(left);
+    await settle(page);
+    const now = await attachment();
+    for (const start of now.starts) expect(Math.abs(start - now.center), `route start vs cover centre after wheel ${wheel}`).toBeLessThan(3);
+  }
+  // Every tile is reachable: at the far end of the scroll the rightmost tile lies inside the view.
+  await page.mouse.wheel(5000, 0);
+  await expect.poll(() => view.evaluate((element) => element.scrollWidth - element.clientWidth - element.scrollLeft)).toBeLessThan(20);
+  const rightmost = await view.evaluate((element) => Math.max(...[...element.querySelectorAll("[data-tile-key]")].map((tile) => tile.getBoundingClientRect().right)) <= element.getBoundingClientRect().right + 1);
+  expect(rightmost).toBe(true);
   expect(await uncaught(page)).toEqual([]);
 });
 

@@ -59,6 +59,9 @@
   const flow = $derived(gridFlow(cells, new Map(cells.filter((cell) => cell.kind === "stack" && openKeys.has(cell.id)).map((cell) => [cell.id, heights.get(cell.id) ?? 160])), columns,
     { cellWidth, cellHeight, columnGap: metrics.gap, rowGap: metrics.gap }));
   const pins = $derived(gridPins(flow, openKeys));
+  /** A band can need more than the pane (many separate inputs need routing lanes). The grid then widens and the
+   * view scrolls sideways as a whole, so a cover and the routes hanging from it always move together. */
+  const spread = $derived(Math.max(0, ...flow.bands.map((band) => covers.get(band.id)?.layout.width ?? 0)));
   const bridges = $derived(new Map(flow.bands.filter((band) => band.y > flow.cells.get(band.id)!.y + cellHeight).map((band) => [band.id, { top: cellHeight + 2, gutter: 4 }])));
   const bandById = $derived(new Map(flow.bands.map((band) => [band.id, band])));
   // Roving tabindex: the stop always names a rendered cell. It follows the last focused cell while
@@ -165,7 +168,7 @@
 </script>
 
 <div class="grid" role="grid" aria-label="Folder" aria-multiselectable="true" aria-colcount={columns} aria-rowcount={flow.rowCount}
-  bind:this={grid} onfocusin={() => focusInside = true} onfocusout={focusout} style:margin="{metrics.gridPadding}px" style:width="{flow.width}px" style:height="{flow.height}px">
+  bind:this={grid} onfocusin={() => focusInside = true} onfocusout={focusout} style:margin="{metrics.gridPadding}px" style:width="{Math.max(flow.width, spread)}px" style:height="{flow.height}px">
   {#each visible as cell (cell.id)}
     {@const rect = flow.cells.get(cell.id)!}
     {@const band = bandById.get(cell.id)}
@@ -227,8 +230,7 @@
   .grid { position: relative; overflow-x: clip; }
   .component { position: absolute; left: 0; width: 100%; pointer-events: none; }
   .cell { position: absolute; top: 0; pointer-events: auto; z-index: 2; }
-  /* A band wider than the pane scrolls within itself, as the sections did. */
-  .content { position: absolute; top: 0; left: 0; width: 100%; pointer-events: none; overflow-x: auto; overflow-y: hidden; scrollbar-width: thin; }
+  .content { position: absolute; top: 0; left: 0; width: 100%; pointer-events: none; }
   .content :global(.tile) { pointer-events: auto; }
   .content::before { content: ""; position: absolute; inset: 100px 0 0; background: color-mix(in srgb, var(--accent) 3%, transparent); box-shadow: 0 0 18px color-mix(in srgb, var(--accent) 5%, transparent); }
   .heading { position: relative; display: flex; flex-direction: column; align-items: center; width: 100%; height: 100%; margin: 0 auto; box-sizing: border-box; padding: 5px; border: 0; background: none; color: var(--text-primary); font: inherit; cursor: pointer; }
