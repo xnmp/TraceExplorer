@@ -10,6 +10,11 @@ listing, oldest cover first (creation order of the cover key), so a stack gainin
 moves another. No user action moves a cell: a stack that was unsaved **stays where it is after it is
 saved** (`held`, kept by `StackGrid`) until the grid is laid out afresh, i.e. the folder or the column
 count changes, when it takes its listed position. Its eventual file name cannot be known before it is saved.
+
+This column rule covers **grid cells** (covers, ordinary files, folders). Inside an open band the
+layout follows the graph rules below, unchanged from the sections it replaced: a tile that stays visible
+can be repacked when other tiles appear or disappear (selecting warm, rain, then quiet moves the still
+visible rain tile at a 420 px pane on both the section layout of #49 and the grid).
 `gridFlow(items, open, columns, metrics)` takes the host-sorted list **already collapsed** to one
 `{id, kind: "stack"}` at each cover's position, plus ordinary files/folders.
 Use an entry path or cover key as `id`, rather than a component id (which can
