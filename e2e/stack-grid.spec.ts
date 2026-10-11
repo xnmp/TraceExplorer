@@ -273,6 +273,13 @@ test("reduced motion opens and closes bands without animations", async ({ page }
   expect(await page.evaluate(() => document.getAnimations().length)).toBe(0);
 });
 
+test("clicking a closed in-place-edit stack selects its cover revision, as clicking the open cover does", async ({ page }) => {
+  await openView(page, 420, "?grouping=in-place-edit", false);
+  await page.locator("[data-stack-toggle]").click(); await settle(page);
+  expect((await state(page)).target).toMatchObject({ id: "trace:a:1", badge: "Earlier revision" });
+  expect(await uncaught(page)).toEqual([]);
+});
+
 test("an in-place edit's stack hangs from its root revision, inside the view and joined to the edit by a route", async ({ page }) => {
   await openView(page, 420, "?grouping=in-place-edit", false);
   await page.locator("[data-stack-toggle]").click(); await settle(page);
