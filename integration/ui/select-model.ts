@@ -106,15 +106,17 @@ export interface Placement { top: number; left: number; minWidth: number; maxHei
 
 /**
  * Places the popup under the trigger, or above it when the room below is too small
- * and above is larger. `maxHeight` is the space on the chosen side.
+ * and above is larger. `maxHeight` is the space on the chosen side. `content` is the
+ * popup's natural size, which may be wider than the trigger; it is kept inside the viewport.
  */
-export function place(trigger: Rect, viewport: { width: number; height: number }, contentHeight: number, gap = 4, margin = 8): Placement {
+export function place(trigger: Rect, viewport: { width: number; height: number }, content: { width: number; height: number }, gap = 4, margin = 8): Placement {
   const below = Math.max(0, viewport.height - trigger.bottom - gap - margin);
   const above = Math.max(0, trigger.top - gap - margin);
-  const side = contentHeight > below && above > below ? "above" : "below";
+  const side = content.height > below && above > below ? "above" : "below";
   const maxHeight = Math.floor(side === "below" ? below : above);
-  const height = Math.min(contentHeight, maxHeight);
+  const height = Math.min(content.height, maxHeight);
   const top = side === "below" ? trigger.bottom + gap : trigger.top - gap - height;
-  const left = Math.max(margin, Math.min(trigger.left, viewport.width - margin - trigger.width));
+  const width = Math.max(content.width, trigger.width);
+  const left = Math.max(margin, Math.min(trigger.left, viewport.width - margin - width));
   return { top, left, minWidth: trigger.width, maxHeight, side };
 }

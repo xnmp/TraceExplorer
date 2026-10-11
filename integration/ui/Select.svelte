@@ -42,8 +42,10 @@
   function reposition(): void {
     if (!trigger || !popup) return;
     // Measure the natural height with the cap lifted, then clamp to the room available.
+    const rect = trigger.getBoundingClientRect();
     popup.style.maxHeight = "none";
-    const next = place(trigger.getBoundingClientRect(), { width: innerWidth, height: innerHeight }, popup.scrollHeight);
+    popup.style.minWidth = `${rect.width}px`;
+    const next = place(rect, { width: innerWidth, height: innerHeight }, { width: popup.offsetWidth, height: popup.scrollHeight });
     placement = next;
     popup.style.maxHeight = `${next.maxHeight}px`;
   }
@@ -126,7 +128,24 @@
     }
   }
 
+  // Clicking a wrapping <label> makes the browser dispatch a synthetic click on the trigger. Native
+  // selects only focus on that; record label clicks so `toggle` can tell the two apart. The flag lives
+  // for the rest of the task, which is exactly when the browser dispatches the synthetic click.
+  let fromLabel = false;
+  $effect(() => {
+    const onClick = (event: MouseEvent) => {
+      if (!(event.target instanceof Element) || trigger?.contains(event.target)) return;
+      const label = event.target.closest("label");
+      if (!label || ![...(trigger?.labels ?? [])].includes(label)) return;
+      fromLabel = true;
+      setTimeout(() => { fromLabel = false; });
+    };
+    addEventListener("click", onClick, true);
+    return () => removeEventListener("click", onClick, true);
+  });
+
   function toggle(): void {
+    if (fromLabel) { fromLabel = false; trigger?.focus(); return; }
     if (disabled) return;
     if (expanded) close(); else show(initialActive(options, value));
   }
@@ -138,7 +157,7 @@
     {disabled} data-value={value ?? ""} aria-label={ariaLabel} aria-labelledby={ariaLabelledby}
     aria-haspopup="listbox" aria-expanded={expanded} aria-controls={listId}
     aria-activedescendant={expanded && active !== NONE ? optionId(active) : undefined}
-    onclick={toggle} onkeydown={keydown}
+    onclick={toggle} onkeydown={keydown} onkeyup={(event) => { if (event.key === " ") event.preventDefault(); }} onblur={close}
   ><span class="text">{label}</span></button>
   {#if expanded}
     <!-- Not focusable by design: the trigger keeps focus and handles every key (aria-activedescendant). -->
@@ -146,7 +165,7 @@
     <div
       bind:this={popup} use:present popover="manual" id={listId} role="listbox" class="list" aria-label={ariaLabel} aria-labelledby={ariaLabelledby}
       style:top={placement ? `${placement.top}px` : undefined} style:left={placement ? `${placement.left}px` : undefined}
-      style:min-width={placement ? `${placement.minWidth}px` : undefined} style:visibility={placement ? undefined : "hidden"}
+      style:visibility={placement ? undefined : "hidden"}
       onmousedown={(event) => event.preventDefault()}
       onclick={(event) => event.preventDefault()}
     >
@@ -185,9 +204,11 @@
   .trigger:focus-visible, .trigger[aria-expanded="true"] { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
   .trigger:disabled { opacity: .6; cursor: default; }
 
-  /* Overrides the UA popover box (centered, bordered, padded) with a plain anchored panel. */
+  /* Overrides the UA popover box (centered, bordered, padded) with a plain anchored panel.
+     The top-layer popover path is always viewport-relative. The `position: fixed` fallback (no Popover API)
+     becomes relative to any ancestor with a transform or backdrop-filter, so it can be offset there. */
   .list {
-    position: fixed; inset: auto; margin: 0; box-sizing: border-box; overflow-y: auto; padding: 4px; z-index: var(--z-modal-popover);
+    position: fixed; inset: auto; margin: 0; width: max-content; max-width: calc(100vw - 16px); box-sizing: border-box; overflow-y: auto; padding: 4px; z-index: var(--z-modal-popover);
     border: 1px solid var(--control-stroke); border-radius: var(--radius-md); background: var(--background-solid); color: var(--text-primary);
     box-shadow: var(--shadow-flyout); font-size: var(--font-size-body); line-height: var(--line-height-normal);
   }

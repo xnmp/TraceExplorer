@@ -99,30 +99,36 @@ describe("place", () => {
   const viewport = { width: 1000, height: 800 };
   const trigger = (top: number) => ({ top, bottom: top + 34, left: 100, width: 200 });
   it("opens below when it fits", () => {
-    const p = place(trigger(100), viewport, 200);
+    const p = place(trigger(100), viewport, { width: 200, height: 200 });
     expect(p).toMatchObject({ side: "below", top: 138, left: 100, minWidth: 200 });
   });
   it("flips above when there is too little room below and more above", () => {
-    const p = place(trigger(700), viewport, 200);
+    const p = place(trigger(700), viewport, { width: 200, height: 200 });
     expect(p.side).toBe("above");
     expect(p.top + 200).toBe(696);
   });
   it("stays below and scrolls when neither side fits but below is larger", () => {
-    const p = place(trigger(100), { width: 1000, height: 300 }, 500);
+    const p = place(trigger(100), { width: 1000, height: 300 }, { width: 200, height: 500 });
     expect(p.side).toBe("below");
     expect(p.maxHeight).toBe(300 - 134 - 4 - 8);
   });
   it("limits maxHeight to the room on the chosen side", () => {
-    const p = place(trigger(500), viewport, 900);
+    const p = place(trigger(500), viewport, { width: 200, height: 900 });
     expect(p.side).toBe("above");
     expect(p.maxHeight).toBe(488);
   });
   it("keeps the popup inside the viewport horizontally", () => {
-    expect(place({ top: 0, bottom: 34, left: 900, width: 200 }, viewport, 100).left).toBe(792);
-    expect(place({ top: 0, bottom: 34, left: -50, width: 200 }, viewport, 100).left).toBe(8);
+    expect(place({ top: 0, bottom: 34, left: 900, width: 200 }, viewport, { width: 200, height: 100 }).left).toBe(792);
+    expect(place({ top: 0, bottom: 34, left: -50, width: 200 }, viewport, { width: 200, height: 100 }).left).toBe(8);
   });
+  it("shifts a popup wider than its trigger left so its right edge stays in the viewport", () => {
+    const p = place({ top: 0, bottom: 34, left: 800, width: 100 }, viewport, { width: 400, height: 100 });
+    expect(p.left).toBe(592);
+    expect(p.left + 400).toBeLessThanOrEqual(1000 - 8);
+  });
+  it("pins a popup as wide as the viewport to the margin", () => expect(place({ top: 0, bottom: 34, left: 300, width: 100 }, viewport, { width: 2000, height: 100 }).left).toBe(8));
   it("survives a trigger outside the viewport", () => {
-    const p = place({ top: 2000, bottom: 2034, left: 0, width: 10 }, viewport, 100);
+    const p = place({ top: 2000, bottom: 2034, left: 0, width: 10 }, viewport, { width: 10, height: 100 });
     expect(p.maxHeight).toBeGreaterThanOrEqual(0);
   });
 });

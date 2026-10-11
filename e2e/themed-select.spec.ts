@@ -119,3 +119,55 @@ test("pressing outside closes the list without changing the value", async ({ pag
   await expect(resolution(page)).toHaveAttribute("data-value", "2k");
 });
 
+
+test("a long option label keeps the list inside a narrow viewport", async ({ page }) => {
+  await page.setViewportSize({ width: 360, height: 700 });
+  await openView(page, 360, "?ai=1");
+  await click(page, "warm");
+  await page.evaluate(() => (window as any).trace.command("plugin.openai-image.edit"));
+  const connection = dialog(page).getByRole("combobox", { name: "Image connection" });
+  await connection.click();
+  // Widen the first label far past the control; a resize makes the open list re-measure.
+  await listbox(page).locator(".option-text").first().evaluate((el) => { el.textContent = "An exceedingly long connection name that cannot possibly fit within a narrow phone viewport"; });
+  await page.evaluate(() => dispatchEvent(new Event("resize")));
+  const box = (await listbox(page).boundingBox())!;
+  expect(box.x).toBeGreaterThanOrEqual(0);
+  expect(box.x + box.width).toBeLessThanOrEqual(360);
+});
+
+test("the list closes when focus leaves the control by other means, and a click on an option still selects", async ({ page }) => {
+  await openEditor(page);
+  await resolution(page).click();
+  await expect(listbox(page)).toBeVisible();
+  await resolution(page).evaluate((el) => (el as HTMLElement).blur());
+  await expect(listbox(page)).toHaveCount(0);
+  await expect(resolution(page)).toHaveAttribute("data-value", "2k");
+  await resolution(page).click();
+  await listbox(page).getByRole("option", { name: "1K" }).click();
+  await expect(resolution(page)).toHaveAttribute("data-value", "1k");
+});
+
+test("clicking the wrapping label only focuses a closed control, and closes an open one", async ({ page }) => {
+  await openEditor(page);
+  const label = dialog(page).locator("label.prompt-field").filter({ hasText: /^Resolution/ });
+  await label.click({ position: { x: 4, y: 4 } });
+  await expect(resolution(page)).toBeFocused();
+  await expect(listbox(page)).toHaveCount(0);
+  await resolution(page).click();
+  await expect(listbox(page)).toBeVisible();
+  await label.click({ position: { x: 4, y: 4 } });
+  await expect(listbox(page)).toHaveCount(0);
+  await expect(resolution(page)).toHaveAttribute("aria-expanded", "false");
+});
+
+test("Enter and Space each toggle once", async ({ page }) => {
+  await openEditor(page);
+  await resolution(page).focus();
+  await page.keyboard.press("Enter");
+  await expect(listbox(page)).toBeVisible();
+  await page.keyboard.press("Escape");
+  await page.keyboard.press("Space");
+  await expect(listbox(page)).toBeVisible();
+  await page.keyboard.press("Space"); // selects the active option and closes
+  await expect(listbox(page)).toHaveCount(0);
+});
