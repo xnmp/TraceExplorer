@@ -5,7 +5,8 @@ async function saveHttp(page: Page) {
   await page.getByLabel('Name', { exact: true }).fill('Saved Images');
   await page.getByLabel('Images resource URL').fill('https://example.test/v1/images');
   await page.getByLabel('Image model ID').fill('custom-image');
-  await page.getByLabel('Default image connection').selectOption({ label: 'Saved Images' });
+  // The first connection becomes the default without a separate step.
+  await expect(page.getByRole('button', { name: /Saved Images.*Default/ })).toBeVisible();
   await page.getByRole('button', { name: 'Save connections' }).click();
   await expect(page.getByText('Connections saved.', { exact: true })).toBeVisible();
 }
@@ -30,8 +31,30 @@ test('remote revision preserves draft until explicit reload; keyboard close prot
 });
 test('mobile Codex settings have adapter-managed model and fit the viewport', async ({ page }, info) => {
   await page.setViewportSize({ width: 320, height: 740 }); await setup(page); await page.getByRole('button', { name: 'Add Codex' }).click();
-  await expect(page.getByLabel('Image model ID')).toHaveCount(0); await expect(page.getByText('Codex uses its saved ChatGPT sign-in.', { exact: false })).toBeVisible();
+  await expect(page.getByLabel('Image model ID')).toHaveCount(0); await expect(page.getByText('Codex uses its saved ChatGPT sign-in', { exact: false })).toBeVisible();
   await page.getByRole('button', { name: 'Save connections' }).click(); await expect(page.getByText('Connections saved.', { exact: true })).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   await page.screenshot({ path: info.outputPath('mobile-image-connections.png') });
+});
+test('the default is chosen from the connection list and saved', async ({ page }) => {
+  await setup(page); await saveHttp(page);
+  await page.getByRole('button', { name: 'Add Codex' }).click();
+  await expect(page.getByRole('heading', { name: 'Codex', level: 3 })).toBeVisible();
+  await page.getByRole('button', { name: 'Set as default' }).click();
+  await expect(page.getByRole('button', { name: /^Codex.*Default/ })).toBeVisible();
+  await expect(page.getByRole('button', { name: /Saved Images.*Default/ })).toHaveCount(0);
+  await page.getByRole('button', { name: 'Save connections' }).click(); await expect(page.getByText('Connections saved.', { exact: true })).toBeVisible();
+  const saved = await page.evaluate(() => (window as any).imageConnectionFixture.snapshot());
+  expect(saved.profiles.find((p: { id: string }) => p.id === saved.defaultConnectionId)).toMatchObject({ transport: 'codex-cli' });
+  // Selecting a connection in the list shows its own fields.
+  await page.getByRole('button', { name: /Saved Images/ }).click();
+  await expect(page.getByLabel('Images resource URL')).toHaveValue('https://example.test/v1/images');
+  await expect(page.getByRole('button', { name: /Saved Images/ })).toHaveAttribute('aria-current', 'true');
+});
+test('removing the default leaves generation disabled until another default is chosen', async ({ page }) => {
+  await setup(page); await saveHttp(page);
+  await page.getByRole('button', { name: 'Remove connection' }).click();
+  await expect(page.getByText('No image connections configured.', { exact: false })).toBeVisible();
+  await page.getByRole('button', { name: 'Add Codex' }).click();
+  await expect(page.getByRole('button', { name: /^Codex.*Default/ })).toBeVisible();
 });

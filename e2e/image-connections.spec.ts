@@ -8,14 +8,14 @@ test("configuring shared connections retains the caller draft and submits the re
   const caller = page.getByRole("dialog", { name: "Edit with AI" });
   await caller.getByRole("textbox", { name: "Edit prompt" }).fill("Keep the entire caller draft and all its images");
   await caller.getByRole("spinbutton", { name: "Images" }).fill("2");
-  await expect(caller.getByText(/adapter-managed/)).toBeVisible();
+  // Codex picks its own model; the form shows no model field and no adapter jargon for it.
+  await expect(caller.getByText(/adapter-managed|saved login/)).toHaveCount(0);
   await expect(caller.getByRole("textbox", { name: "Image model" })).toHaveCount(0);
   await caller.getByRole("button", { name: "Configure connections" }).click();
   await page.getByRole("dialog", { name: "Image connections", exact: true }).getByRole("button", { name: "Use custom connection" }).click();
   await expect(caller.getByRole("combobox", { name: "Image connection" })).toHaveValue("saved-login");
   await expect(caller.getByRole("textbox", { name: "Edit prompt" })).toHaveValue("Keep the entire caller draft and all its images");
   await expect(caller.getByRole("spinbutton", { name: "Images" })).toHaveValue("2");
-  await expect(caller.getByText(/adapter-managed/)).toBeVisible();
   await caller.getByRole("combobox", { name: "Image connection" }).selectOption("custom-http");
   await caller.getByRole("textbox", { name: "Image model" }).fill("vendor/custom-image-42");
   await caller.getByRole("combobox", { name: "Quality" }).selectOption("high");

@@ -82,3 +82,8 @@ export function testSummary(status: ImageOperationStatus): string {
   if (execution.state === 'failed' || execution.state === 'unknown') return `${execution.state === 'unknown' ? 'Remote outcome unknown' : 'Generation failed'}: ${execution.error.message}`;
   return execution.state === 'cancelled' ? 'Test cancelled.' : execution.state === 'running' ? 'Generating a test image…' : 'Test accepted; waiting for generation…';
 }
+/** The short, user-facing name of a connection's kind. */
+export function transportLabel(profile: Pick<ImageProfile, 'transport'>): string { return profile.transport === 'codex-cli' ? 'Codex' : 'Images API'; }
+export function setDefault(value: ImageConfiguration, id: string): ImageConfiguration {
+  return value.profiles.some(p => p.id === id) ? { ...value, defaultConnectionId: id } : value;
+}

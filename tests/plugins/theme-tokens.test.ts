@@ -63,11 +63,14 @@ describe("token scanning", () => {
 
 describe("plugin styles", () => {
   const known = new Set(HOST_THEME_TOKENS);
-  const sources = files(join(ROOT, "src"), [".svelte", ".css"]);
+  // Both packages built here, and the UI they share, run under the host theme.
+  const sources = ["src", "integration/ui", "plugins/image-generation/frontend"].flatMap((directory) => files(join(ROOT, directory), [".svelte", ".css"]));
 
   it("scans the plugin's components and stylesheets", () => {
     expect(sources.some((path) => path.endsWith("TraceGraph.svelte"))).toBe(true);
     expect(sources.some((path) => path.endsWith("plugin-dialog.css"))).toBe(true);
+    expect(sources.some((path) => path.endsWith("ImageConnectionsDialog.svelte"))).toBe(true);
+    expect(sources.some((path) => path.endsWith("Select.svelte"))).toBe(true);
   });
 
   it("use only tokens every host theme defines, unless they give a fallback", () => {
