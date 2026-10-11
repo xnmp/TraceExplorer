@@ -322,7 +322,7 @@
 </style>
 
 {#if configureOpen}
-  <div role="dialog" aria-label="Image connections" aria-modal="true" style="position:fixed;inset:10%;z-index:20;background:var(--background-solid);padding:20px">
+  <div role="dialog" aria-label="Image connections" aria-modal="true" style="position:fixed;inset:10%;z-index:var(--z-modal,1000);background:var(--background-solid);padding:20px">
     <h2>Image connections</h2>
     <button onclick={() => { backend.configureImages(); configureOpen = false; closeConfiguration?.(); }}>Use custom connection</button>
     <button onclick={() => { configureOpen = false; closeConfiguration?.(); }}>Close connections</button>
