@@ -1,6 +1,6 @@
 import { test, expect, type Page } from "@playwright/test";
 import { openView, key, state, settle, uncaught } from "./support";
-import { holdScriptedAnimations, releaseScriptedAnimations } from "./animation-control";
+import { awaitAnimationsCreated, holdScriptedAnimations, releaseScriptedAnimations } from "./animation-control";
 
 const stack = (page: Page, name: string) => page.locator(`section[data-component][aria-label="${name}"]`);
 const gridBoxes = (page: Page) => page.evaluate(() => {
@@ -151,16 +151,17 @@ test("closing during emergence reverses from the displayed tile position and opa
     await stack(page, "photo-a").locator("[data-stack-toggle]").click();
     const child = await key(page, "photo-a-edit");
     await expect(page.locator(`[data-node-key="${child}"]`)).toHaveCount(1);
-    await page.waitForFunction(() => (window as any).trace.layoutsPending() === 0);
+    // Every animation of the opening exists before any is seeked (grid motion and geometry arrive in later turns).
+    await awaitAnimationsCreated(page);
     const result = await page.evaluate(async (key) => {
       const w = window as any, frame = () => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
-      await frame();
       for (const animation of w.__heldAnimations as Animation[]) if (animation.playState === "running") animation.currentTime = 40;
       await frame();
       const tile = document.querySelector<HTMLElement>(`[data-tile-key="${key}"]`)!;
       const before = { y: tile.getBoundingClientRect().y, opacity: Number(getComputedStyle(tile).opacity) };
       tile.closest("section")!.querySelector<HTMLElement>('[aria-label="Close stack"]')!.click();
-      await frame();
+      // The closing copy and its animations are created in turns after the click; wait until none are new.
+      for (let count = -1, stable = 0; stable < 4;) { await frame(); const now = w.__heldAnimations.length + w.trace.layoutsPending(); stable = now === count ? stable + 1 : 0; count = now; }
       const ghost = document.querySelector<HTMLElement>(`[data-grid-ghost] [data-ghost-tile-key="${key}"]`)!;
       const closing = (w.__heldAnimations as Animation[]).filter((animation) => animation.playState === "running");
       const samples = [];
