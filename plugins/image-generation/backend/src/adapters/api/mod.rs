@@ -109,16 +109,24 @@ pub async fn interrupted<T>(
     };
     tokio::select! {value=&mut future=>value,_=watch=>Err(error("cancelled_after_dispatch","Remote image request was cancelled locally; its remote outcome is unknown"))}
 }
+/// Applies the credential as a header marked sensitive, so it is redacted from
+/// any debug output of the request.
 pub fn apply_auth(
     request: reqwest::RequestBuilder,
     auth: Auth,
     key: Option<&str>,
-) -> reqwest::RequestBuilder {
-    match (key, auth) {
-        (None, _) => request,
-        (Some(key), Auth::Bearer) => request.bearer_auth(key),
-        (Some(key), Auth::Header(name)) => request.header(name, key),
-    }
+) -> Result<reqwest::RequestBuilder> {
+    let Some(key) = key else {
+        return Ok(request);
+    };
+    let (name, text) = match auth {
+        Auth::Bearer => ("authorization", format!("Bearer {key}")),
+        Auth::Header(name) => (name, key.to_owned()),
+    };
+    let mut value = reqwest::header::HeaderValue::from_str(&text)
+        .map_err(|_| error("unavailable", "Image credential cannot be sent as a header"))?;
+    value.set_sensitive(true);
+    Ok(request.header(name, value))
 }
 
 /// Everything that can go wrong with a provider exchange.
@@ -209,7 +217,7 @@ pub async fn send(
     stage: &StageSink,
     request: reqwest::RequestBuilder,
 ) -> Result<Reply> {
-    let request = apply_auth(request, descriptor.auth, key);
+    let request = apply_auth(request, descriptor.auth, key)?;
     interrupted(
         async {
             stage("process_started");
@@ -326,6 +334,34 @@ mod tests {
 
     fn code(failure: Failure) -> String {
         outcome(failure).code
+    }
+    #[test]
+    fn credentials_are_sent_as_sensitive_headers() {
+        let client = reqwest::Client::new();
+        for (auth, header, expected) in [
+            (Auth::Bearer, "authorization", "Bearer k-123"),
+            (Auth::Header("x-goog-api-key"), "x-goog-api-key", "k-123"),
+        ] {
+            let request = apply_auth(client.post("https://x.test/"), auth, Some("k-123"))
+                .unwrap()
+                .build()
+                .unwrap();
+            let value = request.headers().get(header).unwrap();
+            assert!(value.is_sensitive(), "{header}");
+            assert_eq!(value.to_str().unwrap(), expected);
+            assert!(!format!("{:?}", request.headers()).contains("k-123"));
+        }
+        let none = apply_auth(client.post("https://x.test/"), Auth::Bearer, None)
+            .unwrap()
+            .build()
+            .unwrap();
+        assert!(none.headers().is_empty());
+        assert!(apply_auth(
+            client.post("https://x.test/"),
+            Auth::Header("x-k"),
+            Some("bad\nkey")
+        )
+        .is_err());
     }
     #[test]
     fn uncertain_provider_outcomes_are_remote_outcome_unknown() {

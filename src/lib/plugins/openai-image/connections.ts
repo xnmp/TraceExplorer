@@ -32,6 +32,11 @@ export function connectionNeedsReview(pinned: ImageConnection, latest: ImageConn
   return pinned.recipeRevision !== latest.recipeRevision || pinned.transport !== latest.transport
     || pinnedProvider !== currentProvider || JSON.stringify(pinned.capabilities) !== JSON.stringify(latest.capabilities);
 }
+/** Keeps `current` if offered, else `preferred` if offered, else the first offered value. No list means anything goes. */
+export function fallbackOption<T extends string>(current: T, preferred: T, offered: readonly T[] | undefined): T {
+  if (!offered || offered.includes(current)) return current;
+  return offered.includes(preferred) ? preferred : offered[0] ?? preferred;
+}
 /** Which image controls a connection offers. Pixel sizes are chosen through Resolution and Aspect ratio. */
 export function offeredOptions(profile: ImageConnection | null | undefined): { resolution: boolean; aspectRatio: boolean; quality: boolean; background: boolean } {
   const caps = profile?.capabilities;

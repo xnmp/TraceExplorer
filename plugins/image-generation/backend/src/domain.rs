@@ -414,6 +414,9 @@ pub fn recipe(profile: &Profile, request: &PrepareRequest) -> Result<EffectiveRe
             if request.inputs.len() > descriptor.max_inputs {
                 return Err(invalid("Too many input images for this image provider"));
             }
+            if let Some(problem) = options_problem(descriptor, &request.options) {
+                return Err(invalid(problem));
+            }
             let model = request
                 .model
                 .clone()
@@ -458,6 +461,27 @@ pub fn recipe(profile: &Profile, request: &PrepareRequest) -> Result<EffectiveRe
 pub fn semantic(request: &StartRequest) -> String {
     let canonical = json!({"operationId":request.operation_id,"connectionId":request.connection_id,"connectionRevision":request.expected_connection_revision,"model":request.model,"prompt":request.prompt,"inputs":request.inputs.iter().map(|a|json!({"sha256":a.sha256,"byteLength":a.byte_length,"mediaType":a.media_type})).collect::<Vec<_>>(),"options":request.options,"effectiveRecipeDigest":request.effective_recipe_digest});
     hex::encode(Sha256::digest(serde_json::to_vec(&canonical).unwrap()))
+}
+/// Why a backend cannot honour these options, using the same descriptor tables
+/// `capabilities()` publishes. Resolution and aspect ratio are also what a client
+/// derives pixel sizes from, so a backend with `sizes` accepts them as well.
+pub fn options_problem(
+    d: &crate::adapters::api::ApiDescriptor,
+    o: &te_image_generation_contract::ImageOptions,
+) -> Option<&'static str> {
+    let o_ = &d.options;
+    if !o_.quality.contains(&o.quality.as_str()) || !o_.background.contains(&o.background.as_str())
+    {
+        Some("This image provider does not support that quality or background")
+    } else if !o_.sizes && o.size != "auto" {
+        Some("This image provider chooses its own image size")
+    } else if o.resolution.is_some() && !(o_.sizes || o_.resolution) {
+        Some("This image provider does not support a resolution")
+    } else if o.aspect_ratio.is_some() && !(o_.sizes || o_.aspect_ratio) {
+        Some("This image provider does not support an aspect ratio")
+    } else {
+        None
+    }
 }
 /// Per-connection capabilities, built from the backend's descriptor for API kinds.
 /// `sizes` is part of the published contract and is omitted only for a backend

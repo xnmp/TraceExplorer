@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { imageAvailability } from "../fixtures/image-connections";
-import { availabilityProblem, capabilityProblem, connectionFields, connectionFor, connectionNeedsReview, offeredOptions, transportLabel } from "$lib/plugins/openai-image/connections";
+import { availabilityProblem, capabilityProblem, connectionFields, connectionFor, connectionNeedsReview, fallbackOption, offeredOptions, transportLabel } from "$lib/plugins/openai-image/connections";
 import { describeImageService, validImageAvailability } from "$lib/api/openai-image";
 import { configureBackend } from "$lib/api/common";
 
@@ -64,6 +64,15 @@ describe("shared image connection policy", () => {
     expect(validImageAvailability(noShape)).toBe(false);
     const wrongSelection = imageAvailability(); wrongSelection.description!.profiles.push({ ...wrongSelection.description!.profiles[1], id: "f2", transport: "future-images", capabilities: { ...wrongSelection.description!.profiles[1].capabilities, modelSelection: false } });
     expect(validImageAvailability(wrongSelection)).toBe(false);
+  });
+  describe("fallbackOption", () => {
+    it("keeps an offered current value, else the preferred one, else the first offered", () => {
+      expect(fallbackOption("2k", "1k", ["1k", "2k"])).toBe("2k");
+      expect(fallbackOption("4k", "1k", ["1k", "2k"])).toBe("1k");
+      expect(fallbackOption("keep", "1:1", ["16:9", "4:3"])).toBe("16:9");
+      expect(fallbackOption("keep", "1:1", undefined)).toBe("keep");
+      expect(fallbackOption("a", "b", [])).toBe("b");
+    });
   });
   describe("a connection without pixel sizes", () => {
     const ratioOnly = () => {

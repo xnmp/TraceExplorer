@@ -18,7 +18,18 @@ pub const DESCRIPTOR: ApiDescriptor = ApiDescriptor {
     max_inputs: 2,
     validate_base_url: |_| Ok(()),
 };
+/// A model named `refuse-<code>` makes the fixture answer like a provider that
+/// refused (structured code `<CODE>`), exercising the Failed/provider_refused path.
+const REFUSALS: &[(&str, Refusal)] = &[("SAFETY", Refusal::Safety), ("POLICY", Refusal::Policy)];
 pub(super) async fn generate(call: ApiCall<'_>) -> Result<Output> {
+    if let Some(code) = call
+        .recipe
+        .model
+        .as_deref()
+        .and_then(|m| m.strip_prefix("refuse-"))
+    {
+        return Err(outcome(refused(&code.to_ascii_uppercase(), REFUSALS)));
+    }
     let image = image::RgbImage::from_pixel(32, 32, image::Rgb([20, 40, 200]));
     let mut jpeg = std::io::Cursor::new(vec![]);
     image::DynamicImage::ImageRgb8(image)

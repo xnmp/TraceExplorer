@@ -299,6 +299,8 @@ fn a_third_api_transport_loads_validates_and_round_trips() {
     let mut req = request();
     req.connection_id = "api".into();
     req.expected_connection_revision = "r1".into();
+    req.options.quality = "auto".into();
+    req.options.size = "auto".into();
     let recipe = recipe(&parsed.profiles[0], &req).unwrap();
     assert_eq!(recipe.adapter, "fixture-images");
     assert_eq!(recipe.endpoint_identity, "https://gateway.test/v1/images");
@@ -308,6 +310,14 @@ fn a_third_api_transport_loads_validates_and_round_trips() {
     let mut many = request();
     many.connection_id = "api".into();
     many.expected_connection_revision = "r1".into();
+    many.options.quality = "auto".into();
+    many.options.size = "auto".into();
+    assert!(self::recipe(&parsed.profiles[0], &{
+        let mut one = many.clone();
+        one.inputs.truncate(2);
+        one
+    })
+    .is_ok());
     many.inputs = vec![request().inputs[0].clone(); 3];
     assert!(self::recipe(&parsed.profiles[0], &many).is_err());
 }
@@ -345,6 +355,8 @@ fn a_connection_without_pixel_sizes_accepts_the_request_its_form_sends() {
     req.connection_id = "api".into();
     req.expected_connection_revision = "r1".into();
     req.options.size = "auto".into();
+    req.options.quality = "auto".into();
+    req.options.background = "auto".into();
     req.options.resolution = Some("2k".into());
     req.options.aspect_ratio = Some("16:9".into());
     let recipe = recipe(&parsed.profiles[0], &req).unwrap();
@@ -498,4 +510,77 @@ fn stored_receipts_accept_any_valid_api_adapter_id_and_reject_invalid_ones() {
     let mut no_model = stored("future-images");
     no_model.recipe.as_mut().unwrap().model = None;
     assert!(!no_model.valid());
+}
+fn api_request(id: &str, rev: &str) -> PrepareRequest {
+    let mut req = request();
+    req.connection_id = id.into();
+    req.expected_connection_revision = rev.into();
+    req.inputs.truncate(1);
+    req.options.quality = "auto".into();
+    req.options.background = "auto".into();
+    req
+}
+fn loaded(transport: &str) -> Profile {
+    let mut parsed: Configuration = serde_json::from_value(serde_json::json!({"schemaVersion":1,"documentRevision":0,"defaultConnectionId":null,"profiles":[api_json(transport)]})).unwrap();
+    validate_configuration(&mut parsed).unwrap();
+    parsed.profiles.remove(0)
+}
+#[test]
+fn recipes_enforce_the_descriptors_option_tables() {
+    // openai-images: all qualities/backgrounds; sizes, so resolution/aspect are accepted as size inputs.
+    let openai = loaded("openai-images");
+    let mut req = api_request("api", "r1");
+    req.options.quality = "high".into();
+    req.options.background = "transparent".into();
+    req.options.resolution = Some("2k".into());
+    req.options.aspect_ratio = Some("keep".into());
+    assert!(recipe(&openai, &req).is_ok());
+    // fixture-images: auto only, no pixel sizes.
+    let fixture = loaded("fixture-images");
+    let mut req = api_request("api", "r1");
+    req.options.size = "auto".into();
+    req.options.resolution = Some("2k".into());
+    req.options.aspect_ratio = Some("16:9".into());
+    assert!(recipe(&fixture, &req).is_ok());
+    for mutate in [
+        (|r: &mut PrepareRequest| r.options.quality = "high".into()) as fn(&mut PrepareRequest),
+        |r| r.options.background = "transparent".into(),
+        |r| r.options.size = "1024x1024".into(),
+    ] {
+        let mut bad = req.clone();
+        mutate(&mut bad);
+        assert!(recipe(&fixture, &bad).is_err());
+    }
+    let mut bad = api_request("api", "r1");
+    bad.options.quality = "ultra".into();
+    assert!(recipe(&openai, &bad).is_err());
+}
+#[test]
+fn options_problem_rejects_unsupported_resolution_and_aspect_ratio() {
+    use image_generation_backend::adapters::api::{ApiDescriptor, Auth, Options};
+    const BARE: ApiDescriptor = ApiDescriptor {
+        transport: "bare-images",
+        default_base_url: "https://bare.test",
+        credential_env: "BARE_KEY",
+        auth: Auth::Bearer,
+        options: Options {
+            quality: &["auto"],
+            background: &["auto"],
+            resolution: false,
+            aspect_ratio: false,
+            sizes: false,
+        },
+        max_inputs: 1,
+        validate_base_url: |_| Ok(()),
+    };
+    let mut options = request().options;
+    options.size = "auto".into();
+    options.quality = "auto".into();
+    options.background = "auto".into();
+    assert_eq!(options_problem(&BARE, &options), None);
+    options.resolution = Some("2k".into());
+    assert!(options_problem(&BARE, &options).is_some());
+    options.resolution = None;
+    options.aspect_ratio = Some("1:1".into());
+    assert!(options_problem(&BARE, &options).is_some());
 }

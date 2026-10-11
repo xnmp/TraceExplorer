@@ -3689,3 +3689,40 @@ async fn transient_artifact_failures_never_rewrite_available_delivery() {
     server.join().unwrap();
     assert_eq!(count.load(Ordering::SeqCst), 1);
 }
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_provider_refusal_ends_failed_with_our_own_wording_end_to_end() {
+    let directory = tempfile::tempdir().unwrap();
+    let service = Service::new(directory.path(), FakeHost::new()).unwrap();
+    service.activate().unwrap();
+    let mut config = configuration("https://unused.test/images");
+    config.profiles = vec![Profile::Fixture(ApiProfile {
+        id: "fixture".into(),
+        name: "Fixture".into(),
+        recipe_revision: "".into(),
+        base_url: "https://unused.test/images".into(),
+        default_model: "refuse-safety".into(),
+        allow_insecure_http: false,
+        credential: Credential::None,
+    })];
+    config.default_connection_id = Some("fixture".into());
+    let config = service.profiles.save(config, 0, None, None).unwrap();
+    let mut prepared = request(&config.profiles[0], vec![]);
+    prepared.model = Some("refuse-safety".into());
+    prepared.options.size = "auto".into();
+    prepared.options.quality = "auto".into();
+    prepared.options.background = "auto".into();
+    let request = start(
+        prepared.clone(),
+        service.prepare(caller(), prepared).unwrap(),
+    );
+    service.start(caller(), request.clone(), false).unwrap();
+    let status = terminal(&service, &request.operation_id).await;
+    match status.execution {
+        Execution::Failed { error } => {
+            assert_eq!(error.code, "provider_refused");
+            assert_eq!(error.message, "The provider refused this request (safety)");
+        }
+        other => panic!("expected Failed, got {other:?}"),
+    }
+    assert_eq!(status.delivery, Delivery::None {});
+}

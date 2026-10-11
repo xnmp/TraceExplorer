@@ -518,3 +518,28 @@ test("switching to a connection that hides a control resets it and does not subm
   expect(start.params.request.size).toBe("auto");
   expect(start.params.request).not.toHaveProperty("aspectRatio");
 });
+
+test("in edit mode, a connection that does not offer Keep falls back to an offered aspect ratio and still generates", async ({ page }) => {
+  await openView(page, 1400, "?ai=1");
+  await page.evaluate(() => {
+    const backend = (window as any).trace.backend, value = backend.imageService();
+    const http = value.description.profiles.find((p: any) => p.id === "custom-http");
+    const { sizes: _sizes, ...caps } = http.capabilities;
+    value.description.profiles.push({ ...http, id: "ratio-only", name: "Ratio only", transport: "future-images", recipeRevision: "ratio-revision",
+      capabilities: { ...caps, resolution: ["1k", "2k"], aspectRatio: ["1:1", "16:9"] } });
+    backend.setImageService(value);
+  });
+  await click(page, "warm");
+  await command(page, "plugin.openai-image.edit");
+  await expect(dialog(page).getByRole("combobox", { name: "Aspect ratio" })).toHaveAttribute("data-value", "keep");
+  await dialog(page).getByRole("combobox", { name: "Image connection" }).click();
+  await page.getByRole("option", { name: "Ratio only" }).click();
+  const ratio = dialog(page).getByRole("combobox", { name: "Aspect ratio" });
+  await expect(ratio).toHaveAttribute("data-value", "1:1");
+  await expect(ratio).toHaveText("1:1");
+  await dialog(page).getByRole("textbox", { name: "Edit prompt" }).fill("Make it blue");
+  await page.keyboard.press("Control+Enter");
+  await expect.poll(() => page.evaluate(() => (window as any).trace.backend.calls("jobs.start").length)).toBe(1);
+  const [start] = await page.evaluate(() => (window as any).trace.backend.calls("jobs.start"));
+  expect(start.params.request).toMatchObject({ connectionId: "ratio-only", size: "auto", aspectRatio: "1:1", resolution: "2k" });
+});

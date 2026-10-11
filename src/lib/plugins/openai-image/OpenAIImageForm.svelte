@@ -3,7 +3,7 @@
   import "../plugin-dialog.css";
   import type { PluginJobs, PluginToast } from "../api";
   import { describeImageInputs, describeImageService, type ImageServiceAvailability, type OpenAIImageRequest } from "$lib/api/openai-image";
-  import { availabilityProblem, capabilityProblem, connectionFields, connectionFor, connectionNeedsReview, isApiConnection, offeredOptions, transportLabel, type ImageConnection } from "./connections";
+  import { availabilityProblem, capabilityProblem, connectionFields, connectionFor, connectionNeedsReview, fallbackOption, isApiConnection, offeredOptions, transportLabel, type ImageConnection } from "./connections";
   import { startImageJob } from "./image-jobs";
   import { describeInputs, inputRequestFields, moveInput, removeInput, withLiveInputs, type ImageInput } from "$lib/domain/image-inputs";
   import TraceThumbnail from "../trace/TraceThumbnail.svelte";
@@ -71,14 +71,16 @@
     pinnedConnection = connectionFor(availability?.description, id);
     pinnedProvider = availability?.providerDigest;
     modelOverride = pinnedConnection && isApiConnection(pinnedConnection) ? pinnedConnection.defaultModel : "";
-    // Controls the new connection does not offer return to their defaults, so nothing hidden is submitted.
+    // Controls the new connection does not offer return to their defaults; a value it does not
+    // accept falls back to a preferred, then any, offered value, so no Select is left blank.
     const offered = offeredOptions(pinnedConnection);
     const caps = pinnedConnection?.capabilities;
-    quality = "auto";
-    background = "auto";
-    if (!offered.resolution) resolution = "2k";
-    else if (caps?.resolution && !caps.resolution.includes(resolution)) resolution = caps.resolution[0] as ImageResolution;
-    if (!offered.aspectRatio || (caps?.aspectRatio && !caps.aspectRatio.includes(aspectRatio))) aspectRatio = defaultAspectRatio;
+    quality = fallbackOption<typeof quality>("auto", "auto", caps?.quality as (typeof quality)[] | undefined);
+    background = fallbackOption<typeof background>("auto", "auto", caps?.background as (typeof background)[] | undefined);
+    resolution = offered.resolution ? fallbackOption<ImageResolution>(resolution, "2k", caps?.resolution as ImageResolution[] | undefined) : "2k";
+    aspectRatio = offered.aspectRatio
+      ? fallbackOption<ImageAspectRatio>(aspectRatio, defaultAspectRatio, (caps?.aspectRatio as ImageAspectRatio[] | undefined)?.filter((v) => editing || v !== "keep"))
+      : defaultAspectRatio;
   }
   function reviewConnection(): void {
     if (!latestConnection) return;
