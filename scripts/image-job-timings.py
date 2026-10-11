@@ -16,27 +16,49 @@ import contextlib
 import io
 import json
 import os
+import shutil
 import sqlite3
 import sys
 import tempfile
 from pathlib import Path
 
-DATA = Path.home() / ".config" / "tauri-explorer" / "plugin-data"
+def config_base():
+    """The platform's per-user config directory, as Tauri Explorer uses it."""
+    if sys.platform == "darwin":
+        return Path.home() / "Library" / "Application Support"
+    if sys.platform in ("win32", "cygwin"):
+        return Path(os.environ.get("APPDATA") or Path.home() / "AppData" / "Roaming")
+    return Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config")
+
+
+DATA = config_base() / "tauri-explorer" / "plugin-data"
 DEFAULT_PROVIDER = DATA / "xnmp.image-generation" / "operations.sqlite"
 DEFAULT_TRACE = DATA / "xnmp.trace-explorer" / "trace.sqlite"
 
 
-def open_ro(path):
-    """Open read-only, or None when the file is absent or unreadable."""
+def open_ro(path, stack):
+    """Open a private copy of the database, or None when it is absent or unreadable.
+
+    Opening a WAL database in place, even with mode=ro, can create -wal/-shm
+    files beside it. A copy (with its -wal when present) leaves the original
+    untouched; the copy is removed when `stack` closes.
+    """
     path = Path(path)
     if not path.is_file():
         return None
     try:
-        con = sqlite3.connect(f"file:{path.resolve().as_posix()}?mode=ro", uri=True)
+        scratch = Path(stack.enter_context(tempfile.TemporaryDirectory(prefix="image-job-timings-")))
+        copy = scratch / "snapshot.sqlite"
+        shutil.copyfile(path, copy)
+        wal = path.with_name(path.name + "-wal")
+        if wal.is_file():
+            shutil.copyfile(wal, scratch / "snapshot.sqlite-wal")
+        con = sqlite3.connect(str(copy))
+        stack.callback(con.close)
         con.execute("SELECT 1 FROM sqlite_master LIMIT 1")
         return con
-    except sqlite3.Error as error:
-        print(f"warning: cannot open {path}: {error}", file=sys.stderr)
+    except (sqlite3.Error, OSError) as error:
+        print(f"warning: cannot read {path}: {error}", file=sys.stderr)
         return None
 
 
@@ -136,7 +158,12 @@ def render(op, phase, stages, color=False):
 
 
 def report(provider_db, trace_db, operation, limit, color=False):
-    trace, provider = open_ro(trace_db), open_ro(provider_db)
+    with contextlib.ExitStack() as stack:
+        return _report(stack, provider_db, trace_db, operation, limit, color)
+
+
+def _report(stack, provider_db, trace_db, operation, limit, color):
+    trace, provider = open_ro(trace_db, stack), open_ro(provider_db, stack)
     if trace is None and provider is None:
         return ["no Trace or provider database found", f"  {trace_db}", f"  {provider_db}"]
     jobs = trace_jobs(trace, operation, limit)
@@ -191,9 +218,11 @@ def _self_test(root):
     def run(provider, trace, **kw):
         return "\n".join(report(provider, trace, kw.get("operation"), kw.get("limit", 5)))
 
-    make_trace(root / "trace.sqlite")
+    weird = root / "we?ird#%dir"
+    weird.mkdir()
+    make_trace(weird / "trace.sqlite")
     make_provider(root / "operations.sqlite")
-    out = run(root / "operations.sqlite", root / "trace.sqlite")
+    out = run(root / "operations.sqlite", weird / "trace.sqlite")
     assert "provider.process_finished" in out and "trace.run_finished" in out, out
     # Stages interleave by time across both databases.
     assert out.index("trace.submitted") < out.index("provider.admitted") < out.index("trace.accepted"), out
@@ -205,12 +234,12 @@ def _self_test(root):
     # A job from before timings existed shows a notice, not a crash.
     assert "operation old" in out and "no timings recorded" in out, out
     # One operation, selected by id.
-    single = run(root / "operations.sqlite", root / "trace.sqlite", operation="new")
+    single = run(root / "operations.sqlite", weird / "trace.sqlite", operation="new")
     assert "operation old" not in single and "provider.output_found" in single, single
-    assert run(root / "operations.sqlite", root / "trace.sqlite", operation="missing").endswith("no image jobs found")
+    assert run(root / "operations.sqlite", weird / "trace.sqlite", operation="missing").endswith("no image jobs found")
     # A provider journal from before the column existed.
     make_provider(root / "legacy.sqlite", with_column=False)
-    legacy = run(root / "legacy.sqlite", root / "trace.sqlite")
+    legacy = run(root / "legacy.sqlite", weird / "trace.sqlite")
     assert "trace.run_finished" in legacy and "provider." not in legacy, legacy
     # Missing databases.
     assert "no Trace or provider database" in run(root / "none-a", root / "none-b")
@@ -218,8 +247,26 @@ def _self_test(root):
     assert "provider.delivery_acquired" in only_provider, only_provider
     # Read-only: the files are unchanged by reporting.
     before = (root / "operations.sqlite").read_bytes()
-    run(root / "operations.sqlite", root / "trace.sqlite")
+    run(root / "operations.sqlite", weird / "trace.sqlite")
     assert (root / "operations.sqlite").read_bytes() == before
+    # A live WAL database: its newest rows sit in the -wal, and reporting
+    # neither misses them nor creates, changes or removes any file beside it.
+    live = root / "live"
+    live.mkdir()
+    wal = sqlite3.connect(live / "operations.sqlite")
+    wal.execute("PRAGMA journal_mode=WAL")
+    wal.execute("PRAGMA wal_autocheckpoint=0")
+    wal.execute("CREATE TABLE operations(caller TEXT,operation TEXT,admitted_at_ms INTEGER,timings TEXT)")
+    wal.execute("INSERT INTO operations VALUES('c','new',?,?)", (t0, json.dumps({"admitted": t0, "output_found": t0 + 5_000})))
+    wal.commit()
+    assert (live / "operations.sqlite-wal").exists()
+    snapshot = {p.name: (p.stat().st_size, p.stat().st_mtime_ns) for p in live.iterdir()}
+    live_out = run(live / "operations.sqlite", weird / "trace.sqlite", operation="new")
+    assert "provider.output_found" in live_out, live_out
+    assert {p.name: (p.stat().st_size, p.stat().st_mtime_ns) for p in live.iterdir()} == snapshot
+    wal.close()
+    # Default paths follow the platform.
+    assert str(DEFAULT_PROVIDER).endswith(os.path.join("tauri-explorer", "plugin-data", "xnmp.image-generation", "operations.sqlite"))
     print(out)
     print("self-test ok")
 

@@ -663,7 +663,33 @@ async fn failing_timing_writes_never_fail_the_operation() {
         .journal
         .timings("test.consumer", &request.operation_id)
         .unwrap();
-    assert_eq!(timings.keys().collect::<Vec<_>>(), vec!["admitted"]);
+    assert!(timings.is_empty(), "{timings:?}");
+    server.join().unwrap();
+}
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn journal_that_cannot_take_the_timings_column_still_activates_and_serves_jobs() {
+    let (root, _, _, server) = server(Duration::ZERO);
+    let directory = tempfile::tempdir().unwrap();
+    let service = Service::new(directory.path(), FakeHost::new()).unwrap();
+    service.journal.fail_timings_migration_for_test(true);
+    service.activate().unwrap();
+    let (request, status) = http_operation(&service, &root).await;
+    assert!(matches!(status.execution, Execution::Succeeded { .. }));
+    assert!(matches!(status.delivery, Delivery::Available { .. }));
+    assert!(service
+        .journal
+        .timings("test.consumer", &request.operation_id)
+        .unwrap()
+        .is_empty());
+    let raw = rusqlite::Connection::open(directory.path().join("operations.sqlite")).unwrap();
+    let columns: Vec<String> = raw
+        .prepare("PRAGMA table_info(operations)")
+        .unwrap()
+        .query_map([], |r| r.get(1))
+        .unwrap()
+        .collect::<std::result::Result<Vec<String>, _>>()
+        .unwrap();
+    assert!(!columns.contains(&"timings".to_string()));
     server.join().unwrap();
 }
 #[test]

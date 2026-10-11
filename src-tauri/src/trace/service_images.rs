@@ -124,22 +124,57 @@ pub(crate) fn ensure_schema(connection: &Connection) -> Result<(), AppError> {
     );
     Ok(())
 }
-/// Records that `stage` of an image operation happened at `at_ms`. The first
-/// record of a stage wins. Diagnostics only: a failed write is logged and the
-/// job carries on, so this never returns an error.
-fn record_stage_at(connection: &Connection, operation: &str, stage: &str, at_ms: u64) {
-    if let Err(error) = connection.execute(
-        "INSERT OR IGNORE INTO image_service_timings(operation_id,stage,at_ms)VALUES(?1,?2,?3)",
-        params![operation, stage, at_ms as i64],
-    ) {
-        eprintln!("image timing {stage} not recorded: {error}");
+/// Stage times are held in memory while a job runs and written once, by
+/// `flush_stages`, after the job's last commit. Nothing here touches SQLite, so
+/// diagnostics can neither join a job's transaction nor slow its critical path.
+static STAGES: Mutex<Vec<(PathBuf, String, String, u64)>> = Mutex::new(Vec::new());
+/// Operations whose stages could never be flushed are dropped past this bound.
+const MAX_PENDING_STAGES: usize = 4096;
+fn note_stage_at(database: &Path, operation: &str, stage: &str, at_ms: u64) {
+    let Ok(mut pending) = STAGES.lock() else { return };
+    if pending.iter().any(|(d, o, s, _)| d == database && o == operation && s == stage) {
+        return;
     }
+    if pending.len() >= MAX_PENDING_STAGES {
+        pending.remove(0);
+    }
+    pending.push((database.into(), operation.into(), stage.into(), at_ms));
 }
-fn record_stage(database: &Path, operation: &str, stage: &str) {
-    let at = now_ms();
-    match connection_at(database) {
-        Ok(connection) => record_stage_at(&connection, operation, stage, at),
-        Err(error) => eprintln!("image timing {stage} not recorded: {error}"),
+fn note_stage(database: &Path, operation: &str, stage: &str) {
+    note_stage_at(database, operation, stage, now_ms());
+}
+/// Writes an operation's noted stages in one best-effort transaction on its own
+/// connection with no busy wait. The first record of a stage wins. Failures are
+/// logged and dropped; the caller is never told.
+fn flush_stages(database: &Path, operation: &str) {
+    let stages: Vec<(String, u64)> = match STAGES.lock() {
+        Ok(mut pending) => {
+            let (mine, rest) = std::mem::take(&mut *pending)
+                .into_iter()
+                .partition::<Vec<_>, _>(|(d, o, _, _)| d == database && o == operation);
+            *pending = rest;
+            mine.into_iter().map(|(_, _, s, at)| (s, at)).collect()
+        }
+        Err(_) => return,
+    };
+    if stages.is_empty() {
+        return;
+    }
+    let write = || -> rusqlite::Result<()> {
+        let connection =
+            Connection::open_with_flags(database, rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE)?;
+        connection.busy_timeout(Duration::ZERO)?;
+        let tx = connection.unchecked_transaction()?;
+        for (stage, at) in &stages {
+            tx.execute(
+                "INSERT OR IGNORE INTO image_service_timings(operation_id,stage,at_ms)VALUES(?1,?2,?3)",
+                params![operation, stage, *at as i64],
+            )?;
+        }
+        tx.commit()
+    };
+    if let Err(error) = write() {
+        eprintln!("image timings for {operation} not recorded: {error}");
     }
 }
 fn managed_target(database: &Path, target: &Path) -> Result<(), AppError> {
@@ -1147,6 +1182,7 @@ fn accept_with_deadline(
         // The complete metadata must fit before any durable local acceptance.
         // The transactional writer repeats this check after assigning the run ID.
         document(&link)?;
+        let created_at = std::sync::atomic::AtomicU64::new(0);
         let action = |database: &Path| {
             // Only metadata is protected here. Capture and prepare already finished.
             let _gate = ADMISSION
@@ -1178,7 +1214,7 @@ fn accept_with_deadline(
                 &request_digest,
                 |tx, run| {
                     link.run_id = run;
-                    record_stage_at(tx, &operation, "run_created", now_ms());
+                    created_at.store(now_ms(), std::sync::atomic::Ordering::Relaxed);
                     tx.execute("INSERT INTO image_service_operations(operation_id,run_id,job_id,request_digest,body)VALUES(?1,?2,?3,?4,?5)",params![operation,run,job_id as i64,request_digest,document(&link)?]).map_err(sql)?;
                     Ok(())
                 },
@@ -1190,6 +1226,14 @@ fn accept_with_deadline(
         } else {
             action(database)?
         };
+        if fresh {
+            note_stage_at(
+                database,
+                &operation,
+                "run_created",
+                created_at.load(std::sync::atomic::Ordering::Relaxed),
+            );
+        }
         let saved = read_link(database, &operation)?
             .ok_or_else(|| invalid("Accepted image ownership is missing"))?;
         // TemporaryOutput removes only empty directories. Persisted target belongs
@@ -1420,9 +1464,7 @@ fn observe(database: &Path, operation: &str, value: Value) -> Result<Link, AppEr
         Ok(())
     })?;
     if succeeded {
-        if let Ok(connection) = connection_at(database) {
-            record_stage_at(&connection, operation, "success_observed", observed_at);
-        }
+        note_stage_at(database, operation, "success_observed", observed_at);
     }
     Ok(link)
 }
@@ -1494,19 +1536,24 @@ fn finish(
     phase: &str,
     error: Option<String>,
 ) -> Result<Link, AppError> {
-    update(database, operation, |tx, link| {
+    let mut transitioned = false;
+    let link = update(database, operation, |tx, link| {
         if terminal(&link.phase) {
             if link.phase != phase {
                 return Err(invalid("Image consumer terminal state changed"));
             }
             return Ok(());
         }
+        transitioned = true;
         link.phase = phase.into();
         link.error = error;
         tx.execute("UPDATE runs SET status=?2,error=?3,finished_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?1 AND status IN('running','uncertain')",params![link.run_id,phase,link.error]).map_err(sql)?;
-        record_stage_at(tx, operation, "run_finished", now_ms());
         Ok(())
-    })
+    })?;
+    if transitioned {
+        note_stage(database, operation, "run_finished");
+    }
+    Ok(link)
 }
 /// The host settles SDK 3 jobs from `jobs.status`; these events tell it when.
 /// Success is announced at local publication (`ack_pending` included). An
@@ -1764,7 +1811,7 @@ fn copy_exact(
         control.check()?;
         fs::hard_link(&anchor, &link.target)?;
         sync_regular(&link.target)?;
-        record_stage(database, &link.operation_id, "output_written");
+        note_stage(database, &link.operation_id, "output_written");
         sync_ancestors(
             link.target
                 .parent()
@@ -1883,7 +1930,7 @@ fn copy_exact(
     control.check()?;
     stage.publish(&link.target)?;
     sync_regular(&link.target)?;
-    record_stage(database, &link.operation_id, "output_written");
+    note_stage(database, &link.operation_id, "output_written");
     sync_ancestors(parent)?;
     if !published_owned(database, link, output)? {
         return Err(invalid("Published image identity could not be verified"));
@@ -1923,7 +1970,7 @@ fn complete_local(database: &Path, operation: &str) -> Result<(Link, bool), AppE
                 .to_str()
                 .ok_or_else(|| invalid("Image destination is not UTF8"))?,
         )?;
-        record_stage(database, operation, "run_finished");
+        note_stage(database, operation, "run_finished");
     }
     let mut first = false;
     let link = update(database, operation, |_, link| {
@@ -1968,7 +2015,7 @@ fn handoff(
         .as_ref()
         .ok_or_else(|| invalid("Image output is unavailable"))?;
     if link.transfer_receipt.is_none() {
-        record_stage(database, &link.operation_id, "transfer_started");
+        note_stage(database, &link.operation_id, "transfer_started");
         update(database, &link.operation_id, |_, link| {
             link.phase = "copy_pending".into();
             Ok(())
@@ -1989,7 +2036,7 @@ fn handoff(
             link.error = None;
             Ok(())
         })?;
-        record_stage(database, &link.operation_id, "transfer_done");
+        note_stage(database, &link.operation_id, "transfer_done");
     }
     complete_local(database, &link.operation_id)
 }
@@ -2048,7 +2095,22 @@ impl Default for Polling {
         }
     }
 }
+/// Runs the worker, then writes its stage times: after every commit it made,
+/// outside any job transaction and heavy-IO permit.
 fn run_worker(
+    host: &dyn ImageHost,
+    database: &Path,
+    operation: &str,
+    fresh: bool,
+    control: &crate::plugin_job::JobControl,
+    app: &EventEmitter,
+    polling: Polling,
+) -> Result<(), AppError> {
+    let result = run_worker_inner(host, database, operation, fresh, control, app, polling);
+    flush_stages(database, operation);
+    result
+}
+fn run_worker_inner(
     host: &dyn ImageHost,
     database: &Path,
     operation: &str,
@@ -2097,7 +2159,7 @@ fn run_worker(
     if dispatch && !budget_expired(remaining, monotonic.elapsed(), link.deadline_ms, now_ms()) {
         // This sole start call is justified by the durable claim just committed.
         // Neither timeout, dropped caller future nor any restart can repeat it.
-        record_stage(database, operation, "submitted");
+        note_stage(database, operation, "submitted");
         let value = host_image::invoke(
             host,
             "start",
@@ -2109,7 +2171,7 @@ fn run_worker(
             },
         );
         if let Ok(value) = value {
-            record_stage(database, operation, "accepted");
+            note_stage(database, operation, "accepted");
             link = observe(database, operation, value)?;
         }
     }
@@ -3139,6 +3201,29 @@ mod tests {
         assert_eq!(f.snapshot(OP)["status"], "succeeded");
         assert_eq!(fs::read(&link.target).unwrap(), PNG);
         assert!(stage_times(&f, OP).is_empty());
+    }
+    #[test]
+    fn rolling_back_timing_writes_leave_runs_and_links_consistent() {
+        for failed in [false, true] {
+            let f = Fixture::new();
+            Connection::open(&f.database)
+                .unwrap()
+                .execute_batch("CREATE TRIGGER no_timings BEFORE INSERT ON image_service_timings BEGIN SELECT RAISE(ROLLBACK,'timings unavailable'); END;")
+                .unwrap();
+            f.host.behavior.lock().unwrap().failed = failed;
+            let link = f.accept(OP);
+            f.run(OP, true);
+            let expected = if failed { "failed" } else { "succeeded" };
+            assert_eq!(f.snapshot(OP)["status"], expected);
+            let run: String = Connection::open(&f.database)
+                .unwrap()
+                .query_row("SELECT status FROM runs WHERE id=?1", [link.run_id], |r| r.get(0))
+                .unwrap();
+            assert_eq!(run, expected, "run must agree with its link");
+            let read = read_link(&f.database, OP).unwrap().unwrap();
+            assert!(terminal(&read.phase) || read.phase == "ack_pending");
+            assert!(stage_times(&f, OP).is_empty());
+        }
     }
     #[test]
     fn database_from_before_timings_gains_the_table_and_keeps_its_operations() {
