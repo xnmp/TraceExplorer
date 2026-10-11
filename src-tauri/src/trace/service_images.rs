@@ -15,9 +15,10 @@ use std::{
     time::{Instant, SystemTime, UNIX_EPOCH},
 };
 use te_image_generation_contract::{
-    ArtifactDescriptor, Delivery, EffectiveRecipe, Execution, OperationStatus, Preparation,
+    ArtifactDescriptor, Delivery, EffectiveRecipe, Execution, Preparation,
     PrepareRequest, StartRequest,
 };
+use super::job_presentation::ImageReceipt as OperationStatus;
 const SCHEMA: i64 = 1;
 const APPLICATION_ID: i64 = 0x54454943;
 const MAX_OUTPUT: u64 = 50 * 1024 * 1024;
@@ -550,6 +551,9 @@ pub(crate) fn cancel_operation(operation: &str) -> Result<(), AppError> {
     with_trace_owner(|database| cancel_at(database, operation))
 }
 fn snapshot_at(database: &Path, operation: &str) -> Result<Option<Value>, AppError> {
+    snapshot_with_capabilities(database, operation, crate::host_image::job_estimates_supported(), crate::host_image::job_reveal_supported(), crate::host_image::job_cost_supported())
+}
+fn snapshot_with_capabilities(database: &Path, operation: &str, estimate: bool, reveal: bool, cost: bool) -> Result<Option<Value>, AppError> {
     let connection = connection_at(database)?;
     let Some(link) = load_link(&connection, database, operation)? else {
         return Ok(None);
@@ -567,11 +571,14 @@ fn snapshot_at(database: &Path, operation: &str) -> Result<Option<Value>, AppErr
         )
         .optional()
         .map_err(sql)?;
-    Ok(Some(super::image_estimate::with_estimate_key(
+    let value = super::image_estimate::with_estimate_key(
         json!({"jobId":link.job_id,"runId":link.run_id,"operationId":link.operation_id,"revision":link.revision,"preparationReleasePending":link.preparation_release_pending,"workerActive":worker_active(database,operation),"status":state,"outputPath":output,"error":link.error,"recoveryState":host_recovery_state(&link.phase),"outcomeUnknown":link.phase=="unknown","providerExecution":link.receipt.as_ref().map(|r|&r.execution),"providerDelivery":link.receipt.as_ref().map(|r|&r.delivery)}),
         &link.recipe,
-        crate::host_image::job_estimates_supported(),
-    )))
+        estimate,
+    );
+    if !reveal && !cost { return Ok(Some(value)); }
+    let (target, billing) = super::job_presentation::current(&connection, link.run_id)?;
+    Ok(Some(super::job_presentation::extend(value,target,billing,reveal,cost)))
 }
 pub(crate) fn status(operation: &str) -> Result<Option<Value>, AppError> {
     snapshot_at(&database_path()?, operation)
@@ -1346,6 +1353,10 @@ fn receipt_valid(link: &Link, receipt: &OperationStatus) -> Result<(), AppError>
     }
     Ok(())
 }
+fn billing_changed(old: &Link, new: &Link) -> bool {
+    old.receipt.as_ref().and_then(|r| r.billing.as_ref())
+        != new.receipt.as_ref().and_then(|r| r.billing.as_ref())
+}
 fn receipt_transition(old: &OperationStatus, new: &OperationStatus) -> Result<(), AppError> {
     if let Some(before) = &old.diagnostics {
         let Some(after) = &new.diagnostics else {
@@ -1456,6 +1467,9 @@ fn observe(database: &Path, operation: &str, value: Value) -> Result<Link, AppEr
             link.phase = "running".into();
         }
         let mut details = json!({"provider_execution":receipt.execution,"provider_delivery":receipt.delivery,"provider_receipt_revision":receipt.revision});
+        if let Some(billing) = &receipt.billing {
+            details["provider_billing"] = json!(billing);
+        }
         if let Some(diagnostics) = &receipt.diagnostics {
             details["provider_diagnostics"] = serde_json::to_value(diagnostics)
                 .map_err(|_| invalid("Invalid image diagnostics"))?;
@@ -1586,7 +1600,9 @@ fn emit_terminal(app: &EventEmitter, database: &Path, link: &Link) {
     match link.phase.as_str() {
         "succeeded" | "ack_pending" => {
             let _ = app.emit("trace:changed", ());
-            let _=app.emit("openai-image-complete",json!({"jobId":link.job_id,"runId":link.run_id,"outputPath":link.target,"operationId":link.operation_id}));
+            let value = json!({"jobId":link.job_id,"runId":link.run_id,"outputPath":link.target,"operationId":link.operation_id});
+            let value = connection_at(database).and_then(|c|super::job_presentation::for_run(&c,link.run_id,value.clone())).unwrap_or(value);
+            let _ = app.emit("openai-image-complete", value);
         }
         "unknown" => progress(app, database, &link.operation_id),
         _ => {
@@ -2230,7 +2246,11 @@ fn run_worker_inner(
             control.check().is_err()
         });
         match value {
-            Ok(value) => link = observe(database, operation, value)?,
+            Ok(value) => {
+                let observed = observe(database, operation, value)?;
+                if billing_changed(&link, &observed) { progress(app, database, operation); }
+                link = observed;
+            },
             Err(AppError::Service { code, .. }) if code == "recovery_stopped" => {
                 settle_unknown(database, operation, RECOVERY_STOPPED)?;
                 progress(app, database, operation);
@@ -2272,8 +2292,8 @@ fn run_worker_inner(
             }
         }
         if let Some(receipt) = link.receipt.clone() {
-            match receipt.execution {
-                Execution::Succeeded { .. } => match receipt.delivery {
+            match &receipt.execution {
+                Execution::Succeeded { .. } => match &receipt.delivery {
                     Delivery::Available { .. } | Delivery::Acquired { .. } => {
                         let (published, first) = retry_local(
                             control,
@@ -2289,7 +2309,11 @@ fn run_worker_inner(
                         let mut attempts = 0usize;
                         loop {
                             match acknowledge(host, database, operation, control) {
-                                Ok(_) => return Ok(()),
+                                Ok(acknowledged) => {
+                                    // A newer acquired receipt can provide the final charge after local publication.
+                                    if billing_changed(&published, &acknowledged) { progress(app, database, operation); }
+                                    return Ok(());
+                                },
                                 Err(error) => {
                                     attempts += 1;
                                     if attempts >= polling.settlement || control.check().is_err() {
@@ -2339,7 +2363,7 @@ fn run_worker_inner(
                     _ => return Err(invalid("Successful image is missing a delivery state")),
                 },
                 Execution::Failed { error } => {
-                    let done = finish(database, operation, "failed", Some(error.message))?;
+                    let done = finish(database, operation, "failed", Some(error.message.clone()))?;
                     emit_terminal(app, database, &done);
                     return Ok(());
                 }
@@ -2654,6 +2678,8 @@ mod tests {
         /// The provider is unreachable after publication: status and
         /// acknowledge fail without changing its receipt.
         ack_down: bool,
+        start_billing: Option<super::job_presentation::ProviderBilling>,
+        ack_billing: Option<Option<super::job_presentation::ProviderBilling>>,
     }
     #[derive(Default)]
     struct IoGate {
@@ -2950,7 +2976,7 @@ mod tests {
                             output: self.output.clone(),
                         }
                     };
-                    let receipt = OperationStatus {
+                    let mut receipt: OperationStatus = te_image_generation_contract::OperationStatus {
                         version: 1,
                         operation_id: request.operation_id,
                         request_fingerprint: request.effective_recipe_digest,
@@ -2963,7 +2989,8 @@ mod tests {
                         diagnostics: None,
                         execution,
                         delivery,
-                    };
+                    }.into();
+                    receipt.billing = behavior.start_billing.clone();
                     self.states
                         .lock()
                         .unwrap()
@@ -3045,6 +3072,7 @@ mod tests {
                     assert!(link.transfer_receipt.is_some());
                     assert_eq!(link.transfer_receipt, Some(format!("proof-{op}")));
                     assert_eq!(p["transferReceipt"], json!(link.transfer_receipt));
+                    let ack_billing = self.behavior.lock().unwrap().ack_billing.clone();
                     // One lock at a time: status holds `states` before `state`.
                     let receipt = {
                         let mut states = self.states.lock().unwrap();
@@ -3053,6 +3081,7 @@ mod tests {
                         receipt.delivery = Delivery::Acquired {
                             transfer_receipt: link.transfer_receipt.unwrap(),
                         };
+                        if let Some(billing) = ack_billing { receipt.billing = billing; }
                         receipt.clone()
                     };
                     *self.state.lock().unwrap() = Some(receipt.clone());
@@ -3892,6 +3921,85 @@ mod tests {
         assert_eq!(f.host.count("acknowledge"), 0);
     }
     #[test]
+    fn acknowledgement_announces_added_replaced_and_removed_billing() {
+        let billing = |amount: &str| serde_json::from_value::<super::job_presentation::ProviderBilling>(json!({"cost":{"amount":amount,"currency":"USD","estimated":false,"source":"fixture"}})).unwrap();
+        for (before,after) in [(None,Some(billing("0.04"))),(Some(billing("0.08")),Some(billing("0.04"))),(Some(billing("0.08")),None)] {
+            let f = Fixture::new();
+            {
+                let mut behavior = f.host.behavior.lock().unwrap();
+                behavior.start_billing = before;
+                behavior.ack_billing = Some(after.clone());
+            }
+            f.accept(OP);
+            f.run(OP,true);
+            assert_eq!(event_count(&f,"openai-image-complete"),1);
+            assert_eq!(event_count(&f,"openai-image-progress"),1);
+            assert_eq!(event_count(&f,"trace:changed"),2);
+            let events = f.events.lock().unwrap();
+            let complete = events.iter().position(|(name,_)|name=="openai-image-complete").unwrap();
+            let progress = events.iter().position(|(name,_)|name=="openai-image-progress").unwrap();
+            assert!(progress > complete);
+            assert_eq!(events[progress].1["status"],"succeeded");
+            let status = snapshot_with_capabilities(&f.database,OP,false,true,true).unwrap().unwrap();
+            assert_eq!(status.get("cost").cloned(),after.as_ref().and_then(|b|b.cost.as_ref()).map(|c|json!(c)));
+        }
+    }
+    #[test]
+    fn billing_is_bounded_replaced_and_gated_in_real_status() {
+        let f = Fixture::new();
+        let link = f.accept(OP);
+        f.run(OP, true);
+        let original = read_link(&f.database, OP).unwrap().unwrap().receipt.unwrap();
+        let mut raw = serde_json::to_value(&original).unwrap();
+        raw["revision"] = json!(original.revision + 1);
+        raw["billing"] = json!({"cost":{"amount":"0.04","currency":"USD","estimated":true,"source":"fixture"},"evidence":{"schema":"usage.v1","values":{"credits":4}}});
+        observe(&f.database, OP, raw.clone()).unwrap();
+        let connection = connection_at(&f.database).unwrap();
+        let details: String = connection.query_row("SELECT result_details FROM runs WHERE id=?1",[link.run_id],|r|r.get(0)).unwrap();
+        assert_eq!(parse::<Value>(&details).unwrap()["provider_billing"],raw["billing"]);
+        let old = snapshot_with_capabilities(&f.database,OP,false,false,false).unwrap().unwrap();
+        assert!(old.get("cost").is_none() && old.get("reveal").is_none());
+        let status = snapshot_with_capabilities(&f.database,OP,false,true,true).unwrap().unwrap();
+        assert_eq!(status["cost"],raw["billing"]["cost"]);
+        assert_eq!(status["reveal"]["kind"],"view");
+        let mut stripped = status.clone();
+        stripped.as_object_mut().unwrap().remove("cost");
+        stripped.as_object_mut().unwrap().remove("reveal");
+        assert_eq!(serde_json::to_string(&stripped).unwrap(),serde_json::to_string(&old).unwrap());
+        let mut invalid = raw.clone();
+        invalid["revision"] = json!(original.revision + 2);
+        invalid["billing"]["evidence"]["values"] = json!({"nested":[]});
+        assert!(observe(&f.database,OP,invalid).is_err());
+        raw["revision"] = json!(original.revision + 2);
+        raw["billing"]["cost"]["amount"] = json!("0.02");
+        observe(&f.database,OP,raw.clone()).unwrap();
+        assert_eq!(snapshot_with_capabilities(&f.database,OP,false,true,true).unwrap().unwrap()["cost"]["amount"],"0.02");
+        raw["revision"] = json!(original.revision + 3);
+        raw.as_object_mut().unwrap().remove("billing");
+        observe(&f.database,OP,raw).unwrap();
+        assert!(snapshot_with_capabilities(&f.database,OP,false,true,true).unwrap().unwrap().get("cost").is_none());
+        let details: String = connection.query_row("SELECT result_details FROM runs WHERE id=?1",[link.run_id],|r|r.get(0)).unwrap();
+        assert!(parse::<Value>(&details).unwrap().get("provider_billing").is_none());
+    }
+    #[test]
+    fn status_recomputes_reveal_after_save_and_subsequent_move() {
+        let f = Fixture::new();
+        let link = f.accept(OP);
+        f.run(OP,true);
+        let before = snapshot_with_capabilities(&f.database,OP,false,true,false).unwrap().unwrap();
+        let connection = connection_at(&f.database).unwrap();
+        let artifact: i64 = connection.query_row("SELECT id FROM artifacts WHERE generating_run=?1",[link.run_id],|r|r.get(0)).unwrap();
+        assert_eq!(before["reveal"],json!({"kind":"view","viewId":"trace.view","directory":link.request.output_dir,"targetId":format!("artifact:{artifact}")}));
+        let saved = f._root.path().join("saved.png");
+        super::super::save::save_at(&f.database,&f.generated,artifact,&saved).unwrap();
+        let after = snapshot_with_capabilities(&f.database,OP,false,true,false).unwrap().unwrap();
+        assert_eq!(after["reveal"],json!({"kind":"file","path":saved}));
+        let moved = f._root.path().join("moved.png");
+        fs::rename(&saved,&moved).unwrap();
+        connection.execute("UPDATE artifacts SET path=?1 WHERE id=?2",params![moved.to_str(),artifact]).unwrap();
+        assert_eq!(snapshot_with_capabilities(&f.database,OP,false,true,false).unwrap().unwrap()["reveal"],json!({"kind":"file","path":moved}));
+    }
+    #[test]
     fn provider_metadata_is_durable_and_receipt_revisions_never_regress() {
         let f = Fixture::new();
         f.host.behavior.lock().unwrap().unavailable = true;
@@ -4588,7 +4696,7 @@ mod tests {
             )
             .unwrap();
         let mut success: OperationStatus = serde_json::from_value(raw).unwrap();
-        success.diagnostics = receipt.diagnostics;
+        success.diagnostics = receipt.diagnostics.clone();
         assert!(observe(&g.database, OP, serde_json::to_value(success).unwrap()).is_err());
         assert!(read_link(&g.database, OP)
             .unwrap()

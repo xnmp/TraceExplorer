@@ -479,3 +479,83 @@ describe("returning to a folder (a Trace tab shown again)", () => {
     expect(cache.recall("/f")).toBeUndefined();
   });
 });
+
+describe("artifact reveal resolution", () => {
+  beforeEach(() => forgetFolderSnapshots());
+  it("finds an unlisted artifact after its component merged, using a fresh index", async () => {
+    let merged = false;
+    const image = { ...node("o:9:0", 71), temporary: true, path: "/private/generated/image.png" };
+    const backend = fakeBackend({
+      components: vi.fn(async () => compPage(merged ? "new" : "old", merged ? ["merged"] : ["old"])),
+      members: vi.fn(async () => memPage([])),
+      nodes: vi.fn(async (_d, _t, id) => nodePage(id === "merged" ? [image] : [])),
+    });
+    const session = createFolderSession(backend);
+    session.setDirectory("/f"); await flush();
+    merged = true;
+    const found = await session.resolveArtifact(71, new AbortController().signal);
+    expect(found).toEqual({ node: image, componentId: "merged" });
+    expect(session.components.get(found.componentId)?.dag.nodes.get(image.key)).toEqual(image);
+  });
+  it("aborting an in-flight index request never publishes its data or continues loading", async () => {
+    const backend = fakeBackend();
+    const session = createFolderSession(backend);
+    session.setDirectory("/f"); await flush();
+    const gate = deferred<FolderComponentsPage>();
+    backend.components.mockImplementation(() => gate.promise);
+    const controller = new AbortController();
+    const task = session.resolveArtifact(71, controller.signal);
+    controller.abort();
+    gate.resolve(compPage("new", ["new"]));
+    await expect(task).rejects.toMatchObject({ name: "AbortError" });
+    expect(session.index?.token).toBe("t1");
+    expect(session.components.size).toBe(0);
+    expect(backend.nodes).not.toHaveBeenCalled();
+  });
+  it("aborting during component paging does not commit a partial component", async () => {
+    const gate = deferred<ComponentNodesPage>();
+    const backend = fakeBackend({ nodes: vi.fn(() => gate.promise) });
+    const session = createFolderSession(backend);
+    session.setDirectory("/f"); await flush();
+    const controller = new AbortController();
+    const task = session.resolveArtifact(71, controller.signal);
+    await flush();
+    controller.abort();
+    gate.resolve(nodePage([node("generated", 71)], 2));
+    await expect(task).rejects.toMatchObject({ name: "AbortError" });
+    expect(session.components.size).toBe(0);
+    expect(backend.nodes).toHaveBeenCalledTimes(1);
+  });
+  it("retries a stale snapshot and rejects absent, discarded and missing images clearly", async () => {
+    let reads = 0;
+    const backend = fakeBackend({ nodes: vi.fn(async () => ++reads === 1 ? nodePage([], 0, true) : nodePage([node("target", 71)])) });
+    const session = createFolderSession(backend);
+    session.setDirectory("/f"); await flush();
+    expect((await session.resolveArtifact(71, new AbortController().signal)).node.artifactId).toBe(71);
+    for (const patch of [{ discarded: true }, { state: "missing" as const }, { earlierRevision: true }]) {
+      backend.nodes.mockImplementation(async () => nodePage([{ ...node("target", 71), ...patch }]));
+      await expect(session.resolveArtifact(71, new AbortController().signal)).rejects.toThrow("no longer exists");
+    }
+    await expect(session.resolveArtifact(999, new AbortController().signal)).rejects.toThrow("no longer exists");
+  });
+});
+
+it("reveal follows an index refresh that races its component load", async () => {
+  forgetFolderSnapshots();
+  let merged = false;
+  const gate = deferred<ComponentNodesPage>();
+  const image = node("generated", 71);
+  const backend = fakeBackend({
+    components: vi.fn(async () => compPage(merged ? "t2" : "t1", merged ? ["merged"] : ["original"])),
+    members: vi.fn(async () => memPage([])),
+    nodes: vi.fn(async (_d, _t, id) => id === "original" ? gate.promise : nodePage([image])),
+  });
+  const session = createFolderSession(backend);
+  session.setDirectory("/f"); await flush();
+  const revealing = session.resolveArtifact(71, new AbortController().signal);
+  await flush();
+  merged = true;
+  await session.refresh();
+  gate.resolve(nodePage([image]));
+  expect(await revealing).toEqual({ node: image, componentId: "merged" });
+});

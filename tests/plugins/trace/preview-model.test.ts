@@ -153,6 +153,13 @@ describe("runSettings", () => {
     expect(runSettings(edit({}, null)).map((row) => row.label)).toEqual(["Operation"]);
   });
 
+  it("shows provider billing only when a cost is known", () => {
+    const provider_billing = { cost: { amount: "0.04", currency: "USD", estimated: true, source: "fixture" } };
+    expect(runSettings(edit({}, { provider_billing }))).toContainEqual({ label: "Cost", value: "≈US$0.04" });
+    expect(runSettings(edit({ provider: "codex-cli" }, { usage: { input_tokens: 500 } })).map((row) => row.label)).not.toContain("Cost");
+    expect(runSettings(edit({}, { provider_billing: { evidence: { schema: "usage.v1", values: {} } } })).map((row) => row.label)).not.toContain("Cost");
+  });
+
   it("keeps a very long value intact for the row to ellipsize", () => {
     const seed = "9".repeat(5000);
     expect(runSettings(edit({ seed }))).toContainEqual({ label: "Seed", value: seed });

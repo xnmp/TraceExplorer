@@ -90,7 +90,7 @@ async fn execute(app: EventEmitter, request: &Request) -> Result<Value, AppError
                 let _ = app.emit("trace:changed", ());
             }
             Ok(
-                json!({"protocolVersion":1,"ready":trace::owner_ready(),"pluginVersion":env!("CARGO_PKG_VERSION")}),
+                json!({"protocolVersion":1,"ready":trace::owner_ready(),"pluginVersion":env!("CARGO_PKG_VERSION"),"features":["receiptBillingV1"]}),
             )
         }
         "lifecycle.activate" => {

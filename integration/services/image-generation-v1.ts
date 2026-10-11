@@ -1,3 +1,5 @@
+import type { JobCost } from "../plugin-sdk";
+
 /** SDK 3 declared image-generation v1. Public requests never contain credentials or provider paths. */
 export interface ArtifactDescriptor {handle:string;sha256:string;byteLength:number;mediaType:string}
 export interface ImageOptions {size:string;resolution?:string|null;aspectRatio?:string|null;quality:"auto"|"low"|"medium"|"high";background:"auto"|"opaque"|"transparent"}
@@ -17,7 +19,12 @@ export type ImageDelivery =
   | {state:"acquired";transferReceipt:string}
   | {state:"unavailable";reason:"missing"|"corrupt"|"storage_unavailable"};
 export interface CodexTurnReceipt {kind:"codex_image_turn";threadId:string;turnState:"completed"|"failed"|"incomplete";usage?:{inputTokens?:number|null;cachedInputTokens?:number|null;outputTokens?:number|null}|null;explanation?:{kind:"reply"|"error";text:string;truncated:boolean}|null}
-export interface ImageOperationStatus {version:1;operationId:string;requestFingerprint:string;provider:{packageId:string;serviceId:string;major:1};revision:number;execution:ImageExecution;delivery:ImageDelivery;diagnostics?:CodexTurnReceipt}
+/** Optional receipt billing; supplied only when receiptBillingV1 is negotiated. */
+export interface ImageBilling {
+  cost?: JobCost;
+  evidence?: { schema: string; values: Record<string, number | string | boolean | null> };
+}
+export interface ImageOperationStatus {version:1;operationId:string;requestFingerprint:string;provider:{packageId:string;serviceId:string;major:1};revision:number;execution:ImageExecution;delivery:ImageDelivery;diagnostics?:CodexTurnReceipt;billing?:ImageBilling}
 export interface ImageCapabilities {generation:boolean;edit:boolean;maxInputs:number;maxInputBytes:number;maxTotalInputBytes:number;maxOutputBytes:number;inputFormats:readonly string[];outputFormats:readonly string[];modelSelection:boolean;sizes?:{auto:boolean;maxEdge:number;multipleOf:number;minPixels:number;maxPixels:number};resolution?:readonly string[];aspectRatio?:readonly string[];quality:readonly string[];background:readonly string[]}
 export type ImageCredential = {kind:"none"}|{kind:"environment";name:string}|{kind:"secret";id:string}|{kind:"command";argv:string[]};
 export interface CodexProfile {id:string;name:string;recipeRevision:string;transport:"codex-cli";executablePath:string;modelSelection:false;credential:{kind:"cli_saved_login"}}

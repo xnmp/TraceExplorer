@@ -77,8 +77,14 @@ fn lookup_at(
 pub(crate) fn existing(id: &str, request_digest: &str) -> Result<Option<JobStatus>, AppError> {
     lookup_at(&database_path()?, id, Some(request_digest))
 }
-pub(crate) async fn status(id: String) -> Result<Option<JobStatus>, AppError> {
-    tokio::task::spawn_blocking(move || lookup_at(&database_path()?, &id, None))
+pub(crate) async fn status(id: String) -> Result<Option<serde_json::Value>, AppError> {
+    tokio::task::spawn_blocking(move || {
+        let database = database_path()?;
+        lookup_at(&database, &id, None)?.map(|status| {
+            let value = serde_json::to_value(&status).map_err(|e|AppError::Other(e.to_string()))?;
+            super::job_presentation::for_run(&connection_at(&database)?,status.run_id,value)
+        }).transpose()
+    })
         .await
         .map_err(|error| AppError::WorkerFailed(error.to_string()))?
 }

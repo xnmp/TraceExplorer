@@ -13,6 +13,7 @@
   import { ARROW, tileMetrics, type TileMetrics } from "$lib/domain/trace-graph/metrics";
   import { promptTitles } from "../prompt-titles.svelte";
   import type { ComponentData } from "./folder-session.svelte";
+  import type { GraphScene } from "./graph-commit";
   import { cachedLayout, computeLayout, layoutNow } from "./layout-client";
   import { captureGraph, playGraph, prefersReducedMotion, zoomOf } from "./motion";
   import { nodeTitle } from "./node-target";
@@ -36,7 +37,9 @@
     captureSelection?: () => () => boolean;
     ondiscarded: (key: NodeKey) => void;
     /** Called after a new layout is in the DOM (motion has started), with a promise that settles when motion ends. */
-    oncommit?: (settled: Promise<void>) => void;
+    oncommit?: (scene: GraphScene, settled: Promise<void>) => void;
+    onfailure?: (scene: GraphScene, error: Error) => void;
+    reveal?: object | null;
     /** The host's component id: stable across refreshes, saves and new descendants. */
     componentId: string;
     /**
@@ -47,7 +50,7 @@
     orientations?: Map<string, Orientation>;
   }
 
-  let { data, focus, selected, width, tile = tileMetrics(), revision, scroller, onactivate, onnavigate, onopen, onmenu, onsaved, ondiscarded, oncommit, captureSelection, componentId, orientations = new Map() }: Props = $props();
+  let { data, focus, selected, width, tile = tileMetrics(), revision, scroller, onactivate, onnavigate, onopen, onmenu, onsaved, ondiscarded, oncommit, captureSelection, componentId, orientations = new Map(), onfailure, reveal = null }: Props = $props();
 
   /** Below this many tiles layout runs inline; it takes well under a frame. */
   const SYNC_LIMIT = 60;
@@ -82,15 +85,19 @@
   }
   let shown = $state.raw(initial());
 
-  function commit(next: ScenePlan, layout: GraphLayout): void {
-    if (shown && shown.plan === next && shown.layout === layout) return;
+  function commit(next: ScenePlan, layout: GraphLayout, scene: GraphScene): void {
+    if (shown && shown.plan === next && shown.layout === layout) {
+      // Initial cached/inline geometry is already committed; report it after its tiles mount.
+      void tick().then(() => { if (scene.isCurrent()) oncommit?.(scene, Promise.allSettled(running.map((animation) => animation.finished)).then(() => {})); });
+      return;
+    }
     // Same geometry (only tones or selection changed): nothing moves, so
     // motion still running carries on and nothing is measured.
     if (shown && shown.layout === layout) {
       shown = { plan: next, layout };
       failure = "";
       // After any pending full commit has started its motion, so `settled` waits for it.
-      void tick().then(() => oncommit?.(Promise.allSettled(running.map((animation) => animation.finished)).then(() => {})));
+      void tick().then(() => { if (scene.isCurrent()) oncommit?.(scene, Promise.allSettled(running.map((animation) => animation.finished)).then(() => {})); });
       return;
     }
     const element = canvas;
@@ -102,21 +109,26 @@
     failure = "";
     const current = ++plays;
     void tick().then(() => {
-      if (current !== plays) return;
+      if (current !== plays || !scene.isCurrent()) return;
       if (before && canvas) running = playGraph(canvas, before, layout.orientation);
-      oncommit?.(Promise.allSettled(running.map((animation) => animation.finished)).then(() => {}));
+      oncommit?.(scene, Promise.allSettled(running.map((animation) => animation.finished)).then(() => {}));
     });
   }
 
   $effect(() => {
     const next = plan;
+    const requestedReveal = reveal;
+    const scene: GraphScene = {
+      data, focus, reveal: requestedReveal,
+      isCurrent: () => plan === next && reveal === requestedReveal,
+    };
     const ready = cachedLayout(next.request) ?? (next.request.items.length <= SYNC_LIMIT ? layoutNow(next.request) : null);
-    if (ready) { commit(next, ready); return; }
+    if (ready) { commit(next, ready, scene); return; }
     let live = true;
     const superseded = new AbortController();
     computeLayout(next.request, superseded.signal).then(
-      (layout) => { if (live) commit(next, layout); },
-      (error: Error) => { if (live) failure = error.message; },
+      (layout) => { if (live && scene.isCurrent()) commit(next, layout, scene); },
+      (error: Error) => { if (live && scene.isCurrent()) { failure = error.message; onfailure?.(scene, error); } },
     );
     return () => { live = false; superseded.abort(); };
   });

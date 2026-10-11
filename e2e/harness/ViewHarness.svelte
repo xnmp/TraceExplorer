@@ -228,6 +228,30 @@
 
   export const harness = {
     backend,
+    /** The host re-reads status when Show image is clicked, then dispatches the current reveal. */
+    async showJob(jobId: number, signal = new AbortController().signal) {
+      const reveal = (await backend.jobStatus(jobId))?.reveal;
+      if (!reveal) throw new Error("Job has no image to show");
+      signal.throwIfAborted();
+      if (reveal.kind === "file") {
+        // Select the file in its folder, as the host's file reveal action does.
+        directory = reveal.path.slice(0, reveal.path.lastIndexOf("/"));
+        entries = files();
+        fileView = null;
+        pane.setSelection([reveal.path], reveal.path);
+        return;
+      }
+      directory = reveal.directory;
+      fileView = reveal.viewId;
+      const contribution = views.find((view) => view.id === reveal.viewId);
+      if (!contribution?.reveal) throw new Error("File view cannot reveal images");
+      await contribution.reveal(reveal.targetId, pane, signal);
+    },
+    async revealTarget(targetId: string, signal = new AbortController().signal) {
+      const contribution = views.find((view) => view.id === "trace.view");
+      if (!contribution?.reveal) throw new Error("Trace is unavailable");
+      await contribution.reveal(targetId, pane, signal);
+    },
     setConfigureFailure(message: string | null) { configureFailure = message; },
     setWidth(width: number) { viewWidth = width; },
     /** Changes the pane's tile-size preset live, as the host's setting would; null removes it (an older host). */
@@ -244,7 +268,7 @@
     state: () => ({ selected: [...selected], inputs: tracePanes.get("pane-1")?.inputs() ?? [], cursor, target: target ? { id: target.id, title: target.title, badge: target.badge ?? null } : null, fileView, opened: [...opened], menus: [...menus], navigations: [...navigations] }),
     selectPath(path: string) { pane.setSelection([path], path); },
     /** The host replaces the selection itself (another pane, a command), as `explorer.selectPaths` does. */
-    setSelection(paths: string[]) { pane.setSelection(paths); },
+    setSelection(paths: string[], focus: string | null = null) { pane.setSelection(paths, focus); },
     setOtherPaneSelection(entries: FileEntry[]) { otherPaneSelection = [...entries]; },
     /** The host's Select all: every listed file (an unchanged selection notifies nothing). */
     selectAll() { replaceSelection(entries.map((entry) => entry.path)); anchor = entries[0]?.path ?? null; },

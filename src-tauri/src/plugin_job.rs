@@ -316,11 +316,11 @@ fn emit_result(
         Ok(output) => {
             let _ = app.emit(
                 &format!("{}-complete", event_prefix),
-                PluginJobCompleteEvent {
+                crate::trace::job_presentation::completion(job_id, serde_json::to_value(PluginJobCompleteEvent {
                     job_id,
                     output_path: output.path,
                     warning: output.warning,
-                },
+                }).expect("Job completion is serializable")),
             );
         }
         Err(e) => {

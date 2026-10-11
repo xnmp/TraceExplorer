@@ -44,6 +44,11 @@ export const tracePlugin: Plugin = {
       id: TRACE_VIEW_ID,
       title: "Trace",
       component: TraceView,
+      reveal: async (targetId, pane, signal) => {
+        const view = await tracePanes.waitFor(pane.paneId, pane.directory, signal);
+        signal.throwIfAborted();
+        await view.reveal(targetId, signal);
+      },
       available: (directory) => traceFolderVisibility.available(directory),
     });
     ctx.registerPreviewInfo?.({
