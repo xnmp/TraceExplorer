@@ -44,8 +44,10 @@
   const listsCover = (cell: { entry?: { path: string }; coverKey?: string }) =>
     !!cell.entry && session.index?.members.get(cell.entry.path)?.key === cell.coverKey;
   /** Pressing a closed stack, by mouse or keyboard: select what its open cover selects, then open it. */
-  function activateStack(cell: FolderCell, event: MouseEvent): void {
+  function activateStack(cell: FolderCell, event: MouseEvent, toggle = false): void {
     const summary = cell.summary!;
+    // Open means the next press closes, whether or not the stack's data has arrived (or failed to).
+    if (toggle && openKeys.has(cell.id)) { onexpand(summary.id, false); return; }
     if (cell.entry && listsCover(cell)) onselect(cell.entry, event); else onactivate(cell.id, event, summary.id);
     onexpand(summary.id, true);
   }
@@ -205,7 +207,7 @@
               onkey={(event) => keydown(cell.id, event)} {captureSelection} onsaved={(path) => onsaved(cell.id, path)} ondiscarded={() => ondiscarded(cell.id)} />
           {:else}
             <button type="button" class="heading" class:selected={selected.has(cell.id)} style:width="{tile.width}px" style:height="{cover.size.height}px" tabindex={stop === cell.id ? 0 : -1} onfocus={() => tabStop = cell.id} data-stack-toggle aria-expanded={!!band} data-tile-key={cell.id} data-node-key={cell.id} aria-pressed={selected.has(cell.id)}
-              onclick={(event) => activateStack(cell, event)}
+              onclick={(event) => activateStack(cell, event, true)}
               ondblclick={() => { if (cell.entry) void pane.open(cell.entry); else onopen(cell.id); }} onkeydown={(event) => keydown(cell.id, event)}
               oncontextmenu={(event) => { if (cell.entry) onordinarymenu(cell.entry, event); else onmenu(cell.id, event, summary.id); }}>
               <span class="cover-image" style:height="{tile.image}px">{#if node.path}<TraceThumbnail path={node.path} present={summary.cover?.present ?? false} {revision} label="" />{:else}▧{/if}</span>

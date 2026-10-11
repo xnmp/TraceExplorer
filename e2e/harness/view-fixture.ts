@@ -151,6 +151,8 @@ let previewLatency = 0;
 // Delay of the folder index and component reads, in ms, like a native backend's IPC round trip.
 let folderLatency = 0;
 let folderReadsHeld = false;
+/** How many of the next `trace_component_nodes` reads fail. */
+let nodeReadFailures = 0;
 let heldFolderReads: Array<() => void> = [];
 const titleCalls: number[] = [];
 const titleWaiters = new Map<number, (title: string) => void>();
@@ -220,6 +222,7 @@ configureBackend(withNativeRequestCapacity({
         return folderReply({ stale: false, total: members.length, offset: params.offset, members: folderPage(members, params.offset, 1000) });
       }
       case "trace_component_nodes": {
+        if (nodeReadFailures > 0) { nodeReadFailures -= 1; return Promise.reject(new Error("Trace could not read this stack")); }
         if (params.token !== token) return folderReply({ stale: true, total: 0, offset: 0, nodes: [] });
         const nodes = componentsOf().find((component) => component.id === params.componentId)?.nodes;
         if (!nodes) return Promise.reject(new Error("Unknown Trace component"));
@@ -476,8 +479,9 @@ export const backend = {
   /** Answers run details, revision status and per-image traces after `ms`. */
   setPreviewLatency(ms: number) { previewLatency = ms; },
   setFolderLatency(ms: number) { folderLatency = ms; },
+  failNodeReads(count: number) { nodeReadFailures = count; },
   holdFolderReads() { folderReadsHeld = true; },
   releaseFolderReads() { folderReadsHeld = false; const pending = heldFolderReads; heldFolderReads = []; pending.forEach((release) => release()); },
   releaseSaves() { holdSaves = false; const pending = heldSaves; heldSaves = []; pending.forEach((run) => run()); },
-  reset() { previewLatency = 0; folderLatency = 0; pickerResult = undefined; nextSaveFailure = null; inputFailures = 0; imageRuns.clear(); imageJobs.clear(); imageOperations.clear(); billing.clear(); state = scenario(); version += 1; calls.length = 0; },
+  reset() { nodeReadFailures = 0; previewLatency = 0; folderLatency = 0; pickerResult = undefined; nextSaveFailure = null; inputFailures = 0; imageRuns.clear(); imageJobs.clear(); imageOperations.clear(); billing.clear(); state = scenario(); version += 1; calls.length = 0; },
 };

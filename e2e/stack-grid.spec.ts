@@ -396,6 +396,26 @@ test("a refresh that merges the stack during activation still selects the clicke
   expect(await uncaught(page)).toEqual([]);
 });
 
+for (const outcome of ["delayed", "failed"] as const) {
+  test(`a stack whose data is ${outcome} can be closed again`, async ({ page }) => {
+    await openView(page, 420, "?grouping=two-chains", false);
+    const backend = (fn: string, ...args: unknown[]) => page.evaluate(([fn, args]) => (window as any).trace.backend[fn as string](...(args as unknown[])), [fn, args] as const);
+    await backend(outcome === "delayed" ? "holdFolderReads" : "failNodeReads", 1);
+    const heading = stack(page, "photo-a").locator("[data-stack-toggle]");
+    await heading.click();
+    await expect(heading).toHaveAttribute("aria-expanded", "true");
+    await heading.click();
+    await expect(heading).toHaveAttribute("aria-expanded", "false");
+    await expect(stack(page, "photo-a").locator("[data-grid-band]")).toHaveCount(0);
+    if (outcome === "delayed") await backend("releaseFolderReads");
+    await settle(page);
+    // Still closed once the data arrives, and openable again.
+    await expect(stack(page, "photo-a").locator("[data-grid-band]")).toHaveCount(0);
+    await heading.click(); await settle(page);
+    await expect(stack(page, "photo-a").locator("[data-grid-band]")).toHaveCount(1);
+  });
+}
+
 const tabStops = (page: Page) => page.locator('[role="grid"] [tabindex="0"]');
 const focusIsInGrid = (page: Page) => page.evaluate(() => !!document.activeElement?.closest('[role="grid"]'));
 
