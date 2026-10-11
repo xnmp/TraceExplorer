@@ -29,7 +29,7 @@
   interface Props { pane: FileViewPane; session?: FolderSession }
   let { pane, session: provided }: Props = $props();
 
-  const session = untrack(() => provided) ?? createFolderSession();
+  const session = untrack(() => provided) ?? createFolderSession(undefined, undefined, untrack(() => pane.paneId));
   /** Width is quantized so resizing does not relayout on every pixel. */
   const WIDTH_STEP = 16;
   /** Horizontal space reserved by the view's 10px pane padding. */
@@ -37,7 +37,6 @@
 
   let scroller = $state<HTMLElement | null>(null);
   let clientWidth = $state(0);
-  let overrides = $state.raw<ReadonlyMap<string, boolean>>(new Map());
   let near = $state.raw<ReadonlySet<string>>(new Set());
   /** A save into this folder waiting for the listing to contain its file; see `callbacks.saved`. */
   let pendingSave = $state.raw<{ directory: string; path: string; key: NodeKey; picks: Picks } | null>(null);
@@ -119,7 +118,7 @@
   const entriesByPath = $derived(new Map(pane.entries.map((entry) => [entry.path, entry])));
 
   // Session follows the pane's folder and Trace's invalidation signal.
-  $effect(() => { const dir = directory; untrack(() => { supersedeReveal(); releaseAnchors(); overrides = new Map(); session.setDirectory(dir); }); });
+  $effect(() => { const dir = directory; untrack(() => { supersedeReveal(); releaseAnchors(); session.setDirectory(dir); }); });
   let seenRevision = untrack(() => traceInvalidation.revision);
   $effect(() => {
     const current = traceInvalidation.revision;
@@ -131,8 +130,7 @@
   const summaries = $derived<readonly ComponentSummary[]>(session.index?.components ?? []);
   const gridCells = $derived(session.index ? folderCells(pane.entries, session.index) : []);
   const stackKey = (id: string) => gridCells.find((cell) => cell.summary?.id === id)?.id ?? id;
-  const openKeys = $derived(new Set([...overrides].filter(([, open]) => open).map(([key]) => key)));
-  let expandedChoice = "";
+  const openKeys = $derived(session.openStackKeys);
   $effect(() => {
     const choice = JSON.stringify([hostChoice, target?.id, pane.focusedPath]);
     const index = session.index;
@@ -140,11 +138,7 @@
       if (!index) return;
       const ids = new Set(pane.selection.flatMap((entry) => { const member = session.componentOf(entry.path); return member ? [member.componentId] : []; }));
       if (focus) ids.add(focus.componentId);
-      const changed = choice !== expandedChoice;
-      expandedChoice = choice;
-      const next = new Map(overrides);
-      for (const id of ids) if (changed || !next.has(stackKey(id))) next.set(stackKey(id), true);
-      if ([...next].some(([key, value]) => overrides.get(key) !== value)) overrides = next;
+      session.followSelection(choice, ids);
     });
   });
 
@@ -246,14 +240,14 @@
   }
 
   const isExpanded = (summary: ComponentSummary, index: number) =>
-    overrides.get(stackKey(summary.id)) ?? false;
+    openKeys.has(summary.coverKey);
 
   // Load what is expanded and near the viewport, and every component holding an
   // extra pick (so a pick in a collapsed section is checked against fresh
   // data); release the rest.
   $effect(() => {
     const picked = pickComponents;
-    const wanted = summaries.filter((summary, index) => (isExpanded(summary, index) && near.has(summary.id)) || picked.has(summary.id)).map((summary) => summary.id);
+    const wanted = summaries.filter((summary, index) => (isExpanded(summary, index) && near.has(summary.id)) || picked.has(summary.id) || session.openStackSearch.has(summary.id)).map((summary) => summary.id);
     untrack(() => {
       for (const summary of summaries) if (!wanted.includes(summary.id)) session.release(summary.id);
       for (const id of wanted) void session.ensure(id);
@@ -603,7 +597,7 @@
       let visible!: Promise<void>;
       flushSync(() => {
         checkReveal(owner);
-        overrides = new Map(overrides).set(stackKey(found.componentId), true);
+        session.setStackOpen(found.componentId, true);
         near = new Set(near).add(found.componentId);
         applyFocusNode(found.node.key, {}, found.componentId);
         owner.ownsSelection = captureSelection();
@@ -627,7 +621,7 @@
     focus: (key) => {
       const found = findNode(key, focus?.componentId);
       if (found && !summaries.some((summary, index) => summary.id === found.componentId && isExpanded(summary, index))) setExpanded(found.componentId, true);
-      else if (found) overrides = new Map(overrides).set(stackKey(found.componentId), true);
+      else if (found) session.setStackOpen(found.componentId, true);
       focusNode(key, {}, "reveal", found?.componentId);
     },
     get active() { return pane.active; },
@@ -651,14 +645,14 @@
     const element = scroller?.querySelector<HTMLElement>(`[data-grid-cell="${CSS.escape(stackKey(id))}"]`) ?? null;
     if (scroller && element && !heldAnchor) heldAnchor = holdAnchor(scroller, element, () => { heldAnchor = null; }, updateHeldAnchor);
     if (!opening && pendingReveal && session.components.get(id)?.dag.nodes.has(pendingReveal.key)) supersedeReveal();
-    overrides = new Map(overrides).set(stackKey(id), opening);
+    session.setStackOpen(id, opening);
     if (opening) void session.ensure(id);
     updateHeldAnchor();
   }
 
   function keepFocusedOpen(): void {
     const id = focus?.componentId;
-    if (id && overrides.get(stackKey(id))) overrides = new Map(overrides).set(stackKey(id), true);
+    if (id && openKeys.has(stackKey(id))) session.setStackOpen(id, true);
   }
 
   onDestroy(() => {
