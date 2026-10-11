@@ -788,7 +788,6 @@ impl Service {
                         | "host_unavailable"
                         | "interrupted"
                         | "invalid_response"
-                        | "codex_output_unreadable"
                         | "storage_unavailable"
                 );
                 return self.journal.finish(

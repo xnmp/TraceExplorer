@@ -61,6 +61,7 @@ fn run(
     args: Vec<String>,
     stdin: Option<String>,
     cwd: &Path,
+    home: &Path,
     cancel: &AtomicBool,
 ) -> Result<ProcessOutput> {
     let login = args == ["login", "status"];
@@ -73,6 +74,8 @@ fn run(
                 "PATH",
                 Some(executable.search_path.to_string_lossy().into_owned()),
             ),
+            // Codex and our output discovery must agree on one directory.
+            ("CODEX_HOME", Some(home.to_string_lossy().into_owned())),
             ("OPENAI_API_KEY", None),
             ("CODEX_API_KEY", None),
             ("CODEX_ACCESS_TOKEN", None),
@@ -122,6 +125,20 @@ fn args_is_login(out: &[u8], err: &[u8]) -> bool {
         .iter()
         .any(|bytes| String::from_utf8_lossy(bytes).contains("Logged in using ChatGPT"))
 }
+/// Pure: the one Codex home both the spawned process and discovery use. An
+/// empty `CODEX_HOME` counts as unset (as Codex treats it); a relative one is
+/// anchored at the backend's working directory, since Codex runs elsewhere.
+fn resolve_home(
+    configured: Option<std::ffi::OsString>,
+    user_home: Option<PathBuf>,
+    cwd: Option<PathBuf>,
+) -> Option<PathBuf> {
+    match configured.filter(|value| !value.is_empty()).map(PathBuf::from) {
+        Some(path) if path.is_absolute() => Some(path),
+        Some(path) => cwd.map(|cwd| cwd.join(path)),
+        None => user_home.map(|home| home.join(".codex")),
+    }
+}
 pub(super) fn generate(
     configured: &str,
     recipe: &EffectiveRecipe,
@@ -132,10 +149,12 @@ pub(super) fn generate(
     stage: &(dyn Fn(&'static str) + Send + Sync),
 ) -> Result<Output> {
     let executable = super::codex_executable::resolve(configured)?;
-    let home = std::env::var_os("CODEX_HOME")
-        .map(PathBuf::from)
-        .or_else(|| dirs::home_dir().map(|h| h.join(".codex")))
-        .ok_or_else(|| error("unavailable", "Codex home is unavailable"))?;
+    let home = resolve_home(
+        std::env::var_os("CODEX_HOME"),
+        dirs::home_dir(),
+        std::env::current_dir().ok(),
+    )
+    .ok_or_else(|| error("unavailable", "Codex home is unavailable"))?;
     generate_at(
         &executable,
         &home,
@@ -168,6 +187,7 @@ fn generate_at(
         vec!["login".into(), "status".into()],
         None,
         work.path(),
+        home,
         cancel,
     );
     stage("credential_check_done");
@@ -256,7 +276,7 @@ fn generate_at(
         }
     };
     stage("process_started");
-    let process = run(host, executable, args, stdin, work.path(), cancel);
+    let process = run(host, executable, args, stdin, work.path(), home, cancel);
     stage("process_finished");
     let process = process.map_err(|failure| {
         process_failure(
@@ -365,7 +385,28 @@ fn output_unreadable(_: std::io::Error) -> te_image_generation_contract::SafeErr
     )
 }
 fn discover(home: &Path, thread: &str) -> std::result::Result<Vec<u8>, Discovery> {
-    let directory = home.join("generated_images").join(thread);
+    let root = home.join("generated_images");
+    // Positive signal that we are looking where Codex writes: the images root
+    // must be a real directory. Otherwise we cannot tell "no image" apart from
+    // "looking in the wrong place".
+    let root_info = std::fs::symlink_metadata(&root).map_err(|failure| {
+        if failure.kind() == std::io::ErrorKind::NotFound {
+            error(
+                "invalid_response",
+                "Codex has no generated-images directory to search",
+            )
+        } else {
+            output_unreadable(failure)
+        }
+    })?;
+    if !root_info.is_dir() || root_info.file_type().is_symlink() {
+        return Err(error(
+            "invalid_response",
+            "Codex generated-images location is not a regular directory",
+        )
+        .into());
+    }
+    let directory = root.join(thread);
     let info = classify_directory(std::fs::symlink_metadata(&directory))?;
     if !info.is_dir() || info.file_type().is_symlink() {
         return Err(error(
@@ -666,6 +707,38 @@ mod tests {
         ));
     }
     #[test]
+    fn home_resolution_matches_codex_for_unset_empty_relative_and_absolute() {
+        let user = Some(PathBuf::from("/home/u"));
+        let cwd = Some(PathBuf::from("/work"));
+        let resolve = |v: Option<&str>| resolve_home(v.map(Into::into), user.clone(), cwd.clone());
+        assert_eq!(resolve(None), Some("/home/u/.codex".into()));
+        assert_eq!(resolve(Some("")), Some("/home/u/.codex".into()));
+        assert_eq!(resolve(Some("rel/codex")), Some("/work/rel/codex".into()));
+        assert_eq!(resolve(Some("/abs/codex")), Some("/abs/codex".into()));
+        assert_eq!(resolve_home(None, None, cwd), None);
+    }
+    #[test]
+    fn no_image_needs_a_real_images_root_with_only_the_thread_directory_absent() {
+        let home = tempfile::tempdir().unwrap();
+        let unknown = |home: &Path| matches!(discover(home, THREAD), Err(Discovery::Unusable(_)));
+        // Root missing: possibly the wrong place, never a definite no-image.
+        assert!(unknown(home.path()));
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(home.path().join("nowhere"), home.path().join("generated_images")).unwrap();
+            assert!(unknown(home.path()));
+            std::fs::remove_file(home.path().join("generated_images")).unwrap();
+        }
+        std::fs::write(home.path().join("generated_images"), b"file").unwrap();
+        assert!(unknown(home.path()));
+        std::fs::remove_file(home.path().join("generated_images")).unwrap();
+        std::fs::create_dir(home.path().join("generated_images")).unwrap();
+        assert!(matches!(
+            discover(home.path(), THREAD),
+            Err(Discovery::NoImageDirectory)
+        ));
+    }
+    #[test]
     fn existing_but_empty_or_symlinked_directories_are_not_no_image() {
         let home = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(home.path().join("generated_images").join(THREAD)).unwrap();
@@ -687,9 +760,5 @@ mod tests {
                 Err(Discovery::Unusable(f)) if f.code == "invalid_response"
             ));
         }
-        assert!(matches!(
-            discover(home.path(), "11111111-1111-1111-1111-111111111111"),
-            Err(Discovery::NoImageDirectory)
-        ));
     }
 }
