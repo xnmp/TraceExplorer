@@ -69,6 +69,27 @@ test('the credential source is a themed list whose disabled choice cannot be pic
   await expect(page.getByRole('listbox')).toHaveCount(0); await expect(source).toHaveText('Environment variable');
   await expect(page.getByLabel('Environment variable name')).toHaveValue('OPENAI_API_KEY');
 });
+test('the Select popup stays anchored when root zoom changes', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 1000 });
+  await setup(page);
+  await page.getByRole('button', { name: 'Add Images API' }).click();
+  const source = page.getByRole('combobox', { name: 'Credential source' });
+  const list = page.getByRole('listbox');
+  for (const zoom of ['125%', '100%']) {
+    await page.evaluate((value) => { document.documentElement.style.zoom = value; }, zoom);
+    await source.click();
+    await expect(list).toBeVisible();
+    await expect.poll(async () => {
+      const triggerBox = await source.boundingBox();
+      const listBox = await list.boundingBox();
+      if (!triggerBox || !listBox) return false;
+      const gap = listBox.y - (triggerBox.y + triggerBox.height);
+      return Math.abs(listBox.x - triggerBox.x) <= 2 && gap >= 0 && gap <= 8;
+    }).toBe(true);
+    await page.keyboard.press('Escape');
+    await expect(list).toHaveCount(0);
+  }
+});
 test('Add Codex disappears once a Codex connection exists and returns when it is removed', async ({ page }) => {
   await setup(page); await saveHttp(page);
   await page.getByRole('button', { name: 'Add Codex' }).click();

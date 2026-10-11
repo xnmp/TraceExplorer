@@ -104,12 +104,20 @@ export function keyAction(open: boolean, input: KeyInput): KeyAction | null {
 export interface Rect { top: number; bottom: number; left: number; width: number }
 export interface Placement { top: number; left: number; minWidth: number; maxHeight: number; side: "below" | "above" }
 
+/** Visual pixels per popup CSS pixel; unusable measurements preserve unscaled placement. */
+export const normalizeScale = (scale: number): number => Number.isFinite(scale) && scale > 0 ? scale : 1;
+
 /**
  * Places the popup under the trigger, or above it when the room below is too small
  * and above is larger. `maxHeight` is the space on the chosen side. `content` is the
  * popup's natural size, which may be wider than the trigger; it is kept inside the viewport.
+ * Trigger and viewport are visual pixels; content, gap, margin and results are popup CSS
+ * pixels. `scale` converts the visual measurements into that local space.
  */
-export function place(trigger: Rect, viewport: { width: number; height: number }, content: { width: number; height: number }, gap = 4, margin = 8): Placement {
+export function place(visualTrigger: Rect, visualViewport: { width: number; height: number }, content: { width: number; height: number }, gap = 4, margin = 8, scale = 1): Placement {
+  const zoom = normalizeScale(scale);
+  const trigger = { top: visualTrigger.top / zoom, bottom: visualTrigger.bottom / zoom, left: visualTrigger.left / zoom, width: visualTrigger.width / zoom };
+  const viewport = { width: visualViewport.width / zoom, height: visualViewport.height / zoom };
   const below = Math.max(0, viewport.height - trigger.bottom - gap - margin);
   const above = Math.max(0, trigger.top - gap - margin);
   const side = content.height > below && above > below ? "above" : "below";

@@ -98,6 +98,38 @@ describe("keyAction", () => {
 describe("place", () => {
   const viewport = { width: 1000, height: 800 };
   const trigger = (top: number) => ({ top, bottom: top + 34, left: 100, width: 200 });
+  it("preserves placement at scale 1", () => {
+    expect(place(trigger(100), viewport, { width: 200, height: 200 }, 4, 8, 1)).toEqual({
+      side: "below", top: 138, left: 100, minWidth: 200, maxHeight: 654,
+    });
+  });
+  it.each([1, 1.25, 0.8])("anchors in visual pixels at scale %s", (scale) => {
+    const rect = trigger(100);
+    const p = place(rect, viewport, { width: 250, height: 200 }, 4, 8, scale);
+    expect(p.side).toBe("below");
+    expect(p.left * scale).toBeCloseTo(rect.left);
+    expect(p.top * scale).toBeCloseTo(rect.bottom + 4 * scale);
+    expect(p.minWidth * scale).toBeCloseTo(rect.width);
+  });
+  it.each([1, 1.25, 0.8])("clamps to the viewport in visual pixels at scale %s", (scale) => {
+    const right = place({ top: 100, bottom: 134, left: 900, width: 100 }, viewport, { width: 250, height: 200 }, 4, 8, scale);
+    expect((right.left + 250) * scale).toBeCloseTo(viewport.width - 8 * scale);
+    const left = place({ top: 100, bottom: 134, left: -50, width: 100 }, viewport, { width: 250, height: 200 }, 4, 8, scale);
+    expect(left.left * scale).toBeCloseTo(8 * scale);
+    const tall = place(trigger(100), { width: 1000, height: 300 }, { width: 250, height: 500 }, 4, 8, scale);
+    expect(tall.side).toBe("below");
+    expect((tall.top + tall.maxHeight) * scale).toBeLessThanOrEqual(300 - 8 * scale);
+    expect((tall.top + tall.maxHeight) * scale).toBeGreaterThan(300 - 9 * scale);
+    const above = place(trigger(700), viewport, { width: 250, height: 900 }, 4, 8, scale);
+    expect(above.side).toBe("above");
+    expect((above.top + above.maxHeight) * scale).toBeCloseTo(700 - 4 * scale);
+    expect(above.top * scale).toBeGreaterThanOrEqual(8 * scale);
+  });
+  it.each([0, -1, NaN, Infinity, -Infinity])("treats invalid scale %s as 1", (scale) => {
+    expect(place(trigger(100), viewport, { width: 200, height: 200 }, 4, 8, scale)).toEqual(
+      place(trigger(100), viewport, { width: 200, height: 200 }),
+    );
+  });
   it("opens below when it fits", () => {
     const p = place(trigger(100), viewport, { width: 200, height: 200 });
     expect(p).toMatchObject({ side: "below", top: 138, left: 100, minWidth: 200 });
