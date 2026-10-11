@@ -141,9 +141,6 @@ pub(crate) fn dismiss_at(database: &Path, run_id: i64) -> Result<(), AppError> {
         [run_id],
     )
     .map_err(sql)?;
-    // The change-counter trigger on `runs` watches status and parameters only.
-    tx.execute("UPDATE trace_revision SET value=value+1 WHERE id=1", [])
-        .map_err(sql)?;
     tx.commit().map_err(sql)
 }
 

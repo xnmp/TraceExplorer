@@ -55,7 +55,41 @@ const COUNTED_TABLES: [(&str, &[&str]); 6] = [
     ("image_folder_contexts", &["INSERT", "UPDATE", "DELETE"]),
 ];
 
-fn counter_triggers() -> Vec<(String, String)> {
+/// Further inputs of the index with explicitly named triggers. The existing
+/// `trace_revision_runs_update` keeps its old column list in databases that
+/// already have it, and `CREATE TRIGGER IF NOT EXISTS` cannot replace it, so
+/// later inputs get triggers of their own. A trigger is installed only once its
+/// table exists; a later open installs the rest.
+/// (name, event, table)
+const EXTRA_COUNTED: [(&str, &str, &str); 4] = [
+    // Dismissal and the evidence behind `TraceNode::dismissable`.
+    ("trace_revision_runs_evidence_update", "UPDATE OF result_details,dismissed_at", "runs"),
+    ("trace_revision_image_service_operations_insert", "INSERT", "image_service_operations"),
+    ("trace_revision_image_service_operations_update", "UPDATE", "image_service_operations"),
+    ("trace_revision_image_service_operations_delete", "DELETE", "image_service_operations"),
+];
+
+fn counter_triggers(connection: &Connection) -> Result<Vec<(String, String)>, AppError> {
+    let mut triggers = base_counter_triggers();
+    for (name, event, table) in EXTRA_COUNTED {
+        let exists: bool = connection
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1)",
+                [table],
+                |row| row.get(0),
+            )
+            .map_err(sql)?;
+        if exists {
+            triggers.push((
+                name.to_owned(),
+                format!("CREATE TRIGGER IF NOT EXISTS {name} AFTER {event} ON {table} BEGIN UPDATE trace_revision SET value=value+1 WHERE id=1; END;"),
+            ));
+        }
+    }
+    Ok(triggers)
+}
+
+fn base_counter_triggers() -> Vec<(String, String)> {
     COUNTED_TABLES
         .iter()
         .flat_map(|(table, events)| {
@@ -80,7 +114,7 @@ fn counter_triggers() -> Vec<(String, String)> {
 /// triggers, so `user_version` is unchanged. Checked read-only first so an
 /// ordinary connection never takes a write lock.
 pub(super) fn ensure_change_counter(connection: &Connection) -> Result<(), AppError> {
-    let triggers = counter_triggers();
+    let triggers = counter_triggers(connection)?;
     let names: Vec<&str> = triggers.iter().map(|(name, _)| name.as_str()).collect();
     let installed: i64 = batched(
         connection,
@@ -3048,6 +3082,85 @@ mod tests {
         assert_eq!(truncated.chars().count(), MAX_PROMPT_CHARS);
         assert!(long.starts_with(&truncated));
         assert_eq!(truncate_prompt(""), "");
+    }
+
+    #[test]
+    fn index_inputs_beyond_status_and_parameters_change_the_counter() {
+        let f = fixture();
+        let source = image(&f.folder.join("source.png"), b"source");
+        let run = uncertain_run(&f, "openai.image.edit", vec![input(&source)]);
+        let connection = connection_at(&f.db).unwrap();
+        let counter = || -> i64 {
+            connection
+                .query_row("SELECT value FROM trace_revision", [], |row| row.get(0))
+                .unwrap()
+        };
+        let token = || components_at(&f.db, &f.folder, 0).unwrap().token;
+        let changes = |what: &str, act: &dyn Fn()| {
+            let (before_counter, before_token) = (counter(), token());
+            act();
+            assert!(counter() > before_counter, "{what}: counter");
+            assert_ne!(token(), before_token, "{what}: token");
+        };
+        changes("result_details", &|| {
+            connection
+                .execute("UPDATE runs SET result_details='{}' WHERE id=?1", [run])
+                .unwrap();
+        });
+        changes("operation link insert", &|| {
+            connection
+                .execute(
+                    "INSERT INTO image_service_operations(operation_id,run_id,job_id,request_digest,body) VALUES ('op',?1,1,'d','{}')",
+                    [run],
+                )
+                .unwrap();
+        });
+        changes("operation link update", &|| {
+            connection
+                .execute("UPDATE image_service_operations SET body='{\"output\":null}' WHERE run_id=?1", [run])
+                .unwrap();
+        });
+        changes("operation link delete", &|| {
+            connection
+                .execute("DELETE FROM image_service_operations WHERE run_id=?1", [run])
+                .unwrap();
+        });
+        changes("dismissal", &|| dismiss::dismiss_at(&f.db, run).unwrap());
+    }
+
+    #[test]
+    fn an_older_database_gains_the_evidence_triggers_idempotently() {
+        let f = fixture();
+        let a = image(&f.folder.join("a.png"), b"a");
+        let b = image(&f.folder.join("b.png"), b"b");
+        record(&f, serde_json::json!({}), &[&a], &b);
+        let names: Vec<&str> = EXTRA_COUNTED.iter().map(|(name, _, _)| *name).collect();
+        let installed = || -> i64 {
+            let connection = connection_at(&f.db).unwrap();
+            names
+                .iter()
+                .map(|name| {
+                    connection
+                        .query_row(
+                            "SELECT count(*) FROM sqlite_master WHERE type='trigger' AND name=?1",
+                            [name],
+                            |row| row.get::<_, i64>(0),
+                        )
+                        .unwrap()
+                })
+                .sum()
+        };
+        assert_eq!(installed(), names.len() as i64);
+        {
+            let connection = connection_at(&f.db).unwrap();
+            for name in &names {
+                connection
+                    .execute_batch(&format!("DROP TRIGGER {name};"))
+                    .unwrap();
+            }
+        }
+        assert_eq!(installed(), names.len() as i64, "reopening installs them");
+        assert_eq!(installed(), names.len() as i64, "and again is a no-op");
     }
 
     #[test]
