@@ -16,7 +16,7 @@
   import type { ComponentData } from "./folder-session.svelte";
   import type { GraphScene } from "./graph-commit";
   import { cachedLayout, computeLayout, layoutNow } from "./layout-client";
-  import { captureGraph, playGraph, prefersReducedMotion, zoomOf } from "./motion";
+  import { captureGraph, carriesMotion, playGraph, prefersReducedMotion, zoomOf } from "./motion";
   import { nodeTitle } from "./node-target";
   import TraceTile from "./TraceTile.svelte";
 
@@ -118,7 +118,7 @@
       // Initial cached/inline geometry is already committed; report it after its tiles mount.
       void tick().then(() => {
         if (!canvas || !scene.isCurrent()) return;
-        if (!mounted && pinned && !prefersReducedMotion()) {
+        if (!mounted && pinned && !prefersReducedMotion() && !carriesMotion(canvas)) {
           const before = captureGraph(canvas);
           const cover = attached?.nodes.get(pinned.key);
           if (cover) {
@@ -150,7 +150,7 @@
     void tick().then(() => {
       if (current !== plays || !scene.isCurrent()) return;
       if (before && canvas) running = playGraph(canvas, before, layout.orientation);
-      else if (firstPinned && canvas && pinned && !prefersReducedMotion()) {
+      else if (firstPinned && canvas && pinned && !prefersReducedMotion() && !carriesMotion(canvas)) {
         const snapshot = captureGraph(canvas), cover = attached?.nodes.get(pinned.key);
         if (cover) running = playGraph(canvas, { ...snapshot, tiles: new Map(), routeIds: new Map(), routes: new Map(), junctions: new Map() }, "down", { key: pinned.key, box: { ...cover, fading: null } });
       }

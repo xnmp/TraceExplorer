@@ -89,6 +89,14 @@ function measureTiles(canvas: HTMLElement): Map<string, { element: HTMLElement; 
   return tiles;
 }
 
+/**
+ * Whether motion is already carrying this graph's tiles. A band reopened while its closing copy was
+ * still fading in is resumed by the grid from that copy's displayed geometry; the graph must not
+ * restart them from the cover.
+ */
+export const carriesMotion = (canvas: HTMLElement): boolean => canvas.getAnimations({ subtree: true }).some((animation) =>
+  animation.playState === "running" && animation.effect?.getTiming().iterations !== Infinity);
+
 /** The canvas's displayed size (mid-animation included), in its own pixels. */
 function canvasSize(canvas: HTMLElement): { width: number; height: number } {
   const style = getComputedStyle(canvas);

@@ -520,3 +520,34 @@ test.describe("new tiles arrive from their parents' side", () => {
     expect(await uncaught(page)).toEqual([]);
   });
 });
+
+test("reopening a stack mid-close continues each tile from where its closing copy is displayed", async ({ page }) => {
+  await openView(page, 900, "", false);
+  const village = page.locator('section[aria-label="village"]');
+  await village.locator("[data-stack-toggle]").click(); await settle(page);
+  const child = await key(page, "daylight");
+  await holdScriptedAnimations(page);
+  try {
+    await village.getByRole("button", { name: "Close stack" }).click();
+    await page.waitForFunction(() => !!document.querySelector("[data-grid-ghost]"));
+    // Both the closing copy and the reopened tile report what is displayed: position and opacity down the ancestor chain.
+    const displayed = (selector: string) => page.evaluate((selector) => {
+      const element = document.querySelector<HTMLElement>(selector)!;
+      let opacity = 1;
+      for (let at: Element | null = element; at && at !== document.body; at = at.parentElement) opacity *= Number(getComputedStyle(at).opacity);
+      const rect = element.getBoundingClientRect();
+      return { x: rect.left, y: rect.top, opacity };
+    }, selector);
+    // Seek the closing motion 40ms in; every held animation is then at a known time.
+    await page.evaluate(() => { for (const animation of (window as any).__heldAnimations as Animation[]) if (animation.playState !== "idle") animation.currentTime = 40; });
+    const closing = await displayed(`[data-ghost-tile-key="${child}"]`);
+    await village.locator("[data-stack-toggle]").click();
+    await page.waitForFunction((child) => !!document.querySelector(`[data-grid-band] [data-tile-key="${child}"]`), child);
+    // Held at the start of the reopening motion: nothing has advanced yet.
+    const reopened = await displayed(`[data-grid-band] [data-tile-key="${child}"]`);
+    expect(Math.abs(reopened.x - closing.x), "x").toBeLessThan(1.5);
+    expect(Math.abs(reopened.y - closing.y), "y").toBeLessThan(1.5);
+    expect(Math.abs(reopened.opacity - closing.opacity), "opacity").toBeLessThan(0.05);
+    expect(await uncaught(page)).toEqual([]);
+  } finally { await releaseScriptedAnimations(page); }
+});
