@@ -123,6 +123,9 @@
   let dropResult = $state(0);
   let feedbackLimit = $state(8);
   const visibleDropIssues = $derived(dropIssues.slice(0, feedbackLimit));
+  // Pagination limits visual clutter, while every result remains in the atomic announcement.
+  const remainingDropIssueText = $derived(dropIssues.slice(feedbackLimit)
+    .map((issue) => `${issue.path ? basename(issue.path) : "Invalid path"}: ${issue.message}`).join(". "));
   const intake = createImageInputIntake({
     getInputs: () => images,
     inspect: async (paths) => {
@@ -330,6 +333,7 @@
               {#if visibleDropIssues.length}
                 <ul>{#each visibleDropIssues as issue}<li><span title={issue.path ?? undefined}>{issue.path ? basename(issue.path) : "Invalid path"}</span>: {issue.message}</li>{/each}</ul>
               {/if}
+              {#if remainingDropIssueText}<span class="announcement-overflow">{remainingDropIssueText}</span>{/if}
             {/key}
           </div>
           {#if dropIssues.length > feedbackLimit}
@@ -400,6 +404,7 @@
   .drop-feedback { font-size: 12px; color: var(--text-secondary); overflow-wrap: anywhere; }
   .drop-feedback p { margin: 0; }
   .drop-feedback ul { margin: 4px 0 0; padding-left: 16px; }
+  .announcement-overflow { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
   .strip { display: flex; gap: 8px; margin: 0; padding: 2px 2px 6px; list-style: none; overflow-x: auto; }
   .strip:focus-visible { outline: 2px solid var(--focus-stroke-outer); outline-offset: 1px; }
   .input-card { position: relative; flex: 0 0 96px; display: flex; flex-direction: column; gap: 2px; padding: 6px; border: 1px solid var(--control-stroke); border-radius: var(--radius-sm); background: var(--control-fill); }

@@ -18,6 +18,7 @@ interface IntakeOptions {
   readonly commit: (result: ImageInputMergeResult) => void;
   readonly blockedReason: () => string | null;
   readonly onPendingChange: (pending: boolean) => void;
+  /** Combined results since the last IO boundary, for one atomic live-region update. */
   readonly onFeedback: (addedPaths: readonly string[], issues: readonly ImageInputIntakeIssue[]) => void;
 }
 interface Batch {
@@ -41,6 +42,12 @@ export function createImageInputIntake(options: IntakeOptions) {
 
   async function drain(): Promise<void> {
     running = true;
+    let feedbackAdded: string[] = [], feedbackIssues: ImageInputIntakeIssue[] = [];
+    let hasFeedback = false;
+    const flushFeedback = () => {
+      if (!disposed && hasFeedback) options.onFeedback(feedbackAdded, feedbackIssues);
+      feedbackAdded = []; feedbackIssues = []; hasFeedback = false;
+    };
     try {
       while (!disposed && queue.length) {
         const batch = queue.shift()!;
@@ -56,7 +63,11 @@ export function createImageInputIntake(options: IntakeOptions) {
           let descriptions: readonly ImageInput[] = [];
           // Once full, no inspection is necessary to explain the remaining eligible files.
           if (hasImageInputCapacity(options.getInputs().length)) {
-            try { descriptions = await options.inspect(preflight.paths); }
+            try {
+              const inspection = options.inspect(preflight.paths);
+              flushFeedback();
+              descriptions = await inspection;
+            }
             catch (cause) {
               const error = cause instanceof Error ? cause.message : String(cause);
               descriptions = preflight.paths.map((path) => ({ path, error }));
@@ -71,11 +82,14 @@ export function createImageInputIntake(options: IntakeOptions) {
           added.push(...result.addedPaths);
           issues.push(...result.issues);
         }
-        if (!disposed) options.onFeedback(added, issues);
+        for (const path of added) feedbackAdded.push(path);
+        for (const issue of issues) feedbackIssues.push(issue);
+        hasFeedback = true;
         batch.resolve();
         current = null;
       }
     } finally {
+      flushFeedback();
       running = false;
       setPending(false);
     }

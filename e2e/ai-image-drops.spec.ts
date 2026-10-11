@@ -51,6 +51,37 @@ for (const reason of ["duplicate", "unsupported", "unreadable"] as const) {
   });
 }
 
+for (const rejectedPaths of [["/one.gif", "/two.gif"], Array.from({ length: 9 }, (_, i) => `/rejected-${i}.gif`)]) {
+  test(`queued drops announce every result after a held inspection completes: ${rejectedPaths.length} rejections`, async ({ page }) => {
+    await openEmpty(page);
+    const [warm] = await inputs(page, ["warm"]);
+    const feedback = dialog(page).locator('[aria-live="polite"]');
+    await expect(feedback).toHaveCount(1);
+    await expect(feedback).toHaveAttribute("aria-atomic", "true");
+    const announcements = await watchAnnouncements(feedback);
+    await page.evaluate((warm) => {
+      const backend = (window as any).trace.backend;
+      backend.symlinkInput("/a.png", warm);
+      backend.holdInputs();
+    }, warm);
+    await dialog(page).locator(".inputs").scrollIntoViewIfNeeded();
+    // Delivery awaits intake completion; retain promises without blocking the release step.
+    await page.evaluate((rejectedPaths) => {
+      (window as any).pendingDrops = ["/a.png", ...rejectedPaths].map((path) =>
+        (window as any).trace.dropFiles(".ai-image-overlay .inputs", [path], "pane"));
+    }, rejectedPaths);
+    await expect(dialog(page).getByText("Reading input images…", { exact: true })).toBeVisible();
+    expect(await announcements()).toEqual([]);
+    await page.evaluate(() => (window as any).trace.backend.releaseInputs());
+    expect(await page.evaluate(() => Promise.all((window as any).pendingDrops))).toEqual(Array(rejectedPaths.length + 1).fill("delivered"));
+    await expect(cards(page)).toHaveCount(1);
+    await expect(cards(page)).toHaveAttribute("data-input-path", "/a.png");
+    for (const result of ["1 input added · 1 of 8", ...rejectedPaths.map((path) => `${path.slice(1)}: Unsupported format. Use PNG, JPEG or WebP`)]) {
+      await expect.poll(async () => (await announcements()).some((message) => message.includes(result))).toBe(true);
+    }
+  });
+}
+
 test("success after removing an input announces even when the previous success text is identical", async ({ page }) => {
   await openEmpty(page);
   const [warm, cool] = await inputs(page, ["warm", "cool"]);
@@ -75,6 +106,7 @@ test("symlink parent traversal accepts distinct files and rejects only inspected
   const [warm, cool] = await inputs(page, ["warm", "cool"]);
   await page.evaluate((cool) => {
     const backend = (window as any).trace.backend;
+    backend.directoryInput("/other/subdir");
     backend.symlinkInput("/pictures/link", "/other/subdir");
     backend.symlinkInput("/other/warm.png", cool);
   }, cool);
@@ -217,7 +249,7 @@ test("unreadable drops leave an empty form in generate mode and external valid d
   await drop(page, ["/pictures/missing.png"], "external");
   await expect(cards(page)).toHaveCount(0);
   await expect(dialog(page).getByRole("heading", { name: "Generate image with AI" })).toBeVisible();
-  await expect(dialog(page).locator('[aria-live="polite"]')).toContainText("missing.png: Cannot read image: Path not found");
+  await expect(dialog(page).locator('[aria-live="polite"]')).toContainText("missing.png: Cannot read image: Path not found: No such file or directory (os error 2)");
   const delivered = await inputs(page, ["warm", "cool"]);
   await drop(page, delivered, "external");
   await expect(cards(page)).toHaveCount(2);

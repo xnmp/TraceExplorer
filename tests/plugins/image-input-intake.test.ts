@@ -26,6 +26,18 @@ function fixture(initial: readonly ImageInput[] = []) {
 }
 
 describe("per-form image input intake", () => {
+  it("combines queued completions into one feedback update without losing any drop result", async () => {
+    const f = fixture();
+    const completions = [f.intake.enqueue(["/a.png"]), f.intake.enqueue(["/one.gif"]), f.intake.enqueue(["/two.gif"])];
+    expect(f.feedback).toEqual([]);
+    f.reads[0].result.resolve(described(["/a.png"]));
+    await Promise.all(completions);
+    expect(f.feedback).toHaveLength(1);
+    expect(f.feedback[0].added).toEqual(["/a.png"]);
+    expect(f.feedback[0].issues.map((issue) => issue.path)).toEqual(["/one.gif", "/two.gif"]);
+    expect(imageInputIntakeStatus(f.feedback[0].added.length, f.inputs().length, f.feedback[0].issues.length))
+      .toBe("1 input added · 1 of 8. 2 files skipped");
+  });
   it("announces the resulting input count after consecutive equal-size successful drops", async () => {
     const f = fixture();
     const messages: string[] = [];
@@ -108,7 +120,7 @@ describe("per-form image input intake", () => {
     await Promise.all([first, second]);
     expect(f.reads).toHaveLength(1);
     expect(f.inputs()).toHaveLength(1);
-    expect(f.feedback[1].issues[0].message).toBe("Already an input");
+    expect(f.feedback[0].issues[0].message).toBe("Already an input");
   });
   it("keeps rejection-only batch feedback FIFO while an earlier inspection is pending", async () => {
     const f = fixture();
@@ -117,7 +129,8 @@ describe("per-form image input intake", () => {
     f.reads[0].result.resolve(described(["/a.png"]));
     await Promise.all([first, second]);
     expect(f.feedback[0].added).toEqual(["/a.png"]);
-    expect(f.feedback[1].issues.map((issue) => issue.code)).toEqual(["unsupported-format", "invalid-path"]);
+    expect(f.feedback).toHaveLength(1);
+    expect(f.feedback[0].issues.map((issue) => issue.code)).toEqual(["unsupported-format", "invalid-path"]);
     expect(f.pending).toEqual([true, false]);
   });
   it("keeps independent forms' queues and disposal isolated", async () => {
