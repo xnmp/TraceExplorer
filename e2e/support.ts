@@ -70,3 +70,12 @@ export const rendered = (page: Page, attribute?: "tone", value?: string): Promis
     .filter((element) => !attribute || element.dataset[attribute] === value)
     .map((element) => lookup.get(element.dataset.tileKey!) ?? element.dataset.tileKey!).sort();
 }, { attribute, value });
+
+/** Opens a themed Select and clicks the option whose label or `data-value` is `choice`. */
+export async function pickOption(combobox: Locator, choice: string): Promise<void> {
+  await combobox.click();
+  const page = combobox.page();
+  const option = page.locator(`[role="option"][data-value=${JSON.stringify(choice)}]`).or(page.getByRole("option", { name: choice, exact: true })).first();
+  await option.click();
+  await expect(combobox).toHaveAttribute("aria-expanded", "false");
+}

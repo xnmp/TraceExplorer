@@ -26,8 +26,8 @@ test("a Trace selection of listed, subfolder and unsaved images arrives whole, i
   expect(await cards(page)).toEqual([["Image 1", "warm.png"], ["Image 2", "merge.png"], ["Image 3", "mist.png"], ["Image 4", "village.png"]]);
   await expect(dialog(page).getByText("References:")).toHaveCount(0);
   await expect(dialog(page).getByLabel("Edit target")).toHaveCount(0);
-  await expect(dialog(page).getByRole("combobox", { name: "Aspect ratio" })).toHaveValue("keep");
-  await expect(dialog(page).getByRole("option", { name: "Keep (Image 1)" })).toHaveCount(1);
+  await expect(dialog(page).getByRole("combobox", { name: "Aspect ratio" })).toHaveAttribute("data-value", "keep");
+  await expect(dialog(page).getByRole("combobox", { name: "Aspect ratio" })).toHaveText("Keep (Image 1)");
   if (SHOTS) { await settle(page); await dialog(page).locator(".plugin-dialog").screenshot({ path: `${SHOTS}/edit-inputs-4.png` }); }
 
   // Removing Image 3 renumbers the rest.

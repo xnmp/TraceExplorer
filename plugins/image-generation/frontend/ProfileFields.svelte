@@ -1,7 +1,8 @@
 <script lang="ts">
-  import Select from '../../../integration/ui/Select.svelte';
+  import Select, { type SelectOption } from '../../../integration/ui/Select.svelte';
   import type { ImageProfile } from './domain';
   let { profile, disabled, saved, onchange, oncredential }: { profile: ImageProfile; disabled: boolean; saved: boolean; onchange: (profile: ImageProfile) => void; oncredential: (key: string | null) => Promise<void> } = $props();
+  const CREDENTIAL_SOURCES: SelectOption[] = [{ value: 'none', label: 'No credential' }, { value: 'environment', label: 'Environment variable' }, { value: 'secret', label: 'Saved OS credential', disabled: true }];
   let key = $state('');
   let keyVisible = $state(false);
   async function credential(value: string | null) { const submitted = value; key = ''; keyVisible = false; await oncredential(submitted); }
@@ -18,9 +19,7 @@
     <p class="note">Include the Images resource, usually /images. The adapter appends /generations or /edits.</p>
     <label>Image model ID<input value={profile.defaultModel} maxlength="256" placeholder="Model supported by this API" oninput={e => onchange({ ...profile, defaultModel: e.currentTarget.value })} /></label>
     <label class="checkbox"><input type="checkbox" checked={profile.allowInsecureHttp} onchange={e => onchange({ ...profile, allowInsecureHttp: e.currentTarget.checked })} />Allow insecure HTTP for this connection</label>
-    <label>Credential source<Select value={profile.credential.kind} onchange={e => { const kind = e.currentTarget.value; if (kind === 'none') onchange({ ...profile, credential: { kind: 'none' } }); else if (kind === 'environment') onchange({ ...profile, credential: { kind: 'environment', name: 'OPENAI_API_KEY' } }); }}>
-      <option value="none">No credential</option><option value="environment">Environment variable</option><option value="secret" disabled>Saved OS credential</option>
-    </Select></label>
+    <label>Credential source<Select aria-label="Credential source" value={profile.credential.kind} options={CREDENTIAL_SOURCES} onchange={kind => { if (kind === 'none') onchange({ ...profile, credential: { kind: 'none' } }); else if (kind === 'environment') onchange({ ...profile, credential: { kind: 'environment', name: 'OPENAI_API_KEY' } }); }} /></label>
     {#if profile.credential.kind === 'environment'}
       <label>Environment variable name<input value={profile.credential.name} maxlength="128" placeholder="OPENAI_API_KEY" oninput={e => onchange({ ...profile, credential: { kind: 'environment', name: e.currentTarget.value } })} /></label>
       <p class="note">Read by the native provider from the app environment.</p>
