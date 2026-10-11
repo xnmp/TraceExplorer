@@ -5,6 +5,7 @@ import { traceThumbnails } from "./thumbnail-cache";
 import { promptTitles } from "./prompt-titles.svelte";
 import { tracePanes, isTraceTargetData } from "./view/pane-registry.svelte";
 import { disposeLayouts } from "./view/layout-client";
+import { forgetFolderSnapshots } from "./view/folder-session.svelte";
 import { subjectNode } from "./view/preview-subject";
 import { previewData } from "./view/preview-data.svelte";
 import TraceView from "./view/TraceView.svelte";
@@ -20,6 +21,7 @@ export const tracePlugin: Plugin = {
   enabledByDefault: true,
   deactivate: () => {
     disposeLayouts();
+    forgetFolderSnapshots();
     tracePanes.clear();
     traceFolderVisibility.clear();
     traceThumbnails.clear();

@@ -86,6 +86,8 @@ let nextSaveFailure: string | null = null;
 let inputFailures = 0;
 // Delay of the Preview-info queries, in ms: a native backend answers them over IPC, not within the same frame.
 let previewLatency = 0;
+// Delay of the folder index and component reads, in ms, like a native backend's IPC round trip.
+let folderLatency = 0;
 const titleCalls: number[] = [];
 const titleWaiters = new Map<number, (title: string) => void>();
 
@@ -145,25 +147,26 @@ configureBackend({
     calls.push({ method, params: structuredClone(params) });
     const reply = (value: unknown) => Promise.resolve(value as T);
     const later = (value: unknown) => previewLatency ? new Promise<T>((resolve) => setTimeout(() => resolve(value as T), previewLatency)) : reply(value);
+    const folderReply = (value: unknown) => folderLatency ? new Promise<T>((resolve) => setTimeout(() => resolve(value as T), folderLatency)) : reply(value);
     const token = String(version);
     switch (method) {
       // MIRROR answers with the same Trace: another folder whose components reuse the same ids.
       case "folder_has_trace": return reply(params.directory === DIRECTORY || params.directory === MIRROR);
       case "trace_folder_components": {
         const all = componentsOf().map((component) => component.summary);
-        return reply({ token, total: all.length, offset: params.offset, components: all.slice(params.offset) });
+        return folderReply({ token, total: all.length, offset: params.offset, components: all.slice(params.offset) });
       }
       case "trace_folder_members": {
-        if (params.token !== token) return reply({ stale: true, total: 0, offset: 0, members: [] });
+        if (params.token !== token) return folderReply({ stale: true, total: 0, offset: 0, members: [] });
         const members = componentsOf().flatMap((component) => component.nodes
           .filter((node) => node.scope === "current" && !node.temporary && node.path)
           .map((node) => ({ path: node.path!, componentId: component.id, key: node.key })));
-        return reply({ stale: false, total: members.length, offset: params.offset, members: members.slice(params.offset) });
+        return folderReply({ stale: false, total: members.length, offset: params.offset, members: members.slice(params.offset) });
       }
       case "trace_component_nodes": {
-        if (params.token !== token) return reply({ stale: true, total: 0, offset: 0, nodes: [] });
+        if (params.token !== token) return folderReply({ stale: true, total: 0, offset: 0, nodes: [] });
         const nodes = componentsOf().find((component) => component.id === params.componentId)?.nodes ?? [];
-        return reply({ stale: false, total: nodes.length, offset: params.offset, nodes: nodes.slice(params.offset) });
+        return folderReply({ stale: false, total: nodes.length, offset: params.offset, nodes: nodes.slice(params.offset) });
       }
       case "trace_run_details": return later((params.runIds as number[]).map((id) => {
         const node = state.nodes.find((item) => item.runId === id);
@@ -320,6 +323,7 @@ export const backend = {
   holdSaves() { holdSaves = true; },
   /** Answers run details, revision status and per-image traces after `ms`. */
   setPreviewLatency(ms: number) { previewLatency = ms; },
+  setFolderLatency(ms: number) { folderLatency = ms; },
   releaseSaves() { holdSaves = false; const pending = heldSaves; heldSaves = []; pending.forEach((run) => run()); },
   reset() { previewLatency = 0; pickerResult = undefined; nextSaveFailure = null; inputFailures = 0; state = scenario(); version += 1; calls.length = 0; },
 };

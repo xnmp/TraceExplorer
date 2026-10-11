@@ -267,7 +267,8 @@ test.describe("wide layouts", () => {
     await settle(page);
     expect(await flow()).toBe("right");
     // Another folder whose components happen to have the same ids remembers nothing: the plain rule lays it out top to bottom.
-    await page.evaluate(() => { (document.querySelector("[data-testid=trace-view]") as any).__marked = true; });
+    // (A folder shown before returns as it was last shown, orientation included; forget that so only this folder's memory is in play.)
+    await page.evaluate(() => { (window as any).trace.forgetFolders(); (document.querySelector("[data-testid=trace-view]") as any).__marked = true; });
     await visit("/pictures-mirror");
     expect(await page.evaluate(() => (document.querySelector("[data-testid=trace-view]") as any).__marked), "same view instance").toBe(true);
     expect(await flow()).toBe("down");

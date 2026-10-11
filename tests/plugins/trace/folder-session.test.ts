@@ -1,6 +1,6 @@
 import "./svelte-host";
-import { describe, it, expect, vi } from "vitest";
-import { createFolderSession } from "$lib/plugins/trace/view/folder-session.svelte";
+import { beforeEach, describe, it, expect, vi } from "vitest";
+import { createFolderSession, forgetFolderSnapshots } from "$lib/plugins/trace/view/folder-session.svelte";
 import type { TraceBackend } from "$lib/plugins/trace/view/backend";
 import type { ComponentNodesPage, FolderComponentsPage, FolderMembersPage } from "$lib/api/trace";
 import type { TraceNode } from "$lib/domain/trace-graph/model";
@@ -33,6 +33,9 @@ function fakeBackend(over: Partial<TraceBackend> = {}) {
 }
 
 describe("folder session", () => {
+  // Each case is one view's session; what earlier cases loaded must not seed it.
+  beforeEach(() => forgetFolderSnapshots());
+
   it("concatenates component and member pages across offsets", async () => {
     const backend = fakeBackend({
       components: vi.fn(async (_d, offset) => offset === 0 ? compPage("t", ["c1", "c2"], 3) : compPage("t", ["c3"], 3, 2)),
@@ -314,5 +317,84 @@ describe("folder session", () => {
     await flush();
     expect(session.componentOf("/f/a.png")).toEqual({ componentId: "c1", key: "a" });
     expect(session.componentOf("/f/none.png")).toBeNull();
+  });
+});
+
+describe("returning to a folder (a Trace tab shown again)", () => {
+  beforeEach(() => forgetFolderSnapshots());
+
+  async function loaded(dir: string) {
+    const first = createFolderSession(fakeBackend());
+    first.setDirectory(dir);
+    await flush();
+    await first.ensure("c1");
+    first.dispose();
+  }
+
+  it("shows the folder's last data at once, then revalidates and replaces it", async () => {
+    await loaded("/f");
+    const gate = deferred<FolderComponentsPage>();
+    const backend = fakeBackend({
+      components: vi.fn(() => gate.promise),
+      members: vi.fn(async () => memPage([["/f/a.png", "c1", "a"], ["/f/b.png", "c1", "b"]])),
+      nodes: vi.fn(async () => nodePage([node("a", 0), node("b", 1, ["a"])])),
+    });
+    const second = createFolderSession(backend);
+    second.setDirectory("/f");
+    // Before any reply: no "Loading Trace…", the previous graph is shown.
+    expect(second.status).toBe("ready");
+    expect(second.index?.components.map((c) => c.id)).toEqual(["c1"]);
+    expect(second.components.get("c1")?.nodes.map((n) => n.key)).toEqual(["a"]);
+    expect(second.componentOf("/f/a.png")).toEqual({ componentId: "c1", key: "a" });
+    expect(backend.components).toHaveBeenCalledTimes(1);
+    // A component the view shows counts as loaded until the new index arrives.
+    await second.ensure("c1");
+    expect(backend.nodes).not.toHaveBeenCalled();
+
+    gate.resolve(compPage("t2", ["c1"]));
+    await flush(); await flush();
+    expect(second.index?.token).toBe("t2");
+    expect(second.componentOf("/f/b.png")).toEqual({ componentId: "c1", key: "b" });
+    expect(second.components.get("c1")?.nodes.map((n) => n.key)).toEqual(["a", "b"]);
+  });
+
+  it("never shows one folder's data for another folder", async () => {
+    await loaded("/f");
+    const second = createFolderSession(fakeBackend({ components: vi.fn(() => new Promise<FolderComponentsPage>(() => {})) }));
+    second.setDirectory("/g");
+    expect(second.status).toBe("loading");
+    expect(second.index).toBeNull();
+    expect(second.components.size).toBe(0);
+  });
+
+  it("keeps the remembered data shown when revalidating fails, and reports why", async () => {
+    await loaded("/f");
+    const second = createFolderSession(fakeBackend({ components: vi.fn(async () => { throw new Error("backend went away"); }) }));
+    second.setDirectory("/f");
+    await flush();
+    expect(second.status).toBe("ready");
+    expect(second.error).toBe("backend went away");
+    expect(second.components.get("c1")?.nodes.map((n) => n.key)).toEqual(["a"]);
+  });
+
+  it("does not remember what a disposed session loads afterwards", async () => {
+    const gate = deferred<FolderComponentsPage>();
+    const first = createFolderSession(fakeBackend({ components: vi.fn(() => gate.promise) }));
+    first.setDirectory("/f");
+    first.dispose();
+    gate.resolve(compPage("t", ["c1"]));
+    await flush();
+    const second = createFolderSession(fakeBackend({ components: vi.fn(() => new Promise<FolderComponentsPage>(() => {})) }));
+    second.setDirectory("/f");
+    expect(second.status).toBe("loading");
+    expect(second.index).toBeNull();
+  });
+
+  it("forgets every folder when the plugin is disabled", async () => {
+    await loaded("/f");
+    forgetFolderSnapshots();
+    const second = createFolderSession(fakeBackend({ components: vi.fn(() => new Promise<FolderComponentsPage>(() => {})) }));
+    second.setDirectory("/f");
+    expect(second.status).toBe("loading");
   });
 });
