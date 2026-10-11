@@ -154,6 +154,43 @@ export interface Plugin {id: string; name: string; description: string; enabledB
  * `data-entry-path`; the host renders icons, thumbnails, selection and
  * keyboard behaviour exactly as in its Tiles view.
  */
+/** CSS px before host zoom (capability "fileTile"). */
+export interface TileGridMetrics {
+  /** Minimum cell width; actual columns share the available width equally. */
+  readonly cellWidth: number;
+  /** Allocated cell height, excluding the inter-row gap. */
+  readonly cellHeight: number;
+  /** Inter-cell gap on both axes. */
+  readonly gap: number;
+  /** Padding on each edge of the built-in grid. */
+  readonly gridPadding: number;
+}
+/** `ui/file-tile` (capability "fileTile"): one `role="gridcell"`; the plugin supplies grid/row roles and owns keyboard navigation and selection. */
+export interface FileTileProps {
+  entry: FileEntry;
+  selected: boolean;
+  /** Roving tab stop (0 when true, otherwise -1); does not move DOM focus. */
+  focused?: boolean;
+  /** Optional one-based column index, supplied by the plugin's layout. */
+  column?: number;
+  onfocus?: (event: FocusEvent) => void;
+  /** Forwarded unchanged; the plugin owns navigation. */
+  onkeydown?: (event: KeyboardEvent) => void;
+  videoUnavailable?: boolean;
+  onvideounavailable?: (entry: FileEntry) => void;
+  /** Explicit preset, else the enclosing pane's folder size, else the global setting. */
+  size?: TileSizePreset;
+  onselect: (entry: FileEntry, event: MouseEvent) => void;
+  /** Double-click. Keyboard activation belongs to the plugin's grid. */
+  onopen: (entry: FileEntry) => void;
+  onmenu: (entry: FileEntry, event: MouseEvent) => void;
+}
+/** Shape of `sdk.modules["ui/file-tile"]`. */
+export interface FileTileModule {
+  readonly default: Component<FileTileProps>;
+  /** Omitted or unknown preset: medium. */
+  readonly tileGridMetrics: (size?: TileSizePreset) => TileGridMetrics;
+}
 export interface FileTilesProps {
   entries: readonly FileEntry[];
   /** Selected entry paths. */
@@ -174,7 +211,7 @@ export interface RuntimeSDK {
   /** For example `fileViews`, `previewInfo`, `previewTargets`, `blobWorkers`, `fileTiles`, `tileSize`, `jobRetry`, `jobReveal`, `jobCost`, `fileViewReveal`. */
   capabilities?: readonly string[];
   svelteVersion: string;
-  /** Shared host modules: `svelte`, `ui/modal`, `ui/image-editor`, and `ui/file-tiles` where `fileTiles` is announced. */
+  /** Shared host modules: `svelte`, `ui/modal`, `ui/image-editor`, `ui/file-tiles` where `fileTiles` is announced, and `ui/file-tile` where `fileTile` is. */
   modules: Record<string, Record<string, unknown>>;
   thumbnailData(path: string, size?: number): Promise<ApiResult<string>>;
   pickSaveFile(options: {directory: string; filename: string; title: string}): Promise<string | null>;
