@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { locateTarget, type TargetIndex } from "$lib/plugins/trace/view/target-location";
+import { findLoadedNode, locateTarget, unresolvedTargetComponents, type TargetIndex } from "$lib/plugins/trace/view/target-location";
+import fixtures from "../../fixtures/folder-grouping.json";
+import { folderComponents } from "../../../e2e/harness/folder-snapshot";
 import type { TraceNode } from "$lib/domain/trace-graph/model";
 
 const node = (key: string): TraceNode => ({
@@ -61,5 +63,32 @@ describe("Preview target location", () => {
       .toMatchObject({ componentId: "right" });
     expect(locateTarget("a:9", "removed", index(["right"], { removed: ["a:9"], right: ["a:9"] })))
       .toMatchObject({ componentId: "right" });
+  });
+
+  it("resolves a Preview input in the subject's stack in two-chains", () => {
+    const groups = folderComponents(fixtures.find((fixture) => fixture.name === "two-chains")!.nodes as TraceNode[]);
+    const components = new Map(groups.map((group) => [group.id, { dag: { nodes: new Map(group.nodes.map((node) => [node.key, node])) } }]));
+    // Stack B loads first; Preview's saved subject is in A, then navigates to
+    // style (a different key shared by both stacks).
+    expect(findLoadedNode("a:1", components, "c:a:2")).toMatchObject({ componentId: "c:a:2" });
+    expect(findLoadedNode("a:1", components, "c:a:4")).toMatchObject({ componentId: "c:a:4" });
+    expect(findLoadedNode("absent", components, "c:a:2")).toBeNull();
+  });
+
+  it.each([{}, { right: ["a:9"] }])("waits for an unresolved issuing stack before using another copy (%j)", (own) => {
+    const pending = index(["left", "right", "unloaded"], { left: ["a:9"], ...own }, ["right"]);
+    expect(locateTarget("a:9", "right", pending)).toBe("unknown");
+    expect(unresolvedTargetComponents("a:9", "right", pending)).toEqual(["right"]);
+    const reloaded = index(["left", "right", "unloaded"], { left: ["a:9"], right: ["a:9"] });
+    expect(locateTarget("a:9", "right", reloaded)).toMatchObject({ componentId: "right" });
+    expect(unresolvedTargetComponents("a:9", "right", reloaded)).toEqual([]);
+    const replaced = index(["left", "right"], { left: ["a:9"], right: [] });
+    expect(locateTarget("a:9", "right", replaced)).toMatchObject({ componentId: "left" });
+  });
+
+  it("searches unloaded replacements only after the issuing stack no longer owns the target", () => {
+    expect(unresolvedTargetComponents("o:2:0", "old", index(["left", "right"], { left: [] }))).toEqual(["right"]);
+    expect(unresolvedTargetComponents("o:2:0", "left", index(["left", "right"], { left: [] }))).toEqual(["right"]);
+    expect(unresolvedTargetComponents("o:2:0", "old", index([], {}))).toEqual([]);
   });
 });

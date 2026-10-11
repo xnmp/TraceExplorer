@@ -40,10 +40,24 @@ test("Show image expands a collapsed component and focuses an unsaved Preview wi
 });
 
 test("Show image loads an offscreen component and omits cost when unavailable", async ({ page }) => {
-  await openView(page, undefined, "?many=25");
+  await openView(page, undefined, "?many=60");
   await generated(page, "m24", false);
+  const section = page.getByRole("region", { name: "m24", exact: true });
+  const componentId = await section.getAttribute("data-component");
+  expect(componentId).not.toBeNull();
+  await expect(page.locator("section.component[data-component]").first()).toHaveAttribute("data-component", componentId!);
+  await expect(await tile(page, "revealed")).toHaveCount(1);
+  // A newly published output ranks first natively. Put it beyond the view's
+  // near margin so Show image must load and mount its offscreen component.
+  await page.getByTestId("trace-view").evaluate((element) => { element.scrollTop = element.scrollHeight; });
+  await settle(page);
+  await expect(section).not.toBeInViewport();
   await expect(await tile(page, "revealed")).toHaveCount(0);
+  const nodeReads = () => page.evaluate((id) => (window as any).trace.backend.calls("trace_component_nodes")
+    .filter((call: { params: { componentId: string } }) => call.params.componentId === id).length, componentId);
+  const before = await nodeReads();
   await page.evaluate(() => (window as any).trace.showJob(71));
+  await expect.poll(nodeReads).toBeGreaterThan(before);
   await expect(page.getByTestId("preview-title")).toHaveText("revealed.png");
   await expect(await tile(page, "revealed")).toHaveAttribute("data-tone", "focus");
   await expect(await card(page, "revealed")).toBeFocused();

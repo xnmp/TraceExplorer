@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import fixtures from "../fixtures/folder-grouping.json";
-import { folderComponents, folderPage, isDirectFolderSeed, nativeStringOrder } from "../../e2e/harness/folder-snapshot";
+import { folderComponents, folderPage, isDirectFolderSeed, nativeStringOrder, type FolderNode } from "../../e2e/harness/folder-snapshot";
 import type { TraceNode } from "$lib/domain/trace-graph/model";
 
 describe("native folder grouping parity", () => {
@@ -56,5 +56,12 @@ describe("native folder grouping parity", () => {
     expect(folderPage(nodes, 0, 1_000).length).toBeLessThan(nodes.length);
     expect(collect(nodes, 1_000)).toEqual(nodes);
     expect(folderPage(nodes, nodes.length + 10, 1_000)).toEqual([]);
+  });
+
+  it("keeps a foreign draft external when its previous folder reported current scope", () => {
+    const draft: FolderNode = { ...output(2, []), path: "/managed/draft.png", temporary: true, contextDirectory: "/elsewhere" };
+    const groups = folderComponents([draft, output(3, [draft.key]), output(4, [draft.key])]);
+    expect(groups.map((group) => group.id)).toEqual(["c:o:4:0", "c:o:3:0"]);
+    expect(groups.every((group) => group.nodes[0].referenceBadge?.scope === "external")).toBe(true);
   });
 });

@@ -12,8 +12,9 @@ import type { JobCost, JobReveal, TileSizePreset } from "../../integration/plugi
 import { TILE_IMAGE_PX } from "./tile-presets";
 import { basename, joinPath, parentDir } from "$lib/domain/path";
 import StubFileTiles from "./StubFileTiles.svelte";
-import { folderComponents, folderPage, isDirectFolderSeed, nativeStringOrder } from "./folder-snapshot";
+import { folderComponents, folderPage, isDirectFolderSeed, nativeStringOrder, type FolderNode } from "./folder-snapshot";
 import { isLocalAbsolutePath } from "$lib/domain/target-location";
+import { withNativeRequestCapacity } from "./request-capacity";
 
 export const DIRECTORY = "/pictures";
 const TEMP = "/managed";
@@ -21,21 +22,21 @@ export const MIRROR = "/pictures-mirror";
 
 type Seed = { key: string; parents?: string[]; scope?: TraceNode["scope"]; temporary?: boolean; prompt?: string };
 let counter = 0;
-function make({ key, parents = [], scope = "current", temporary = false, prompt }: Seed): TraceNode {
+function make({ key, parents = [], scope = "current", temporary = false, prompt }: Seed): FolderNode {
   counter += 1;
   const path = temporary ? `${TEMP}/${key}.png` : scope === "current" ? `${DIRECTORY}/${key}.png` : scope === "subfolder" ? `${DIRECTORY}/refs/${key}.png` : `/elsewhere/${key}.png`;
   return {
     key: parents.length ? `o:${counter}:0` : `a:${counter}`, artifactId: counter, runId: parents.length ? counter : null, parents, path, scope,
     location: temporary ? "Unsaved" : scope === "current" ? `./${key}.png` : scope === "subfolder" ? `refs/${key}.png` : `/elsewhere/${key}.png`,
-    state: "present", temporary, discarded: false, earlierRevision: false, order: counter, prompt: prompt ?? `${key} prompt`,
+    state: "present", temporary, ...(temporary ? { contextDirectory: DIRECTORY } : {}), discarded: false, earlierRevision: false, order: counter, prompt: prompt ?? `${key} prompt`,
   };
 }
 
 /** Named scenario nodes; keys are resolved after creation so parents refer to real keys. */
-function scenario(): { nodes: TraceNode[]; names: Map<string, string> } {
+function scenario(): { nodes: FolderNode[]; names: Map<string, string> } {
   counter = 0;
   const names = new Map<string, string>();
-  const nodes: TraceNode[] = [];
+  const nodes: FolderNode[] = [];
   const add = (seed: Seed) => {
     const node = make({ ...seed, parents: (seed.parents ?? []).map((name) => names.get(name)!) });
     names.set(seed.key, node.key);
@@ -46,7 +47,7 @@ function scenario(): { nodes: TraceNode[]; names: Map<string, string> } {
   // references repeated across sections without disturbing the motion gym.
   const grouping = groupingFixtures.find((fixture) => fixture.name === query.get("grouping"));
   if (grouping) {
-    const fixtures = grouping.nodes as TraceNode[];
+    const fixtures = grouping.nodes as FolderNode[];
     for (const node of fixtures) {
       names.set(basename(node.path ?? node.key).replace(/\.png$/, ""), node.key);
       counter = Math.max(counter, node.artifactId ?? 0, node.runId ?? 0);
@@ -163,7 +164,7 @@ function jobSnapshot(jobId: number) {
     outputPath: node.path, error: null, ...(reveal ? { reveal } : {}), ...(cost ? { cost } : {}) };
 }
 
-configureBackend({
+configureBackend(withNativeRequestCapacity({
   invoke<T>(method: string, params: Record<string, any> = {}): Promise<T> {
     calls.push({ method, params: structuredClone(params) });
     const reply = (value: unknown) => Promise.resolve(value as T);
@@ -298,8 +299,8 @@ configureBackend({
         imageOperations.set(jobId, params.operationId ?? operationIdFor(jobId));
         state.names.set(`job-${jobId}`, key);
         state = { ...state, nodes: [...state.nodes, {
-          key, artifactId: null, runId, parents, path: null, scope: "current", location: "Generating",
-          state: "running", temporary: true, discarded: false, earlierRevision: false, order: 1_000_000_000_000 + runId, prompt: String(request.prompt),
+          key, artifactId: null, runId, parents, path: null, scope: directory === DIRECTORY ? "current" : "external", location: "Generating",
+          state: "running", temporary: true, contextDirectory: directory, discarded: false, earlierRevision: false, order: 1_000_000_000_000 + runId, prompt: String(request.prompt),
         }] };
         changed();
         return reply(jobId);
@@ -308,7 +309,7 @@ configureBackend({
       default: return Promise.reject(new Error(`Unexpected method ${method}`));
     }
   },
-});
+}));
 
 // `?fileTiles=1` simulates a host with the `ui/file-tiles` module; without it, an older SDK 2 host.
 const fileTiles = new URLSearchParams(globalThis.location?.search ?? "").has("fileTiles");
@@ -371,7 +372,7 @@ export const backend = {
     state.names.set(name, key);
     state = { ...state, nodes: [...state.nodes, {
       key, artifactId: null, runId: counter, parents: [state.names.get(parent)!], path: null, scope: "current", location: "Generating",
-      state: "running", temporary: true, discarded: false, earlierRevision: false, order: 1_000_000_000_000 + counter, prompt: `${name} prompt`,
+      state: "running", temporary: true, contextDirectory: DIRECTORY, discarded: false, earlierRevision: false, order: 1_000_000_000_000 + counter, prompt: `${name} prompt`,
     }] };
     changed();
     return key;
@@ -383,7 +384,7 @@ export const backend = {
     state.names.set(name, key);
     state = { ...state, nodes: [...state.nodes, {
       key, artifactId: null, runId: counter, parents: parents.map((parent) => state.names.get(parent)!), path: null, scope: "current", location: "Generating",
-      state: "running", temporary: true, discarded: false, earlierRevision: false, order: 1_000_000_000_000 + counter, prompt: `${name} prompt`,
+      state: "running", temporary: true, contextDirectory: DIRECTORY, discarded: false, earlierRevision: false, order: 1_000_000_000_000 + counter, prompt: `${name} prompt`,
     }] };
     changed();
     return key;

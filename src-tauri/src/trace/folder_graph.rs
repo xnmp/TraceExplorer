@@ -1855,6 +1855,9 @@ mod tests {
         for node in nodes {
             let run = node["runId"].as_i64();
             let temporary = node["temporary"].as_bool().unwrap();
+            let own_context = node["contextDirectory"]
+                .as_str()
+                .map_or(node["scope"] == "current", |directory| directory == "/pictures");
             let state = match node["state"].as_str().unwrap() {
                 "missing" => NodeState::Missing,
                 "unavailable" => NodeState::Unavailable,
@@ -1917,7 +1920,10 @@ mod tests {
                         },
                     },
                 );
-                if (node["scope"] == "current" || temporary)
+                // Private storage says nothing about folder ownership: only
+                // this folder's output context can seed a managed draft.
+                let owned_temporary = temporary && own_context;
+                if ((!temporary && node["scope"] == "current") || owned_temporary)
                     && state == NodeState::Present
                     && !earlier_revision
                     && !discarded
@@ -1927,7 +1933,7 @@ mod tests {
                         direct: !temporary,
                     });
                 }
-            } else if matches!(state, NodeState::Running | NodeState::Uncertain) {
+            } else if own_context && matches!(state, NodeState::Running | NodeState::Uncertain) {
                 facts.seeds.push(Seed::Placeholder { run: run.unwrap() });
             }
         }

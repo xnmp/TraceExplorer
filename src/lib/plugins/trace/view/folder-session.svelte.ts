@@ -12,6 +12,7 @@ import type { Orientation } from "$lib/domain/trace-graph/layout";
 import { projectDag, type TraceDag } from "$lib/domain/trace-graph/projection";
 import { traceBackend, type TraceBackend } from "./backend";
 import { createSnapshotCache, type SnapshotCache } from "./folder-snapshots";
+import { componentRequest } from "./component-requests";
 
 export interface ComponentData {
   readonly nodes: readonly TraceNode[];
@@ -58,7 +59,7 @@ export function createFolderSession(backend: TraceBackend = traceBackend, snapsh
   let disposed = false;
   const loading = new Map<string, Promise<void>>();
   let wanted = new Set<string>();
-  /** Loaded components a refresh did not reload (not wanted then): shown until reloaded, reloaded when wanted again. */
+  /** Loaded data predating the index: stays visible until its fresh load completes. */
   let stale = $state.raw<ReadonlySet<string>>(new Set());
   /** Orientation each component of this folder was last laid out with, by id: hysteresis that survives collapse and remount. The layout writes it. */
   let orientations = $state.raw(new Map<string, Orientation>());
@@ -117,8 +118,10 @@ export function createFolderSession(backend: TraceBackend = traceBackend, snapsh
   async function loadComponent(id: string, current: number, folder: FolderIndex): Promise<void> {
     const nodes: TraceNode[] = [];
     for (let offset = 0; ;) {
-      const page = await backend.nodes(folder.directory, folder.token, id, offset);
+      const page = await componentRequest(() => current !== generation || disposed
+        ? Promise.resolve(null) : backend.nodes(folder.directory, folder.token, id, offset));
       if (current !== generation || disposed) return;
+      if (!page) return;
       if (page.stale) { void refresh(); return; }
       nodes.push(...page.nodes);
       offset += page.nodes.length;
@@ -129,6 +132,7 @@ export function createFolderSession(backend: TraceBackend = traceBackend, snapsh
     next.set(id, { nodes, dag, members: dag.order });
     components = next;
     if (stale.has(id)) stale = new Set([...stale].filter((other) => other !== id));
+    error = "";
     remember();
   }
 
@@ -150,7 +154,7 @@ export function createFolderSession(backend: TraceBackend = traceBackend, snapsh
       const keep = new Set(next.components.map((component) => component.id));
       components = new Map([...previous].filter(([id]) => keep.has(id)));
       // Every kept component may be out of date: wanted ones reload now, the others when wanted again.
-      stale = new Set([...components.keys()].filter((id) => !wanted.has(id)));
+      stale = new Set(components.keys());
       remember();
       for (const id of wanted) if (keep.has(id)) void ensure(id, true);
     } catch (cause) {
@@ -170,7 +174,7 @@ export function createFolderSession(backend: TraceBackend = traceBackend, snapsh
     const current = generation;
     const task = loadComponent(id, current, folder)
       .catch((cause) => { if (current === generation) error = cause instanceof Error ? cause.message : String(cause); })
-      .finally(() => loading.delete(key));
+      .finally(() => { if (loading.get(key) === task) loading.delete(key); });
     loading.set(key, task);
     return task;
   }
@@ -195,10 +199,13 @@ export function createFolderSession(backend: TraceBackend = traceBackend, snapsh
         const nodes: TraceNode[] = [];
         for (let offset = 0; ;) {
           signal.throwIfAborted();
-          const page = await backend.nodes(dir, folder.token, summary.id, offset);
+          const page = await componentRequest(() => {
+            signal.throwIfAborted();
+            return current !== generation || disposed ? Promise.resolve(null) : backend.nodes(dir, folder.token, summary.id, offset);
+          });
           signal.throwIfAborted();
           if (dir !== directory || disposed) throw new Error("Trace folder changed during reveal");
-          if (current !== generation) { restart = true; break; }
+          if (current !== generation || !page) { restart = true; break; }
           if (page.stale) { restart = true; break; }
           nodes.push(...page.nodes);
           offset += page.nodes.length;

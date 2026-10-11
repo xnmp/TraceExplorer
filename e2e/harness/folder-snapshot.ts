@@ -1,5 +1,17 @@
 import type { ComponentSummary, TraceNode } from "$lib/domain/trace-graph/model";
-import { basename } from "$lib/domain/path";
+import { basename, nativeDirectoryKey, parentDir } from "$lib/domain/path";
+
+/** A run's output-folder context is independent of its managed storage path.
+ * Native only seeds unsaved outputs belonging to the queried folder.
+ */
+export interface FolderNode extends TraceNode { readonly contextDirectory?: string }
+const belongsToFolder = (node: FolderNode, directory: string): boolean =>
+  node.contextDirectory !== undefined ? node.contextDirectory === directory : node.scope === "current";
+const storedScope = (path: string, directory: string): TraceNode["scope"] => {
+  const folder = nativeDirectoryKey(directory);
+  if (nativeDirectoryKey(parentDir(path)) === folder) return "current";
+  return nativeDirectoryKey(path).startsWith(folder.endsWith("/") ? folder : `${folder}/`) ? "subfolder" : "external";
+};
 
 const isPresentRevision = (node: TraceNode): boolean => node.artifactId !== null
   && node.state === "present" && !node.discarded && !node.earlierRevision;
@@ -13,10 +25,10 @@ export const isDirectFolderSeed = (node: TraceNode): boolean => isPresentRevisio
  * Active placeholders also seed it. Other artifacts appear only as direct
  * parents of a seed, including unavailable and superseded revisions.
  */
-export function displayedNodes(nodes: readonly TraceNode[], dismissedRuns: ReadonlySet<number>): TraceNode[] {
+export function displayedNodes(nodes: readonly FolderNode[], dismissedRuns: ReadonlySet<number>, directory = "/pictures"): FolderNode[] {
   const seeds = nodes.filter((node) => node.artifactId === null
-    ? (node.state === "running" || (node.state === "uncertain" && !dismissedRuns.has(node.runId!)))
-    : (node.scope === "current" || node.temporary) && isPresentRevision(node));
+    ? belongsToFolder(node, directory) && (node.state === "running" || (node.state === "uncertain" && !dismissedRuns.has(node.runId!)))
+    : (isDirectFolderSeed(node) || (node.temporary && belongsToFolder(node, directory))) && isPresentRevision(node));
   const displayed = new Set(seeds.flatMap((node) => [node.key, ...node.parents]));
   return nodes.filter((node) => displayed.has(node.key));
 }
@@ -59,12 +71,15 @@ export interface MockComponent {
  * golden parity test. Use displayed parents before any DAG cycle sanitizing:
  * an outside image is a badge only when no parent exists in this folder graph.
  */
-export function folderComponents(input: readonly TraceNode[], dismissedRuns: ReadonlySet<number> = new Set()): MockComponent[] {
-  const displayed = displayedNodes(input, dismissedRuns);
+export function folderComponents(input: readonly FolderNode[], dismissedRuns: ReadonlySet<number> = new Set(), directory = "/pictures"): MockComponent[] {
+  const displayed = displayedNodes(input, dismissedRuns, directory);
   const known = new Set(displayed.map((node) => node.key));
   const nodes = displayed.map((node): TraceNode => {
-    const { referenceBadge: _badge, ...rest } = node;
-    return { ...rest, scope: node.temporary && isPresentRevision(node) ? "current" : node.scope,
+    const { referenceBadge: _badge, contextDirectory: _context, ...rest } = node;
+    const scope = node.temporary && node.path
+      ? belongsToFolder(node, directory) && isPresentRevision(node) ? "current" : storedScope(node.path, directory)
+      : node.scope;
+    return { ...rest, scope,
       parents: [...new Set(node.parents.filter((key) => known.has(key)))] };
   });
   const byKey = new Map(nodes.map((node) => [node.key, node]));

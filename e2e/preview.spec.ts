@@ -1,5 +1,5 @@
 import { test, expect, type Page } from "@playwright/test";
-import { openView, click, key, tile, card, state, uncaught, settle, rendered } from "./support";
+import { openView, click, key, tile, card, state, uncaught, settle, rendered, ensureExpanded } from "./support";
 
 const previewTitle = (page: Page) => page.getByTestId("preview-title");
 const preview = (page: Page) => page.getByRole("complementary", { name: "Preview" });
@@ -406,8 +406,7 @@ test.describe("Interrupted placeholders", () => {
     });
     const section = page.locator("section.component[data-component]", { has: page.locator(".heading .name", { hasText: /^lonely$/ }) });
     await expect(section).toHaveCount(1);
-    await section.locator(".heading").click();
-    await settle(page);
+    await ensureExpanded(section);
     await page.locator(`[data-tile-key="${identity}"] .card`).click();
     await settle(page);
     await dismiss(page).click();
@@ -425,8 +424,7 @@ test.describe("Interrupted placeholders", () => {
       return made;
     });
     const section = page.locator("section.component[data-component]", { has: page.locator(".heading .name", { hasText: /^lonely$/ }) });
-    await section.locator(".heading").click();
-    await settle(page);
+    await ensureExpanded(section);
     await page.locator(`[data-tile-key="${identity}"] .card`).click();
     await dismiss(page).click();
     await expect(section).toHaveCount(0);
@@ -514,7 +512,12 @@ test.describe("thumbnails", () => {
     await openView(page);
     await click(page, "warm");
     await page.waitForFunction(() => [...document.querySelectorAll<HTMLImageElement>(".graph img")].every((image) => image.complete && image.naturalWidth > 0));
-    const geometry = () => page.evaluate(() => [...document.querySelectorAll("section.component")[0].querySelectorAll<HTMLElement>("[data-tile-key]")].map((element) => [element.dataset.tileKey, element.style.left, element.style.top, element.style.width, element.style.height]));
+    const componentId = await page.locator("section.component", { has: await tile(page, "warm") }).getAttribute("data-component");
+    expect(componentId).not.toBeNull();
+    // A generation promotes its component in the native newest-first order;
+    // compare the selected component's geometry across that reorder.
+    const geometry = () => page.evaluate((id) => [...document.querySelector(`section.component[data-component="${CSS.escape(id!)}"]`)!
+      .querySelectorAll<HTMLElement>("[data-tile-key]")].map((element) => [element.dataset.tileKey, element.style.left, element.style.top, element.style.width, element.style.height]), componentId);
     const before = await geometry();
     const images = await page.locator(".graph img").count();
     await page.evaluate(() => (window as any).trace.backend.startGeneration("forest", "gen"));

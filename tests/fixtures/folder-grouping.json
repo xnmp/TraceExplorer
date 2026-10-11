@@ -1001,7 +1001,8 @@
         "earlierRevision": false,
         "order": 1000000000010,
         "prompt": "",
-        "dismissable": true
+        "dismissable": true,
+        "contextDirectory": "/pictures"
       },
       {
         "key": "o:11:0",
@@ -1019,7 +1020,8 @@
         "earlierRevision": false,
         "order": 3,
         "prompt": "",
-        "dismissable": false
+        "dismissable": false,
+        "contextDirectory": "/pictures"
       }
     ],
     "expected": [
@@ -1732,6 +1734,338 @@
         "path": "/pictures/\ud83d\ude00.png",
         "componentId": "c:a:5",
         "key": "o:6:0"
+      }
+    ]
+  },
+  {
+    "name": "foreign-unsaved-reference",
+    "nodes": [
+      {
+        "key": "o:10:0",
+        "artifactId": 1,
+        "runId": 10,
+        "parents": [],
+        "path": "/managed/draft.png",
+        "scope": "external",
+        "location": "Unsaved",
+        "state": "present",
+        "temporary": true,
+        "discarded": false,
+        "earlierRevision": false,
+        "order": 1,
+        "prompt": "",
+        "dismissable": false,
+        "contextDirectory": "/elsewhere"
+      },
+      {
+        "key": "o:20:0",
+        "artifactId": 2,
+        "runId": 20,
+        "parents": [
+          "o:10:0"
+        ],
+        "path": "/pictures/a.png",
+        "scope": "current",
+        "location": "/pictures/a.png",
+        "state": "present",
+        "temporary": false,
+        "discarded": false,
+        "earlierRevision": false,
+        "order": 2,
+        "prompt": "",
+        "dismissable": false
+      },
+      {
+        "key": "o:21:0",
+        "artifactId": 3,
+        "runId": 21,
+        "parents": [
+          "o:10:0"
+        ],
+        "path": "/pictures/b.png",
+        "scope": "current",
+        "location": "/pictures/b.png",
+        "state": "present",
+        "temporary": false,
+        "discarded": false,
+        "earlierRevision": false,
+        "order": 3,
+        "prompt": "",
+        "dismissable": false
+      }
+    ],
+    "expected": [
+      {
+        "summary": {
+          "id": "c:o:21:0",
+          "title": "b",
+          "cover": {
+            "path": "/pictures/b.png",
+            "present": true
+          },
+          "imageCount": 1,
+          "nodeCount": 2,
+          "active": false,
+          "unsaved": true
+        },
+        "keys": [
+          "o:10:0",
+          "o:21:0"
+        ],
+        "badges": [
+          {
+            "key": "o:10:0",
+            "path": "/managed/draft.png",
+            "scope": "external",
+            "artifactId": 1,
+            "consumers": [
+              "o:21:0"
+            ]
+          }
+        ]
+      },
+      {
+        "summary": {
+          "id": "c:o:20:0",
+          "title": "a",
+          "cover": {
+            "path": "/pictures/a.png",
+            "present": true
+          },
+          "imageCount": 1,
+          "nodeCount": 2,
+          "active": false,
+          "unsaved": true
+        },
+        "keys": [
+          "o:10:0",
+          "o:20:0"
+        ],
+        "badges": [
+          {
+            "key": "o:10:0",
+            "path": "/managed/draft.png",
+            "scope": "external",
+            "artifactId": 1,
+            "consumers": [
+              "o:20:0"
+            ]
+          }
+        ]
+      }
+    ],
+    "members": [
+      {
+        "path": "/pictures/a.png",
+        "componentId": "c:o:20:0",
+        "key": "o:20:0"
+      },
+      {
+        "path": "/pictures/b.png",
+        "componentId": "c:o:21:0",
+        "key": "o:21:0"
+      }
+    ]
+  },
+  {
+    "name": "foreign-unsaved-not-seed",
+    "nodes": [
+      {
+        "key": "o:10:0",
+        "artifactId": 1,
+        "runId": 10,
+        "parents": [],
+        "path": "/managed/draft.png",
+        "scope": "external",
+        "location": "Unsaved",
+        "state": "present",
+        "temporary": true,
+        "discarded": false,
+        "earlierRevision": false,
+        "order": 1,
+        "prompt": "",
+        "dismissable": false,
+        "contextDirectory": "/elsewhere"
+      }
+    ],
+    "expected": [],
+    "members": []
+  },
+  {
+    "name": "foreign-placeholder-not-seed",
+    "nodes": [
+      {
+        "key": "o:10:0",
+        "artifactId": null,
+        "runId": 10,
+        "parents": [],
+        "path": null,
+        "scope": "current",
+        "location": "Unsaved",
+        "state": "running",
+        "temporary": true,
+        "discarded": false,
+        "earlierRevision": false,
+        "order": 1000000000010,
+        "prompt": "",
+        "dismissable": false,
+        "contextDirectory": "/elsewhere"
+      }
+    ],
+    "expected": [],
+    "members": []
+  },
+  {
+    "name": "foreign-context-overrides-current-scope",
+    "nodes": [
+      {
+        "key": "o:10:0",
+        "artifactId": 1,
+        "runId": 10,
+        "parents": [],
+        "path": "/managed/draft.png",
+        "scope": "current",
+        "location": "Unsaved",
+        "state": "present",
+        "temporary": true,
+        "discarded": false,
+        "earlierRevision": false,
+        "order": 1,
+        "prompt": "",
+        "dismissable": false,
+        "contextDirectory": "/elsewhere"
+      }
+    ],
+    "expected": [],
+    "members": []
+  },
+  {
+    "name": "foreign-current-scope-reference",
+    "nodes": [
+      {
+        "key": "o:10:0",
+        "artifactId": 1,
+        "runId": 10,
+        "parents": [],
+        "path": "/managed/draft.png",
+        "scope": "current",
+        "location": "Unsaved",
+        "state": "present",
+        "temporary": true,
+        "discarded": false,
+        "earlierRevision": false,
+        "order": 1,
+        "prompt": "",
+        "dismissable": false,
+        "contextDirectory": "/elsewhere"
+      },
+      {
+        "key": "o:20:0",
+        "artifactId": 2,
+        "runId": 20,
+        "parents": [
+          "o:10:0"
+        ],
+        "path": "/pictures/a.png",
+        "scope": "current",
+        "location": "/pictures/a.png",
+        "state": "present",
+        "temporary": false,
+        "discarded": false,
+        "earlierRevision": false,
+        "order": 2,
+        "prompt": "",
+        "dismissable": false
+      },
+      {
+        "key": "o:21:0",
+        "artifactId": 3,
+        "runId": 21,
+        "parents": [
+          "o:10:0"
+        ],
+        "path": "/pictures/b.png",
+        "scope": "current",
+        "location": "/pictures/b.png",
+        "state": "present",
+        "temporary": false,
+        "discarded": false,
+        "earlierRevision": false,
+        "order": 3,
+        "prompt": "",
+        "dismissable": false
+      }
+    ],
+    "expected": [
+      {
+        "summary": {
+          "id": "c:o:21:0",
+          "title": "b",
+          "cover": {
+            "path": "/pictures/b.png",
+            "present": true
+          },
+          "imageCount": 1,
+          "nodeCount": 2,
+          "active": false,
+          "unsaved": true
+        },
+        "keys": [
+          "o:10:0",
+          "o:21:0"
+        ],
+        "badges": [
+          {
+            "key": "o:10:0",
+            "path": "/managed/draft.png",
+            "scope": "external",
+            "artifactId": 1,
+            "consumers": [
+              "o:21:0"
+            ]
+          }
+        ]
+      },
+      {
+        "summary": {
+          "id": "c:o:20:0",
+          "title": "a",
+          "cover": {
+            "path": "/pictures/a.png",
+            "present": true
+          },
+          "imageCount": 1,
+          "nodeCount": 2,
+          "active": false,
+          "unsaved": true
+        },
+        "keys": [
+          "o:10:0",
+          "o:20:0"
+        ],
+        "badges": [
+          {
+            "key": "o:10:0",
+            "path": "/managed/draft.png",
+            "scope": "external",
+            "artifactId": 1,
+            "consumers": [
+              "o:20:0"
+            ]
+          }
+        ]
+      }
+    ],
+    "members": [
+      {
+        "path": "/pictures/a.png",
+        "componentId": "c:o:20:0",
+        "key": "o:20:0"
+      },
+      {
+        "path": "/pictures/b.png",
+        "componentId": "c:o:21:0",
+        "key": "o:21:0"
       }
     ]
   }

@@ -5,6 +5,8 @@ import { createSnapshotCache } from "$lib/plugins/trace/view/folder-snapshots";
 import type { TraceBackend } from "$lib/plugins/trace/view/backend";
 import type { ComponentNodesPage, FolderComponentsPage, FolderMembersPage } from "$lib/api/trace";
 import type { TraceNode } from "$lib/domain/trace-graph/model";
+import { locateTarget } from "$lib/plugins/trace/view/target-location";
+import { withNativeRequestCapacity } from "../../../e2e/harness/request-capacity";
 
 const flush = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
 function deferred<T>() {
@@ -170,6 +172,89 @@ describe("folder session", () => {
     expect(data.members).toEqual(["a", "b"]);
     await session.ensure("c1");
     expect(backend.nodes).toHaveBeenCalledTimes(1);
+  });
+
+  it("bounds replacement searches across panes below native request capacity", async () => {
+    const ids = Array.from({ length: 80 }, (_, i) => `c${i}`);
+    const gate = deferred<void>();
+    let active = 0, peak = 0;
+    const admitted = withNativeRequestCapacity({ invoke: async <T>(_method: string, params?: Record<string, unknown>) => {
+      active += 1; peak = Math.max(peak, active);
+      try { await gate.promise; return nodePage([node(String(params?.id), 1)]) as T; }
+      finally { active -= 1; }
+    } });
+    const backend = fakeBackend({
+      components: vi.fn(async () => compPage("t", ids)),
+      nodes: vi.fn((_d, _t, id) => admitted.invoke<ComponentNodesPage>("trace_component_nodes", { id })),
+    });
+    const sessions = [createFolderSession(backend), createFolderSession(backend)];
+    sessions.forEach((session, i) => session.setDirectory(`/f${i}`));
+    await flush();
+    const search = sessions.flatMap((session) => ids.map((id) => session.ensure(id)));
+    await flush();
+    gate.resolve();
+    await Promise.all(search);
+    expect(peak).toBeLessThanOrEqual(4);
+    for (const session of sessions) {
+      expect(session.components.size).toBe(ids.length);
+      expect(session.error).toBe("");
+      expect(locateTarget("failed-placeholder", "old", {
+        listed: new Set(ids), components: session.components, isStale: (id) => session.isStale(id),
+      })).toBe("gone");
+      session.dispose();
+    }
+  });
+
+  it("clears a component read error when a later load succeeds", async () => {
+    let fail = true;
+    const backend = fakeBackend({ nodes: vi.fn(async () => {
+      if (fail) throw new Error("Plugin request capacity reached");
+      return nodePage([node("a", 1)]);
+    }) });
+    const session = createFolderSession(backend);
+    session.setDirectory("/f"); await flush();
+    await session.ensure("c1");
+    expect(session.error).toBe("Plugin request capacity reached");
+    fail = false;
+    await session.ensure("c1");
+    expect(session.components.get("c1")?.members).toEqual(["a"]);
+    expect(session.error).toBe("");
+  });
+
+  it("does not send queued component reads after the folder changes", async () => {
+    const ids = Array.from({ length: 12 }, (_, i) => `old${i}`);
+    const gate = deferred<ComponentNodesPage>();
+    const backend = fakeBackend({
+      components: vi.fn(async (dir) => compPage(dir, dir === "/old" ? ids : ["new"])),
+      nodes: vi.fn(() => gate.promise),
+    });
+    const session = createFolderSession(backend);
+    session.setDirectory("/old"); await flush();
+    const loading = ids.map((id) => session.ensure(id));
+    session.setDirectory("/new"); await flush();
+    gate.resolve(nodePage([node("old-node", 1)]));
+    await Promise.all(loading);
+    expect(backend.nodes.mock.calls).toHaveLength(4);
+    expect(session.index?.directory).toBe("/new");
+    expect(session.components.size).toBe(0);
+  });
+
+  it("keeps reloading component data unresolved until the fresh page arrives", async () => {
+    const backend = fakeBackend();
+    const session = createFolderSession(backend);
+    session.setDirectory("/f"); await flush();
+    await session.ensure("c1");
+    const gate = deferred<ComponentNodesPage>();
+    backend.nodes.mockImplementation(() => gate.promise);
+    await session.refresh();
+    expect(session.components.get("c1")?.members).toEqual(["a"]);
+    expect(session.isStale("c1")).toBe(true);
+    expect(locateTarget("a", "c1", {
+      listed: new Set(["c1"]), components: session.components, isStale: (id) => session.isStale(id),
+    })).toBe("unknown");
+    gate.resolve(nodePage([node("a", 1)]));
+    await session.ensure("c1");
+    expect(session.isStale("c1")).toBe(false);
   });
 
   it("pages component nodes", async () => {

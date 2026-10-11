@@ -17,6 +17,17 @@ export interface TargetIndex {
   readonly isStale: (componentId: string) => boolean;
 }
 
+/** Resolve a visible copy in the Preview subject's stack before other loaded copies. */
+export function findLoadedNode(key: NodeKey, components: TargetIndex["components"], preferred?: string): Exclude<TargetLocation, string> | null {
+  const own = preferred ? components.get(preferred)?.dag.nodes.get(key) : undefined;
+  if (own) return { node: own, componentId: preferred! };
+  for (const [componentId, data] of components) {
+    const node = data.dag.nodes.get(key);
+    if (node) return { node, componentId };
+  }
+  return null;
+}
+
 /**
  * Found: in current data, in its own component or in the one it merged into.
  * Prefer the issued component when a badge has several copies. A saved ID
@@ -25,6 +36,9 @@ export interface TargetIndex {
  */
 export function locateTarget(key: NodeKey, componentId: string, index: TargetIndex): TargetLocation {
   if (!index.listed) return "unknown";
+  // A loaded copy elsewhere cannot settle ownership until the issuing stack
+  // has been read against this index. It may still contain the same badge.
+  if (index.listed.has(componentId) && (!index.components.has(componentId) || index.isStale(componentId))) return "unknown";
   const own = index.components.get(componentId)?.dag.nodes.get(key);
   if (own && index.listed.has(componentId) && !index.isStale(componentId)) return { node: own, componentId };
   for (const [id, data] of index.components) {
@@ -32,4 +46,12 @@ export function locateTarget(key: NodeKey, componentId: string, index: TargetInd
     if (node && index.listed.has(id) && !index.isStale(id)) return { node, componentId: id };
   }
   return [...index.listed].some((id) => !index.components.has(id) || index.isStale(id)) ? "unknown" : "gone";
+}
+
+/** Reload the issuing stack first; search replacements only once it cannot own the key. */
+export function unresolvedTargetComponents(key: NodeKey, componentId: string, index: TargetIndex): readonly string[] {
+  if (locateTarget(key, componentId, index) !== "unknown" || !index.listed) return [];
+  const unresolved = (id: string) => !index.components.has(id) || index.isStale(id);
+  if (index.listed.has(componentId) && unresolved(componentId)) return [componentId];
+  return [...index.listed].filter(unresolved);
 }

@@ -36,6 +36,15 @@ export async function click(page: Page, name: Name, options: Parameters<Locator[
   await settle(page);
 }
 
+/** Newest-first summaries can make a new section expanded by default. */
+export async function ensureExpanded(section: Locator): Promise<void> {
+  const heading = section.locator(".heading");
+  await expect(heading).toHaveAttribute("aria-expanded", /^(true|false)$/);
+  if (await heading.getAttribute("aria-expanded") === "false") await heading.click();
+  await expect(heading).toHaveAttribute("aria-expanded", "true");
+  await settle(section.page());
+}
+
 export interface Box { x: number; y: number; width: number; height: number }
 
 /** Tile boxes keyed by node key, relative to the graph that holds them. */

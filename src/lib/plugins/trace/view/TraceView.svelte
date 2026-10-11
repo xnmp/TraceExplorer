@@ -21,7 +21,7 @@
   import { nodeTarget } from "./node-target";
   import { revealArtifactId } from "./reveal-target";
   import type { GraphScene } from "./graph-commit";
-  import { locateTarget } from "./target-location";
+  import { findLoadedNode, locateTarget, unresolvedTargetComponents } from "./target-location";
   import { holdAnchor, layoutHeight, MOTION_MS, prefersReducedMotion, zoomOf, resizeSection, scrollsByUser, sectionHeight, USER_SCROLL } from "./motion";
   import TraceGraph from "./TraceGraph.svelte";
   import OrdinarySection from "./OrdinarySection.svelte";
@@ -127,7 +127,7 @@
     for (const entry of pane.selection) { const member = session.componentOf(entry.path); if (member) keys.add(member.key); }
     const included = new Set(inputs);
     // The target is highlighted while it is an input (a Ctrl-click unpicks it), or when it cannot be one.
-    const targetNode = targetData ? findNode(targetData.key)?.node : undefined;
+    const targetNode = targetData ? findNode(targetData.key, targetData.componentId)?.node : undefined;
     if (targetData && (!targetNode || !pickable(targetNode) || included.has(targetNode.path!))) keys.add(targetData.key);
     for (const extra of livePicks.extras) if (included.has(extra.path)) keys.add(extra.key);
     return keys;
@@ -144,8 +144,6 @@
    * the host selection; the view's own clicks assign it (see `commitPicks`).
    */
   let picks = $derived.by(() => { void hostChoice; return picksFromHost(untrack(() => hostSelected)); });
-  /** Whether a component's loaded data is current (loaded, and not skipped by a refresh). */
-  const fresh = (id: string) => session.components.has(id) && !session.isStale(id);
   /**
    * Where an extra's node is now, from current data only: a copy in data a
    * refresh skipped may be out of date (discarded since, say), so it is
@@ -153,16 +151,11 @@
    * component is not loaded fresh.
    */
   function locateExtra(key: NodeKey, preferred: string | undefined = undefined): PickLocation {
-    const own = preferred ? session.components.get(preferred)?.dag.nodes.get(key) : undefined;
-    if (own && !session.isStale(preferred!)) return { node: own, componentId: preferred! };
-    let unknown = false;
-    for (const [componentId, data] of session.components) {
-      const node = data.dag.nodes.get(key);
-      if (!node) continue;
-      if (!session.isStale(componentId)) return { node, componentId };
-      unknown = true;
-    }
-    return unknown || !summaries.every((summary) => fresh(summary.id)) ? "unknown" : null;
+    const located = locateTarget(key, preferred ?? "", {
+      listed: session.index ? new Set(summaries.map((summary) => summary.id)) : null,
+      components: session.components, isStale: (id) => session.isStale(id),
+    });
+    return located === "gone" ? null : located;
   }
   /** The picks with their extras following their nodes (saved, discarded, gone, merged into another component). */
   const livePicks = $derived(followPicks(picks, locateExtra));
@@ -176,16 +169,18 @@
     const listed = new Set(summaries.map((summary) => summary.id));
     for (const extra of livePicks.extras) {
       const own = extra.componentId;
-      if (own && listed.has(own) && (!fresh(own) || session.components.get(own)!.dag.nodes.has(extra.key))) { ids.add(own); continue; }
-      for (const summary of summaries) if (!fresh(summary.id)) ids.add(summary.id);
+      if (own && listed.has(own)) ids.add(own);
+      for (const id of unresolvedTargetComponents(extra.key, own ?? "", {
+        listed, components: session.components, isStale: (id) => session.isStale(id),
+      })) ids.add(id);
     }
     // A Preview target may be unpickable (missing reference or placeholder),
     // so extras alone cannot resolve it after components merge or split.
     if (targetData) {
-      const located = locateTarget(targetData.key, targetData.componentId, {
+      const unresolved = unresolvedTargetComponents(targetData.key, targetData.componentId, {
         listed, components: session.components, isStale: (id) => session.isStale(id),
       });
-      if (located === "unknown") for (const summary of summaries) if (!fresh(summary.id)) ids.add(summary.id);
+      for (const id of unresolved) ids.add(id);
     }
     return ids;
   });
@@ -231,13 +226,7 @@
   });
 
   function findNode(key: NodeKey, preferred: string | undefined = undefined): { node: TraceNode; componentId: string } | null {
-    const own = preferred ? session.components.get(preferred)?.dag.nodes.get(key) : undefined;
-    if (own) return { node: own, componentId: preferred! };
-    for (const [componentId, data] of session.components) {
-      const node = data.dag.nodes.get(key);
-      if (node) return { node, componentId };
-    }
-    return null;
+    return findLoadedNode(key, session.components, preferred);
   }
 
   const fileEntry = (node: TraceNode): FileEntry | null =>
@@ -551,10 +540,10 @@
   const view: TracePaneView = {
     reveal,
     get directory() { return directory; },
-    node: (key) => findNode(key)?.node ?? null,
-    nodeForPath: (path) => { const member = session.componentOf(path); return member ? findNode(member.key)?.node ?? null : null; },
+    node: (key) => findNode(key, focus?.componentId)?.node ?? null,
+    nodeForPath: (path) => { const member = session.componentOf(path); return member ? findNode(member.key, member.componentId)?.node ?? null : null; },
     focus: (key) => {
-      const found = findNode(key, targetData?.key === key ? targetData.componentId : undefined);
+      const found = findNode(key, focus?.componentId);
       if (found && !summaries.some((summary, index) => summary.id === found.componentId && isExpanded(summary, index))) setExpanded(found.componentId, true);
       else if (found) overrides = new Map(overrides).set(found.componentId, true);
       focusNode(key, {}, "reveal", found?.componentId);
@@ -563,7 +552,7 @@
     inputs: () => inputs,
     hasUnusableTarget: () => {
       if (!targetData) return false;
-      const node = findNode(targetData.key)?.node;
+      const node = findNode(targetData.key, targetData.componentId)?.node;
       return !node || !pickable(node);
     },
   };
