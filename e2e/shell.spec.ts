@@ -1,5 +1,5 @@
 import { test, expect } from "@playwright/test";
-import { openView, click, state, uncaught, settle, rendered, tile } from "./support";
+import { openView, click, state, uncaught, settle, rendered, tile, ensureExpanded } from "./support";
 
 const view = (page: import("@playwright/test").Page) => page.getByTestId("trace-view");
 const builtin = (page: import("@playwright/test").Page) => page.getByRole("list", { name: "Built-in listing" });
@@ -65,8 +65,7 @@ test("an image whose only history is failed edits lists with the other files unt
   await expect(others.locator(`[data-entry-path="${lonely}"]`)).toHaveCount(0);
   await expect(page.locator("section.ordinary .count")).toHaveText("3");
   const section = page.locator("section.component[data-component]", { has: page.locator(".heading .name", { hasText: /^lonely$/ }) });
-  await section.locator(".heading").click();
-  await settle(page);
+  await ensureExpanded(section);
   await expect(section.locator(await tile(page, "lonely"))).toHaveCount(1);
   await expect(section.locator(await tile(page, "retry"))).toHaveCount(1);
   expect(await uncaught(page)).toEqual([]);
@@ -94,8 +93,7 @@ test("a Preview target whose generation fails is cleared and dims no section", a
   await page.evaluate(() => (window as any).trace.backend.startGeneration("lonely", "retry"));
   const section = page.locator("section.component[data-component]", { has: page.locator(".heading .name", { hasText: /^lonely$/ }) });
   await expect(section).toHaveCount(1);
-  await section.locator(".heading").click();
-  await settle(page);
+  await ensureExpanded(section);
   await click(page, "retry");
   expect((await state(page)).target?.badge).toBe("Generating");
   await expect(page.locator("section.component.dimmed[data-component]")).not.toHaveCount(0);

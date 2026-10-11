@@ -30,6 +30,8 @@ export interface ScenePlan {
 }
 
 export interface SceneOptions {
+  /** Component identity disambiguates references copied into several stacks. */
+  readonly componentId?: string;
   /** Previous reading order, so siblings keep their places (see `LayoutRequest.hint`). */
   readonly hint?: ReadonlyMap<NodeKey, number>;
   /**
@@ -41,13 +43,17 @@ export interface SceneOptions {
   readonly tile?: TileMetrics;
 }
 
-export function planScene(dag: TraceDag, members: readonly NodeKey[], focus: NodeKey | null, maxWidth: number, options: SceneOptions = {}): ScenePlan {
+export interface ComponentFocus { readonly key: NodeKey; readonly componentId: string }
+
+export function planScene(dag: TraceDag, members: readonly NodeKey[], focus: NodeKey | ComponentFocus | null, maxWidth: number, options: SceneOptions = {}): ScenePlan {
   const { hint, previous, tile = tileMetrics() } = options;
-  const inComponent = focus !== null && members.includes(focus);
-  const context = lineage(dag, inComponent ? focus : null);
+  const key = typeof focus === "object" ? focus?.key ?? null : focus;
+  const ownsFocus = typeof focus !== "object" || focus === null || focus.componentId === options.componentId;
+  const inComponent = key !== null && ownsFocus && members.includes(key);
+  const context = lineage(dag, inComponent ? key : null);
   // Lineage of an out-of-component focus still dims this component entirely.
-  const effective: Lineage = focus !== null && !inComponent ? { focus, related: new Set() } : context;
-  const { tiles, items } = sceneTiles(dag, members, inComponent ? focus : null, effective, tile);
+  const effective: Lineage = key !== null && !inComponent ? { focus: key, related: new Set() } : context;
+  const { tiles, items } = sceneTiles(dag, members, inComponent ? key : null, effective, tile);
   // Decided from the whole component, never the focus, so selection cannot flip it.
   // Running right, the canvas is sized for the whole component, so it does not re-centre as generations appear.
   const profile = generationProfile(dag, members);
@@ -115,7 +121,7 @@ export function routeStyle(route: PlacedRoute, dag: TraceDag, context: Lineage):
   return {
     kind,
     related: route.consumers.some((item) => context.related.has(item.parent) && context.related.has(item.child)),
-    highlighted: route.consumers.some((item) => item.parent === context.focus || item.child === context.focus),
+    highlighted: context.related.has(context.focus) && route.consumers.some((item) => item.parent === context.focus || item.child === context.focus),
   };
 }
 

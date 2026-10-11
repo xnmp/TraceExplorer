@@ -36,12 +36,23 @@ export async function click(page: Page, name: Name, options: Parameters<Locator[
   await settle(page);
 }
 
+/** Newest-first summaries can make a new section expanded by default. */
+export async function ensureExpanded(section: Locator): Promise<void> {
+  const heading = section.locator(".heading");
+  await expect(heading).toHaveAttribute("aria-expanded", /^(true|false)$/);
+  if (await heading.getAttribute("aria-expanded") === "false") await heading.click();
+  await expect(heading).toHaveAttribute("aria-expanded", "true");
+  await settle(section.page());
+}
+
 export interface Box { x: number; y: number; width: number; height: number }
 
 /** Tile boxes keyed by node key, relative to the graph that holds them. */
-export function tileBoxes(page: Page, component: number): Promise<Record<string, Box>> {
+export function tileBoxes(page: Page, component: number | Name): Promise<Record<string, Box>> {
   return page.evaluate((index) => {
-    const section = document.querySelectorAll("section.component[data-component]")[index];
+    const sections = [...document.querySelectorAll("section.component[data-component]")];
+    const section = typeof index === "number" ? sections[index] : sections.find((element) =>
+      element.querySelector(`[data-tile-key="${CSS.escape((window as any).trace.backend.key(index))}"]`))!;
     const graph = section.querySelector(".graph")!.getBoundingClientRect();
     return Object.fromEntries([...section.querySelectorAll<HTMLElement>("[data-tile-key]")].map((element) => {
       const r = element.getBoundingClientRect();

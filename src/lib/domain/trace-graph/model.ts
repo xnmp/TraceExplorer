@@ -11,6 +11,18 @@ export type NodeScope = "current" | "subfolder" | "external";
 
 export type NodeState = "present" | "missing" | "unavailable" | "running" | "uncertain";
 
+/** Native component-local badge metadata, compatible with the grid projection's
+ * ReferenceBadge. Artifact identity is supplied instead of a content hash.
+ * Consumers refer to the complete component, possibly on later node pages.
+ */
+export interface ReferenceBadgeRecord {
+  readonly key: NodeKey;
+  readonly path: string;
+  readonly scope: Exclude<NodeScope, "current">;
+  readonly artifactId: number;
+  readonly consumers: readonly NodeKey[];
+}
+
 export interface TraceNode {
   readonly key: NodeKey;
   /** null only for a placeholder whose output has not been recorded yet. */
@@ -31,6 +43,9 @@ export interface TraceNode {
   /** Stable creation order used to break ties deterministically. */
   readonly order: number;
   readonly prompt: string;
+  /** Only outside images with no displayed parent; copied once per component.
+   * Legacy views keep rendering the node and its parent edges. */
+  readonly referenceBadge?: ReferenceBadgeRecord;
 }
 
 export interface ComponentSummary {

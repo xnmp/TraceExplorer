@@ -2,7 +2,8 @@
 //!
 //! The index holds the newest recorded revision of every image directly inside
 //! a folder, the folder's unsaved generations, and the direct parents of both,
-//! grouped into connected components; a lone plain file forms none (see
+//! grouped into connected components, ignoring root references outside the
+//! folder as links between lineages; a lone plain file forms none (see
 //! `has_relationship`). It is built from a single SQLite read
 //! snapshot with batched queries and existence checks: no image is hashed and
 //! no graph is walked per file.
@@ -63,10 +64,26 @@ const COUNTED_TABLES: [(&str, &[&str]); 6] = [
 /// (name, event, table)
 const EXTRA_COUNTED: [(&str, &str, &str); 4] = [
     // Dismissal and the evidence behind `TraceNode::dismissable`.
-    ("trace_revision_runs_evidence_update", "UPDATE OF result_details,dismissed_at", "runs"),
-    ("trace_revision_image_service_operations_insert", "INSERT", "image_service_operations"),
-    ("trace_revision_image_service_operations_update", "UPDATE", "image_service_operations"),
-    ("trace_revision_image_service_operations_delete", "DELETE", "image_service_operations"),
+    (
+        "trace_revision_runs_evidence_update",
+        "UPDATE OF result_details,dismissed_at",
+        "runs",
+    ),
+    (
+        "trace_revision_image_service_operations_insert",
+        "INSERT",
+        "image_service_operations",
+    ),
+    (
+        "trace_revision_image_service_operations_update",
+        "UPDATE",
+        "image_service_operations",
+    ),
+    (
+        "trace_revision_image_service_operations_delete",
+        "DELETE",
+        "image_service_operations",
+    ),
 ];
 
 fn counter_triggers(connection: &Connection) -> Result<Vec<(String, String)>, AppError> {
@@ -204,6 +221,24 @@ pub(crate) struct TraceNode {
     pub prompt: String,
     /// An Interrupted placeholder whose recorded evidence allows Dismiss.
     pub dismissable: bool,
+    /// Only on an out-of-folder root reference. The node and its edges stay
+    /// in each component for legacy views; consumers name only this copy's
+    /// component. Read all node pages before projecting badges.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reference_badge: Option<ReferenceBadge>,
+}
+
+/// Compatible with the grid domain's `ReferenceBadge` (key/path/scope/consumers),
+/// with artifact identity added so no image hashing or extra RPC is needed.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ReferenceBadge {
+    pub key: String,
+    pub path: String,
+    pub scope: NodeScope,
+    pub artifact_id: i64,
+    /// Direct consumers in this component, sorted by creation order then key.
+    pub consumers: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -469,10 +504,11 @@ impl NodeIdentity {
     }
 }
 
-/// Names a component after its oldest node identity: sources before outputs,
+/// Names a component after its oldest non-badge node identity: sources before outputs,
 /// then by ID. Because keys are stable, the ID survives completion, saving,
 /// moving, and new descendants (whose runs are newer). It changes only when
-/// the component merges with another, or loses that node.
+/// the component merges, splits, or loses that node. Never resolve a node
+/// across refreshes using a saved component ID alone.
 fn component_id(identities: impl Iterator<Item = NodeIdentity>) -> String {
     identities
         .min()
@@ -610,6 +646,7 @@ fn build_index(facts: &Facts, layout: &Layout) -> FolderIndex {
                         order: id,
                         prompt: run.map(|run| run.prompt.clone()).unwrap_or_default(),
                         dismissable: false,
+                        reference_badge: None,
                     }
                 }
                 NodeRef::Placeholder(run_id) => {
@@ -632,39 +669,94 @@ fn build_index(facts: &Facts, layout: &Layout) -> FolderIndex {
                         order: PLACEHOLDER_ORDER + run_id,
                         prompt: run.map(|run| run.prompt.clone()).unwrap_or_default(),
                         dismissable: run.is_some_and(|run| run.dismissable),
+                        reference_badge: None,
                     }
                 }
             }
         })
         .collect();
 
+    // Only parents in the displayed folder graph matter. An outside image
+    // may have recorded ancestors that were not imported; it is still a badge
+    // here. Managed unsaved outputs have already been classified as Current.
+    let badges: Vec<bool> = nodes
+        .iter()
+        .map(|node| node.scope != NodeScope::Current && node.parents.is_empty())
+        .collect();
     let mut sets = UnionFind::new(nodes.len());
     for (child, parents) in parents.iter().enumerate() {
         for parent in parents {
-            sets.union(child, *parent);
+            if !badges[*parent] {
+                sets.union(child, *parent);
+            }
         }
     }
     let mut groups: HashMap<usize, Vec<usize>> = HashMap::new();
     for index in 0..nodes.len() {
-        groups.entry(sets.find(index)).or_default().push(index);
+        if !badges[index] {
+            groups.entry(sets.find(index)).or_default().push(index);
+        }
+    }
+    // Attach once per receiving component, without scanning all references
+    // for every stack (a shared style can feed thousands of separate stacks).
+    let mut references: HashMap<usize, HashMap<usize, Vec<usize>>> = HashMap::new();
+    for (child, parents) in parents.iter().enumerate() {
+        for &parent in parents {
+            if badges[parent] {
+                references
+                    .entry(sets.find(child))
+                    .or_default()
+                    .entry(parent)
+                    .or_default()
+                    .push(child);
+            }
+        }
     }
 
     let mut component_of = vec![String::new(); nodes.len()];
     let mut ranked: Vec<(i64, ComponentSummary, Vec<TraceNode>)> = groups
-        .into_values()
-        .map(|members| {
+        .into_iter()
+        .map(|(root, mut members)| {
             let id = component_id(members.iter().map(|index| identities[*index]));
             for index in &members {
                 component_of[*index] = id.clone();
             }
-            let summary = summarize(&id, &members, &nodes, &parents, facts);
             let newest = members
                 .iter()
                 .map(|index| nodes[*index].order)
                 .max()
                 .unwrap_or_default();
-            let mut component_nodes: Vec<TraceNode> =
-                members.iter().map(|index| nodes[*index].clone()).collect();
+            let component_badges = references.remove(&root).unwrap_or_default();
+            members.extend(component_badges.keys().copied());
+            // Cover, relationship and counts retain their existing rules,
+            // including the legacy reference nodes in node_count only.
+            let summary = summarize(&id, &members, &nodes, &parents, facts);
+            let mut component_nodes: Vec<TraceNode> = members
+                .iter()
+                .map(|index| {
+                    let mut node = nodes[*index].clone();
+                    if let Some(consumers) = component_badges.get(index) {
+                        let mut consumers = consumers.clone();
+                        consumers.sort_by(|a, b| {
+                            nodes[*a]
+                                .order
+                                .cmp(&nodes[*b].order)
+                                .then_with(|| nodes[*a].key.cmp(&nodes[*b].key))
+                        });
+                        node.reference_badge = Some(ReferenceBadge {
+                            key: node.key.clone(),
+                            path: node.path.clone().expect("artifact reference path"),
+                            scope: node.scope,
+                            artifact_id: node.artifact_id.expect("artifact reference identity"),
+                            consumers: consumers
+                                .iter()
+                                .map(|index| nodes[*index].key.clone())
+                                .collect(),
+                        });
+                    }
+                    node
+                })
+                .collect();
             component_nodes.sort_by(|a, b| a.order.cmp(&b.order).then_with(|| a.key.cmp(&b.key)));
             (newest, summary, component_nodes)
         })
@@ -1447,6 +1539,10 @@ impl Presentation<'_> {
     fn node(&self, node: TraceNode) -> TraceNode {
         TraceNode {
             path: node.path.as_deref().map(|path| self.path(path)),
+            reference_badge: node.reference_badge.map(|badge| ReferenceBadge {
+                path: self.path(&badge.path),
+                ..badge
+            }),
             ..node
         }
     }
@@ -1743,6 +1839,236 @@ mod tests {
 
     const PNG: &[u8] = include_bytes!("../../test_support/fixtures/source32.png");
 
+    /// The same recorded histories and observable golden output drive vitest's
+    /// mock parity suite. Facts include unimported ancestors deliberately.
+    fn golden_facts(input: &serde_json::Value) -> Facts {
+        let nodes = input.as_array().unwrap();
+        let artifact_by_key: HashMap<&str, i64> = nodes
+            .iter()
+            .filter_map(|node| {
+                node["artifactId"]
+                    .as_i64()
+                    .map(|id| (node["key"].as_str().unwrap(), id))
+            })
+            .collect();
+        let mut facts = Facts::default();
+        for node in nodes {
+            let run = node["runId"].as_i64();
+            let temporary = node["temporary"].as_bool().unwrap();
+            let own_context = node["contextDirectory"]
+                .as_str()
+                .map_or(node["scope"] == "current", |directory| directory == "/pictures");
+            let state = match node["state"].as_str().unwrap() {
+                "missing" => NodeState::Missing,
+                "unavailable" => NodeState::Unavailable,
+                "running" => NodeState::Running,
+                "uncertain" => NodeState::Uncertain,
+                _ => NodeState::Present,
+            };
+            if let Some(run) = run {
+                facts.runs.insert(
+                    run,
+                    RunFacts {
+                        status: if state == NodeState::Uncertain {
+                            "uncertain"
+                        } else if state == NodeState::Running {
+                            "running"
+                        } else {
+                            "succeeded"
+                        }
+                        .into(),
+                        temporary,
+                        prompt: node["prompt"].as_str().unwrap().into(),
+                        dismissable: node["dismissable"].as_bool().unwrap_or(false),
+                        inputs: node["parents"]
+                            .as_array()
+                            .unwrap()
+                            .iter()
+                            .filter_map(|key| {
+                                let key = key.as_str().unwrap();
+                                artifact_by_key
+                                    .get(key)
+                                    .copied()
+                                    .or_else(|| key.strip_prefix("a:")?.parse().ok())
+                            })
+                            .collect(),
+                    },
+                );
+            }
+            if let Some(id) = node["artifactId"].as_i64() {
+                let earlier_revision = node["earlierRevision"].as_bool().unwrap();
+                let discarded = node["discarded"].as_bool().unwrap();
+                facts.artifacts.insert(
+                    id,
+                    ArtifactFacts {
+                        path: node["path"].as_str().unwrap().into(),
+                        generating_run: run,
+                        state,
+                        discarded,
+                        earlier_revision,
+                        output_index: if run.is_some() {
+                            node["key"]
+                                .as_str()
+                                .unwrap()
+                                .rsplit(':')
+                                .next()
+                                .unwrap()
+                                .parse()
+                                .unwrap()
+                        } else {
+                            0
+                        },
+                    },
+                );
+                // Private storage says nothing about folder ownership: only
+                // this folder's output context can seed a managed draft.
+                let owned_temporary = temporary && own_context;
+                if ((!temporary && node["scope"] == "current") || owned_temporary)
+                    && state == NodeState::Present
+                    && !earlier_revision
+                    && !discarded
+                {
+                    facts.seeds.push(Seed::Artifact {
+                        id,
+                        direct: !temporary,
+                    });
+                }
+            } else if own_context && matches!(state, NodeState::Running | NodeState::Uncertain) {
+                facts.seeds.push(Seed::Placeholder { run: run.unwrap() });
+            }
+        }
+        facts
+    }
+
+    fn golden_index(facts: &Facts) -> FolderIndex {
+        build_index(
+            facts,
+            &Layout {
+                folder: Path::new("/pictures"),
+                home: None,
+                case_insensitive: false,
+            },
+        )
+    }
+
+    fn golden_components(index: &FolderIndex) -> serde_json::Value {
+        serde_json::Value::Array(index.components.iter().map(|summary| {
+            let nodes = &index.nodes[&summary.id];
+            serde_json::json!({ "summary": summary,
+                "keys": nodes.iter().map(|node| &node.key).collect::<Vec<_>>(),
+                "badges": nodes.iter().filter_map(|node| node.reference_badge.as_ref()).collect::<Vec<_>>() })
+        }).collect())
+    }
+
+    #[test]
+    fn folder_grouping_matches_shared_mock_golden() {
+        let fixtures: serde_json::Value =
+            serde_json::from_str(include_str!("../../../tests/fixtures/folder-grouping.json"))
+                .unwrap();
+        for fixture in fixtures.as_array().unwrap() {
+            let mut facts = golden_facts(&fixture["nodes"]);
+            let index = golden_index(&facts);
+            assert_eq!(
+                golden_components(&index),
+                fixture["expected"],
+                "{}",
+                fixture["name"]
+            );
+            assert_eq!(
+                serde_json::to_value(&index.members).unwrap(),
+                fixture["members"],
+                "{}",
+                fixture["name"]
+            );
+            // Loading/seed order and HashMap iteration cannot affect identities,
+            // node ordering or per-component badge consumer ordering.
+            facts.seeds.reverse();
+            assert_eq!(
+                golden_components(&golden_index(&facts)),
+                fixture["expected"],
+                "{} reversed",
+                fixture["name"]
+            );
+        }
+    }
+
+    #[test]
+    fn five_thousand_images_sharing_a_reference_stay_separate_within_budget() {
+        let mut facts = Facts::default();
+        facts.artifacts.insert(
+            1,
+            ArtifactFacts {
+                path: "/elsewhere/style.png".into(),
+                generating_run: None,
+                state: NodeState::Present,
+                discarded: false,
+                earlier_revision: false,
+                output_index: 0,
+            },
+        );
+        for id in 2..=5_001 {
+            facts.artifacts.insert(
+                id,
+                ArtifactFacts {
+                    path: format!("/pictures/{id}.png"),
+                    generating_run: Some(id),
+                    state: NodeState::Present,
+                    discarded: false,
+                    earlier_revision: false,
+                    output_index: 0,
+                },
+            );
+            facts.runs.insert(
+                id,
+                RunFacts {
+                    status: "succeeded".into(),
+                    temporary: false,
+                    prompt: String::new(),
+                    dismissable: false,
+                    inputs: vec![1],
+                },
+            );
+            facts.seeds.push(Seed::Artifact { id, direct: true });
+        }
+        let started = std::time::Instant::now();
+        let index = golden_index(&facts);
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(5),
+            "assembly took {:?}",
+            started.elapsed()
+        );
+        assert_eq!(index.components.len(), 5_000);
+        assert_eq!(index.members.len(), 5_000);
+        assert_eq!(
+            index
+                .components
+                .iter()
+                .map(|component| &component.id)
+                .collect::<HashSet<_>>()
+                .len(),
+            5_000
+        );
+        for component in &index.components {
+            assert_eq!((component.image_count, component.node_count), (1, 2));
+            let nodes = &index.nodes[&component.id];
+            let badge = nodes[0].reference_badge.as_ref().unwrap();
+            assert_eq!(badge.consumers, vec![nodes[1].key.clone()]);
+        }
+        let mut paged = Vec::new();
+        while paged.len() < index.components.len() {
+            paged.extend(page(&index.components, paged.len(), COMPONENT_PAGE));
+        }
+        assert_eq!(paged, index.components);
+        let mut paged = Vec::new();
+        while paged.len() < index.members.len() {
+            paged.extend(page(&index.members, paged.len(), MEMBER_PAGE));
+        }
+        assert_eq!(
+            serde_json::to_value(paged).unwrap(),
+            serde_json::to_value(&index.members).unwrap()
+        );
+    }
+
     struct Fixture {
         root: tempfile::TempDir,
         db: PathBuf,
@@ -2000,7 +2326,7 @@ mod tests {
     }
 
     #[test]
-    fn shared_outside_input_joins_children_and_its_ancestors_stay_hidden() {
+    fn shared_outside_input_splits_children_and_its_ancestors_stay_hidden() {
         let f = fixture();
         let grand = image(&f.elsewhere.join("grand.png"), b"grand");
         let shared = image(&f.elsewhere.join("shared.png"), b"shared");
@@ -2010,10 +2336,9 @@ mod tests {
         record(&f, serde_json::json!({"prompt":"x"}), &[&shared], &x);
         record(&f, serde_json::json!({"prompt":"y"}), &[&shared], &y);
         let view = view(&f);
-        assert_eq!(view.components.len(), 1);
-        let component = &view.components[0];
-        assert_eq!((component.node_count, component.image_count), (3, 2));
-        assert_eq!(component.title, "x");
+        assert_eq!(view.components.len(), 2);
+        assert_eq!(view.components[0].title, "y");
+        assert_eq!(view.components[1].title, "x");
         let node = view.node(&shared);
         assert_eq!(node.scope, NodeScope::External);
         let path = shared.to_string_lossy();
@@ -2035,6 +2360,55 @@ mod tests {
         assert_eq!(view.node(&x).parents, vec![node.key.clone()]);
         assert_eq!(view.node(&x).prompt, "x");
         assert_eq!(view.members.len(), 2);
+        for output in [&x, &y] {
+            let child = view.node(output);
+            let component = view.component_of(&child.key);
+            assert_eq!((component.node_count, component.image_count), (2, 1));
+            assert_eq!(component.id, format!("c:{}", child.key));
+            assert_eq!(
+                component.cover.as_ref().unwrap().path,
+                output.to_string_lossy()
+            );
+            let reference = view.nodes[&component.id]
+                .iter()
+                .find(|node| node.path.as_deref() == Some(shared.to_str().unwrap()))
+                .unwrap();
+            assert_eq!(
+                reference.reference_badge.as_ref().unwrap().consumers,
+                vec![child.key.clone()]
+            );
+        }
+    }
+
+    #[test]
+    fn outside_input_with_a_displayed_parent_still_joins_children() {
+        let f = fixture();
+        let root = image(&f.folder.join("root.png"), b"root");
+        let reference = image(&f.elsewhere.join("derived.png"), b"derived");
+        record(&f, serde_json::json!({}), &[&root], &reference);
+        for name in ["a", "b"] {
+            let output = image(&f.folder.join(format!("{name}.png")), name.as_bytes());
+            record(&f, serde_json::json!({}), &[&reference], &output);
+        }
+        let view = view(&f);
+        assert_eq!(view.components.len(), 1);
+        assert_eq!(
+            (
+                view.components[0].image_count,
+                view.components[0].node_count
+            ),
+            (3, 4)
+        );
+        assert_eq!(
+            view.components[0].cover.as_ref().unwrap().path,
+            root.to_string_lossy()
+        );
+        assert!(view.node(&reference).reference_badge.is_none());
+        assert_eq!(
+            view.node(&reference).parents,
+            vec![view.node(&root).key.clone()]
+        );
+        assert_eq!(view.members.len(), 3);
     }
 
     #[test]
@@ -2825,6 +3199,7 @@ mod tests {
             order: 1,
             prompt: String::new(),
             dismissable: false,
+            reference_badge: None,
         };
         let with = |change: fn(&mut TraceNode)| {
             let mut node = plain.clone();
@@ -2962,6 +3337,7 @@ mod tests {
             order: 2,
             prompt: String::new(),
             dismissable: false,
+            reference_badge: None,
         };
         let value = serde_json::to_value(&node).unwrap();
         assert_eq!(value["artifactId"], 2);
@@ -2970,6 +3346,7 @@ mod tests {
         assert_eq!(value["scope"], "subfolder");
         assert_eq!(value["state"], "uncertain");
         assert_eq!(value["dismissable"], false);
+        assert!(value.get("referenceBadge").is_none());
         let member = serde_json::to_value(Member {
             path: "/x".into(),
             component_id: "c:1".into(),
@@ -3117,12 +3494,18 @@ mod tests {
         });
         changes("operation link update", &|| {
             connection
-                .execute("UPDATE image_service_operations SET body='{\"output\":null}' WHERE run_id=?1", [run])
+                .execute(
+                    "UPDATE image_service_operations SET body='{\"output\":null}' WHERE run_id=?1",
+                    [run],
+                )
                 .unwrap();
         });
         changes("operation link delete", &|| {
             connection
-                .execute("DELETE FROM image_service_operations WHERE run_id=?1", [run])
+                .execute(
+                    "DELETE FROM image_service_operations WHERE run_id=?1",
+                    [run],
+                )
                 .unwrap();
         });
         changes("dismissal", &|| dismiss::dismiss_at(&f.db, run).unwrap());
@@ -3234,6 +3617,13 @@ mod tests {
                 _ => node.path.as_deref().map(|path| under_link(Path::new(path))),
             };
             assert_eq!(shown.path, expected, "{}", node.key);
+            if let Some(badge) = &shown.reference_badge {
+                assert_eq!(Some(&badge.path), shown.path.as_ref());
+                assert_eq!(
+                    badge.consumers,
+                    node.reference_badge.as_ref().unwrap().consumers
+                );
+            }
             assert_eq!(
                 (shown.artifact_id, shown.scope, &shown.location, shown.state),
                 (node.artifact_id, node.scope, &node.location, node.state)

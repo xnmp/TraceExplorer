@@ -5,6 +5,8 @@ import { createSnapshotCache } from "$lib/plugins/trace/view/folder-snapshots";
 import type { TraceBackend } from "$lib/plugins/trace/view/backend";
 import type { ComponentNodesPage, FolderComponentsPage, FolderMembersPage } from "$lib/api/trace";
 import type { TraceNode } from "$lib/domain/trace-graph/model";
+import { locateTarget } from "$lib/plugins/trace/view/target-location";
+import { withNativeRequestCapacity } from "../../../e2e/harness/request-capacity";
 
 const flush = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
 function deferred<T>() {
@@ -170,6 +172,218 @@ describe("folder session", () => {
     expect(data.members).toEqual(["a", "b"]);
     await session.ensure("c1");
     expect(backend.nodes).toHaveBeenCalledTimes(1);
+  });
+
+  it("bounds replacement searches across panes below native request capacity", async () => {
+    const ids = Array.from({ length: 80 }, (_, i) => `c${i}`);
+    const gate = deferred<void>();
+    let active = 0, peak = 0;
+    const admitted = withNativeRequestCapacity({ invoke: async <T>(_method: string, params?: Record<string, unknown>) => {
+      active += 1; peak = Math.max(peak, active);
+      try { await gate.promise; return nodePage([node(String(params?.id), 1)]) as T; }
+      finally { active -= 1; }
+    } });
+    const backend = fakeBackend({
+      components: vi.fn(async () => compPage("t", ids)),
+      nodes: vi.fn((_d, _t, id) => admitted.invoke<ComponentNodesPage>("trace_component_nodes", { id })),
+    });
+    const sessions = [createFolderSession(backend), createFolderSession(backend)];
+    sessions.forEach((session, i) => session.setDirectory(`/f${i}`));
+    await flush();
+    const search = sessions.flatMap((session) => ids.map((id) => session.ensure(id)));
+    await flush();
+    gate.resolve();
+    await Promise.all(search);
+    expect(peak).toBeLessThanOrEqual(4);
+    for (const session of sessions) {
+      expect(session.components.size).toBe(ids.length);
+      expect(session.error).toBe("");
+      expect(locateTarget("failed-placeholder", "old", {
+        listed: new Set(ids), components: session.components, isStale: (id) => session.isStale(id),
+      })).toBe("gone");
+      session.dispose();
+    }
+  });
+
+  it("clears a component read error when a later load succeeds", async () => {
+    let fail = true;
+    const backend = fakeBackend({ nodes: vi.fn(async () => {
+      if (fail) throw new Error("Plugin request capacity reached");
+      return nodePage([node("a", 1)]);
+    }) });
+    const session = createFolderSession(backend);
+    session.setDirectory("/f"); await flush();
+    await session.ensure("c1");
+    expect(session.error).toBe("Plugin request capacity reached");
+    fail = false;
+    await session.ensure("c1");
+    expect(session.components.get("c1")?.members).toEqual(["a"]);
+    expect(session.error).toBe("");
+  });
+
+  it("keeps a failed component's error when a concurrent component succeeds, until its own retry recovers", async () => {
+    const a = deferred<ComponentNodesPage>();
+    const b = deferred<ComponentNodesPage>();
+    const backend = fakeBackend({
+      components: vi.fn(async () => compPage("t1", ["a", "b"])),
+      nodes: vi.fn((_d, _t, id) => id === "a" ? a.promise : b.promise),
+    });
+    const session = createFolderSession(backend);
+    session.setDirectory("/f"); await flush();
+    const first = session.ensure("a");
+    const second = session.ensure("b");
+    a.reject(new Error("A is unavailable"));
+    await first;
+    expect(session.error).toBe("A is unavailable");
+    b.resolve(nodePage([node("b", 2)]));
+    await second;
+    expect(session.components.has("a")).toBe(false);
+    expect(session.components.has("b")).toBe(true);
+    expect(session.error).toBe("A is unavailable");
+    backend.nodes.mockImplementation(async (_d, _t, id) => nodePage([node(id, 3)]));
+    await session.ensure("a");
+    expect(session.components.has("a")).toBe(true);
+    expect(session.error).toBe("");
+    session.dispose();
+  });
+
+  it("keeps stale component errors across refresh and clears only failures that recovered or disappeared", async () => {
+    let ids = ["a", "b"];
+    let failing = new Set<string>();
+    const backend = fakeBackend({
+      components: vi.fn(async () => compPage("t1", ids)),
+      nodes: vi.fn(async (_d, _t, id) => {
+        if (failing.has(id)) throw new Error(`${id} unavailable`);
+        return nodePage([node(id, 1)]);
+      }),
+    });
+    const session = createFolderSession(backend);
+    session.setDirectory("/f"); await flush();
+    await Promise.all(ids.map((id) => session.ensure(id)));
+    failing = new Set(ids);
+    await session.refresh(); await flush();
+    session.release("b");
+    failing = new Set(["b"]);
+    await session.ensure("a");
+    expect(session.isStale("a")).toBe(false);
+    expect(session.isStale("b")).toBe(true);
+    expect(session.error).toBe("b unavailable");
+    await session.refresh(); await flush();
+    expect(session.error).toBe("b unavailable");
+    ids = ["a"];
+    await session.refresh(); await flush();
+    expect(session.error).toBe("");
+    session.dispose();
+  });
+
+  it("a component success does not clear an unresolved index error", async () => {
+    const backend = fakeBackend();
+    const session = createFolderSession(backend);
+    session.setDirectory("/f"); await flush();
+    backend.components.mockRejectedValueOnce(new Error("Index is unavailable"));
+    await session.refresh();
+    await session.ensure("c1");
+    expect(session.error).toBe("Index is unavailable");
+    await session.refresh(); await flush();
+    expect(session.error).toBe("");
+    session.dispose();
+  });
+
+  it("drops sixteen released queued reads while four wanted reads are still in flight", async () => {
+    const ids = Array.from({ length: 20 }, (_, i) => `c${i}`);
+    const gate = deferred<ComponentNodesPage>();
+    const backend = fakeBackend({
+      components: vi.fn(async () => compPage("t1", ids)),
+      nodes: vi.fn(() => gate.promise),
+    });
+    const session = createFolderSession(backend);
+    session.setDirectory("/f"); await flush();
+    const reads = ids.map((id) => session.ensure(id));
+    expect(backend.nodes.mock.calls).toHaveLength(4);
+    for (const id of ids.slice(4)) session.release(id);
+    gate.resolve(nodePage([node("loaded", 1)]));
+    await Promise.all(reads);
+    expect(backend.nodes.mock.calls.map((call) => call[2])).toEqual(ids.slice(0, 4));
+    expect([...session.components.keys()]).toEqual(ids.slice(0, 4));
+    expect(session.error).toBe("");
+    // A released request must not block a later request for the same component.
+    await session.ensure(ids[4]);
+    expect(session.components.has(ids[4])).toBe(true);
+    session.dispose();
+  });
+
+  it("can immediately request a released queued component again without its old task cancelling the replacement", async () => {
+    const ids = ["c1", "c2", "c3", "c4", "c5"];
+    const gate = deferred<ComponentNodesPage>();
+    const backend = fakeBackend({
+      components: vi.fn(async () => compPage("t1", ids)),
+      nodes: vi.fn(() => gate.promise),
+    });
+    const session = createFolderSession(backend);
+    session.setDirectory("/f"); await flush();
+    const reads = ids.map((id) => session.ensure(id));
+    session.release("c5");
+    const replacement = session.ensure("c5");
+    // Let the cancelled task clean up while its replacement is still queued.
+    await flush();
+    const repeated = session.ensure("c5");
+    gate.resolve(nodePage([node("loaded", 1)]));
+    await Promise.all([...reads, replacement, repeated]);
+    expect(backend.nodes.mock.calls.map((call) => call[2])).toEqual(ids);
+    expect(session.components.has("c5")).toBe(true);
+    expect(session.error).toBe("");
+    session.dispose();
+  });
+
+  it("stops released in-flight loads before reading another page or committing partial data", async () => {
+    const gate = deferred<ComponentNodesPage>();
+    const backend = fakeBackend({ nodes: vi.fn(() => gate.promise) });
+    const session = createFolderSession(backend);
+    session.setDirectory("/f"); await flush();
+    const reading = session.ensure("c1");
+    session.release("c1");
+    gate.resolve(nodePage([node("partial", 1)], 2));
+    await reading;
+    expect(backend.nodes).toHaveBeenCalledTimes(1);
+    expect(session.components.size).toBe(0);
+    expect(session.error).toBe("");
+    session.dispose();
+  });
+
+  it("does not send queued component reads after the folder changes", async () => {
+    const ids = Array.from({ length: 12 }, (_, i) => `old${i}`);
+    const gate = deferred<ComponentNodesPage>();
+    const backend = fakeBackend({
+      components: vi.fn(async (dir) => compPage(dir, dir === "/old" ? ids : ["new"])),
+      nodes: vi.fn(() => gate.promise),
+    });
+    const session = createFolderSession(backend);
+    session.setDirectory("/old"); await flush();
+    const loading = ids.map((id) => session.ensure(id));
+    session.setDirectory("/new"); await flush();
+    gate.resolve(nodePage([node("old-node", 1)]));
+    await Promise.all(loading);
+    expect(backend.nodes.mock.calls).toHaveLength(4);
+    expect(session.index?.directory).toBe("/new");
+    expect(session.components.size).toBe(0);
+  });
+
+  it("keeps reloading component data unresolved until the fresh page arrives", async () => {
+    const backend = fakeBackend();
+    const session = createFolderSession(backend);
+    session.setDirectory("/f"); await flush();
+    await session.ensure("c1");
+    const gate = deferred<ComponentNodesPage>();
+    backend.nodes.mockImplementation(() => gate.promise);
+    await session.refresh();
+    expect(session.components.get("c1")?.members).toEqual(["a"]);
+    expect(session.isStale("c1")).toBe(true);
+    expect(locateTarget("a", "c1", {
+      listed: new Set(["c1"]), components: session.components, isStale: (id) => session.isStale(id),
+    })).toBe("unknown");
+    gate.resolve(nodePage([node("a", 1)]));
+    await session.ensure("c1");
+    expect(session.isStale("c1")).toBe(false);
   });
 
   it("pages component nodes", async () => {
@@ -482,6 +696,61 @@ describe("returning to a folder (a Trace tab shown again)", () => {
 
 describe("artifact reveal resolution", () => {
   beforeEach(() => forgetFolderSnapshots());
+  it("a reveal clears its own component's failure without clearing another unloaded component's failure", async () => {
+    let failing = true;
+    const backend = fakeBackend({
+      components: vi.fn(async () => compPage("t1", ["a", "b"])),
+      nodes: vi.fn(async (_d, _t, id) => {
+        if (failing) throw new Error(`${id} unavailable`);
+        return nodePage([node(id, id === "b" ? 71 : 1)]);
+      }),
+    });
+    const session = createFolderSession(backend);
+    session.setDirectory("/f"); await flush();
+    await Promise.all([session.ensure("a"), session.ensure("b")]);
+    failing = false;
+    const found = await session.resolveArtifact(71, new AbortController().signal);
+    expect(found.componentId).toBe("b");
+    expect(session.components.has("a")).toBe(false);
+    expect(session.components.has("b")).toBe(true);
+    expect(session.error).toBe("a unavailable");
+    await session.ensure("a");
+    expect(session.error).toBe("");
+    session.dispose();
+  });
+  for (const cancellation of ["abort", "dispose", "change folder"] as const) {
+    it(`settles a queued reveal promptly on ${cancellation} without waiting for occupied slots`, async () => {
+      const ids = ["c1", "c2", "c3", "c4"];
+      const gate = deferred<ComponentNodesPage>();
+      const backend = fakeBackend({
+        components: vi.fn(async () => compPage("t1", ids)),
+        nodes: vi.fn(() => gate.promise),
+      });
+      const session = createFolderSession(backend);
+      session.setDirectory("/f"); await flush();
+      const reads = ids.map((id) => session.ensure(id));
+      const controller = new AbortController();
+      let outcome = "pending";
+      const reveal = session.resolveArtifact(71, controller.signal)
+        .then(() => { outcome = "completed"; }, (error: Error) => { outcome = error.name; });
+      try {
+        await flush();
+        expect(backend.nodes).toHaveBeenCalledTimes(4);
+        if (cancellation === "abort") controller.abort();
+        else if (cancellation === "dispose") session.dispose();
+        else session.setDirectory("/other");
+        await flush();
+        expect(outcome).toBe("AbortError");
+        expect(session.components.size).toBe(0);
+        expect(backend.nodes).toHaveBeenCalledTimes(4);
+      } finally {
+        gate.resolve(nodePage([node("a", 1)]));
+        await Promise.all([...reads, reveal]);
+        session.dispose();
+      }
+      expect(backend.nodes).toHaveBeenCalledTimes(4);
+    });
+  }
   it("finds an unlisted artifact after its component merged, using a fresh index", async () => {
     let merged = false;
     const image = { ...node("o:9:0", 71), temporary: true, path: "/private/generated/image.png" };

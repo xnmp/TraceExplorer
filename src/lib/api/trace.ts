@@ -1,4 +1,5 @@
 import { invoke, extractError, virtualPathGuard, type ApiResult } from "./common";
+import type { ReferenceBadgeRecord } from "$lib/domain/trace-graph/model";
 
 export interface TraceArtifact {
   readonly id: number;
@@ -92,10 +93,13 @@ export interface TraceNodeRecord {
   readonly earlierRevision: boolean;
   readonly order: number;
   readonly prompt: string;
+  /** Component-local reference data; finish node paging before consuming it. */
+  readonly referenceBadge?: ReferenceBadgeRecord;
 }
 
 export interface ComponentSummaryRecord {
-  /** Opaque and stable across refreshes, saves and new descendants; changes only when components merge or split. */
+  /** Opaque, derived from non-badge members. Resolve node keys against each
+   * fresh index: merges, splits or removal of the oldest member can change it. */
   readonly id: string;
   readonly title: string;
   readonly cover: { readonly path: string; readonly present: boolean } | null;

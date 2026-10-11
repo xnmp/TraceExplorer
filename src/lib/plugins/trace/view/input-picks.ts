@@ -131,12 +131,12 @@ export type PickLocation = { readonly node: TraceNode; readonly componentId: str
  * carries its pick to the new path, and one whose component changed (merged
  * with another) carries its pick to that component.
  */
-export function followPicks(picks: Picks, locate: (key: NodeKey) => PickLocation): Picks {
+export function followPicks(picks: Picks, locate: (key: NodeKey, preferred?: string) => PickLocation): Picks {
   const moved = new Map<string, string | null>();
   let changed = false;
   const extras: Pick[] = [];
   for (const extra of picks.extras) {
-    const found = locate(extra.key);
+    const found = locate(extra.key, extra.componentId);
     if (found === "unknown") { extras.push(extra); continue; }
     if (!found || !pickable(found.node)) { moved.set(extra.path, null); changed = true; continue; }
     const path = found.node.path!;

@@ -1,4 +1,5 @@
 import { imageAvailability } from "../../tests/fixtures/image-connections";
+import groupingFixtures from "../../tests/fixtures/folder-grouping.json";
 /**
  * In-memory Trace backend for the view harness. It answers the folder-scoped
  * protocol from a mutable node list (components are derived with the same
@@ -9,11 +10,11 @@ import { configureBackend, invoke } from "$lib/api/common";
 import type { TraceNode } from "$lib/domain/trace-graph/model";
 import type { JobCost, JobReveal, TileSizePreset } from "../../integration/plugin-sdk";
 import { TILE_IMAGE_PX } from "./tile-presets";
-import { connectedComponents, projectDag } from "$lib/domain/trace-graph/projection";
 import { basename, joinPath, parentDir } from "$lib/domain/path";
 import StubFileTiles from "./StubFileTiles.svelte";
-import { displayedNodes, isDirectFolderSeed } from "./folder-snapshot";
+import { folderComponents, folderPage, isDirectFolderSeed, nativeStringOrder, type FolderNode } from "./folder-snapshot";
 import { isLocalAbsolutePath } from "$lib/domain/target-location";
+import { withNativeRequestCapacity } from "./request-capacity";
 
 export const DIRECTORY = "/pictures";
 const TEMP = "/managed";
@@ -21,55 +22,77 @@ export const MIRROR = "/pictures-mirror";
 
 type Seed = { key: string; parents?: string[]; scope?: TraceNode["scope"]; temporary?: boolean; prompt?: string };
 let counter = 0;
-function make({ key, parents = [], scope = "current", temporary = false, prompt }: Seed): TraceNode {
+function make({ key, parents = [], scope = "current", temporary = false, prompt }: Seed): FolderNode {
   counter += 1;
   const path = temporary ? `${TEMP}/${key}.png` : scope === "current" ? `${DIRECTORY}/${key}.png` : scope === "subfolder" ? `${DIRECTORY}/refs/${key}.png` : `/elsewhere/${key}.png`;
   return {
     key: parents.length ? `o:${counter}:0` : `a:${counter}`, artifactId: counter, runId: parents.length ? counter : null, parents, path, scope,
     location: temporary ? "Unsaved" : scope === "current" ? `./${key}.png` : scope === "subfolder" ? `refs/${key}.png` : `/elsewhere/${key}.png`,
-    state: "present", temporary, discarded: false, earlierRevision: false, order: counter, prompt: prompt ?? `${key} prompt`,
+    state: "present", temporary, ...(temporary ? { contextDirectory: DIRECTORY } : {}), discarded: false, earlierRevision: false, order: counter, prompt: prompt ?? `${key} prompt`,
   };
 }
 
 /** Named scenario nodes; keys are resolved after creation so parents refer to real keys. */
-function scenario(): { nodes: TraceNode[]; names: Map<string, string> } {
+function scenario(): { nodes: FolderNode[]; names: Map<string, string> } {
   counter = 0;
   const names = new Map<string, string>();
-  const nodes: TraceNode[] = [];
+  const nodes: FolderNode[] = [];
   const add = (seed: Seed) => {
     const node = make({ ...seed, parents: (seed.parents ?? []).map((name) => names.get(name)!) });
     names.set(seed.key, node.key);
     nodes.push(node);
   };
   const query = new URLSearchParams(globalThis.location?.search ?? "");
-  // `?gym=1` puts a small component first, shaped like a typical edit session:
-  // a root with two edits, and two further edits under the second one.
-  if (query.has("gym")) for (const seed of [
-    { key: "gym" }, { key: "cerulean", parents: ["gym"] }, { key: "saffron", parents: ["gym"] },
-    { key: "saffron-a", parents: ["saffron"] }, { key: "saffron-b", parents: ["saffron"] },
-  ] satisfies Seed[]) add(seed);
+  // Shared with native and mock golden tests. These focused scenarios expose
+  // references repeated across sections without disturbing the motion gym.
+  const grouping = groupingFixtures.find((fixture) => fixture.name === query.get("grouping"));
+  if (grouping) {
+    const fixtures = grouping.nodes as FolderNode[];
+    for (const node of fixtures) {
+      names.set(basename(node.path ?? node.key).replace(/\.png$/, ""), node.key);
+      counter = Math.max(counter, node.artifactId ?? 0, node.runId ?? 0);
+    }
+    return { nodes: fixtures, names };
+  }
+  // Record source identities in their original order, then outputs oldest
+  // section first. Native summaries rank newest-first, while identities keep
+  // village before forest before fan when a later edit joins those lineages.
+  if (query.has("gym")) add({ key: "gym" });
   for (const seed of [
     { key: "village" }, { key: "palette" }, { key: "mist", scope: "subfolder" }, { key: "lantern", scope: "external" },
+    { key: "forest" }, { key: "fan" },
+  ] satisfies Seed[]) add(seed);
+  // `?many=N` adds N older small components (a root and six children each) for tall, scrollable views.
+  const many = Number(query.get("many") ?? 0);
+  for (let component = many - 1; component >= 0; component--) {
+    add({ key: `m${component}` });
+    for (let index = 0; index < 6; index++) add({ key: `m${component}-${index}`, parents: [`m${component}`] });
+  }
+  for (const seed of [
+    ...Array.from({ length: 18 }, (_, index) => ({ key: `fan-${index + 1}`, parents: ["fan"] })),
+  ] satisfies Seed[]) add(seed);
+  // Large uncached scenes exercise the view's worker layout path during reveal.
+  if (query.has("revealLarge")) for (let index = 0; index < 85; index++) add({ key: `wide-${index}`, parents: ["fan"] });
+  for (const seed of [
+    { key: "forest-mist", parents: ["forest"] }, { key: "autumn", parents: ["forest"] },
+  ] satisfies Seed[]) add(seed);
+  // `?deeper=1` continues the forest's mist edit two more generations, so selecting along it reveals new columns.
+  if (query.has("deeper")) for (const seed of [{ key: "mist-dawn", parents: ["forest-mist"] }, { key: "mist-dusk", parents: ["mist-dawn"] }]) add(seed);
+  for (const seed of [
     { key: "daylight", parents: ["village"] }, { key: "warm", parents: ["village", "palette", "mist", "lantern"] }, { key: "cool", parents: ["palette"] },
     { key: "morning", parents: ["daylight"] }, { key: "sunny", parents: ["daylight"] }, { key: "evening", parents: ["warm"] }, { key: "rain", parents: ["warm"] },
     { key: "merge", parents: ["daylight", "warm"], temporary: true }, { key: "quiet", parents: ["rain"] },
     // Daylight's six children make its focus widen the graph (see the motion specs).
     { key: "dawn", parents: ["daylight"] }, { key: "noon", parents: ["daylight"] }, { key: "dusk", parents: ["daylight"] },
-    { key: "forest" }, { key: "forest-mist", parents: ["forest"] }, { key: "autumn", parents: ["forest"] },
-    { key: "fan" }, ...Array.from({ length: 18 }, (_, index) => ({ key: `fan-${index + 1}`, parents: ["fan"] })),
   ] satisfies Seed[]) add(seed);
-  // `?deeper=1` continues the forest's mist edit two more generations, so selecting along it reveals new columns.
-  if (query.has("deeper")) for (const seed of [{ key: "mist-dawn", parents: ["forest-mist"] }, { key: "mist-dusk", parents: ["mist-dawn"] }]) add(seed);
+  // `?gym=1` puts a small component first, shaped like a typical edit session:
+  // a root with two edits, and two further edits under the second one.
+  if (query.has("gym")) for (const seed of [
+    { key: "cerulean", parents: ["gym"] }, { key: "saffron", parents: ["gym"] },
+    { key: "saffron-a", parents: ["saffron"] }, { key: "saffron-b", parents: ["saffron"] },
+  ] satisfies Seed[]) add(seed);
   // `?lone=1` adds an image whose only history is failed edits: recorded, but with no visible relationship.
   if (query.has("lone")) add({ key: "lonely" });
-  // `?many=N` appends N small components (a root and six children each) for tall, scrollable views.
-  const many = Number(query.get("many") ?? 0);
-  for (let component = 0; component < many; component++) {
-    add({ key: `m${component}` });
-    for (let index = 0; index < 6; index++) add({ key: `m${component}-${index}`, parents: [`m${component}`] });
-  }
-  // Large uncached scenes exercise the view's worker layout path during reveal.
-  if (query.has("revealLarge")) for (let index = 0; index < 85; index++) add({ key: `wide-${index}`, parents: ["fan"] });
   return { nodes, names };
 }
 
@@ -106,35 +129,7 @@ let heldFolderReads: Array<() => void> = [];
 const titleCalls: number[] = [];
 const titleWaiters = new Map<number, (title: string) => void>();
 
-/**
- * Mirrors the backend's rule (`has_relationship` in src-tauri/src/trace/folder_graph.rs):
- * a component that is one plain file in this folder (not generated, not
- * unsaved, not a placeholder, no displayed parent or child) is not a section,
- * so its file is not a member and lists with the ordinary files.
- */
-function hasRelationship(nodes: readonly TraceNode[]): boolean {
-  if (nodes.length !== 1) return true;
-  const [node] = nodes;
-  return !(node.scope === "current" && node.artifactId !== null && node.runId === null && !node.temporary
-    && node.state !== "running" && node.state !== "uncertain" && node.parents.length === 0);
-}
-
-function componentsOf() {
-  const dag = projectDag(displayedNodes(state.nodes, dismissedRuns));
-  return connectedComponents(dag).filter((members) => hasRelationship(members.map((key) => dag.nodes.get(key)!))).map((members) => {
-    const first = members.map((key) => dag.nodes.get(key)!).sort((a, b) => a.order - b.order)[0];
-    const name = [...state.names].find(([, key]) => key === first.key)?.[0] ?? first.key;
-    const nodes = members.map((key) => dag.nodes.get(key)!);
-    return {
-      id: `c:${first.key}`, members, nodes,
-      summary: {
-        id: `c:${first.key}`, title: name, cover: first.path ? { path: first.path, present: true } : null,
-        imageCount: nodes.filter((node) => node.artifactId !== null).length, nodeCount: nodes.length,
-        active: nodes.some((node) => node.state === "running"), unsaved: nodes.some((node) => node.temporary && !node.discarded),
-      },
-    };
-  });
-}
+const componentsOf = () => folderComponents(state.nodes, dismissedRuns);
 
 export const files = () => [
   ...state.nodes.filter((node) => isDirectFolderSeed(node) && !entryExtras.some((entry) => entry.path === node.path)).map((node) => ({ name: node.path!.split("/").at(-1)!, path: node.path!, kind: "file" as const })),
@@ -169,7 +164,7 @@ function jobSnapshot(jobId: number) {
     outputPath: node.path, error: null, ...(reveal ? { reveal } : {}), ...(cost ? { cost } : {}) };
 }
 
-configureBackend({
+configureBackend(withNativeRequestCapacity({
   invoke<T>(method: string, params: Record<string, any> = {}): Promise<T> {
     calls.push({ method, params: structuredClone(params) });
     const reply = (value: unknown) => Promise.resolve(value as T);
@@ -189,19 +184,20 @@ configureBackend({
       case "folder_has_trace": return reply(params.directory === DIRECTORY || params.directory === MIRROR);
       case "trace_folder_components": {
         const all = componentsOf().map((component) => component.summary);
-        return folderReply({ token, total: all.length, offset: params.offset, components: all.slice(params.offset) });
+        return folderReply({ token, total: all.length, offset: params.offset, components: folderPage(all, params.offset, 200) });
       }
       case "trace_folder_members": {
         if (params.token !== token) return folderReply({ stale: true, total: 0, offset: 0, members: [] });
         const members = componentsOf().flatMap((component) => component.nodes
           .filter(isDirectFolderSeed)
-          .map((node) => ({ path: node.path!, componentId: component.id, key: node.key })));
-        return folderReply({ stale: false, total: members.length, offset: params.offset, members: members.slice(params.offset) });
+          .map((node) => ({ path: node.path!, componentId: component.id, key: node.key }))).sort((a, b) => nativeStringOrder(a.path, b.path));
+        return folderReply({ stale: false, total: members.length, offset: params.offset, members: folderPage(members, params.offset, 1000) });
       }
       case "trace_component_nodes": {
         if (params.token !== token) return folderReply({ stale: true, total: 0, offset: 0, nodes: [] });
-        const nodes = componentsOf().find((component) => component.id === params.componentId)?.nodes ?? [];
-        return folderReply({ stale: false, total: nodes.length, offset: params.offset, nodes: nodes.slice(params.offset) });
+        const nodes = componentsOf().find((component) => component.id === params.componentId)?.nodes;
+        if (!nodes) return Promise.reject(new Error("Unknown Trace component"));
+        return folderReply({ stale: false, total: nodes.length, offset: params.offset, nodes: folderPage(nodes, params.offset, 1000) });
       }
       case "trace_run_details": return later((params.runIds as number[]).map((id) => {
         const node = state.nodes.find((item) => item.runId === id);
@@ -303,8 +299,8 @@ configureBackend({
         imageOperations.set(jobId, params.operationId ?? operationIdFor(jobId));
         state.names.set(`job-${jobId}`, key);
         state = { ...state, nodes: [...state.nodes, {
-          key, artifactId: null, runId, parents, path: null, scope: "current", location: "Generating",
-          state: "running", temporary: true, discarded: false, earlierRevision: false, order: runId, prompt: String(request.prompt),
+          key, artifactId: null, runId, parents, path: null, scope: directory === DIRECTORY ? "current" : "external", location: "Generating",
+          state: "running", temporary: true, contextDirectory: directory, discarded: false, earlierRevision: false, order: 1_000_000_000_000 + runId, prompt: String(request.prompt),
         }] };
         changed();
         return reply(jobId);
@@ -313,7 +309,7 @@ configureBackend({
       default: return Promise.reject(new Error(`Unexpected method ${method}`));
     }
   },
-});
+}));
 
 // `?fileTiles=1` simulates a host with the `ui/file-tiles` module; without it, an older SDK 2 host.
 const fileTiles = new URLSearchParams(globalThis.location?.search ?? "").has("fileTiles");
@@ -353,7 +349,7 @@ export const backend = {
     const node = state.nodes.find((node) => node.key === key);
     const run = node?.runId === null || node?.runId === undefined ? undefined : imageRuns.get(node.runId);
     if (!node || !run || node.state !== "running") throw new Error("Job is not running");
-    update(node.key, { artifactId: ++counter, path: `${TEMP}/generation-${node.runId}/${run.filename}`, location: "Unsaved", state: "present" });
+    update(node.key, { artifactId: ++counter, order: counter, path: `${TEMP}/generation-${node.runId}/${run.filename}`, location: "Unsaved", state: "present" });
     changed();
     return node.key;
   },
@@ -376,7 +372,7 @@ export const backend = {
     state.names.set(name, key);
     state = { ...state, nodes: [...state.nodes, {
       key, artifactId: null, runId: counter, parents: [state.names.get(parent)!], path: null, scope: "current", location: "Generating",
-      state: "running", temporary: true, discarded: false, earlierRevision: false, order: counter, prompt: `${name} prompt`,
+      state: "running", temporary: true, contextDirectory: DIRECTORY, discarded: false, earlierRevision: false, order: 1_000_000_000_000 + counter, prompt: `${name} prompt`,
     }] };
     changed();
     return key;
@@ -388,7 +384,7 @@ export const backend = {
     state.names.set(name, key);
     state = { ...state, nodes: [...state.nodes, {
       key, artifactId: null, runId: counter, parents: parents.map((parent) => state.names.get(parent)!), path: null, scope: "current", location: "Generating",
-      state: "running", temporary: true, discarded: false, earlierRevision: false, order: counter, prompt: `${name} prompt`,
+      state: "running", temporary: true, contextDirectory: DIRECTORY, discarded: false, earlierRevision: false, order: 1_000_000_000_000 + counter, prompt: `${name} prompt`,
     }] };
     changed();
     return key;
@@ -422,7 +418,7 @@ export const backend = {
   completeGeneration(name: string) {
     const key = state.names.get(name)!;
     counter += 1;
-    update(key, { artifactId: counter, path: `${TEMP}/${name}.png`, location: "Unsaved", state: "present" });
+    update(key, { artifactId: counter, order: counter, path: `${TEMP}/${name}.png`, location: "Unsaved", state: "present" });
     changed();
   },
   /** Title generation: connection availability, requested run ids, and manual completion. */

@@ -12,6 +12,7 @@ import type { Orientation } from "$lib/domain/trace-graph/layout";
 import { projectDag, type TraceDag } from "$lib/domain/trace-graph/projection";
 import { traceBackend, type TraceBackend } from "./backend";
 import { createSnapshotCache, type SnapshotCache } from "./folder-snapshots";
+import { componentRequest } from "./component-requests";
 
 export interface ComponentData {
   readonly nodes: readonly TraceNode[];
@@ -51,19 +52,35 @@ export function forgetFolderSnapshots(): void { folderSnapshots.clear(); }
 export function createFolderSession(backend: TraceBackend = traceBackend, snapshots: SnapshotCache<FolderSnapshot> = folderSnapshots) {
   let index = $state.raw<FolderIndex | null>(null);
   let status = $state<SessionStatus>("idle");
-  let error = $state("");
+  let indexError = $state("");
+  let componentErrors = $state.raw<ReadonlyMap<string, string>>(new Map());
+  const error = $derived(indexError || [...componentErrors.values()].join("\n"));
   let components = $state.raw<ReadonlyMap<string, ComponentData>>(new Map());
   let directory: string | null = null;
   let generation = 0;
   let disposed = false;
   const loading = new Map<string, Promise<void>>();
+  const loadControllers = new Map<string, AbortController>();
+  /** Reveals survive index refreshes, but never a directory change or disposal. */
+  let lifetime = new AbortController();
   let wanted = new Set<string>();
-  /** Loaded components a refresh did not reload (not wanted then): shown until reloaded, reloaded when wanted again. */
+  /** Loaded data predating the index: stays visible until its fresh load completes. */
   let stale = $state.raw<ReadonlySet<string>>(new Set());
   /** Orientation each component of this folder was last laid out with, by id: hysteresis that survives collapse and remount. The layout writes it. */
   let orientations = $state.raw(new Map<string, Orientation>());
   /** Writes stop once the cache is cleared (the plugin was disabled) after this session began. */
   const epoch = snapshots.epoch;
+
+  function cancelLoads(): void {
+    for (const controller of loadControllers.values()) controller.abort();
+    loadControllers.clear();
+    loading.clear();
+  }
+
+  /** A successful load resolves only its own error; removed components have no unresolved load. */
+  function retainErrors(ids: ReadonlySet<string>): void {
+    componentErrors = new Map([...componentErrors].filter(([id]) => ids.has(id)));
+  }
 
   /** Keeps what this folder now shows for the next session that opens it. */
   function remember(): void {
@@ -114,11 +131,13 @@ export function createFolderSession(backend: TraceBackend = traceBackend, snapsh
     return { directory: dir, token, components: summaries, members };
   }
 
-  async function loadComponent(id: string, current: number, folder: FolderIndex): Promise<void> {
+  async function loadComponent(id: string, current: number, folder: FolderIndex, signal: AbortSignal): Promise<void> {
     const nodes: TraceNode[] = [];
     for (let offset = 0; ;) {
-      const page = await backend.nodes(folder.directory, folder.token, id, offset);
-      if (current !== generation || disposed) return;
+      const page = await componentRequest(() => current !== generation || disposed || !wanted.has(id)
+        ? Promise.resolve(null) : backend.nodes(folder.directory, folder.token, id, offset), signal);
+      if (current !== generation || disposed || !wanted.has(id) || signal.aborted) return;
+      if (!page) return;
       if (page.stale) { void refresh(); return; }
       nodes.push(...page.nodes);
       offset += page.nodes.length;
@@ -129,38 +148,42 @@ export function createFolderSession(backend: TraceBackend = traceBackend, snapsh
     next.set(id, { nodes, dag, members: dag.order });
     components = next;
     if (stale.has(id)) stale = new Set([...stale].filter((other) => other !== id));
+    componentErrors = new Map([...componentErrors].filter(([other]) => other !== id));
     remember();
   }
 
   async function open(dir: string | null, keepVisible: boolean): Promise<void> {
     const current = ++generation;
-    loading.clear();
+    cancelLoads();
     directory = dir;
-    if (!dir) { index = null; components = new Map(); status = "idle"; return; }
+    if (!keepVisible) { indexError = ""; componentErrors = new Map(); }
+    if (!dir) { index = null; components = new Map(); stale = new Set(); status = "idle"; return; }
     if (!keepVisible) { index = null; components = new Map(); stale = new Set(); }
     status = keepVisible && index ? "ready" : "loading";
-    error = "";
     try {
       const next = await loadIndex(dir, current);
       if (!next || current !== generation || disposed) return;
       const previous = components;
       index = next;
+      indexError = "";
       status = "ready";
       // Reload what is shown; keep the old graph visible until it is replaced.
       const keep = new Set(next.components.map((component) => component.id));
+      retainErrors(keep);
       components = new Map([...previous].filter(([id]) => keep.has(id)));
       // Every kept component may be out of date: wanted ones reload now, the others when wanted again.
-      stale = new Set([...components.keys()].filter((id) => !wanted.has(id)));
+      stale = new Set(components.keys());
       remember();
       for (const id of wanted) if (keep.has(id)) void ensure(id, true);
     } catch (cause) {
       if (current !== generation || disposed) return;
-      error = cause instanceof Error ? cause.message : String(cause);
+      indexError = cause instanceof Error ? cause.message : String(cause);
       status = index ? "ready" : "error";
     }
   }
 
   function ensure(id: string, force = false): Promise<void> {
+    if (disposed) return Promise.resolve();
     wanted.add(id);
     const folder = index;
     if (!folder || (!force && components.has(id) && !stale.has(id))) return Promise.resolve();
@@ -168,9 +191,18 @@ export function createFolderSession(backend: TraceBackend = traceBackend, snapsh
     const pending = loading.get(key);
     if (pending) return pending;
     const current = generation;
-    const task = loadComponent(id, current, folder)
-      .catch((cause) => { if (current === generation) error = cause instanceof Error ? cause.message : String(cause); })
-      .finally(() => loading.delete(key));
+    const controller = new AbortController();
+    loadControllers.set(key, controller);
+    const task = loadComponent(id, current, folder, controller.signal)
+      .catch((cause) => {
+        if (current === generation && !disposed && !controller.signal.aborted) {
+          componentErrors = new Map(componentErrors).set(id, cause instanceof Error ? cause.message : String(cause));
+        }
+      })
+      .finally(() => {
+        if (loading.get(key) === task) loading.delete(key);
+        if (loadControllers.get(key) === controller) loadControllers.delete(key);
+      });
     loading.set(key, task);
     return task;
   }
@@ -181,6 +213,7 @@ export function createFolderSession(backend: TraceBackend = traceBackend, snapsh
 
   /** Resolve against a fresh index: component ids may have changed since publication. */
   async function resolveArtifact(artifactId: number, signal: AbortSignal): Promise<{ node: TraceNode; componentId: string }> {
+    signal = AbortSignal.any([signal, lifetime.signal]);
     signal.throwIfAborted();
     const dir = directory;
     if (!dir || disposed) throw new Error("Trace view is no longer available");
@@ -195,10 +228,13 @@ export function createFolderSession(backend: TraceBackend = traceBackend, snapsh
         const nodes: TraceNode[] = [];
         for (let offset = 0; ;) {
           signal.throwIfAborted();
-          const page = await backend.nodes(dir, folder.token, summary.id, offset);
+          const page = await componentRequest(() => {
+            signal.throwIfAborted();
+            return current !== generation || disposed ? Promise.resolve(null) : backend.nodes(dir, folder.token, summary.id, offset);
+          }, signal);
           signal.throwIfAborted();
           if (dir !== directory || disposed) throw new Error("Trace folder changed during reveal");
-          if (current !== generation) { restart = true; break; }
+          if (current !== generation || !page) { restart = true; break; }
           if (page.stale) { restart = true; break; }
           nodes.push(...page.nodes);
           offset += page.nodes.length;
@@ -210,15 +246,16 @@ export function createFolderSession(backend: TraceBackend = traceBackend, snapsh
         // Only commit once the entire target component is loaded and the request is still live.
         signal.throwIfAborted();
         generation += 1;
-        loading.clear();
+        cancelLoads();
         const ids = new Set(folder.components.map((component) => component.id));
+        retainErrors(new Set([...ids].filter((id) => id !== summary.id)));
         components = new Map([...components].filter(([id]) => ids.has(id)));
         stale = index?.token === folder.token ? new Set([...stale].filter((id) => ids.has(id))) : new Set(components.keys());
         components = new Map(components).set(summary.id, { nodes, dag: projectDag(nodes), members: nodes.map((node) => node.key) });
         stale = new Set([...stale].filter((id) => id !== summary.id));
         index = folder;
         status = "ready";
-        error = "";
+        indexError = "";
         wanted.add(summary.id);
         remember();
         return { node, componentId: summary.id };
@@ -236,7 +273,11 @@ export function createFolderSession(backend: TraceBackend = traceBackend, snapsh
     get orientations() { return orientations; },
     /** Switch folders. Data for the previous folder is never shown for the new one. */
     setDirectory(dir: string | null) {
-      if (dir === directory) return;
+      if (disposed || dir === directory) return;
+      lifetime.abort();
+      lifetime = new AbortController();
+      indexError = "";
+      componentErrors = new Map();
       wanted = new Set();
       const known = dir ? snapshots.recall(dir) : undefined;
       if (!known) { orientations = new Map(); void open(dir, false); return; }
@@ -247,11 +288,18 @@ export function createFolderSession(backend: TraceBackend = traceBackend, snapsh
     refresh,
     resolveArtifact,
     ensure,
-    release(id: string) { wanted.delete(id); },
+    release(id: string) {
+      wanted.delete(id);
+      const key = index ? `${index.token}:${id}` : null;
+      if (!key) return;
+      loadControllers.get(key)?.abort();
+      loadControllers.delete(key);
+      loading.delete(key);
+    },
     componentOf(path: string): Member | null { return index?.members.get(path) ?? null; },
     /** Whether a loaded component's data predates the current index (a refresh skipped it). Reactive. */
     isStale(id: string): boolean { return stale.has(id); },
-    dispose() { disposed = true; generation += 1; loading.clear(); },
+    dispose() { disposed = true; generation += 1; lifetime.abort(); cancelLoads(); },
   };
 }
 

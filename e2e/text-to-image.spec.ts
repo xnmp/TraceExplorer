@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { click, openView, tile } from "./support";
+import { click, openView, tile, key, ensureExpanded } from "./support";
 
 test("Ctrl+E with nothing selected generates an image with zero inputs", async ({ page }) => {
   await openView(page, 1400, "?ai=1");
@@ -27,7 +27,8 @@ test("Ctrl+E with nothing selected generates an image with zero inputs", async (
   // As the native provider finishes: publish a managed, unsaved output with
   // no inputs, then save it through the real Preview action into the hint folder.
   await page.evaluate(() => (window as any).trace.backend.completeJob(901));
-  await page.getByRole("region", { name: "job-901", exact: true }).getByRole("button", { name: /^job-901/ }).click();
+  const componentId = `c:${await key(page, "job-901")}`;
+  await ensureExpanded(page.locator(`section.component[data-component="${componentId}"]`));
   const root = await tile(page, "job-901");
   await expect(root.locator("img")).toBeVisible();
   const rootKey = await root.getAttribute("data-tile-key");
@@ -101,7 +102,8 @@ test("editing an external generated parent saves into the current Trace folder",
     await page.evaluate((id) => (window as any).trace.backend.completeJob(id), jobId);
   };
   await generate("A lantern", 901);
-  await page.getByRole("region", { name: "job-901", exact: true }).getByRole("button", { name: /^job-901/ }).click();
+  const componentId = `c:${await key(page, "job-901")}`;
+  await ensureExpanded(page.locator(`section.component[data-component="${componentId}"]`));
   await click(page, "job-901");
   // A present child keeps the parent indexed after it is saved outside this folder.
   await generate("A brighter lantern", 902);

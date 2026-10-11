@@ -50,6 +50,6 @@ export function lineageWithBadges(graph: BadgeProjection, focus: NodeKey | null,
 
 export function toneOf(context: Lineage, key: NodeKey): NodeTone {
   if (context.focus === null) return "neutral";
-  if (key === context.focus) return "focus";
+  if (key === context.focus && context.related.has(key)) return "focus";
   return context.related.has(key) ? "related" : "unrelated";
 }
