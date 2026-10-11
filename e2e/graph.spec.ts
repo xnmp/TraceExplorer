@@ -1,5 +1,6 @@
 import { test, expect, type Page } from "@playwright/test";
 import { openView, click, key, tile, card, state, uncaught, settle, tileBoxes, overlaps, rendered, type Box } from "./support";
+import { holdScriptedAnimations, releaseScriptedAnimations } from "./animation-control";
 
 /** Rendered width and image height of every tile, keyed by node key. */
 const tileSizes = (page: Page) => page.evaluate(() => Object.fromEntries([...document.querySelectorAll<HTMLElement>("[data-tile-key]")].map((element) => {
@@ -550,30 +551,46 @@ test.describe("motion", () => {
 
   test("a tile interrupted while fading in continues from its displayed opacity", async ({ page }) => {
     await openView(page);
-    const samples = await page.evaluate(async (target) => {
+    // Animations are held and seeked by hand, so the interruption lands part-way through the fade however slow the machine is.
+    await holdScriptedAnimations(page);
+    const target = await key(page, "merge");
+    const result = await page.evaluate(async (target) => {
+      const held = (window as any).__heldAnimations as Animation[];
       const frame = () => new Promise((resolve) => requestAnimationFrame(resolve));
       const select = (name: string) => document.querySelector<HTMLElement>(`[data-node-key="${CSS.escape((window as any).trace.backend.key(name))}"]`)!.click();
-      const opacity = () => {
-        const element = document.querySelector<HTMLElement>(`[data-tile-key="${CSS.escape(target)}"]`);
-        return element ? Number(getComputedStyle(element).opacity) : null;
+      const element = () => document.querySelector<HTMLElement>(`[data-tile-key="${CSS.escape(target)}"]`);
+      const fades = () => held.filter((animation) => (animation.effect as KeyframeEffect | null)?.target === element() && animation.playState !== "idle"
+        && (animation.effect as KeyframeEffect).getKeyframes().some((keyframe) => "opacity" in keyframe));
+      const waitFor = async <T,>(find: () => T | undefined): Promise<T> => {
+        for (let i = 0; i < 2000; i++) { const found = find(); if (found !== undefined) return found; await frame(); }
+        throw new Error("timed out waiting for the tile's fade");
       };
       select("daylight");
-      // Interrupt once the newly shown tile is part-way through its fade.
-      let before = opacity();
-      for (let i = 0; i < 30 && !(before !== null && before > 0.15 && before < 0.85); i++) { await frame(); before = opacity(); }
+      const entering = await waitFor(() => fades().find((animation) => (animation.effect as KeyframeEffect).getKeyframes()[0].opacity === "0"));
+      const duration = Number(entering.effect!.getTiming().duration);
+      entering.currentTime = duration * 0.1; // eased out, so a tenth of the time is already well into the fade
+      const before = Number(getComputedStyle(element()!).opacity);
       select("warm");
-      const after: Array<number | null> = [];
-      for (let i = 0; i < 4; i++) { await frame(); after.push(opacity()); }
-      return { before, after };
-    }, await key(page, "merge"));
-    expect(samples.before).toBeGreaterThan(0.15);
-    expect(samples.before).toBeLessThan(0.85);
-    for (const value of samples.after) {
-      expect(value).not.toBeNull();
-      expect(value!).toBeGreaterThanOrEqual(samples.before! - 0.05);
-    }
-    // It keeps fading rather than snapping to full opacity.
-    expect(samples.after[0]!).toBeLessThan(0.95);
+      const continuing = await waitFor(() => fades().find((animation) => animation !== entering && animation.playState === "running"));
+      const keyframes = (continuing.effect as KeyframeEffect).getKeyframes();
+      const after: number[] = [];
+      for (const at of [0, 0.1, 0.5, 1]) {
+        continuing.currentTime = Number(continuing.effect!.getTiming().duration) * at;
+        after.push(Number(getComputedStyle(element()!).opacity));
+      }
+      return { before, startsAt: Number(keyframes[0].opacity), endsAt: Number(keyframes.at(-1)!.opacity), after };
+    }, target);
+    expect(result.before).toBeGreaterThan(0.15);
+    expect(result.before).toBeLessThan(0.85);
+    // The new animation starts from what was displayed (not 0, and not full opacity)...
+    expect(result.startsAt).toBeCloseTo(result.before, 2);
+    expect(result.after[0]).toBeCloseTo(result.before, 2);
+    // ...and goes on to the tile's full opacity without dipping below where it was.
+    expect(result.endsAt).toBeCloseTo(1, 2);
+    for (const value of result.after) expect(value).toBeGreaterThanOrEqual(result.before - 0.01);
+    expect(result.after.at(-1)!).toBeCloseTo(1, 2);
+    await releaseScriptedAnimations(page);
+    await settle(page);
   });
 
   test("an interrupted transition settles where a fresh selection of the same node would", async ({ page }) => {

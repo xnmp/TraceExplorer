@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { connectedComponents, projectDag } from "$lib/domain/trace-graph/projection";
 import { planScene } from "$lib/domain/trace-graph/scene";
 import { layoutGraph, type GraphLayout, type Orientation } from "$lib/domain/trace-graph/layout";
-import { chooseOrientation, generationProfile, sidewaysWidth, type GenerationProfile } from "$lib/domain/trace-graph/orientation";
+import { chooseOrientation, generationProfile, rememberOrientation, sidewaysWidth, type GenerationProfile, type OrientationHistory } from "$lib/domain/trace-graph/orientation";
 import type { TraceNode } from "$lib/domain/trace-graph/model";
 import { mockupNodes, node, random } from "./fixtures";
 import { tileMetrics } from "$lib/domain/trace-graph/metrics";
@@ -36,7 +36,7 @@ const discarded = (key: string, parents: string[]) => node(key, parents, "curren
 function shown(nodes: TraceNode[], focus: string, width: number, previous?: Orientation): GraphLayout {
   const dag = projectDag(nodes);
   const members = connectedComponents(dag).find((component) => component.includes(focus))!;
-  return layoutGraph(planScene(dag, members, focus, width, { previous }).request);
+  return layoutGraph(planScene(dag, members, focus, width, { previous: previous ? rememberOrientation(undefined, previous) : undefined }).request);
 }
 
 const chain = (length: number) => Array.from({ length }, (_, index) => node(`s${index}`, index ? [`s${index - 1}`] : []));
@@ -239,7 +239,7 @@ describe("orientation", () => {
       const dag = projectDag(nodes);
       for (const members of connectedComponents(dag)) for (const width of [400, 560, 720, 900, 1200]) for (const focus of [null, ...members]) {
         for (const previous of [undefined, "right"] as const) {
-          const plan = planScene(dag, members, focus, width, { previous });
+          const plan = planScene(dag, members, focus, width, { previous: previous ? rememberOrientation(undefined, previous) : undefined });
           if (plan.request.orientation !== "right") continue;
           sideways++;
           if (members.some((key) => dag.nodes.get(key)!.temporary)) withPending++;
@@ -276,6 +276,47 @@ describe("orientation", () => {
     // Shown top to bottom, a pane only just wide enough does not turn it.
     expect(chooseOrientation(profile, fit, "down")).toBe("down");
     expect(chooseOrientation(profile, Math.ceil(fit / 0.9), "down")).toBe("right");
+  });
+
+  it.each([0, 1, 5, 10, 15])("restores the starting tile size's geometry when resize commits have mask %i", (commits) => {
+    // Two generations with two edits: sideways when fresh, but a downward
+    // orientation would stay down. The largest tiles force it down at this width.
+    const dag = projectDag([node("forest"), node("mist", ["forest"]), node("autumn", ["forest"])]);
+    let previous: OrientationHistory | undefined;
+    let hint: ReadonlyMap<string, number> | undefined;
+    const plan = (imagePx: number) => planScene(dag, dag.order, null, 360, { previous, hint, tile: tileMetrics(imagePx) });
+    const display = (imagePx: number) => {
+      const next = plan(imagePx);
+      const layout = layoutGraph(next.request);
+      previous = rememberOrientation(previous, layout.orientation, next.request.tileWidth);
+      hint = layout.readingOrder;
+      return layout;
+    };
+    const first = display(48);
+    expect(first.orientation).toBe("right");
+    expect(plan(128).request.orientation).toBe("down");
+    // Every intermediate size is planned; only some reach the display under load.
+    for (const [index, imagePx] of [96, 64, 128, 48].entries()) {
+      plan(imagePx);
+      if (commits & (1 << index)) display(imagePx);
+    }
+    const last = display(48);
+    expect(last.orientation).toBe("right");
+    expect(last.nodes).toEqual(first.nodes);
+    expect(last.routes).toEqual(first.routes);
+  });
+
+  it("keeps pane-resize hysteresis for a remembered tile size, while rechecking fit and shape", () => {
+    const nodes = [node("root"), node("a", ["root"]), node("b", ["root"])];
+    const dag = projectDag(nodes);
+    const sideways = rememberOrientation(undefined, "right");
+    expect(planScene(dag, dag.order, null, 200, { previous: sideways }).request.orientation).toBe("down");
+    const downward = rememberOrientation(sideways, "down");
+    // Remembering a displayed turn does not mutate the earlier history.
+    expect(planScene(dag, dag.order, null, 360, { previous: sideways }).request.orientation).toBe("right");
+    expect(planScene(dag, dag.order, null, 360, { previous: downward }).request.orientation).toBe("down");
+    const deeper = projectDag([...nodes, node("c", ["a"])]);
+    expect(planScene(deeper, deeper.order, null, 900, { previous: downward }).request.orientation).toBe("right");
   });
 
   describe("while images are generated into a component", () => {

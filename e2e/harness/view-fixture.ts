@@ -93,6 +93,21 @@ function scenario(): { nodes: FolderNode[]; names: Map<string, string> } {
   ] satisfies Seed[]) add(seed);
   // `?lone=1` adds an image whose only history is failed edits: recorded, but with no visible relationship.
   if (query.has("lone")) add({ key: "lonely" });
+  // Append new identities after the existing scenarios. Native newest-first
+  // summaries put A above B, then the unchanged village/forest/fan/many order.
+  // A's focused grandchild disappears when selecting B, exercising a hold
+  // while a section above the clicked tile shrinks.
+  if (query.has("anchorChains") || query.has("anchorWorker")) {
+    for (const seed of [
+      { key: "anchor-b" }, { key: "anchor-b-child", parents: ["anchor-b"] },
+    ] satisfies Seed[]) add(seed);
+    // Clicking B's child reveals an uncached neighborhood above SYNC_LIMIT.
+    if (query.has("anchorWorker")) for (let index = 0; index < 75; index++) add({ key: `anchor-b-leaf-${index}`, parents: ["anchor-b-child"] });
+    for (const seed of [
+      { key: "anchor-a" }, { key: "anchor-a-middle", parents: ["anchor-a"] },
+      { key: "anchor-a-last", parents: ["anchor-a-middle"] },
+    ] satisfies Seed[]) add(seed);
+  }
   return { nodes, names };
 }
 

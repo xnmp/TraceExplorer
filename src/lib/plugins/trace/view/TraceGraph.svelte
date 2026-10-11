@@ -5,10 +5,11 @@
    * discarded) and animates from whatever geometry is currently displayed.
    * Tiles and routes always render from the same committed plan + layout pair.
    */
-  import { tick } from "svelte";
+  import { onDestroy, tick, untrack } from "svelte";
   import type { NodeKey } from "$lib/domain/trace-graph/model";
   import { planScene, routeStyle, junctionRelated, type ComponentFocus, type RouteStyle, type ScenePlan } from "$lib/domain/trace-graph/scene";
-  import { nearestInDirection, type Direction, type GraphLayout, type Orientation } from "$lib/domain/trace-graph/layout";
+  import { nearestInDirection, type Direction, type GraphLayout } from "$lib/domain/trace-graph/layout";
+  import { rememberOrientation, type OrientationHistory } from "$lib/domain/trace-graph/orientation";
   import { endpointKey } from "$lib/domain/trace-graph/junctions";
   import { ARROW, tileMetrics, type TileMetrics } from "$lib/domain/trace-graph/metrics";
   import { promptTitles } from "../prompt-titles.svelte";
@@ -36,21 +37,23 @@
     /** Selection lease for hover saves (see TraceImageActions). */
     captureSelection?: () => () => boolean;
     ondiscarded: (key: NodeKey) => void;
-    /** Called after a new layout is in the DOM (motion has started), with a promise that settles when motion ends. */
-    oncommit?: (scene: GraphScene, settled: Promise<void>) => void;
+    /** Called after a new layout is in the DOM and its motion has started. */
+    oncommit?: (scene: GraphScene) => void;
+    /** Current layout readiness, used only by keyboard/programmatic reveals. */
+    onlayout?: (pending: boolean) => void;
     onfailure?: (scene: GraphScene, error: Error) => void;
     reveal?: object | null;
     /** The host's component id: stable across refreshes, saves and new descendants. */
     componentId: string;
     /**
-     * The pane's memory of the orientation each component was last shown
-     * with (by `componentId`), for orientation hysteresis. Written on every
-     * commit; deliberately not reactive, like `ordering` below.
+     * The pane's memory of each component's displayed orientations by tile
+     * width. Written after rendering, never from a superseded plan;
+     * deliberately not reactive, like `ordering` below.
      */
-    orientations?: Map<string, Orientation>;
+    orientations?: Map<string, OrientationHistory>;
   }
 
-  let { data, focus, selected, width, tile = tileMetrics(), revision, scroller, onactivate, onnavigate, onopen, onmenu, onsaved, ondiscarded, oncommit, captureSelection, componentId, orientations = new Map(), onfailure, reveal = null }: Props = $props();
+  let { data, focus, selected, width, tile = tileMetrics(), revision, scroller, onactivate, onnavigate, onopen, onmenu, onsaved, ondiscarded, oncommit, onlayout, captureSelection, componentId, orientations = new Map(), onfailure, reveal = null }: Props = $props();
 
   /** Below this many tiles layout runs inline; it takes well under a frame. */
   const SYNC_LIMIT = 60;
@@ -67,12 +70,20 @@
   /** Only the latest full commit plays; one superseded before rendering never starts. */
   let plays = 0;
 
+  onDestroy(() => {
+    for (const animation of running) animation.cancel();
+    running = [];
+  });
+
   const plan = $derived(planScene(data.dag, data.members, focus, width, { componentId, hint: ordering, previous: orientations.get(componentId), tile }));
 
   /** What later plans build on: the reading order and the orientation shown. */
-  function remember(layout: GraphLayout): void {
+  function rendered(scene: GraphScene, next: ScenePlan, layout: GraphLayout): void {
+    if (!canvas || !scene.isCurrent() || shown?.plan !== next || shown.layout !== layout) return;
     ordering = layout.readingOrder;
-    orientations.set(componentId, layout.orientation);
+    orientations.set(componentId, rememberOrientation(orientations.get(componentId), layout.orientation, next.request.tileWidth));
+    onlayout?.(false);
+    oncommit?.(scene);
   }
 
   // The first render uses the very plan the effect below sees, so mounting
@@ -80,7 +91,6 @@
   function initial(): { plan: ScenePlan; layout: GraphLayout } | null {
     const first = plan;
     const layout = cachedLayout(first.request) ?? (first.request.items.length <= SYNC_LIMIT ? layoutNow(first.request) : null);
-    if (layout) remember(layout);
     return layout ? { plan: first, layout } : null;
   }
   let shown = $state.raw(initial());
@@ -88,7 +98,7 @@
   function commit(next: ScenePlan, layout: GraphLayout, scene: GraphScene): void {
     if (shown && shown.plan === next && shown.layout === layout) {
       // Initial cached/inline geometry is already committed; report it after its tiles mount.
-      void tick().then(() => { if (scene.isCurrent()) oncommit?.(scene, Promise.allSettled(running.map((animation) => animation.finished)).then(() => {})); });
+      void tick().then(() => rendered(scene, next, layout));
       return;
     }
     // Same geometry (only tones or selection changed): nothing moves, so
@@ -96,8 +106,8 @@
     if (shown && shown.layout === layout) {
       shown = { plan: next, layout };
       failure = "";
-      // After any pending full commit has started its motion, so `settled` waits for it.
-      void tick().then(() => { if (scene.isCurrent()) oncommit?.(scene, Promise.allSettled(running.map((animation) => animation.finished)).then(() => {})); });
+      // Report after any pending full commit has started its motion.
+      void tick().then(() => rendered(scene, next, layout));
       return;
     }
     const element = canvas;
@@ -105,32 +115,33 @@
     for (const animation of running) animation.cancel();
     running = [];
     shown = { plan: next, layout };
-    remember(layout);
     failure = "";
     const current = ++plays;
     void tick().then(() => {
       if (current !== plays || !scene.isCurrent()) return;
       if (before && canvas) running = playGraph(canvas, before, layout.orientation);
-      oncommit?.(scene, Promise.allSettled(running.map((animation) => animation.finished)).then(() => {}));
+      rendered(scene, next, layout);
     });
   }
 
   $effect(() => {
     const next = plan;
     const requestedReveal = reveal;
+    const superseded = new AbortController();
     const scene: GraphScene = {
       data, focus: focus?.componentId === componentId ? focus.key : null, reveal: requestedReveal,
-      isCurrent: () => plan === next && reveal === requestedReveal,
+      isCurrent: () => !superseded.signal.aborted && plan === next && reveal === requestedReveal,
     };
+    onlayout?.(true);
     const ready = cachedLayout(next.request) ?? (next.request.items.length <= SYNC_LIMIT ? layoutNow(next.request) : null);
-    if (ready) { commit(next, ready, scene); return; }
-    let live = true;
-    const superseded = new AbortController();
-    computeLayout(next.request, superseded.signal).then(
-      (layout) => { if (live && scene.isCurrent()) commit(next, layout, scene); },
-      (error: Error) => { if (live && scene.isCurrent()) { failure = error.message; onfailure?.(scene, error); } },
+    // Commit reads displayed geometry, not planning inputs. Tracking those
+    // reads would supersede this scene when its own render updates `shown`.
+    if (ready) untrack(() => commit(next, ready, scene));
+    else computeLayout(next.request, superseded.signal).then(
+      (layout) => { if (scene.isCurrent()) commit(next, layout, scene); },
+      (error: Error) => { if (scene.isCurrent()) { failure = error.message; onlayout?.(false); onfailure?.(scene, error); } },
     );
-    return () => { live = false; superseded.abort(); };
+    return () => { superseded.abort(); onlayout?.(false); };
   });
 
   // Windowing: only tiles near the scroller's viewport are mounted.
