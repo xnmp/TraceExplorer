@@ -471,9 +471,11 @@
     if (holder) focusNode(key, { ctrlKey: event.ctrlKey || event.metaKey, shiftKey: event.shiftKey }, "hold", holder);
   }
 
+  /** Double-click or Enter on an image opens its file. An earlier revision has none of its own: the file at its path now holds the newest revision, which is what opens. */
   function open(key: NodeKey): void {
     const found = findNode(key);
-    const entry = found && fileEntry(found.node);
+    const node = found?.node;
+    const entry = node && (fileEntry(node) ?? (node.earlierRevision && node.scope === "current" && node.path ? entriesByPath.get(node.path) : null));
     if (entry) void pane.open(entry);
   }
 

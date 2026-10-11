@@ -115,6 +115,8 @@ function scenario(): { nodes: FolderNode[]; names: Map<string, string> } {
       { key: "anchor-a-last", parents: ["anchor-a-middle"] },
     ] satisfies Seed[]) add(seed);
   }
+  // `?draftStack=1` adds an unsaved cover with one saved edit: a stack that another pane can save (`backend.saveGeneration("draft")`).
+  if (query.has("draftStack")) { add({ key: "draft", temporary: true }); add({ key: "draft-edit", parents: ["draft"] }); }
   // `?wideRoots=N`: N separate roots joined by multi-input edits into one component, whose first row is far wider than a narrow pane.
   const wideRoots = Number(query.get("wideRoots") ?? 0);
   for (let index = 0; index < wideRoots; index++) add({ key: `wr-${index}` });

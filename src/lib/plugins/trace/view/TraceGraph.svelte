@@ -142,14 +142,15 @@
     const firstPinned = !shown && !!pinned;
     const element = canvas;
     const before = element && shown && !prefersReducedMotion() ? captureGraph(element) : null;
-    for (const animation of running) animation.cancel();
-    running = [];
     shown = { plan: next, layout };
     layoutStamp++;
     failure = "";
     const current = ++plays;
     void tick().then(() => {
       if (current !== plays || !scene.isCurrent()) return;
+      // Cancelled as the replacements start, not at commit: a later commit before this turn then still captures this motion as displayed.
+      for (const animation of running) animation.cancel();
+      running = [];
       if (before && canvas) running = playGraph(canvas, before, layout.orientation);
       else if (firstPinned && canvas && pinned && !prefersReducedMotion() && !carriesMotion(canvas)) {
         const snapshot = captureGraph(canvas), cover = attached?.nodes.get(pinned.key);

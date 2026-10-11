@@ -231,6 +231,47 @@ test("closing during emergence reverses from the displayed tile position and opa
   expect(await uncaught(page)).toEqual([]);
 });
 
+test("selecting in another band mid-transition continues every tile from where it is displayed", async ({ page }) => {
+  // The forest's reading reveals new tiles (?deeper), so its graph re-lays out in the middle of the grid's own correction.
+  await openView(page, 420, "?deeper=1", false);
+  for (const name of ["village", "forest"]) { await stack(page, name).locator("[data-stack-toggle]").click(); await settle(page); }
+  await holdScriptedAnimations(page);
+  try {
+    const warm = await key(page, "warm"), mist = await key(page, "forest-mist");
+    const positions = () => page.evaluate(() => Object.fromEntries([...document.querySelectorAll<HTMLElement>("[data-tile-key]")].map((tile) => {
+      const box = tile.getBoundingClientRect(); return [tile.dataset.tileKey!, [Math.round(box.x), Math.round(box.y)]];
+    })));
+    // Seeks the animations created since `from` (earlier ones were cancelled by the interruption).
+    const seek = (time: number, from: number) => page.evaluate(async ([time, from]) => {
+      const held = (window as any).__heldAnimations as Animation[];
+      for (const animation of held.slice(from)) if (animation.playState === "running") animation.currentTime = time;
+      await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    }, [time, from]);
+    const start = await positions();
+    await page.locator(`[data-node-key="${warm}"]`).click();
+    await awaitAnimationsCreated(page);
+    await seek(40, 0);
+    const displayed = await positions();
+    expect(displayed[mist][1], "the first selection is under way").toBeGreaterThan(start[mist][1] + 20);
+    const created = await page.evaluate(() => (window as any).__heldAnimations.length as number);
+    await page.locator(`[data-node-key="${mist}"]`).click();
+    await awaitAnimationsCreated(page);
+    await seek(0, created);
+    const resumed = await positions();
+    for (const [tileKey, at] of Object.entries(displayed)) if (resumed[tileKey]) expect(resumed[tileKey], `${tileKey} continues from where it was displayed`).toEqual(at);
+    // ...and arrives without going back.
+    let previous = resumed[mist][1];
+    for (const time of [20, 40, 80, 120, 160]) {
+      await seek(time, created);
+      const now = (await positions())[mist][1];
+      expect(now, `forest-mist at ${time}ms`).toBeLessThanOrEqual(previous);
+      previous = now;
+    }
+  } finally { await releaseScriptedAnimations(page); }
+  await settle(page);
+  expect(await uncaught(page)).toEqual([]);
+});
+
 test("host selection opens every selected stack and focused bands survive refreshed component ids", async ({ page }) => {
   await openView(page, 900, "?grouping=two-chains", false);
   await page.evaluate(() => (window as any).trace.setSelection(["/pictures/photo-a-edit.png", "/pictures/photo-b-edit.png"])); await settle(page);
@@ -323,6 +364,17 @@ test("clicking a closed in-place-edit stack selects its cover revision, as click
   await openView(page, 420, "?grouping=in-place-edit", false);
   await page.locator("[data-stack-toggle]").click(); await settle(page);
   expect((await state(page)).target).toMatchObject({ id: "trace:a:1", badge: "Earlier revision" });
+  expect(await uncaught(page)).toEqual([]);
+});
+
+test("double-clicking a closed in-place-edit stack opens the file at its path, as double-clicking its open cover does", async ({ page }) => {
+  await openView(page, 420, "?grouping=in-place-edit", false);
+  await page.locator("[data-stack-toggle]").dblclick(); await settle(page);
+  expect((await state(page)).opened).toEqual(["/pictures/photo.png"]);
+  await expect(page.locator("[data-grid-band]")).toHaveCount(1);
+  // The open cover behaves the same.
+  await page.locator('[data-tile-key="a:1"]').dblclick(); await settle(page);
+  expect((await state(page)).opened).toEqual(["/pictures/photo.png", "/pictures/photo.png"]);
   expect(await uncaught(page)).toEqual([]);
 });
 
@@ -434,6 +486,24 @@ test("saving an unsaved cover through its Save button moves no cell, even while 
   await backend("releaseFolderReads"); await settle(page);
   await expect(page.locator('[data-entry-path="/pictures/draft.png"]')).toHaveCount(0);
   expect(await cells()).toEqual(before);
+  expect(await uncaught(page)).toEqual([]);
+});
+
+test("a cover whose band is virtualised renders from fresh node data after the draft is saved elsewhere", async ({ page }) => {
+  // Wide enough for one row: the fan's tall band, opened second, pushes the draft's band out of the mounted window while its cover stays.
+  await openView(page, 1000, "?draftStack=1&fanChildren=200", false);
+  await stack(page, "draft").locator("[data-stack-toggle]").click(); await settle(page);
+  const draft = await key(page, "draft"), cover = page.locator(`[data-tile-key="${draft}"]`);
+  const card = cover.locator("[data-node-key]");
+  await expect(card).toHaveAttribute("aria-label", /unsaved/);
+  await stack(page, "fan").locator("[data-stack-toggle]").click(); await settle(page);
+  await expect(stack(page, "draft").locator("[data-grid-band] .tile")).toHaveCount(0);
+  await expect(cover).toBeVisible();
+  await page.evaluate(() => (window as any).trace.backend.saveGeneration("draft")); await settle(page);
+  await expect(card).not.toHaveAttribute("aria-label", /unsaved/);
+  await cover.hover();
+  await expect(cover.getByRole("button", { name: "Save image permanently" })).toHaveCount(0);
+  await expect(cover.getByRole("button", { name: "Delete image" })).toHaveCount(0);
   expect(await uncaught(page)).toEqual([]);
 });
 

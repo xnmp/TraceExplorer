@@ -117,9 +117,15 @@
     const element = untrack(() => grid);
     if (!element) return;
     const before = prefersReducedMotion() ? null : captureGrid(element);
-    for (const animation of running) animation.cancel();
     const current = ++motion;
-    void tick().then(() => { if (current === motion && grid && before) running = playGrid(grid, before); });
+    // The running animations are cancelled only as their replacements start, in the same turn. Cancelled earlier, a graph
+    // that commits in between (and captures what is displayed) would capture the settled geometry and snap there.
+    void tick().then(() => {
+      if (current !== motion) return;
+      for (const animation of running) animation.cancel();
+      running = [];
+      if (grid && before) running = playGrid(grid, before);
+    });
   });
   // Keyboard focus belongs to the grid until it genuinely leaves (a blur to another element or the page).
   // Removing the focused element fires no blur, so a cover replaced by a toggle, a band tile that leaves
@@ -194,7 +200,9 @@
       {@const data = session.components.get(summary.id)}
       {@const known = covers.get(cell.id)}
       {@const node = data?.dag.nodes.get(cell.id) ?? coverNode(cell)}
-      {@const cover = (band ? known?.plan.tiles.get(cell.id) : undefined) ?? { key: cell.id, node, tone: focus?.key === cell.id ? "focus" : focus ? "unrelated" : "normal", size: tileSize({ foreign: false, hint: true }, tile), childCount: 0, hiddenDescendants: 0, expandable: false } as SceneTile}
+      {@const planned = band ? known?.plan.tiles.get(cell.id) : undefined}
+      <!-- The plan is only as fresh as the last time the band's graph was mounted: it drops out of the window while the cover stays. The node is always the index's. -->
+      {@const cover = planned ? { ...planned, node } : { key: cell.id, node, tone: focus?.key === cell.id ? "focus" : focus ? "unrelated" : "normal", size: tileSize({ foreign: false, hint: true }, tile), childCount: 0, hiddenDescendants: 0, expandable: false } as SceneTile}
       <section class="component" class:dimmed={focus !== null && focus.componentId !== summary.id} data-stack-count={`${summary.imageCount} images`} data-component={summary.id} data-grid-motion={cell.id} aria-label={summary.title}
         style:top="{rect.y}px" style:height="{band ? band.y + band.height - rect.y : rect.height}px">
         <div class="cell stack" role="row" aria-rowindex={rect.row + 1} data-grid-cell={cell.id} data-stack-key={cell.id}
