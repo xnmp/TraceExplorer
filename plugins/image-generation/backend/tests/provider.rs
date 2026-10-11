@@ -698,8 +698,8 @@ fn journal_without_timings_column_gains_it_and_keeps_its_receipts() {
     let mut configuration = configuration("https://custom.test/images");
     configuration.profiles[0].set_revision("legacy-revision".into());
     let prepared = request(&configuration.profiles[0], vec![]);
-    let recipe = image_generation_backend::domain::recipe(&configuration.profiles[0], &prepared)
-        .unwrap();
+    let recipe =
+        image_generation_backend::domain::recipe(&configuration.profiles[0], &prepared).unwrap();
     let journal = image_generation_backend::journal::Journal::open(directory.path()).unwrap();
     journal.activate().unwrap();
     journal
@@ -1898,7 +1898,8 @@ async fn valid_admission_rejections_are_durable_and_never_dispatch() {
         }
         if cause == "configuration_changed" {
             let mut edited = config.clone();
-            if let Profile::OpenAiImages(ApiProfile { default_model, .. }) = &mut edited.profiles[0] {
+            if let Profile::OpenAiImages(ApiProfile { default_model, .. }) = &mut edited.profiles[0]
+            {
                 *default_model = "new-model".into();
             }
             service.profiles.save(edited, 1, None, None).unwrap();
@@ -3725,4 +3726,266 @@ async fn a_provider_refusal_ends_failed_with_our_own_wording_end_to_end() {
         other => panic!("expected Failed, got {other:?}"),
     }
     assert_eq!(status.delivery, Delivery::None {});
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn command_credentials_supply_fresh_keys_to_the_http_adapter() {
+    use std::os::unix::fs::PermissionsExt;
+    let directory = tempfile::tempdir().unwrap();
+    let helper = directory.path().join("key-helper");
+    // The test helper generates a different key in memory for each invocation.
+    std::fs::write(&helper, "#!/bin/sh\nprintf 'command-key-%s\\n' $$\n").unwrap();
+    std::fs::set_permissions(&helper, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let host = FakeHost::new();
+    let service = Service::new(directory.path(), host.clone()).unwrap();
+    service.activate().unwrap();
+    let mut keys = vec![];
+    for revision in 0..2 {
+        let (root, count, wire, worker) = server(Duration::ZERO);
+        let mut config = configuration(&root);
+        *config.profiles[0].credential_mut() = Credential::Command {
+            argv: vec!["/bin/sh".into(), helper.to_str().unwrap().into()],
+        };
+        let saved = service.profiles.save(config, revision, None, None).unwrap();
+        let prepared = request(&saved.profiles[0], vec![]);
+        let request = start(
+            prepared.clone(),
+            service.prepare(caller(), prepared).unwrap(),
+        );
+        service.start(caller(), request.clone(), false).unwrap();
+        let status = terminal(&service, &request.operation_id).await;
+        assert!(matches!(status.execution, Execution::Succeeded { .. }));
+        let wire = wire.recv_timeout(Duration::from_secs(3)).unwrap();
+        let key = wire
+            .lines()
+            .find_map(|line| {
+                line.to_ascii_lowercase()
+                    .strip_prefix("authorization: bearer ")
+                    .map(str::to_owned)
+            })
+            .unwrap();
+        assert!(key.starts_with("command-key-"));
+        assert!(!serde_json::to_string(&status).unwrap().contains(&key));
+        assert!(!serde_json::to_string(&*host.events.lock().unwrap())
+            .unwrap()
+            .contains(&key));
+        keys.push(key);
+        assert_eq!(count.load(Ordering::SeqCst), 1);
+        worker.join().unwrap();
+    }
+    assert_ne!(
+        keys[0], keys[1],
+        "the command key was cached between operations"
+    );
+    for entry in std::fs::read_dir(directory.path()).unwrap() {
+        let path = entry.unwrap().path();
+        if path.is_file() {
+            let bytes = std::fs::read(path).unwrap();
+            for key in &keys {
+                assert!(
+                    !bytes
+                        .windows(key.len())
+                        .any(|window| window == key.as_bytes()),
+                    "command key was persisted"
+                );
+            }
+        }
+    }
+    assert!(
+        host.processes.lock().unwrap().is_empty(),
+        "credential output went through host process files"
+    );
+}
+
+#[tokio::test]
+async fn checking_a_missing_command_reports_unavailable() {
+    let directory = tempfile::tempdir().unwrap();
+    let service = Service::new(directory.path(), FakeHost::new()).unwrap();
+    service.activate().unwrap();
+    let mut config = configuration("https://example.test/images");
+    *config.profiles[0].credential_mut() = Credential::Command {
+        argv: vec![directory
+            .path()
+            .join("missing-helper")
+            .to_str()
+            .unwrap()
+            .into()],
+    };
+    service.profiles.save(config, 0, None, None).unwrap();
+    assert_eq!(
+        service.describe().unwrap()["profiles"][0]["hasCredential"],
+        true
+    );
+    assert_eq!(
+        service.sanitized(service.profiles.read().unwrap()).unwrap()["profiles"][0]
+            ["hasCredential"],
+        true
+    );
+    let checked = service
+        .settings("check", json!({"profileId":"http"}))
+        .unwrap();
+    assert_eq!(checked["available"], false);
+    assert_eq!(checked["error"]["code"], "unavailable");
+    assert_eq!(
+        checked["error"]["message"],
+        "Credential command could not start"
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cancel_and_shutdown_interrupt_credential_resolution_before_dispatch() {
+    use std::os::unix::fs::PermissionsExt;
+    for shutdown in [false, true] {
+        let directory = tempfile::tempdir().unwrap();
+        let helper = directory.path().join("waiting-helper");
+        let pid_file = directory.path().join("helper-pid");
+        std::fs::write(
+            &helper,
+            "#!/bin/sh\nprintf '%s' $$ > \"$1.tmp\"\nmv \"$1.tmp\" \"$1\"\nexec sleep 5\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&helper, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let host = FakeHost::new();
+        let service = Service::new(directory.path(), host.clone()).unwrap();
+        service.activate().unwrap();
+        let mut config = configuration("https://example.test/images");
+        *config.profiles[0].credential_mut() = Credential::Command {
+            argv: vec![
+                "/bin/sh".into(),
+                helper.to_str().unwrap().into(),
+                pid_file.to_str().unwrap().into(),
+            ],
+        };
+        let saved = service.profiles.save(config, 0, None, None).unwrap();
+        let prepared = request(&saved.profiles[0], vec![]);
+        let request = start(
+            prepared.clone(),
+            service.prepare(caller(), prepared).unwrap(),
+        );
+        let operation = request.operation_id.clone();
+        let starting = service.clone();
+        let worker = tokio::task::spawn_blocking(move || starting.start(caller(), request, false));
+        for _ in 0..300 {
+            if pid_file.exists() && !std::fs::read(&pid_file).unwrap().is_empty() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let pid: i32 = std::fs::read_to_string(&pid_file).unwrap().parse().unwrap();
+        if shutdown {
+            service.shutdown();
+        } else {
+            // No receipt exists yet; cancellation still signals in-flight admission IO.
+            assert_eq!(
+                service
+                    .cancel("test.consumer", &operation)
+                    .unwrap_err()
+                    .code,
+                "not_found"
+            );
+        }
+        let status = tokio::time::timeout(Duration::from_secs(2), worker)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        let Execution::Failed { error } = status.execution else {
+            panic!("Credential cancellation dispatched work")
+        };
+        assert_eq!(error.code, "unavailable");
+        assert_eq!(error.message, "Credential command was cancelled");
+        assert_eq!(unsafe { libc::kill(pid, 0) }, -1);
+        assert_eq!(
+            std::io::Error::last_os_error().raw_os_error(),
+            Some(libc::ESRCH)
+        );
+        assert!(host.processes.lock().unwrap().is_empty());
+        service.wait_idle().await;
+    }
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn describing_and_sanitizing_a_command_source_never_invokes_the_helper() {
+    let directory = tempfile::tempdir().unwrap();
+    let helper = directory.path().join("helper.sh");
+    let marker = directory.path().join("invoked");
+    std::fs::write(&helper, "printf invoked > \"$1\"\nprintf key\n").unwrap();
+    let service = Service::new(directory.path(), FakeHost::new()).unwrap();
+    service.activate().unwrap();
+    let mut config = configuration("https://example.test/images");
+    *config.profiles[0].credential_mut() = Credential::Command {
+        argv: vec![
+            "/bin/sh".into(),
+            helper.to_str().unwrap().into(),
+            marker.to_str().unwrap().into(),
+        ],
+    };
+    service.profiles.save(config, 0, None, None).unwrap();
+    assert_eq!(
+        service.describe().unwrap()["profiles"][0]["hasCredential"],
+        true
+    );
+    assert!(!marker.exists());
+    assert_eq!(
+        service.sanitized(service.profiles.read().unwrap()).unwrap()["profiles"][0]
+            ["hasCredential"],
+        true
+    );
+    assert!(!marker.exists());
+    assert_eq!(
+        service
+            .settings("check", json!({"profileId":"http"}))
+            .unwrap()["available"],
+        true
+    );
+    assert!(
+        marker.exists(),
+        "the real helper must run when explicitly checked"
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn shutdown_interrupts_a_local_credential_check() {
+    let directory = tempfile::tempdir().unwrap();
+    let helper = directory.path().join("helper.sh");
+    let marker = directory.path().join("started");
+    std::fs::write(
+        &helper,
+        "printf '%s' $$ > \"$1.tmp\"\nmv \"$1.tmp\" \"$1\"\nexec sleep 60\n",
+    )
+    .unwrap();
+    let service = Service::new(directory.path(), FakeHost::new()).unwrap();
+    service.activate().unwrap();
+    let mut config = configuration("https://example.test/images");
+    *config.profiles[0].credential_mut() = Credential::Command {
+        argv: vec![
+            "/bin/sh".into(),
+            helper.to_str().unwrap().into(),
+            marker.to_str().unwrap().into(),
+        ],
+    };
+    service.profiles.save(config, 0, None, None).unwrap();
+    let checking = service.clone();
+    let worker = std::thread::spawn(move || {
+        checking
+            .settings("check", json!({"profileId":"http"}))
+            .unwrap()
+    });
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while !marker.exists() && std::time::Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let pid: i32 = std::fs::read_to_string(marker).unwrap().parse().unwrap();
+    service.shutdown();
+    let result = worker.join().unwrap();
+    assert_eq!(result["available"], false);
+    assert_eq!(
+        result["error"]["message"],
+        "Credential command was cancelled"
+    );
+    assert_eq!(unsafe { libc::kill(pid, 0) }, -1);
 }

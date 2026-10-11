@@ -58,6 +58,29 @@ impl Drop for AdmissionIo {
     }
 }
 type OperationKey = (String, String);
+/// Credential/input IO precedes a receipt. Keep its flags reachable without
+/// replacing an already admitted duplicate operation's worker control.
+struct AdmissionCancel {
+    service: Arc<Service>,
+    identity: OperationKey,
+    flag: Arc<AtomicBool>,
+}
+impl Drop for AdmissionCancel {
+    fn drop(&mut self) {
+        let mut pending = self
+            .service
+            .admission_cancels
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if let Some(flags) = pending.get_mut(&self.identity) {
+            flags.retain(|flag| !Arc::ptr_eq(flag, &self.flag));
+            if flags.is_empty() {
+                pending.remove(&self.identity);
+            }
+        }
+    }
+}
+
 /// A proven success whose output this process is still staging and sealing.
 /// Holds the last receipt consumers could have observed until the terminal
 /// receipt is committed (plan §8.3 step 8), then forgets it on any exit path.
@@ -121,10 +144,12 @@ pub struct Service {
     preparations: Mutex<HashMap<String, Prepared>>,
     controls: Mutex<HashMap<(String, String), Arc<AtomicBool>>>,
     admission_io: Mutex<HashMap<(String, String), usize>>,
+    admission_cancels: Mutex<HashMap<OperationKey, Vec<Arc<AtomicBool>>>>,
     unannounced: Mutex<HashMap<OperationKey, OperationStatus>>,
     admissions: Arc<tokio::sync::Semaphore>,
     workers: Arc<tokio::sync::Semaphore>,
     ready: AtomicBool,
+    shutdown: AtomicBool,
     directory: PathBuf,
     owner: Mutex<Option<std::fs::File>>,
     operation_budget: Duration,
@@ -156,10 +181,12 @@ impl Service {
             preparations: Mutex::new(HashMap::new()),
             controls: Mutex::new(HashMap::new()),
             admission_io: Mutex::new(HashMap::new()),
+            admission_cancels: Mutex::new(HashMap::new()),
             unannounced: Mutex::new(HashMap::new()),
             admissions: Arc::new(tokio::sync::Semaphore::new(36)),
             workers: Arc::new(tokio::sync::Semaphore::new(4)),
             ready: AtomicBool::new(false),
+            shutdown: AtomicBool::new(false),
             directory: directory.into(),
             owner: Mutex::new(None),
             operation_budget: policy.operation_budget,
@@ -272,15 +299,23 @@ impl Service {
         Ok(json!({"ready":false,"idle":true,"checkpoint":true}))
     }
     pub fn shutdown(&self) {
-        for cancel in self
-            .controls
+        self.shutdown.store(true, Ordering::Release);
+        let controls = self.controls.lock().unwrap_or_else(|e| e.into_inner());
+        // Close readiness under the same lock as admission registration.
+        self.ready.store(false, Ordering::Release);
+        for cancel in controls.values() {
+            cancel.store(true, Ordering::Release);
+        }
+        for flags in self
+            .admission_cancels
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .values()
         {
-            cancel.store(true, Ordering::Release)
+            for flag in flags {
+                flag.store(true, Ordering::Release);
+            }
         }
-        self.ready.store(false, Ordering::Release);
     }
     fn profile(&self, id: &str) -> Result<Profile> {
         self.profiles
@@ -290,7 +325,7 @@ impl Service {
             .find(|p| p.id() == id)
             .ok_or_else(|| invalid("Image connection no longer exists"))
     }
-    fn credential(&self, profile: &Profile) -> Result<Option<String>> {
+    fn credential(&self, profile: &Profile, cancel: &AtomicBool) -> Result<Option<String>> {
         let key = match profile.credential() {
             Credential::None | Credential::CliSavedLogin => return Ok(None),
             Credential::Environment { name } => std::env::var(name).map_err(|_| {
@@ -299,16 +334,19 @@ impl Service {
                     "Image credential environment variable is absent",
                 )
             })?,
+            Credential::Command { argv } => {
+                crate::credential_command::run(argv, cancel, Duration::from_secs(30))?
+            }
             Credential::Secret { id } => self.host.call(
                 "host.credentials.get",
                 json!({"profileId":profile.id(),"id":id}),
-                &AtomicBool::new(false),
+                cancel,
             )?["key"]
                 .as_str()
                 .ok_or_else(|| error("unavailable", "Saved image credential is unavailable"))?
                 .to_owned(),
         };
-        if key.trim().is_empty() || key.len() > 4096 || key.chars().any(char::is_control) {
+        if !domain::credential_rules::usable_key(&key) {
             return Err(error("unavailable", "Image credential is empty or invalid"));
         }
         Ok(Some(key))
@@ -325,7 +363,7 @@ impl Service {
                 Credential::CliSavedLogin => false,
                 Credential::Environment { name } =>
                     std::env::var(name).is_ok_and(|s| !s.is_empty()),
-                Credential::Secret { .. } => true,
+                Credential::Secret { .. } | Credential::Command { .. } => true,
             });
         }
         Ok(value)
@@ -448,7 +486,8 @@ impl Service {
                 "Image connection changed; prepare again",
             ));
         }
-        let mut admission_io = {
+        let cancel = Arc::new(AtomicBool::new(false));
+        let (mut admission_io, _admission_cancel) = {
             let _controls = self.controls.lock().map_err(storage)?;
             if !self.ready() {
                 return Err(error("unavailable", "Image service is quiesced"));
@@ -465,13 +504,25 @@ impl Service {
                 .map_err(storage)?
                 .entry(identity.clone())
                 .or_insert(0) += 1;
-            AdmissionIo {
-                service: self.clone(),
-                identity,
-                permit: Some(permit),
-            }
+            self.admission_cancels
+                .lock()
+                .map_err(storage)?
+                .entry(identity.clone())
+                .or_default()
+                .push(cancel.clone());
+            (
+                AdmissionIo {
+                    service: self.clone(),
+                    identity: identity.clone(),
+                    permit: Some(permit),
+                },
+                AdmissionCancel {
+                    service: self.clone(),
+                    identity,
+                    flag: cancel.clone(),
+                },
+            )
         };
-        let cancel = Arc::new(AtomicBool::new(false));
         let mut paths = vec![];
         for artifact in &request.inputs {
             let read=self.host.call("host.artifacts.read",json!({"consumerPackageId":caller.package_id,"operationId":request.operation_id,"artifact":artifact}),&cancel)?;
@@ -490,7 +541,7 @@ impl Service {
             ));
         }
         let credential_started = epoch_millis().ok();
-        let key = self.credential(&profile)?;
+        let key = self.credential(&profile, &cancel)?;
         let credential_done = epoch_millis().ok();
         let (status, accepted) = self.profiles.admit(&profile, || {
             self.journal.accept_with_budget(
@@ -1024,13 +1075,24 @@ impl Service {
         if !valid_operation_id(operation) {
             return Err(invalid("Invalid operation ID"));
         }
-        if let Some(cancel) = self
-            .controls
-            .lock()
-            .map_err(storage)?
-            .get(&(caller.into(), operation.into()))
         {
-            cancel.store(true, Ordering::Release)
+            // Keep both lookups atomic with the pending-to-worker handoff.
+            // Admission and shutdown use the same lock order.
+            let controls = self.controls.lock().map_err(storage)?;
+            let identity = (caller.into(), operation.into());
+            if let Some(cancel) = controls.get(&identity) {
+                cancel.store(true, Ordering::Release);
+            }
+            if let Some(flags) = self
+                .admission_cancels
+                .lock()
+                .map_err(storage)?
+                .get(&identity)
+            {
+                for flag in flags {
+                    flag.store(true, Ordering::Release);
+                }
+            }
         }
         // The request is still recorded durably; an unannounced success keeps
         // reading as running and its committed proof cannot be erased.
@@ -1237,7 +1299,7 @@ impl Service {
                     Profile::Codex {
                         executable_path, ..
                     } => adapters::check_cli(executable_path),
-                    _ => self.credential(&profile).map(|_| ()),
+                    _ => self.credential(&profile, &self.shutdown).map(|_| ()),
                 };
                 Ok(match result {
                     Ok(()) => json!({"available":true}),

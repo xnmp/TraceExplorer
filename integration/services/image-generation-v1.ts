@@ -19,7 +19,7 @@ export type ImageDelivery =
 export interface CodexTurnReceipt {kind:"codex_image_turn";threadId:string;turnState:"completed"|"failed"|"incomplete";usage?:{inputTokens?:number|null;cachedInputTokens?:number|null;outputTokens?:number|null}|null;explanation?:{kind:"reply"|"error";text:string;truncated:boolean}|null}
 export interface ImageOperationStatus {version:1;operationId:string;requestFingerprint:string;provider:{packageId:string;serviceId:string;major:1};revision:number;execution:ImageExecution;delivery:ImageDelivery;diagnostics?:CodexTurnReceipt}
 export interface ImageCapabilities {generation:boolean;edit:boolean;maxInputs:number;maxInputBytes:number;maxTotalInputBytes:number;maxOutputBytes:number;inputFormats:readonly string[];outputFormats:readonly string[];modelSelection:boolean;sizes?:{auto:boolean;maxEdge:number;multipleOf:number;minPixels:number;maxPixels:number};resolution?:readonly string[];aspectRatio?:readonly string[];quality:readonly string[];background:readonly string[]}
-export type ImageCredential = {kind:"none"}|{kind:"environment";name:string}|{kind:"secret";id:string};
+export type ImageCredential = {kind:"none"}|{kind:"environment";name:string}|{kind:"secret";id:string}|{kind:"command";argv:string[]};
 export interface CodexProfile {id:string;name:string;recipeRevision:string;transport:"codex-cli";executablePath:string;modelSelection:false;credential:{kind:"cli_saved_login"}}
 /**
  * Any HTTP image backend. `transport` names the backend and matches

@@ -36,7 +36,7 @@ SCENARIOS = sys.argv[3:] or ['ordered-large-http', 'profile-change', 'provider-r
 FRAME = 1024 * 1024
 PACKAGE = 'xnmp.image-generation'
 CALLER = {'packageId': 'xnmp.trace-explorer', 'packageDigest': 'd' * 64, 'incarnation': 1}
-SECRET_VARIABLES = ('OPENAI_API_KEY', 'CODEX_API_KEY', 'CODEX_ACCESS_TOKEN', 'ANTHROPIC_API_KEY')
+SECRET_VARIABLES = ('OPENAI_API_KEY', 'CODEX_API_KEY', 'CODEX_ACCESS_TOKEN', 'ANTHROPIC_API_KEY', 'GEMINI_API_KEY', 'BFL_API_KEY')
 
 
 def png(width, height):
@@ -366,10 +366,10 @@ class Broker:
                 peer.close()
 
 
-def http_profile(endpoint):
+def http_profile(endpoint, credential=None):
     return {'id': 'http', 'name': 'Loopback fixture', 'recipeRevision': '', 'transport': 'openai-images',
             'baseUrl': endpoint, 'defaultModel': 'fixture-default-model', 'allowInsecureHttp': False,
-            'credential': {'kind': 'none'}}
+            'credential': {'kind': 'none'} if credential is None else credential}
 
 
 def photos(root, names_and_sizes):
@@ -407,7 +407,10 @@ def scenario_ordered_large_http(broker):
     endpoint = Endpoint(broker.durable)
     try:
         broker.start_provider()
-        revision = broker.save_profile(http_profile(endpoint.root))
+        helper = broker.root / 'credential-helper'
+        helper.write_text("#!/bin/sh\nprintf 'fixture-key-%s\\n' $$\n")
+        helper.chmod(0o700)
+        revision = broker.save_profile(http_profile(endpoint.root, {'kind': 'command', 'argv': ['/bin/sh', str(helper)]}))
         # Selection order is deliberately not alphabetical, by name or by size.
         folder, originals = photos(broker.root, [('zeta-first.png', (24, 16)), ('alpha-second.png', (16, 24)),
                                                  ('mid-third.png', (20, 20))])
@@ -420,6 +423,7 @@ def scenario_ordered_large_http(broker):
         assert len(endpoint.requests) == 1
         wire = endpoint.requests[0]
         assert wire['path'] == '/v1/images/edits'
+        assert wire['headers']['authorization'].startswith('Bearer fixture-key-')
         # Ordered immutable inputs: the endpoint received the captured snapshots,
         # in selection order, although every original changed after capture.
         assert [name for name, _ in wire['images']] == ['source-1.png', 'source-2.png', 'source-3.png']
@@ -480,6 +484,48 @@ def rejected_before_dispatch(broker, endpoint, change, code):
     return value
 
 
+def scenario_credential_cancel(broker):
+    # No socket is needed: the helper must be cancelled before HTTP dispatch.
+    broker.start_provider()
+    helper = broker.root / 'waiting-credential-helper'
+    ready = broker.root / 'credential-pid'
+    release = broker.root / 'release-key'
+    helper.write_text('printf "%s" $$ > "$1.tmp"\nmv "$1.tmp" "$1"\nwhile [ ! -f "$2" ]; do sleep 0.05; done\nprintf fixture-key\n')
+    revision = broker.save_profile(http_profile('https://example.invalid/v1/images',
+                                  {'kind': 'command', 'argv': ['/bin/sh', str(helper), str(ready), str(release)]}))
+    folder, originals = photos(broker.root, [('source.png', (8, 8))])
+    broker.start_trace()
+    broker.submit(edit_request(folder, originals, 'http', revision, 'fixture-image-model', PROMPT), 'ac' * 16)
+    deadline = time.monotonic() + 5
+    while not ready.exists() and time.monotonic() < deadline:
+        time.sleep(.01)
+    assert ready.exists(), 'Credential helper did not start'
+    pid = int(ready.read_text())
+    assert broker.durable()['link']['phase'] == 'forwarding'
+    broker.trace.call('jobs.cancelOperation', {'operationId': broker.operation})
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            break
+        time.sleep(.01)
+    else:
+        raise AssertionError('Trace Cancel never interrupted the in-flight credential helper')
+    release.touch()  # A late unlock cannot print a key or dispatch the operation.
+    value = broker.settle({'failed', 'cancelled'})
+    status = broker.provider.call('services.image-generation.v1.status',
+                                 {'caller': CALLER, 'request': {'operationId': broker.operation}})
+    assert status['execution']['state'] == 'failed', status
+    assert status['execution']['error']['message'] == 'Credential command was cancelled', status
+    assert value['outputPath'] is None
+    assert not broker.stages and not broker.processes and not broker.acquired
+    cancels = [json.loads(line) for direction, line in broker.trace.lines if direction == 'from'
+               and b'host.services.invoke' in line and json.loads(line).get('params', {}).get('method') == 'cancel']
+    assert cancels, 'Trace never forwarded service cancellation'
+    print('PASS credential-cancel: real Trace Cancel interrupts real provider credential admission; no dispatch')
+
+
 def scenario_profile_change(broker):
     endpoint = Endpoint(broker.durable)
     try:
@@ -534,7 +580,8 @@ def scenario_cli_task(broker):
 
 
 RUN = {'ordered-large-http': scenario_ordered_large_http, 'profile-change': scenario_profile_change,
-       'provider-restart': scenario_provider_restart, 'cli-task': scenario_cli_task}
+       'provider-restart': scenario_provider_restart, 'cli-task': scenario_cli_task,
+       'credential-cancel': scenario_credential_cancel}
 for name in SCENARIOS:
     directory = tempfile.mkdtemp(prefix=f'te-shared-ai-{name}-')
     broker = Broker(Path(directory).resolve())

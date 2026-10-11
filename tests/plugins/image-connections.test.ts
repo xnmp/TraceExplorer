@@ -129,3 +129,14 @@ describe("shared image connection policy", () => {
     }
   });
 });
+
+// Trace consumes capabilities and revisions, leaving credential resolution to the provider.
+it("accepts command and future credential sources without rejecting the description", () => {
+  const availability = imageAvailability();
+  expect(validImageAvailability(availability)).toBe(true);
+  const future = structuredClone(availability);
+  Object.assign(future.description!.profiles[1], { credential: { kind: "future-keyring", source: "user-defined" }, hasCredential: true });
+  expect(validImageAvailability(future)).toBe(true);
+  expect(connectionFor(future.description, "custom-http")?.hasCredential).toBe(true);
+  expect(availabilityProblem(future)).toBeNull();
+});

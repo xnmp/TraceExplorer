@@ -118,3 +118,23 @@ test('a bad Flux model ID and a Gemini URL ending in /models show a problem and 
   await expect(page.getByText('cannot contain the path segment /models')).toBeVisible();
   await expect(save).toBeDisabled();
 });
+
+test('command source saves parsed argv and an unclosed quote blocks Save', async ({ page }) => {
+  await setup(page); await page.getByRole('button', { name: 'Add Nano Banana' }).click();
+  await page.getByRole('combobox', { name: 'Credential source' }).click();
+  await page.getByRole('option', { name: 'Command', exact: true }).click();
+  const command = page.getByLabel('Credential command', { exact: true });
+  const save = page.getByRole('button', { name: 'Save connections' });
+  await command.fill('secret-tool lookup service "gemini');
+  await expect(page.getByText('Close the quote in the credential command.')).toBeVisible();
+  await expect(save).toBeDisabled();
+  await command.fill('secret-tool lookup service gemini');
+  await expect(save).toBeEnabled();
+  await save.click();
+  await expect(page.getByText('Connections saved.', { exact: true })).toBeVisible();
+  const saved = await page.evaluate(() => (window as any).imageConnectionFixture.snapshot());
+  expect(saved.profiles[0].credential).toEqual({ kind: 'command', argv: ['secret-tool', 'lookup', 'service', 'gemini'] });
+  await command.fill('secret-tool "');
+  await expect(page.getByText('Close the quote in the credential command.')).toBeVisible();
+  await expect(save).toBeDisabled();
+});

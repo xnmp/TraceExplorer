@@ -409,6 +409,28 @@ fn shared_ai_end_to_end_preserves_ordered_inputs_durable_recipe_and_large_output
     }
 }
 
+#[cfg(unix)]
+#[test]
+fn shared_ai_credential_cancel_interrupts_admission_without_dispatch() {
+    let output = Command::new("python3")
+        .arg(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/test_support/shared_ai_end_to_end.py"
+        ))
+        .arg(env!("CARGO_BIN_EXE_trace-explorer-backend"))
+        .arg(image_generation_backend())
+        .arg("credential-cancel")
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success(),
+        "{stdout}\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(stdout.contains("PASS credential-cancel:"), "{stdout}");
+}
+
 #[test]
 fn native_plugin_persists_published_lineage_across_restart_without_host_code() {
     let directory = test_support::tempdir().unwrap();

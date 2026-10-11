@@ -1,6 +1,7 @@
 //! Pure profile/recipe policy; never opens files or contacts a provider.
 pub mod backend_rules;
 pub mod codex_evidence;
+pub mod credential_rules;
 pub mod stored_receipt;
 use crate::error::{invalid, Result};
 use serde::{Deserialize, Serialize};
@@ -26,6 +27,7 @@ pub enum Credential {
     None,
     Environment { name: String },
     Secret { id: String },
+    Command { argv: Vec<String> },
     CliSavedLogin,
 }
 /// One HTTP image-API connection. Every API backend shares this exact shape;
@@ -317,6 +319,7 @@ pub fn validate_configuration(configuration: &mut Configuration) -> Result<()> {
                     Credential::Secret { id: secret } if !id(secret) => {
                         return Err(invalid("Invalid saved credential reference"))
                     }
+                    Credential::Command { argv } => credential_rules::validate_argv(argv)?,
                     Credential::CliSavedLogin => {
                         return Err(invalid("HTTP profiles cannot use CLI login"))
                     }
