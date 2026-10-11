@@ -3122,8 +3122,10 @@ mod tests {
             }
         }
     }
+    // Folder hints must be absolute on the platform running the tests, or Trace records no folder context.
+    const PICTURES: &str = if cfg!(windows) { r"C:\Pictures" } else { "/Pictures" };
     fn request() -> ImageRequest {
-        serde_json::from_value(json!({"connectionId":"fixture","expectedConnectionRevision":"recipe-1","model":"arbitrary-image-model","sourcePath":null,"prompt":"Draw a landscape","outputDir":"/Pictures","outputFilename":"ignored-user-hint.png","size":"1024x1024","quality":"auto","background":"auto"})).unwrap()
+        serde_json::from_value(json!({"connectionId":"fixture","expectedConnectionRevision":"recipe-1","model":"arbitrary-image-model","sourcePath":null,"prompt":"Draw a landscape","outputDir":PICTURES,"outputFilename":"ignored-user-hint.png","size":"1024x1024","quality":"auto","background":"auto"})).unwrap()
     }
     struct Fixture {
         _root: tempfile::TempDir,
