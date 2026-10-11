@@ -436,13 +436,14 @@
    * in the new index by what identifies it (its component if that survives, else the stack it covers).
    * Null when the folder changed, the selection moved on, or the node is gone.
    */
-  async function reachNode(key: NodeKey, componentId: string): Promise<string | null> {
+  async function reachNode(key: NodeKey, componentId: string, turn: number): Promise<string | null> {
     const dir = directory, owns = captureSelection();
+    const current = () => dir === directory && owns() && turn === activations;
     for (let round = 0; round < 4; round++) {
       const hit = findNode(key, componentId);
       if (hit) return hit.componentId;
       await session.settled();
-      if (dir !== directory || !owns()) return null;
+      if (!current()) return null;
       const index = session.index;
       const holder = index?.components.find((summary) => summary.id === componentId)
         ?? index?.components.find((summary) => summary.coverKey === key)
@@ -450,18 +451,23 @@
       if (!holder) return null;
       componentId = holder.id;
       await session.ensure(holder.id);
-      if (dir !== directory || !owns()) return null;
+      if (!current()) return null;
     }
-    return findNode(key)?.componentId ?? null;
+    return current() ? findNode(key)?.componentId ?? null : null;
   }
 
+  /** Bumped by every user activation and every explicit close: an activation still loading when it changes does nothing. */
+  let activations = 0;
+
   async function navigateNode(key: NodeKey, componentId: string, modifiers: { shiftKey?: boolean } = {}): Promise<void> {
-    const holder = findNode(key, componentId) ? componentId : await reachNode(key, componentId);
+    const turn = ++activations;
+    const holder = findNode(key, componentId) ? componentId : await reachNode(key, componentId, turn);
     if (holder) focusNode(key, modifiers, "reveal", holder);
   }
 
   async function activate(key: NodeKey, event: MouseEvent, componentId: string): Promise<void> {
-    const holder = findNode(key, componentId) ? componentId : await reachNode(key, componentId);
+    const turn = ++activations;
+    const holder = findNode(key, componentId) ? componentId : await reachNode(key, componentId, turn);
     if (holder) focusNode(key, { ctrlKey: event.ctrlKey || event.metaKey, shiftKey: event.shiftKey }, "hold", holder);
   }
 
@@ -672,6 +678,7 @@
     const element = scroller?.querySelector<HTMLElement>(`[data-grid-cell="${CSS.escape(stackKey(id))}"]`) ?? null;
     if (scroller && element && !heldAnchor) heldAnchor = holdAnchor(scroller, element, () => { heldAnchor = null; }, updateHeldAnchor);
     if (!opening && pendingReveal && session.components.get(id)?.dag.nodes.has(pendingReveal.key)) supersedeReveal();
+    if (!opening) activations++;
     session.setStackOpen(id, opening);
     if (opening) void session.ensure(id);
     updateHeldAnchor();

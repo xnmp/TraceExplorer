@@ -425,6 +425,24 @@ for (const outcome of ["delayed", "failed"] as const) {
   });
 }
 
+test("a delayed activation does not undo an explicit close", async ({ page }) => {
+  await openView(page, 420, "?grouping=unsaved-and-placeholder", false);
+  const backend = (fn: string) => page.evaluate((fn) => (window as any).trace.backend[fn](), fn);
+  const before = await state(page);
+  await backend("holdFolderReads");
+  // An unsaved cover is not a listed file: pressing it loads its component before selecting it.
+  const heading = stack(page, "out").locator("[data-stack-toggle]");
+  await heading.click();
+  await expect(heading).toHaveAttribute("aria-expanded", "true");
+  await heading.click();
+  await expect(heading).toHaveAttribute("aria-expanded", "false");
+  await backend("releaseFolderReads"); await settle(page);
+  await expect(stack(page, "out").locator("[data-grid-band]")).toHaveCount(0);
+  const after = await state(page);
+  expect([after.selected, after.inputs, after.target]).toEqual([before.selected, before.inputs, before.target]);
+  expect(await uncaught(page)).toEqual([]);
+});
+
 const tabStops = (page: Page) => page.locator('[role="grid"] [tabindex="0"]');
 const focusIsInGrid = (page: Page) => page.evaluate(() => !!document.activeElement?.closest('[role="grid"]'));
 
