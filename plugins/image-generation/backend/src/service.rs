@@ -736,7 +736,7 @@ impl Service {
     ) {
         let remaining = domain::remaining_budget(
             deadline,
-            epoch_millis().unwrap_or(deadline),
+            self.journal.now().unwrap_or(deadline),
             self.operation_budget,
         );
         let service = Arc::downgrade(self);
@@ -850,7 +850,7 @@ impl Service {
                 }
             }
         }
-        if epoch_millis()? >= work.deadline {
+        if self.journal.now()? >= work.deadline {
             let _ = self
                 .journal
                 .cancel(&work.caller.package_id, &work.request.operation_id);

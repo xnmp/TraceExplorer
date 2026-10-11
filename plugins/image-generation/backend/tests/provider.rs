@@ -343,6 +343,15 @@ impl Gate {
             .unwrap();
         *open
     }
+    /// A held IO phase with a Drop release guard must end only on release,
+    /// never because machine load consumed an elapsed-time bound.
+    fn wait_for_release(&self) {
+        drop(
+            self.1
+                .wait_while(self.0.lock().unwrap(), |open| !*open)
+                .unwrap(),
+        );
+    }
 }
 type Server = (
     String,
@@ -2644,6 +2653,7 @@ struct HeldOutputStage {
     inner: Arc<FakeHost>,
     entered: AtomicUsize,
     all_entered: Arc<Gate>,
+    progress: tokio::sync::Notify,
     released: Arc<Gate>,
 }
 impl Host for HeldOutputStage {
@@ -2652,7 +2662,8 @@ impl Host for HeldOutputStage {
             if self.entered.fetch_add(1, Ordering::SeqCst) + 1 == 4 {
                 self.all_entered.open();
             }
-            self.released.wait();
+            self.progress.notify_one();
+            self.released.wait_for_release();
         }
         self.inner.call(method, params, cancelled)
     }
@@ -2660,7 +2671,7 @@ impl Host for HeldOutputStage {
         self.inner.event(name, payload)
     }
 }
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(start_paused = true)]
 async fn expired_queue_never_dispatches_and_live_io_retains_worker_leases() {
     let servers: Vec<_> = (0..4).map(|_| server(Duration::ZERO)).collect();
     let untouched = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -2671,6 +2682,7 @@ async fn expired_queue_never_dispatches_and_live_io_retains_worker_leases() {
         inner: FakeHost::new(),
         entered: AtomicUsize::new(0),
         all_entered: Gate::new(),
+        progress: tokio::sync::Notify::new(),
         released: Gate::new(),
     });
     struct Release(Arc<Gate>);
@@ -2680,13 +2692,24 @@ async fn expired_queue_never_dispatches_and_live_io_retains_worker_leases() {
         }
     }
     let _release = Release(host.released.clone());
-    // Deadlines apply only once every worker holds its proven output in stage.
+    // Freeze both durable deadline checks and Tokio timers until all four
+    // workers hold proven output. Gating only timer cancellation still lets
+    // claim/pre-dispatch checks expire requests before this state exists.
+    let epoch = image_generation_backend::journal::epoch_millis().unwrap();
+    let clock = tokio::time::Instant::now();
+    let budget = Duration::from_millis(1000);
     let service = Service::with_policy(
         directory.path(),
         host.clone(),
-        gated_deadline(host.all_entered.clone()),
+        image_generation_backend::service::ServicePolicy {
+            operation_budget: budget,
+            ..Default::default()
+        },
     )
     .unwrap();
+    service.journal.set_clock_for_test(Arc::new(move || {
+        Ok(epoch + i64::try_from(clock.elapsed().as_millis()).unwrap())
+    }));
     service.activate().unwrap();
     let mut config = configuration(&unused_root);
     for (index, (root, _, _, _)) in servers.iter().enumerate() {
@@ -2697,6 +2720,10 @@ async fn expired_queue_never_dispatches_and_live_io_retains_worker_leases() {
         config.profiles.push(profile);
     }
     let config = service.profiles.save(config, 0, None, None).unwrap();
+    // A live blocking wait inhibits Tokio's automatic clock advance while
+    // real HTTP IO reaches the stage gates, without occupying the async worker.
+    let ready = host.all_entered.clone();
+    let mut all_ready = tokio::task::spawn_blocking(move || ready.wait());
     let mut active = vec![];
     for profile in &config.profiles[1..] {
         let prepared = request(profile, vec![]);
@@ -2706,8 +2733,19 @@ async fn expired_queue_never_dispatches_and_live_io_retains_worker_leases() {
         );
         service.start(caller(), request.clone(), false).unwrap();
         active.push(request);
+        // Let this request finish HTTP before the next synchronous client setup
+        // can delay its body flush on the single paused-time async worker. Its
+        // blocking stage retains the lease, so all four still overlap.
+        if active.len() < 4 {
+            tokio::select! {
+                _ = host.progress.notified() => {},
+                result = &mut all_ready => {
+                    assert!(result.unwrap(), "Workers did not reach their output stages");
+                },
+            }
+        }
     }
-    tokio::task::block_in_place(|| assert!(host.all_entered.wait()));
+    assert!(all_ready.await.unwrap());
     let prepared = request(&config.profiles[0], vec![]);
     let queued = start(
         prepared.clone(),
@@ -2718,6 +2756,11 @@ async fn expired_queue_never_dispatches_and_live_io_retains_worker_leases() {
         .journal
         .deadline("test.consumer", &queued.operation_id)
         .unwrap();
+    assert_eq!(deadline, epoch + i64::try_from(budget.as_millis()).unwrap());
+    // The stage waits now inhibit auto-advance. Explicitly expire the unchanged
+    // budget, then resume so existing bounded failure waits use elapsed time.
+    tokio::time::advance(budget).await;
+    tokio::time::resume();
     // The queued operation's own deadline cancels it while every slot is held.
     tokio::time::timeout(Duration::from_secs(5), async {
         while service
@@ -2790,9 +2833,9 @@ async fn expired_queue_never_dispatches_and_live_io_retains_worker_leases() {
 }
 
 /// The automatic deadline really expires, but its cancellation is applied only
-/// after `ready` opens: a loaded machine cannot cut the request short or let
-/// the deadline win before the state under test exists. The budget leaves
-/// room for admission and claim commits before dispatch.
+/// after `ready` opens. This gates timer cancellation only; admission, claim
+/// and pre-dispatch expiry still use elapsed wall time. Tests that must reach
+/// a phase before the budget runs out need a controlled deadline clock.
 fn gated_deadline(ready: Arc<Gate>) -> image_generation_backend::service::ServicePolicy {
     image_generation_backend::service::ServicePolicy {
         operation_budget: Duration::from_millis(1000),

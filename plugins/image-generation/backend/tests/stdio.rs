@@ -31,6 +31,21 @@ impl Drop for Child {
 }
 #[tokio::test]
 async fn real_stdio_keeps_cancellation_and_reverse_replies_live_with_full_ordinary_pool() {
+    stdio_check_burst(CheckBurst::Saturated).await;
+}
+
+#[tokio::test]
+async fn real_stdio_answers_delayed_checks_after_reverse_capacity_is_released() {
+    stdio_check_burst(CheckBurst::DelayedOverflow).await;
+}
+
+#[derive(Clone, Copy)]
+enum CheckBurst {
+    Saturated,
+    DelayedOverflow,
+}
+
+async fn stdio_check_burst(burst: CheckBurst) {
     let directory = tempfile::tempdir().unwrap();
     let service = Service::new(directory.path(), Arc::new(NoHost)).unwrap();
     service.activate().unwrap();
@@ -125,7 +140,11 @@ async fn real_stdio_keeps_cancellation_and_reverse_replies_live_with_full_ordina
         json!({"jsonrpc":"2.0","id":6,"method":"migration.status","params":{"sourceId":"trace-openai-image-v1","controlToken":"b".repeat(64)}}),
     );
     assert_eq!(receive()["result"]["state"], "absent");
-    for id in 100..132 {
+    let initial_end = match burst {
+        CheckBurst::Saturated => 132,
+        CheckBurst::DelayedOverflow => 128,
+    };
+    for id in 100..initial_end {
         write(
             &mut stdin,
             json!({"jsonrpc":"2.0","id":id,"method":"settings.check","params":{"profileId":"fixture"}}),
@@ -133,7 +152,11 @@ async fn real_stdio_keeps_cancellation_and_reverse_replies_live_with_full_ordina
     }
     let mut reverse = vec![];
     let mut replies = vec![];
-    while reverse.len() < 28 {
+    // Keep every reverse slot occupied until every initial check has either
+    // issued its host call or replied with overflow. Otherwise a delayed
+    // handler can issue another host call after a slot is freed, which the
+    // old fixture counted as a reply and left unanswered.
+    while reverse.len() + replies.len() < initial_end - 100 {
         let frame = receive();
         if frame["method"] == "host.credentials.get" {
             reverse.push(frame["id"].clone())
@@ -141,6 +164,11 @@ async fn real_stdio_keeps_cancellation_and_reverse_replies_live_with_full_ordina
             replies.push(frame)
         }
     }
+    assert_eq!(reverse.len(), 28);
+    assert!(replies
+        .iter()
+        .all(|r| r["result"]["available"] == false
+            && r["result"]["error"]["code"] == "host_unavailable"));
     write(
         &mut stdin,
         json!({"jsonrpc":"2.0","id":999,"method":"settings.cancelTest","params":{"requestId":"12345678-1234-1234-1234-123456789abc"}}),
@@ -166,6 +194,35 @@ async fn real_stdio_keeps_cancellation_and_reverse_replies_live_with_full_ordina
         }
         replies.push(frame);
     }
+    if matches!(burst, CheckBurst::DelayedOverflow) {
+        // Force a late check to reuse a reverse slot. The earlier numeric
+        // reply is the barrier: its host call and handler have both finished.
+        let released = reverse.pop().unwrap();
+        write(
+            &mut stdin,
+            json!({"jsonrpc":"2.0","id":released,"result":{"key":"fixture-key-kept-native"}}),
+        );
+        let reply = receive();
+        assert_eq!(reply["result"]["available"], true, "{reply}");
+        replies.push(reply);
+        for id in 128..132 {
+            write(
+                &mut stdin,
+                json!({"jsonrpc":"2.0","id":id,"method":"settings.check","params":{"profileId":"fixture"}}),
+            );
+        }
+        while reverse.len() + replies.len() < 32 {
+            let frame = receive();
+            if frame["method"] == "host.credentials.get" {
+                reverse.push(frame["id"].clone());
+            } else {
+                assert_eq!(frame["result"]["available"], false, "{frame}");
+                assert_eq!(frame["result"]["error"]["code"], "host_unavailable");
+                replies.push(frame);
+            }
+        }
+        assert_eq!(reverse.len(), 28);
+    }
     for id in reverse.into_iter().rev() {
         write(
             &mut stdin,
@@ -175,39 +232,36 @@ async fn real_stdio_keeps_cancellation_and_reverse_replies_live_with_full_ordina
     while replies.len() < 32 {
         replies.push(receive())
     }
+    let mut reply_ids: Vec<_> = replies.iter().map(|r| r["id"].as_u64()).collect();
+    reply_ids.sort();
+    assert_eq!(reply_ids, (100..132).map(Some).collect::<Vec<_>>());
+    let available = match burst {
+        CheckBurst::Saturated => 28,
+        CheckBurst::DelayedOverflow => 29,
+    };
     assert_eq!(
         replies
             .iter()
             .filter(|r| r["result"]["available"] == true)
             .count(),
-        28
+        available
     );
     assert!(replies
         .iter()
         .all(|r| !r.to_string().contains("fixture-key-kept-native")));
-    // Released workers finish asynchronously, so poll against a deadline: a
-    // fixed attempt count is exhausted early on a loaded machine.
-    let mut quiesced = false;
-    let deadline = std::time::Instant::now() + Duration::from_secs(20);
-    for id in 2000.. {
-        if std::time::Instant::now() >= deadline {
-            break;
-        }
-        if id > 2000 {
-            std::thread::sleep(Duration::from_millis(10));
-        }
-        write(
-            &mut stdin,
-            json!({"jsonrpc":"2.0","id":id,"method":"lifecycle.quiesce","params":{}}),
-        );
-        let response = receive();
-        if response["result"] == json!({"ready":false,"idle":true,"checkpoint":true}) {
-            quiesced = true;
-            break;
-        }
-        assert_eq!(response["error"]["data"]["code"], "busy");
-    }
-    assert!(quiesced);
+    // These checks start no generation workers. Stdio drops each handler's
+    // permit before sending its reply, so all 32 numeric replies prove idle.
+    write(
+        &mut stdin,
+        json!({"jsonrpc":"2.0","id":2000,"method":"lifecycle.quiesce","params":{}}),
+    );
+    let quiesced = receive();
+    assert_eq!(quiesced["id"], 2000);
+    assert_eq!(
+        quiesced["result"],
+        json!({"ready":false,"idle":true,"checkpoint":true}),
+        "{quiesced}"
+    );
     write(
         &mut stdin,
         json!({"jsonrpc":"2.0","id":1000000,"method":"settings.read","params":{}}),

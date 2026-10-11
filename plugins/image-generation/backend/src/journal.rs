@@ -23,10 +23,28 @@ pub struct Journal {
     /// Fault injection for tests: adding the `timings` column fails.
     #[cfg(feature = "test-hooks")]
     migration_fault: std::sync::atomic::AtomicBool,
+    /// Test clock shared by admission, claim, and the service's deadline checks.
+    #[cfg(feature = "test-hooks")]
+    clock: Mutex<Option<std::sync::Arc<dyn Fn() -> Result<i64> + Send + Sync>>>,
     /// Whether the active journal has the optional `timings` column.
     has_timings: std::sync::atomic::AtomicBool,
 }
 impl Journal {
+    pub(crate) fn now(&self) -> Result<i64> {
+        #[cfg(feature = "test-hooks")]
+        if let Some(clock) = self.clock.lock().map_err(storage)?.clone() {
+            return clock();
+        }
+        epoch_millis()
+    }
+
+    /// Keep durable deadlines and Tokio's timer clock in the same test time.
+    #[cfg(feature = "test-hooks")]
+    #[doc(hidden)]
+    pub fn set_clock_for_test(&self, clock: std::sync::Arc<dyn Fn() -> Result<i64> + Send + Sync>) {
+        *self.clock.lock().unwrap() = Some(clock);
+    }
+
     pub fn open(directory: &Path) -> Result<Self> {
         let path = directory.join("operations.sqlite");
         let initialized = initialized_marker(directory)?;
@@ -74,6 +92,8 @@ impl Journal {
             timing_fault: std::sync::atomic::AtomicBool::new(false),
             #[cfg(feature = "test-hooks")]
             migration_fault: std::sync::atomic::AtomicBool::new(false),
+            #[cfg(feature = "test-hooks")]
+            clock: Mutex::new(None),
             has_timings: std::sync::atomic::AtomicBool::new(false),
         })
     }
@@ -372,7 +392,7 @@ impl Journal {
             diagnostics: None,
             billing: None,
         };
-        let admitted_at = epoch_millis()?;
+        let admitted_at = self.now()?;
         let deadline_at = admitted_at
             .checked_add(i64::try_from(budget.as_millis()).map_err(storage)?)
             .ok_or_else(|| {
@@ -514,7 +534,7 @@ impl Journal {
         if status.execution != (Execution::Accepted {}) {
             return Ok(false);
         }
-        let expired = epoch_millis()? >= deadline;
+        let expired = self.now()? >= deadline;
         if expired {
             transaction
                 .execute(
