@@ -66,7 +66,7 @@
 <style>
   :global(body) { margin: 0; font-family: system-ui, sans-serif; background: var(--background-solid); color: var(--text-primary); }
   /* Mirrors the host's image job rows (ProgressDialog.svelte). */
-  .panel { position: fixed; right: 16px; bottom: 16px; width: 420px; background: var(--background-solid); border: 1px solid var(--surface-stroke); border-radius: 8px; padding: 12px; z-index: 2; }
+  .panel { position: fixed; right: 16px; bottom: 16px; width: 420px; background: var(--background-solid); border: 1px solid var(--surface-stroke); border-radius: 8px; padding: 12px; z-index: var(--z-progress, 1300); }
   h3 { margin: 0 0 8px; font-size: 14px; }
   .operation-item { display: flex; gap: 12px; padding: 10px; border-radius: 6px; background: var(--subtle-fill); }
   .icon { width: 20px; color: var(--text-secondary); }

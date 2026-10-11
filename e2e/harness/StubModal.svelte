@@ -1,5 +1,5 @@
 <script lang="ts">
-  /** The host's `ui/modal`, reduced to what plugin dialogs rely on: an overlay that renders its content while open. */
+  /** The host's `ui/modal`, including backdrop blur/fade so dialog entrance regressions remain observable. */
   import type { Snippet } from "svelte";
   let { open, onClose, overlayClass = "", labelledby, children }: { open: boolean; onClose: () => void; overlayClass?: string; labelledby?: string; children: Snippet } = $props();
 </script>
@@ -10,5 +10,6 @@
 {/if}
 
 <style>
-  .stub-overlay { position: fixed; inset: 0; display: grid; place-items: center; background: rgba(0, 0, 0, 0.3); }
+  .stub-overlay { position: fixed; inset: 0; display: grid; place-items: center; background: rgba(0, 0, 0, 0.3); backdrop-filter: blur(4px); z-index: var(--z-modal, 1000); animation: modal-overlay-in 150ms cubic-bezier(0, 0, 0, 1); }
+  @keyframes modal-overlay-in { from { opacity: 0; } to { opacity: 1; } }
 </style>
