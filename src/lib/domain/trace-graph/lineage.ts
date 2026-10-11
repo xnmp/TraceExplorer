@@ -5,7 +5,7 @@
  * sizes.
  */
 import type { NodeKey } from "./model";
-import type { TraceDag } from "./projection";
+import type { BadgeProjection, TraceDag } from "./projection";
 
 export interface Lineage {
   readonly focus: NodeKey | null;
@@ -25,6 +25,26 @@ export function lineage(dag: TraceDag, focus: NodeKey | null): Lineage {
   if (focus === null || !dag.nodes.has(focus)) return { focus: null, related: new Set() };
   const ancestors = walk(focus, (key) => dag.parents.get(key) ?? []);
   const descendants = walk(focus, (key) => dag.children.get(key) ?? []);
+  return { focus, related: new Set([...ancestors, ...descendants]) };
+}
+
+/**
+ * Badges are virtual parents for highlighting, but never acquire routes or
+ * tiles. Optional members restrict traversal to one drawable component: a
+ * shared badge must not make planning every band traverse the whole folder.
+ */
+export function lineageWithBadges(graph: BadgeProjection, focus: NodeKey | null, members?: ReadonlySet<NodeKey>): Lineage {
+  const { dag, badges, byConsumer } = graph;
+  if (focus === null || (!dag.nodes.has(focus) && !badges.has(focus))) return { focus: null, related: new Set() };
+  const consumers = badges.has(focus) && members
+    ? [...members].filter((key) => byConsumer.get(key)?.some((badge) => badge.key === focus))
+    : badges.get(focus)?.consumers;
+  const ancestors = walk(focus, (key) => [
+    ...(dag.parents.get(key) ?? []).filter((parent) => !members || members.has(parent)),
+    ...(byConsumer.get(key) ?? []).map((badge) => badge.key),
+  ]);
+  const descendants = walk(focus, (key) => key === focus && consumers ? consumers
+    : (dag.children.get(key) ?? []).filter((child) => !members || members.has(child)));
   return { focus, related: new Set([...ancestors, ...descendants]) };
 }
 

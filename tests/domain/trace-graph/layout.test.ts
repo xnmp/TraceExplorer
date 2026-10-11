@@ -2,10 +2,13 @@ import { describe, expect, it } from "vitest";
 import { layoutGraph, nearestFree, nearestInDirection, wrapRow, type LayoutItem, type Orientation } from "$lib/domain/trace-graph/layout";
 import { connectedComponents, projectDag } from "$lib/domain/trace-graph/projection";
 import { planScene } from "$lib/domain/trace-graph/scene";
-import { ARROW, SPACING, TRACK_HEIGHT, spacingFor, tileMetrics, tileSize, type Spacing } from "$lib/domain/trace-graph/metrics";
-import { arrowStemProblems, channels, foreignJunctionContacts, mockupNodes, node, random, routeCollisions, sharedLanes, sourcesReaching, tileOverlaps } from "./fixtures";
+import { ARROW, SPACING, TRACK_HEIGHT, spacingFor, tileMetrics, tileSize } from "$lib/domain/trace-graph/metrics";
+import { arrowStemProblems, channelProblems, junctionOverlaps, channels, foreignJunctionContacts, mockupNodes, node, random, routeCollisions, sharedLanes, sourcesReaching, tileOverlaps } from "./fixtures";
 
 /** Correctness sweeps over many graphs: slower CI runners need more than the default 5 s. */
+import { fixtures, grid, itemsOf, randomDag, coverOf, widths, columns } from "./pinned-fixtures";
+import { invariants, metrics } from "./pinned-diagnostics";
+
 const HEAVY = 30_000;
 const small = tileSize({ foreign: false, hint: false });
 const tall = tileSize({ foreign: true, hint: true });
@@ -15,7 +18,7 @@ const tall = tileSize({ foreign: true, hint: true });
  * guarantees never silently depend on uniform widths.
  */
 const wide = { width: 168, height: 152 };
-const item = (key: string, parents: string[] = [], size = small, order = 0): LayoutItem => ({ key, parents, width: size.width, height: size.height, order });
+const item = (key: string, parents: string[] = [], size: Pick<LayoutItem, "width" | "height"> = small, order = 0): LayoutItem => ({ key, parents, width: size.width, height: size.height, order });
 
 function fanOut(children: number): LayoutItem[] {
   return [item("p", [], wide), ...Array.from({ length: children }, (_, index) => item(`c${index}`, ["p"], wide, index + 1)),
@@ -51,36 +54,6 @@ function checkLayout(items: readonly LayoutItem[], maxWidth: number, orientation
     else expect(child.x, `${parent} left of ${entry.key}`).toBeGreaterThan(source.x + source.width);
   }
   return layout;
-}
-
-/**
- * Channels outside the bounds their contents justify. Every channel holds at
- * least the approach (a stem and the arrowhead) and one bend track. A channel
- * is its default height (`bandChannel` between generations, `rowChannel`
- * between wrapped rows) plus `junctionLevel` per junction level; it grows past
- * that only when its bends need more tracks than a zone holds, by at most one
- * track per route crossing it in each zone. Without junctions, as many routes
- * as its default bend room has tracks for keep it at exactly its default.
- */
-function channelProblems(layout: ReturnType<typeof layoutGraph>, spacing: Spacing): string[] {
-  return channels(layout).flatMap(({ between, gap, betweenBands, levels, routes }) => {
-    const base = betweenBands ? spacing.bandChannel : spacing.rowChannel;
-    const problems: string[] = [];
-    if (gap < spacing.approach + TRACK_HEIGHT) problems.push(`${between}: ${gap} px leaves no room to bend`);
-    if (gap > base + levels * spacing.junctionLevel + (levels + 1) * routes * TRACK_HEIGHT) problems.push(`${between}: ${gap} px for ${levels} levels and ${routes} routes`);
-    if (!levels && routes * TRACK_HEIGHT <= base - spacing.approach && Math.abs(gap - base) > 0.01) problems.push(`${between}: ${gap} px, not the default ${base} px, for ${routes} routes`);
-    return problems;
-  });
-}
-
-/** Pairs of junction dots closer than a dot's diameter. */
-function junctionOverlaps(layout: ReturnType<typeof layoutGraph>): string[] {
-  const placed = [...layout.junctions.values()];
-  const overlaps: string[] = [];
-  for (let i = 0; i < placed.length; i++) for (let j = i + 1; j < placed.length; j++) {
-    if (Math.hypot(placed[i].x - placed[j].x, placed[i].y - placed[j].y) < 6) overlaps.push(`${placed[i].id} ${placed[j].id}`);
-  }
-  return overlaps;
 }
 
 describe("row wrapping", () => {
@@ -528,3 +501,98 @@ describe("spatial navigation", () => {
 });
 
 function sorted(values: Iterable<string>) { return [...values].sort(); }
+
+describe("pinned cover layout", () => {
+  it("aligns narrow lineage rows toward either edge-column cover within routing margins", () => {
+    const items = [item("cover"), item("child", ["cover"], small, 1), item("grandchild", ["child"], small, 2)];
+    for (const x of [80, 560]) {
+      const layout = layoutGraph({ items, maxWidth: 640, pinned: { key: "cover", x } });
+      expect(layout.width).toBe(640);
+      for (const node of layout.nodes.values()) expect(node.x + node.width / 2).toBe(x);
+      expect(metrics(layout, "cover").coverMax).toBe(SPACING.bandChannel);
+      expect(routeCollisions(layout)).toEqual([]);
+    }
+    const flush = layoutGraph({ items, maxWidth: 640, pinned: { key: "cover", x: small.width / 2 } });
+    expect(flush.nodes.get("child")!.x).toBe(SPACING.margin);
+  });
+
+  it("keeps the cover's grid geometry across focus changes in the spike regression fixture", () => {
+    for (const width of widths) for (const col of columns) {
+      const layouts = fixtures().filter((fixture) => fixture.id.startsWith("12-")).map((fixture) => layoutGraph({ items: itemsOf(fixture.nodes), maxWidth: width, pinned: grid(width, col, fixture.cover) }));
+      for (const layout of layouts) expect(layout.nodes.get("village")).toEqual(layouts[0].nodes.get("village"));
+    }
+  });
+
+  it("sweeps 2,700 pinned layouts against the existing and grid contracts, tracking the known lane limit", () => {
+    const counts = { pinned: 0, main: 0 };
+    const failures: string[] = [];
+    for (let seed = 1; seed <= 300; seed++) {
+      const nodes = randomDag(seed), items = itemsOf(nodes), cover = coverOf(nodes);
+      for (const width of widths) {
+        const ordinary = layoutGraph({ items, maxWidth: width });
+        const ordinaryShares = sharedLanes(ordinary).length > 0;
+        for (const col of columns) {
+          if (ordinaryShares) counts.main++;
+          const pinned = grid(width, col, cover);
+          const layout = layoutGraph({ items, maxWidth: width, pinned });
+          const problems = invariants(items, layout, width, pinned);
+          if (problems["shared-lane"].length) counts.pinned++;
+          for (const [contract, details] of Object.entries(problems)) {
+            if (contract !== "shared-lane" && details.length) failures.push(`seed ${seed}, ${width}px col ${col}, ${contract}: ${details.join(", ")}`);
+          }
+        }
+      }
+    }
+    console.info(`pinned fuzz: lane sharing ${counts.pinned}/2700; main ${counts.main}/2700; spike 68/2700`);
+    expect(failures).toEqual([]);
+    // This bound tracks an existing, documented routing limit, not a new invariant.
+    expect(counts.main).toBe(57);
+    expect(counts.pinned).toBeLessThanOrEqual(25);
+  }, 180_000);
+
+  it("holds a root alone at the absolute grid centre, including when the engine widens", () => {
+    for (const id of ["01", "02", "05", "09"]) {
+      const fixture = fixtures().find((entry) => entry.id === id)!;
+      const items = itemsOf(fixture.nodes), pinned = grid(380, 3, fixture.cover);
+      const layout = layoutGraph({ items, maxWidth: 380, pinned });
+      expect(layout.rows[0].keys).toEqual([fixture.cover]);
+      const cover = layout.nodes.get(fixture.cover)!;
+      expect(cover.x + cover.width / 2).toBe(pinned.x);
+      expect(cover.y).toBe(layout.rows[0].top);
+      const failures = invariants(items, layout, 380, pinned);
+      for (const contract of ["pinned-x", "cover-alone", "cover-incoming", "obstacle-route", "foreign-grid-channel", "parentage", "parent-order"]) expect(failures[contract], contract).toEqual([]);
+    }
+  });
+  it("preserves reference parentage and returns an ordinary layout for non-root covers", () => {
+    for (const id of ["07", "08"]) {
+      const fixture = fixtures().find((entry) => entry.id === id)!;
+      const items = itemsOf(fixture.nodes);
+      const ordinary = layoutGraph({ items, maxWidth: 640 });
+      const { pinnedViolation, ...layout } = layoutGraph({ items, maxWidth: 640, pinned: grid(640, 0, fixture.cover) });
+      expect(pinnedViolation).toBe("not-a-root");
+      expect(layout).toEqual(ordinary);
+      expect(layout.routes.some((route) => route.terminal && route.to.id === fixture.cover)).toBe(true);
+    }
+  });
+  it("ignores pinning for left-to-right requests", () => {
+    const fixture = fixtures()[0], items = itemsOf(fixture.nodes);
+    expect(layoutGraph({ items, maxWidth: 640, orientation: "right", pinned: grid(640, 3, fixture.cover) }))
+      .toEqual(layoutGraph({ items, maxWidth: 640, orientation: "right" }));
+  });
+  it("can pin a later root and ignores unavailable or nonfinite pins", () => {
+    const fixture = fixtures()[0], items = itemsOf(fixture.nodes), ordinary = layoutGraph({ items, maxWidth: 640 });
+    const later = layoutGraph({ items, maxWidth: 640, pinned: grid(640, 2, "palette") });
+    expect(later.rows[0].keys).toEqual(["palette"]);
+    expect(later.nodes.get("palette")!.x + later.nodes.get("palette")!.width / 2).toBe(400);
+    expect(later.nodes.has("village")).toBe(true);
+    for (const pinned of [{ key: "unavailable", x: 80 }, ...[Number.NaN, Infinity, Number.MAX_VALUE, -1, 700].map((x) => ({ key: fixture.cover, x }))]) {
+      expect(layoutGraph({ items, maxWidth: 640, pinned })).toEqual(ordinary);
+    }
+    for (const maxWidth of [NaN, Infinity, Number.MAX_VALUE]) {
+      expect(layoutGraph({ items, maxWidth, pinned: { key: fixture.cover, x: 80 } })).toEqual(layoutGraph({ items, maxWidth }));
+    }
+    const pinned = { key: fixture.cover, x: 80 };
+    expect(layoutGraph({ items, maxWidth: 640, pinned: { ...pinned, obstacles: [{ x: NaN, width: 92 }, { x: 10, width: Infinity }] } }))
+      .toEqual(layoutGraph({ items, maxWidth: 640, pinned }));
+  });
+});

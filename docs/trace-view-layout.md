@@ -2,6 +2,85 @@
 
 How the Trace view arranges one connected component, which way it runs, which nodes it shows, and why it does not use ELK.
 
+## Grid bands and pinned covers
+
+The grid-band domain API for issue #36 is opt-in; the current view still uses
+`planScene` and the component orientation rule below. `gridFlow(items, open,
+columns, metrics)` takes the host-sorted list **already collapsed** to one
+`{id, kind: "stack"}` at each cover's position, plus ordinary files/folders.
+Use an entry path or cover key as `id`, rather than a component id (which can
+change on merges). Cells keep their logical row, column and x on every band
+change. Full-width bands begin at their stack row's bottom; bands sharing a
+row touch in item order, and the normal row gap follows them. Measured heights
+exclude the cover row. Coordinates start at (0, 0), without pane padding.
+`mapGridItemRects(before, after)` joins by identity and returns both rectangles,
+including null for arrivals/departures. The domain does not animate anything.
+
+For a fully paged graph, `projectReferenceBadges(projectDag(nodes))` removes
+foreign root images (scope `subfolder`/`external`, with a path and no accepted
+parent in the supplied DAG) from the drawable DAG. It preserves each reference's
+path, scope, key and ordered direct consumers, indexed by consumer. Keep all
+badges in domain data; display up to three and a `+n` overflow in the view.
+Path-null placeholders and foreign images with parents remain tiles. Compute
+drawable components **after** this projection: sharing only a reference no
+longer joins two edit chains. Projection requires complete parent relationships,
+before visibility filtering; a partial graph cannot establish reference roots.
+`lineageWithBadges` treats each badge as a virtual parent: focusing it highlights
+all its consumers and descendants; focusing a consumer highlights its badge
+ancestors without highlighting unrelated co-consumers.
+
+`planBandScene` accepts that projection, drawable members and a `PinnedCover`.
+It seeds visibility from current-folder roots and always requests top-to-bottom
+layout, bypassing `orientation.ts`. The legacy reference-only root fallback and
+automatic orientation remain in `planScene`. `layoutGraph` puts the pinned root
+alone in generation 0's first display row, at its absolute x centre, even when
+routing widens the canvas. Other roots wrap below it; neighbouring grid tiles'
+horizontal spans are obstacles in that first row. The remaining rows centre
+toward the cover, clamped inside routing margins. A non-root pin returns the
+ordinary layout with `pinnedViolation: "not-a-root"`, preserving its real parents.
+Pinning is ignored for legacy left-to-right requests. Unavailable, nonfinite
+or off-pane pins fall back to ordinary layout; pinning requires a finite
+measured pane width of at most 100,000 px. Invalid neighbour spans are ignored.
+Routing retries spend unused band width on wider margins before extending the
+canvas, so aligning a narrow row toward an edge does not discard that spare room.
+
+When the view adopts these APIs, its `layout-client.ts` cache signature must
+include the complete `request.pinned` (key, x and obstacle spans). The existing
+client only keys legacy requests; passing a band request through it unchanged
+would reuse geometry after a cover-column change. The grid's cover cell must
+also be mapped to the engine's row-0 origin (`spacingFor(...).top`) and cover
+dimensions when measuring the band. No view or worker integration is included
+in this domain change.
+
+The original spike (`19601c1`, 12 hard cases and 2,700 fuzz layouts) established
+that the cover can hang from a fixed grid cell without tile/route collisions or
+false parentage. External-parent covers could not be pinned; the badge projection
+resolves that case. Centred bands produced long edge-column cover routes; aligning
+their rows reduces those detours, but dense narrow graphs can still overflow and
+deep chains remain tall (the 20-step fixture is 2,413 px). Lane sharing is an
+existing routing limit; it must be measured rather than described as eliminated.
+
+Re-measuring the same four-cell contexts (columns 0/2/3, widths 380/640/1,000,
+uniform default tiles, full fixtures) gives **25/2,700** lane-sharing failures
+with aligned pinned rows, versus **68/2,700** in the spike and **57/2,700** on
+main (`aa22ed6`). Complete cover-to-child lengths include shared trunks,
+junction tails and the 8 px arrowhead; cubics are sampled at 60 points. At
+640 px with the cover in the last column:
+
+| Hard case | Centred spike | Aligned rows |
+|---|---:|---:|
+| 24 styled photos | 1,432.6 px | 1,401.1 px |
+| Every pair of eight roots | 1,504.3 px | 1,319.0 px |
+| Six distant partners | 1,002.7 px | 783.7 px |
+| Thirty children | 1,474.0 px | 1,437.2 px |
+| 20-step chain (first cover route) | 257.8 px | 34.0 px |
+
+Alignment shortens these cover routes, not necessarily total ink: the every-pair
+case grows from 40,329.1 to 42,177.0 px of ink in that context. These measurements
+isolate row alignment without badge conversion, so the styled-photo fixture
+still contains its shared reference as a tile. Regression fixtures and diagnostics
+live under `tests/domain/trace-graph/pinned-*`; the spike renderer is removed.
+
 ## Requirements
 
 These requirements come from the [plan](trace-view-plan.md), section 4:

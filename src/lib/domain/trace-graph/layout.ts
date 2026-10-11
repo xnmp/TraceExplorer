@@ -34,7 +34,22 @@ export interface LayoutItem {
  */
 export type Orientation = "down" | "right";
 
+/** A cover anchored in the grid row above an open lineage band. */
+export interface PinnedCover {
+  readonly key: NodeKey;
+  /** Absolute tile centre in the measured pane; unchanged even if routing widens the canvas. */
+  readonly x: number;
+  /** Neighbouring grid tiles' horizontal spans, occupying the cover's row. */
+  readonly obstacles?: readonly { readonly x: number; readonly width: number }[];
+}
+
 export interface LayoutRequest {
+  /**
+   * Root alone in row 0; remaining rows align toward its column. Ignored
+   * running right, for an unavailable key, or if the tile would lie outside
+   * the measured pane. Pins require a finite pane width up to 100,000 px.
+   */
+  readonly pinned?: PinnedCover;
   readonly items: readonly LayoutItem[];
   /** Pixel width available for the graph. Generations wrap to fit it when they run down; running right, they never wrap. */
   readonly maxWidth: number;
@@ -97,6 +112,8 @@ export interface PlacedRoute {
 export interface RowBox { readonly index: number; readonly band: number; readonly top: number; readonly bottom: number; readonly keys: readonly NodeKey[] }
 
 export interface GraphLayout {
+  /** A non-root cannot be pinned without hiding parentage; the ordinary layout is returned. */
+  readonly pinnedViolation?: "not-a-root";
   readonly orientation: Orientation;
   readonly width: number;
   readonly height: number;
@@ -244,18 +261,18 @@ function layoutDown(request: LayoutRequest, minWidth: number): GraphLayout {
   // Outer margins hold every lane that does not fit between tiles, and the
   // junctions a crowded channel has no column for. When they overflow, they
   // widen (the graph scrolls horizontally) rather than letting lanes merge or
-  // dots stack. Geometry is placed relative to the tiles, so one retry with
-  // the measured shortfall fits the lanes; a second covers junctions that
-  // took room the lanes' widening opened.
+  // dots stack. Legacy placement needs two retries. A pinned band can first
+  // consume spare pane width; moving rows within that width changes gap slots,
+  // so allow two further routing passes to settle the new slot choices.
   let extra = { left: 0, right: 0 };
   for (let attempt = 0; ; attempt++) {
-    const { layout, shortfall } = layoutPass(request, extra, minWidth);
-    if ((shortfall.left <= 0 && shortfall.right <= 0) || attempt === 2) return layout;
+    const { layout, shortfall, pinned } = layoutPass(request, extra, minWidth);
+    if ((shortfall.left <= 0 && shortfall.right <= 0) || attempt === (pinned ? 4 : 2)) return layout;
     extra = { left: extra.left + Math.max(0, Math.ceil(shortfall.left)), right: extra.right + Math.max(0, Math.ceil(shortfall.right)) };
   }
 }
 
-function layoutPass(request: LayoutRequest, extra: { readonly left: number; readonly right: number }, minWidth: number): { layout: GraphLayout; shortfall: { left: number; right: number } } {
+function layoutPass(request: LayoutRequest, extra: { readonly left: number; readonly right: number }, minWidth: number): { layout: GraphLayout; shortfall: { left: number; right: number }; pinned: boolean } {
   // Malformed input never spreads through the geometry: a size that is not a
   // finite, non-negative number counts as zero, sizes are capped far above
   // any tile, and an order that is not a number sorts first (ties by key).
@@ -287,6 +304,7 @@ function layoutPass(request: LayoutRequest, extra: { readonly left: number; read
   }
   let bandCount = 0;
   for (const value of bands.values()) if (value + 1 > bandCount) bandCount = value + 1;
+  const pinnedViolation = request.pinned && bands.has(request.pinned.key) && bands.get(request.pinned.key) !== 0 ? "not-a-root" as const : undefined;
 
   const plan = buildInputJunctions(keys.map((child) => ({ child, parents: parentsOf(child) })));
   const joins = new Map(plan.joins.map((join) => [join.id, join]));
@@ -309,12 +327,24 @@ function layoutPass(request: LayoutRequest, extra: { readonly left: number; read
   for (const key of keys) byBand[bands.get(key)!].push(key);
   const natural = byBand.reduce((most, members) => Math.max(most, members.reduce((sum, key) => sum + items.get(key)!.width, 0) + Math.max(0, members.length - 1) * gap), 0);
   const budget = Number.isFinite(request.maxWidth) && request.maxWidth > 0 ? Math.floor(request.maxWidth) : Infinity;
+  // Pins are absolute grid coordinates. Reject malformed positions instead
+  // of letting them escape the canvas or enter spatial buckets so large that
+  // integer increments stop advancing. Ordinary layout still accepts an
+  // unbounded width; a pinned grid requires a real, bounded measurement.
+  const pin = request.pinned;
+  const pinHalf = pin ? (items.get(pin.key)?.width ?? 0) / 2 : 0;
+  const pinned = pin && bands.get(pin.key) === 0 && Number.isFinite(pin.x)
+    && budget <= MAX_TILE && pin.x >= pinHalf && pin.x <= budget - pinHalf ? pin : undefined;
   const contentLimit = Math.max(widest, budget - 2 * margin);
   const contentWidth = Math.max(widest, Math.min(natural, contentLimit));
-  const width = Math.max(contentWidth + 2 * margin, Math.min(minWidth, budget)) + extra.left + extra.right;
+  // A pinned band already spans the pane. Spend its unused horizontal room
+  // on extra routing margins before widening it; centred legacy canvases
+  // start tightly around their content and still widen by the full shortfall.
+  let width = Math.max(contentWidth + 2 * margin, Math.min(minWidth, budget), pinned ? budget : 0)
+    + (pinned ? 0 : extra.left + extra.right);
 
   // 1. Horizontal placement. Each band is ordered, wrapped onto display rows
-  // and centered. Vertical positions come last, once junction levels and
+  // and centered (or aligned toward the pinned cover). Vertical positions come last, once junction levels and
   // bend tracks have claimed the channel space they need.
   interface Column { readonly x: number; readonly row: number; readonly band: number }
   const columns = new Map<NodeKey, Column>();
@@ -342,12 +372,23 @@ function layoutPass(request: LayoutRequest, extra: { readonly left: number; read
       const parents = parentsOf(key);
       return parents.reduce((sum, parent) => sum + columns.get(parent)!.row * 1e6 + center(parent), 0) / parents.length;
     };
-    const members = [...byBand[bandIndex]].sort((a, b) => bandIndex === 0 ? tieBreak(a, b) : score(a) - score(b) || tieBreak(a, b));
+    if (bandIndex === 0 && pinned) {
+      columns.set(pinned.key, { x: pinned.x - items.get(pinned.key)!.width / 2, row: 0, band: 0 });
+      reading.set(pinned.key, reading.size);
+      rowKeys.push({ band: 0, keys: [pinned.key] });
+      lastRowOfBand.set(0, 0);
+    }
+    const members = [...byBand[bandIndex]].filter((key) => !pinned || key !== pinned.key).sort((a, b) => bandIndex === 0 ? tieBreak(a, b) : score(a) - score(b) || tieBreak(a, b));
     const wrapped = wrapRow(members.map((key) => items.get(key)!.width), contentWidth, gap);
     wrapped.forEach((indices) => {
       const keysInRow = indices.map((index) => members[index]);
       const rowWidth = keysInRow.reduce((sum, key) => sum + items.get(key)!.width, 0) + (keysInRow.length - 1) * gap;
-      let x = extra.left + (width - extra.left - extra.right - rowWidth) / 2;
+      if (pinned) width = Math.max(width, rowWidth + 2 * margin + extra.left + extra.right);
+      const left = extra.left + margin;
+      const right = width - extra.right - margin - rowWidth;
+      let x = pinned
+        ? Math.max(left, Math.min(right, pinned.x - rowWidth / 2))
+        : extra.left + (width - extra.left - extra.right - rowWidth) / 2;
       const row = rowKeys.length;
       for (const key of keysInRow) {
         columns.set(key, { x: round(x), row, band: bandIndex });
@@ -361,7 +402,17 @@ function layoutPass(request: LayoutRequest, extra: { readonly left: number; read
   const spanCache = new Map<number, { key: NodeKey; x: number; width: number }[]>();
   const spans = (row: number) => {
     let cached = spanCache.get(row);
-    if (!cached) spanCache.set(row, cached = (rowKeys[row]?.keys ?? []).map((key) => ({ key, x: columns.get(key)!.x, width: items.get(key)!.width })));
+    if (!cached) {
+      // Tile placement already orders spans by x. Only grid obstacles need merging.
+      cached = (rowKeys[row]?.keys ?? []).map((key) => ({ key, x: columns.get(key)!.x, width: items.get(key)!.width }));
+      if (row === 0 && pinned) cached = [
+        ...cached,
+        ...(pinned.obstacles ?? [])
+          .filter((box) => Number.isFinite(box.x) && Number.isFinite(box.width) && box.width > 0 && box.x >= 0 && box.x + box.width <= budget)
+          .map((box, index) => ({ ...box, key: `__grid_obstacle_${index}` })),
+      ].sort((a, b) => a.x - b.x);
+      spanCache.set(row, cached);
+    }
     return cached;
   };
 
@@ -987,9 +1038,11 @@ function layoutPass(request: LayoutRequest, extra: { readonly left: number; read
   });
 
   return {
+    pinned: pinned !== undefined,
     shortfall,
     layout: {
       orientation: "down", width, height, nodes, rows, routes, readingOrder: reading,
+      ...(pinnedViolation ? { pinnedViolation } : {}),
       junctions: new Map([...junctions].map(([id, { channel: _channel, ...join }]) => [id, join])),
     },
   };

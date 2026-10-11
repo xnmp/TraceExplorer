@@ -3,7 +3,7 @@
  * Unknown parents are dropped and any edge closing a cycle is discarded
  * deterministically, so later stages can rely on a well-formed DAG.
  */
-import type { NodeKey, TraceNode } from "./model";
+import type { NodeKey, NodeScope, TraceNode } from "./model";
 
 export interface TraceDag {
   readonly nodes: ReadonlyMap<NodeKey, TraceNode>;
@@ -84,4 +84,57 @@ export function connectedComponents(dag: TraceDag): NodeKey[][] {
     result.push(members.sort((a, b) => rank.get(a)! - rank.get(b)!));
   }
   return result;
+}
+
+export interface ReferenceBadge {
+  /** Provenance identity, retained for selection and lineage highlighting. */
+  readonly key: NodeKey;
+  readonly path: string;
+  readonly scope: Exclude<NodeScope, "current">;
+  /** Direct consumers in stable creation order, across all supplied lineages. */
+  readonly consumers: readonly NodeKey[];
+}
+
+export interface BadgeProjection {
+  /** Drawable DAG: references and their outgoing edges are removed, never reparented. */
+  readonly dag: TraceDag;
+  readonly badges: ReadonlyMap<NodeKey, ReferenceBadge>;
+  /** Each consumer keeps all badges; the renderer shows up to three and a +n overflow. */
+  readonly byConsumer: ReadonlyMap<NodeKey, readonly ReferenceBadge[]>;
+}
+
+/**
+ * Opt-in projection for grid bands. Supply a complete, projected lineage (or
+ * folder graph), before visibility filtering, with backend-classified scope.
+ * TraceNode represents images; path-null placeholders stay drawable. A foreign
+ * image with no accepted parent in this DAG is a badge, even if missing on disk.
+ * Foreign images with parents stay tiles. Partial graphs cannot establish that
+ * an omitted parent is absent: finish component paging before this transform.
+ * Sharing only a badge no longer joins drawable components. The source DAG
+ * and its TraceNodes are untouched; the new node.parents also match its index.
+ */
+export function projectReferenceBadges(source: TraceDag): BadgeProjection {
+  const badges = new Map<NodeKey, ReferenceBadge>();
+  const byConsumer = new Map<NodeKey, ReferenceBadge[]>();
+  for (const key of source.order) {
+    const node = source.nodes.get(key)!;
+    if (node.scope === "current" || !node.path || source.parents.get(key)!.length) continue;
+    const badge: ReferenceBadge = { key, path: node.path, scope: node.scope, consumers: [...source.children.get(key)!] };
+    badges.set(key, badge);
+    for (const child of badge.consumers) {
+      const list = byConsumer.get(child);
+      if (list) list.push(badge); else byConsumer.set(child, [badge]);
+    }
+  }
+  const order = source.order.filter((key) => !badges.has(key));
+  const nodes = new Map<NodeKey, TraceNode>();
+  const parents = new Map<NodeKey, readonly NodeKey[]>();
+  const children = new Map<NodeKey, readonly NodeKey[]>();
+  for (const key of order) {
+    const keptParents = source.parents.get(key)!.filter((parent) => !badges.has(parent));
+    nodes.set(key, { ...source.nodes.get(key)!, parents: keptParents });
+    parents.set(key, keptParents);
+    children.set(key, source.children.get(key)!.filter((child) => !badges.has(child)));
+  }
+  return { dag: { nodes, parents, children, order }, badges, byConsumer };
 }
