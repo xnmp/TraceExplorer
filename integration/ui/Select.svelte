@@ -14,7 +14,7 @@
 
 <script lang="ts">
   import { tick } from "svelte";
-  import { NONE, emptyTypeahead, indexOfValue, initialActive, keyAction, move, place, typeahead, typeaheadMatch, type Move, type SelectOption } from "./select-model";
+  import { NONE, emptyTypeahead, indexOfValue, initialActive, keyAction, move, normalizeScale, place, typeahead, typeaheadMatch, type Move, type SelectOption } from "./select-model";
 
   let {
     value = $bindable(), options, placeholder = "", disabled = false, id, onchange, class: className = "",
@@ -44,9 +44,12 @@
     if (!trigger || !popup) return;
     // Measure the natural height with the cap lifted, then clamp to the room available.
     const rect = trigger.getBoundingClientRect();
+    // Re-measure inherited zoom each time; older engines expose it through the width ratio.
+    const scale = normalizeScale((popup as HTMLDivElement & { currentCSSZoom?: number }).currentCSSZoom
+      ?? popup.getBoundingClientRect().width / popup.offsetWidth);
     popup.style.maxHeight = "none";
-    popup.style.minWidth = `${rect.width}px`;
-    const next = place(rect, { width: innerWidth, height: innerHeight }, { width: popup.offsetWidth, height: popup.scrollHeight });
+    popup.style.minWidth = `${rect.width / scale}px`;
+    const next = place(rect, { width: innerWidth, height: innerHeight }, { width: popup.offsetWidth, height: popup.scrollHeight }, 4, 8, scale);
     placement = next;
     popup.style.maxHeight = `${next.maxHeight}px`;
   }
