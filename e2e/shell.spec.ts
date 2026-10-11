@@ -115,6 +115,8 @@ test("the toggle command switches to the built-in listing and back", async ({ pa
   await page.evaluate(() => (window as any).trace.toggle());
   await expect(view(page)).toBeVisible();
   await expect(page.locator("[data-tile-key]").first()).toBeVisible();
+  // Stacks start closed; opening the village's shows its lineage again.
+  await ensureExpanded(page.locator('section[data-component][aria-label="village"]'));
   await click(page, "warm");
   expect(await rendered(page, "tone", "focus")).toEqual(["warm"]);
 });

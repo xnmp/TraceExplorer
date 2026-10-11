@@ -1,12 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { folderCells, attachBand, gridNeighbor, gridPins } from "$lib/plugins/trace/view/stack-grid";
+import { folderCells, attachBand, gridNeighbor, gridPins, rovingStop } from "$lib/plugins/trace/view/stack-grid";
 import { layoutGraph } from "$lib/domain/trace-graph/layout";
 import { gridFlow } from "$lib/domain/trace-graph/grid-flow";
 import { samplePathString } from "$lib/plugins/trace/view/path-sampling";
 import type { FolderIndex } from "$lib/plugins/trace/view/folder-session.svelte";
 import type { FileEntry } from "$lib/domain/file";
 const entry = (path: string, kind: FileEntry["kind"] = "file") => ({ path, name: path, kind } as FileEntry);
-const summary = (id: string, path: string | null) => ({ id, title: id, cover: path ? { path, present: true } : null, imageCount: 2, nodeCount: 2, active: false, unsaved: false });
+const summary = (id: string, path: string | null, coverKey = id.slice(2)) => ({ id, title: id, cover: path ? { path, present: true } : null, coverKey, imageCount: 2, nodeCount: 2, active: false, unsaved: false });
 const index: FolderIndex = { directory: "/p", token: "v1", components: [summary("c:a:1", "/p/a"), summary("c:a:4", "/p/b"), summary("c:o:8:0", null)],
   members: new Map([["/p/a", { key: "a:1", componentId: "c:a:1" }], ["/p/a-edit", { key: "o:2:0", componentId: "c:a:1" }], ["/p/b", { key: "a:4", componentId: "c:a:4" }]]) };
 
@@ -16,8 +16,18 @@ describe("folder grid rules", () => {
     expect(cells.map(({ id, kind }) => [id, kind])).toEqual([["/p/refs", "folder"], ["/p/notes", "file"], ["a:4", "stack"], ["a:1", "stack"], ["o:8:0", "stack"]]);
   });
   it("retains cover identity across a merge that replaces component ids", () => {
-    const merged = { ...index, components: [summary("c:new", "/p/a")], members: new Map([["/p/a", { key: "a:1", componentId: "c:new" }], ["/p/b", { key: "a:4", componentId: "c:new" }]]) };
+    const merged = { ...index, components: [summary("c:new", "/p/a", "a:1")], members: new Map([["/p/a", { key: "a:1", componentId: "c:new" }], ["/p/b", { key: "a:4", componentId: "c:new" }]]) };
     expect(folderCells([entry("/p/a"), entry("/p/b")], merged).map((cell) => cell.id)).toEqual(["a:1"]);
+  });
+  it("takes an unsaved cover's identity from the component's cover, not its id (which follows another member)", () => {
+    const joined = { ...index, components: [summary("c:a:5", "/managed/draft.png", "o:7:0")], members: new Map([["/p/source", { key: "a:5", componentId: "c:a:5" }]]) };
+    const [cell] = folderCells([entry("/p/source")], joined);
+    expect([cell.id, cell.coverKey, cell.entry]).toEqual(["o:7:0", "o:7:0", undefined]);
+  });
+  it("keys an in-place edit's stack by its root revision, not the newest revision its path maps to", () => {
+    const edited = { ...index, components: [summary("c:a:1", "/p/photo", "a:1")], members: new Map([["/p/photo", { key: "o:5:0", componentId: "c:a:1" }]]) };
+    const [cell] = folderCells([entry("/p/photo")], edited);
+    expect([cell.id, cell.coverKey, cell.entry?.path]).toEqual(["a:1", "a:1", "/p/photo"]);
   });
   it("handles empty folders", () => { expect(folderCells([], { ...index, components: [], members: new Map() })).toEqual([]); });
   it("attaches several bands to the same pinned cover without changing any x or losing parentage", () => {
@@ -58,4 +68,17 @@ describe("folder grid rules", () => {
     expect(gridNeighbor(rects, "missing", "ArrowDown")).toBeNull();
     expect(gridNeighbor(new Map(), "cover", "Home")).toBeNull();
   });
+});
+
+describe("roving tab stop", () => {
+  const rendered = new Set(["a", "b", "tile"]);
+  const owner = (key: string) => (key === "gone" ? "b" : undefined);
+  it("keeps the last focused cell while it is rendered", () => { expect(rovingStop("tile", rendered, owner, "a")).toBe("tile"); });
+  it("falls to the stack that held a cell that left", () => { expect(rovingStop("gone", rendered, owner, "a")).toBe("b"); });
+  it("falls to the first cell when nothing is known, or the owner is also gone", () => {
+    expect(rovingStop(null, rendered, owner, "a")).toBe("a");
+    expect(rovingStop("unknown", rendered, owner, "a")).toBe("a");
+    expect(rovingStop("gone", new Set(["a"]), owner, "a")).toBe("a");
+  });
+  it("names no stop for an empty grid", () => { expect(rovingStop("x", new Set(), () => undefined, null)).toBeNull(); });
 });

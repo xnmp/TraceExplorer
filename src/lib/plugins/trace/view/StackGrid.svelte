@@ -9,7 +9,7 @@
   import { hostFileTile } from "../../../../sdk";
   import type { FolderSession } from "./folder-session.svelte";
   import type { GraphScene } from "./graph-commit";
-  import { folderCells, coverNode, gridNeighbor, attachBand, gridPins } from "./stack-grid";
+  import { folderCells, coverNode, gridNeighbor, attachBand, gridPins, rovingStop } from "./stack-grid";
   import { captureGrid, playGrid, prefersReducedMotion, zoomOf } from "./motion";
   import TraceGraph from "./TraceGraph.svelte";
   import TraceTile from "./TraceTile.svelte";
@@ -52,25 +52,36 @@
   const pins = $derived(gridPins(flow, openKeys));
   const bridges = $derived(new Map(flow.bands.filter((band) => band.y > flow.cells.get(band.id)!.y + cellHeight).map((band) => [band.id, { top: cellHeight + 2, gutter: 4 }])));
   const bandById = $derived(new Map(flow.bands.map((band) => [band.id, band])));
+  // Roving tabindex: the stop always names a rendered cell. It follows the last focused cell while
+  // that is drawn; once it leaves (a deselected band tile, a merged stack) it falls to the stack that held it.
+  const stops = $derived(new Set([...cells.map((cell) => cell.id),
+    ...flow.bands.flatMap((band) => [...(covers.get(band.id)?.plan.tiles.keys() ?? [])])]));
+  const stop = $derived(rovingStop(tabStop, stops,
+    (key) => cells.find((cell) => cell.summary && session.components.get(cell.summary.id)?.dag.nodes.has(key))?.id, cells[0]?.id ?? null));
   const nearRect = (top: number, height: number) => top + height >= viewport.top - 1200 && top <= viewport.bottom + 1200;
   const visible = $derived(cells.filter((cell) => {
     const rect = flow.cells.get(cell.id)!;
     const band = bandById.get(cell.id);
-    return tabStop === cell.id || (tabStop !== null && session.components.get(cell.summary?.id ?? "")?.dag.nodes.has(tabStop)) || nearRect(rect.y, band ? band.y + band.height - rect.y : rect.height) || cell.summary?.id === focus?.componentId;
+    return stop === cell.id || (stop !== null && session.components.get(cell.summary?.id ?? "")?.dag.nodes.has(stop)) || nearRect(rect.y, band ? band.y + band.height - rect.y : rect.height) || cell.summary?.id === focus?.componentId;
   }));
   $effect(() => { onnear(new Set(visible.filter((cell) => cell.summary && openKeys.has(cell.id)).map((cell) => cell.summary!.id))); });
   $effect(() => {
     const container = scroller, element = grid;
     if (!container || !element) return;
+    let frame = 0;
     const update = () => {
+      frame = 0;
       const view = container.getBoundingClientRect(), rect = element.getBoundingClientRect(), zoom = zoomOf(element, rect);
       const top = Math.floor((view.top - rect.top) / zoom / 200) * 200;
       const bottom = Math.ceil((view.bottom - rect.top) / zoom / 200) * 200;
       if (top !== viewport.top || bottom !== viewport.bottom) viewport = { top, bottom };
     };
-    update(); container.addEventListener("scroll", update, { passive: true });
-    const observer = new ResizeObserver(update); observer.observe(container);
-    return () => { container.removeEventListener("scroll", update); observer.disconnect(); };
+    // Resizes are applied on the next frame, as TraceGraph's window is: re-rendering inside the
+    // ResizeObserver callback can resize the scroller again and loses its notifications.
+    const schedule = () => { if (!frame) frame = requestAnimationFrame(update); };
+    update(); container.addEventListener("scroll", schedule, { passive: true });
+    const observer = new ResizeObserver(schedule); observer.observe(container);
+    return () => { container.removeEventListener("scroll", schedule); observer.disconnect(); cancelAnimationFrame(frame); };
   });
   $effect.pre(() => {
     void flow;
@@ -81,15 +92,23 @@
     const current = ++motion;
     void tick().then(() => { if (current === motion && grid && before) running = playGrid(grid, before); });
   });
-  $effect.pre(() => {
-    void visible; void session.components;
-    const active = untrack(() => document.activeElement as HTMLElement | null);
-    const key = active?.closest<HTMLElement>("[data-stack-key]")?.dataset.stackKey;
-    if (!active || !key) return;
-    // A cover and its close control are replaced when a stack toggles or its
-    // first graph page arrives. Preserve actual keyboard focus on that cover.
+  // Keyboard focus belongs to the grid until it genuinely leaves (a blur to another element or the page).
+  // Removing the focused element fires no blur, so a cover replaced by a toggle, a band tile that leaves
+  // the neighbourhood, or a stack that merges away leaves focus on <body>: move it to the surviving stop.
+  let focusInside = false;
+  function focusout(event: FocusEvent): void {
+    const target = event.target as Element, to = event.relatedTarget;
+    if (to instanceof Node && grid?.contains(to)) return;
+    // A blur caused by removing the element has already disconnected it once the event's turn ends.
+    queueMicrotask(() => { if (target.isConnected) focusInside = false; });
+  }
+  $effect(() => {
+    void visible; void session.components; void covers; void stop;
+    if (!focusInside) return;
     void tick().then(() => {
-      if (!active.isConnected && document.activeElement === document.body) grid?.querySelector<HTMLElement>(`[data-node-key="${CSS.escape(key)}"]`)?.focus({ preventScroll: true });
+      const active = document.activeElement;
+      if (!focusInside || !stop || (active && active !== document.body)) return;
+      grid?.querySelector<HTMLElement>(`[data-node-key="${CSS.escape(stop)}"], [data-entry-path="${CSS.escape(stop)}"]`)?.focus({ preventScroll: true });
     });
   });
   onDestroy(() => { motion++; for (const animation of running) animation.cancel(); });
@@ -141,7 +160,7 @@
 </script>
 
 <div class="grid" role="grid" aria-label="Folder" aria-multiselectable="true" aria-colcount={columns} aria-rowcount={flow.rowCount}
-  bind:this={grid} style:margin="{metrics.gridPadding}px" style:width="{flow.width}px" style:height="{flow.height}px">
+  bind:this={grid} onfocusin={() => focusInside = true} onfocusout={focusout} style:margin="{metrics.gridPadding}px" style:width="{flow.width}px" style:height="{flow.height}px">
   {#each visible as cell (cell.id)}
     {@const rect = flow.cells.get(cell.id)!}
     {@const band = bandById.get(cell.id)}
@@ -158,11 +177,11 @@
           {#if band && data}
             <TraceTile tile={cover} placed={{ key: cell.id, x: (rect.width - tile.width) / 2, y: 0, width: tile.width, height: cover.size.height, row: 0, band: 0 }}
               selected={selected.has(cell.id)} {revision} badgeNodes={data.dag.nodes} badges={known?.plan.badges.get(cell.id) ?? []} badgeSelection={selected}
-              onbadge={(key, event) => onactivate(key, event, summary.id)} onbadgehover={(key) => hoveredBadge = key} focused={(tabStop ?? cells[0]?.id) === cell.id} onfocus={() => tabStop = cell.id} onclose={() => onexpand(summary.id, false)}
+              onbadge={(key, event) => onactivate(key, event, summary.id)} onbadgehover={(key) => hoveredBadge = key} focused={stop === cell.id} onfocus={() => tabStop = cell.id} onclose={() => onexpand(summary.id, false)}
               onactivate={(event) => onactivate(cell.id, event, summary.id)} onopen={() => onopen(cell.id)} onmenu={(event) => onmenu(cell.id, event, summary.id)}
               onkey={(event) => keydown(cell.id, event)} {captureSelection} onsaved={(path) => onsaved(cell.id, path)} ondiscarded={() => ondiscarded(cell.id)} />
           {:else}
-            <button type="button" class="heading" class:selected={selected.has(cell.id)} style:width="{tile.width}px" style:height="{cover.size.height}px" tabindex={(tabStop ?? cells[0]?.id) === cell.id ? 0 : -1} onfocus={() => tabStop = cell.id} data-stack-toggle aria-expanded={!!band} data-tile-key={cell.id} data-node-key={cell.id} aria-pressed={selected.has(cell.id)}
+            <button type="button" class="heading" class:selected={selected.has(cell.id)} style:width="{tile.width}px" style:height="{cover.size.height}px" tabindex={stop === cell.id ? 0 : -1} onfocus={() => tabStop = cell.id} data-stack-toggle aria-expanded={!!band} data-tile-key={cell.id} data-node-key={cell.id} aria-pressed={selected.has(cell.id)}
               onclick={(event) => { if (cell.entry) onselect(cell.entry, event); else onactivate(cell.id, event, summary.id); onexpand(summary.id, true); }}
               ondblclick={() => { if (cell.entry) void pane.open(cell.entry); else onopen(cell.id); }} onkeydown={(event) => keydown(cell.id, event)}
               oncontextmenu={(event) => { if (cell.entry) onordinarymenu(cell.entry, event); else onmenu(cell.id, event, summary.id); }}>
@@ -174,8 +193,8 @@
         </div>
         {#if band}
           <div class="content" data-grid-band={cell.id} data-horizontal-scroll style:height="{band.y + band.height - rect.y}px">
-            {#if data && (nearRect(band.y, band.height) || focus?.componentId === summary.id || (tabStop !== null && data.dag.nodes.has(tabStop)))}
-              <TraceGraph {data} {focus} focusedKey={tabStop ?? cells[0]?.id} onfocuskey={(key) => tabStop = key} badgeHover={hoveredBadge} onbadgehover={(key) => hoveredBadge = key} {selected} width={flow.width} {tile} {revision} {scroller} componentId={summary.id} {reveal}
+            {#if data && (nearRect(band.y, band.height) || focus?.componentId === summary.id || (stop !== null && data.dag.nodes.has(stop)))}
+              <TraceGraph {data} {focus} focusedKey={stop ?? undefined} onfocuskey={(key) => tabStop = key} badgeHover={hoveredBadge} onbadgehover={(key) => hoveredBadge = key} {selected} width={flow.width} {tile} {revision} {scroller} componentId={summary.id} {reveal}
                 pinned={pins.get(cell.id)!}
                 bandTop={band.y - rect.y} bandBridge={bridges.get(cell.id)} ongeometry={(plan, layout) => geometry(cell.id, plan, layout)} ongridkey={keydown}
                 onactivate={(key, event) => onactivate(key, event, summary.id)} onnavigate={(key) => onnavigate(key, summary.id)} {onopen}
@@ -188,18 +207,19 @@
     {:else if cell.entry}
       <div class="cell" role="row" aria-rowindex={rect.row + 1} data-grid-cell={cell.id} data-grid-motion={cell.id}
         style:left="{rect.x}px" style:top="{rect.y}px" style:width="{rect.width}px" style:height="{rect.height}px">
-        {#if HostTile}<HostTile entry={cell.entry} selected={pane.selection.some((entry) => entry.path === cell.id)} focused={(tabStop ?? cells[0]?.id) === cell.id}
+        {#if HostTile}<HostTile entry={cell.entry} selected={pane.selection.some((entry) => entry.path === cell.id)} focused={stop === cell.id}
           column={rect.col + 1} size={pane.tileSize?.preset} onfocus={() => tabStop = cell.id} onkeydown={(event) => keydown(cell.id, event)}
           videoUnavailable={failedVideoPaths.has(cell.entry.path)} onvideounavailable={(entry) => failedVideoPaths = new Set(failedVideoPaths).add(entry.path)}
           {onselect} onopen={(entry) => void pane.open(entry)} onmenu={onordinarymenu} />
-        {:else}<OrdinaryTile entry={cell.entry} selected={pane.selection.some((entry) => entry.path === cell.id)} focused={(tabStop ?? cells[0]?.id) === cell.id} column={rect.col + 1}
+        {:else}<OrdinaryTile entry={cell.entry} selected={pane.selection.some((entry) => entry.path === cell.id)} focused={stop === cell.id} column={rect.col + 1}
           {tile} {revision} onfocus={() => tabStop = cell.id} onkeydown={(event) => keydown(cell.id, event)} {onselect} onopen={(entry) => void pane.open(entry)} onmenu={onordinarymenu} />{/if}
       </div>
     {/if}
   {/each}
 </div>
 <style>
-  .grid { position: relative; }
+  /* Motion travels tiles and ghosts outside the grid mid-flight; that must not toggle the view's horizontal scrollbar. */
+  .grid { position: relative; overflow-x: clip; }
   .component { position: absolute; left: 0; width: 100%; pointer-events: none; }
   .cell { position: absolute; top: 0; pointer-events: auto; z-index: 2; }
   .content { position: absolute; top: 0; left: 0; width: 100%; pointer-events: none; }

@@ -130,7 +130,7 @@
 
   const summaries = $derived<readonly ComponentSummary[]>(session.index?.components ?? []);
   const gridCells = $derived(session.index ? folderCells(pane.entries, session.index) : []);
-  const stackKey = (id: string) => gridCells.find((cell) => cell.summary?.id === id)?.id ?? id.slice(2);
+  const stackKey = (id: string) => gridCells.find((cell) => cell.summary?.id === id)?.id ?? id;
   const openKeys = $derived(new Set([...overrides].filter(([, open]) => open).map(([key]) => key)));
   let expandedChoice = "";
   $effect(() => {

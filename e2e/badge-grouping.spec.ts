@@ -51,7 +51,10 @@ test("a generated cover keeps its external reference without counting it as a fo
   for (const name of ["cover", "cover-edit"]) {
     await expect(section.locator(`[data-node-key="${await key(page, name)}"]`)).toBeVisible();
   }
-  await section.locator(`[data-reference-key="${await key(page, "reference")}"]`).click();
+  // The reference fed both images, so each carries its own badge for it.
+  const reference = await key(page, "reference");
+  await expect(section.locator(`[data-reference-key="${reference}"]`)).toHaveCount(2);
+  await section.locator(`[data-tile-key="${await key(page, "cover")}"]`).locator(`[data-reference-key="${reference}"]`).click();
   await settle(page);
   expect((await state(page)).inputs).toEqual(["/elsewhere/reference.png"]);
   expect((await state(page)).target?.title).toBe("reference.png");

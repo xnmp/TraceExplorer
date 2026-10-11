@@ -103,6 +103,12 @@ export function folderComponents(input: readonly FolderNode[], dismissedRuns: Re
     const consumers = attached.get(parent);
     if (consumers) consumers.push(node.key); else attached.set(parent, [node.key]);
   }
+  /** The cover as a tile is a drawn root (never a reference badge): the title's rule over drawn members. */
+  const drawnCover = (members: readonly TraceNode[]) => {
+    const sorted = [...members].sort(byOrder);
+    return sorted.find((node) => node.path && node.scope === "current" && !node.parents.some((key) => byKey.get(key)!.scope === "current"))
+      ?? sorted.find((node) => node.path) ?? sorted[0];
+  };
   return [...groups].map(([root, members]) => {
     const oldest = [...members].sort(byIdentity)[0];
     const id = `c:${oldest.key}`;
@@ -120,6 +126,7 @@ export function folderComponents(input: readonly FolderNode[], dismissedRuns: Re
     return { id, members: all.map((node) => node.key), nodes: all, newest, summary: {
       id, title: extension > 0 ? filename.slice(0, extension) : filename,
       cover: cover?.path ? { path: cover.path, present: cover.state === "present" } : null,
+      coverKey: drawnCover(members).key,
       imageCount: all.filter((node) => node.scope === "current" && node.state === "present" && !node.earlierRevision).length,
       nodeCount: all.length, active: all.some((node) => node.state === "running" || node.state === "uncertain"),
       unsaved: all.some((node) => node.temporary),

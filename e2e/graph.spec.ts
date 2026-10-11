@@ -375,7 +375,9 @@ test.describe("tile size", () => {
       expect(shown.ordinary[0], preset).toBeGreaterThanOrEqual(shown.trace[0]);
       // The image keeps its aspect inside the same chrome.
       expect(shown.traceImage, preset).toEqual([Math.round((shown.trace[0] - 12) * 51 / 80)]);
-      expect(resizing.flat(), preset).toEqual([`${previous}px`, `${shown.trace[0]}px`]);
+      // Each relayout of the grid (the tile size, then the band's measured height) replays the tile's motion
+      // from the geometry it displays; every replay is the same single resize, with no stale size in between.
+      expect([...new Set(resizing.map((frames) => frames.join(" -> ")))], preset).toEqual([`${previous}px -> ${shown.trace[0]}px`]);
       previous = shown.trace[0];
       // Relaid out for the new size: nothing overlaps and every arrowhead still ends on its tile's edge.
       expect(overlaps(await tileBoxes(page, 0)), preset).toEqual([]);
@@ -738,8 +740,14 @@ test.describe("keyboard", () => {
   test("arrow keys move the selection to a neighbouring node and keep keyboard focus on it", async ({ page }) => {
     await openView(page);
     await click(page, "warm");
-    const family = new Set(await Promise.all(["village", "palette", "mist", "lantern", "evening", "rain", "merge"].map((n) => key(page, n))));
-    for (const arrow of ["ArrowDown", "ArrowRight"]) {
+    // Down reaches warm's children; right reaches the next tile on its row. The mist and lantern
+    // references are badges, not tiles, so arrows never land on them.
+    const neighbours = {
+      ArrowDown: new Set(await Promise.all(["evening", "rain", "merge"].map((n) => key(page, n)))),
+      ArrowRight: new Set([await key(page, "cool")]),
+    };
+    for (const arrow of ["ArrowDown", "ArrowRight"] as const) {
+      const family = neighbours[arrow];
       await click(page, "warm");
       await (await card(page, "warm")).focus();
       const before = await state(page);

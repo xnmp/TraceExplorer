@@ -36,7 +36,7 @@ for (const host of ["", "&fileTile=1&tileSize=medium"]) {
 test("selection inside a band moves only rows below vertically, including another open band", async ({ page }) => {
   await page.setViewportSize({ width: 800, height: 1400 });
   await openView(page, 220, "?deeper=1", false);
-  for (const name of ["village", "forest", "fan"]) { await stack(page, name).locator("[data-stack-toggle]").click(); await settle(page); }
+  for (const name of ["village", "forest"]) { await stack(page, name).locator("[data-stack-toggle]").click(); await settle(page); }
   await stack(page, "village").locator(`[data-node-key="${await key(page, "warm")}"]`).click(); await settle(page);
   const before = await gridBoxes(page);
   const forestChild = page.locator(`[data-tile-key="${await key(page, "forest-mist")}"]`);
@@ -65,13 +65,16 @@ test("selection inside a band moves only rows below vertically, including anothe
   } finally { await releaseScriptedAnimations(page); }
   await settle(page);
   const after = await gridBoxes(page); sameColumns(before, after);
-  const covers = await Promise.all(["village", "forest"].map((name) => key(page, name))), below = await key(page, "fan");
+  // The village band grows under the village cover, so the cover stays put while every row below it,
+  // including the other open stack's cover, only slides vertically by the band's growth.
+  const village = await key(page, "village"), forest = await key(page, "forest"), below = await key(page, "fan");
   for (const sample of samples) {
     sameColumns(before, sample);
-    for (const cover of covers) expect(sample[cover].y).toBeCloseTo(before[cover].y, 1);
+    expect(sample[village].y).toBeCloseTo(before[village].y, 1);
   }
   const delta = after[below].y - before[below].y;
   expect(Math.abs(delta)).toBeGreaterThan(40);
+  expect(after[forest].y - before[forest].y).toBeCloseTo(delta, 1);
   expect(samples.some((sample) => Math.abs(sample[below].y - before[below].y) > 1 && Math.abs(sample[below].y - after[below].y) > 1)).toBe(true);
   expect(after["/pictures/notes.txt"].y - before["/pictures/notes.txt"].y).toBeCloseTo(delta, 1);
   const childAfter = await forestChild.evaluate((element) => element.getBoundingClientRect().y + document.querySelector<HTMLElement>('[data-testid="trace-view"]')!.scrollTop);
@@ -100,12 +103,14 @@ test("a cover made from an external reference hangs in place with its reference 
   await stack(page, "cover").locator("[data-stack-toggle]").click(); await settle(page);
   sameColumns(before, await gridBoxes(page));
   const reference = await key(page, "reference"), cover = await key(page, "cover");
-  await expect(stack(page, "cover").locator(`[data-reference-key="${reference}"]`)).toBeVisible();
+  // The reference fed both images, so each carries a badge for it.
+  await expect(page.locator(`[data-tile-key="${cover}"] [data-reference-key="${reference}"]`)).toBeVisible();
+  await expect(page.locator(`[data-tile-key="${await key(page, "cover-edit")}"] [data-reference-key="${reference}"]`)).toBeVisible();
   await expect(page.locator(`[data-tile-key="${reference}"]`)).toHaveCount(0);
   const root = (await page.locator(`[data-tile-key="${cover}"]`).boundingBox())!;
   const child = (await page.locator(`[data-tile-key="${await key(page, "cover-edit")}"]`).boundingBox())!;
   expect(child.y).toBeGreaterThan(root.y + root.height);
-  await page.locator(`[data-reference-key="${reference}"]`).click(); await settle(page);
+  await page.locator(`[data-tile-key="${cover}"] [data-reference-key="${reference}"]`).click(); await settle(page);
   expect((await state(page)).inputs).toEqual(["/elsewhere/reference.png"]);
 });
 
@@ -210,8 +215,9 @@ test("End reaches the final virtualized row and arrows can cross the mounted win
   expect((await state(page)).selected).toEqual(["/pictures/refs"]);
   expect(await page.evaluate(() => document.querySelector<HTMLElement>("[data-testid=trace-view]")!.scrollTop)).toBeGreaterThan(1200);
   await page.keyboard.press("ArrowUp"); await settle(page);
-  await expect(page.locator('[data-entry-path="/pictures/notes.txt"]')).toBeFocused();
-  expect((await state(page)).selected).toEqual(["/pictures/notes.txt"]);
+  // One column: the listing order is notes.txt, plain.png, refs.
+  await expect(page.locator('[data-entry-path="/pictures/plain.png"]')).toBeFocused();
+  expect((await state(page)).selected).toEqual(["/pictures/plain.png"]);
   expect(await uncaught(page)).toEqual([]);
 });
 
@@ -265,4 +271,61 @@ test("reduced motion opens and closes bands without animations", async ({ page }
   await stack(page, "photo-a").getByRole("button", { name: "Close stack" }).click(); await settle(page);
   await expect(stack(page, "photo-a").locator("[data-grid-band]")).toHaveCount(0);
   expect(await page.evaluate(() => document.getAnimations().length)).toBe(0);
+});
+
+test("an in-place edit's stack hangs from its root revision, inside the view and joined to the edit by a route", async ({ page }) => {
+  await openView(page, 420, "?grouping=in-place-edit", false);
+  await page.locator("[data-stack-toggle]").click(); await settle(page);
+  const root = page.locator('[data-tile-key="a:1"]'), edit = page.locator('[data-tile-key="o:5:0"]');
+  await expect(root).toBeVisible(); await expect(edit).toBeVisible();
+  const [r, e] = [(await root.boundingBox())!, (await edit.boundingBox())!];
+  expect(r.y).toBeGreaterThanOrEqual(0);
+  expect(e.y).toBeGreaterThan(r.y + r.height);
+  await expect(page.locator('path[data-from="node:a:1"][data-to="node:o:5:0"]')).toHaveCount(1);
+  // The root is the earlier revision: it previews as such rather than selecting the file the edit now holds.
+  await root.click(); await settle(page);
+  expect((await state(page)).target).toMatchObject({ id: "trace:a:1", badge: "Earlier revision" });
+  expect(await uncaught(page)).toEqual([]);
+});
+
+test("an unsaved cover that is not the component's namesake selects itself as the AI input", async ({ page }) => {
+  // The unsaved draft is the cover; the component is named after the later source it merged with.
+  await openView(page, 420, "?grouping=unsaved-root-joined-with-source", false);
+  await stack(page, "draft").locator("[data-stack-toggle]").click(); await settle(page);
+  await expect(page.locator('[data-tile-key="o:10:0"]')).toBeVisible();
+  expect((await state(page)).inputs).toEqual(["/managed/draft.png"]);
+  expect((await state(page)).selected).not.toContain("/pictures/source.png");
+  expect(await uncaught(page)).toEqual([]);
+});
+
+const tabStops = (page: Page) => page.locator('[role="grid"] [tabindex="0"]');
+const focusIsInGrid = (page: Page) => page.evaluate(() => !!document.activeElement?.closest('[role="grid"]'));
+
+test("deselecting the focused band tile leaves one tab stop and keeps the keyboard working", async ({ page }) => {
+  await openView(page, 900, "", false);
+  await stack(page, "village").locator("[data-stack-toggle]").click(); await settle(page);
+  for (const name of ["warm", "rain", "quiet"]) { await page.locator(`[data-node-key="${await key(page, name)}"]`).click(); await settle(page); }
+  await page.locator(`[data-node-key="${await key(page, "quiet")}"]`).click({ modifiers: ["Control"] }); await settle(page);
+  await expect(tabStops(page)).toHaveCount(1);
+  expect(await focusIsInGrid(page)).toBe(true);
+  const focused = () => page.evaluate(() => document.activeElement?.getAttribute("data-node-key") ?? null);
+  const before = await focused();
+  expect(before).not.toBeNull();
+  await page.keyboard.press("ArrowDown"); await settle(page);
+  const after = await focused();
+  expect(after).not.toBeNull();
+  expect(after).not.toBe(before);
+  expect(await uncaught(page)).toEqual([]);
+});
+
+test("merging the focused child's stack into another keeps one tab stop and focus in the grid", async ({ page }) => {
+  await openView(page, 900, "?grouping=two-chains", false);
+  for (const name of ["photo-a", "photo-b"]) { await stack(page, name).locator("[data-stack-toggle]").click(); await settle(page); }
+  await page.locator(`[data-node-key="${await key(page, "photo-b-edit")}"]`).click(); await settle(page);
+  await page.evaluate(() => (window as any).trace.backend.joinGeneration(["photo-a-edit", "photo-b-edit"], "joined"));
+  await expect(page.locator("section[data-component]")).toHaveCount(1);
+  await settle(page);
+  await expect(tabStops(page)).toHaveCount(1);
+  expect(await focusIsInGrid(page)).toBe(true);
+  expect(await uncaught(page)).toEqual([]);
 });

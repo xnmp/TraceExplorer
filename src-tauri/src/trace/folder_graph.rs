@@ -254,6 +254,10 @@ pub(crate) struct ComponentSummary {
     pub id: String,
     pub title: String,
     pub cover: Option<Cover>,
+    /// The key of the drawn node that is the cover (a reference badge never is), or with no
+    /// file to show the oldest drawn member: the root a view draws the lineage from. It is not derived from `id`, and an
+    /// in-place edit's cover is the earlier revision, not the node its path maps to.
+    pub cover_key: String,
     pub image_count: usize,
     pub node_count: usize,
     pub active: bool,
@@ -727,10 +731,11 @@ fn build_index(facts: &Facts, layout: &Layout) -> FolderIndex {
                 .max()
                 .unwrap_or_default();
             let component_badges = references.remove(&root).unwrap_or_default();
+            let drawn = members.clone();
             members.extend(component_badges.keys().copied());
             // Cover, relationship and counts retain their existing rules,
             // including the legacy reference nodes in node_count only.
-            let summary = summarize(&id, &members, &nodes, &parents, facts);
+            let summary = summarize(&id, &members, &drawn, &nodes, &parents, facts);
             let mut component_nodes: Vec<TraceNode> = members
                 .iter()
                 .map(|index| {
@@ -816,6 +821,8 @@ fn has_relationship(component: &[TraceNode]) -> bool {
 fn summarize(
     id: &str,
     members: &[usize],
+    // The members that are drawn: `members` also holds the reference badges.
+    drawn: &[usize],
     nodes: &[TraceNode],
     parents: &[Vec<usize>],
     facts: &Facts,
@@ -830,6 +837,14 @@ fn summarize(
         is_current(*index) && !parents[*index].iter().any(|parent| is_current(*parent))
     }))
     .or_else(|| oldest_with_path(&mut members.iter().copied()));
+    // The cover as a tile is a drawn root: the same rule as the title, over drawn members only.
+    let cover_key = oldest_with_path(&mut drawn.iter().copied().filter(|index| {
+        is_current(*index) && !parents[*index].iter().any(|parent| is_current(*parent))
+    }))
+    .or_else(|| oldest_with_path(&mut drawn.iter().copied()))
+    .or_else(|| drawn.iter().copied().min_by_key(|index| nodes[*index].order))
+    .map(|index| nodes[index].key.clone())
+    .unwrap_or_default();
     let (title, cover) = match title_node {
         Some(index) => {
             let path = nodes[index].path.clone().unwrap_or_default();
@@ -847,6 +862,7 @@ fn summarize(
         id: id.to_owned(),
         title,
         cover,
+        cover_key,
         // An earlier revision shares its file with the newest one.
         image_count: members
             .iter()
@@ -2274,6 +2290,7 @@ mod tests {
         let component = &view.components[0];
         assert_eq!(component.id, format!("c:a:{source_id}"));
         assert_eq!(component.title, "source");
+        assert_eq!(component.cover_key, format!("a:{source_id}"));
         assert_eq!(
             component.cover,
             Some(Cover {
@@ -2776,6 +2793,10 @@ mod tests {
         assert_eq!(view.members[0].key, nodes[1].key);
         assert_eq!(view.components[0].title, "photo");
         assert_eq!(view.components[0].image_count, 1, "one file, two revisions");
+        assert_eq!(
+            view.components[0].cover_key, nodes[0].key,
+            "the cover is the root revision, not the newest one that the path maps to"
+        );
     }
 
     fn bulk(db: &Path, write: impl FnOnce(&rusqlite::Transaction<'_>)) {
@@ -3358,6 +3379,7 @@ mod tests {
             id: "c:1".into(),
             title: "t".into(),
             cover: None,
+            cover_key: "a:1".into(),
             image_count: 1,
             node_count: 2,
             active: false,

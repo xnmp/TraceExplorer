@@ -67,7 +67,9 @@ test.describe("references and unsaved outputs open in Preview without navigating
       const after = await state(page);
       expect(after.navigations).toEqual([]);
       expect(after.selected).toEqual([]);
-      expect(await rendered(page, "tone", "focus")).toEqual([name]);
+      // The reference is a badge, not a tile: it shows as the selected one, and the image it fed is related.
+      await expect(page.locator(`[data-reference-key="${await key(page, name)}"]`).first()).toHaveAttribute("aria-pressed", "true");
+      expect(await rendered(page, "tone", "related")).toContain("warm");
     });
   }
 });

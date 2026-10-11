@@ -14,7 +14,7 @@ function deferred<T>() {
   const promise = new Promise<T>((a, b) => { resolve = a; reject = b; });
   return { promise, resolve, reject };
 }
-const summary = (id: string) => ({ id, title: id, cover: null, imageCount: 1, nodeCount: 1, active: false, unsaved: false });
+const summary = (id: string) => ({ id, title: id, cover: null, coverKey: id, imageCount: 1, nodeCount: 1, active: false, unsaved: false });
 const node = (key: string, order: number, parents: string[] = []): TraceNode => ({
   key, artifactId: order, runId: null, parents, path: `/f/${key}.png`, scope: "current", location: `./${key}.png`,
   state: "present", temporary: false, discarded: false, earlierRevision: false, order, prompt: "",

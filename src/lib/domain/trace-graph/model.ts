@@ -52,6 +52,8 @@ export interface ComponentSummary {
   readonly id: string;
   readonly title: string;
   readonly cover: { readonly path: string; readonly present: boolean } | null;
+  /** The node the lineage is drawn from: the cover's own revision (an in-place edit's path maps to its newest), or the oldest member when there is no file. */
+  readonly coverKey: string;
   readonly imageCount: number;
   readonly nodeCount: number;
   readonly active: boolean;

@@ -24,6 +24,8 @@ test("returning to a Trace tab shows its graph at once, without Loading Trace…
   });
   // Shown from what the previous view loaded, well before the 600 ms reads return.
   expect(shownAt).toBeLessThan(300);
+  // Stacks start closed in a new view; opening them shows the graphs the previous view loaded, with no wait.
+  for (let i = 0; i < 3; i++) await page.locator("section[data-component]").nth(i).locator("[data-stack-toggle]").click();
   await expect(page.locator("[data-tile-key]")).toHaveCount(tiles);
   // Revalidation completes in the background and keeps the graph in place.
   await page.waitForTimeout(1500);

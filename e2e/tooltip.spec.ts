@@ -126,7 +126,8 @@ test.describe("Trace tile tooltip", () => {
     await expect(bubble(page)).toHaveCount(0);
 
     await page.mouse.move(2, 2);
-    await (await card(page, "village")).hover();
+    // The village cover now sits partly above the scrolled view, and hovering it would scroll it into view.
+    await (await card(page, "warm")).hover();
     await expect(bubble(page)).toBeVisible();
     await page.evaluate(() => window.dispatchEvent(new Event("blur")));
     await expect(bubble(page)).toHaveCount(0);
@@ -142,9 +143,9 @@ test.describe("Trace tile tooltip", () => {
       const right = await page.locator(".explorer").evaluate((element) => Math.floor(element.getBoundingClientRect().right));
       await page.setViewportSize({ width: right, height: 720 });
       await settle(page);
-      // Scroll the right-most tile of the first graph down to the window's bottom edge.
+      // Scroll the right-most graph tile (a closed stack has no tooltip) of the grid (a graph is narrower than the grid now) down to the window's bottom edge.
       const corner = await page.evaluate(() => {
-        const cards = [...document.querySelectorAll<HTMLElement>("section.component")[0].querySelectorAll<HTMLElement>("[data-node-key]")];
+        const cards = [...document.querySelectorAll<HTMLElement>("section.component [data-node-key]:not([data-stack-toggle])")];
         const card = cards.sort((a, b) => b.getBoundingClientRect().right - a.getBoundingClientRect().right)[0];
         const view = document.querySelector<HTMLElement>("[data-testid=trace-view]")!;
         view.scrollTop += card.getBoundingClientRect().bottom - Math.min(innerHeight, view.getBoundingClientRect().bottom) + 2;

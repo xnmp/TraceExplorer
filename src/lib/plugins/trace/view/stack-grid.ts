@@ -21,15 +21,19 @@ export function folderCells(entries: readonly FileEntry[], index: FolderIndex): 
     if (!summary) { result.push({ id: entry.path, kind: entry.kind === "directory" ? "folder" : "file", entry }); continue; }
     if (summary.cover?.path !== entry.path) continue;
     emitted.add(summary.id);
-    result.push({ id: member!.key, kind: "stack", entry, summary, coverKey: member!.key });
+    result.push({ id: summary.coverKey, kind: "stack", entry, summary, coverKey: summary.coverKey });
   }
   // Unsaved-only lineages have no listed cover. Keep them reachable after the listing.
-  for (const summary of index.components) if (!emitted.has(summary.id)) {
-    const member = summary.cover && index.members.get(summary.cover.path);
-    const key = member?.key ?? summary.id.slice(2);
-    result.push({ id: key, kind: "stack", summary, coverKey: key });
-  }
+  for (const summary of index.components) if (!emitted.has(summary.id)) result.push({ id: summary.coverKey, kind: "stack", summary, coverKey: summary.coverKey });
   return result;
+}
+
+/** Roving tabindex: the stop is the last focused cell while it is rendered, otherwise the stack
+ * that held it, otherwise the first cell, so the grid always has exactly one tab stop. */
+export function rovingStop(stop: string | null, rendered: ReadonlySet<string>, ownerOf: (key: string) => string | undefined, first: string | null): string | null {
+  if (stop && rendered.has(stop)) return stop;
+  const owner = stop ? ownerOf(stop) : undefined;
+  return owner && rendered.has(owner) ? owner : first;
 }
 
 export function coverNode(cell: FolderCell): TraceNode {
