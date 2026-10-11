@@ -100,10 +100,19 @@ export interface FileViewContribution { id: string; title: string; component: Co
  */
 export interface PreviewInfoContribution { id: string; component: Component<any>; props?: Record<string, unknown>; when(subject: PreviewSubject): boolean }
 
+/** Capability "paneDialogs": a host-issued pane handle from `workspace.capturePane`. Never construct or serialize it. */
+export interface PluginDialogPane { readonly paneId: string }
+/** Omitted means a window modal; "pane" covers only the captured pane. */
+export type PluginDialogOptions = { readonly scope: "window" } | { readonly scope: "pane"; readonly pane: PluginDialogPane };
+/** "pane": a verified explorer drag. "external": paths Tauri delivered from another application. */
+export type PluginFileDropSource = "pane" | "external";
+export type PluginFileDropHandler = (paths: readonly string[], source: PluginFileDropSource) => void | Promise<void>;
+/** When `enabled` returns false, drops on the target are consumed without delivery. */
+export interface PluginFileDropTargetOptions { readonly enabled?: () => boolean }
 export interface PluginContext {
   /** Host-managed modal navigation retains the caller's mounted draft. */
   presentation?: {
-    openDialog(id:string,props?:Record<string,unknown>):Promise<{reason:"closed"|"caller-closed"|"owner-disposed"}>;
+    openDialog(id:string,props?:Record<string,unknown>,options?:PluginDialogOptions):Promise<{reason:"closed"|"caller-closed"|"owner-disposed"}>;
     /** Opens the host image editor directly in one of this plugin's editor tools; settles when it closes. */
     openImageEditor?(request:{path:string;tool:string}):Promise<void>;
   };
@@ -122,7 +131,8 @@ export interface PluginContext {
   registerFileView?(view: FileViewContribution): void;
   /** SDK 2. */
   registerPreviewInfo?(section: PreviewInfoContribution): void;
-  openDialog(id: string, props?: Record<string, unknown>): void;
+  /** `options` needs capability "paneDialogs". */
+  openDialog(id: string, props?: Record<string, unknown>, options?: PluginDialogOptions): void;
   closeDialog(id: string): void;
   backend?: PluginBackend;
   jobs: PluginJobs;
@@ -145,6 +155,10 @@ export interface PluginContext {
     getFileView?(): string | null;
     /** SDK 2. */
     toggleFileView?(viewId: string): void;
+    /** Capability "paneDialogs": capture a pane of the active tab (the active pane when omitted); valid for the pane's lifetime. */
+    capturePane?(paneId?: string): PluginDialogPane | null;
+    /** Capability "fileDropTargets": deliver paths dropped on `element`; returns an idempotent disposer. */
+    registerFileDropTarget?(element: HTMLElement, handler: PluginFileDropHandler, options?: PluginFileDropTargetOptions): () => void;
   };
 }
 export interface Plugin {id: string; name: string; description: string; enabledByDefault?: boolean; activate(ctx: PluginContext): void | Promise<void>; deactivate?(): void}
