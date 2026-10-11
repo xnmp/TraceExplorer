@@ -72,6 +72,27 @@ describe("folder grid rules", () => {
     const mapped: FolderIndex = { ...index, members: new Map([...index.members, ["/p/draft", { key: "a:1", componentId: "c:a:1" }]]) };
     expect(folderCells(listing, mapped, new Set(), new Set(["/p/draft"])).map((cell) => cell.id)).toEqual(folderCells(listing, mapped).map((cell) => cell.id));
   });
+  describe("vertical navigation between tiles of different heights", () => {
+    const box = (x: number, y: number, width: number, height: number) => ({ x, y, width, height, row: 0, col: 0 }) as never;
+    // evening and rain share a row; quiet hangs below rain only. rain is taller (it carries a hint).
+    const rects = new Map<string, never>([["evening", box(0, 0, 90, 90)], ["rain", box(100, 0, 90, 130)], ["quiet", box(100, 140, 90, 90)], ["far", box(0, 400, 90, 90)]]);
+    it("moves down to the next row, not sideways to a tile at the same height", () => {
+      expect(gridNeighbor(rects, "evening", "ArrowDown")).toBe("quiet");
+      expect(gridNeighbor(rects, "quiet", "ArrowUp")).toBe("rain");
+    });
+    it("then picks the nearest by x within that row", () => {
+      const row = new Map<string, never>([["top", box(100, 0, 90, 90)], ["left", box(0, 100, 90, 90)], ["right", box(200, 100, 90, 90)], ["under", box(110, 100, 90, 90)]]);
+      expect(gridNeighbor(row, "top", "ArrowDown")).toBe("under");
+    });
+    it("takes tiles starting inside the first candidate's extent as the same row", () => {
+      const row = new Map<string, never>([["top", box(0, 0, 90, 90)], ["tall", box(300, 100, 90, 200)], ["short", box(0, 150, 90, 60)]]);
+      expect(gridNeighbor(row, "top", "ArrowDown")).toBe("short");
+    });
+    it("stops at the first and last row", () => {
+      expect(gridNeighbor(rects, "far", "ArrowDown")).toBeNull();
+      expect(gridNeighbor(rects, "evening", "ArrowUp")).toBeNull();
+    });
+  });
   it("handles empty folders", () => { expect(folderCells([], { ...index, components: [], members: new Map() })).toEqual([]); });
   it("attaches several bands to the same pinned cover without changing any x or losing parentage", () => {
     const layout = layoutGraph({ items: [{ key: "cover", width: 92, height: 97, order: 0, parents: [] }, { key: "child", width: 92, height: 97, order: 1, parents: ["cover"] }], maxWidth: 700, pinned: { key: "cover", x: 650 } });
