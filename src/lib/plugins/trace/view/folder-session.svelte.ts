@@ -100,6 +100,12 @@ export function createFolderSession(backend: TraceBackend = traceBackend, snapsh
     return (index?.components ?? []).map((summary) => ({ coverKey: summary.coverKey, coverIdentity: coverIdentity(summary, index!.members), identities: identities.get(summary.id)! }));
   });
   const openStacks = $derived(resolveOpenStacks(paneState.openCovers, stackMembership, paneState.openOwners));
+  /** Same identity while the open set's contents are unchanged, so consumers (the grid's motion capture) do not re-run on a no-op rewrite of the pane state. */
+  let stableOpen: ReadonlySet<string> = new Set();
+  const openStackKeys = $derived.by(() => {
+    const next = openStacks.open;
+    return next.size === stableOpen.size && [...next].every((key) => stableOpen.has(key)) ? stableOpen : (stableOpen = next);
+  });
   const openStackSearch = $derived(new Set(index && [...openStacks.unresolved].some((key) =>
     !(key.startsWith("path:") && samePath(parentDir(key.slice(5)), index!.directory)))
     ? index.components.filter((summary) => !components.has(summary.id) || stale.has(summary.id)).map((summary) => summary.id) : []));
@@ -319,7 +325,7 @@ export function createFolderSession(backend: TraceBackend = traceBackend, snapsh
     get error() { return error; },
     get components() { return components; },
     get orientations() { return orientations; },
-    get openStackKeys() { return openStacks.open; },
+    get openStackKeys() { return openStackKeys; },
     get openStackSearch() { return openStackSearch; },
     setStackOpen(id: string, opening: boolean) {
       const summary = index?.components.find((component) => component.id === id);
