@@ -79,12 +79,14 @@ export function createFolderSession(backend: TraceBackend = traceBackend, snapsh
     });
   }
 
-  async function loadIndex(dir: string, current: number, attempt = 0): Promise<FolderIndex | null> {
+  async function loadIndex(dir: string, current: number, attempt = 0, signal?: AbortSignal): Promise<FolderIndex | null> {
     const summaries: ComponentSummary[] = [];
     let token = "";
     let restarts = 0;
     for (let offset = 0; ;) {
+      signal?.throwIfAborted();
       const page = await backend.components(dir, offset);
+      signal?.throwIfAborted();
       if (current !== generation) return null;
       if (token && page.token !== token) {
         if (++restarts > MAX_RETRIES) throw new Error("Trace kept changing while it was loading");
@@ -97,11 +99,13 @@ export function createFolderSession(backend: TraceBackend = traceBackend, snapsh
     }
     const members = new Map<string, Member>();
     for (let offset = 0; ;) {
+      signal?.throwIfAborted();
       const page = await backend.members(dir, token, offset);
+      signal?.throwIfAborted();
       if (current !== generation) return null;
       if (page.stale) {
         if (attempt >= MAX_RETRIES) throw new Error("Trace kept changing while it was loading");
-        return loadIndex(dir, current, attempt + 1);
+        return loadIndex(dir, current, attempt + 1, signal);
       }
       for (const member of page.members) members.set(member.path, { componentId: member.componentId, key: member.key });
       offset += page.members.length;
@@ -175,6 +179,55 @@ export function createFolderSession(backend: TraceBackend = traceBackend, snapsh
     return open(directory, true);
   }
 
+  /** Resolve against a fresh index: component ids may have changed since publication. */
+  async function resolveArtifact(artifactId: number, signal: AbortSignal): Promise<{ node: TraceNode; componentId: string }> {
+    signal.throwIfAborted();
+    const dir = directory;
+    if (!dir || disposed) throw new Error("Trace view is no longer available");
+    for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+      const current = generation;
+      const folder = await loadIndex(dir, current, 0, signal);
+      signal.throwIfAborted();
+      if (dir !== directory || disposed) throw new Error("Trace folder changed during reveal");
+      if (!folder || current !== generation) continue;
+      let restart = false;
+      for (const summary of folder.components) {
+        const nodes: TraceNode[] = [];
+        for (let offset = 0; ;) {
+          signal.throwIfAborted();
+          const page = await backend.nodes(dir, folder.token, summary.id, offset);
+          signal.throwIfAborted();
+          if (dir !== directory || disposed) throw new Error("Trace folder changed during reveal");
+          if (current !== generation) { restart = true; break; }
+          if (page.stale) { restart = true; break; }
+          nodes.push(...page.nodes);
+          offset += page.nodes.length;
+          if (!page.nodes.length || offset >= page.total) break;
+        }
+        if (restart) break;
+        const node = nodes.find((node) => node.artifactId === artifactId && !node.discarded && !node.earlierRevision && node.state === "present");
+        if (!node) continue;
+        // Only commit once the entire target component is loaded and the request is still live.
+        signal.throwIfAborted();
+        generation += 1;
+        loading.clear();
+        const ids = new Set(folder.components.map((component) => component.id));
+        components = new Map([...components].filter(([id]) => ids.has(id)));
+        stale = index?.token === folder.token ? new Set([...stale].filter((id) => ids.has(id))) : new Set(components.keys());
+        components = new Map(components).set(summary.id, { nodes, dag: projectDag(nodes), members: nodes.map((node) => node.key) });
+        stale = new Set([...stale].filter((id) => id !== summary.id));
+        index = folder;
+        status = "ready";
+        error = "";
+        wanted.add(summary.id);
+        remember();
+        return { node, componentId: summary.id };
+      }
+      if (!restart) throw new Error(`Trace image artifact:${artifactId} no longer exists in this folder`);
+    }
+    throw new Error("Trace kept changing while revealing the image");
+  }
+
   return {
     get index() { return index; },
     get status() { return status; },
@@ -192,6 +245,7 @@ export function createFolderSession(backend: TraceBackend = traceBackend, snapsh
       void open(dir, true);
     },
     refresh,
+    resolveArtifact,
     ensure,
     release(id: string) { wanted.delete(id); },
     componentOf(path: string): Member | null { return index?.members.get(path) ?? null; },

@@ -6,6 +6,7 @@ pub(crate) mod dismiss;
 pub(crate) mod folder_graph;
 pub(crate) mod folders;
 mod image_estimate;
+pub(crate) mod job_presentation;
 pub(crate) mod jobs;
 pub(crate) mod service_images;
 pub(crate) mod save;

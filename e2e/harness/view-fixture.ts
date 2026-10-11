@@ -5,9 +5,9 @@ import { imageAvailability } from "../../tests/fixtures/image-connections";
  * domain rules the view uses) and records save/discard calls so specs can
  * assert on outcomes.
  */
-import { configureBackend } from "$lib/api/common";
+import { configureBackend, invoke } from "$lib/api/common";
 import type { TraceNode } from "$lib/domain/trace-graph/model";
-import type { TileSizePreset } from "../../integration/plugin-sdk";
+import type { JobCost, JobReveal, TileSizePreset } from "../../integration/plugin-sdk";
 import { TILE_IMAGE_PX } from "./tile-presets";
 import { connectedComponents, projectDag } from "$lib/domain/trace-graph/projection";
 import { basename, joinPath, parentDir } from "$lib/domain/path";
@@ -68,6 +68,8 @@ function scenario(): { nodes: TraceNode[]; names: Map<string, string> } {
     add({ key: `m${component}` });
     for (let index = 0; index < 6; index++) add({ key: `m${component}-${index}`, parents: [`m${component}`] });
   }
+  // Large uncached scenes exercise the view's worker layout path during reveal.
+  if (query.has("revealLarge")) for (let index = 0; index < 85; index++) add({ key: `wide-${index}`, parents: ["fan"] });
   return { nodes, names };
 }
 
@@ -82,6 +84,9 @@ const calls: Array<{ method: string; params: unknown }> = [];
 /** Accepted jobs keep the run recipe and save hint, like Trace's durable runs. */
 const imageRuns = new Map<number, { operation: string; parameters: Record<string, unknown>; directory: string; filename: string }>();
 const imageJobs = new Map<number, string>();
+const imageOperations = new Map<number, string>();
+const operationIdFor = (jobId: number) => jobId.toString(16).padStart(32, "0");
+const billing = new Map<number, { cost: JobCost }>();
 let changeListener: (() => void) | null = null;
 /** Runs whose Interrupted placeholder the user dismissed (`runs.dismissed_at`). */
 const dismissedRuns = new Set<number>();
@@ -149,6 +154,19 @@ function saveSuggestion(node: TraceNode | undefined) {
   return { directory: run.directory, filename };
 }
 
+/** Same storage rule as Trace: a private output path is never a saved-file signal. */
+function jobSnapshot(jobId: number) {
+  const node = state.nodes.find((node) => node.key === imageJobs.get(jobId));
+  if (!node || node.runId === null) return null;
+  const run = imageRuns.get(node.runId);
+  const reveal: JobReveal | undefined = node.artifactId === null || node.discarded ? undefined
+    : run?.parameters.output_storage === "saved" ? { kind: "file", path: node.path! }
+    : run?.directory ? { kind: "view", viewId: "trace.view", directory: run.directory, targetId: `artifact:${node.artifactId}` } : undefined;
+  const cost = billing.get(node.runId)?.cost;
+  return { jobId, runId: node.runId, operationId: imageOperations.get(jobId), status: node.state === "present" ? "succeeded" : node.state,
+    outputPath: node.path, error: null, ...(reveal ? { reveal } : {}), ...(cost ? { cost } : {}) };
+}
+
 configureBackend({
   invoke<T>(method: string, params: Record<string, any> = {}): Promise<T> {
     calls.push({ method, params: structuredClone(params) });
@@ -158,6 +176,12 @@ configureBackend({
     const token = String(version);
     switch (method) {
       // MIRROR answers with the same Trace: another folder whose components reuse the same ids.
+      case "jobs.status": {
+        const operationId = params.operationId;
+        if (typeof operationId !== "string" || !/^(?:[a-f0-9]{32}|[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})$/i.test(operationId)) return Promise.reject(new Error("Invalid image operation ID"));
+        const jobId = [...imageOperations].find(([, id]) => id === operationId)?.[0];
+        return reply(jobId === undefined ? null : jobSnapshot(jobId));
+      }
       case "folder_has_trace": return reply(params.directory === DIRECTORY || params.directory === MIRROR);
       case "trace_folder_components": {
         const all = componentsOf().map((component) => component.summary);
@@ -181,7 +205,7 @@ configureBackend({
         return {
           id, operation: run?.operation ?? "openai.image.edit", parameters: run?.parameters ?? { prompt: node?.prompt ?? "", resolution: "2k", aspect_ratio: "keep", quality: "high", seed: 7 },
           createdAt: "2026-10-05T00:00:00Z", status: node?.state === "running" ? "running" : "succeeded", finishedAt: null, error: null, recovered: false,
-          details: { actual_size: { width: 1024, height: 768 } }, inputIds: node?.parents.flatMap((key) => {
+          details: { actual_size: { width: 1024, height: 768 }, ...(billing.has(id) ? { provider_billing: billing.get(id) } : {}) }, inputIds: node?.parents.flatMap((key) => {
             const id = state.nodes.find((parent) => parent.key === key)?.artifactId;
             return id === null || id === undefined ? [] : [id];
           }) ?? [],
@@ -272,6 +296,7 @@ configureBackend({
           directory, filename,
         });
         imageJobs.set(jobId, key);
+        imageOperations.set(jobId, params.operationId ?? operationIdFor(jobId));
         state.names.set(`job-${jobId}`, key);
         state = { ...state, nodes: [...state.nodes, {
           key, artifactId: null, runId, parents, path: null, scope: "current", location: "Generating",
@@ -294,7 +319,7 @@ export const initialTileSize: TileSizePreset | null = tileQuery && tileQuery in 
 const color = (path: string) => `hsl(${[...path].reduce((sum, char) => (sum * 31 + char.charCodeAt(0)) % 360, 7)} 45% 55%)`;
 (globalThis as any).__TAURI_EXPLORER_PLUGIN_SDK__ = {
   sdkVersion: 1, apiVersion: 2, svelteVersion: "5.56.3",
-  capabilities: ["fileViews", "previewInfo", "previewTargets", "blobWorkers", ...(fileTiles ? ["fileTiles"] : []), ...(initialTileSize ? ["tileSize"] : [])],
+  capabilities: ["fileViews", "previewInfo", "previewTargets", "blobWorkers", "jobReveal", "jobCost", "fileViewReveal", ...(fileTiles ? ["fileTiles"] : []), ...(initialTileSize ? ["tileSize"] : [])],
   modules: fileTiles ? { "ui/file-tiles": { default: StubFileTiles } } : {},
   pickSaveFile: async () => pickerResult === undefined ? `${DIRECTORY}/picked.png` : pickerResult,
   thumbnailData: async (path: string) => ({ ok: true, data: URL.createObjectURL(new Blob([
@@ -307,6 +332,17 @@ let imageDescriptionsHeld = false;
 let imageDescriptionWaiters: Array<() => void> = [];
 
 export const backend = {
+  jobStatus: (jobId: number) => invoke<ReturnType<typeof jobSnapshot>>("jobs.status", { operationId: imageOperations.get(jobId) ?? operationIdFor(jobId) }),
+  /** Connect a scenario generation to a durable job, including its publication context. */
+  registerJob(name: string, jobId: number, cost?: JobCost) {
+    const node = state.nodes.find((node) => node.key === state.names.get(name));
+    if (!node || node.runId === null) throw new Error("Generation missing");
+    imageJobs.set(jobId, node.key);
+    imageOperations.set(jobId, operationIdFor(jobId));
+    imageRuns.set(node.runId, { operation: "openai.image.generate", parameters: { prompt: node.prompt, output_storage: node.temporary ? "temporary" : "saved", save_directory_hint: DIRECTORY }, directory: DIRECTORY, filename: `${name}.png` });
+    if (cost) billing.set(node.runId, { cost });
+    changed();
+  },
   /** Publish an accepted job to private storage; Save later moves it to the hint folder. */
   completeJob(jobId: number) {
     const key = imageJobs.get(jobId);
@@ -408,5 +444,5 @@ export const backend = {
   setPreviewLatency(ms: number) { previewLatency = ms; },
   setFolderLatency(ms: number) { folderLatency = ms; },
   releaseSaves() { holdSaves = false; const pending = heldSaves; heldSaves = []; pending.forEach((run) => run()); },
-  reset() { previewLatency = 0; folderLatency = 0; pickerResult = undefined; nextSaveFailure = null; inputFailures = 0; imageRuns.clear(); imageJobs.clear(); state = scenario(); version += 1; calls.length = 0; },
+  reset() { previewLatency = 0; folderLatency = 0; pickerResult = undefined; nextSaveFailure = null; inputFailures = 0; imageRuns.clear(); imageJobs.clear(); imageOperations.clear(); billing.clear(); state = scenario(); version += 1; calls.length = 0; },
 };

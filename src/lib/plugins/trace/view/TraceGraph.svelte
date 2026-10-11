@@ -37,6 +37,7 @@
     ondiscarded: (key: NodeKey) => void;
     /** Called after a new layout is in the DOM (motion has started), with a promise that settles when motion ends. */
     oncommit?: (settled: Promise<void>) => void;
+    onfailure?: (error: Error) => void;
     /** The host's component id: stable across refreshes, saves and new descendants. */
     componentId: string;
     /**
@@ -47,7 +48,7 @@
     orientations?: Map<string, Orientation>;
   }
 
-  let { data, focus, selected, width, tile = tileMetrics(), revision, scroller, onactivate, onnavigate, onopen, onmenu, onsaved, ondiscarded, oncommit, captureSelection, componentId, orientations = new Map() }: Props = $props();
+  let { data, focus, selected, width, tile = tileMetrics(), revision, scroller, onactivate, onnavigate, onopen, onmenu, onsaved, ondiscarded, oncommit, captureSelection, componentId, orientations = new Map(), onfailure }: Props = $props();
 
   /** Below this many tiles layout runs inline; it takes well under a frame. */
   const SYNC_LIMIT = 60;
@@ -83,7 +84,11 @@
   let shown = $state.raw(initial());
 
   function commit(next: ScenePlan, layout: GraphLayout): void {
-    if (shown && shown.plan === next && shown.layout === layout) return;
+    if (shown && shown.plan === next && shown.layout === layout) {
+      // Initial cached/inline geometry is already committed; report it after its tiles mount.
+      void tick().then(() => oncommit?.(Promise.resolve()));
+      return;
+    }
     // Same geometry (only tones or selection changed): nothing moves, so
     // motion still running carries on and nothing is measured.
     if (shown && shown.layout === layout) {
@@ -116,7 +121,7 @@
     const superseded = new AbortController();
     computeLayout(next.request, superseded.signal).then(
       (layout) => { if (live) commit(next, layout); },
-      (error: Error) => { if (live) failure = error.message; },
+      (error: Error) => { if (live) { failure = error.message; onfailure?.(error); } },
     );
     return () => { live = false; superseded.abort(); };
   });

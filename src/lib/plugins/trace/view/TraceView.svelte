@@ -19,6 +19,7 @@
   import { tracePanes, isTraceTargetData, type TracePaneView } from "./pane-registry.svelte";
   import { NO_PICKS, clickListed, dropPick, followPicks, picksFromHost, pickOnly, pickable, replacePick, resolvePicks, selectionKey, settlePicks, togglePick, type PickLocation, type Picks } from "./input-picks";
   import { nodeTarget } from "./node-target";
+  import { revealArtifactId } from "./reveal-target";
   import { locateTarget } from "./target-location";
   import { holdAnchor, layoutHeight, MOTION_MS, prefersReducedMotion, zoomOf, resizeSection, scrollsByUser, sectionHeight, USER_SCROLL } from "./motion";
   import TraceGraph from "./TraceGraph.svelte";
@@ -51,6 +52,26 @@
   let pendingSave = $state.raw<{ directory: string; path: string; key: NodeKey; picks: Picks } | null>(null);
   let anchor: { key: NodeKey; mode: "hold" | "reveal"; rect: DOMRect | null; until: number } | null = null;
   let releaseAnchor: (() => void) | null = null;
+  let pendingReveal: { key: NodeKey; signal: AbortSignal; finish(error?: unknown): void } | null = null;
+
+  /** A reveal finishes only once its focused tile has settled into the visible layout. */
+  function awaitReveal(key: NodeKey, signal: AbortSignal): Promise<void> {
+    pendingReveal?.finish(new Error("Trace reveal was superseded"));
+    return new Promise((resolve, reject) => {
+      const request = {
+        key, signal,
+        finish: (error: unknown = undefined) => {
+          if (pendingReveal === request) pendingReveal = null;
+          signal.removeEventListener("abort", cancel);
+          if (error !== undefined) reject(error); else resolve();
+        },
+      };
+      const cancel = () => { anchor = null; releaseAnchor?.(); request.finish(signal.reason ?? new DOMException("Reveal aborted", "AbortError")); };
+      pendingReveal = request;
+      signal.addEventListener("abort", cancel, { once: true });
+      if (signal.aborted) cancel();
+    });
+  }
   const issuedTargets = new WeakMap<PreviewTarget, TraceNode>();
 
   const directory = $derived(pane.directory);
@@ -63,7 +84,7 @@
   const entriesByPath = $derived(new Map(pane.entries.map((entry) => [entry.path, entry])));
 
   // Session follows the pane's folder and Trace's invalidation signal.
-  $effect(() => { const dir = directory; untrack(() => { overrides = new Map(); session.setDirectory(dir); }); });
+  $effect(() => { const dir = directory; untrack(() => { pendingReveal?.finish(new Error("Trace folder changed during reveal")); overrides = new Map(); session.setDirectory(dir); }); });
   let seenRevision = untrack(() => traceInvalidation.revision);
   $effect(() => {
     const current = traceInvalidation.revision;
@@ -205,6 +226,22 @@
   // that shows the chosen tile uses it, once. Other sections relaying out
   // (their focus changed too) must not move the scroll position.
   function keepAnchor(data: ComponentData, settled: Promise<void>): void {
+    const request = pendingReveal;
+    if (request && data.dag.nodes.has(request.key)) {
+      anchor = null;
+      releaseAnchor?.();
+      releaseAnchor = null;
+      void settled.then(() => {
+        if (pendingReveal !== request || request.signal.aborted) return;
+        if (focus?.key !== request.key) { request.finish(new Error("Trace reveal was superseded")); return; }
+        const button = scroller?.querySelector<HTMLElement>(`[data-node-key="${CSS.escape(request.key)}"]`);
+        if (!button) { request.finish(new Error("Trace image could not be shown")); return; }
+        button.scrollIntoView({ block: "nearest", inline: "nearest" });
+        button.focus({ preventScroll: true });
+        request.finish();
+      });
+      return;
+    }
     const current = anchor;
     if (!current || !scroller || performance.now() > current.until || !data.dag.nodes.has(current.key)) return;
     anchor = null;
@@ -223,7 +260,7 @@
   $effect(() => {
     const element = scroller;
     if (!element) return;
-    const cancel = (event: Event) => { if (scrollsByUser(event)) { anchor = null; releaseAnchor?.(); } };
+    const cancel = (event: Event) => { if (scrollsByUser(event)) { anchor = null; releaseAnchor?.(); pendingReveal?.finish(new Error("Trace reveal was superseded")); } };
     for (const type of USER_SCROLL) element.addEventListener(type, cancel, { passive: true, capture: true });
     return () => { for (const type of USER_SCROLL) element.removeEventListener(type, cancel, { capture: true }); };
   });
@@ -256,6 +293,7 @@
   function focusNode(key: NodeKey, modifiers: { ctrlKey?: boolean; shiftKey?: boolean } = {}, keep: "hold" | "reveal" = "reveal"): void {
     const found = findNode(key);
     if (!found) return;
+    if (pendingReveal && pendingReveal.key !== key) pendingReveal.finish(new Error("Trace reveal was superseded"));
     keepFocusedOpen();
     captureAnchor(key, keep);
     const entry = fileEntry(found.node);
@@ -308,6 +346,7 @@
   }
 
   function background(): void {
+    pendingReveal?.finish(new Error("Trace reveal was superseded"));
     keepFocusedOpen();
     pane.clearSelection();
     if (targetData) pane.setPreviewTarget(null);
@@ -424,7 +463,27 @@
     });
   });
 
+  async function reveal(targetId: string, signal: AbortSignal): Promise<void> {
+    const id = revealArtifactId(targetId);
+    signal.throwIfAborted();
+    const dir = directory;
+    session.setDirectory(dir);
+    const found = await session.resolveArtifact(id, signal);
+    signal.throwIfAborted();
+    if (dir !== directory) throw new Error("Trace folder changed during reveal");
+    // Expansion and Preview/picks are committed together after loading succeeds.
+    let visible!: Promise<void>;
+    flushSync(() => {
+      overrides = new Map(overrides).set(found.componentId, true);
+      near = new Set(near).add(found.componentId);
+      focusNode(found.node.key);
+      visible = awaitReveal(found.node.key, signal);
+    });
+    await visible;
+  }
+
   const view: TracePaneView = {
+    reveal,
     get directory() { return directory; },
     node: (key) => findNode(key)?.node ?? null,
     nodeForPath: (path) => { const member = session.componentOf(path); return member ? findNode(member.key)?.node ?? null : null; },
@@ -465,6 +524,7 @@
    * reverses smoothly.
    */
   function setExpanded(id: string, opening: boolean): void {
+    if (!opening && pendingReveal && session.components.get(id)?.dag.nodes.has(pendingReveal.key)) pendingReveal.finish(new Error("Trace reveal was superseded"));
     const section = scroller?.querySelector<HTMLElement>(`section[data-component="${CSS.escape(id)}"]`) ?? null;
     const body = () => section?.querySelector<HTMLElement>(":scope > .content") ?? null;
     const animate = !!section && !!scroller && !prefersReducedMotion();
@@ -534,6 +594,7 @@
   }
 
   onDestroy(() => {
+    pendingReveal?.finish(new Error("Trace view is no longer available"));
     releaseAnchor?.();
     for (const animations of sectionMotions.values()) for (const animation of animations) animation.cancel();
     session.dispose();
@@ -572,13 +633,13 @@
         </button>
         {#if expanded || closing.has(summary.id)}
           <div class="content" data-horizontal-scroll inert={!expanded}>
-            {#if !near.has(summary.id)}
+            {#if !near.has(summary.id) && focus?.componentId !== summary.id}
               <div class="placeholder" style:height="{heights.get(summary.id) ?? 160}px"></div>
             {:else if data}
               <div use:measure={summary.id}>
                 <TraceGraph {data} focus={focus?.key ?? null} selected={selectedKeys} {width} {tile} {revision} {scroller}
                   onactivate={activate} onnavigate={(key) => focusNode(key)} onopen={open} onmenu={menu}
-                  {captureSelection} componentId={summary.id} orientations={session.orientations} onsaved={(key, path) => callbacks.saved(path, key)} ondiscarded={(key) => callbacks.discarded(key)} oncommit={(settled) => keepAnchor(data, settled)} />
+                  {captureSelection} componentId={summary.id} orientations={session.orientations} onsaved={(key, path) => callbacks.saved(path, key)} ondiscarded={(key) => callbacks.discarded(key)} oncommit={(settled) => keepAnchor(data, settled)} onfailure={(error) => { if (pendingReveal && data.dag.nodes.has(pendingReveal.key)) pendingReveal.finish(error); }} />
               </div>
             {:else}
               <div class="placeholder loading" role="status" style:height="{heights.get(summary.id) ?? 160}px">Loading…</div>

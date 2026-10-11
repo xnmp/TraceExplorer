@@ -10,6 +10,22 @@ export interface PluginStorage {
   setChecked?(value: Record<string, unknown>): Promise<void>;
   subscribe?(listener: (value: Record<string,unknown>)=>void): ()=>void;
 }
+/** The money one AI operation cost. */
+export interface JobCost {
+  /** Non-negative decimal in major units, at most 6 fractional digits, e.g. "0.045". Never a float. */
+  amount: string;
+  /** ISO 4217 code; "USD" today. */
+  currency: string;
+  /** True when computed from reported usage × a dated published rate card; false when the provider reported the charge itself. */
+  estimated: boolean;
+  /** Bounded (≤ 64 chars) identifier of the origin, e.g. "bfl.credits" or "ratecard:openai-images:2026-10-11". */
+  source: string;
+}
+/** Where a finished job's output can be shown. */
+export type JobReveal =
+  | { kind: "file"; path: string }
+  | { kind: "view"; viewId: string; directory: string; targetId: string };
+
 export interface PluginJobs {
   accept(
     registration: {
@@ -75,7 +91,7 @@ export interface PreviewTarget {
 export type PreviewSubject =
   | { readonly kind: "file"; readonly entry: FileEntry; readonly paneId: string | null }
   | { readonly kind: "target"; readonly target: PreviewTarget; readonly pluginId: string; readonly paneId: string | null };
-export interface FileViewContribution { id: string; title: string; component: Component<any>; props?: Record<string, unknown>; available?(directory: string): boolean }
+export interface FileViewContribution { id: string; title: string; component: Component<any>; props?: Record<string, unknown>; available?(directory: string): boolean; reveal?(targetId: string, pane: FileViewPane, signal: AbortSignal): Promise<void> }
 /**
  * A Preview-info section. It spans the pane's width below the host's own info
  * rows. Hosts that set `--preview-info-inset` (the inset of their rows in the
@@ -151,7 +167,7 @@ export interface RuntimeSDK {
   sdkVersion: 1;
   /** Present from SDK 2 hosts on. */
   apiVersion?: number;
-  /** For example `fileViews`, `previewInfo`, `previewTargets`, `blobWorkers`, `fileTiles`, `tileSize`, `jobRetry`. */
+  /** For example `fileViews`, `previewInfo`, `previewTargets`, `blobWorkers`, `fileTiles`, `tileSize`, `jobRetry`, `jobReveal`, `jobCost`, `fileViewReveal`. */
   capabilities?: readonly string[];
   svelteVersion: string;
   /** Shared host modules: `svelte`, `ui/modal`, `ui/image-editor`, and `ui/file-tiles` where `fileTiles` is announced. */

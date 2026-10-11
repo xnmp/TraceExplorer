@@ -3,6 +3,8 @@
  * mounted Trace view (inputs can be focused there) or, in built-in views, from
  * the per-image trace query (inputs are informational).
  */
+import { formatJobCost } from "$lib/domain/job-cost";
+import type { JobCost } from "../../../../../integration/plugin-sdk";
 import type { TraceGraph, TraceRun } from "$lib/api/trace";
 import type { NodeScope, TraceNode } from "$lib/domain/trace-graph/model";
 import { basename, isInsideDir, parentDir, samePath, toForwardSlashes } from "$lib/domain/path";
@@ -100,6 +102,7 @@ export function runSettings(run: TraceRun): PreviewSetting[] {
     ["Quality", text(quality)],
     ["Seed", text(seed)],
     ["Actual size", actualSize(run.details)],
+    ["Cost", formatJobCost((run.details?.provider_billing as { cost?: JobCost } | undefined)?.cost) || null],
   ];
   return rows.flatMap(([label, value]) => value === null ? [] : [{ label, value }]);
 }

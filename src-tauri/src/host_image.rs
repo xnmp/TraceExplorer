@@ -12,8 +12,14 @@ static JOB_ESTIMATES: AtomicBool = AtomicBool::new(false);
 pub(crate) fn job_estimates_supported() -> bool {
     JOB_ESTIMATES.load(Ordering::Acquire)
 }
+static JOB_COST: AtomicBool = AtomicBool::new(false);
+static JOB_REVEAL: AtomicBool = AtomicBool::new(false);
+pub(crate) fn job_cost_supported() -> bool { JOB_COST.load(Ordering::Acquire) }
+pub(crate) fn job_reveal_supported() -> bool { JOB_REVEAL.load(Ordering::Acquire) }
 static ENABLED: AtomicBool = AtomicBool::new(false);
 pub(crate) fn enable(service: &Value, artifacts: &Value, jobs: &Value) {
+    JOB_COST.store(jobs["costV1"] == true, Ordering::Release);
+    JOB_REVEAL.store(jobs["revealV1"] == true, Ordering::Release);
     JOB_ESTIMATES.store(jobs["estimateKey"] == true, Ordering::Release);
     ENABLED.store(
         service["version"] == 1 && artifacts["version"] == 1,
