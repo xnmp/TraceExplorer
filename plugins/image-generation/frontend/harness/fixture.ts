@@ -1,4 +1,4 @@
-import type { ImageConfiguration, ImageOperationStatus } from '../../../../integration/services/image-generation-v1';
+import type { ImageConfiguration, ImageOperationStatus, ImageProfile } from '../../../../integration/services/image-generation-v1';
 import { isApi } from '../domain';
 import type { Backend } from '../controller';
 
@@ -16,6 +16,7 @@ export function connectionFixture(initial: ImageConfiguration = { schemaVersion:
   let current = structuredClone(initial);
   const results = new Map<string, { profileId: string; status: ImageOperationStatus }>();
   const shown = new Set<string>();
+  const cancelledBeforeAdmission = new Set<string>();
   const calls: { method: string; params: Record<string, unknown> }[] = [];
   let outcome: 'succeeded' | 'unknown' | 'running' = 'succeeded';
   let startFailure: unknown = null;
@@ -24,7 +25,15 @@ export function connectionFixture(initial: ImageConfiguration = { schemaVersion:
   let startReply: ((status: ImageOperationStatus) => Promise<ImageOperationStatus>) | null = null;
   let nextCleanupFailure: unknown = null;
   let discovery: (() => Promise<void>) | null = null;
-  const commit = (value: ImageConfiguration) => { current = value; emit(current); return structuredClone(current); };
+  const executionIdentity = (p: ImageProfile) => JSON.stringify(isApi(p) ? [p.transport, p.baseUrl, p.defaultModel, p.allowInsecureHttp, p.credential] : [p.transport, p.executablePath, p.credential]);
+  const commit = (value: ImageConfiguration, forceRotation?: string) => {
+    current = { ...value, profiles: value.profiles.map(p => {
+      const previous = current.profiles.find(old => old.id === p.id);
+      const recipeRevision = previous && p.id !== forceRotation && executionIdentity(previous) === executionIdentity(p) ? previous.recipeRevision : `fixture-${value.documentRevision}-${p.id}`;
+      return { ...p, recipeRevision };
+    }) };
+    emit(current); return structuredClone(current);
+  };
   const backend: Backend = { async invoke<T>(method: string, params: Record<string, unknown> = {}): Promise<T> {
     calls.push({ method, params });
     const invoke = async (): Promise<unknown> => {
@@ -35,7 +44,7 @@ export function connectionFixture(initial: ImageConfiguration = { schemaVersion:
       }
       if (method === 'settings.credential.set' || method === 'settings.credential.clear') {
         if (params.expectedRevision !== current.documentRevision) throw { code: 'configuration_changed', message: 'Settings changed' };
-        return commit({ ...current, documentRevision: current.documentRevision + 1, profiles: current.profiles.map(p => p.id === params.profileId && isApi(p) ? { ...p, credential: method.endsWith('.clear') ? { kind: 'none' } : { kind: 'secret', id: 'owned-secret-reference' } } : p) });
+        return commit({ ...current, documentRevision: current.documentRevision + 1, profiles: current.profiles.map(p => p.id === params.profileId && isApi(p) ? { ...p, credential: method.endsWith('.clear') ? { kind: 'none' } : { kind: 'secret', id: 'owned-secret-reference' } } : p) }, String(params.profileId));
       }
       if (method === 'settings.test.list') {
         await discovery?.();
@@ -50,11 +59,12 @@ export function connectionFixture(initial: ImageConfiguration = { schemaVersion:
         if (startFailure) throw startFailure;
         if ([...results.values()].some(({ profileId, status }) => profileId === params.profileId && ['accepted', 'running'].includes(status.execution.state))) throw { code: 'test_already_running', message: 'A test is already running for this connection' };
         if (params.expectedConfigurationRevision !== current.documentRevision) throw { code: 'configuration_changed', message: 'Settings changed' };
-        const status = fixtureStatus(requestId, credentialFailure ? 'failed' : 'accepted');
+        const status = fixtureStatus(requestId, cancelledBeforeAdmission.has(requestId) ? 'cancelled' : credentialFailure ? 'failed' : 'accepted');
         results.set(requestId, { profileId: String(params.profileId), status });
         return startReply ? startReply(structuredClone(status)) : structuredClone(status);
       }
       const entry = results.get(requestId);
+      if (!entry && method === 'settings.cancelTest') cancelledBeforeAdmission.add(requestId);
       if (!entry) throw { code: method === 'settings.cancelTest' ? 'test_not_started' : 'not_found', message: method === 'settings.cancelTest' ? 'The test never started' : 'Unknown image operation' };
       const receipt = entry.status;
       if (method === 'settings.test.status') {

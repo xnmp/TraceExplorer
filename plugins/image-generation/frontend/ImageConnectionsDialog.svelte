@@ -2,7 +2,7 @@
   import { onMount, untrack } from 'svelte';
   import Modal from '$lib/components/Modal.svelte';
   import { ConnectionsController, pending, type Backend, type RevisionEvent, type TestRegistry } from './controller';
-  import { API_BACKENDS, testSummary, effectiveZoom, commandDraftText, canAddCodex, isApi, newProfile, parseCommand, removeProfile, setDefault, transportLabel, validation, type CommandDraft, type ImageProfile } from './domain';
+  import { API_BACKENDS, testResultText, effectiveZoom, commandDraftText, canAddCodex, isApi, newProfile, parseCommand, removeProfile, setDefault, transportLabel, validation, type CommandDraft, type ImageProfile } from './domain';
   import ProfileFields from './ProfileFields.svelte';
   let { open, onClose, backend, registry, subscribeRevision }: { open: boolean; onClose: () => void; backend: Backend; registry: TestRegistry; subscribeRevision: (fn: (event: RevisionEvent) => void) => () => void } = $props();
   const controller = untrack(() => new ConnectionsController(backend, registry));
@@ -21,7 +21,7 @@
   let usable = $derived(savedUsable && !needsKey);
   let lastTest = $derived([...view.tests].reverse().find(test => test.profileId === profile?.id));
   let runningTest = $derived(view.tests.find(test => test.profileId === profile?.id && pending(test)));
-  let resultText = $derived(testSummary(lastTest?.status, lastTest?.startFailed, lastTest?.error, lastTest?.elapsedMs));
+  let resultText = $derived(testResultText(lastTest, view.saved?.profiles.find(p => p.id === profile?.id)));
   let full = $derived((view.draft?.profiles.length ?? 0) >= 32);
   function trackZoom(element: HTMLDivElement) {
     const ancestors: HTMLElement[] = [];

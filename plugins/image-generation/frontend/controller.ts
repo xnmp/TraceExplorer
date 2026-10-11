@@ -1,7 +1,7 @@
-import { active, configuration, equal, validation, validConfiguration, validTestReceipt, type ImageConfiguration, type ImageOperationStatus, type ImageProfile } from './domain';
+import { active, configuration, equal, validation, validConfiguration, validTestReceipt, type ImageConfiguration, type ImageOperationStatus, type ImageProfile, type TestOutcome } from './domain';
 export interface Backend { invoke<T>(method: string, params?: Record<string, unknown>): Promise<T> }
 export interface RevisionEvent { documentRevision: number; affectedProfileIds: readonly string[] }
-export interface TestResult { requestId: string; profileId: string; profileName: string; configurationRevision: number; status?: ImageOperationStatus; startFailed?: boolean; neverStarted?: boolean; error?: string; startedAt?: number; elapsedMs?: number; outputCleaned?: boolean; cancelRequested?: boolean; cancelNotStarted?: boolean }
+export interface TestResult extends TestOutcome { requestId: string; profileName: string; configurationRevision: number; startedAt?: number; outputCleaned?: boolean; cancelRequested?: boolean; cancelNotStarted?: boolean }
 export interface State { saved: ImageConfiguration | null; draft: ImageConfiguration | null; busy: boolean; loading: boolean; recoveringTests: boolean; conflict: boolean; error: string; message: string; check: { profileId: string; message: string; available: boolean } | null; tests: readonly TestResult[] }
 export class TestRegistry {
   private records = new Map<string, TestResult>();
@@ -142,7 +142,7 @@ export class ConnectionsController {
     const prior = this.registry.all();
     if (prior.some(t => t.profileId === profileId && pending(t))) return;
     if (this.disposed || this.state.recoveringTests) return;
-    const record: TestResult = { requestId: this.id(), profileId, profileName: profile.name, configurationRevision: this.state.saved!.documentRevision, startedAt: Date.now() };
+    const record: TestResult = { requestId: this.id(), profileId, profileName: profile.name, configurationRevision: this.state.saved!.documentRevision, connectionRevision: profile.recipeRevision, startedAt: Date.now() };
     this.registry.set(record);
     try {
       const status = await this.backend.invoke<ImageOperationStatus>('settings.test', { profileId, requestId: record.requestId, expectedConfigurationRevision: record.configurationRevision });
@@ -154,10 +154,11 @@ export class ConnectionsController {
       const latest = this.registry.all().find(t => t.requestId === record.requestId) ?? record;
       const rejected = rejectedBeforeAdmission(cause);
       // Transport failures cannot prove the billable operation was rejected.
-      // Cancellation's no-receipt evidence survives a definite late rejection.
+      // Cancellation's durable no-receipt evidence survives any late failure.
+      const neverStarted = !latest.status && !!latest.cancelNotStarted;
       this.registry.set({ ...latest, startFailed: !latest.status && rejected,
-        neverStarted: !latest.status && rejected && !!latest.cancelNotStarted,
-        error: !latest.status && rejected && latest.cancelNotStarted ? 'The test never started' : message(cause) });
+        neverStarted,
+        error: neverStarted ? 'The test never started' : message(cause) });
       await this.poll(record.requestId);
       const settled = this.registry.all().find(t => t.requestId === record.requestId);
       if (settled && pending(settled) && (this.disposed || settled.cancelRequested)) await this.cancel(record.requestId);
@@ -171,14 +172,20 @@ export class ConnectionsController {
       elapsedMs: old?.elapsedMs ?? (!active(status) && record.startedAt !== undefined ? Date.now() - record.startedAt : undefined) });
     if (!active(status)) { this.timers.get(record.requestId)?.(); this.timers.delete(record.requestId); }
   }
-  private failure(record: TestResult, error: string): void { const latest = this.registry.all().find(t => t.requestId === record.requestId) ?? record; this.registry.set({ ...latest, error: latest.startFailed && latest.error ? latest.error : error }); }
+  private failure(record: TestResult, error: string): void { const latest = this.registry.all().find(t => t.requestId === record.requestId) ?? record; this.registry.set({ ...latest, error: (latest.startFailed || latest.neverStarted) && latest.error ? latest.error : error }); }
   private queue(requestId: string): void {
     this.timers.get(requestId)?.();
     this.timers.delete(requestId);
-    if (this.registry.all().some(test => test.requestId === requestId && (!this.disposed || pending(test) && test.cancelRequested || needsOutputCleanup(test)))) this.timers.set(requestId, this.timer(() => { this.timers.delete(requestId); void this.poll(requestId); }, 750));
+    const record = this.registry.all().find(test => test.requestId === requestId);
+    if (record && pollable(record) && (!this.disposed || record.cancelRequested || needsOutputCleanup(record))) this.timers.set(requestId, this.timer(() => {
+      this.timers.delete(requestId);
+      const latest = this.registry.all().find(test => test.requestId === requestId);
+      if (latest && pending(latest)) void this.poll(requestId);
+      else void this.discard(requestId);
+    }, 750));
   }
   async poll(requestId: string): Promise<void> {
-    const record = this.registry.all().find(t => t.requestId === requestId); if (!record || this.polling.has(requestId) || this.disposed && !record.cancelRequested && !needsOutputCleanup(record)) return;
+    const record = this.registry.all().find(t => t.requestId === requestId); if (!record || !pending(record) || this.polling.has(requestId) || this.disposed && !record.cancelRequested) return;
     this.polling.add(requestId);
     try { this.accept(record, await this.backend.invoke<ImageOperationStatus>('settings.test.status', { requestId }));
       const latest = this.registry.all().find(t => t.requestId === requestId)!;
@@ -196,12 +203,13 @@ export class ConnectionsController {
       const reason = message(cause);
       if (errorCode(cause) === 'test_not_started') {
         const latest = this.registry.all().find(t => t.requestId === requestId) ?? record;
-        // Start may still be in flight. Retain this evidence until it settles;
-        // an authoritative receipt always overrides it.
-        const neverStarted = !latest.status && !!latest.startFailed;
+        // The backend durably records cancellation before this reply, so even
+        // admission still in flight cannot dispatch. A late receipt overrides it.
+        const neverStarted = !latest.status;
         this.registry.set({ ...latest, cancelNotStarted: true, neverStarted,
           startFailed: neverStarted || latest.startFailed, error: reason });
-        if (!neverStarted) this.queue(requestId);
+        if (neverStarted) { this.timers.get(requestId)?.(); this.timers.delete(requestId); }
+        else this.queue(requestId);
       } else { this.failure(record, `Cancellation could not be confirmed: ${reason}`); this.queue(requestId); }
     }
   }

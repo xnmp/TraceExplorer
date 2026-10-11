@@ -143,6 +143,17 @@ pub struct ServicePolicy {
     pub sync_profile_directory: DirectorySync,
     pub before_deadline_cancel: Arc<dyn Fn() + Send + Sync>,
 }
+/// End ownership explicitly, rather than waiting for every duplicated file
+/// description to close. A parallel fork can inherit this file before CLOEXEC
+/// runs; that child must not keep a destroyed service's state directory locked.
+struct OwnerLease(std::fs::File);
+impl Drop for OwnerLease {
+    fn drop(&mut self) {
+        if let Err(failure) = fs2::FileExt::unlock(&self.0) {
+            eprintln!("image state directory unlock failed: {failure}");
+        }
+    }
+}
 impl Default for ServicePolicy {
     fn default() -> Self {
         Self {
@@ -167,7 +178,8 @@ pub struct Service {
     ready: AtomicBool,
     shutdown: AtomicBool,
     directory: PathBuf,
-    owner: Mutex<Option<std::fs::File>>,
+    // Fields drop in declaration order: close the journal before releasing ownership.
+    owner: Mutex<Option<OwnerLease>>,
     operation_budget: Duration,
     before_deadline_cancel: Arc<dyn Fn() + Send + Sync>,
 }
@@ -263,6 +275,7 @@ impl Service {
                 "Another Image Generation backend owns this state directory",
             )
         })?;
+        let lease = OwnerLease(lease);
         self.journal.activate()?;
         let recovered = self.journal.recover()?;
         *owner = Some(lease);

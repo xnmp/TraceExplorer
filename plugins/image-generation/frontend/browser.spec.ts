@@ -35,6 +35,23 @@ test('remote revision preserves draft until explicit reload; keyboard close prot
   await page.keyboard.press('Escape'); await expect(page.getByRole('button', { name: 'Discard edits and close' })).toBeVisible(); await page.getByRole('button', { name: 'Keep editing' }).click();
   await page.getByRole('button', { name: 'Reload saved settings' }).click(); await expect(page.getByLabel('Name', { exact: true })).toHaveValue('Remote saved name');
 });
+test('success verifies only the tested saved connection settings', async ({ page }) => {
+  await setup(page); await saveHttp(page);
+  const generate = page.getByRole('button', { name: 'Test generation (may be billed)', exact: true });
+  const result = page.getByRole('status').filter({ hasText: /^✓ Generated a test image/ });
+  await generate.click(); await expect(result).toBeVisible();
+  await page.getByRole('button', { name: 'Add Codex' }).click();
+  await page.getByRole('button', { name: 'Save connections' }).click();
+  await page.getByRole('button', { name: /Saved Images/ }).click(); await expect(result).toBeVisible();
+  await page.getByLabel('Image model ID').fill('new-image-model');
+  await page.getByRole('button', { name: 'Save connections' }).click();
+  await expect(page.getByLabel('Image model ID')).toHaveValue('new-image-model');
+  await expect(result).toHaveCount(0); await expect(generate).toBeEnabled();
+  await page.getByRole('button', { name: 'Close', exact: true }).click();
+  await page.getByRole('button', { name: 'Configure connections', exact: true }).click();
+  await expect(result).toHaveCount(0); await expect(generate).toBeEnabled();
+  await generate.click(); await expect(result).toBeVisible();
+});
 test('mobile Codex settings have adapter-managed model and fit the viewport', async ({ page }, info) => {
   await page.setViewportSize({ width: 320, height: 740 }); await setup(page); await page.getByRole('button', { name: 'Add Codex' }).click();
   await expect(page.getByLabel('Image model ID')).toHaveCount(0); await expect(page.getByText('Codex uses its saved ChatGPT sign-in', { exact: false })).toBeVisible();

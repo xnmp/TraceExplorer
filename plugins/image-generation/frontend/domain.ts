@@ -178,6 +178,15 @@ export function testSummary(status?: ImageOperationStatus, startFailed = false, 
   if (execution.state === 'unknown') return `? Outcome unknown: ${execution.error.message}`;
   return execution.state === 'cancelled' ? '✗ Test cancelled.' : '';
 }
+export interface TestOutcome { profileId: string; connectionRevision?: string; status?: ImageOperationStatus; startFailed?: boolean; neverStarted?: boolean; error?: string; elapsedMs?: number }
+/** A historical receipt verifies only the connection revision it was tested against. */
+export function testResultText(test: TestOutcome | undefined, savedProfile: ImageProfile | undefined): string {
+  if (!test || !savedProfile || test.profileId !== savedProfile.id || test.connectionRevision !== undefined && test.connectionRevision !== savedProfile.recipeRevision) return '';
+  const text = testSummary(test.status, test.startFailed || test.neverStarted, test.error, test.elapsedMs);
+  // Recovery may have a receipt without its original settings revision. Never
+  // present that success as verification of the currently saved settings.
+  return text && test.status?.execution.state === 'succeeded' && test.connectionRevision === undefined ? `${text} (saved settings not verified)` : text;
+}
 /** The short, user-facing name of a connection's kind. */
 /** Codex has one saved login and discovers its own executable, so one Codex connection is enough. */
 export function canAddCodex(value: Pick<ImageConfiguration, 'profiles'>): boolean { return !value.profiles.some(isCodex); }
