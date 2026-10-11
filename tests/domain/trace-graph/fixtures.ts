@@ -1,3 +1,4 @@
+import { TRACK_HEIGHT, type Spacing } from "$lib/domain/trace-graph/metrics";
 import type { NodeKey, NodeScope, TraceNode } from "$lib/domain/trace-graph/model";
 import type { GraphLayout } from "$lib/domain/trace-graph/layout";
 import type { JunctionPlan } from "$lib/domain/trace-graph/junctions";
@@ -241,4 +242,34 @@ export function channels(layout: GraphLayout): Channel[] {
     const routes = sampled.filter((points) => points.some((point) => inside(along(layout, point)))).length;
     return { between: `rows ${above.index}-${row.index}`, gap: row.top - above.bottom, betweenBands: row.band !== above.band, levels: levels.size, routes };
   });
+}
+
+/**
+ * Channels outside the bounds their contents justify. Every channel holds at
+ * least the approach (a stem and the arrowhead) and one bend track. A channel
+ * is its default height (`bandChannel` between generations, `rowChannel`
+ * between wrapped rows) plus `junctionLevel` per junction level; it grows past
+ * that only when its bends need more tracks than a zone holds, by at most one
+ * track per route crossing it in each zone. Without junctions, as many routes
+ * as its default bend room has tracks for keep it at exactly its default.
+ */
+export function channelProblems(layout: GraphLayout, spacing: Spacing): string[] {
+  return channels(layout).flatMap(({ between, gap, betweenBands, levels, routes }) => {
+    const base = betweenBands ? spacing.bandChannel : spacing.rowChannel;
+    const problems: string[] = [];
+    if (gap < spacing.approach + TRACK_HEIGHT) problems.push(`${between}: ${gap} px leaves no room to bend`);
+    if (gap > base + levels * spacing.junctionLevel + (levels + 1) * routes * TRACK_HEIGHT) problems.push(`${between}: ${gap} px for ${levels} levels and ${routes} routes`);
+    if (!levels && routes * TRACK_HEIGHT <= base - spacing.approach && Math.abs(gap - base) > 0.01) problems.push(`${between}: ${gap} px, not the default ${base} px, for ${routes} routes`);
+    return problems;
+  });
+}
+
+/** Pairs of junction dots closer than a dot's diameter. */
+export function junctionOverlaps(layout: GraphLayout): string[] {
+  const placed = [...layout.junctions.values()];
+  const overlaps: string[] = [];
+  for (let i = 0; i < placed.length; i++) for (let j = i + 1; j < placed.length; j++) {
+    if (Math.hypot(placed[i].x - placed[j].x, placed[i].y - placed[j].y) < 6) overlaps.push(`${placed[i].id} ${placed[j].id}`);
+  }
+  return overlaps;
 }

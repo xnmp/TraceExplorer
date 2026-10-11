@@ -5,12 +5,12 @@
  * here is cheap and synchronous.
  */
 import type { NodeKey, TraceNode } from "./model";
-import type { TraceDag } from "./projection";
-import { lineage, toneOf, type Lineage, type NodeTone } from "./lineage";
-import { hiddenDescendantCount, visibleKeys } from "./visibility";
+import type { BadgeProjection, ReferenceBadge, TraceDag } from "./projection";
+import { lineage, lineageWithBadges, toneOf, type Lineage, type NodeTone } from "./lineage";
+import { hiddenDescendantCount, visibleKeys, type VisibilityOptions } from "./visibility";
 import { tileMetrics, tileSize, type TileMetrics, type TileSize } from "./metrics";
 import { chooseOrientation, generationProfile, sidewaysWidth } from "./orientation";
-import type { GraphLayout, LayoutItem, LayoutRequest, Orientation, PlacedRoute } from "./layout";
+import type { GraphLayout, LayoutItem, LayoutRequest, Orientation, PinnedCover, PlacedRoute } from "./layout";
 
 export interface SceneTile {
   readonly key: NodeKey;
@@ -47,7 +47,17 @@ export function planScene(dag: TraceDag, members: readonly NodeKey[], focus: Nod
   const context = lineage(dag, inComponent ? focus : null);
   // Lineage of an out-of-component focus still dims this component entirely.
   const effective: Lineage = focus !== null && !inComponent ? { focus, related: new Set() } : context;
-  const visible = visibleKeys(dag, members, inComponent ? focus : null);
+  const { tiles, items } = sceneTiles(dag, members, inComponent ? focus : null, effective, tile);
+  // Decided from the whole component, never the focus, so selection cannot flip it.
+  // Running right, the canvas is sized for the whole component, so it does not re-centre as generations appear.
+  const profile = generationProfile(dag, members);
+  const orientation = chooseOrientation(profile, maxWidth, previous, tile);
+  const extent = orientation === "right" ? sidewaysWidth(profile, tile) : undefined;
+  return { lineage: effective, tiles, request: { items, maxWidth, hint, orientation, extent, tileWidth: tile.width } };
+}
+
+function sceneTiles(dag: TraceDag, members: readonly NodeKey[], focus: NodeKey | null, context: Lineage, tile: TileMetrics, visibility: VisibilityOptions = {}) {
+  const visible = visibleKeys(dag, members, focus, visibility);
   const shown = new Set(visible);
   const tiles = new Map<NodeKey, SceneTile>();
   const items: LayoutItem[] = [];
@@ -57,15 +67,41 @@ export function planScene(dag: TraceDag, members: readonly NodeKey[], focus: Nod
     const expandable = node.scope === "current" && childCount > 0;
     // Sizes depend only on the node, never on the focus.
     const size = tileSize({ foreign: node.scope !== "current", hint: expandable }, tile);
-    tiles.set(key, { key, node, tone: toneOf(effective, key), size, childCount, hiddenDescendants: hiddenDescendantCount(dag, key, shown), expandable });
+    tiles.set(key, { key, node, tone: toneOf(context, key), size, childCount, hiddenDescendants: hiddenDescendantCount(dag, key, shown), expandable });
     items.push({ key, width: size.width, height: size.height, order: node.order, parents: dag.parents.get(key)!.filter((parent) => shown.has(parent)) });
   }
-  // Decided from the whole component, never the focus, so selection cannot flip it.
-  // Running right, the canvas is sized for the whole component, so it does not re-centre as generations appear.
-  const profile = generationProfile(dag, members);
-  const orientation = chooseOrientation(profile, maxWidth, previous, tile);
-  const extent = orientation === "right" ? sidewaysWidth(profile, tile) : undefined;
-  return { lineage: effective, tiles, request: { items, maxWidth, hint, orientation, extent, tileWidth: tile.width } };
+  return { tiles, items };
+}
+
+export interface BandSceneOptions extends Pick<SceneOptions, "hint" | "tile"> {
+  readonly pinned: PinnedCover;
+}
+
+export interface BandScenePlan extends ScenePlan {
+  /** Badges docked on visible consumers; all references survive the display's three-badge limit. */
+  readonly badges: ReadonlyMap<NodeKey, readonly ReferenceBadge[]>;
+}
+
+/**
+ * Opt-in band scene; legacy planScene is unchanged. Project reference badges
+ * before computing drawable components. Members contain drawable keys only.
+ * A band always runs down, bypassing orientation.ts and its hysteresis.
+ */
+export function planBandScene(graph: BadgeProjection, members: readonly NodeKey[], focus: NodeKey | null, maxWidth: number, options: BandSceneOptions): BandScenePlan {
+  const { dag } = graph;
+  const membership = new Set(members);
+  const badgeConsumers = focus !== null && graph.badges.has(focus)
+    ? members.filter((key) => graph.byConsumer.get(key)?.some((badge) => badge.key === focus)) : [];
+  const inComponent = focus !== null && (membership.has(focus) || badgeConsumers.length > 0);
+  const context = lineageWithBadges(graph, inComponent ? focus : null, membership);
+  const effective: Lineage = focus !== null && !inComponent ? { focus, related: new Set() } : context;
+  const tile = options.tile ?? tileMetrics();
+  const { tiles, items } = sceneTiles(dag, members, inComponent && badgeConsumers.length === 0 ? focus : null, effective, tile, { roots: "in-folder", include: badgeConsumers });
+  const badges = new Map([...tiles.keys()].flatMap((key) => {
+    const references = graph.byConsumer.get(key);
+    return references ? [[key, references] as const] : [];
+  }));
+  return { lineage: effective, tiles, badges, request: { items, maxWidth, hint: options.hint, tileWidth: tile.width, orientation: "down", pinned: options.pinned } };
 }
 
 export type RouteKind = "current" | "subfolder" | "external";

@@ -15,17 +15,25 @@ import type { NodeKey } from "./model";
 import type { TraceDag } from "./projection";
 
 /** Roots are folder images without a parent in the folder itself. */
-export function componentRoots(dag: TraceDag, members: readonly NodeKey[]): NodeKey[] {
+export function componentRoots(dag: TraceDag, members: readonly NodeKey[], policy: "legacy" | "in-folder" = "legacy"): NodeKey[] {
   const local = (key: NodeKey) => dag.nodes.get(key)?.scope === "current";
   const roots = members.filter((key) => local(key) && !dag.parents.get(key)!.some(local));
   // A component made only of references still needs an entry point.
-  return roots.length ? roots : members.filter((key) => dag.parents.get(key)!.length === 0);
+  return roots.length || policy === "in-folder" ? roots : members.filter((key) => dag.parents.get(key)!.length === 0);
 }
 
-export function visibleKeys(dag: TraceDag, members: readonly NodeKey[], focus: NodeKey | null): NodeKey[] {
+export interface VisibilityOptions {
+  /** Bands seed only current-folder roots; legacy reference-only components keep their fallback. */
+  readonly roots?: "in-folder";
+  /** Extra visible outputs, e.g. direct consumers of a focused reference badge. */
+  readonly include?: readonly NodeKey[];
+}
+
+export function visibleKeys(dag: TraceDag, members: readonly NodeKey[], focus: NodeKey | null, options: VisibilityOptions = {}): NodeKey[] {
   const inComponent = new Set(members);
   const visible = new Set<NodeKey>();
-  const roots = componentRoots(dag, members);
+  const roots = componentRoots(dag, members, options.roots);
+  for (const key of options.include ?? []) if (inComponent.has(key)) visible.add(key);
   for (const root of roots) {
     visible.add(root);
     for (const child of dag.children.get(root)!) visible.add(child);
