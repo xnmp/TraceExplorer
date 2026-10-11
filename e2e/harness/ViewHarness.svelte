@@ -268,7 +268,7 @@
     state: () => ({ selected: [...selected], inputs: tracePanes.get("pane-1")?.inputs() ?? [], cursor, target: target ? { id: target.id, title: target.title, badge: target.badge ?? null } : null, fileView, opened: [...opened], menus: [...menus], navigations: [...navigations] }),
     selectPath(path: string) { pane.setSelection([path], path); },
     /** The host replaces the selection itself (another pane, a command), as `explorer.selectPaths` does. */
-    setSelection(paths: string[]) { pane.setSelection(paths); },
+    setSelection(paths: string[], focus: string | null = null) { pane.setSelection(paths, focus); },
     setOtherPaneSelection(entries: FileEntry[]) { otherPaneSelection = [...entries]; },
     /** The host's Select all: every listed file (an unchanged selection notifies nothing). */
     selectAll() { replaceSelection(entries.map((entry) => entry.path)); anchor = entries[0]?.path ?? null; },

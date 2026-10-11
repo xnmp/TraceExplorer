@@ -101,6 +101,8 @@ let inputFailures = 0;
 let previewLatency = 0;
 // Delay of the folder index and component reads, in ms, like a native backend's IPC round trip.
 let folderLatency = 0;
+let folderReadsHeld = false;
+let heldFolderReads: Array<() => void> = [];
 const titleCalls: number[] = [];
 const titleWaiters = new Map<number, (title: string) => void>();
 
@@ -172,7 +174,9 @@ configureBackend({
     calls.push({ method, params: structuredClone(params) });
     const reply = (value: unknown) => Promise.resolve(value as T);
     const later = (value: unknown) => previewLatency ? new Promise<T>((resolve) => setTimeout(() => resolve(value as T), previewLatency)) : reply(value);
-    const folderReply = (value: unknown) => folderLatency ? new Promise<T>((resolve) => setTimeout(() => resolve(value as T), folderLatency)) : reply(value);
+    const folderReply = (value: unknown) => folderReadsHeld
+      ? new Promise<T>((resolve) => heldFolderReads.push(() => resolve(value as T)))
+      : folderLatency ? new Promise<T>((resolve) => setTimeout(() => resolve(value as T), folderLatency)) : reply(value);
     const token = String(version);
     switch (method) {
       // MIRROR answers with the same Trace: another folder whose components reuse the same ids.
@@ -443,6 +447,8 @@ export const backend = {
   /** Answers run details, revision status and per-image traces after `ms`. */
   setPreviewLatency(ms: number) { previewLatency = ms; },
   setFolderLatency(ms: number) { folderLatency = ms; },
+  holdFolderReads() { folderReadsHeld = true; },
+  releaseFolderReads() { folderReadsHeld = false; const pending = heldFolderReads; heldFolderReads = []; pending.forEach((release) => release()); },
   releaseSaves() { holdSaves = false; const pending = heldSaves; heldSaves = []; pending.forEach((run) => run()); },
   reset() { previewLatency = 0; folderLatency = 0; pickerResult = undefined; nextSaveFailure = null; inputFailures = 0; imageRuns.clear(); imageJobs.clear(); imageOperations.clear(); billing.clear(); state = scenario(); version += 1; calls.length = 0; },
 };

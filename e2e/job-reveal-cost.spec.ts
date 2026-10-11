@@ -85,6 +85,143 @@ test("a disappeared target rejects without replacing the current Preview", async
   await expect(page.getByTestId("preview-title")).toHaveText("warm.png");
 });
 
+for (const choice of ["tile", "host", "extra"] as const) {
+  test(`a ${choice} selection supersedes a reveal still loading`, async ({ page }) => {
+    await openView(page);
+    await generated(page);
+    if (choice === "extra") {
+      await page.evaluate(() => {
+        const b = (window as any).trace.backend;
+        b.startGeneration("forest", "extra");
+        b.completeGeneration("extra");
+      });
+      await settle(page);
+    }
+    await click(page, "warm");
+    const section = page.locator("section.component").filter({ has: page.locator(".heading .name", { hasText: /^village$/ }) });
+    await section.locator(".heading").click();
+    await settle(page);
+    const reads = await page.evaluate(() => (window as any).trace.backend.calls("trace_folder_components").length);
+    await page.evaluate(() => {
+      const w = window as any;
+      w.trace.backend.holdFolderReads();
+      w.revealResult = w.trace.showJob(71).then(() => "completed", (error: Error) => error.name);
+    });
+    await expect.poll(() => page.evaluate(() => (window as any).trace.backend.calls("trace_folder_components").length)).toBeGreaterThan(reads);
+    if (choice === "host") await page.evaluate(() => (window as any).trace.selectPath("/pictures/forest.png"));
+    else if (choice === "extra") await click(page, "extra", { modifiers: ["Control"] });
+    else await click(page, "forest");
+    const chosen = await state(page);
+    const expansion = await page.locator(".heading[aria-expanded]").evaluateAll((nodes) => nodes.map((node) => node.getAttribute("aria-expanded")));
+    expect(chosen.inputs.length).toBeGreaterThan(0);
+    await page.evaluate(() => (window as any).trace.backend.releaseFolderReads());
+    expect(await page.evaluate(() => (window as any).revealResult)).toBe("AbortError");
+    await settle(page);
+    expect(await state(page)).toEqual(chosen);
+    expect(await page.locator(".heading[aria-expanded]").evaluateAll((nodes) => nodes.map((node) => node.getAttribute("aria-expanded")))).toEqual(expansion);
+    await expect(section.locator(".heading")).toHaveAttribute("aria-expanded", "false");
+    await expect(page.getByTestId("preview-title")).toHaveText(choice === "extra" ? "warm.png" : "forest.png");
+  });
+}
+
+test("a newer reveal supersedes an older loading request", async ({ page }) => {
+  await openView(page);
+  await generated(page);
+  const reads = await page.evaluate(() => (window as any).trace.backend.calls("trace_folder_components").length);
+  await page.evaluate(() => {
+    const w = window as any;
+    w.trace.backend.holdFolderReads();
+    w.revealResult = w.trace.showJob(71).then(() => "completed", (error: Error) => error.name);
+  });
+  await expect.poll(() => page.evaluate(() => (window as any).trace.backend.calls("trace_folder_components").length)).toBeGreaterThan(reads);
+  await page.evaluate(() => {
+    const w = window as any;
+    w.newReveal = w.trace.revealTarget(`artifact:${w.trace.backend.node("forest").artifactId}`);
+    w.trace.backend.releaseFolderReads();
+  });
+  expect(await page.evaluate(() => (window as any).revealResult)).toBe("AbortError");
+  await page.evaluate(() => (window as any).newReveal);
+  await expect(page.getByTestId("preview-title")).toHaveText("forest.png");
+  expect((await state(page)).inputs).toEqual(["/pictures/forest.png"]);
+  await expect(await card(page, "forest")).toBeFocused();
+});
+
+test("changing primary focus within the same host selection supersedes loading", async ({ page }) => {
+  await openView(page);
+  await generated(page);
+  const paths = ["/pictures/warm.png", "/pictures/forest.png"];
+  await page.evaluate((paths) => (window as any).trace.setSelection(paths, paths[0]), paths);
+  await settle(page);
+  const reads = await page.evaluate(() => (window as any).trace.backend.calls("trace_folder_components").length);
+  await page.evaluate(() => {
+    const w = window as any;
+    w.trace.backend.holdFolderReads();
+    w.revealResult = w.trace.showJob(71).then(() => "completed", (error: Error) => error.name);
+  });
+  await expect.poll(() => page.evaluate(() => (window as any).trace.backend.calls("trace_folder_components").length)).toBeGreaterThan(reads);
+  await page.evaluate((paths) => (window as any).trace.setSelection(paths, paths[1]), paths);
+  const chosen = await state(page);
+  await page.evaluate(() => (window as any).trace.backend.releaseFolderReads());
+  expect(await page.evaluate(() => (window as any).revealResult)).toBe("AbortError");
+  await settle(page);
+  expect(await state(page)).toEqual(chosen);
+  await expect(await tile(page, "forest")).toHaveAttribute("data-tone", "focus");
+});
+
+for (const change of ["refresh", "new reveal"] as const) {
+  test(`a stale worker scene cannot settle a reveal after ${change}`, async ({ page }) => {
+    await openView(page, undefined, "?revealLarge=1");
+    const section = page.locator("section.component").filter({ has: page.locator(".heading .name", { hasText: /^fan$/ }) });
+    if (await section.locator(".heading").getAttribute("aria-expanded") === "true") await section.locator(".heading").click();
+    await settle(page);
+    await generated(page, "fan", false);
+    await page.evaluate(() => {
+      const w = window as any;
+      const original = Worker.prototype.postMessage;
+      w.originalWorkerPostMessage = original;
+      w.heldLayouts = [];
+      Worker.prototype.postMessage = function (...args: Parameters<Worker["postMessage"]>) {
+        w.heldLayouts.push(() => original.apply(this, args));
+      };
+      w.revealOutcome = "pending";
+      w.revealResult = w.trace.showJob(71).then(() => w.revealOutcome = "completed", (error: Error) => w.revealOutcome = error.name);
+    });
+    await expect.poll(() => page.evaluate(() => (window as any).heldLayouts.length)).toBeGreaterThan(0);
+    const nodeReads = await page.evaluate(() => (window as any).trace.backend.calls("trace_component_nodes").length);
+    await page.evaluate((change) => {
+      const w = window as any;
+      w.trace.backend.startGeneration("revealed", "replacement");
+      w.trace.backend.completeGeneration("replacement");
+      if (change === "new reveal") {
+        w.newOutcome = "pending";
+        w.newReveal = w.trace.revealTarget(`artifact:${w.trace.backend.node("replacement").artifactId}`)
+          .then(() => w.newOutcome = "completed", (error: Error) => w.newOutcome = error.name);
+      }
+    }, change);
+    await expect(page.getByTestId("preview-title")).toHaveText(change === "refresh" ? "revealed.png" : "replacement.png");
+    await expect.poll(() => page.evaluate(() => (window as any).trace.backend.calls("trace_component_nodes").length)).toBeGreaterThan(nodeReads);
+    // Release just the stale layout; the worker then receives the newer scene.
+    await page.evaluate(() => { for (const release of (window as any).heldLayouts.splice(0)) release(); });
+    await expect.poll(() => page.evaluate(() => (window as any).heldLayouts.length)).toBeGreaterThan(0);
+    expect(await page.evaluate((change) => {
+      const w = window as any;
+      return change === "refresh" ? w.revealOutcome : w.newOutcome;
+    }, change)).toBe("pending");
+    // Subsequent jobs may queue behind that scene; release them as they arrive.
+    await page.evaluate(() => {
+      const w = window as any;
+      Worker.prototype.postMessage = w.originalWorkerPostMessage;
+      for (const release of w.heldLayouts.splice(0)) release();
+    });
+    const result = await page.evaluate((change) => change === "refresh" ? (window as any).revealResult : (window as any).newReveal, change);
+    expect(result).toBe("completed");
+    if (change === "new reveal") expect(await page.evaluate(() => (window as any).revealResult)).toBe("AbortError");
+    const name = change === "refresh" ? "revealed" : "replacement";
+    await expect(await card(page, name)).toBeFocused();
+    await expect(await tile(page, name)).toBeInViewport();
+  });
+}
+
 
 test("Show image waits for an uncached worker layout to display and focus the tile", async ({ page }) => {
   await openView(page, undefined, "?revealLarge=1");
