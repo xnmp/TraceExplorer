@@ -204,7 +204,7 @@ async fn png_and_jpeg_outputs_are_returned_as_png() {
     }
 }
 #[tokio::test]
-async fn the_first_image_part_is_used() {
+async fn the_last_image_block_is_the_result_as_in_the_sdk() {
     let mut body = success(&encoded(image::ImageFormat::Png, 10));
     let second = encoded(image::ImageFormat::Png, 200);
     body["steps"][1]["content"]
@@ -215,7 +215,42 @@ async fn the_first_image_part_is_used() {
     let out = run(&root, &recipe(None, None), vec![], None).await.unwrap();
     wire.join().unwrap();
     let pixel = image::load_from_memory(&out.bytes).unwrap().to_rgb8()[(0, 0)];
+    assert_eq!(pixel.0[0], 200);
+}
+#[tokio::test]
+async fn a_draft_image_in_a_thought_step_is_not_the_result() {
+    let mut body = success(&encoded(image::ImageFormat::Png, 10));
+    let draft = encoded(image::ImageFormat::Png, 99);
+    body["steps"][0]["summary"] =
+        json!([{"type":"image","mime_type":"image/png","data":STANDARD.encode(&draft)}]);
+    body["steps"][0]["content"] =
+        json!([{"type":"image","mime_type":"image/png","data":STANDARD.encode(&draft)}]);
+    let (root, wire) = serve("200 OK", body);
+    let out = run(&root, &recipe(None, None), vec![], None).await.unwrap();
+    wire.join().unwrap();
+    let pixel = image::load_from_memory(&out.bytes).unwrap().to_rgb8()[(0, 0)];
     assert_eq!(pixel.0[0], 10);
+}
+#[tokio::test]
+async fn a_delivered_image_wins_over_diagnostic_block_codes() {
+    // A billed image must never be reported as a retryable refusal.
+    let mut body = success(&encoded(image::ImageFormat::Png, 10));
+    body["errors"] = json!([{"code":"image_other","message":"PRIVATE"}]);
+    body["error"] = json!({"code":"safety"});
+    let (root, wire) = serve("200 OK", body);
+    let out = run(&root, &recipe(None, None), vec![], None).await.unwrap();
+    wire.join().unwrap();
+    assert_eq!(
+        image::guess_format(&out.bytes).unwrap(),
+        image::ImageFormat::Png
+    );
+}
+#[tokio::test]
+async fn an_image_without_inline_data_is_unknown_not_a_refusal() {
+    // URI delivery (or any non-inline shape) still means an image was produced.
+    let body = json!({"status":"completed","steps":[{"type":"model_output","content":[
+        {"type":"image","mime_type":"image/png","uri":"https://example.invalid/i.png"}]}]});
+    assert_eq!(failure("200 OK", body).await.0, "invalid_response");
 }
 async fn failure(status: &'static str, body: Value) -> (String, String) {
     let (root, wire) = serve(status, body);

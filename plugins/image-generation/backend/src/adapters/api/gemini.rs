@@ -23,17 +23,21 @@
 //! inputs); no quality or background control exists, so those stay `auto`.
 //!
 //! Limits: up to 14 reference images per request for the Nano Banana models
-//! (10 objects + 4 characters on 2.1), so `max_inputs` is our own limit of 8.
+//! (10 objects + 5 characters on 2.1), so `max_inputs` is our own limit of 8.
 //!
 //! Outcome mapping (<https://ai.google.dev/gemini-api/docs/api-errors>):
 //! - non-2xx: the shared rule (`provider_rejected` / `remote_outcome_unknown`);
-//! - a 200 whose body carries one of the documented "generation blocked" codes
-//!   (`safety`, `image_safety`, `prohibited_content`, `blocklist`,
-//!   `recitation`, ...) in `error.code` or `errors[].code`, or `no_image`, is a
-//!   definite `provider_refused`, worded from [`REFUSALS`] only;
-//! - a `completed` or `incomplete` interaction with no image part is a
-//!   definite refusal with no reason; any other status or shape is
-//!   `invalid_response` (Unknown), as is unparseable JSON.
+//! - an image block in a `model_output` step means an image was produced (and
+//!   billed): the last one is the result, as the SDK's `output_image` does, and
+//!   any diagnostic `errors` beside it are ignored. An image block without
+//!   inline `data` (e.g. URI delivery) is `invalid_response` (Unknown), never a
+//!   refusal;
+//! - with no image block at all, one of the documented "generation blocked"
+//!   codes (`safety`, `image_safety`, `prohibited_content`, `blocklist`,
+//!   `recitation`, ...) in `error.code` or `errors[].code` is a definite
+//!   `provider_refused`, worded from [`REFUSALS`] only, and so is a
+//!   `completed` or `incomplete` interaction (no reason given); any other
+//!   status or shape is `invalid_response` (Unknown), as is unparseable JSON.
 //!
 //! The docs do not say which of those carriers a blocked generation uses (nor
 //! whether it is a 200), so all are accepted; a blocked code delivered with a
@@ -57,9 +61,6 @@ pub const DESCRIPTOR: ApiDescriptor = ApiDescriptor {
     max_inputs: 8,
     validate_base_url,
 };
-/// Recommended Nano Banana model (documented as the one for new projects).
-pub const DEFAULT_MODEL: &str = "gemini-nano-banana-2.1";
-
 /// Documented aspect ratios (`ImageResponseFormat.aspect_ratio`). Our shared
 /// list is a subset, so every non-"keep" ratio we offer is accepted.
 const API_RATIOS: [&str; 14] = [
@@ -130,15 +131,31 @@ fn error_codes(value: &Value) -> Vec<String> {
         .map(str::to_ascii_lowercase)
         .collect()
 }
-/// The first image block of the first `model_output` step carrying one.
-fn first_image(value: &Value) -> Option<&str> {
+/// The last image block of the `model_output` steps, whatever its delivery.
+/// Thought steps carry draft images and are skipped.
+fn last_image_block(value: &Value) -> Option<&Value> {
     value["steps"]
         .as_array()?
         .iter()
         .filter(|step| step["type"] == "model_output")
         .flat_map(|step| step["content"].as_array().into_iter().flatten())
-        .find(|block| block["type"] == "image" && block["data"].is_string())
-        .and_then(|block| block["data"].as_str())
+        .filter(|block| block["type"] == "image")
+        .last()
+}
+/// Why a response holding no image block produced nothing: a documented block
+/// code, or a finished interaction. Anything else is not a definite outcome.
+fn no_image_failure(value: &Value) -> Failure {
+    if let Some(code) = error_codes(value)
+        .into_iter()
+        .find(|code| REFUSALS.iter().any(|(known, _)| known == code))
+    {
+        return refused(&code, &REFUSALS);
+    }
+    if matches!(value["status"].as_str(), Some("completed" | "incomplete")) {
+        refused("no_image", &REFUSALS)
+    } else {
+        Failure::Invalid("Image provider returned no image")
+    }
 }
 fn safe_id(value: &Value) -> Option<String> {
     value
@@ -169,21 +186,13 @@ pub(super) async fn generate(call: ApiCall<'_>) -> Result<Output> {
     let reply = send(&DESCRIPTOR, key.as_deref(), &cancel, &stage, request).await?;
     let value: Value = serde_json::from_slice(&reply.body)
         .map_err(|_| outcome(Failure::Invalid("Image provider returned unreadable JSON")))?;
-    // An explicit, documented block wins over everything else in the body.
-    if let Some(code) = error_codes(&value)
-        .into_iter()
-        .find(|code| REFUSALS.iter().any(|(known, _)| known == code))
-    {
-        return Err(outcome(refused(&code, &REFUSALS)));
-    }
-    let Some(encoded) = first_image(&value) else {
-        return Err(outcome(
-            if matches!(value["status"].as_str(), Some("completed" | "incomplete")) {
-                refused("no_image", &REFUSALS)
-            } else {
-                Failure::Invalid("Image provider returned no image")
-            },
-        ));
+    let Some(block) = last_image_block(&value) else {
+        return Err(outcome(no_image_failure(&value)));
+    };
+    let Some(encoded) = block["data"].as_str() else {
+        return Err(outcome(Failure::Invalid(
+            "Image provider returned an image without inline data",
+        )));
     };
     if encoded.len() > MAX_OUTPUT * 4 / 3 + 4 {
         return Err(error("invalid_response", "Image output exceeds 50 MiB"));
