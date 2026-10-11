@@ -840,7 +840,7 @@ fn summarize(
     // The cover as a tile is a root of what is drawn: no drawn parent. Reference badges are not
     // drawn, but an external tile is, so a current image consuming one is not a root.
     let drawn_root = |index: &usize| !parents[*index].iter().any(|parent| drawn.contains(parent));
-    let cover_key = oldest_with_path(&mut drawn.iter().copied().filter(|index| {
+    let cover_index = oldest_with_path(&mut drawn.iter().copied().filter(|index| {
         is_current(*index) && drawn_root(index)
     }))
     .or_else(|| oldest_with_path(&mut drawn.iter().copied().filter(|index| drawn_root(index))))
@@ -849,22 +849,20 @@ fn summarize(
         is_current(*index) && !parents[*index].iter().any(|parent| is_current(*parent))
     })))
     .or_else(|| oldest_with_path(&mut drawn.iter().copied()))
-    .or_else(|| drawn.iter().copied().min_by_key(|index| nodes[*index].order))
-    .map(|index| nodes[index].key.clone())
-    .unwrap_or_default();
-    let (title, cover) = match title_node {
-        Some(index) => {
-            let path = nodes[index].path.clone().unwrap_or_default();
-            (
-                file_stem(&path),
-                Some(Cover {
-                    path,
-                    present: nodes[index].state == NodeState::Present,
-                }),
-            )
-        }
-        None => ("Generating".to_owned(), None),
-    };
+    .or_else(|| drawn.iter().copied().min_by_key(|index| nodes[*index].order));
+    let cover_key = cover_index.map(|index| nodes[index].key.clone()).unwrap_or_default();
+    // The title is the namesake; the cover is the drawn cover node itself, so a stack's
+    // thumbnail, path and selection target all come from `cover_key`.
+    let title = title_node.map_or_else(
+        || "Generating".to_owned(),
+        |index| file_stem(nodes[index].path.as_deref().unwrap_or_default()),
+    );
+    let cover = cover_index.and_then(|index| {
+        nodes[index].path.clone().map(|path| Cover {
+            path,
+            present: nodes[index].state == NodeState::Present,
+        })
+    });
     ComponentSummary {
         id: id.to_owned(),
         title,
@@ -3808,7 +3806,7 @@ mod tests {
     }
 
     #[test]
-    fn a_cover_outside_the_folder_reports_its_presence_when_served() {
+    fn a_reference_badge_is_never_the_cover_of_an_unsaved_stack() {
         let f = fixture();
         let parent = image(&f.elsewhere.join("parent.png"), b"parent");
         let run = begin_operation_at(
@@ -3821,16 +3819,10 @@ mod tests {
         )
         .unwrap();
         let key = format!("o:{run}:0");
-        let cover = |view: &View| view.component_of(&key).cover.clone().unwrap();
-        assert_eq!(
-            cover(&view(&f)),
-            Cover {
-                path: parent.to_string_lossy().into_owned(),
-                present: true
-            }
-        );
-        fs::remove_file(&parent).unwrap();
-        assert!(!cover(&view(&f)).present);
+        let component = view(&f).component_of(&key).clone();
+        // The drawn cover is the unsaved output, which has no file yet; the outside input is a badge.
+        assert_eq!(component.cover_key, key);
+        assert_eq!(component.cover, None);
     }
 
     #[test]

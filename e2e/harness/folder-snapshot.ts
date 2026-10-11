@@ -122,14 +122,16 @@ export function folderComponents(input: readonly FolderNode[], dismissedRuns: Re
         consumers: consumers.sort((a, b) => byOrder(byKey.get(a)!, byKey.get(b)!)) } };
     });
     const all = [...members, ...attached].sort(byOrder);
-    const cover = all.find((node) => node.path && node.scope === "current" && !node.parents.some((key) => byKey.get(key)!.scope === "current"))
+    // The title names the stack; the cover is the one drawn cover node.
+    const namesake = all.find((node) => node.path && node.scope === "current" && !node.parents.some((key) => byKey.get(key)!.scope === "current"))
       ?? all.find((node) => node.path);
-    const filename = cover?.path ? basename(cover.path) : "Generating";
+    const cover = drawnCover(members);
+    const filename = namesake?.path ? basename(namesake.path) : "Generating";
     const extension = filename.lastIndexOf(".");
     return { id, members: all.map((node) => node.key), nodes: all, newest, summary: {
       id, title: extension > 0 ? filename.slice(0, extension) : filename,
-      cover: cover?.path ? { path: cover.path, present: cover.state === "present" } : null,
-      coverKey: drawnCover(members).key,
+      cover: cover.path ? { path: cover.path, present: cover.state === "present" } : null,
+      coverKey: cover.key,
       imageCount: all.filter((node) => node.scope === "current" && node.state === "present" && !node.earlierRevision).length,
       nodeCount: all.length, active: all.some((node) => node.state === "running" || node.state === "uncertain"),
       unsaved: all.some((node) => node.temporary),

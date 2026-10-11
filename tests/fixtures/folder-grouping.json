@@ -105,11 +105,11 @@
             "path": "/pictures/photo-b.png",
             "present": true
           },
+          "coverKey": "a:4",
           "imageCount": 2,
           "nodeCount": 3,
           "active": false,
-          "unsaved": false,
-          "coverKey": "a:4"
+          "unsaved": false
         },
         "keys": [
           "a:1",
@@ -136,11 +136,11 @@
             "path": "/pictures/photo-a.png",
             "present": true
           },
+          "coverKey": "a:2",
           "imageCount": 2,
           "nodeCount": 3,
           "active": false,
-          "unsaved": false,
-          "coverKey": "a:2"
+          "unsaved": false
         },
         "keys": [
           "a:1",
@@ -353,11 +353,11 @@
             "path": "/pictures/photo-d.png",
             "present": true
           },
+          "coverKey": "a:8",
           "imageCount": 2,
           "nodeCount": 3,
           "active": false,
-          "unsaved": false,
-          "coverKey": "a:8"
+          "unsaved": false
         },
         "keys": [
           "a:1",
@@ -384,11 +384,11 @@
             "path": "/pictures/photo-c.png",
             "present": true
           },
+          "coverKey": "a:6",
           "imageCount": 2,
           "nodeCount": 3,
           "active": false,
-          "unsaved": false,
-          "coverKey": "a:6"
+          "unsaved": false
         },
         "keys": [
           "a:1",
@@ -415,11 +415,11 @@
             "path": "/pictures/photo-b.png",
             "present": true
           },
+          "coverKey": "a:4",
           "imageCount": 2,
           "nodeCount": 3,
           "active": false,
-          "unsaved": false,
-          "coverKey": "a:4"
+          "unsaved": false
         },
         "keys": [
           "a:1",
@@ -446,11 +446,11 @@
             "path": "/pictures/photo-a.png",
             "present": true
           },
+          "coverKey": "a:2",
           "imageCount": 2,
           "nodeCount": 3,
           "active": false,
-          "unsaved": false,
-          "coverKey": "a:2"
+          "unsaved": false
         },
         "keys": [
           "a:1",
@@ -579,11 +579,11 @@
             "path": "/pictures/cover.png",
             "present": true
           },
+          "coverKey": "o:9:0",
           "imageCount": 2,
           "nodeCount": 3,
           "active": false,
-          "unsaved": false,
-          "coverKey": "o:9:0"
+          "unsaved": false
         },
         "keys": [
           "a:1",
@@ -700,11 +700,11 @@
             "path": "/pictures/root.png",
             "present": true
           },
+          "coverKey": "a:1",
           "imageCount": 3,
           "nodeCount": 4,
           "active": false,
-          "unsaved": false,
-          "coverKey": "a:1"
+          "unsaved": false
         },
         "keys": [
           "a:1",
@@ -816,11 +816,11 @@
             "path": "/pictures/b.png",
             "present": true
           },
+          "coverKey": "o:10:0",
           "imageCount": 1,
           "nodeCount": 2,
           "active": false,
-          "unsaved": false,
-          "coverKey": "o:10:0"
+          "unsaved": false
         },
         "keys": [
           "o:8:0",
@@ -846,11 +846,11 @@
             "path": "/pictures/a.png",
             "present": true
           },
+          "coverKey": "o:9:0",
           "imageCount": 1,
           "nodeCount": 2,
           "active": false,
-          "unsaved": false,
-          "coverKey": "o:9:0"
+          "unsaved": false
         },
         "keys": [
           "o:8:0",
@@ -946,11 +946,11 @@
             "path": "/pictures/out.png",
             "present": true
           },
+          "coverKey": "o:10:0",
           "imageCount": 1,
           "nodeCount": 2,
           "active": false,
-          "unsaved": false,
-          "coverKey": "o:10:0"
+          "unsaved": false
         },
         "keys": [
           "a:1",
@@ -1040,15 +1040,12 @@
         "summary": {
           "id": "c:o:10:0",
           "title": "reference",
-          "cover": {
-            "path": "/elsewhere/reference.png",
-            "present": true
-          },
+          "cover": null,
+          "coverKey": "o:10:0",
           "imageCount": 0,
           "nodeCount": 2,
           "active": true,
-          "unsaved": true,
-          "coverKey": "o:10:0"
+          "unsaved": true
         },
         "keys": [
           "a:1",
@@ -1074,11 +1071,11 @@
             "path": "/managed/out.png",
             "present": true
           },
+          "coverKey": "o:11:0",
           "imageCount": 1,
           "nodeCount": 2,
           "active": false,
-          "unsaved": true,
-          "coverKey": "o:11:0"
+          "unsaved": true
         },
         "keys": [
           "a:1",
@@ -1164,11 +1161,11 @@
             "path": "/pictures/newer-source.png",
             "present": true
           },
+          "coverKey": "a:10",
           "imageCount": 3,
           "nodeCount": 3,
           "active": false,
-          "unsaved": false,
-          "coverKey": "a:10"
+          "unsaved": false
         },
         "keys": [
           "o:9:0",
@@ -1296,11 +1293,11 @@
             "path": "/pictures/a.png",
             "present": true
           },
+          "coverKey": "a:2",
           "imageCount": 4,
           "nodeCount": 5,
           "active": false,
-          "unsaved": false,
-          "coverKey": "a:2"
+          "unsaved": false
         },
         "keys": [
           "a:1",
@@ -1429,11 +1426,11 @@
             "path": "/pictures/root.png",
             "present": true
           },
+          "coverKey": "a:1",
           "imageCount": 3,
           "nodeCount": 4,
           "active": false,
-          "unsaved": false,
-          "coverKey": "a:1"
+          "unsaved": false
         },
         "keys": [
           "a:1",
@@ -1529,11 +1526,11 @@
             "path": "/pictures/a.png",
             "present": true
           },
+          "coverKey": "o:8:0",
           "imageCount": 2,
           "nodeCount": 3,
           "active": false,
-          "unsaved": false,
-          "coverKey": "o:8:0"
+          "unsaved": false
         },
         "keys": [
           "o:7:0",
@@ -1671,11 +1668,11 @@
             "path": "/pictures/\ue000.png",
             "present": true
           },
+          "coverKey": "a:5",
           "imageCount": 2,
           "nodeCount": 2,
           "active": false,
-          "unsaved": false,
-          "coverKey": "a:5"
+          "unsaved": false
         },
         "keys": [
           "a:5",
@@ -1691,11 +1688,11 @@
             "path": "/pictures/B.png",
             "present": true
           },
+          "coverKey": "a:3",
           "imageCount": 2,
           "nodeCount": 2,
           "active": false,
-          "unsaved": false,
-          "coverKey": "a:3"
+          "unsaved": false
         },
         "keys": [
           "a:3",
@@ -1711,11 +1708,11 @@
             "path": "/pictures/A.png",
             "present": true
           },
+          "coverKey": "a:1",
           "imageCount": 2,
           "nodeCount": 2,
           "active": false,
-          "unsaved": false,
-          "coverKey": "a:1"
+          "unsaved": false
         },
         "keys": [
           "a:1",
@@ -1823,11 +1820,11 @@
             "path": "/pictures/b.png",
             "present": true
           },
+          "coverKey": "o:21:0",
           "imageCount": 1,
           "nodeCount": 2,
           "active": false,
-          "unsaved": true,
-          "coverKey": "o:21:0"
+          "unsaved": true
         },
         "keys": [
           "o:10:0",
@@ -1853,11 +1850,11 @@
             "path": "/pictures/a.png",
             "present": true
           },
+          "coverKey": "o:20:0",
           "imageCount": 1,
           "nodeCount": 2,
           "active": false,
-          "unsaved": true,
-          "coverKey": "o:20:0"
+          "unsaved": true
         },
         "keys": [
           "o:10:0",
@@ -2027,11 +2024,11 @@
             "path": "/pictures/b.png",
             "present": true
           },
+          "coverKey": "o:21:0",
           "imageCount": 1,
           "nodeCount": 2,
           "active": false,
-          "unsaved": true,
-          "coverKey": "o:21:0"
+          "unsaved": true
         },
         "keys": [
           "o:10:0",
@@ -2057,11 +2054,11 @@
             "path": "/pictures/a.png",
             "present": true
           },
+          "coverKey": "o:20:0",
           "imageCount": 1,
           "nodeCount": 2,
           "active": false,
-          "unsaved": true,
-          "coverKey": "o:20:0"
+          "unsaved": true
         },
         "keys": [
           "o:10:0",
@@ -2315,7 +2312,7 @@
           "id": "c:o:2:0",
           "title": "c",
           "cover": {
-            "path": "/pictures/c.png",
+            "path": "/elsewhere/b.png",
             "present": true
           },
           "coverKey": "o:2:0",
