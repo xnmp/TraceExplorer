@@ -7,7 +7,7 @@
   import { startImageJob } from "./image-jobs";
   import { describeInputs, inputRequestFields, moveInput, removeInput, withLiveInputs, type ImageInput } from "$lib/domain/image-inputs";
   import TraceThumbnail from "../trace/TraceThumbnail.svelte";
-  import Select from "../../../../integration/ui/Select.svelte";
+  import Select, { type SelectOption } from "../../../../integration/ui/Select.svelte";
   import { basename } from "$lib/domain/path";
   import { imageOutputFilename } from "$lib/domain/image-output-filename";
   import { imageGenerationSize, type ImageResolution, type ImageAspectRatio } from "$lib/domain/image-generation-settings";
@@ -198,6 +198,16 @@
     }
   }
 
+  const plain = (values: readonly string[]): SelectOption[] => values.map((value) => ({ value, label: value }));
+  const RESOLUTIONS: SelectOption[] = [{ value: "1k", label: "1K" }, { value: "2k", label: "2K" }, { value: "4k", label: "4K" }];
+  const connectionOptions = $derived((availability?.description?.profiles ?? []).map((connection): SelectOption => ({ value: connection.id, label: connection.name })));
+  const aspectRatioOptions = ([
+    ...(editing ? [{ value: "keep", label: "Keep (Image 1)" }] : []),
+    ...plain(["1:1", "4:3", "3:4", "3:2", "2:3", "16:9", "9:16"]),
+  ]);
+  const qualityOptions = $derived(plain(profile?.capabilities.quality ?? ["auto"]));
+  const backgroundOptions = $derived(plain(profile?.capabilities.background ?? ["auto"]));
+
   function keydown(event: KeyboardEvent): void {
     if (event.key === "Enter" && (event.ctrlKey || event.metaKey) && !event.isComposing) {
       event.preventDefault();
@@ -213,10 +223,7 @@
       <div class="model-row">
         <label class="prompt-field model-field">Image connection
           <Select aria-label="Image connection" value={latestConnection?.id ?? ""} disabled={submitting || configuring || loadingConnections}
-            onchange={(event) => chooseConnection(event.currentTarget.value)}>
-            <option value="">Select a connection</option>
-            {#each availability?.description?.profiles ?? [] as connection (connection.id)}<option value={connection.id}>{connection.name}</option>{/each}
-          </Select>
+            options={connectionOptions} placeholder="Select a connection" onchange={chooseConnection} />
         </label>
         <button type="button" class="btn btn-secondary" disabled={submitting || configuring} onclick={() => void configure()}>{configuring ? "Configuring…" : "Configure connections"}</button>
         <button type="button" class="btn btn-secondary icon-btn" aria-label="Reload connections" title="Reload connections" disabled={submitting || configuring || loadingConnections} onclick={() => void refreshConnections()}>
@@ -263,28 +270,19 @@
       </label>
       <div class="options">
         <label class="prompt-field">Resolution
-          <Select aria-label="Resolution" bind:value={resolution} disabled={submitting || configuring}>
-            <option value="1k">1K</option><option value="2k">2K</option><option value="4k">4K</option>
-          </Select>
+          <Select aria-label="Resolution" bind:value={resolution} disabled={submitting || configuring} options={RESOLUTIONS} />
         </label>
         <label class="prompt-field">Aspect ratio
-          <Select aria-label="Aspect ratio" bind:value={aspectRatio} disabled={submitting || configuring}>
-            {#if editing}<option value="keep">Keep (Image 1)</option>{/if}
-            {#each ["1:1", "4:3", "3:4", "3:2", "2:3", "16:9", "9:16"] as ratio}<option value={ratio}>{ratio}</option>{/each}
-          </Select>
+          <Select aria-label="Aspect ratio" bind:value={aspectRatio} disabled={submitting || configuring} options={aspectRatioOptions} />
         </label>
         <label class="prompt-field">Images
           <input class="prompt-input" type="number" min="1" max="8" step="1" bind:value={count} disabled={submitting} aria-label="Images" />
         </label>
         <label class="prompt-field">Quality
-          <Select aria-label="Quality" bind:value={quality} disabled={submitting || configuring || !profile}>
-            {#each profile?.capabilities.quality ?? ["auto"] as option}<option value={option}>{option}</option>{/each}
-          </Select>
+          <Select aria-label="Quality" bind:value={quality} disabled={submitting || configuring || !profile} options={qualityOptions} />
         </label>
         <label class="prompt-field">Background
-          <Select aria-label="Background" bind:value={background} disabled={submitting || configuring || !profile}>
-            {#each profile?.capabilities.background ?? ["auto"] as option}<option value={option}>{option}</option>{/each}
-          </Select>
+          <Select aria-label="Background" bind:value={background} disabled={submitting || configuring || !profile} options={backgroundOptions} />
         </label>
       </div>
       {#if error}<p class="error" role="alert">{error}</p>{/if}
