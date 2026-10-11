@@ -45,12 +45,12 @@ test("a missing package blocks generation while a disabled settings contribution
     return trace.command("plugin.openai-image.edit");
   });
   const caller = page.getByRole("dialog", { name: "Edit with AI" });
-  await expect(caller.getByRole("status")).toHaveText("Install the Image Generation package in Plugins.");
+  await expect(caller.getByRole("status").and(caller.locator(".error"))).toHaveText("Install the Image Generation package in Plugins.");
   await caller.getByRole("textbox", { name: "Edit prompt" }).fill("Keep me while fixing settings");
   await expect(caller.getByRole("button", { name: "Generate", exact: true })).toBeDisabled();
   await caller.getByRole("button", { name: "Configure connections" }).click();
   await expect(caller.getByRole("alert")).toHaveText("Enable the Image Generation settings contribution in Plugins.");
-  await expect(caller.getByRole("status")).toHaveText("Install the Image Generation package in Plugins.");
+  await expect(caller.getByRole("status").and(caller.locator(".error"))).toHaveText("Install the Image Generation package in Plugins.");
   await expect(caller.getByRole("textbox", { name: "Edit prompt" })).toHaveValue("Keep me while fixing settings");
   expect(await page.evaluate(() => (window as any).trace.backend.calls("jobs.start"))).toEqual([]);
 });
@@ -99,7 +99,7 @@ test("reloading connections preserves a custom model draft and refreshes the rev
   await expect(caller.getByRole("textbox", { name: "Image model" })).toHaveValue("my-mobile-custom-model");
   await expect(caller.getByRole("textbox", { name: "Edit prompt" })).toHaveValue("Preserve this narrow caller draft");
   await expect(caller.getByRole("button", { name: "Generate", exact: true })).toBeDisabled();
-  await expect(caller.getByRole("status")).toContainText("This connection changed");
+  await expect(caller.getByRole("status").and(caller.locator(".error"))).toContainText("This connection changed");
   await caller.getByRole("button", { name: "Use updated connection" }).click();
   expect(await caller.locator(".plugin-dialog").evaluate((node) => node.scrollWidth - node.clientWidth)).toBeLessThanOrEqual(1);
   await caller.getByRole("button", { name: "Generate", exact: true }).click();
@@ -123,7 +123,7 @@ test("removing a pinned connection requires an explicit choice instead of switch
     backend.setImageService(value);
   });
   await caller.getByRole("button", { name: "Reload connections" }).click();
-  await expect(caller.getByRole("status")).toContainText("selected connection was removed");
+  await expect(caller.getByRole("status").and(caller.locator(".error"))).toContainText("selected connection was removed");
   await expect(caller.getByRole("button", { name: "Generate", exact: true })).toBeDisabled();
   await expect(caller.getByRole("textbox", { name: "Edit prompt" })).toHaveValue("Keep this draft until I choose");
   expect(await page.evaluate(() => (window as any).trace.backend.calls("jobs.start"))).toEqual([]);

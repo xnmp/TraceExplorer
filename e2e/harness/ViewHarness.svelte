@@ -118,7 +118,7 @@
         getSelection: () => entries.filter((entry) => selected.includes(entry.path)),
         ...(combinedSelectionApi ? { getCombinedSelection: () => [...entries.filter((entry) => selected.includes(entry.path)), ...otherPaneSelection] } satisfies Pick<PluginContext["workspace"], "getCombinedSelection"> : {}),
         captureSelection: () => () => true,
-        ...(paneDialogs ? { capturePane: (paneId?: string) => !disposed && (!paneId || paneId === dialogPane.paneId) ? dialogPane : null } : {}),
+        ...(paneDialogs ? { capturePane: (paneId: string | undefined = undefined) => !disposed && (!paneId || paneId === dialogPane.paneId) ? dialogPane : null } : {}),
         ...(fileDropTargets ? { registerFileDropTarget: dropTargets.register } : {}),
         selectFile: async () => {},
       },
@@ -129,7 +129,7 @@
       registerContextMenuItem: (item: { id: string; label: string; group: string; when: (entries: FileEntry[]) => boolean; handler: (entries: FileEntry[]) => void | Promise<void> }) => { menuItems.set(item.id, item); }, registerSettingsSection: () => {},
       registerImageEditorTool: (tool: { id: string; component: Component<any>; props?: Record<string, unknown> }) => { editorTool = tool; editorToolId = tool.id; },
       registerDialog: (dialog: { id: string; component: Component<any> }) => { dialogs.set(dialog.id, dialog.component); },
-      openDialog: (id: string, props: Record<string, unknown> = {}, options?: PluginDialogOptions) => {
+      openDialog: (id: string, props: Record<string, unknown> = {}, options: PluginDialogOptions | undefined = undefined) => {
         dialogCalls.push({ id, ...(options ? { options } : {}) });
         if (disposed) throw new Error("Plugin caller was disposed");
         if (!dialogs.has(id)) throw new Error("Dialog is not registered by this plugin");
