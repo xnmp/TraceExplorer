@@ -7,6 +7,7 @@ import type { ComponentNodesPage, FolderComponentsPage, FolderMembersPage } from
 import type { TraceNode } from "$lib/domain/trace-graph/model";
 import { locateTarget } from "$lib/plugins/trace/view/target-location";
 import { withNativeRequestCapacity } from "../../../e2e/harness/request-capacity";
+import { MAX_UNRESOLVED_OPEN_STACKS } from "$lib/plugins/trace/view/open-stacks";
 
 const flush = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
 function deferred<T>() {
@@ -14,7 +15,7 @@ function deferred<T>() {
   const promise = new Promise<T>((a, b) => { resolve = a; reject = b; });
   return { promise, resolve, reject };
 }
-const summary = (id: string) => ({ id, title: id, cover: null, imageCount: 1, nodeCount: 1, active: false, unsaved: false });
+const summary = (id: string) => ({ id, title: id, cover: null, coverKey: id, imageCount: 1, nodeCount: 1, active: false, unsaved: false });
 const node = (key: string, order: number, parents: string[] = []): TraceNode => ({
   key, artifactId: order, runId: null, parents, path: `/f/${key}.png`, scope: "current", location: `./${key}.png`,
   state: "present", temporary: false, discarded: false, earlierRevision: false, order, prompt: "",
@@ -828,4 +829,317 @@ it("reveal follows an index refresh that races its component load", async () => 
   await session.refresh();
   gate.resolve(nodePage([image]));
   expect(await revealing).toEqual({ node: image, componentId: "merged" });
+});
+
+describe("pane and folder open-stack snapshots", () => {
+  beforeEach(() => forgetFolderSnapshots());
+  const stackSummary = (id: string, path: string, coverKey: string) => ({ ...summary(id), cover: { path, present: true }, coverKey });
+  const initial = [stackSummary("left", "/f/a.png", "a"), stackSummary("right", "/f/b.png", "b")];
+  const backendFor = (components = initial, members: [string, string, string][] = [["/f/a.png", "left", "a"], ["/f/b.png", "right", "b"]]) => fakeBackend({
+    components: vi.fn(async () => ({ ...compPage("t", []), components, total: components.length })),
+    members: vi.fn(async () => memPage(members)),
+    nodes: vi.fn(async (_d, _t, id) => nodePage([node(id === "right" ? "b" : "a", 0)])),
+  });
+  const sessionFor = (pane: string, backend: TraceBackend = backendFor()) => createFolderSession(backend, undefined, pane);
+
+  it("restores two open stacks and their loaded tiles synchronously before revalidation", async () => {
+    const first = sessionFor("pane-a");
+    first.setDirectory("/f"); await flush();
+    first.setStackOpen("left", true); first.setStackOpen("right", true);
+    await first.ensure("left"); await first.ensure("right");
+    first.dispose();
+    const back = sessionFor("pane-a", fakeBackend({ components: vi.fn(() => new Promise<FolderComponentsPage>(() => {})) }));
+    back.setDirectory("/f");
+    expect(back.status).toBe("ready");
+    expect(back.openStackKeys).toEqual(new Set(["a", "b"]));
+    expect(back.components.get("left")?.nodes.map((node) => node.key)).toEqual(["a"]);
+    expect(back.components.get("right")?.nodes.map((node) => node.key)).toEqual(["b"]);
+    back.dispose();
+  });
+
+  it("keeps panes independent while sharing loaded data, and clears history on folder changes", async () => {
+    const left = sessionFor("pane-a"), right = sessionFor("pane-b");
+    left.setDirectory("/f"); right.setDirectory("/f"); await flush();
+    left.setStackOpen("left", true); right.setStackOpen("right", true);
+    await left.ensure("left"); await right.ensure("right");
+    left.dispose(); right.dispose();
+    for (const [pane, keys] of [["pane-a", ["a"]], ["pane-b", ["b"]], ["pane-c", []]] as const) {
+      const back = sessionFor(pane);
+      back.setDirectory("/f");
+      expect(back.openStackKeys).toEqual(new Set(keys));
+      back.dispose();
+    }
+    const back = sessionFor("pane-a");
+    back.setDirectory("/g"); await flush();
+    expect(back.openStackKeys.size).toBe(0);
+    back.setDirectory("/f");
+    expect(back.openStackKeys.size).toBe(0);
+    back.dispose();
+    const remount = sessionFor("pane-a");
+    remount.setDirectory("/f");
+    expect(remount.openStackKeys.size).toBe(0);
+    remount.dispose();
+    const otherPane = sessionFor("pane-b");
+    otherPane.setDirectory("/f");
+    expect(otherPane.openStackKeys).toEqual(new Set(["b"]));
+    otherPane.dispose();
+  });
+
+  it("refresh resolves old covers into merged components, splits them again and reopens disappeared covers", async () => {
+    let components = initial;
+    let members: [string, string, string][] = [["/f/a.png", "left", "a"], ["/f/b.png", "right", "b"]];
+    const backend = backendFor();
+    backend.components.mockImplementation(async () => ({ ...compPage("t", []), components, total: components.length }));
+    backend.members.mockImplementation(async () => memPage(members));
+    const session = sessionFor("pane", backend);
+    session.setDirectory("/f"); await flush();
+    session.setStackOpen("right", true);
+    components = [stackSummary("merged", "/f/a.png", "a")];
+    members = [["/f/a.png", "merged", "a"], ["/f/b.png", "merged", "b"]];
+    await session.refresh();
+    expect(session.openStackKeys).toEqual(new Set(["a"]));
+    components = initial; members = [["/f/a.png", "left", "a"], ["/f/b.png", "right", "b"]];
+    await session.refresh();
+    expect(session.openStackKeys).toEqual(new Set(["b"]));
+    components = [stackSummary("replacement", "/f/a.png", "a")];
+    members = [["/f/a.png", "replacement", "a"]];
+    await session.refresh();
+    expect(session.openStackKeys.size).toBe(0);
+    components = initial; members = [["/f/a.png", "left", "a"], ["/f/b.png", "right", "b"]];
+    await session.refresh();
+    expect(session.openStackKeys).toEqual(new Set(["b"]));
+    session.dispose();
+  });
+
+  it("a stack whose original image is deleted stays open while an edit survives", async () => {
+    const stack = { ...summary("s"), cover: { path: "/f/a.png", present: false }, coverKey: "a", imageCount: 1, nodeCount: 2 };
+    const backend = backendFor([stack], [["/f/b.png", "s", "b"]]);
+    backend.nodes.mockResolvedValue(nodePage([{ ...node("a", 1), state: "missing" }, node("b", 2, ["a"])]));
+    const session = sessionFor("pane", backend);
+    session.setDirectory("/f"); await flush();
+    session.setStackOpen("s", true); await session.ensure("s"); await flush();
+    expect(session.openStackKeys).toEqual(new Set(["a"]));
+    session.setStackOpen("s", false);
+    expect(session.openStackKeys.size).toBe(0);
+    session.dispose();
+  });
+
+  describe("a stack whose cover file is deleted and restored", () => {
+    const present = { ...summary("s"), cover: { path: "/f/a.png", present: true }, coverKey: "a", imageCount: 2, nodeCount: 2 };
+    const gone = { ...present, cover: { path: "/f/a.png", present: false }, imageCount: 1 };
+    const both: [string, string, string][] = [["/f/a.png", "s", "a"], ["/f/b.png", "s", "b"]];
+    const only: [string, string, string][] = [["/f/b.png", "s", "b"]];
+    const nodes = (cover: "present" | "missing") => nodePage([{ ...node("a", 1), state: cover }, node("b", 2, ["a"])]);
+    async function show(session: ReturnType<typeof sessionFor>, backend: ReturnType<typeof backendFor>, cover: "present" | "missing") {
+      backend.components.mockResolvedValue({ ...compPage("t" + Math.random(), []), components: [cover === "present" ? present : gone], total: 1 });
+      backend.members.mockResolvedValue(memPage(cover === "present" ? both : only));
+      backend.nodes.mockResolvedValue(nodes(cover));
+      await session.refresh(); await session.ensure("s"); await flush();
+    }
+    it("stays open when its cover is deleted, and stays closed after an explicit close when it returns", async () => {
+      const backend = backendFor([present], both);
+      backend.nodes.mockResolvedValue(nodes("present"));
+      const session = sessionFor("pane", backend);
+      session.setDirectory("/f"); await flush();
+      session.setStackOpen("s", true); await session.ensure("s");
+      expect(session.openStackKeys).toEqual(new Set(["a"]));
+      await show(session, backend, "missing");
+      expect(session.openStackKeys).toEqual(new Set(["a"]));
+      session.setStackOpen("s", false);
+      await show(session, backend, "present");
+      expect(session.openStackKeys.size).toBe(0);
+      session.dispose();
+    });
+    it("is forgotten entirely by a close made while the cover is missing", async () => {
+      const backend = backendFor([present], both);
+      backend.nodes.mockResolvedValue(nodes("present"));
+      const session = sessionFor("pane", backend);
+      session.setDirectory("/f"); await flush();
+      session.setStackOpen("s", true); await session.ensure("s");
+      await show(session, backend, "missing");
+      session.setStackOpen("s", false);
+      session.setStackOpen("s", true);
+      session.setStackOpen("s", false);
+      await show(session, backend, "present");
+      expect(session.openStackKeys.size).toBe(0);
+      session.dispose();
+    });
+    it("reopens through the cover's path when only that identity is remembered by an earlier snapshot of the folder", async () => {
+      const backend = backendFor([present], both);
+      backend.nodes.mockResolvedValue(nodes("present"));
+      const session = sessionFor("pane", backend);
+      session.setDirectory("/f"); await flush();
+      session.setStackOpen("s", true);
+      await show(session, backend, "missing");
+      await show(session, backend, "present");
+      expect(session.openStackKeys).toEqual(new Set(["a"]));
+      session.dispose();
+    });
+  });
+
+  it("reopens a resumed unsaved placeholder and forgets it after an explicit close", async () => {
+    const backend = backendFor([summary("o:7:0")], []);
+    backend.nodes.mockResolvedValue(nodePage([{ ...node("o:7:0", 7), path: null, state: "running", temporary: true }]));
+    const session = sessionFor("pane", backend);
+    session.setDirectory("/f"); await flush();
+    session.setStackOpen("o:7:0", true); await session.ensure("o:7:0");
+    for (const open of [true, false]) {
+      backend.components.mockResolvedValue(compPage("dismissed", []));
+      await session.refresh();
+      expect(session.openStackKeys.size).toBe(0);
+      backend.components.mockResolvedValue(compPage("resumed", ["o:7:0"]));
+      await session.refresh(); await flush();
+      expect(session.openStackKeys).toEqual(new Set(open ? ["o:7:0"] : []));
+      session.setStackOpen("o:7:0", false);
+    }
+    session.dispose();
+  });
+
+  it("evicts the oldest missing cover while keeping a recently reopened cover", async () => {
+    const keys = Array.from({ length: MAX_UNRESOLVED_OPEN_STACKS + 1 }, (_, i) => `o:${i}:0`);
+    const backend = backendFor(keys.map(summary), []);
+    const session = sessionFor("pane", backend);
+    session.setDirectory("/f"); await flush();
+    for (const key of keys) session.setStackOpen(key, true);
+    session.setStackOpen(keys[0], true);
+    backend.components.mockResolvedValue(compPage("missing", []));
+    await session.refresh();
+    expect(session.openStackKeys.size).toBe(0);
+    backend.components.mockResolvedValue(compPage("restored", keys));
+    await session.refresh();
+    expect(session.openStackKeys).toEqual(new Set([keys[0], ...keys.slice(2)]));
+    session.dispose();
+  });
+
+  it("forgets unresolved identities on folder changes, including navigation through no folder", async () => {
+    const backend = backendFor();
+    const session = sessionFor("pane", backend);
+    session.setDirectory("/f"); await flush();
+    session.setStackOpen("right", true);
+    backend.components.mockResolvedValue(compPage("missing", []));
+    backend.members.mockResolvedValue(memPage([]));
+    await session.refresh();
+    session.setDirectory(null);
+    backend.components.mockResolvedValue({ ...compPage("restored", []), components: initial, total: 2 });
+    backend.members.mockResolvedValue(memPage([["/f/a.png", "left", "a"], ["/f/b.png", "right", "b"]]));
+    session.setDirectory("/f"); await flush();
+    expect(session.openStackKeys.size).toBe(0);
+    session.dispose();
+  });
+
+  it("closing a merged stack forgets all predecessor covers", async () => {
+    const backend = backendFor();
+    const session = sessionFor("pane", backend);
+    session.setDirectory("/f"); await flush();
+    session.setStackOpen("left", true); session.setStackOpen("right", true);
+    backend.components.mockResolvedValue({ ...compPage("new", []), components: [stackSummary("merged", "/f/a.png", "a")], total: 1 });
+    backend.members.mockResolvedValue(memPage([["/f/a.png", "merged", "a"], ["/f/b.png", "merged", "b"]]));
+    await session.refresh();
+    session.setStackOpen("merged", false);
+    backend.components.mockResolvedValue({ ...compPage("split", []), components: initial, total: 2 });
+    backend.members.mockResolvedValue(memPage([["/f/a.png", "left", "a"], ["/f/b.png", "right", "b"]]));
+    await session.refresh();
+    expect(session.openStackKeys.size).toBe(0);
+    session.dispose();
+  });
+
+  it("closing a merged stack forgets a predecessor absent from current nodes, including across remounts", async () => {
+    const backend = backendFor();
+    const session = sessionFor("pane", backend);
+    session.setDirectory("/f"); await flush();
+    session.setStackOpen("left", true); session.setStackOpen("right", true);
+    backend.components.mockResolvedValue({ ...compPage("merged", []), components: [stackSummary("merged", "/f/b.png", "b")], total: 1 });
+    backend.members.mockResolvedValue(memPage([["/f/a.png", "merged", "a"], ["/f/b.png", "merged", "b"]]));
+    await session.refresh();
+    backend.members.mockResolvedValue(memPage([["/f/b.png", "merged", "b"]]));
+    backend.nodes.mockResolvedValue(nodePage([node("b", 0)]));
+    await session.refresh();
+    expect(session.openStackKeys).toEqual(new Set(["b"]));
+    session.dispose();
+    const back = sessionFor("pane", backend);
+    back.setDirectory("/f"); await flush();
+    back.setStackOpen("merged", false);
+    backend.components.mockResolvedValue({ ...compPage("restored", []), components: initial, total: 2 });
+    backend.members.mockResolvedValue(memPage([["/f/a.png", "left", "a"], ["/f/b.png", "right", "b"]]));
+    await back.refresh();
+    expect(back.openStackKeys.size).toBe(0);
+    back.dispose();
+  });
+
+  it("opens new external selections and remembers a deliberate close across remounts", async () => {
+    const session = sessionFor("pane");
+    session.setDirectory("/f"); await flush();
+    session.followSelection("selected-b", new Set(["right"]));
+    expect(session.openStackKeys).toEqual(new Set(["b"]));
+    session.setStackOpen("right", false); session.dispose();
+    const back = sessionFor("pane");
+    back.setDirectory("/f");
+    back.followSelection("selected-b", new Set(["right"]));
+    expect(back.openStackKeys.size).toBe(0);
+    await back.refresh();
+    back.followSelection("selected-a", new Set(["left"]));
+    expect(back.openStackKeys).toEqual(new Set(["a"]));
+    back.followSelection("selected-b", new Set(["right"]));
+    expect(back.openStackKeys).toEqual(new Set(["a", "b"]));
+    back.dispose();
+  });
+
+  it("keeps stacks with a shared reference title independently open", async () => {
+    const components = [stackSummary("first", "/outside/style.png", "o:2:0"), stackSummary("second", "/outside/style.png", "o:3:0")];
+    const backend = backendFor(components, []);
+    backend.nodes.mockImplementation(async (_d, _t, id) => nodePage([{ ...node(id === "first" ? "o:2:0" : "o:3:0", 0), path: null, state: "running" }]));
+    const session = sessionFor("pane", backend);
+    session.setDirectory("/f"); await flush();
+    session.setStackOpen("first", true);
+    expect(session.openStackKeys).toEqual(new Set(["o:2:0"]));
+    session.setStackOpen("second", true);
+    expect(session.openStackKeys).toEqual(new Set(["o:2:0", "o:3:0"]));
+    session.setStackOpen("first", false);
+    expect(session.openStackKeys).toEqual(new Set(["o:3:0"]));
+    session.dispose();
+    const back = sessionFor("pane", backend);
+    back.setDirectory("/f");
+    expect(back.openStackKeys).toEqual(new Set(["o:3:0"]));
+    back.dispose();
+  });
+
+  it("keeps a missing unlisted revision closed until it returns, and an explicit close forgets it", async () => {
+    const backend = backendFor([stackSummary("draft", "/managed/draft.png", "o:7:0")], []);
+    backend.nodes.mockResolvedValue(nodePage([{ ...node("o:7:0", 7), path: "/managed/draft.png", temporary: true }]));
+    const session = sessionFor("pane", backend);
+    session.setDirectory("/f"); await flush();
+    session.setStackOpen("draft", true); await session.ensure("draft");
+    backend.nodes.mockResolvedValue(nodePage([{ ...node("o:7:0", 7), path: "/managed/draft.png", state: "missing" }]));
+    await session.refresh(); await flush();
+    expect(session.openStackKeys.size).toBe(0);
+    backend.nodes.mockResolvedValue(nodePage([{ ...node("o:7:0", 7), path: "/managed/draft.png", temporary: true }]));
+    await session.refresh(); await flush();
+    expect(session.openStackKeys).toEqual(new Set(["o:7:0"]));
+    backend.nodes.mockResolvedValue(nodePage([{ ...node("o:7:0", 7), path: "/managed/draft.png", state: "missing" }]));
+    await session.refresh(); await flush();
+    // The toggle is still available even though the drawn cover is missing.
+    session.setStackOpen("draft", false);
+    backend.nodes.mockResolvedValue(nodePage([{ ...node("o:7:0", 7), path: "/managed/draft.png", temporary: true }]));
+    await session.refresh(); await session.ensure("draft");
+    expect(session.openStackKeys.size).toBe(0);
+    session.dispose();
+  });
+
+  it("resolves an unlisted cover through fresh nodes after its component merges", async () => {
+    const backend = backendFor([stackSummary("draft", "/managed/draft.png", "o:7:0")], []);
+    const draft = { ...node("o:7:0", 7), path: "/managed/draft.png", temporary: true };
+    backend.nodes.mockResolvedValue(nodePage([draft]));
+    const session = sessionFor("pane", backend);
+    session.setDirectory("/f"); await flush();
+    session.setStackOpen("draft", true); await session.ensure("draft");
+    backend.components.mockResolvedValue({ ...compPage("new", []), components: [stackSummary("merged", "/f/a.png", "a")], total: 1 });
+    backend.members.mockResolvedValue(memPage([["/f/a.png", "merged", "a"]]));
+    backend.nodes.mockResolvedValue(nodePage([node("a", 0), draft]));
+    await session.refresh(); await flush();
+    expect(session.openStackKeys).toEqual(new Set(["a"]));
+    backend.nodes.mockResolvedValue(nodePage([node("a", 0)]));
+    await session.refresh(); await flush();
+    expect(session.openStackKeys.size).toBe(0);
+    session.dispose();
+  });
 });

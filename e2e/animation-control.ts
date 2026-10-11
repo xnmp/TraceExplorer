@@ -38,3 +38,21 @@ export async function releaseScriptedAnimations(page: Page): Promise<void> {
     w.__heldAnimations = undefined;
   });
 }
+
+/**
+ * Waits until the view has finished creating animations for what it just did. Layout, geometry reports
+ * and grid motion run in later turns than the input that caused them, so a test that seeks "all running
+ * animations" straight away misses the ones created after. Counted per animation frame, never by time.
+ */
+export async function awaitAnimationsCreated(page: Page, stableFrames = 4): Promise<void> {
+  await page.evaluate(async (needed) => {
+    const w = window as any, frame = () => new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    let count = -1, stable = 0;
+    while (stable < needed) {
+      await frame();
+      const now = (w.__heldAnimations as Animation[]).length + (w.trace.layoutsPending() as number);
+      stable = now === count ? stable + 1 : 0;
+      count = now;
+    }
+  }, stableFrames);
+}

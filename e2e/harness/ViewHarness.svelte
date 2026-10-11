@@ -35,6 +35,7 @@
   let cursor = $state<string | null>(null);
   /** The Shift-range anchor, as the host's `selectionAnchorPath`. */
   let anchor: string | null = null;
+  let selectionNotifications = 0;
   /**
    * Replaces the selection as the host's `setSelection` does: only a change of
    * its contents notifies (the host mutates a SvelteSet in place), and a
@@ -44,6 +45,7 @@
     const unique = [...new Set(next)];
     if (unique.length === selected.length && unique.every((path) => selected.includes(path))) return;
     selected = unique;
+    selectionNotifications++;
     if (unique.length && target) target = null;
   }
   let target = $state.raw<PreviewTarget | null>(null);
@@ -227,6 +229,7 @@
 
   export const harness = {
     backend,
+    listing: () => [...entries],
     /** The host re-reads status when Show image is clicked, then dispatches the current reveal. */
     async showJob(jobId: number, signal = new AbortController().signal) {
       const reveal = (await backend.jobStatus(jobId))?.reveal;
@@ -264,7 +267,7 @@
     enterView: () => { fileView = "trace.view"; },
     /** Forgets what each folder last showed, as if no view had shown them yet. */
     forgetFolders: () => forgetFolderSnapshots(),
-    state: () => ({ selected: [...selected], inputs: tracePanes.get("pane-1")?.inputs() ?? [], cursor, target: target ? { id: target.id, title: target.title, badge: target.badge ?? null } : null, fileView, opened: [...opened], menus: [...menus], navigations: [...navigations] }),
+    state: () => ({ selectionNotifications, selected: [...selected], inputs: tracePanes.get("pane-1")?.inputs() ?? [], cursor, target: target ? { id: target.id, title: target.title, imagePath: target.imagePath, badge: target.badge ?? null } : null, fileView, opened: [...opened], menus: [...menus], navigations: [...navigations] }),
     selectPath(path: string) { pane.setSelection([path], path); },
     /** The host replaces the selection itself (another pane, a command), as `explorer.selectPaths` does. */
     setSelection(paths: string[], focus: string | null = null) { pane.setSelection(paths, focus); },
@@ -341,12 +344,12 @@
   </aside>
 </main>
 {#if editorTool && editorSource}
-  <section class="plugin-dialog" role="dialog" aria-label="AI edit">
+  <div class="plugin-dialog" role="dialog" aria-label="AI edit">
     {#key editorTool}
       {@const Tool = editorTool.component}
       <Tool {...editorTool.props} source={editorSource} onClose={() => { editorSource = null; editorClosed?.(); editorClosed = undefined; }} onBusyChange={() => {}} />
     {/key}
-  </section>
+  </div>
 {/if}
 {#each opened_dialogs as dialog (dialog)}
   {@const Dialog = dialogs.get(dialog.id)}

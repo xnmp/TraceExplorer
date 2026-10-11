@@ -16,12 +16,12 @@ async function generated(page: import("@playwright/test").Page, parent = "warm",
 test("Show image expands a collapsed component and focuses an unsaved Preview with cost", async ({ page }) => {
   await openView(page);
   const artifact = await generated(page);
-  const section = page.locator("section.component").filter({ has: page.locator(".heading .name", { hasText: /^village$/ }) });
-  await expect(section.locator(".heading")).toHaveAttribute("aria-expanded", "true");
-  await section.locator(".heading").click();
+  const section = page.locator('section.component[aria-label="village"]');
+  await expect(section.locator("[data-stack-toggle]")).toHaveAttribute("aria-expanded", "true");
+  await section.locator("[data-stack-toggle]").click();
   await settle(page);
   await page.evaluate(() => (window as any).trace.showJob(71));
-  await expect(section.locator(".heading")).toHaveAttribute("aria-expanded", "true");
+  await expect(section.locator("[data-stack-toggle]")).toHaveAttribute("aria-expanded", "true");
   await expect(page.getByTestId("preview-title")).toHaveText("revealed.png");
   await expect(page.getByTestId("preview-badge")).toHaveText("Unsaved");
   await expect(page.getByRole("button", { name: "Save", exact: true })).toBeVisible();
@@ -39,17 +39,48 @@ test("Show image expands a collapsed component and focuses an unsaved Preview wi
   await expect(page.getByTestId("preview-title")).toHaveText("revealed.png");
 });
 
+test("revealing the already focused image keeps displayed band tiles still", async ({ page }) => {
+  await openView(page);
+  await generated(page);
+  await page.evaluate(() => (window as any).trace.showJob(71)); await settle(page);
+  const image = await tile(page, "revealed"), before = (await image.boundingBox())!;
+  const original = await page.evaluate(() => {
+    const w = window as any, original = Element.prototype.animate;
+    w.revealAnimations = [];
+    Element.prototype.animate = function (...args: Parameters<Element["animate"]>) {
+      w.revealAnimations.push({ target: this, frames: args[0] });
+      return original.apply(this, args);
+    };
+    w.restoreRevealAnimate = () => Element.prototype.animate = original;
+    return true;
+  });
+  expect(original).toBe(true);
+  try {
+    await page.evaluate(() => (window as any).trace.showJob(71)); await settle(page);
+    const after = (await image.boundingBox())!;
+    expect(after.x).toBeCloseTo(before.x, 1); expect(after.y).toBeCloseTo(before.y, 1);
+    expect(await page.evaluate(() => (window as any).revealAnimations.filter((call: { target: Element; frames: Keyframe[] }) =>
+      call.target.matches('[data-tile-key]') && Array.isArray(call.frames) && call.frames.some((frame) => "transform" in frame)).length)).toBe(0);
+    await expect(await card(page, "revealed")).toBeFocused();
+  } finally { await page.evaluate(() => (window as any).restoreRevealAnimate()); }
+});
+
 test("Show image loads an offscreen component and omits cost when unavailable", async ({ page }) => {
-  await openView(page, undefined, "?many=60");
+  await openView(page, 220, "?many=240", false);
+  await page.evaluate(() => (window as any).trace.selectPath("/pictures/m24.png"));
+  await settle(page);
+  await page.getByRole("region", { name: "m24", exact: true }).locator("[data-node-key]").first().scrollIntoViewIfNeeded();
+  await settle(page);
+  await page.getByTestId("trace-view").click({ position: { x: 2, y: 2 } });
+  await settle(page);
   await generated(page, "m24", false);
   const section = page.getByRole("region", { name: "m24", exact: true });
   const componentId = await section.getAttribute("data-component");
   expect(componentId).not.toBeNull();
-  await expect(page.locator("section.component[data-component]").first()).toHaveAttribute("data-component", componentId!);
   await expect(await tile(page, "revealed")).toHaveCount(1);
-  // A newly published output ranks first natively. Put it beyond the view's
-  // near margin so Show image must load and mount its offscreen component.
-  await page.getByTestId("trace-view").evaluate((element) => { element.scrollTop = element.scrollHeight; });
+  // Grid order follows the folder listing. Scroll away from the loaded band
+  // so Show image must mount it again and bring its target into the viewport.
+  await page.getByTestId("trace-view").evaluate((element) => { element.scrollTop = 0; });
   await settle(page);
   await expect(section).not.toBeInViewport();
   await expect(await tile(page, "revealed")).toHaveCount(0);
@@ -68,16 +99,14 @@ test("Show image loads an offscreen component and omits cost when unavailable", 
 });
 
 test("Show image first-loads an unseen component published while Trace is closed", async ({ page }) => {
-  await openView(page, undefined, "?many=60");
+  await openView(page, 220, "?many=240", false);
   const section = page.getByRole("region", { name: "m24", exact: true });
-  const componentId = await section.getAttribute("data-component");
-  expect(componentId).not.toBeNull();
-  await expect(section).not.toBeInViewport();
+  const componentId = await page.evaluate(() => `c:${(window as any).trace.backend.key("m24")}`);
+  await expect(section).toHaveCount(0);
   const nodeReads = () => page.evaluate((id) => (window as any).trace.backend.calls("trace_component_nodes")
     .filter((call: { params: { componentId: string } }) => call.params.componentId === id).length, componentId);
   expect(await nodeReads()).toBe(0);
-  // Publishing into an open Trace view ranks the output first and preloads
-  // it. Publish with the view closed to exercise its first-ever node read.
+  // Publish with Trace closed to exercise the first-ever node read on reveal.
   await page.evaluate(() => (window as any).trace.toggle());
   await expect(page.getByTestId("trace-view")).toHaveCount(0);
   await generated(page, "m24", false);
@@ -88,7 +117,7 @@ test("Show image first-loads an unseen component published while Trace is closed
   await expect(await tile(page, "revealed")).toHaveAttribute("data-tone", "focus");
   await expect(await card(page, "revealed")).toBeFocused();
   await expect(await tile(page, "revealed")).toBeInViewport();
-  await expect(section.locator(".heading")).toHaveAttribute("aria-expanded", "true");
+  await expect(section.locator("[data-stack-toggle]")).toHaveAttribute("aria-expanded", "true");
 });
 
 test("aborting during loading preserves the existing focus and expansion", async ({ page }) => {
@@ -96,7 +125,7 @@ test("aborting during loading preserves the existing focus and expansion", async
   await generated(page);
   await click(page, "warm");
   const before = await state(page);
-  const expanded = await page.locator(".heading[aria-expanded]").evaluateAll((nodes) => nodes.map((node) => node.getAttribute("aria-expanded")));
+  const expanded = await page.locator("[data-stack-toggle][aria-expanded]").evaluateAll((nodes) => nodes.map((node) => node.getAttribute("aria-expanded")));
   const count = await page.evaluate(() => (window as any).trace.backend.calls("trace_folder_components").length);
   await page.evaluate(() => {
     const w = window as any;
@@ -108,7 +137,7 @@ test("aborting during loading preserves the existing focus and expansion", async
   const result = await page.evaluate(async () => { const w = window as any; w.revealController.abort(); return w.revealResult; });
   expect(result).toBe("AbortError");
   expect(await state(page)).toEqual(before);
-  expect(await page.locator(".heading[aria-expanded]").evaluateAll((nodes) => nodes.map((node) => node.getAttribute("aria-expanded")))).toEqual(expanded);
+  expect(await page.locator("[data-stack-toggle][aria-expanded]").evaluateAll((nodes) => nodes.map((node) => node.getAttribute("aria-expanded")))).toEqual(expanded);
   await expect(page.getByTestId("preview-title")).toHaveText("warm.png");
 });
 
@@ -136,8 +165,8 @@ for (const choice of ["tile", "host", "extra"] as const) {
       await settle(page);
     }
     await click(page, "warm");
-    const section = page.locator("section.component").filter({ has: page.locator(".heading .name", { hasText: /^village$/ }) });
-    await section.locator(".heading").click();
+    const section = page.locator('section.component[aria-label="village"]');
+    await section.locator("[data-stack-toggle]").click();
     await settle(page);
     const reads = await page.evaluate(() => (window as any).trace.backend.calls("trace_folder_components").length);
     await page.evaluate(() => {
@@ -150,14 +179,14 @@ for (const choice of ["tile", "host", "extra"] as const) {
     else if (choice === "extra") await click(page, "extra", { modifiers: ["Control"] });
     else await click(page, "forest");
     const chosen = await state(page);
-    const expansion = await page.locator(".heading[aria-expanded]").evaluateAll((nodes) => nodes.map((node) => node.getAttribute("aria-expanded")));
+    const expansion = await page.locator("[data-stack-toggle][aria-expanded]").evaluateAll((nodes) => nodes.map((node) => node.getAttribute("aria-expanded")));
     expect(chosen.inputs.length).toBeGreaterThan(0);
     await page.evaluate(() => (window as any).trace.backend.releaseFolderReads());
     expect(await page.evaluate(() => (window as any).revealResult)).toBe("AbortError");
     await settle(page);
     expect(await state(page)).toEqual(chosen);
-    expect(await page.locator(".heading[aria-expanded]").evaluateAll((nodes) => nodes.map((node) => node.getAttribute("aria-expanded")))).toEqual(expansion);
-    await expect(section.locator(".heading")).toHaveAttribute("aria-expanded", "false");
+    expect(await page.locator("[data-stack-toggle][aria-expanded]").evaluateAll((nodes) => nodes.map((node) => node.getAttribute("aria-expanded")))).toEqual(expansion);
+    await expect(section.locator("[data-stack-toggle]")).toHaveAttribute("aria-expanded", "false");
     await expect(page.getByTestId("preview-title")).toHaveText(choice === "extra" ? "warm.png" : "forest.png");
   });
 }
@@ -209,8 +238,8 @@ test("changing primary focus within the same host selection supersedes loading",
 for (const change of ["refresh", "new reveal"] as const) {
   test(`a stale worker scene cannot settle a reveal after ${change}`, async ({ page }) => {
     await openView(page, undefined, "?revealLarge=1");
-    const section = page.locator("section.component").filter({ has: page.locator(".heading .name", { hasText: /^fan$/ }) });
-    if (await section.locator(".heading").getAttribute("aria-expanded") === "true") await section.locator(".heading").click();
+    const section = page.locator('section.component[aria-label="fan"]');
+    if (await section.locator("[data-stack-toggle]").getAttribute("aria-expanded") === "true") await section.locator("[data-stack-toggle]").click();
     await settle(page);
     await generated(page, "fan", false);
     await page.evaluate(() => {
@@ -218,8 +247,8 @@ for (const change of ["refresh", "new reveal"] as const) {
       const original = Worker.prototype.postMessage;
       w.originalWorkerPostMessage = original;
       w.heldLayouts = [];
-      Worker.prototype.postMessage = function (...args: Parameters<Worker["postMessage"]>) {
-        w.heldLayouts.push(() => original.apply(this, args));
+      Worker.prototype.postMessage = function (message: unknown, transferOrOptions?: Transferable[] | StructuredSerializeOptions) {
+        w.heldLayouts.push(() => Reflect.apply(original, this, [message, transferOrOptions]));
       };
       w.revealOutcome = "pending";
       w.revealResult = w.trace.showJob(71).then(() => w.revealOutcome = "completed", (error: Error) => w.revealOutcome = error.name);
@@ -285,25 +314,25 @@ test("Show image waits for an uncached worker layout to display and focus the ti
 
 test("collapsing the target cancels a reveal waiting for worker layout", async ({ page }) => {
   await openView(page, undefined, "?revealLarge=1");
-  const section = page.locator("section.component").filter({ has: page.locator(".heading .name", { hasText: /^fan$/ }) });
-  if (await section.locator(".heading").getAttribute("aria-expanded") === "true") await section.locator(".heading").click();
+  const section = page.locator('section.component[aria-label="fan"]');
+  if (await section.locator("[data-stack-toggle]").getAttribute("aria-expanded") === "true") await section.locator("[data-stack-toggle]").click();
   await settle(page);
   await generated(page, "fan", false);
   await page.evaluate(() => {
     const w = window as any;
     const original = Worker.prototype.postMessage;
     w.heldLayouts = [];
-    Worker.prototype.postMessage = function (...args: Parameters<Worker["postMessage"]>) {
-      w.heldLayouts.push(() => original.apply(this, args));
+    Worker.prototype.postMessage = function (message: unknown, transferOrOptions?: Transferable[] | StructuredSerializeOptions) {
+      w.heldLayouts.push(() => Reflect.apply(original, this, [message, transferOrOptions]));
     };
     w.revealResult = w.trace.showJob(71).then(() => "completed", (error: Error) => error.message);
   });
   await expect.poll(() => page.evaluate(() => (window as any).heldLayouts.length)).toBeGreaterThan(0);
-  await expect(section.locator(".heading")).toHaveAttribute("aria-expanded", "true");
-  await section.locator(".heading").click();
+  await expect(section.locator("[data-stack-toggle]")).toHaveAttribute("aria-expanded", "true");
+  await section.locator("[data-stack-toggle]").click();
   expect(await page.evaluate(() => (window as any).revealResult)).toContain("superseded");
   await page.evaluate(() => { for (const release of (window as any).heldLayouts) release(); });
   await settle(page);
-  await expect(section.locator(".heading")).toHaveAttribute("aria-expanded", "false");
+  await expect(section.locator("[data-stack-toggle]")).toHaveAttribute("aria-expanded", "false");
   await expect(await tile(page, "revealed")).toHaveCount(0);
 });

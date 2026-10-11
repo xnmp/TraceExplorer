@@ -13,6 +13,8 @@ import { projectDag, type TraceDag } from "$lib/domain/trace-graph/projection";
 import { traceBackend, type TraceBackend } from "./backend";
 import { createSnapshotCache, type SnapshotCache } from "./folder-snapshots";
 import { componentRequest } from "./component-requests";
+import { parentDir, samePath } from "$lib/domain/path";
+import { coverAliases, coverIdentity, forgetOpenStack, stackIdentity, pathIdentity, revisionIdentity, resolveOpenStacks } from "./open-stacks";
 
 export interface ComponentData {
   readonly nodes: readonly TraceNode[];
@@ -34,22 +36,31 @@ const MAX_RETRIES = 3;
 
 export type SessionStatus = "idle" | "loading" | "ready" | "error";
 
-/** What a folder last showed: its index, loaded components and which of them predate it, and each component's orientation. */
+/** Shared folder data, with each pane's expansion and selection history kept separately. */
 export interface FolderSnapshot {
   readonly index: FolderIndex;
   readonly components: ReadonlyMap<string, ComponentData>;
   readonly stale: ReadonlySet<string>;
   readonly orientations: ReadonlyMap<string, OrientationHistory>;
+  readonly panes: ReadonlyMap<string, PaneFolderSnapshot>;
 }
+interface PaneFolderSnapshot {
+  readonly openCovers: ReadonlySet<string>;
+  readonly openOwners: ReadonlyMap<string, string>;
+  readonly selectionChoice: string;
+  readonly selectionCovers: ReadonlySet<string>;
+}
+const emptyPaneSnapshot = (): PaneFolderSnapshot => ({ openCovers: new Set(), openOwners: new Map(), selectionChoice: "", selectionCovers: new Set() });
 /** Members and nodes a snapshot holds, which bound the cache's memory. */
 export const snapshotWeight = (snapshot: FolderSnapshot): number =>
-  snapshot.index.members.size + [...snapshot.components.values()].reduce((sum, data) => sum + data.nodes.length, 0);
+  snapshot.index.members.size + [...snapshot.components.values()].reduce((sum, data) => sum + data.nodes.length, 0)
+  + [...(snapshot.panes?.values() ?? [])].reduce((sum, pane) => sum + pane.openCovers.size + pane.openOwners.size + pane.selectionCovers.size, 0);
 /** Shared by every session, so a remounted view finds what the previous one loaded. */
 const folderSnapshots = createSnapshotCache<FolderSnapshot>({ limit: 8, budget: 200_000, weigh: snapshotWeight });
 /** Forgets every folder's data, when the plugin is disabled. */
 export function forgetFolderSnapshots(): void { folderSnapshots.clear(); }
 
-export function createFolderSession(backend: TraceBackend = traceBackend, snapshots: SnapshotCache<FolderSnapshot> = folderSnapshots) {
+export function createFolderSession(backend: TraceBackend = traceBackend, snapshots: SnapshotCache<FolderSnapshot> = folderSnapshots, paneId = "") {
   let index = $state.raw<FolderIndex | null>(null);
   let status = $state<SessionStatus>("idle");
   let indexError = $state("");
@@ -57,6 +68,7 @@ export function createFolderSession(backend: TraceBackend = traceBackend, snapsh
   const error = $derived(indexError || [...componentErrors.values()].join("\n"));
   let components = $state.raw<ReadonlyMap<string, ComponentData>>(new Map());
   let directory: string | null = null;
+  let started = false;
   let generation = 0;
   let disposed = false;
   const loading = new Map<string, Promise<void>>();
@@ -68,6 +80,38 @@ export function createFolderSession(backend: TraceBackend = traceBackend, snapsh
   let stale = $state.raw<ReadonlySet<string>>(new Set());
   /** Displayed orientations by component and tile width: hysteresis that survives collapse and remount. */
   let orientations = $state.raw(new Map<string, OrientationHistory>());
+  let paneState = $state.raw<PaneFolderSnapshot>(emptyPaneSnapshot());
+  const stackMembership = $derived.by(() => {
+    const available = (node: TraceNode) => !node.discarded && node.state !== "missing" && !node.referenceBadge;
+    // A stack is identified by its cover's revision while it has anything present to show, even when
+    // the cover image itself is gone: its surviving edits must stay openable.
+    const listed = new Set([...(index?.members.values() ?? [])].map((member) => member.componentId));
+    const identities = new Map((index?.components ?? []).map((summary) => {
+      const data = !stale.has(summary.id) ? components.get(summary.id) : undefined;
+      const present = !data || data.nodes.some(available) || listed.has(summary.id);
+      return [summary.id, new Set<string>(present ? [revisionIdentity(summary.coverKey)] : [])];
+    }));
+    for (const [path, member] of index?.members ?? []) {
+      identities.get(member.componentId)?.add(pathIdentity(path));
+      identities.get(member.componentId)?.add(revisionIdentity(member.key));
+    }
+    for (const [id, data] of components) if (!stale.has(id)) for (const node of data.nodes) {
+      if (!available(node)) continue;
+      identities.get(id)?.add(revisionIdentity(node.key));
+      if (node.path && !node.earlierRevision) identities.get(id)?.add(pathIdentity(node.path));
+    }
+    return (index?.components ?? []).map((summary) => ({ coverKey: summary.coverKey, coverIdentity: stackIdentity(summary), aliases: coverAliases(summary, index!.members), identities: identities.get(summary.id)! }));
+  });
+  const openStacks = $derived(resolveOpenStacks(paneState.openCovers, stackMembership, paneState.openOwners));
+  /** Same identity while the open set's contents are unchanged, so consumers (the grid's motion capture) do not re-run on a no-op rewrite of the pane state. */
+  let stableOpen: ReadonlySet<string> = new Set();
+  const openStackKeys = $derived.by(() => {
+    const next = openStacks.open;
+    return next.size === stableOpen.size && [...next].every((key) => stableOpen.has(key)) ? stableOpen : (stableOpen = next);
+  });
+  const openStackSearch = $derived(new Set(index && [...openStacks.unresolved].some((key) =>
+    !(key.startsWith("path:") && samePath(parentDir(key.slice(5)), index!.directory)))
+    ? index.components.filter((summary) => !components.has(summary.id) || stale.has(summary.id)).map((summary) => summary.id) : []));
   /** Writes stop once the cache is cleared (the plugin was disabled) after this session began. */
   const epoch = snapshots.epoch;
 
@@ -93,7 +137,20 @@ export function createFolderSession(backend: TraceBackend = traceBackend, snapsh
       components: merge ? new Map([...prior.components, ...components]) : components,
       stale: merge ? new Set([...[...prior.stale].filter((id) => !components.has(id)), ...stale]) : stale,
       orientations,
+      panes: new Map(prior?.panes).set(paneId, paneState),
     });
+  }
+
+  /** Retain missing covers; only unlisted identities need fresh node pages to resolve. */
+  function reconcileOpenStacks(): void {
+    if (!index) return;
+    const resolved = openStacks;
+    const pending = [...resolved.unresolved].filter((key) =>
+      !(key.startsWith("path:") && samePath(parentDir(key.slice(5)), index!.directory)));
+    const unread = index.components.filter((summary) => !components.has(summary.id) || stale.has(summary.id));
+    paneState = { ...paneState, openCovers: resolved.remembered, openOwners: resolved.owners };
+    remember();
+    if (pending.length) for (const summary of unread) void ensure(summary.id);
   }
 
   async function loadIndex(dir: string, current: number, attempt = 0, signal?: AbortSignal): Promise<FolderIndex | null> {
@@ -149,10 +206,17 @@ export function createFolderSession(backend: TraceBackend = traceBackend, snapsh
     components = next;
     if (stale.has(id)) stale = new Set([...stale].filter((other) => other !== id));
     componentErrors = new Map([...componentErrors].filter(([other]) => other !== id));
-    remember();
+    reconcileOpenStacks();
   }
 
-  async function open(dir: string | null, keepVisible: boolean): Promise<void> {
+  /** The latest index read; `settled` waits for it, since a read replaces component ids and cancels loads. */
+  let opening: Promise<void> = Promise.resolve();
+  const open = (dir: string | null, keepVisible: boolean): Promise<void> => (opening = openIndex(dir, keepVisible));
+  async function settled(): Promise<void> {
+    for (let seen: Promise<void> | null = null; seen !== opening;) { seen = opening; await seen; }
+  }
+
+  async function openIndex(dir: string | null, keepVisible: boolean): Promise<void> {
     const current = ++generation;
     cancelLoads();
     directory = dir;
@@ -173,7 +237,7 @@ export function createFolderSession(backend: TraceBackend = traceBackend, snapsh
       components = new Map([...previous].filter(([id]) => keep.has(id)));
       // Every kept component may be out of date: wanted ones reload now, the others when wanted again.
       stale = new Set(components.keys());
-      remember();
+      reconcileOpenStacks();
       for (const id of wanted) if (keep.has(id)) void ensure(id, true);
     } catch (cause) {
       if (current !== generation || disposed) return;
@@ -257,7 +321,7 @@ export function createFolderSession(backend: TraceBackend = traceBackend, snapsh
         status = "ready";
         indexError = "";
         wanted.add(summary.id);
-        remember();
+        reconcileOpenStacks();
         return { node, componentId: summary.id };
       }
       if (!restart) throw new Error(`Trace image artifact:${artifactId} no longer exists in this folder`);
@@ -271,23 +335,58 @@ export function createFolderSession(backend: TraceBackend = traceBackend, snapsh
     get error() { return error; },
     get components() { return components; },
     get orientations() { return orientations; },
+    get openStackKeys() { return openStackKeys; },
+    get openStackSearch() { return openStackSearch; },
+    setStackOpen(id: string, opening: boolean) {
+      const summary = index?.components.find((component) => component.id === id);
+      if (!summary) return;
+      let keys = new Set(paneState.openCovers);
+      if (opening) {
+        for (const key of coverAliases(summary, index!.members)) { keys.delete(key); keys.add(key); }
+      }
+      else {
+        const membership = stackMembership.find((component) => component.coverKey === summary.coverKey);
+        if (membership) keys = new Set(forgetOpenStack(openStacks, membership));
+      }
+      const resolved = resolveOpenStacks(keys, stackMembership, openStacks.owners);
+      paneState = { ...paneState, openCovers: resolved.remembered, openOwners: resolved.owners };
+      remember();
+    },
+    /** A new external selection opens its stacks; an explicitly closed selection stays closed on return. */
+    followSelection(choice: string, ids: ReadonlySet<string>) {
+      if (!index) return;
+      const selected = index.components.filter((summary) => ids.has(summary.id)).map((summary) => coverIdentity(summary, index!.members));
+      const added = index.components.filter((summary) => ids.has(summary.id) && (choice !== paneState.selectionChoice || !paneState.selectionCovers.has(coverIdentity(summary, index!.members))));
+      const keys = new Set(paneState.openCovers);
+      for (const summary of added) for (const key of coverAliases(summary, index.members)) { keys.delete(key); keys.add(key); }
+      const resolved = resolveOpenStacks(keys, stackMembership, openStacks.owners);
+      paneState = { openCovers: resolved.remembered, openOwners: resolved.owners, selectionChoice: choice, selectionCovers: new Set(selected) };
+      remember();
+    },
     /** Switch folders. Data for the previous folder is never shown for the new one. */
     setDirectory(dir: string | null) {
       if (disposed || dir === directory) return;
+      // A remount restores the same pane/folder, but navigation forgets its history.
+      if (started) { paneState = emptyPaneSnapshot(); remember(); }
       lifetime.abort();
       lifetime = new AbortController();
       indexError = "";
       componentErrors = new Map();
       wanted = new Set();
       const known = dir ? snapshots.recall(dir) : undefined;
+      paneState = (!started && known?.panes?.get(paneId)) || emptyPaneSnapshot();
+      started = true;
       if (!known) { orientations = new Map(); void open(dir, false); return; }
       // Show what the folder last showed, as it was laid out, while its index is read again; open() reloads what is wanted.
       index = known.index; components = known.components; stale = known.stale; orientations = new Map(known.orientations);
       void open(dir, true);
+      // Persist navigation's reset even if the view unmounts before revalidation.
+      remember();
     },
     refresh,
     resolveArtifact,
     ensure,
+    settled,
     release(id: string) {
       wanted.delete(id);
       const key = index ? `${index.token}:${id}` : null;

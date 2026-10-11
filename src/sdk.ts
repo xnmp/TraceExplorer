@@ -1,5 +1,5 @@
 import type { Component } from "svelte";
-import type { FileTilesProps, RuntimeSDK } from "../integration/plugin-sdk";
+import type { FileTileModule, FileTilesProps, RuntimeSDK } from "../integration/plugin-sdk";
 export const SVELTE_ABI = "5.56.3";
 export function host(): RuntimeSDK {
   const sdk = (globalThis as typeof globalThis & { __TAURI_EXPLORER_PLUGIN_SDK__?: RuntimeSDK }).__TAURI_EXPLORER_PLUGIN_SDK__;
@@ -23,5 +23,19 @@ export function hostFileTiles(): Component<FileTilesProps> | null {
     if (!sdk.capabilities?.includes("fileTiles")) return null;
     const component = sdk.modules["ui/file-tiles"]?.default;
     return typeof component === "function" ? component as Component<FileTilesProps> : null;
+  } catch { return null; }
+}
+
+/**
+ * The host's single Tiles-view cell and its grid metrics (`ui/file-tile`),
+ * where the host announces `fileTile`; null otherwise, and the view draws
+ * ordinary entries with its own fallback tile.
+ */
+export function hostFileTile(): FileTileModule | null {
+  try {
+    const sdk = host();
+    if (!sdk.capabilities?.includes("fileTile")) return null;
+    const module = sdk.modules["ui/file-tile"] as Partial<FileTileModule> | undefined;
+    return typeof module?.default === "function" && typeof module.tileGridMetrics === "function" ? module as FileTileModule : null;
   } catch { return null; }
 }

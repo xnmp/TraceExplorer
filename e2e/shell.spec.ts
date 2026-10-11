@@ -5,20 +5,20 @@ const view = (page: import("@playwright/test").Page) => page.getByTestId("trace-
 const builtin = (page: import("@playwright/test").Page) => page.getByRole("list", { name: "Built-in listing" });
 
 for (const host of [
-  { name: "a host with ui/file-tiles", query: "?fileTiles=1", module: true },
+  { name: "a host with ui/file-tile", query: "?fileTile=1", module: true },
   { name: "an older SDK 2 host", query: "", module: false },
 ]) {
-  test(`with ${host.name}, the ordinary section lists files without provenance and keeps selection, opening and menus working`, async ({ page }) => {
+  test(`with ${host.name}, the folder grid lists files without provenance and keeps selection, opening and menus working`, async ({ page }) => {
     await openView(page, undefined, host.query);
     // The host's Tiles view is a grid of gridcells with aria-selected; the built-in fallback is a list of buttons with aria-pressed.
-    const list = page.getByRole(host.module ? "grid" : "list", { name: "Other files and folders" });
-    const selectedAttribute = host.module ? "aria-selected" : "aria-pressed";
+    const list = page.getByRole("grid", { name: "Folder" });
+    const selectedAttribute = "aria-selected";
     const entry = (path: string) => list.locator(`[data-entry-path="${path}"]`);
     await expect(list.locator("[data-entry-path]")).toHaveCount(3);
     for (const path of ["/pictures/notes.txt", "/pictures/plain.png", "/pictures/refs"]) await expect(entry(path)).toHaveCount(1);
     // The host's Tiles view renders the entries when available; the plugin then draws no icons of its own.
-    await expect(page.locator("section.ordinary [data-host-file-tiles]")).toHaveCount(host.module ? 1 : 0);
-    if (host.module) await expect(page.locator("section.ordinary svg")).toHaveCount(0);
+    await expect(page.locator("[data-host-file-tile]")).toHaveCount(host.module ? 3 : 0);
+    if (host.module) await expect(list.locator("[data-host-file-tile] svg")).toHaveCount(0);
 
     const notes = entry("/pictures/notes.txt");
     await notes.click();
@@ -53,9 +53,9 @@ for (const host of [
 test("an image whose only history is failed edits lists with the other files until an edit draws its section", async ({ page }) => {
   await openView(page, undefined, "?lone=1");
   const lonely = "/pictures/lonely.png";
-  const others = page.getByRole("list", { name: "Other files and folders" });
+  const others = page.getByRole("grid", { name: "Folder" });
   await expect(others.locator(`[data-entry-path="${lonely}"]`)).toHaveCount(1);
-  await expect(page.locator("section.ordinary .count")).toHaveText("4");
+  await expect(others.locator("[data-entry-path]")).toHaveCount(4);
   await expect(await tile(page, "lonely")).toHaveCount(0);
   const sections = await page.locator("section.component[data-component]").count();
 
@@ -63,8 +63,8 @@ test("an image whose only history is failed edits lists with the other files unt
   await page.evaluate(() => (window as any).trace.backend.startGeneration("lonely", "retry"));
   await expect(page.locator("section.component[data-component]")).toHaveCount(sections + 1);
   await expect(others.locator(`[data-entry-path="${lonely}"]`)).toHaveCount(0);
-  await expect(page.locator("section.ordinary .count")).toHaveText("3");
-  const section = page.locator("section.component[data-component]", { has: page.locator(".heading .name", { hasText: /^lonely$/ }) });
+  await expect(others.locator("[data-entry-path]")).toHaveCount(3);
+  const section = page.locator('section.component[aria-label="lonely"]');
   await ensureExpanded(section);
   await expect(section.locator(await tile(page, "lonely"))).toHaveCount(1);
   await expect(section.locator(await tile(page, "retry"))).toHaveCount(1);
@@ -74,7 +74,7 @@ test("an image whose only history is failed edits lists with the other files unt
 test("an image whose edit fails before any output goes back to the other files", async ({ page }) => {
   await openView(page, undefined, "?lone=1");
   const lonely = "/pictures/lonely.png";
-  const others = page.getByRole("list", { name: "Other files and folders" });
+  const others = page.getByRole("grid", { name: "Folder" });
   const sections = await page.locator("section.component[data-component]").count();
   await page.evaluate(() => (window as any).trace.backend.startGeneration("lonely", "retry"));
   await expect(page.locator("section.component[data-component]")).toHaveCount(sections + 1);
@@ -82,16 +82,16 @@ test("an image whose edit fails before any output goes back to the other files",
 
   await page.evaluate(() => (window as any).trace.backend.failGeneration("retry"));
   await expect(page.locator("section.component[data-component]")).toHaveCount(sections);
-  await expect(page.locator("section.component[data-component]", { has: page.locator(".heading .name", { hasText: /^lonely$/ }) })).toHaveCount(0);
+  await expect(page.locator('section.component[aria-label="lonely"]')).toHaveCount(0);
   await expect(others.locator(`[data-entry-path="${lonely}"]`)).toHaveCount(1);
-  await expect(page.locator("section.ordinary .count")).toHaveText("4");
+  await expect(others.locator("[data-entry-path]")).toHaveCount(4);
   expect(await uncaught(page)).toEqual([]);
 });
 
 test("a Preview target whose generation fails is cleared and dims no section", async ({ page }) => {
   await openView(page, undefined, "?lone=1");
   await page.evaluate(() => (window as any).trace.backend.startGeneration("lonely", "retry"));
-  const section = page.locator("section.component[data-component]", { has: page.locator(".heading .name", { hasText: /^lonely$/ }) });
+  const section = page.locator('section.component[aria-label="lonely"]');
   await expect(section).toHaveCount(1);
   await ensureExpanded(section);
   await click(page, "retry");
@@ -115,6 +115,8 @@ test("the toggle command switches to the built-in listing and back", async ({ pa
   await page.evaluate(() => (window as any).trace.toggle());
   await expect(view(page)).toBeVisible();
   await expect(page.locator("[data-tile-key]").first()).toBeVisible();
+  // Stacks start closed; opening the village's shows its lineage again.
+  await ensureExpanded(page.locator('section[data-component][aria-label="village"]'));
   await click(page, "warm");
   expect(await rendered(page, "tone", "focus")).toEqual(["warm"]);
 });

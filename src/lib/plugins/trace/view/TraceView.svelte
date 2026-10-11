@@ -1,7 +1,7 @@
 <script lang="ts">
   /**
    * The Trace file view: replaces the pane's listing with one collapsible
-   * section per connected component and an ordinary section for everything
+   * stack per connected component in the folder grid alongside entries
    * without provenance. All view state (folder session, expansion, anchors)
    * belongs to this pane; selection and Preview go through the pane handle.
    */
@@ -14,41 +14,39 @@
   import { tileMetrics } from "$lib/domain/trace-graph/metrics";
   import { traceInvalidation } from "../invalidation.svelte";
   import { promptTitles } from "../prompt-titles.svelte";
-  import TraceThumbnail from "../TraceThumbnail.svelte";
-  import { createFolderSession, type ComponentData, type FolderSession } from "./folder-session.svelte";
+  import { createFolderSession, type ComponentData, type FolderIndex, type FolderSession } from "./folder-session.svelte";
   import { tracePanes, isTraceTargetData, type TracePaneView } from "./pane-registry.svelte";
   import { NO_PICKS, clickListed, dropPick, followPicks, picksFromHost, pickOnly, pickable, replacePick, resolvePicks, selectionKey, settlePicks, togglePick, type PickLocation, type Picks } from "./input-picks";
   import { nodeTarget } from "./node-target";
   import { revealArtifactId } from "./reveal-target";
   import type { GraphScene } from "./graph-commit";
   import { findLoadedNode, locateTarget, unresolvedTargetComponents } from "./target-location";
-  import { holdAnchor, layoutHeight, prefersReducedMotion, zoomOf, resizeSection, scrollsByUser, sectionHeight, USER_SCROLL, type AnchorHold, viewMoving } from "./motion";
-  import TraceGraph from "./TraceGraph.svelte";
-  import OrdinarySection from "./OrdinarySection.svelte";
+  import { holdAnchor, zoomOf, scrollsByUser, USER_SCROLL, type AnchorHold, viewMoving } from "./motion";
+
+  import StackGrid from "./StackGrid.svelte";
+  import { selectableSelector } from "./selectable";
+  import { folderCells } from "./stack-grid";
 
   interface Props { pane: FileViewPane; session?: FolderSession }
   let { pane, session: provided }: Props = $props();
 
-  const session = untrack(() => provided) ?? createFolderSession();
-  /** Sections expanded by default: the first few, plus whichever holds the focus. */
-  const DEFAULT_EXPANDED = 3;
+  const session = untrack(() => provided) ?? createFolderSession(undefined, undefined, untrack(() => pane.paneId));
   /** Width is quantized so resizing does not relayout on every pixel. */
   const WIDTH_STEP = 16;
-  /** Horizontal space around a graph: the view's 10px padding and the section's 1px borders. */
-  const GRAPH_CHROME = 22;
-  /** Sections this far outside the viewport keep only a sized placeholder. */
-  const NEAR_MARGIN = "1200px 0px";
+  /** Horizontal space reserved by the view's 10px pane padding. */
+  const GRID_CHROME = 20;
 
   let scroller = $state<HTMLElement | null>(null);
   let clientWidth = $state(0);
-  let overrides = $state.raw<ReadonlyMap<string, boolean>>(new Map());
-  /** Collapsed sections whose content stays mounted until it has been hidden. */
-  let closing = $state.raw<ReadonlySet<string>>(new Set());
-  /** Each section's running expand or collapse. */
-  const sectionMotions = new Map<string, Animation[]>();
   let near = $state.raw<ReadonlySet<string>>(new Set());
-  let heights = new Map<string, number>();
   /** A save into this folder waiting for the listing to contain its file; see `callbacks.saved`. */
+  /**
+   * Files this view just saved, by path, with the index read they predate. The host lists a saved file
+   * before Trace's index maps it into its stack; until a newer read lands it is part of that stack, not
+   * an ordinary file (which would duplicate the cover and shift every cell).
+   */
+  let claimed = $state.raw<ReadonlyMap<string, FolderIndex | null>>(new Map());
+  const claimedPaths = $derived(new Set([...claimed].filter(([, since]) => since === session.index).map(([path]) => path)));
   let pendingSave = $state.raw<{ directory: string; path: string; key: NodeKey; picks: Picks } | null>(null);
   type ScrollAnchor = { key: NodeKey; componentId: string; ownsSelection: () => boolean };
   let anchor: ScrollAnchor | null = null;
@@ -119,7 +117,7 @@
   const issuedTargets = new WeakMap<PreviewTarget, TraceNode>();
 
   const directory = $derived(pane.directory);
-  const width = $derived(Math.max(0, Math.floor((clientWidth - GRAPH_CHROME - 2) / WIDTH_STEP) * WIDTH_STEP));
+  const width = $derived(Math.max(0, Math.floor((clientWidth - GRID_CHROME) / WIDTH_STEP) * WIDTH_STEP));
   const revision = $derived(traceInvalidation.revision);
   // Trace tiles follow the host's tile-size setting for this pane; older hosts
   // (without the "tileSize" capability) leave it undefined: the default tile.
@@ -128,7 +126,7 @@
   const entriesByPath = $derived(new Map(pane.entries.map((entry) => [entry.path, entry])));
 
   // Session follows the pane's folder and Trace's invalidation signal.
-  $effect(() => { const dir = directory; untrack(() => { supersedeReveal(); releaseAnchors(); overrides = new Map(); session.setDirectory(dir); }); });
+  $effect(() => { const dir = directory; untrack(() => { supersedeReveal(); releaseAnchors(); session.setDirectory(dir); claimed = new Map(); }); });
   let seenRevision = untrack(() => traceInvalidation.revision);
   $effect(() => {
     const current = traceInvalidation.revision;
@@ -138,7 +136,19 @@
   });
 
   const summaries = $derived<readonly ComponentSummary[]>(session.index?.components ?? []);
-  const ordinary = $derived(session.index ? pane.entries.filter((entry) => !session.index!.members.has(entry.path)) : []);
+  const gridCells = $derived(session.index ? folderCells(pane.entries, session.index) : []);
+  const stackKey = (id: string) => gridCells.find((cell) => cell.summary?.id === id)?.id ?? id;
+  const openKeys = $derived(session.openStackKeys);
+  $effect(() => {
+    const choice = JSON.stringify([hostChoice, target?.id, pane.focusedPath]);
+    const index = session.index;
+    untrack(() => {
+      if (!index) return;
+      const ids = new Set(pane.selection.flatMap((entry) => { const member = session.componentOf(entry.path); return member ? [member.componentId] : []; }));
+      if (focus) ids.add(focus.componentId);
+      session.followSelection(choice, ids);
+    });
+  });
 
   // Focus: this pane's Trace preview target, otherwise the primary selected file.
   const target = $derived(pane.previewTarget);
@@ -238,14 +248,14 @@
   }
 
   const isExpanded = (summary: ComponentSummary, index: number) =>
-    overrides.get(summary.id) ?? (index < DEFAULT_EXPANDED || summary.id === focus?.componentId);
+    openKeys.has(summary.coverKey);
 
   // Load what is expanded and near the viewport, and every component holding an
   // extra pick (so a pick in a collapsed section is checked against fresh
   // data); release the rest.
   $effect(() => {
     const picked = pickComponents;
-    const wanted = summaries.filter((summary, index) => (isExpanded(summary, index) && near.has(summary.id)) || picked.has(summary.id)).map((summary) => summary.id);
+    const wanted = summaries.filter((summary, index) => (isExpanded(summary, index) && near.has(summary.id)) || picked.has(summary.id) || session.openStackSearch.has(summary.id)).map((summary) => summary.id);
     untrack(() => {
       for (const summary of summaries) if (!wanted.includes(summary.id)) session.release(summary.id);
       for (const id of wanted) void session.ensure(id);
@@ -264,7 +274,7 @@
   // programmatic navigation reveal it once motion settles.
   function anchorTile(key: NodeKey, componentId: string | undefined = undefined): HTMLElement | null {
     const section = componentId ? scroller?.querySelector<HTMLElement>(`section[data-component="${CSS.escape(componentId)}"]`) : scroller;
-    return section?.querySelector<HTMLElement>(`[data-tile-key="${CSS.escape(key)}"]`) ?? null;
+    return section?.querySelector<HTMLElement>(selectableSelector(key)) ?? null;
   }
   // Holds compensate every section commit, including while the clicked graph
   // is still computing. Reveals alone wait for their committed motion.
@@ -299,7 +309,7 @@
         if (pendingReveal !== request || request.signal.aborted) return;
         try { checkReveal(request.owner); } catch (error) { request.finish(error); return; }
         if (focus?.key !== request.key) { supersedeReveal(); return; }
-        const button = anchorTile(request.key, focus?.componentId)?.querySelector<HTMLElement>(`[data-node-key="${CSS.escape(request.key)}"]`);
+        const button = anchorTile(request.key, focus?.componentId);
         if (!button) { request.finish(new Error("Trace image could not be shown")); return; }
         button.scrollIntoView({ block: "nearest", inline: "nearest" });
         button.focus({ preventScroll: true });
@@ -312,7 +322,11 @@
       || data !== session.components.get(current.componentId)) return;
     anchor = null;
     whenReady(() => {
-      if (current.ownsSelection()) anchorTile(current.key, current.componentId)?.scrollIntoView({ block: "nearest", inline: "nearest" });
+      if (current.ownsSelection()) {
+        const tile = anchorTile(current.key, current.componentId);
+        tile?.scrollIntoView({ block: "nearest", inline: "nearest" });
+        tile?.focus({ preventScroll: true });
+      }
     });
   }
 
@@ -347,7 +361,11 @@
      * folder selects its file once the listing has it; one elsewhere needs
      * nothing: its pick follows the node to the saved path (followPicks).
      */
-    saved(path: string, key: NodeKey) { if (samePath(parentDir(path), directory)) pendingSave = { directory, path, key, picks }; },
+    saved(path: string, key: NodeKey, select: boolean) {
+      if (!samePath(parentDir(path), directory)) return;
+      claimed = new Map(claimed).set(path, session.index);
+      if (select) pendingSave = { directory, path, key, picks };
+    },
     discarded(key: NodeKey) { commitPicks(dropPick(livePicks, key)); },
   };
 
@@ -385,6 +403,7 @@
     const found = findNode(key, componentId);
     if (!found) return;
     keepFocusedOpen();
+    setExpanded(found.componentId, true);
     const entry = fileEntry(found.node);
     if (entry) { selectListed(entry, modifiers); return; }
     if (modifiers.ctrlKey || modifiers.shiftKey) {
@@ -411,20 +430,68 @@
     commitPicks(pickable(node) ? pickOnly({ path: node.path!, key: node.key, componentId }, false) : NO_PICKS);
   }
 
-  function activate(key: NodeKey, event: MouseEvent, componentId: string): void {
-    focusNode(key, { ctrlKey: event.ctrlKey || event.metaKey, shiftKey: event.shiftKey }, "hold", componentId);
+  /**
+   * Loads the component holding `key` and returns the id of the component that has it. A refresh that
+   * lands meanwhile (a merge renaming components) cancels the load: wait for it, then look the node up
+   * in the new index by what identifies it (its component if that survives, else the stack it covers).
+   * Null when the folder changed, the selection moved on, or the node is gone.
+   */
+  async function reachNode(key: NodeKey, componentId: string, turn: number): Promise<string | null> {
+    const dir = directory, owns = captureSelection();
+    const current = () => dir === directory && owns() && turn === activations;
+    for (let round = 0; round < 4; round++) {
+      const hit = findNode(key, componentId);
+      if (hit) return hit.componentId;
+      await session.settled();
+      if (!current()) return null;
+      const index = session.index;
+      const holder = index?.components.find((summary) => summary.id === componentId)
+        ?? index?.components.find((summary) => summary.coverKey === key)
+        ?? index?.components.find((summary) => summary.id === [...index.members.values()].find((member) => member.key === key)?.componentId);
+      if (!holder) return null;
+      componentId = holder.id;
+      await session.ensure(holder.id);
+      if (!current()) return null;
+    }
+    return current() ? findNode(key)?.componentId ?? null : null;
   }
 
+  /** Bumped by every user activation and every explicit close: an activation still loading when it changes does nothing. */
+  let activations = 0;
+
+  async function navigateNode(key: NodeKey, componentId: string, modifiers: { shiftKey?: boolean } = {}): Promise<void> {
+    const turn = ++activations;
+    const holder = findNode(key, componentId) ? componentId : await reachNode(key, componentId, turn);
+    if (holder) focusNode(key, modifiers, "reveal", holder);
+  }
+
+  async function activate(key: NodeKey, event: MouseEvent, componentId: string): Promise<void> {
+    const turn = ++activations;
+    const holder = findNode(key, componentId) ? componentId : await reachNode(key, componentId, turn);
+    if (holder) focusNode(key, { ctrlKey: event.ctrlKey || event.metaKey, shiftKey: event.shiftKey }, "hold", holder);
+  }
+
+  /** Double-click or Enter on an image opens its file. An earlier revision has none of its own: the file at its path now holds the newest revision, which is what opens. */
   function open(key: NodeKey): void {
     const found = findNode(key);
-    const entry = found && fileEntry(found.node);
+    const node = found?.node;
+    const entry = node && (fileEntry(node) ?? (node.earlierRevision && node.scope === "current" && node.path ? entriesByPath.get(node.path) : null));
     if (entry) void pane.open(entry);
   }
 
-  function menu(key: NodeKey, event: MouseEvent, componentId: string | undefined = undefined): void {
+  async function menu(key: NodeKey, event: MouseEvent, componentId: string | undefined = undefined): Promise<void> {
     supersedeReveal();
     releaseAnchors();
-    const found = findNode(key, componentId);
+    let found = findNode(key, componentId);
+    if (!found && componentId) {
+      // A stack not loaded yet: resolve its image the way activation does, then act as for a loaded one.
+      // Claim the event before any await: the host's folder handlers (empty-space menu, clearing the selection) must never see it.
+      event.preventDefault();
+      event.stopPropagation();
+      const holder = await reachNode(key, componentId, ++activations);
+      found = holder ? findNode(key, holder) : null;
+      if (!found) return;
+    }
     const entry = found && fileEntry(found.node);
     if (entry) {
       if (!selectedPaths.has(entry.path)) { keepFocusedOpen(); selectListed(entry); }
@@ -574,7 +641,7 @@
       let visible!: Promise<void>;
       flushSync(() => {
         checkReveal(owner);
-        overrides = new Map(overrides).set(found.componentId, true);
+        session.setStackOpen(found.componentId, true);
         near = new Set(near).add(found.componentId);
         applyFocusNode(found.node.key, {}, found.componentId);
         owner.ownsSelection = captureSelection();
@@ -598,7 +665,7 @@
     focus: (key) => {
       const found = findNode(key, focus?.componentId);
       if (found && !summaries.some((summary, index) => summary.id === found.componentId && isExpanded(summary, index))) setExpanded(found.componentId, true);
-      else if (found) overrides = new Map(overrides).set(found.componentId, true);
+      else if (found) session.setStackOpen(found.componentId, true);
       focusNode(key, {}, "reveal", found?.componentId);
     },
     get active() { return pane.active; },
@@ -618,100 +685,28 @@
     for (const data of session.components.values()) for (const node of data.nodes) if (node.runId !== null) untrack(() => promptTitles.loadFor(node.runId, node.prompt));
   });
 
-  const withClosing = (id: string, on: boolean): ReadonlySet<string> => {
-    if (closing.has(id) === on) return closing;
-    const next = new Set(closing);
-    if (on) next.add(id); else next.delete(id);
-    return next;
-  };
-
-  /**
-   * Expands or collapses a section. The section's layout changes once; its
-   * displayed height then follows by clip and transform (see resizeSection),
-   * starting from what is displayed now, so a change interrupting another
-   * reverses smoothly.
-   */
   function setExpanded(id: string, opening: boolean): void {
+    const element = scroller?.querySelector<HTMLElement>(`[data-grid-cell="${CSS.escape(stackKey(id))}"]`) ?? null;
+    if (scroller && element && !heldAnchor) heldAnchor = holdAnchor(scroller, element, () => { heldAnchor = null; }, updateHeldAnchor);
     if (!opening && pendingReveal && session.components.get(id)?.dag.nodes.has(pendingReveal.key)) supersedeReveal();
-    const section = scroller?.querySelector<HTMLElement>(`section[data-component="${CSS.escape(id)}"]`) ?? null;
-    const body = () => section?.querySelector<HTMLElement>(":scope > .content") ?? null;
-    const animate = !!section && !!scroller && !prefersReducedMotion();
-    const shown = animate ? body() : null;
-    const from = animate ? { height: sectionHeight(section!), opacity: shown ? Number(getComputedStyle(shown).opacity) : 0 } : null;
-    for (const animation of sectionMotions.get(id) ?? []) animation.cancel();
-    sectionMotions.delete(id);
-    overrides = new Map(overrides).set(id, opening);
-    closing = withClosing(id, !opening && animate);
-    if (!from) { flushSync(); updateHeldAnchor(); return; }
-    // Mount (or keep) the content now, so the new layout can be measured.
-    flushSync();
-    const view = scroller!;
-    const content = body();
-    const layout = layoutHeight(section!);
-    const removed = opening || !content ? 0 : layoutHeight(content);
-    // Removing the content may leave the scroll position past the end; the view then scrolls back by the excess.
-    const settle = opening ? 0 : Math.max(0, view.scrollTop - (view.scrollHeight - removed - view.clientHeight));
-    const animations = resizeSection(section!, content, { from, to: layout - removed, opening, settle });
-    sectionMotions.set(id, animations);
+    if (!opening) activations++;
+    session.setStackOpen(id, opening);
+    if (opening) void session.ensure(id);
     updateHeldAnchor();
-    void Promise.all(animations.map((animation) => animation.finished)).then(() => {
-      if (sectionMotions.get(id) !== animations) return;
-      sectionMotions.delete(id);
-      if (opening) return;
-      // Drop the hidden content and the held final frame together, so nothing shifts.
-      closing = withClosing(id, false);
-      flushSync();
-      for (const animation of animations) animation.cancel();
-      updateHeldAnchor();
-    }, () => {});
   }
 
-  function toggle(summary: ComponentSummary, index: number): void {
-    setExpanded(summary.id, !isExpanded(summary, index));
-  }
-
-  /**
-   * A section open only because it holds the focus stays open when the focus
-   * moves on: closing it under the pointer would move everything below it.
-   */
   function keepFocusedOpen(): void {
     const id = focus?.componentId;
-    if (id && !overrides.has(id) && summaries.some((summary, index) => summary.id === id && isExpanded(summary, index))) overrides = new Map(overrides).set(id, true);
-  }
-
-  /** Tracks which sections are near the viewport. */
-  function nearby(element: HTMLElement, id: string) {
-    let current = id;
-    const observer = new IntersectionObserver((records) => {
-      let next: Set<string> | null = null;
-      for (const record of records) {
-        const has = near.has(current);
-        if (record.isIntersecting !== has) { next ??= new Set(near); if (record.isIntersecting) next.add(current); else next.delete(current); }
-      }
-      if (next) near = next;
-    }, { root: scroller, rootMargin: NEAR_MARGIN });
-    observer.observe(element);
-    return {
-      update(value: string) { current = value; },
-      destroy() { observer.disconnect(); if (near.has(current)) { const next = new Set(near); next.delete(current); near = next; } },
-    };
-  }
-
-  function measure(element: HTMLElement, id: string) {
-    const observer = new ResizeObserver(() => { if (element.offsetHeight) heights.set(id, element.offsetHeight); });
-    observer.observe(element);
-    return { destroy() { observer.disconnect(); } };
+    if (id && openKeys.has(stackKey(id))) session.setStackOpen(id, true);
   }
 
   onDestroy(() => {
     supersedeReveal();
     releaseAnchors();
-    for (const animations of sectionMotions.values()) for (const animation of animations) animation.cancel();
     session.dispose();
     if (pane.previewTarget && isTraceTargetData(pane.previewTarget.data)) pane.setPreviewTarget(null);
   });
 
-  const countLabel = (summary: ComponentSummary) => `${summary.imageCount} ${summary.imageCount === 1 ? "image" : "images"}`;
   const graphData = (id: string): ComponentData | undefined => session.components.get(id);
 </script>
 
@@ -728,76 +723,22 @@
       <button type="button" onclick={() => pane.exitView()}>Show files</button>
     </div>
   {:else}
-    {#each summaries as summary, index (summary.id)}
-      {@const expanded = isExpanded(summary, index)}
-      {@const data = graphData(summary.id)}
-      <section class="component" class:dimmed={focus !== null && focus.componentId !== summary.id}
-        data-component={summary.id} aria-label={summary.title} use:nearby={summary.id}>
-        <button type="button" class="heading" aria-expanded={expanded} onclick={() => toggle(summary, index)}>
-          <svg class="chevron" viewBox="0 0 24 24" aria-hidden="true"><path d={expanded ? "m5 9 7 7 7-7" : "m9 5 7 7-7 7"} /></svg>
-          {#if summary.cover}<span class="cover"><TraceThumbnail path={summary.cover.path} present={summary.cover.present} {revision} label="" /></span>{/if}
-          <span class="name">{summary.title}</span>
-          <span class="count">{countLabel(summary)}</span>
-          {#if summary.active}<span class="spinner" role="status" aria-label="Generating"></span>{/if}
-          {#if summary.unsaved}<span class="unsaved" title="Contains unsaved images">Unsaved</span>{/if}
-        </button>
-        {#if expanded || closing.has(summary.id)}
-          <div class="content" data-horizontal-scroll inert={!expanded}>
-            {#if !near.has(summary.id) && focus?.componentId !== summary.id}
-              <div class="placeholder" style:height="{heights.get(summary.id) ?? 160}px"></div>
-            {:else if data}
-              <div use:measure={summary.id}>
-                <TraceGraph {data} {focus} selected={selectedKeys} {width} {tile} {revision} {scroller}
-                  onactivate={(key, event) => activate(key, event, summary.id)} onnavigate={(key) => focusNode(key, {}, "reveal", summary.id)} onopen={open} onmenu={(key, event) => menu(key, event, summary.id)}
-                  {captureSelection} componentId={summary.id} orientations={session.orientations} reveal={revealScene}
-                  onsaved={(key, path) => callbacks.saved(path, key)} ondiscarded={(key) => callbacks.discarded(key)} oncommit={keepAnchor}
-                  onlayout={(pending) => { if (pending) pendingLayouts.add(summary.id); else pendingLayouts.delete(summary.id); }}
-                  onfailure={(scene, error) => { if (pendingReveal && scene.isCurrent() && scene.reveal === pendingReveal.owner && scene.focus === pendingReveal.key && scene.data.dag.nodes.has(pendingReveal.key)) pendingReveal.finish(error); }} />
-              </div>
-            {:else}
-              <div class="placeholder loading" role="status" style:height="{heights.get(summary.id) ?? 160}px">Loading…</div>
-            {/if}
-          </div>
-        {/if}
-      </section>
-    {/each}
+    <StackGrid {pane} {session} {focus} selected={selectedKeys} {tile} {revision} {scroller} {width} {openKeys} {claimedPaths}
+      onexpand={setExpanded} onnear={(ids) => near = ids} onactivate={activate}
+      onnavigate={navigateNode} onopen={open} onmenu={menu}
+      onselect={(entry, event) => { supersedeReveal(); releaseAnchors(); keepFocusedOpen(); selectListed(entry, { ctrlKey: event.ctrlKey || event.metaKey, shiftKey: event.shiftKey }); }}
+      onordinarymenu={(entry, event) => { supersedeReveal(); releaseAnchors(); if (!selectedPaths.has(entry.path)) { keepFocusedOpen(); selectListed(entry); } pane.contextMenu(event, entry); }}
+      {captureSelection} onsaved={(key, path, select) => callbacks.saved(path, key, select)} ondiscarded={(key) => callbacks.discarded(key)} oncommit={keepAnchor}
+      onlayout={(id, pending) => { if (pending) pendingLayouts.add(id); else pendingLayouts.delete(id); }} reveal={revealScene}
+      onfailure={(scene, error) => { if (pendingReveal && scene.isCurrent() && scene.reveal === pendingReveal.owner && scene.focus === pendingReveal.key && scene.data.dag.nodes.has(pendingReveal.key)) pendingReveal.finish(error); }} />
     {#if session.error && session.index}<p class="notice" role="alert">{session.error}</p>{/if}
-    {#if ordinary.length}
-      <section class="component ordinary" aria-label="Other files">
-        <h3 class="heading static">Other files and folders <span class="count">{ordinary.length}</span></h3>
-        <OrdinarySection entries={ordinary} selected={selectedPaths} {revision} size={pane.tileSize?.preset} {tile}
-          onselect={(entry, event) => { supersedeReveal(); releaseAnchors(); keepFocusedOpen(); selectListed(entry, { ctrlKey: event.ctrlKey || event.metaKey, shiftKey: event.shiftKey }); }}
-          onopen={(entry) => void pane.open(entry)}
-          onmenu={(entry, event) => { supersedeReveal(); releaseAnchors(); if (!selectedPaths.has(entry.path)) { keepFocusedOpen(); selectListed(entry); } pane.contextMenu(event, entry); }} />
-      </section>
-    {:else if !summaries.length && session.index}
-      <div class="message">This folder is empty.</div>
-    {/if}
+    {#if !gridCells.length && session.index}<div class="message">This folder is empty.</div>{/if}
   {/if}
 </div>
 
 <style>
   .trace-view { flex: 1; min-height: 0; overflow: auto; padding: 10px 10px 24px; box-sizing: border-box; overflow-anchor: none; scrollbar-gutter: stable; }
-  .component { margin-bottom: 10px; border: 1px solid var(--divider, var(--control-stroke)); border-radius: 5px; background: var(--background-card-secondary, transparent); overflow: hidden; }
-  .heading { display: flex; align-items: center; gap: 9px; width: 100%; min-height: 41px; margin: 0; padding: 9px 12px; box-sizing: border-box; font: inherit; font-size: 13px; text-align: left; color: var(--text-primary); background: none; border: 0; cursor: pointer; }
-  .heading:hover:not(.static) { background: var(--subtle-fill-secondary); }
-  .heading.static { cursor: default; font-weight: 400; }
-  .heading:focus-visible { outline: 2px solid var(--focus-stroke-outer); outline-offset: -2px; }
-  .chevron { width: 14px; height: 14px; flex: none; fill: none; stroke: var(--text-secondary); stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
-  .cover { display: block; flex: none; width: 29px; height: 20px; overflow: hidden; border-radius: 2px; }
-  .cover :global(.thumbnail) { height: 100% !important; flex-basis: auto !important; }
-  .cover :global(img) { object-fit: cover !important; }
-  .cover :global(.placeholder) { font-size: 12px; }
-  .name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
-  .count { color: var(--text-secondary); white-space: nowrap; }
-  .unsaved { padding: 0 6px; font-size: 11px; line-height: 16px; color: var(--system-caution-text, var(--system-caution)); border: 1px solid currentColor; border-radius: 8px; }
-  .dimmed .cover { filter: grayscale(.45); opacity: .78; }
-  .content { border-top: 1px solid var(--divider, var(--control-stroke)); overflow-x: auto; overflow-y: hidden; scrollbar-width: thin; }
-  .placeholder { display: grid; place-items: center; color: var(--text-secondary); font-size: 12px; }
   .message { display: flex; flex-direction: column; align-items: center; gap: 10px; padding: 40px 12px; color: var(--text-secondary); }
   .message button { padding: 4px 12px; font: inherit; color: var(--text-primary); background: var(--control-fill); border: 1px solid var(--control-stroke); border-radius: var(--radius-sm); cursor: pointer; }
   .notice { margin: 0 0 10px; font-size: 12px; color: var(--system-critical-text, var(--system-critical)); }
-  .spinner { width: 12px; height: 12px; flex: none; border: 2px solid var(--divider); border-top-color: var(--accent); border-radius: 50%; animation: spin 800ms linear infinite; }
-  @keyframes spin { to { transform: rotate(360deg); } }
-  @media (prefers-reduced-motion: reduce) { .spinner { animation: none; } }
 </style>

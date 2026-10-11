@@ -4,7 +4,12 @@ import { openView } from "./support";
 // Switching to another tab unmounts the Trace view; switching back mounts a new one.
 test("returning to a Trace tab shows its graph at once, without Loading Trace…", async ({ page }) => {
   await openView(page, 1400);
-  const tiles = await page.locator("[data-tile-key]").count();
+  const openStacks = await page.locator('[data-stack-toggle][aria-expanded="true"]').evaluateAll((elements) =>
+    elements.map((element) => element.closest("[data-grid-cell]")!.getAttribute("data-grid-cell")).sort());
+  expect(openStacks.length).toBeGreaterThanOrEqual(2);
+  const tileKeys = await page.locator("[data-tile-key]").evaluateAll((elements) =>
+    elements.map((element) => element.getAttribute("data-tile-key")).sort());
+  const tiles = tileKeys.length;
   expect(tiles).toBeGreaterThan(0);
 
   await page.evaluate(() => (window as any).trace.leaveView());
@@ -16,15 +21,21 @@ test("returning to a Trace tab shows its graph at once, without Loading Trace…
     new MutationObserver(() => { if (document.body.textContent?.includes("Loading Trace…")) w.__loadingSeen = true; })
       .observe(document.body, { childList: true, subtree: true, characterData: true });
   });
-  const shownAt = await page.evaluate(async () => {
+  const shownAt = await page.evaluate(async ({ tiles, openStacks }) => {
     const start = performance.now();
     (window as any).trace.enterView();
-    while (!document.querySelector("[data-tile-key]")) await new Promise(requestAnimationFrame);
+    while (document.querySelectorAll("[data-tile-key]").length !== tiles
+      || JSON.stringify([...document.querySelectorAll('[data-stack-toggle][aria-expanded="true"]')]
+        .map((element) => element.closest("[data-grid-cell]")!.getAttribute("data-grid-cell")).sort()) !== JSON.stringify(openStacks)) {
+      await new Promise(requestAnimationFrame);
+    }
     return performance.now() - start;
-  });
+  }, { tiles, openStacks });
   // Shown from what the previous view loaded, well before the 600 ms reads return.
   expect(shownAt).toBeLessThan(300);
   await expect(page.locator("[data-tile-key]")).toHaveCount(tiles);
+  expect(await page.locator("[data-tile-key]").evaluateAll((elements) =>
+    elements.map((element) => element.getAttribute("data-tile-key")).sort())).toEqual(tileKeys);
   // Revalidation completes in the background and keeps the graph in place.
   await page.waitForTimeout(1500);
   await expect(page.locator("[data-tile-key]")).toHaveCount(tiles);

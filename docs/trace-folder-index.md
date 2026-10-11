@@ -3,12 +3,18 @@
 The folder index displays current files, unsaved folder outputs, active
 placeholders and their direct parents. It does not recursively import ancestors.
 An image in a subfolder or outside the folder is a reference badge when it has
-no parent **in that displayed graph**, even if it has recorded ancestors elsewhere
-or its file is missing. Unsaved folder outputs are classified as current.
+no current-folder ancestor **in that displayed graph**, even if it has recorded
+ancestors elsewhere or its file is missing. The drawn graph is therefore the
+current-folder images plus the outside images derived from them (an edit saved
+elsewhere). An outside chain A → B that only feeds current images is all badges;
+a badge keeps its own path and carries no parents, and a stack shows the badges of
+its **direct** outside inputs (A only if A also fed the stack directly).
+Unsaved folder outputs are classified as current. A stack's cover is its oldest
+current-folder image with no current-folder parent, which is always a drawn root.
 
 Grouping ignores edges from these references. Each reference is attached once
 to every component it directly feeds. Other edges still join components:
-an outside image with a displayed parent is an ordinary member, and edits using
+an outside image below a current image is an ordinary member, and edits using
 two current lineages still merge them. Classification happens before grouping,
 so it cannot change depending on which component is read first.
 

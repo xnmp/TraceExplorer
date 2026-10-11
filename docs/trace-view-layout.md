@@ -4,9 +4,18 @@ How the Trace view arranges one connected component, which way it runs, which no
 
 ## Grid bands and pinned covers
 
-The grid-band domain API for issue #36 is opt-in; the current view still uses
-`planScene` and the component orientation rule below. `gridFlow(items, open,
-columns, metrics)` takes the host-sorted list **already collapsed** to one
+The view uses one folder-order grid. `folderCells` collapses each lineage at
+its cover’s position in the host listing. Stacks with no listed cover (unsaved) follow the
+listing, oldest cover first (creation order of the cover key), so a stack gaining members never
+moves another. No user action moves a cell: a stack that was unsaved **stays where it is after it is
+saved** (`held`, kept by `StackGrid`) until the grid is laid out afresh, i.e. the folder or the column
+count changes, when it takes its listed position. Its eventual file name cannot be known before it is saved.
+
+This column rule covers **grid cells** (covers, ordinary files, folders). Inside an open band the
+layout follows the graph rules below, unchanged from the sections it replaced: a tile that stays visible
+can be repacked when other tiles appear or disappear (selecting warm, rain, then quiet moves the still
+visible rain tile at a 420 px pane on both the section layout of #49 and the grid).
+`gridFlow(items, open, columns, metrics)` takes the host-sorted list **already collapsed** to one
 `{id, kind: "stack"}` at each cover's position, plus ordinary files/folders.
 Use an entry path or cover key as `id`, rather than a component id (which can
 change on merges). Cells keep their logical row, column and x on every band
@@ -18,16 +27,19 @@ including null for arrivals/departures. The domain does not animate anything.
 
 For a fully paged graph, `projectReferenceBadges(projectDag(nodes))` removes
 foreign root images (scope `subfolder`/`external`, with a path and no accepted
-parent in the supplied DAG) from the drawable DAG. It preserves each reference's
+parent in the supplied DAG; the index sends an outside image with no current-folder ancestor
+without parents, so a chain A → B of outside inputs is all badges) from the drawable DAG. It preserves each reference's
 path, scope, key and ordered direct consumers, indexed by consumer. Keep all
 badges in domain data; display up to three and a `+n` overflow in the view.
-Path-null placeholders and foreign images with parents remain tiles. Compute
+Path-null placeholders and foreign images below a current image remain tiles. Compute
 drawable components **after** this projection: sharing only a reference no
 longer joins two edit chains. Projection requires complete parent relationships,
 before visibility filtering; a partial graph cannot establish reference roots.
 `lineageWithBadges` treats each badge as a virtual parent: focusing it highlights
 all its consumers and descendants; focusing a consumer highlights its badge
 ancestors without highlighting unrelated co-consumers.
+`badgeHighlight` adds hover lineage to the selected lineage without changing
+the selected neighborhood, keyboard focus, or layout request.
 
 `planBandScene` accepts that projection, drawable members and a `PinnedCover`.
 It seeds visibility from current-folder roots and always requests top-to-bottom
@@ -44,13 +56,14 @@ measured pane width of at most 100,000 px. Invalid neighbour spans are ignored.
 Routing retries spend unused band width on wider margins before extending the
 canvas, so aligning a narrow row toward an edge does not discard that spare room.
 
-When the view adopts these APIs, its `layout-client.ts` cache signature must
-include the complete `request.pinned` (key, x and obstacle spans). The existing
-client only keys legacy requests; passing a band request through it unchanged
-would reuse geometry after a cover-column change. The grid's cover cell must
-also be mapped to the engine's row-0 origin (`spacingFor(...).top`) and cover
-dimensions when measuring the band. No view or worker integration is included
-in this domain change.
+The layout cache includes the complete pin (key, centre x and neighbor spans).
+`attachBand` maps the engine’s cover origin to the grid cell and inserts earlier
+same-row bands beneath its stem. Later stems use the empty left routing gutter
+to bypass earlier bands’ tiles. Several stacks can remain open; their open state
+is keyed by cover identity, while current component ids are resolved from each
+fresh folder index. Clicking a closed stack selects its cover and opens it;
+the cover’s chevron closes it, and double-click opens its file. External host
+selection or Preview focus opens the owning stack, including after a merge.
 
 The original spike (`19601c1`, 12 hard cases and 2,700 fuzz layouts) established
 that the cover can hang from a fixed grid cell without tile/route collisions or
@@ -87,18 +100,18 @@ These requirements come from the [plan](trace-view-plan.md), section 4:
 
 - **Pixel width budget.** Lay out within the measured pane width.
 - **Siblings wrap onto several rows.** A display row is not a generation boundary.
-- **Direction.** Parents always come before their children: above them, or to their left when the component runs left to right (see [Orientation](#orientation)).
+- **Direction.** Parents always come before their children: above them inside every band (see [Orientation](#orientation)).
 - **Junctions.** Multi-parent inputs combine in readable junctions, with one terminal arrow per output.
 - **Clean routes.** Routes never cross a tile and do not make long detours along the border.
 - **Stable sizes.** Every tile has the same width and image size (`metrics.ts`), whatever the selection or focus; only rows a node always carries (its scope marker, its expansion hint) add height. Decoding, title changes and selection therefore never resize a tile; selection shows in styling only. Only the host's tile-size setting does (see [Tile size](#tile-size)).
 
 ## Tile size
 
-Hosts with the SDK's `tileSize` capability report each pane's tile size (`FileViewPane.tileSize`: its preset and thumbnail edge `imagePx`, resolved as their Tiles view resolves it, per-folder override first). `tileMetrics(imagePx)` turns it into the Trace tile: as wide as the host's own tiles, the edge plus 44 px of chrome (92, 108, 140 and 172 px for the 48, 64, 96 and 128 px presets), with the image keeping its 80:51 aspect inside the usual 6 px chrome. The text rows (title, scope, hint) keep their heights. The ordinary section passes the same preset to the host's `ui/file-tiles` (`size`), so both sections match.
+Hosts with the SDK's `tileSize` capability report each pane's tile size (`FileViewPane.tileSize`: its preset and thumbnail edge `imagePx`, resolved as their Tiles view resolves it, per-folder override first). `tileMetrics(imagePx)` turns it into the Trace tile: as wide as the host's own tiles, the edge plus 44 px of chrome (92, 108, 140 and 172 px for the 48, 64, 96 and 128 px presets), with the image keeping its 80:51 aspect inside the usual 6 px chrome. The text rows (title, scope, hint) keep their heights. Ordinary cells pass the preset to `ui/file-tile`; its `tileGridMetrics` supplies the allocation and gaps. Hosts without `fileTile` use the original plugin fallback tile in the same grid.
 
 Hosts without the capability (up to v1.11.4) report nothing: Trace draws the default 92 px tile, the same as the smallest preset, and the host's tiles keep their global setting.
 
-The view passes the metrics to `planScene`, whose layout request carries the tile sizes and `tileWidth`, so the cache key changes with the setting and a layout of one size is never reused for another. Spacing scales with the tile width (`spacingFor`, never below the default): the gap between tiles, the side margins and the bend room grow in proportion, while the arrowhead, its approach, junction levels, clearances and lanes stay the same. Tiles resize in motion, from the size shown to the new one. The orientation rule uses the real tile width and its spacing. The layout sweeps run at all four presets.
+The view passes the metrics to `planBandScene`, whose layout request carries the tile sizes and `tileWidth`, so the cache key changes with the setting and a layout of one size is never reused for another. Spacing scales with the tile width (`spacingFor`, never below the default): the gap between tiles, the side margins and the bend room grow in proportion, while the arrowhead, its approach, junction levels, clearances and lanes stay the same. Tiles resize in motion, from the size shown to the new one. Bands keep their downward orientation at every tile size. The layout sweeps run at all four presets.
 
 ## Visible nodes
 
@@ -115,30 +128,11 @@ Siblings are context, not lineage: they keep the `unrelated` tone (lightly dimme
 
 ## Orientation
 
-A component's generations run either top to bottom or left to right (Sugiyama/dagre `rankdir` TB vs LR). `orientation.ts` decides it per component, in a pure function, and `planScene` passes it in the layout request.
-
-**Rule.** The component's *shape* comes from its **settled core**: its largest group of settled images (not running, not unsaved or discarded) connected through settled images only. A pending output therefore changes the shape neither directly nor through the reference inputs it pulls into the component. Let *depth* be the core's number of generations (longest parent chain, in the component's generations) and *breadth* the number of core images in its largest generation, over all of them, not just the visible ones. Let *span* be the number of generations drawn, pending outputs included. The component fits left to right when
-
-1. depth ≥ 2,
-2. depth ≥ breadth: top to bottom it would be at least as tall as it is wide, in tiles, and
-3. its drawn generations fit side by side in the pane: `top + span × tile width + (span − 1) × bandChannel + channel extra + bottom ≤ pane width`, with the view's real tile width and the spacing that goes with it (with the default tile and no extra, 2 generations need 250 px, 3 need 376 px, 6 need 754 px).
-
-The *channel extra* estimates what the engine adds to the channels between generations: `junctionLevel` (26 px) per level of junction nesting, and a channel whose distinct crossing sources need more bend tracks (6 px each) than its bend room holds grows to fit them (the approach into the next column never bends, so it never grows). Junction levels split the bend room into zones (`bendZones`, shared with the engine), only 16 px either side of the levels; since the estimate cannot know which zone a bend takes, it assumes every track lands in the smallest. (Spreading the tracks over the whole channel instead let dense edit sessions overflow their pane by up to 26 px.) Both are estimated per channel from every drawn relationship of the whole component, so the estimate does not depend on the focus; the orientation is never decided from an actual, focus-dependent layout. Junction nesting is computed exactly (as `buildInputJunctions` groups inputs) for up to 200 multi-input outputs with up to 800 inputs in all; beyond that it is bounded (an output with *n* inputs nests at most *n* − 1 junctions). Neither counts the further levels the engine opens when a level is full, so the extra is an estimate, not a bound. Grouping inputs is quadratic, so `chooseOrientation` runs the cheap checks first (depth, breadth, and the width without the extra) and computes the extra, once per component, only for components that could still run left to right.
-
-Otherwise it runs top to bottom, where a wide generation wraps onto several rows. A single image, an empty component and an invalid width all run top to bottom.
-
-**Hysteresis.** `chooseOrientation(profile, width, previous?)` is pure; `previous` is the orientation the component was last displayed with at the current tile width. Without one the rule above applies. With one, the component keeps it until the rule fails by a clear margin:
-
-- shown left to right, it stays so while breadth ≤ depth + max(1, ⌊depth / 2⌋) and its drawn generations still fit the pane (width gets no slack, so a sideways canvas stays within the pane, up to the estimate's error);
-- shown top to bottom, it turns only when breadth ≤ depth − 1 and its drawn generations fit in 90% of the pane.
-
-The folder session remembers each component's displayed orientations per pane, keyed by the host's component id (`ComponentSummary.id`) and tile width. `TraceGraph` reads the current size's history when planning and records it only after that plan reaches the DOM. Superseded plans never change the history. Returning to a tile size restores its orientation while the current profile and pane width still allow it, whether intermediate sizes were displayed or skipped. Pane resizing at the same tile size retains the hysteresis above. The memory survives collapse and remount through the folder snapshot cache; another folder's history is kept separate.
-
-**Stability.** The rule never looks at the focus or at which tiles are shown, so changing the selection can never flip a component (its tiles would jump). Generating into a component or discarding the results never changes its shape; it can flip a sideways component only when a pending output opens a new, deeper generation that no longer fits the pane (turning beats overflowing). Saving a batch flips it only once it is clearly broader than deep; pane resizing at the same tile size flips it only across the hysteresis band. A newly visited tile size applies the plain rule, while a previously displayed size uses its own history. Using the whole component is deliberately conservative: a long edit chain that does not fit side by side runs top to bottom even while only its first images are visible, instead of turning once the selection reveals more of it. For the same reason a left-to-right canvas is drawn as wide as the whole component's estimated sideways width (the request's `extent`, pending outputs included), so a canvas centred in its pane does not shift when selection reveals or hides a generation column. It does widen, and re-centre, when a new generation column is generated.
-
-**Engine.** Left to right is the top-to-bottom engine run on transposed tile sizes (each tile's width and height swapped), with its result transposed back (`transposeLayout`): node positions and sizes, junctions, every coordinate pair of every route path, and the canvas extents. Everything the engine guarantees therefore carries over unchanged, now along the other axis: routes leave a tile's right edge and enter the next generation's left edge (with the arrowhead), pass a column through the gaps between stacked tiles or above and below it, and bend only in the channels between generation columns. Running right there is no height budget, so a generation is one column and never wraps; the transposed pass also skips the minimum canvas width (it would become a minimum height). `RowBox.top`/`bottom` then bound a column along x. Spatial navigation needs nothing special: ←/→ follow lineage and ↑/↓ move between siblings. The focused tile's "children open" chevron points towards its children: down, or right when its component runs left to right.
-
-**Known limits.** The channel estimate is not exact: a crowded channel can open junction levels the estimate does not foresee (and the estimate cannot know which tiles a focus shows). A sweep over random components at five widths and every focus (`orientation.test.ts`) keeps left-to-right canvases within 5% of the pane; before the estimate, 3.5% of them overflowed, by up to 13%. When it is exceeded, the canvas scrolls horizontally rather than flipping.
+Bands always run top to bottom. `planBandScene` bypasses `orientation.ts` and its
+per-size hysteresis. The legacy `planScene` and orientation functions remain
+unit-tested domain APIs, but the grid view does not invoke their automatic
+left-to-right rule. Long chains can therefore make tall bands; snaking or
+selective horizontal flow remains a follow-up to issue #36.
 
 ## Spacing
 
@@ -228,7 +222,7 @@ The algorithm is described top to bottom; a left-to-right layout is its transpos
      - Past two extra view widths, junctions in an extremely crowded channel (over a hundred combinations in one generation, sooner in narrow panes) may share a column, and their routes can then meet. Even below that, in very crowded channels a tile's exit can line up with another tile's entry; the bend zones cannot always separate the routes using that column. Every pair of 20 inputs at 300 px still shows this.
      - Neither hides parentage: highlighting a node shows its exact lineage.
 8. **Tie-breaks.** Ties use one total order: hinted keys keep their previous relative order, and new keys merge in by creation order. This keeps sorting transitive and independent of input order.
-9. **Navigation.** `nearestInDirection` picks arrow-key targets spatially. The cross axis is weighted 3×, so ←/→ stay on a row and ↑/↓ follow lineage (the other way round when the component runs left to right).
+9. **Navigation.** `gridNeighbor` uses logical cell and committed band rectangles, including virtualized rows. The cross axis is weighted 3×; Home/End use visual order. A roving tab stop spans ordinary entries, covers and band tiles. Selection forwards the original modifiers to the host, including Shift ranges; unlisted picks keep the established Preview/AI-input rules.
 
 ## Performance
 
@@ -246,17 +240,18 @@ The algorithm is described top to bottom; a left-to-right layout is its transpos
 
 - **Benchmarks.** `tests/domain/trace-graph/scale.test.ts` covers a 20,000-step edit chain focused at its end, a 3,000-output fan-out, the same two laid out left to right (transposing adds a linear pass), and a 10,000-image folder made of 500 components. Choosing the orientation is linear in the component's size, apart from the junction estimate, which is computed only for components that pass the cheap checks and exactly only for up to 200 multi-input outputs (800 inputs). It is cached per component, so focus changes reuse it. A benchmark covers 200 outputs of 20 inputs each (the estimate is skipped) and a 96-image component whose estimate runs exactly. A 1,000-child fan-out test bounds the path data (under 250 KB; it was 10.7 MB before trunks).
 - **Off-thread.** Layouts above 60 tiles run in a blob worker when the host announces `blobWorkers` (its CSP permits `worker-src blob:`), and otherwise on the main thread after yielding a frame. Results are cached by their exact request, except that a left-to-right request ignores the pane width (the engine does not use it running right), so resizing reuses its layout. The worker gets one job at a time, so a request superseded while it waits is dropped rather than computed; one already running finishes and is cached.
-- **Rendering.** Tiles outside the viewport (±800 px) are not mounted once a component shows more than 120 tiles; connectors and junctions are windowed the same way by their vertical extent. Sections far outside the viewport keep only a sized placeholder, and collapsed sections need only their summaries.
+- **Rendering.** Tiles outside the viewport (±800 px) are not mounted once a component shows more than 120 tiles; connectors and junctions are windowed the same way by their vertical extent. Grid rows and bands beyond a 1,200 px viewport margin are windowed; their logical geometry remains allocated. Closed stacks need only summaries. Open nearby bands load through the existing complete per-component paging and request scheduler. Focused bands stay mounted so keyboard and job reveals can finish even from offscreen.
 
 ## Motion
 
-`motion.ts` captures the displayed geometry before a commit and animates for about 180 ms from there. The captured geometry includes any transition still in progress, so interrupted selections continue smoothly. Tile sizes never depend on the selection, so a selection change only moves, adds and removes things. The transitions are:
+`motion.ts` captures the displayed geometry before a commit and animates for 160 ms from there. The captured geometry includes any transition still in progress, so interrupted selections continue smoothly. Tile sizes never depend on the selection, so a selection change only moves, adds and removes things. The transitions are:
 
 - tile translate (tiles that did not move are not animated);
 - junction positions;
 - route `d` morphs; new routes are displaced to follow their endpoints and fade in to their own (possibly dimmed) opacity;
 - departures: tiles, connectors and junctions that leave fade out where they were displayed;
-- section height;
+- band reveal clips and vertical movement of whole later stacks/ordinary cells;
+- cover fan rotation/opacity, and route-following tile emergence with reversed departure;
 - tile styling (selection border, focus ring, lineage dimming) by short CSS transitions.
 
 Rules:
@@ -270,8 +265,14 @@ Rules:
 - **Superseded commits.** When two commits land before one render, only the later one plays.
 - **Opacity.** Keyframes never set an existing element's opacity, so lineage dimming (a class) holds throughout. The exception is an element caught mid fade-in: its displayed opacity is captured and the fade continues from there, so an interruption never flashes it.
 - **Scroll anchoring.** Modeled on [CSS Scroll Anchoring](https://drafts.csswg.org/css-scroll-anchoring/): capture an element and its viewport offset, then compensate its displacement.
-  - *Hold* (pointer selection): capture synchronously before selection changes, including before a worker layout starts. Every graph commit and section toggle compensates the clicked tile; one frame loop samples all finite view animations while they run. Idle motion keeps the anchor without a frame or settlement promise. A new selection replaces it; user scrolling, removal, unmount or a clamped adjustment releases it and tears down its listeners, observer and frame.
+  - *Hold* (pointer selection): capture synchronously before selection changes, including before a worker layout starts. Every graph commit and stack toggle compensates the clicked tile; one frame loop samples all finite view animations while they run. Idle motion keeps the anchor without a frame or settlement promise. A new selection replaces it; user scrolling, removal, unmount or a clamped adjustment releases it and tears down its listeners, observer and frame.
   - *Reveal* (keyboard and programmatic focus, including the Preview pane's inputs): once motion settles, the focused tile is scrolled into view by the smallest amount (`nearest`).
-  - Other sections' relayouts compensate the active hold too. Wheel, touch, scrolling keys, scrollbar presses and scroll changes other than the hold's own adjustments release it. Modifier keys and section content clicks preserve it. Section bodies never become vertically scrollable mid-motion, so a wheel always reaches the view.
+  - Other bands’ relayouts compensate the active hold too. Wheel, touch, scrolling keys, scrollbar presses and scroll changes other than the hold's own adjustments release it. Modifier keys and band content clicks preserve it. Band bodies never become vertically scrollable mid-motion, so a wheel always reaches the view.
 - **Mounting** commits exactly once.
 - **Reduced motion** skips animation; committed layout still compensates an active anchor.
+
+Opening and closing share bounded route samples, indexed once per transition.
+Closing trims travel at the displayed progress; reopening continues along the
+remaining route and retains opacity. Grid snapshots include the viewport origin
+so bottom-band scroll clamping does not jump the first frame. A reveal readiness
+notification never replays a mounted band’s emergence.

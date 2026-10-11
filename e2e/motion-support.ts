@@ -29,7 +29,7 @@ export function sampleClick(page: Page, selector: string, ms = 600): Promise<Fra
       tiles: Object.fromEntries([...document.querySelectorAll<HTMLElement>("[data-tile-key]")].map((element) => {
         const box = element.getBoundingClientRect();
         const graph = element.closest<HTMLElement>(".graph");
-        const place = `${element.style.left} ${element.style.top} ${graph?.style.width} ${down(graph)}`;
+        const place = `${element.style.left} ${element.style.top} ${graph?.style.width} ${down(graph ?? element.closest<HTMLElement>("section[data-component]"))}`;
         // Vertical positions are in the view's content, so the view scrolling (to hold the clicked tile) is not motion.
         return [element.dataset.tileKey!, [box.x, box.y + view.scrollTop * zoom, place, box.y] as Sample];
       })),

@@ -9,8 +9,9 @@ import groupingFixtures from "../../tests/fixtures/folder-grouping.json";
 import { configureBackend, invoke } from "$lib/api/common";
 import type { TraceNode } from "$lib/domain/trace-graph/model";
 import type { JobCost, JobReveal, TileSizePreset } from "../../integration/plugin-sdk";
-import { TILE_IMAGE_PX } from "./tile-presets";
+import { TILE_IMAGE_PX, TILE_GRID_PX } from "./tile-presets";
 import { basename, joinPath, parentDir } from "$lib/domain/path";
+import StubFileTile from "./StubFileTile.svelte";
 import StubFileTiles from "./StubFileTiles.svelte";
 import { folderComponents, folderPage, isDirectFolderSeed, nativeStringOrder, type FolderNode } from "./folder-snapshot";
 import { isLocalAbsolutePath } from "$lib/domain/target-location";
@@ -73,13 +74,19 @@ function scenario(): { nodes: FolderNode[]; names: Map<string, string> } {
   ] satisfies Seed[]) add(seed);
   // Large uncached scenes exercise the view's worker layout path during reveal.
   if (query.has("revealLarge")) for (let index = 0; index < 85; index++) add({ key: `wide-${index}`, parents: ["fan"] });
+  // `?fanChildren=N` gives the fan N more direct children: enough tiles that the graph windows them.
+  for (let index = 0; index < Number(query.get("fanChildren") ?? 0); index++) add({ key: `fan-child-${index}`, parents: ["fan"] });
   for (const seed of [
     { key: "forest-mist", parents: ["forest"] }, { key: "autumn", parents: ["forest"] },
   ] satisfies Seed[]) add(seed);
   // `?deeper=1` continues the forest's mist edit two more generations, so selecting along it reveals new columns.
   if (query.has("deeper")) for (const seed of [{ key: "mist-dawn", parents: ["forest-mist"] }, { key: "mist-dusk", parents: ["mist-dawn"] }]) add(seed);
+  if (query.has("moreBadges")) {
+    add({ key: "reference-3", scope: "subfolder" });
+    add({ key: "reference-4", scope: "external" });
+  }
   for (const seed of [
-    { key: "daylight", parents: ["village"] }, { key: "warm", parents: ["village", "palette", "mist", "lantern"] }, { key: "cool", parents: ["palette"] },
+    { key: "daylight", parents: ["village"] }, { key: "warm", parents: ["village", "palette", "mist", "lantern", ...(query.has("moreBadges") ? ["reference-3", "reference-4"] : [])] }, { key: "cool", parents: ["palette"] },
     { key: "morning", parents: ["daylight"] }, { key: "sunny", parents: ["daylight"] }, { key: "evening", parents: ["warm"] }, { key: "rain", parents: ["warm"] },
     { key: "merge", parents: ["daylight", "warm"], temporary: true }, { key: "quiet", parents: ["rain"] },
     // Daylight's six children make its focus widen the graph (see the motion specs).
@@ -108,6 +115,12 @@ function scenario(): { nodes: FolderNode[]; names: Map<string, string> } {
       { key: "anchor-a-last", parents: ["anchor-a-middle"] },
     ] satisfies Seed[]) add(seed);
   }
+  // `?draftStack=1` adds an unsaved cover with one saved edit: a stack that another pane can save (`backend.saveGeneration("draft")`).
+  if (query.has("draftStack")) { add({ key: "draft", temporary: true }); add({ key: "draft-edit", parents: ["draft"] }); }
+  // `?wideRoots=N`: N separate roots joined by multi-input edits into one component, whose first row is far wider than a narrow pane.
+  const wideRoots = Number(query.get("wideRoots") ?? 0);
+  for (let index = 0; index < wideRoots; index++) add({ key: `wr-${index}` });
+  for (let index = 0; index + 1 < wideRoots; index++) add({ key: `wr-edit-${index}`, parents: [`wr-${index}`, `wr-${index + 1}`] });
   return { nodes, names };
 }
 
@@ -140,6 +153,8 @@ let previewLatency = 0;
 // Delay of the folder index and component reads, in ms, like a native backend's IPC round trip.
 let folderLatency = 0;
 let folderReadsHeld = false;
+/** How many of the next `trace_component_nodes` reads fail. */
+let nodeReadFailures = 0;
 let heldFolderReads: Array<() => void> = [];
 const titleCalls: number[] = [];
 const titleWaiters = new Map<number, (title: string) => void>();
@@ -209,6 +224,7 @@ configureBackend(withNativeRequestCapacity({
         return folderReply({ stale: false, total: members.length, offset: params.offset, members: folderPage(members, params.offset, 1000) });
       }
       case "trace_component_nodes": {
+        if (nodeReadFailures > 0) { nodeReadFailures -= 1; return Promise.reject(new Error("Trace could not read this stack")); }
         if (params.token !== token) return folderReply({ stale: true, total: 0, offset: 0, nodes: [] });
         const nodes = componentsOf().find((component) => component.id === params.componentId)?.nodes;
         if (!nodes) return Promise.reject(new Error("Unknown Trace component"));
@@ -327,6 +343,7 @@ configureBackend(withNativeRequestCapacity({
 }));
 
 // `?fileTiles=1` simulates a host with the `ui/file-tiles` module; without it, an older SDK 2 host.
+const fileTile = new URLSearchParams(globalThis.location?.search ?? "").has("fileTile");
 const fileTiles = new URLSearchParams(globalThis.location?.search ?? "").has("fileTiles");
 // `?tileSize=<preset>` simulates a host with the `tileSize` capability whose pane reports that preset; without it, an older host.
 const tileQuery = new URLSearchParams(globalThis.location?.search ?? "").get("tileSize");
@@ -334,8 +351,14 @@ export const initialTileSize: TileSizePreset | null = tileQuery && tileQuery in 
 const color = (path: string) => `hsl(${[...path].reduce((sum, char) => (sum * 31 + char.charCodeAt(0)) % 360, 7)} 45% 55%)`;
 (globalThis as any).__TAURI_EXPLORER_PLUGIN_SDK__ = {
   sdkVersion: 1, apiVersion: 2, svelteVersion: "5.56.3",
-  capabilities: ["fileViews", "previewInfo", "previewTargets", "blobWorkers", "jobReveal", "jobCost", "fileViewReveal", ...(fileTiles ? ["fileTiles"] : []), ...(initialTileSize ? ["tileSize"] : [])],
-  modules: fileTiles ? { "ui/file-tiles": { default: StubFileTiles } } : {},
+  capabilities: ["fileViews", "previewInfo", "previewTargets", "blobWorkers", "jobReveal", "jobCost", "fileViewReveal", ...(fileTile ? ["fileTile"] : []), ...(fileTiles ? ["fileTiles"] : []), ...(initialTileSize ? ["tileSize"] : [])],
+  modules: {
+    ...(fileTiles ? { "ui/file-tiles": { default: StubFileTiles } } : {}),
+    ...(fileTile ? { "ui/file-tile": { default: StubFileTile, tileGridMetrics: (size: TileSizePreset = "medium") => {
+      const preset = Object.hasOwn(TILE_IMAGE_PX, size) ? size : "medium";
+      return { cellWidth: TILE_GRID_PX[preset], cellHeight: (preset === "small" ? 12 : 22) + TILE_IMAGE_PX[preset] + 4 + 37 + 2, gap: preset === "small" ? 2 : 6, gridPadding: 8 };
+    } } } : {}),
+  },
   pickSaveFile: async () => pickerResult === undefined ? `${DIRECTORY}/picked.png` : pickerResult,
   thumbnailData: async (path: string) => ({ ok: true, data: URL.createObjectURL(new Blob([
     `<svg xmlns="http://www.w3.org/2000/svg" width="160" height="96"><rect width="160" height="96" fill="${color(path)}"/></svg>`,
@@ -458,8 +481,12 @@ export const backend = {
   /** Answers run details, revision status and per-image traces after `ms`. */
   setPreviewLatency(ms: number) { previewLatency = ms; },
   setFolderLatency(ms: number) { folderLatency = ms; },
+  /** The node stops being an input of `child` (a refresh that drops the reference). */
+  dropInput(child: string, parent: string) { const parentKey = state.names.get(parent)!; update(state.names.get(child)!, { parents: state.nodes.find((node) => node.key === state.names.get(child))!.parents.filter((key) => key !== parentKey) }); changed(); },
+  addInput(child: string, parent: string) { const node = state.nodes.find((candidate) => candidate.key === state.names.get(child))!; update(node.key, { parents: [...node.parents, state.names.get(parent)!] }); changed(); },
+  failNodeReads(count: number) { nodeReadFailures = count; },
   holdFolderReads() { folderReadsHeld = true; },
   releaseFolderReads() { folderReadsHeld = false; const pending = heldFolderReads; heldFolderReads = []; pending.forEach((release) => release()); },
   releaseSaves() { holdSaves = false; const pending = heldSaves; heldSaves = []; pending.forEach((run) => run()); },
-  reset() { previewLatency = 0; folderLatency = 0; pickerResult = undefined; nextSaveFailure = null; inputFailures = 0; imageRuns.clear(); imageJobs.clear(); imageOperations.clear(); billing.clear(); state = scenario(); version += 1; calls.length = 0; },
+  reset() { nodeReadFailures = 0; previewLatency = 0; folderLatency = 0; pickerResult = undefined; nextSaveFailure = null; inputFailures = 0; imageRuns.clear(); imageJobs.clear(); imageOperations.clear(); billing.clear(); state = scenario(); version += 1; calls.length = 0; },
 };

@@ -4,7 +4,7 @@ import { holdScriptedAnimations, releaseScriptedAnimations } from "./animation-c
 
 /** Rendered width and image height of every tile, keyed by node key. */
 const tileSizes = (page: Page) => page.evaluate(() => Object.fromEntries([...document.querySelectorAll<HTMLElement>("[data-tile-key]")].map((element) => {
-  const image = element.querySelector<HTMLElement>(".image")!;
+  const image = element.querySelector<HTMLElement>(".image, .cover-image")!;
   return [element.dataset.tileKey!, { width: element.getBoundingClientRect().width, image: image.getBoundingClientRect().height }];
 })));
 
@@ -27,7 +27,7 @@ test.describe("selection neighborhood", () => {
     await click(page, "warm");
     await uniform();
     expect(await rendered(page, "tone", "focus")).toEqual(["warm"]);
-    expect(await rendered(page, "tone", "related")).toEqual(["evening", "lantern", "merge", "mist", "palette", "rain", "village"]);
+    expect(await rendered(page, "tone", "related")).toEqual(["evening", "merge", "palette", "rain", "village"]);
     const unrelated = await rendered(page, "tone", "unrelated");
     for (const name of ["daylight", "cool", "forest", "fan"]) expect(unrelated).toContain(name);
     expect(unrelated).not.toContain("warm");
@@ -35,7 +35,7 @@ test.describe("selection neighborhood", () => {
     await click(page, "rain");
     await uniform();
     expect(await rendered(page, "tone", "focus")).toEqual(["rain"]);
-    for (const name of ["village", "palette", "mist", "lantern"]) await expect(await tile(page, name)).toHaveAttribute("data-tone", "related");
+    for (const name of ["village", "palette"]) await expect(await tile(page, name)).toHaveAttribute("data-tone", "related");
     await expect(await tile(page, "daylight")).toHaveAttribute("data-tone", "unrelated");
 
     // Daylight's view no longer shows warm's children: the old branch is dropped.
@@ -145,149 +145,69 @@ test.describe("wide layouts", () => {
     }
   });
 
-  /** Tile boxes of a section on screen (viewport coordinates), keyed by node key. */
-  const screenBoxes = (page: Page, component: number) => page.evaluate((index) => {
-    const section = document.querySelectorAll("section.component[data-component]")[index];
-    return Object.fromEntries([...section.querySelectorAll<HTMLElement>("[data-tile-key]")].map((element) => {
-      const r = element.getBoundingClientRect();
-      return [element.dataset.tileKey!, { x: r.x, y: r.y, width: r.width, height: r.height }];
-    }));
-  }, component);
-  /** Every shown child lies entirely right of each of its shown parents. */
-  const runsRight = (boxes: Record<string, Box>, edges: Array<[string, string]>) => {
-    for (const [parent, child] of edges) if (boxes[parent] && boxes[child]) expect(boxes[child].x, `${child} right of ${parent}`).toBeGreaterThanOrEqual(boxes[parent].x + boxes[parent].width);
+  const runsDown = (boxes: Record<string, Box>, edges: Array<[string, string]>) => {
+    for (const [parent, child] of edges) if (boxes[parent] && boxes[child]) expect(boxes[child].y, `${child} below ${parent}`).toBeGreaterThanOrEqual(boxes[parent].y + boxes[parent].height);
   };
 
-  test("a component whose generations fit side by side runs left to right, and no tile jumps while selection reveals deeper generations", async ({ page }) => {
+  test("a deep band runs down at every width and keeps its grid cover pinned while revealing generations", async ({ page }) => {
     await openView(page, 900, "?deeper=1");
-    const [forest, mist, autumn, dawn, dusk] = await Promise.all(["forest", "forest-mist", "autumn", "mist-dawn", "mist-dusk"].map((name) => key(page, name)));
-    const edges: Array<[string, string]> = [[forest, mist], [forest, autumn], [mist, dawn], [dawn, dusk]];
-    const arrowEnd = (child: string) => page.evaluate((k) => {
-      const section = document.querySelectorAll("section.component[data-component]")[1];
-      const path = section.querySelector<SVGPathElement>(`path[data-route][data-to="node:${CSS.escape(k)}"]`)!;
-      const point = path.getPointAtLength(path.getTotalLength());
-      return { x: point.x, y: point.y };
-    }, child);
-    const settled: Record<string, Box> = {};
-    /** Lays out sideways, and every tile shown before is exactly where it was on screen. */
-    const check = async (shown: string[], hidden: string[]) => {
-      const local = await tileBoxes(page, 1);
-      const screen = await screenBoxes(page, 1);
-      expect(Object.keys(screen).sort()).toEqual(expect.arrayContaining(shown.sort()));
-      for (const k of hidden) expect(screen[k], `${k} hidden`).toBeUndefined();
-      expect(overlaps(local)).toEqual([]);
-      runsRight(local, edges);
-      for (const [k, box] of Object.entries(screen)) {
-        if (settled[k]) {
-          expect(Math.abs(box.x - settled[k].x), `${k} x`).toBeLessThanOrEqual(1);
-          expect(Math.abs(box.y - settled[k].y), `${k} y`).toBeLessThanOrEqual(1);
-        }
-        settled[k] = box;
-      }
-      return local;
-    };
-    const first = await check([forest, mist, autumn], [dawn, dusk]);
-    // Both edits sit in one column right of the image they were made from, one above the other.
-    expect(Math.abs(first[mist].x - first[autumn].x)).toBeLessThanOrEqual(1);
-    expect(Math.abs(first[mist].y - first[autumn].y)).toBeGreaterThanOrEqual(first[mist].height);
-    // Each arrow arrives at its edit's left edge (its line ends at the arrowhead's base, 8 px short).
-    for (const child of [mist, autumn]) {
-      const end = await arrowEnd(child);
-      expect(end.x).toBeLessThanOrEqual(first[child].x);
-      expect(end.x).toBeGreaterThan(first[child].x - 12);
-      expect(end.y).toBeGreaterThan(first[child].y);
-      expect(end.y).toBeLessThan(first[child].y + first[child].height);
-    }
-    // Each selection reveals the next generation in a new column; nothing already shown moves.
-    await click(page, "forest-mist");
-    await check([forest, mist, autumn, dawn], [dusk]);
-    await click(page, "mist-dawn");
-    await check([forest, mist, autumn, dawn, dusk], []);
-    await click(page, "mist-dusk");
-    await check([forest, mist, dawn, dusk], []);
-    await click(page, "autumn");
-    await check([forest, mist, autumn], [dawn, dusk]);
-  });
-
-  test("generating images into a left-to-right component keeps it left to right", async ({ page }) => {
-    await openView(page, 900);
-    const names = ["forest", "forest-mist", "autumn"];
-    const [forest, mist, autumn] = await Promise.all(names.map((name) => key(page, name)));
-    await click(page, "forest-mist");
-    const columns = async () => {
-      // Native newest-first summaries can move this section when a generation
-      // starts; keep asserting the forest's geometry, not its old list index.
+    const names = ["forest", "forest-mist", "autumn", "mist-dawn", "mist-dusk"];
+    const [forest, mist, autumn, dawn, dusk] = await Promise.all(names.map((name) => key(page, name)));
+    const coverX = (await (await tile(page, "forest")).boundingBox())!.x;
+    for (const name of ["forest", "forest-mist", "mist-dawn", "mist-dusk", "autumn"]) {
+      await click(page, name);
       const boxes = await tileBoxes(page, "forest");
-      runsRight(boxes, [[forest, mist], [forest, autumn], ...batch.map((k) => [forest, k] as [string, string])]);
+      runsDown(boxes, [[forest, mist], [forest, autumn], [mist, dawn], [dawn, dusk]]);
       expect(overlaps(boxes)).toEqual([]);
-      return Object.fromEntries([forest, mist, autumn].map((k) => [k, Math.round(boxes[k].x)]));
-    };
-    const batch: string[] = [];
-    const before = await columns();
-    // A four-image batch of variations of the root, as one generation request makes them.
-    for (let index = 1; index <= 4; index++) batch.push(await page.evaluate((n) => (window as any).trace.backend.startGeneration("forest", n), `variation-${index}`));
-    for (const k of batch) await expect(page.locator(`[data-tile-key="${k}"]`)).toBeVisible();
-    await settle(page);
-    expect(await columns(), "while generating").toEqual(before);
-    for (let index = 1; index <= 4; index++) await page.evaluate((n) => (window as any).trace.backend.completeGeneration(n), `variation-${index}`);
-    await settle(page);
-    expect(await columns(), "unsaved").toEqual(before);
-    for (let index = 1; index <= 4; index++) await page.evaluate((n) => (window as any).trace.backend.discardGeneration(n), `variation-${index}`);
-    // Discarded outputs with no edits of their own leave the graph.
-    for (const k of batch) await expect(page.locator(`[data-tile-key="${k}"]`)).toHaveCount(0);
-    await page.waitForTimeout(150);
-    await settle(page);
-    expect(await columns(), "discarded").toEqual(before);
+      expect((await (await tile(page, "forest")).boundingBox())!.x).toBeCloseTo(coverX, 1);
+    }
+    await expect(await tile(page, "mist-dawn")).toHaveCount(0);
+    await expect(await tile(page, "mist-dusk")).toHaveCount(0);
     expect(await uncaught(page)).toEqual([]);
   });
 
-  test("the view remembers a component's orientation while images are saved into it, and forgets it in another folder", async ({ page }) => {
+  test("generating, saving and discarding a batch keeps its band downward and its cover pinned", async ({ page }) => {
     await openView(page, 900);
-    const [forest, mist, autumn] = await Promise.all(["forest", "forest-mist", "autumn"].map((name) => key(page, name)));
-    const flow = async () => {
+    await click(page, "forest-mist");
+    const forest = await key(page, "forest"), children = await Promise.all(["forest-mist", "autumn"].map((name) => key(page, name)));
+    const coverX = (await (await tile(page, "forest")).boundingBox())!.x;
+    const check = async (expected = children) => {
       const boxes = await tileBoxes(page, "forest");
-      const children = [mist, autumn, ...extra].filter((k) => boxes[k]);
-      if (children.every((k) => boxes[k].x >= boxes[forest].x + boxes[forest].width)) return "right";
-      if (children.every((k) => boxes[k].y >= boxes[forest].y + boxes[forest].height)) return "down";
-      return "mixed";
+      for (const child of expected) expect(boxes[child], `visible batch member ${child}`).toBeTruthy();
+      runsDown(boxes, expected.map((child) => [forest, child]));
+      expect(overlaps(boxes)).toEqual([]);
+      expect((await (await tile(page, "forest")).boundingBox())!.x).toBeCloseTo(coverX, 1);
     };
-    const extra: string[] = [];
-    const visit = async (folder: string) => {
-      await page.evaluate((path) => (window as any).trace.navigate(path), folder);
-      await expect(page.locator(`[data-tile-key="${forest}"]`)).toBeVisible();
-      await page.waitForTimeout(150);
-      await settle(page);
-    };
-    // Visit the mirror once, so switching to it later keeps the same view mounted.
-    await visit("/pictures-mirror");
-    await visit("/pictures");
-    expect(await flow()).toBe("right");
-    // A third saved edit of the root: a little broader than deep. Shown sideways, it stays so.
-    extra.push(await page.evaluate(() => (window as any).trace.backend.startGeneration("forest", "third")));
-    await page.evaluate(() => { const b = (window as any).trace.backend; b.completeGeneration("third"); b.saveGeneration("third"); });
-    await expect(page.locator(`[data-tile-key="${extra[0]}"]`)).toBeVisible();
-    await page.waitForTimeout(150);
-    await settle(page);
-    expect(await flow()).toBe("right");
-    // Another folder whose components happen to have the same ids remembers nothing: the plain rule lays it out top to bottom.
-    // (The mirror was shown before, so it would return laid out as then, orientation included; forget that, so only this folder's memory is in play.)
-    await page.evaluate(() => { (window as any).trace.forgetFolders(); (document.querySelector("[data-testid=trace-view]") as any).__marked = true; });
-    await visit("/pictures-mirror");
-    expect(await page.evaluate(() => (document.querySelector("[data-testid=trace-view]") as any).__marked), "same view instance").toBe(true);
-    expect(await flow()).toBe("down");
+    for (let i = 1; i <= 4; i++) children.push(await page.evaluate((name) => (window as any).trace.backend.startGeneration("forest", name), `variation-${i}`));
+    await settle(page); await check();
+    for (let i = 1; i <= 4; i++) await page.evaluate((name) => (window as any).trace.backend.completeGeneration(name), `variation-${i}`);
+    await settle(page); await check();
+    for (let i = 1; i <= 4; i++) await page.evaluate((name) => (window as any).trace.backend.saveGeneration(name), `variation-${i}`);
+    await settle(page); await check();
+    for (let i = 1; i <= 4; i++) await page.evaluate((name) => (window as any).trace.backend.discardGeneration(name), `variation-${i}`);
+    await settle(page); await check(children.slice(0, 2));
+    for (const child of children.slice(2)) await expect(page.locator(`[data-tile-key="${child}"]`)).toHaveCount(0);
     expect(await uncaught(page)).toEqual([]);
   });
 
-  test("an open tile's chevron points towards its children: down, or right when the component runs left to right", async ({ page }) => {
+  test("bands keep downward orientation after saving and switching folders", async ({ page }) => {
     await openView(page, 900);
-    const chevron = async (name: string) => (await tile(page, name)).locator(".chevron").evaluate((svg) => {
-      const box = (svg.querySelector("path") as SVGPathElement).getBBox();
-      return box.width > box.height ? "down" : "right";
-    });
-    await click(page, "forest");
-    expect(await chevron("forest")).toBe("right");
-    await click(page, "village");
-    expect(await chevron("village")).toBe("down");
+    const forest = await key(page, "forest"), mist = await key(page, "forest-mist");
+    await page.evaluate(() => { const b = (window as any).trace.backend; b.startGeneration("forest", "third"); b.completeGeneration("third"); b.saveGeneration("third"); });
+    for (const directory of ["/pictures-mirror", "/pictures"]) {
+      await page.evaluate((path) => (window as any).trace.navigate(path), directory); await settle(page);
+      await click(page, "forest");
+      const boxes = await tileBoxes(page, "forest"); runsDown(boxes, [[forest, mist], [forest, await key(page, "third")]]);
+      expect(overlaps(boxes)).toEqual([]);
+    }
+    expect(await uncaught(page)).toEqual([]);
+  });
+
+  test("the cover chevron closes the band without changing its selected file", async ({ page }) => {
+    await openView(page, 900); await click(page, "forest");
+    await (await tile(page, "forest")).getByRole("button", { name: "Close stack" }).click(); await settle(page);
+    await expect(page.locator('section[aria-label="forest"] .graph')).toHaveCount(0);
+    expect((await state(page)).selected).toEqual(["/pictures/forest.png"]);
   });
 
   test("the village graph keeps tiles apart at every width", async ({ page }) => {
@@ -380,9 +300,9 @@ async function arrowheads(page: Page, index = 0): Promise<Head[]> {
 }
 
 test.describe("arrowheads", () => {
-  for (const { orientation, width } of [{ orientation: "top to bottom", width: 360 }, { orientation: "left to right", width: 700 }]) {
+  for (const { orientation, width } of [{ orientation: "top to bottom", width: 360 }, { orientation: "top to bottom", width: 700 }]) {
     for (const zoom of [1, 1.3]) {
-      test(`running ${orientation} at ${zoom * 100}% zoom, every arrowhead ends on its tile's edge, points along its line and has one size`, async ({ page }) => {
+      test(`running ${orientation} at width ${width} and ${zoom * 100}% zoom, every arrowhead ends on its tile's edge, points along its line and has one size`, async ({ page }) => {
         // A root with two edits and two further edits under the second, selected (the selected branch is highlighted).
         await openView(page, width, `?gym=1&zoom=${zoom}`);
         await click(page, "saffron");
@@ -391,7 +311,7 @@ test.describe("arrowheads", () => {
         expect(heads.filter((head) => head.tone === "normal").length).toBeGreaterThanOrEqual(1);
         for (const head of heads) {
           const label = `${head.tone} ${head.route}`;
-          expect(head.sideways, label).toBe(orientation === "left to right");
+          expect(head.sideways, label).toBe(false);
           // The tip touches the tile's edge, within a pixel, on the edge itself.
           expect(Math.abs(head.edgeGap), label).toBeLessThanOrEqual(1);
           expect(head.withinEdge, label).toBe(true);
@@ -419,14 +339,14 @@ test.describe("tile size", () => {
     const heights = (selector: string) => [...new Set([...document.querySelectorAll<HTMLElement>(selector)].map((element) => element.getBoundingClientRect().height))];
     return {
       trace: widths("[data-tile-key]"), traceImage: heights("[data-tile-key] .image"),
-      ordinary: widths("[data-host-file-tiles] [data-entry-path]"), thumbnail: widths("[data-host-file-tiles] [data-thumbnail]"),
-      preset: document.querySelector<HTMLElement>("[data-host-file-tiles]")?.dataset.size ?? null,
+      ordinary: widths("[data-host-file-tile]"), thumbnail: heights("[data-host-file-tile] .icon"),
+      preset: document.querySelector<HTMLElement>("[data-host-file-tile]")?.dataset.size ?? null,
     };
   });
   const boxes = async (page: Page) => ({ ...(await tileBoxes(page, 0)), ...(await tileBoxes(page, 1)) });
 
   test("changing the host's tile size resizes Trace tiles and the ordinary tiles to match, smoothly and without a stale layout", async ({ page }) => {
-    await openView(page, 900, "?fileTiles=1&tileSize=small");
+    await openView(page, 900, "?fileTile=1&tileSize=small");
     await click(page, "warm");
     const first = await boxes(page);
     const warm = await key(page, "warm");
@@ -452,10 +372,12 @@ test.describe("tile size", () => {
       expect(shown.preset, preset).toBe(preset);
       expect(shown.thumbnail, preset).toHaveLength(1);
       expect(shown.trace, preset).toEqual([shown.thumbnail[0] + 44]);
-      if (preset !== "small") expect(shown.trace, preset).toEqual(shown.ordinary);
+      expect(shown.ordinary[0], preset).toBeGreaterThanOrEqual(shown.trace[0]);
       // The image keeps its aspect inside the same chrome.
       expect(shown.traceImage, preset).toEqual([Math.round((shown.trace[0] - 12) * 51 / 80)]);
-      expect(resizing.flat(), preset).toEqual([`${previous}px`, `${shown.trace[0]}px`]);
+      // Each relayout of the grid (the tile size, then the band's measured height) replays the tile's motion
+      // from the geometry it displays; every replay is the same single resize, with no stale size in between.
+      expect([...new Set(resizing.map((frames) => frames.join(" -> ")))], preset).toEqual([`${previous}px -> ${shown.trace[0]}px`]);
       previous = shown.trace[0];
       // Relaid out for the new size: nothing overlaps and every arrowhead still ends on its tile's edge.
       expect(overlaps(await tileBoxes(page, 0)), preset).toEqual([]);
@@ -472,7 +394,7 @@ test.describe("tile size", () => {
   });
 
   test("a host that does not report its tile size gets the default tiles, and its own tile setting for the ordinary section", async ({ page }) => {
-    await openView(page, 900, "?fileTiles=1");
+    await openView(page, 900, "?fileTile=1");
     const shown = await sizes(page);
     expect(shown.trace).toEqual([92]);
     expect(shown.traceImage).toEqual([51]);
@@ -626,7 +548,7 @@ test.describe("motion", () => {
     void NAMES;
   });
 
-  test("motion starts every tile where it was displayed, even when the graph changes width", async ({ page }) => {
+  test("motion starts every tile where it was displayed while the band keeps its full width", async ({ page }) => {
     await openView(page);
     await click(page, "village");
     // Daylight's six children widen the graph.
@@ -647,7 +569,7 @@ test.describe("motion", () => {
       await new Promise((resolve) => setTimeout(resolve, 400));
       return { jumps, refaded, undimmed, widthChanged: Math.abs(graph().getBoundingClientRect().width - widthBefore) > 20 };
     }, daylight);
-    expect(result.widthChanged).toBe(true);
+    expect(result.widthChanged).toBe(false);
     expect(result.jumps).toEqual([]);
     expect(result.refaded).toBe(0);
     expect(result.undimmed).toBe(0);
@@ -797,19 +719,20 @@ test.describe("scroll anchoring", () => {
   });
 });
 
-test("collapsing and expanding sections toggles their graphs; the first three start expanded", async ({ page }) => {
+test("opening and closing stacks toggles their bands while covers remain in the grid", async ({ page }) => {
   await openView(page);
   const sections = page.locator("section.component[data-component]");
   await expect(sections).toHaveCount(3);
-  for (let i = 0; i < 3; i++) await expect(sections.nth(i).locator("button.heading")).toHaveAttribute("aria-expanded", "true");
+  for (let i = 0; i < 3; i++) await expect(sections.nth(i).locator("[data-stack-toggle]")).toHaveAttribute("aria-expanded", "true");
   const forest = sections.nth(1);
   await expect(forest.locator("[data-tile-key]").first()).toBeVisible();
-  await forest.locator("button.heading").click();
-  await expect(forest.locator("button.heading")).toHaveAttribute("aria-expanded", "false");
-  await expect(forest.locator("[data-tile-key]")).toHaveCount(0);
+  await forest.locator("[data-stack-toggle]").click();
+  await expect(forest.locator("[data-stack-toggle]")).toHaveAttribute("aria-expanded", "false");
+  await expect(forest.locator(".graph")).toHaveCount(0);
+  await expect(forest.locator("[data-tile-key]")).toHaveCount(1);
   await expect(sections.nth(0).locator("[data-tile-key]").first()).toBeVisible();
-  await forest.locator("button.heading").click();
-  await expect(forest.locator("button.heading")).toHaveAttribute("aria-expanded", "true");
+  await forest.locator("[data-stack-toggle]").click();
+  await expect(forest.locator("[data-stack-toggle]")).toHaveAttribute("aria-expanded", "true");
   await expect(forest.locator("[data-tile-key]").first()).toBeVisible();
 });
 
@@ -817,8 +740,14 @@ test.describe("keyboard", () => {
   test("arrow keys move the selection to a neighbouring node and keep keyboard focus on it", async ({ page }) => {
     await openView(page);
     await click(page, "warm");
-    const family = new Set(await Promise.all(["village", "palette", "mist", "lantern", "evening", "rain", "merge"].map((n) => key(page, n))));
-    for (const arrow of ["ArrowDown", "ArrowRight"]) {
+    // Down reaches warm's children; right reaches the next tile on its row. The mist and lantern
+    // references are badges, not tiles, so arrows never land on them.
+    const neighbours = {
+      ArrowDown: new Set(await Promise.all(["evening", "rain", "merge"].map((n) => key(page, n)))),
+      ArrowRight: new Set([await key(page, "cool")]),
+    };
+    for (const arrow of ["ArrowDown", "ArrowRight"] as const) {
+      const family = neighbours[arrow];
       await click(page, "warm");
       await (await card(page, "warm")).focus();
       const before = await state(page);

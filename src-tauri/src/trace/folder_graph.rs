@@ -254,6 +254,10 @@ pub(crate) struct ComponentSummary {
     pub id: String,
     pub title: String,
     pub cover: Option<Cover>,
+    /// The key of the drawn node that is the cover (a reference badge never is), or with no
+    /// file to show the oldest drawn member: the root a view draws the lineage from. It is not derived from `id`, and an
+    /// in-place edit's cover is the earlier revision, not the node its path maps to.
+    pub cover_key: String,
     pub image_count: usize,
     pub node_count: usize,
     pub active: bool,
@@ -676,12 +680,31 @@ fn build_index(facts: &Facts, layout: &Layout) -> FolderIndex {
         })
         .collect();
 
-    // Only parents in the displayed folder graph matter. An outside image
-    // may have recorded ancestors that were not imported; it is still a badge
-    // here. Managed unsaved outputs have already been classified as Current.
+    // An out-of-folder image is a reference badge unless a current-folder image is among its
+    // ancestors (an edit saved elsewhere is drawn). Recorded ancestors that were not imported do not
+    // matter. Managed unsaved outputs have already been classified as Current.
+    let mut children: Vec<Vec<usize>> = vec![Vec::new(); nodes.len()];
+    for (child, parents) in parents.iter().enumerate() {
+        for &parent in parents {
+            children[parent].push(child);
+        }
+    }
+    let mut descends_from_current = vec![false; nodes.len()];
+    let mut pending: Vec<usize> = (0..nodes.len())
+        .filter(|index| nodes[*index].scope == NodeScope::Current)
+        .collect();
+    while let Some(index) = pending.pop() {
+        for &child in &children[index] {
+            if !descends_from_current[child] {
+                descends_from_current[child] = true;
+                pending.push(child);
+            }
+        }
+    }
     let badges: Vec<bool> = nodes
         .iter()
-        .map(|node| node.scope != NodeScope::Current && node.parents.is_empty())
+        .enumerate()
+        .map(|(index, node)| node.scope != NodeScope::Current && !descends_from_current[index])
         .collect();
     let mut sets = UnionFind::new(nodes.len());
     for (child, parents) in parents.iter().enumerate() {
@@ -701,6 +724,9 @@ fn build_index(facts: &Facts, layout: &Layout) -> FolderIndex {
     // for every stack (a shared style can feed thousands of separate stacks).
     let mut references: HashMap<usize, HashMap<usize, Vec<usize>>> = HashMap::new();
     for (child, parents) in parents.iter().enumerate() {
+        if badges[child] {
+            continue;
+        }
         for &parent in parents {
             if badges[parent] {
                 references
@@ -727,15 +753,18 @@ fn build_index(facts: &Facts, layout: &Layout) -> FolderIndex {
                 .max()
                 .unwrap_or_default();
             let component_badges = references.remove(&root).unwrap_or_default();
+            let drawn = members.clone();
             members.extend(component_badges.keys().copied());
             // Cover, relationship and counts retain their existing rules,
             // including the legacy reference nodes in node_count only.
-            let summary = summarize(&id, &members, &nodes, &parents, facts);
+            let summary = summarize(&id, &members, &drawn, &nodes, &parents, facts);
             let mut component_nodes: Vec<TraceNode> = members
                 .iter()
                 .map(|index| {
                     let mut node = nodes[*index].clone();
                     if let Some(consumers) = component_badges.get(index) {
+                        // A badge is an input, not part of the drawn lineage: its own ancestry is not drawn.
+                        node.parents.clear();
                         let mut consumers = consumers.clone();
                         consumers.sort_by(|a, b| {
                             nodes[*a]
@@ -816,6 +845,8 @@ fn has_relationship(component: &[TraceNode]) -> bool {
 fn summarize(
     id: &str,
     members: &[usize],
+    // The members that are drawn: `members` also holds the reference badges.
+    drawn: &[usize],
     nodes: &[TraceNode],
     parents: &[Vec<usize>],
     facts: &Facts,
@@ -830,23 +861,37 @@ fn summarize(
         is_current(*index) && !parents[*index].iter().any(|parent| is_current(*parent))
     }))
     .or_else(|| oldest_with_path(&mut members.iter().copied()));
-    let (title, cover) = match title_node {
-        Some(index) => {
-            let path = nodes[index].path.clone().unwrap_or_default();
-            (
-                file_stem(&path),
-                Some(Cover {
-                    path,
-                    present: nodes[index].state == NodeState::Present,
-                }),
-            )
-        }
-        None => ("Generating".to_owned(), None),
-    };
+    // The cover is the oldest current-folder image with no current-folder parent. Every drawn root
+    // is a current-folder image (an out-of-folder image is drawn only below one), so it is a root of
+    // what is drawn.
+    let drawn_root = |index: &usize| !parents[*index].iter().any(|parent| drawn.contains(parent));
+    let cover_index = oldest_with_path(&mut drawn.iter().copied().filter(|index| {
+        is_current(*index) && drawn_root(index)
+    }))
+    // A cycle leaves no root: fall back to the title's rule.
+    .or_else(|| oldest_with_path(&mut drawn.iter().copied().filter(|index| {
+        is_current(*index) && !parents[*index].iter().any(|parent| is_current(*parent))
+    })))
+    .or_else(|| oldest_with_path(&mut drawn.iter().copied()))
+    .or_else(|| drawn.iter().copied().min_by_key(|index| nodes[*index].order));
+    let cover_key = cover_index.map(|index| nodes[index].key.clone()).unwrap_or_default();
+    // The title is the namesake; the cover is the drawn cover node itself, so a stack's
+    // thumbnail, path and selection target all come from `cover_key`.
+    let title = title_node.map_or_else(
+        || "Generating".to_owned(),
+        |index| file_stem(nodes[index].path.as_deref().unwrap_or_default()),
+    );
+    let cover = cover_index.and_then(|index| {
+        nodes[index].path.clone().map(|path| Cover {
+            path,
+            present: nodes[index].state == NodeState::Present,
+        })
+    });
     ComponentSummary {
         id: id.to_owned(),
         title,
         cover,
+        cover_key,
         // An earlier revision shares its file with the newest one.
         image_count: members
             .iter()
@@ -2274,6 +2319,7 @@ mod tests {
         let component = &view.components[0];
         assert_eq!(component.id, format!("c:a:{source_id}"));
         assert_eq!(component.title, "source");
+        assert_eq!(component.cover_key, format!("a:{source_id}"));
         assert_eq!(
             component.cover,
             Some(Cover {
@@ -2776,6 +2822,10 @@ mod tests {
         assert_eq!(view.members[0].key, nodes[1].key);
         assert_eq!(view.components[0].title, "photo");
         assert_eq!(view.components[0].image_count, 1, "one file, two revisions");
+        assert_eq!(
+            view.components[0].cover_key, nodes[0].key,
+            "the cover is the root revision, not the newest one that the path maps to"
+        );
     }
 
     fn bulk(db: &Path, write: impl FnOnce(&rusqlite::Transaction<'_>)) {
@@ -3358,6 +3408,7 @@ mod tests {
             id: "c:1".into(),
             title: "t".into(),
             cover: None,
+            cover_key: "a:1".into(),
             image_count: 1,
             node_count: 2,
             active: false,
@@ -3779,7 +3830,7 @@ mod tests {
     }
 
     #[test]
-    fn a_cover_outside_the_folder_reports_its_presence_when_served() {
+    fn a_reference_badge_is_never_the_cover_of_an_unsaved_stack() {
         let f = fixture();
         let parent = image(&f.elsewhere.join("parent.png"), b"parent");
         let run = begin_operation_at(
@@ -3792,16 +3843,10 @@ mod tests {
         )
         .unwrap();
         let key = format!("o:{run}:0");
-        let cover = |view: &View| view.component_of(&key).cover.clone().unwrap();
-        assert_eq!(
-            cover(&view(&f)),
-            Cover {
-                path: parent.to_string_lossy().into_owned(),
-                present: true
-            }
-        );
-        fs::remove_file(&parent).unwrap();
-        assert!(!cover(&view(&f)).present);
+        let component = view(&f).component_of(&key).clone();
+        // The drawn cover is the unsaved output, which has no file yet; the outside input is a badge.
+        assert_eq!(component.cover_key, key);
+        assert_eq!(component.cover, None);
     }
 
     #[test]

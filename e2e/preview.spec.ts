@@ -67,7 +67,9 @@ test.describe("references and unsaved outputs open in Preview without navigating
       const after = await state(page);
       expect(after.navigations).toEqual([]);
       expect(after.selected).toEqual([]);
-      expect(await rendered(page, "tone", "focus")).toEqual([name]);
+      // The reference is a badge, not a tile: it shows as the selected one, and the image it fed is related.
+      await expect(page.locator(`[data-reference-key="${await key(page, name)}"]`).first()).toHaveAttribute("aria-pressed", "true");
+      expect(await rendered(page, "tone", "related")).toContain("warm");
     });
   }
 });
@@ -223,8 +225,42 @@ test.describe("Preview info", () => {
     await click(page, "warm");
     await trace(page).getByRole("button", { name: /Preview input .*lantern/ }).click();
     await settle(page);
-    await expect(await tile(page, "lantern")).toHaveAttribute("data-tone", "focus");
+    await expect(await card(page, "lantern")).toHaveAttribute("aria-pressed", "true");
+    await expect(await tile(page, "warm")).toHaveAttribute("data-tone", "related");
     expect((await state(page)).navigations).toEqual([]);
+  });
+
+  test("choosing an outside input scrolls its reference badge into view and focuses it", async ({ page }) => {
+    await openView(page, undefined, "?many=8");
+    await click(page, "warm");
+    await openDetails(page);
+    const view = page.getByTestId("trace-view");
+    await view.evaluate((element) => { element.scrollTop = element.scrollHeight; });
+    await settle(page);
+    const badge = page.locator(`[data-reference-key="${await key(page, "lantern")}"]`).first();
+    const inView = () => Promise.all([badge.boundingBox(), view.boundingBox()]).then(([b, v]) => !!b && !!v && b.y >= v.y - 1 && b.y + b.height <= v.y + v.height + 1);
+    expect(await inView()).toBe(false);
+    await trace(page).getByRole("button", { name: /Preview input .*lantern/ }).click();
+    await settle(page);
+    await expect(badge).toHaveAttribute("aria-pressed", "true");
+    expect(await inView()).toBe(true);
+    expect(await page.evaluate(() => document.activeElement?.getAttribute("data-reference-key"))).toBe(await key(page, "lantern"));
+    expect(await uncaught(page)).toEqual([]);
+  });
+
+  test("choosing a reference hidden behind +n reveals and focuses its badge", async ({ page }) => {
+    await openView(page, 420, "?moreBadges=1");
+    await click(page, "warm");
+    await openDetails(page);
+    const hidden = `[data-reference-key="${await key(page, "reference-4")}"]`;
+    await expect(page.locator(hidden)).toHaveCount(0);
+    await trace(page).getByRole("button", { name: /Preview input .*reference-4/ }).click();
+    await settle(page);
+    const badge = page.locator(hidden).first();
+    await expect(badge).toBeVisible();
+    await expect(badge).toHaveAttribute("aria-pressed", "true");
+    expect(await page.evaluate(() => document.activeElement?.getAttribute("data-reference-key"))).toBe(await key(page, "reference-4"));
+    expect(await uncaught(page)).toEqual([]);
   });
 
   test("raw data is collapsed until opened", async ({ page }) => {
@@ -252,7 +288,7 @@ test.describe("saving and deleting unsaved outputs", () => {
     await expect(page.locator(`[data-tile-key="${identity}"]`)).toHaveCount(1);
     await expect(page.locator(`[data-tile-key="${identity}"] .unsaved-dot`)).toHaveCount(0);
     await expect(page.getByTestId("preview-badge")).toHaveCount(0);
-    await expect(page.locator("section.component .heading .unsaved")).toHaveCount(0);
+    await expect(page.locator("section.component .unsaved")).toHaveCount(0);
     expect((await state(page)).navigations).toEqual([]);
     expect(await uncaught(page)).toEqual([]);
   });
@@ -415,14 +451,14 @@ test.describe("Interrupted placeholders", () => {
 
   test("dismissing the only edit of a lone image returns it to the other files, as the backend does", async ({ page }) => {
     await openView(page, undefined, "?lone=1");
-    const others = page.getByRole("list", { name: "Other files and folders" });
+    const others = page.getByRole("grid", { name: "Folder" });
     const identity = await page.evaluate(() => {
       const backend = (window as any).trace.backend;
       const made = backend.startGeneration("lonely", "retry") as string;
       backend.interruptGeneration("retry");
       return made;
     });
-    const section = page.locator("section.component[data-component]", { has: page.locator(".heading .name", { hasText: /^lonely$/ }) });
+    const section = page.locator('section.component[aria-label="lonely"]');
     await expect(section).toHaveCount(1);
     await ensureExpanded(section);
     await page.locator(`[data-tile-key="${identity}"] .card`).click();
@@ -441,7 +477,7 @@ test.describe("Interrupted placeholders", () => {
       backend.interruptGeneration("retry");
       return made;
     });
-    const section = page.locator("section.component[data-component]", { has: page.locator(".heading .name", { hasText: /^lonely$/ }) });
+    const section = page.locator('section.component[aria-label="lonely"]');
     await ensureExpanded(section);
     await page.locator(`[data-tile-key="${identity}"] .card`).click();
     await dismiss(page).click();

@@ -3,7 +3,7 @@ import { expect, test, type Locator, type Page } from "@playwright/test";
 /** Scenario names used by the fixture (see harness/view-fixture.ts). */
 export type Name = string;
 
-export async function openView(page: Page, width?: number, query = ""): Promise<void> {
+export async function openView(page: Page, width?: number, query = "", expand = true): Promise<void> {
   await page.goto(`/view.html${query}`);
   await page.waitForFunction(() => !!(window as any).trace);
   if (width) await page.evaluate((w) => (window as any).trace.setWidth(w), width);
@@ -16,13 +16,19 @@ export async function openView(page: Page, width?: number, query = ""): Promise<
   test.info().setTimeout(test.info().timeout + FIRST_TILES_TIMEOUT_MS);
   await expect(page.locator("[data-tile-key]").first()).toBeVisible({ timeout: FIRST_TILES_TIMEOUT_MS });
   await settle(page);
+  if (expand) {
+    const stacks = page.locator("section[data-component]");
+    for (let i = 0; i < Math.min(3, await stacks.count()); i++) await ensureExpanded(stacks.nth(i));
+    await page.getByTestId("trace-view").click({ position: { x: 2, y: 2 } });
+    await settle(page);
+  }
 }
 
 const FIRST_TILES_TIMEOUT_MS = 20_000;
 
 export const key = (page: Page, name: Name): Promise<string> => page.evaluate((n) => (window as any).trace.backend.key(n), name);
-export const tile = async (page: Page, name: Name): Promise<Locator> => page.locator(`[data-tile-key="${await key(page, name)}"]`);
-export const card = async (page: Page, name: Name): Promise<Locator> => page.locator(`[data-node-key="${await key(page, name)}"]`);
+export const tile = async (page: Page, name: Name): Promise<Locator> => page.locator(`[data-tile-key="${await key(page, name)}"], [data-reference-key="${await key(page, name)}"]`).first();
+export const card = async (page: Page, name: Name): Promise<Locator> => page.locator(`[data-node-key="${await key(page, name)}"], [data-reference-key="${await key(page, name)}"]`).first();
 export const state = (page: Page) => page.evaluate(() => (window as any).trace.state() as {
   selected: string[]; inputs: string[]; cursor: string | null; target: { id: string; title: string; badge: string | null } | null;
   fileView: string | null; opened: string[]; menus: Array<string | null>; navigations: string[];
@@ -55,9 +61,9 @@ export async function click(page: Page, name: Name, options: Parameters<Locator[
   await settle(page);
 }
 
-/** Newest-first summaries can make a new section expanded by default. */
+/** Open a stack without depending on the folder's default expansion state. */
 export async function ensureExpanded(section: Locator): Promise<void> {
-  const heading = section.locator(".heading");
+  const heading = section.locator("[data-stack-toggle]");
   await expect(heading).toHaveAttribute("aria-expanded", /^(true|false)$/);
   if (await heading.getAttribute("aria-expanded") === "false") await heading.click();
   await expect(heading).toHaveAttribute("aria-expanded", "true");

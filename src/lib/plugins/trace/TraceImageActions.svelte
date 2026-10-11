@@ -10,7 +10,7 @@
   import { traceInvalidation } from "./invalidation.svelte";
   import { imageActionState } from "./image-actions.svelte";
   import { tooltipTrigger } from "./view/tooltip/controller.svelte";
-  let { artifact, onSelectFile, captureSelection, selectAfterSave = true, onDiscard }: { artifact: TraceArtifact; onSelectFile:(path:string)=>Promise<void>; captureSelection?:()=>()=>boolean; selectAfterSave?:boolean; onDiscard?:(artifact:TraceArtifact,viewPath:string|null)=>void } = $props();
+  let { artifact, onSelectFile, captureSelection, selectAfterSave = true, onDiscard }: { artifact: TraceArtifact; onSelectFile:(path:string, select:boolean)=>Promise<void>; captureSelection?:()=>()=>boolean; selectAfterSave?:boolean; onDiscard?:(artifact:TraceArtifact,viewPath:string|null)=>void } = $props();
   let alive = true;
   let error = $state("");
   let operation = $state("");
@@ -31,7 +31,8 @@
         if (alive) onDiscard?.(selected,result.viewPath);
       } else {
         const result = await saveGeneratedImage(selected.id);
-        if (alive && artifact.id === selected.id && navigateAfterSave && stillSelected()) await onSelectFile(result.path);
+        // Always report the file: the view must know it is part of its stack even if this control has been unmounted.
+        await onSelectFile(result.path, alive && artifact.id === selected.id && navigateAfterSave && stillSelected());
       }
       traceInvalidation.bump();
     } catch (cause) { error = extractError(cause); }

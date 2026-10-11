@@ -225,7 +225,7 @@ test.describe("the view's own clicks", () => {
 test.describe("picks in sections that are not shown", () => {
   async function section(page: Page, name: string) {
     const id = await (await tile(page, name)).locator("xpath=ancestor::section[@data-component]").getAttribute("data-component");
-    return page.locator(`section[data-component="${id}"]`).locator("button.heading").first();
+    return page.locator(`section[data-component="${id}"]`).locator("[data-stack-toggle]").first();
   }
 
   test("an unsaved pick discarded while its section is collapsed is no longer an input", async ({ page }) => {
@@ -255,7 +255,7 @@ test.describe("picks in sections that are not shown", () => {
     await settle(page);
     await expect.poll(id).not.toBe(before);
     expect(await editInputs(page)).toEqual([warm, fgen]);
-    const heading = page.locator(`section[data-component="${await id()}"]`).locator("button.heading").first();
+    const heading = page.locator(`section[data-component="${await id()}"]`).locator("[data-stack-toggle]").first();
     await heading.click();
     await expect(heading).toHaveAttribute("aria-expanded", "false");
     await settle(page);

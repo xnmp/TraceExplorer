@@ -126,7 +126,8 @@ test.describe("Trace tile tooltip", () => {
     await expect(bubble(page)).toHaveCount(0);
 
     await page.mouse.move(2, 2);
-    await (await card(page, "village")).hover();
+    // The village cover now sits partly above the scrolled view, and hovering it would scroll it into view.
+    await (await card(page, "warm")).hover();
     await expect(bubble(page)).toBeVisible();
     await page.evaluate(() => window.dispatchEvent(new Event("blur")));
     await expect(bubble(page)).toHaveCount(0);
@@ -142,9 +143,9 @@ test.describe("Trace tile tooltip", () => {
       const right = await page.locator(".explorer").evaluate((element) => Math.floor(element.getBoundingClientRect().right));
       await page.setViewportSize({ width: right, height: 720 });
       await settle(page);
-      // Scroll the right-most tile of the first graph down to the window's bottom edge.
+      // Scroll the right-most graph tile (a closed stack has no tooltip) of the grid (a graph is narrower than the grid now) down to the window's bottom edge.
       const corner = await page.evaluate(() => {
-        const cards = [...document.querySelectorAll<HTMLElement>("section.component")[0].querySelectorAll<HTMLElement>("[data-node-key]")];
+        const cards = [...document.querySelectorAll<HTMLElement>("section.component [data-node-key]:not([data-stack-toggle])")];
         const card = cards.sort((a, b) => b.getBoundingClientRect().right - a.getBoundingClientRect().right)[0];
         const view = document.querySelector<HTMLElement>("[data-testid=trace-view]")!;
         view.scrollTop += card.getBoundingClientRect().bottom - Math.min(innerHeight, view.getBoundingClientRect().bottom) + 2;
@@ -198,6 +199,20 @@ test.describe("Trace tile tooltip", () => {
     await page.keyboard.press("Escape");
     await expect(bubble(page)).toHaveCount(0);
   });
+});
+
+test("removing the focused tile under its shown tooltip writes no state mid-render", async ({ page }) => {
+  await openView(page, 420, "", false);
+  await page.locator('section[aria-label="village"] [data-stack-toggle]').click(); await settle(page);
+  const target = await card(page, "daylight");
+  await page.keyboard.press("Tab"); await target.focus(); await page.keyboard.press("Shift+Tab"); await page.keyboard.press("Tab");
+  await target.focus();
+  await expect(bubble(page)).toBeVisible();
+  await page.locator('section[aria-label="village"]').getByRole("button", { name: "Close stack" }).evaluate((button: HTMLElement) => button.click());
+  await settle(page);
+  await expect(page.locator('section[aria-label="village"] [data-grid-band]')).toHaveCount(0);
+  await expect(bubble(page)).toHaveCount(0);
+  expect(await uncaught(page)).toEqual([]);
 });
 
 test.describe("unsaved output actions", () => {
