@@ -7,7 +7,6 @@ let activeTrace:{directory:string;inputs():readonly string[];hasUnusableTarget()
 vi.mock("$lib/plugins/openai-image/OpenAIImageHistory.svelte",()=>({default:{}}));
 import {openAIImagePlugin} from "$lib/plugins/openai-image";
 import type {PluginContext} from "../../integration/plugin-sdk";
-import type {CombinedSelectionWorkspace} from "$lib/plugins/openai-image/workspace-selection";
 import type {FileEntry} from "$lib/domain/file";
 const image:FileEntry={name:"photo.PNG",path:"/media/photo.PNG",kind:"file",size:20,modified:"2026-10-03T00:00:00Z"};
 const folder:FileEntry={...image,name:"media",path:"/media",kind:"directory"};
@@ -133,7 +132,7 @@ describe("OpenAI plugin SDK contributions",()=>{
     try{
       const command=f.commands.find(c=>c.id==="plugin.openai-image.edit")!;
       await command.handler();
-      const workspace:CombinedSelectionWorkspace=f.ctx.workspace;
+      const workspace=f.ctx.workspace;
       workspace.getCombinedSelection=()=>[image];
       await command.handler();
       expect(f.opened).toEqual([]);
@@ -155,7 +154,7 @@ describe("OpenAI plugin SDK contributions",()=>{
   });
   it("uses the optional combined selection even when the active pane has no inputs",async()=>{
     const f=fixture();
-    const workspace:CombinedSelectionWorkspace=f.ctx.workspace;
+    const workspace=f.ctx.workspace;
     let combined:FileEntry[]=[image,image];
     workspace.getCombinedSelection=()=>combined;
     await openAIImagePlugin.activate(f.ctx);
@@ -169,7 +168,7 @@ describe("OpenAI plugin SDK contributions",()=>{
   it("combines other panes with ordered Trace picks and rejects their invalid inputs",async()=>{
     const f=fixture(),second={...image,name:"other.webp",path:"/other/other.webp"};
     f.setSelection([image]);
-    const workspace:CombinedSelectionWorkspace=f.ctx.workspace;
+    const workspace=f.ctx.workspace;
     let combined=[image,second];workspace.getCombinedSelection=()=>combined;
     activeTrace={hasUnusableTarget:()=>false,directory:"/media",inputs:()=>["/managed/new.png",image.path]};
     try{
