@@ -1,10 +1,9 @@
 <script lang="ts">
   import { onMount, untrack } from 'svelte';
   import Modal from '$lib/components/Modal.svelte';
-  import { ConnectionsController, type Backend, type RevisionEvent, type TestRegistry } from './controller';
-  import { API_BACKENDS, effectiveZoom, commandDraftText, canAddCodex, isApi, newProfile, parseCommand, removeProfile, setDefault, transportLabel, validation, type CommandDraft, type ImageProfile } from './domain';
+  import { ConnectionsController, pending, type Backend, type RevisionEvent, type TestRegistry } from './controller';
+  import { API_BACKENDS, testResultText, effectiveZoom, commandDraftText, canAddCodex, isApi, newProfile, parseCommand, removeProfile, setDefault, transportLabel, validation, type CommandDraft, type ImageProfile } from './domain';
   import ProfileFields from './ProfileFields.svelte';
-  import TestResults from './TestResults.svelte';
   let { open, onClose, backend, registry, subscribeRevision }: { open: boolean; onClose: () => void; backend: Backend; registry: TestRegistry; subscribeRevision: (fn: (event: RevisionEvent) => void) => () => void } = $props();
   const controller = untrack(() => new ConnectionsController(backend, registry));
   let view = $state(controller.snapshot());
@@ -20,6 +19,9 @@
   let savedUsable = $derived(!dirty && !view.busy && !view.conflict && !!profile && !!view.saved?.profiles.some(p => p.id === profile?.id));
   let needsKey = $derived(!!profile && isApi(profile) && !!pendingSecrets[profile.id] && (profile.credential.kind !== 'secret' || !profile.credential.id));
   let usable = $derived(savedUsable && !needsKey);
+  let lastTest = $derived([...view.tests].reverse().find(test => test.profileId === profile?.id));
+  let runningTest = $derived(view.tests.find(test => test.profileId === profile?.id && pending(test)));
+  let resultText = $derived(testResultText(lastTest, view.saved?.profiles.find(p => p.id === profile?.id)));
   let full = $derived((view.draft?.profiles.length ?? 0) >= 32);
   function trackZoom(element: HTMLDivElement) {
     const ancestors: HTMLElement[] = [];
@@ -110,8 +112,11 @@
               {#if view.draft.defaultConnectionId === null}<p class="banner caution">Choose a default connection, then save, to enable image generation.</p>{/if}
               {#key profile.id}<ProfileFields {profile} choosingSecret={!!pendingSecrets[profile.id]} commandText={profile.credential.kind === 'command' ? commandDraftText(profile.credential.argv, commandTexts[profile.id]) : undefined} oncommand={updateCommand} disabled={view.busy} saved={savedUsable} onsource={selectSource} onchange={updateProfile} oncredential={key => controller.credential(profile!.id, key)} />{/key}
               <div class="verify">
-                <div class="actions"><button type="button" disabled={!usable} onclick={() => controller.check(profile!.id)}>Check locally</button><button type="button" disabled={!usable} onclick={() => controller.test(profile!.id)}>Test generation (may be billed)</button></div>
-                <p class="note">{dirty ? 'Save or discard your edits before checking or testing.' : 'Check locally confirms the executable or credentials are available. Test generation makes one real image.'}</p>
+                <div class="actions test-actions"><button type="button" disabled={!usable} onclick={() => controller.check(profile!.id)}>Check locally</button><button type="button" class="test-button" aria-busy={!!runningTest} disabled={!runningTest && (!usable || view.recoveringTests)} onclick={() => runningTest ? controller.cancel(runningTest.requestId) : controller.test(profile!.id)}>
+                  {#if runningTest}<span class="spinner" aria-hidden="true"></span>Cancel test{:else}Test generation (may be billed){/if}
+                </button>
+                {#if resultText}<p class="test-result" role="status">{resultText}</p>{/if}</div>
+                <p class="note">{dirty ? 'Save or discard your edits before checking or testing.' : 'Check locally confirms the executable or credentials are available. Test generation makes one real image, may be billed, and discards the output.'}</p>
                 {#if view.check && view.check.profileId === profile.id}<p role="status">{view.check.message}</p>{/if}
               </div>
               <div class="danger-zone"><button type="button" class="danger" disabled={view.busy} onclick={() => view.draft && controller.edit(removeProfile(view.draft, profile!.id))}>Remove connection</button></div>
@@ -119,9 +124,8 @@
           </section>
         </div>
         {#if invalid && dirty}<p class="banner critical">{invalid}</p>{/if}
-        <TestResults tests={view.tests} revision={view.saved?.documentRevision ?? 0} oncancel={id => controller.cancel(id)} onrefresh={id => controller.poll(id)} ondiscard={id => controller.discard(id)} />
       {/if}
-      {#if confirmingClose}<div class="banner caution" role="alert"><p>Discard unsaved connection edits and close? Saved connections and retained test images are kept.</p><div class="actions"><button type="button" onclick={() => confirmingClose = false}>Keep editing</button><button type="button" onclick={finishClose}>Discard edits and close</button></div></div>{/if}
+      {#if confirmingClose}<div class="banner caution" role="alert"><p>Discard unsaved connection edits and close? Saved connections are kept.</p><div class="actions"><button type="button" onclick={() => confirmingClose = false}>Keep editing</button><button type="button" onclick={finishClose}>Discard edits and close</button></div></div>{/if}
     </div>
     <footer>
       <span class="note">{#if dirty}<span class="dot" aria-hidden="true"></span>Unsaved changes{/if}</span>
@@ -155,6 +159,12 @@
   .detail { display: grid; align-content: start; gap: var(--spacing-md); padding: var(--spacing-lg); min-width: 0; }
   .detail-head { display: flex; align-items: center; justify-content: space-between; gap: var(--spacing-md); }
   .verify { display: grid; gap: var(--spacing-sm); padding-top: var(--spacing-md); border-top: 1px solid var(--divider); }
+  .test-button { display: inline-flex; align-items: center; gap: var(--spacing-xs); }
+  .test-actions { align-items: center; }
+  .test-result { font-size: var(--font-size-caption); }
+  .spinner { width: 1em; height: 1em; border: 2px solid var(--control-stroke); border-top-color: currentColor; border-radius: var(--radius-pill); animation: spin 1s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  @media (prefers-reduced-motion: reduce) { .spinner { animation: none; } }
   .danger-zone { padding-top: var(--spacing-md); border-top: 1px solid var(--divider); }
   .empty { display: grid; gap: var(--spacing-xs); align-content: center; justify-items: center; text-align: center; min-height: 12rem; padding: var(--spacing-lg); }
   .empty-title { font-weight: var(--font-weight-semibold); }

@@ -32,7 +32,9 @@
 //! ratio maps natively to `aspect_ratio` for `flux-3-image` and `flux-kontext*`, and to
 //! a fixed ~1 MP `width`/`height` pair for FLUX.2, which has no ratio field.
 //! `keep` (or no ratio) sends nothing, so the model follows the inputs. There is
-//! no size or quality control exposed in v1.
+//! no size or quality control exposed in v1. Private connection-test recipes
+//! use exact schema minima: FLUX.2 64x64, FLUX1.1/dev 256x256, and FLUX3
+//! `768sq`; unknown models and Kontext use their adapter defaults.
 //!
 //! Polling happens inside the adapter. The delay starts at 0.5 s and grows 1.5x to
 //! 2 s. Cancellation ends the wait as `cancelled_after_dispatch`: the service sets
@@ -86,6 +88,7 @@ pub const DESCRIPTOR: ApiDescriptor = ApiDescriptor {
     credential_env: "BFL_API_KEY",
     auth: Auth::Header("x-key"),
     options: Options {
+        test_size: "auto",
         quality: &["auto"],
         background: &["auto"],
         resolution: false,
@@ -202,7 +205,14 @@ fn request_body(family: Family, recipe: &EffectiveRecipe, inputs: &[Input]) -> V
         if let Some(r) = ratio {
             fields.insert("aspect_ratio".into(), json!(r));
         }
+        if let Some(resolution) = &recipe.options.resolution {
+            fields.insert("resolution".into(), json!(resolution));
+        }
         return body;
+    }
+    if let Some((width, height)) = recipe.options.size.split_once('x') {
+        fields.insert("width".into(), json!(width.parse::<u32>().unwrap()));
+        fields.insert("height".into(), json!(height.parse::<u32>().unwrap()));
     }
     for (index, image) in images.into_iter().enumerate() {
         let name = if index == 0 {
@@ -222,6 +232,34 @@ fn request_body(family: Family, recipe: &EffectiveRecipe, inputs: &[Input]) -> V
         }
     }
     body
+}
+
+pub(super) fn validated_request_body(
+    recipe: &EffectiveRecipe,
+    profile: &ApiProfile,
+    inputs: &[Input],
+) -> Result<Value> {
+    let model = model_name(recipe, profile)?;
+    if let Some(problem) =
+        crate::domain::model_options_problem(ApiKind::Bfl, Some(&model), &recipe.options)
+    {
+        return Err(error("invalid_request", problem));
+    }
+    let family = family(&model)?;
+    if inputs.len() > family.cap() {
+        return Err(error(
+            "invalid_request",
+            &if family.cap() == 0 {
+                "This Flux model does not accept reference images".to_owned()
+            } else {
+                format!(
+                    "This Flux model accepts at most {} reference images",
+                    family.cap()
+                )
+            },
+        ));
+    }
+    Ok(request_body(family, recipe, inputs))
 }
 
 /// May the key be sent to this polling URL? Only the base's exact origin, or the
@@ -335,24 +373,10 @@ async fn run(call: ApiCall<'_>, schedule: Schedule) -> Result<Output> {
         stage,
     } = call;
     let model = model_name(recipe, profile)?;
-    let family = family(&model)?;
-    if inputs.len() > family.cap() {
-        return Err(error(
-            "invalid_request",
-            &if family.cap() == 0 {
-                "This Flux model does not accept reference images".to_owned()
-            } else {
-                format!(
-                    "This Flux model accepts at most {} reference images",
-                    family.cap()
-                )
-            },
-        ));
-    }
+    let body = validated_request_body(recipe, profile, &inputs)?;
     let base = url::Url::parse(&profile.base_url)
         .map_err(|_| error("invalid_request", "Enter an absolute Flux API root"))?;
     let client = client()?;
-    let body = request_body(family, recipe, &inputs);
     drop(inputs);
     let submit = client
         .post(format!(

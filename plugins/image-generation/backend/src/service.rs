@@ -10,7 +10,7 @@ use crate::{
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -81,6 +81,21 @@ impl Drop for AdmissionCancel {
     }
 }
 
+/// Serializes user-initiated tests per connection, including admission IO.
+struct TestLease {
+    service: Arc<Service>,
+    connection_id: String,
+}
+impl Drop for TestLease {
+    fn drop(&mut self) {
+        self.service
+            .tests
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&self.connection_id);
+    }
+}
+
 /// A proven success whose output this process is still staging and sealing.
 /// Holds the last receipt consumers could have observed until the terminal
 /// receipt is committed (plan §8.3 step 8), then forgets it on any exit path.
@@ -128,6 +143,17 @@ pub struct ServicePolicy {
     pub sync_profile_directory: DirectorySync,
     pub before_deadline_cancel: Arc<dyn Fn() + Send + Sync>,
 }
+/// End ownership explicitly, rather than waiting for every duplicated file
+/// description to close. A parallel fork can inherit this file before CLOEXEC
+/// runs; that child must not keep a destroyed service's state directory locked.
+struct OwnerLease(std::fs::File);
+impl Drop for OwnerLease {
+    fn drop(&mut self) {
+        if let Err(failure) = fs2::FileExt::unlock(&self.0) {
+            eprintln!("image state directory unlock failed: {failure}");
+        }
+    }
+}
 impl Default for ServicePolicy {
     fn default() -> Self {
         Self {
@@ -142,6 +168,7 @@ pub struct Service {
     pub journal: Journal,
     host: Arc<dyn Host>,
     preparations: Mutex<HashMap<String, Prepared>>,
+    tests: Mutex<HashSet<String>>,
     controls: Mutex<HashMap<(String, String), Arc<AtomicBool>>>,
     admission_io: Mutex<HashMap<(String, String), usize>>,
     admission_cancels: Mutex<HashMap<OperationKey, Vec<Arc<AtomicBool>>>>,
@@ -151,7 +178,8 @@ pub struct Service {
     ready: AtomicBool,
     shutdown: AtomicBool,
     directory: PathBuf,
-    owner: Mutex<Option<std::fs::File>>,
+    // Fields drop in declaration order: close the journal before releasing ownership.
+    owner: Mutex<Option<OwnerLease>>,
     operation_budget: Duration,
     before_deadline_cancel: Arc<dyn Fn() + Send + Sync>,
 }
@@ -179,6 +207,7 @@ impl Service {
             journal: Journal::open(directory)?,
             host,
             preparations: Mutex::new(HashMap::new()),
+            tests: Mutex::new(HashSet::new()),
             controls: Mutex::new(HashMap::new()),
             admission_io: Mutex::new(HashMap::new()),
             admission_cancels: Mutex::new(HashMap::new()),
@@ -246,6 +275,7 @@ impl Service {
                 "Another Image Generation backend owns this state directory",
             )
         })?;
+        let lease = OwnerLease(lease);
         self.journal.activate()?;
         let recovered = self.journal.recover()?;
         *owner = Some(lease);
@@ -436,7 +466,29 @@ impl Service {
         if !valid_digest(&request.effective_recipe_digest) {
             return Err(invalid("Invalid prepared image recipe digest"));
         }
-        match self.start_prepared(caller.clone(), request.clone(), test, semantic.clone()) {
+        let test_lease = if test {
+            let mut tests = self.tests.lock().map_err(storage)?;
+            if tests.contains(&request.connection_id) {
+                return Err(error(
+                    "test_already_running",
+                    "A test is already running for this connection",
+                ));
+            }
+            tests.insert(request.connection_id.clone());
+            Some(TestLease {
+                service: self.clone(),
+                connection_id: request.connection_id.clone(),
+            })
+        } else {
+            None
+        };
+        match self.start_prepared(
+            caller.clone(),
+            request.clone(),
+            test,
+            semantic.clone(),
+            test_lease,
+        ) {
             Ok(status) => Ok(status),
             Err(failure) if failure.code == "operation_conflict" => Err(failure),
             Err(failure) => self
@@ -447,6 +499,7 @@ impl Service {
                             &request.operation_id,
                             &semantic,
                             &request.effective_recipe_digest,
+                            &request.connection_id,
                             failure,
                             test,
                         )
@@ -461,6 +514,7 @@ impl Service {
         request: StartRequest,
         test: bool,
         semantic: String,
+        test_lease: Option<TestLease>,
     ) -> Result<OperationStatus> {
         let recipe = {
             let tokens = self.preparations.lock().map_err(storage)?;
@@ -624,6 +678,7 @@ impl Service {
                         .lock()
                         .unwrap_or_else(|e| e.into_inner())
                         .remove(&identity);
+                    drop(test_lease);
                     drop(service);
                     drop(admission);
                 });
@@ -656,6 +711,7 @@ impl Service {
                 .remove(&identity);
             // The admission permit is released last: once wait_idle observes it,
             // no worker retains this instance (or its state-directory lease).
+            drop(test_lease);
             drop(service);
             drop(admission);
         });
@@ -1307,6 +1363,29 @@ impl Service {
                 })
             }
             "test" => self.test(params),
+            "test.list" => {
+                let tests = self.journal.retained_tests("xnmp.image-generation")?;
+                let mut visible_tests = Vec::new();
+                for (profile_id, status) in tests {
+                    let visible = self
+                        .visible("xnmp.image-generation", &status.operation_id, || {
+                            self.journal
+                                .get("xnmp.image-generation", &status.operation_id, None)
+                        })?
+                        .ok_or_else(|| error("not_found", "Unknown image test"))?;
+                    if !matches!(
+                        visible.execution,
+                        Execution::Accepted {}
+                            | Execution::Running {}
+                            | Execution::Succeeded { .. }
+                    ) {
+                        self.journal
+                            .mark_test_shown("xnmp.image-generation", &status.operation_id)?;
+                    }
+                    visible_tests.push(json!({"profileId":profile_id,"status":visible}));
+                }
+                Ok(json!(visible_tests))
+            }
             "test.status" => Ok(serde_json::to_value(
                 self.status("xnmp.image-generation", &text(&params, "requestId")?)?,
             )
@@ -1325,18 +1404,42 @@ impl Service {
             }
             "test.discard" => {
                 let operation = text(&params, "requestId")?;
-                self.status("xnmp.image-generation", &operation)?;
-                let sha = self
-                    .journal
-                    .output_sha256("xnmp.image-generation", &operation)?
-                    .ok_or_else(|| invalid("Successful test output required for discard"))?;
-                let status =
-                    self.acknowledge("xnmp.image-generation", &operation, &sha, "discarded", None)?;
-                self.host.call(
-                    "host.services.test.update",
-                    json!({"operationId":operation,"status":status}),
-                    &AtomicBool::new(false),
-                )?;
+                if !self.journal.is_test("xnmp.image-generation", &operation)? {
+                    return Err(invalid("Only a test operation can be discarded here"));
+                }
+                let before = self
+                    .visible("xnmp.image-generation", &operation, || {
+                        self.journal.get("xnmp.image-generation", &operation, None)
+                    })?
+                    .ok_or_else(|| error("not_found", "Unknown image test"))?;
+                if matches!(
+                    before.execution,
+                    Execution::Accepted {} | Execution::Running {}
+                ) {
+                    return Err(invalid("Only a settled test can be discarded"));
+                }
+                let status = if matches!(before.execution, Execution::Succeeded { .. }) {
+                    let sha = self
+                        .journal
+                        .output_sha256("xnmp.image-generation", &operation)?
+                        .ok_or_else(|| {
+                            invalid("Successful test output digest required for discard")
+                        })?;
+                    self.acknowledge("xnmp.image-generation", &operation, &sha, "discarded", None)?
+                } else {
+                    before
+                };
+                // Only successful output needs host delivery cleanup. Failed,
+                // cancelled and unknown tests have no output or user workflow.
+                if matches!(status.execution, Execution::Succeeded { .. }) {
+                    self.host.call(
+                        "host.services.test.update",
+                        json!({"operationId":operation,"status":status}),
+                        &AtomicBool::new(false),
+                    )?;
+                }
+                self.journal
+                    .mark_test_shown("xnmp.image-generation", &operation)?;
                 Ok(serde_json::to_value(status).map_err(storage)?)
             }
             _ => Err(error(
@@ -1398,33 +1501,12 @@ impl Service {
             connection_id: profile.id().into(),
             expected_connection_revision: profile.revision().into(),
             model: profile.api().map(|(_, api)| api.default_model.clone()),
-            prompt: "Create a simple solid blue square, without text.".into(),
+            prompt: "A blue dot.".into(),
             inputs: vec![],
-            options: ImageOptions {
-                size: if profile
-                    .api()
-                    .is_some_and(|(kind, _)| !adapters::api::descriptor(kind).options.sizes)
-                {
-                    "auto"
-                } else {
-                    "1024x1024"
-                }
-                .into(),
-                resolution: None,
-                aspect_ratio: None,
-                quality: if profile.api().is_some_and(|(kind, _)| {
-                    adapters::api::descriptor(kind)
-                        .options
-                        .quality
-                        .contains(&"low")
-                }) {
-                    "low"
-                } else {
-                    "auto"
-                }
-                .into(),
-                background: "auto".into(),
-            },
+            options: domain::test_recipe_options(
+                profile.kind(),
+                profile.api().map(|(_, api)| api.default_model.as_str()),
+            ),
         };
         let preparation = self.prepare(caller.clone(), prepared.clone())?;
 

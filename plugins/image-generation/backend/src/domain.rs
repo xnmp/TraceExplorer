@@ -384,12 +384,12 @@ pub fn validate_prepare(request: &PrepareRequest) -> Result<()> {
         ));
     }
     let o = &request.options;
-    if !valid_size(&o.size)
+    if !(valid_size(&o.size) || matches!(o.size.as_str(), "64x64" | "256x256"))
         || !matches!(o.quality.as_str(), "auto" | "low" | "medium" | "high")
         || !matches!(o.background.as_str(), "auto" | "opaque" | "transparent")
         || o.resolution
             .as_deref()
-            .is_some_and(|v| !RESOLUTIONS.contains(&v))
+            .is_some_and(|v| !RESOLUTIONS.contains(&v) && !matches!(v, "512" | "768sq"))
         || o.aspect_ratio
             .as_deref()
             .is_some_and(|v| !ASPECT_RATIOS.contains(&v))
@@ -412,6 +412,9 @@ pub fn recipe(profile: &Profile, request: &PrepareRequest) -> Result<EffectiveRe
         Profile::Codex {
             executable_path, ..
         } => {
+            if !request.options.valid() {
+                return Err(invalid("Unsupported Codex image options"));
+            }
             if request.model.is_some()
                 || request.options.quality != "auto"
                 || request.options.background != "auto"
@@ -441,7 +444,9 @@ pub fn recipe(profile: &Profile, request: &PrepareRequest) -> Result<EffectiveRe
             if request.inputs.len() > descriptor.max_inputs {
                 return Err(invalid("Too many input images for this image provider"));
             }
-            if let Some(problem) = options_problem(descriptor, &request.options) {
+            if let Some(problem) =
+                model_options_problem(kind, request.model.as_deref(), &request.options)
+            {
                 return Err(invalid(&problem));
             }
             let model = request
@@ -534,6 +539,91 @@ pub fn capabilities(kind: Kind) -> serde_json::Value {
         }
     }
     value
+}
+/// Minimal request controls verified against the model schemas in the adapters.
+/// Unknown/custom models keep the descriptor defaults; no tier is inferred from
+/// a model-name prefix. Codex model and quality remain adapter-managed.
+pub fn test_recipe_options(
+    kind: Kind,
+    model: Option<&str>,
+) -> te_image_generation_contract::ImageOptions {
+    let descriptor = match kind {
+        Kind::Codex => None,
+        Kind::Api(kind) => Some(crate::adapters::api::descriptor(kind)),
+    };
+    let (size, resolution) = match (kind, model) {
+        // Google image-generation model catalogue: only 3.1 Flash Image
+        // supports 512px; Nano Banana 2.1 and Lite start at 1K.
+        // https://ai.google.dev/gemini-api/docs/image-generation (2026-10-11).
+        (Kind::Api(ApiKind::Gemini), Some("gemini-3.1-flash-image")) => ("auto", Some("512")),
+        (Kind::Api(ApiKind::Bfl), model) => bfl_test_minimum(model),
+        _ => (
+            descriptor.map_or("1024x1024", |d| d.options.test_size),
+            descriptor
+                .filter(|d| d.options.resolution)
+                .map(|_| RESOLUTIONS[0]),
+        ),
+    };
+    te_image_generation_contract::ImageOptions {
+        size: size.into(),
+        resolution: resolution.map(str::to_owned),
+        aspect_ratio: None,
+        quality: if descriptor.is_some_and(|d| d.options.quality.contains(&"low")) {
+            "low"
+        } else {
+            "auto"
+        }
+        .into(),
+        background: "auto".into(),
+    }
+}
+/// BFL OpenAPI schema minima (https://api.bfl.ai/openapi.json, 2026-10-11).
+/// Kontext exposes neither dimensions nor a resolution tier.
+fn bfl_test_minimum(model: Option<&str>) -> (&'static str, Option<&'static str>) {
+    match model {
+        Some(
+            "flux-2-pro"
+            | "flux-2-pro-preview"
+            | "flux-2-max"
+            | "flux-2-flex"
+            | "flux-2-klein-9b"
+            | "flux-2-klein-9b-preview"
+            | "flux-2-klein-4b",
+        ) => ("64x64", None),
+        Some("flux-pro-1.1" | "flux-dev") => ("256x256", None),
+        Some("flux-3-image") => ("auto", Some("768sq")),
+        _ => ("auto", None),
+    }
+}
+/// Structural receipt validation accepts the private minimum recipes as well as
+/// normal service options. Model-specific validation below constrains their use.
+pub fn recipe_options_valid(
+    adapter: &str,
+    model: Option<&str>,
+    options: &te_image_generation_contract::ImageOptions,
+) -> bool {
+    let kind = ApiKind::ALL
+        .iter()
+        .copied()
+        .find(|kind| kind.transport() == adapter);
+    options.valid()
+        || kind.is_some_and(|kind| *options == test_recipe_options(Kind::Api(kind), model))
+}
+/// Per-model controls omitted from the connection-wide capability descriptor.
+/// These exact private minima are used for tests without advertising unsupported
+/// controls for other models or relaxing the general pixel policy.
+pub fn model_options_problem(
+    kind: ApiKind,
+    model: Option<&str>,
+    options: &te_image_generation_contract::ImageOptions,
+) -> Option<&'static str> {
+    if *options == test_recipe_options(Kind::Api(kind), model) {
+        return None;
+    }
+    if !options.valid() {
+        return Some("This image model does not support those dimensions or resolution");
+    }
+    options_problem(crate::adapters::api::descriptor(kind), options)
 }
 pub const RESOLUTIONS: [&str; 3] = ["1k", "2k", "4k"];
 pub const ASPECT_RATIOS: [&str; 8] = ["keep", "1:1", "4:3", "3:4", "3:2", "2:3", "16:9", "9:16"];

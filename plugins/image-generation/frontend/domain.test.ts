@@ -128,6 +128,22 @@ describe('zoomed viewport', () => {
   });
 });
 it('a rejected start stops showing waiting while an unresolved reply remains waiting', () => {
-  expect(testSummary(undefined, true)).toBe('Test could not start.');
-  expect(testSummary()).toBe('Waiting for the test acceptance reply…');
+  expect(testSummary(undefined, true)).toBe('✗ Test could not start.');
+  expect(testSummary()).toBe('');
+});
+
+describe('inline test result', () => {
+  const receipt = (execution: unknown) => ({ execution, delivery: { state: 'none' } }) as Parameters<typeof testSummary>[0];
+  it('shows elapsed generation time and preserves success after discard', () => {
+    expect(testSummary(receipt({ state: 'succeeded' }), false, undefined, 12000)).toBe('✓ Generated a test image in 12 s');
+    expect(testSummary(receipt({ state: 'succeeded' }))).toBe('✓ Generated a test image');
+    expect(testSummary(receipt({ state: 'succeeded' }), false, undefined, NaN)).toBe('✓ Generated a test image');
+  });
+  it('shows fixed failure and unknown reasons without additional actions', () => {
+    expect(testSummary(receipt({ state: 'failed', error: { message: 'Provider refused the request' } }))).toBe('✗ Provider refused the request');
+    expect(testSummary(receipt({ state: 'unknown', error: { message: 'Turn interrupted' } }))).toBe('? Outcome unknown: Turn interrupted');
+    expect(testSummary(receipt({ state: 'cancelled' }))).toBe('✗ Test cancelled.');
+    expect(testSummary(undefined, true, 'Credential unavailable')).toBe('✗ Credential unavailable');
+    expect(testSummary(receipt({ state: 'running' }))).toBe('');
+  });
 });

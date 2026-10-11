@@ -714,6 +714,7 @@ fn options_problem_rejects_unsupported_resolution_and_aspect_ratio() {
         credential_env: "BARE_KEY",
         auth: Auth::Bearer,
         options: Options {
+            test_size: "auto",
             quality: &["auto"],
             background: &["auto"],
             resolution: false,
@@ -842,5 +843,241 @@ fn windows_batch_targets_require_an_explicit_interpreter() {
         "/usr/bin/secret-tool",
     ] {
         assert!(!implicit_windows_shell(program));
+    }
+}
+
+#[test]
+fn test_recipes_choose_minimal_options_for_every_catalogued_model() {
+    for (kind, model, size, resolution, quality) in [
+        (
+            Kind::Api(ApiKind::OpenAiImages),
+            Some("gpt-image-2"),
+            "1024x1024",
+            None,
+            "low",
+        ),
+        (
+            Kind::Api(ApiKind::OpenAiImages),
+            Some("gpt-image-2.5-sunburst"),
+            "1024x1024",
+            None,
+            "low",
+        ),
+        (
+            Kind::Api(ApiKind::OpenAiImages),
+            Some("gpt-image-2.5-flare"),
+            "1024x1024",
+            None,
+            "low",
+        ),
+        (
+            Kind::Api(ApiKind::OpenAiImages),
+            Some("custom-model"),
+            "1024x1024",
+            None,
+            "low",
+        ),
+        (
+            Kind::Api(ApiKind::Gemini),
+            Some("gemini-nano-banana-2.1"),
+            "auto",
+            Some("1k"),
+            "auto",
+        ),
+        (
+            Kind::Api(ApiKind::Gemini),
+            Some("gemini-3.1-flash-image"),
+            "auto",
+            Some("512"),
+            "auto",
+        ),
+        (
+            Kind::Api(ApiKind::Gemini),
+            Some("gemini-3.1-flash-lite-image"),
+            "auto",
+            Some("1k"),
+            "auto",
+        ),
+        (
+            Kind::Api(ApiKind::Gemini),
+            Some("gemini-3-pro-image"),
+            "auto",
+            Some("1k"),
+            "auto",
+        ),
+        (
+            Kind::Api(ApiKind::Gemini),
+            Some("gemini-2.5-flash-image"),
+            "auto",
+            Some("1k"),
+            "auto",
+        ),
+        (
+            Kind::Api(ApiKind::Gemini),
+            Some("custom-model"),
+            "auto",
+            Some("1k"),
+            "auto",
+        ),
+        (
+            Kind::Api(ApiKind::Bfl),
+            Some("flux-2-pro"),
+            "64x64",
+            None,
+            "auto",
+        ),
+        (
+            Kind::Api(ApiKind::Bfl),
+            Some("flux-2-pro-preview"),
+            "64x64",
+            None,
+            "auto",
+        ),
+        (
+            Kind::Api(ApiKind::Bfl),
+            Some("flux-2-max"),
+            "64x64",
+            None,
+            "auto",
+        ),
+        (
+            Kind::Api(ApiKind::Bfl),
+            Some("flux-2-flex"),
+            "64x64",
+            None,
+            "auto",
+        ),
+        (
+            Kind::Api(ApiKind::Bfl),
+            Some("flux-2-klein-9b"),
+            "64x64",
+            None,
+            "auto",
+        ),
+        (
+            Kind::Api(ApiKind::Bfl),
+            Some("flux-2-klein-9b-preview"),
+            "64x64",
+            None,
+            "auto",
+        ),
+        (
+            Kind::Api(ApiKind::Bfl),
+            Some("flux-2-klein-4b"),
+            "64x64",
+            None,
+            "auto",
+        ),
+        (
+            Kind::Api(ApiKind::Bfl),
+            Some("flux-kontext-pro"),
+            "auto",
+            None,
+            "auto",
+        ),
+        (
+            Kind::Api(ApiKind::Bfl),
+            Some("flux-kontext-max"),
+            "auto",
+            None,
+            "auto",
+        ),
+        (
+            Kind::Api(ApiKind::Bfl),
+            Some("flux-3-image"),
+            "auto",
+            Some("768sq"),
+            "auto",
+        ),
+        (
+            Kind::Api(ApiKind::Bfl),
+            Some("flux-pro-1.1"),
+            "256x256",
+            None,
+            "auto",
+        ),
+        (
+            Kind::Api(ApiKind::Bfl),
+            Some("flux-dev"),
+            "256x256",
+            None,
+            "auto",
+        ),
+        (
+            Kind::Api(ApiKind::Bfl),
+            Some("flux-2-unheard-of"),
+            "auto",
+            None,
+            "auto",
+        ),
+        (Kind::Codex, None, "1024x1024", None, "auto"),
+    ] {
+        let options = test_recipe_options(kind, model);
+        assert_eq!(options.size, size, "{model:?}");
+        assert_eq!(options.resolution.as_deref(), resolution, "{model:?}");
+        assert_eq!(options.quality, quality);
+        assert_eq!(options.background, "auto");
+        assert_eq!(options.aspect_ratio, None);
+        if let Kind::Api(kind) = kind {
+            assert!(recipe_options_valid(kind.transport(), model, &options));
+            assert_eq!(model_options_problem(kind, model, &options), None);
+        } else {
+            assert!(options.valid());
+        }
+    }
+}
+
+#[test]
+fn private_test_minima_are_confined_to_the_exact_supported_models() {
+    let small_gemini =
+        test_recipe_options(Kind::Api(ApiKind::Gemini), Some("gemini-3.1-flash-image"));
+    for model in [
+        "gemini-nano-banana-2.1",
+        "gemini-3.1-flash-lite-image",
+        "custom",
+        "gemini-3.1-flash-image-future",
+    ] {
+        assert!(model_options_problem(ApiKind::Gemini, Some(model), &small_gemini).is_some());
+    }
+    let small_flux = test_recipe_options(Kind::Api(ApiKind::Bfl), Some("flux-2-pro"));
+    for model in [
+        "flux-kontext-pro",
+        "flux-3-image",
+        "flux-dev",
+        "custom",
+        "flux-2-pro-future",
+    ] {
+        assert!(model_options_problem(ApiKind::Bfl, Some(model), &small_flux).is_some());
+    }
+    let small_flux3 = test_recipe_options(Kind::Api(ApiKind::Bfl), Some("flux-3-image"));
+    assert!(model_options_problem(ApiKind::Bfl, Some("flux-2-pro"), &small_flux3).is_some());
+    assert!(model_options_problem(ApiKind::OpenAiImages, Some("custom"), &small_flux).is_some());
+    for (adapter, model, options) in [
+        ("gemini", "custom", &small_gemini),
+        ("bfl", "custom", &small_flux),
+        ("codex-cli", "custom", &small_flux3),
+    ] {
+        assert!(!recipe_options_valid(adapter, Some(model), options));
+    }
+}
+
+#[test]
+fn minimal_test_options_survive_stored_receipt_validation() {
+    for (kind, model) in [
+        (ApiKind::Gemini, "gemini-3.1-flash-image"),
+        (ApiKind::Bfl, "flux-2-pro"),
+        (ApiKind::Bfl, "flux-dev"),
+        (ApiKind::Bfl, "flux-3-image"),
+    ] {
+        let mut receipt = stored(kind.transport());
+        let recipe = receipt.recipe.as_mut().unwrap();
+        recipe.model = Some(model.into());
+        recipe.options = test_recipe_options(Kind::Api(kind), Some(model));
+        receipt.status.request_fingerprint = recipe.digest();
+        receipt.test = true;
+        assert!(receipt.valid(), "{model}");
+        receipt.recipe.as_mut().unwrap().model = Some("incompatible-custom-model".into());
+        receipt.status.request_fingerprint = receipt.recipe.as_ref().unwrap().digest();
+        assert!(!receipt.valid(), "{model}");
     }
 }

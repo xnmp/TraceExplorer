@@ -52,6 +52,7 @@ pub const DESCRIPTOR: ApiDescriptor = ApiDescriptor {
     credential_env: "GEMINI_API_KEY",
     auth: Auth::Header("x-goog-api-key"),
     options: Options {
+        test_size: "auto",
         quality: &["auto"],
         background: &["auto"],
         resolution: true,
@@ -88,7 +89,14 @@ fn image_size(resolution: Option<&str>) -> Option<String> {
 fn aspect_ratio(value: Option<&str>) -> Option<&str> {
     value.filter(|v| API_RATIOS.contains(v))
 }
-fn request_body(recipe: &EffectiveRecipe, inputs: &[Input]) -> Value {
+pub(super) fn request_body(recipe: &EffectiveRecipe, inputs: &[Input]) -> Result<Value> {
+    if let Some(problem) = crate::domain::model_options_problem(
+        ApiKind::Gemini,
+        recipe.model.as_deref(),
+        &recipe.options,
+    ) {
+        return Err(error("invalid_request", problem));
+    }
     let mut input = vec![json!({"type":"text","text":recipe.submitted_prompt})];
     input.extend(inputs.iter().map(
         |image| json!({"type":"image","mime_type":image.mime,"data":STANDARD.encode(&image.bytes)}),
@@ -100,7 +108,7 @@ fn request_body(recipe: &EffectiveRecipe, inputs: &[Input]) -> Value {
     if let Some(size) = image_size(recipe.options.resolution.as_deref()) {
         format["image_size"] = json!(size);
     }
-    json!({"model":recipe.model,"input":input,"response_format":format,"store":false})
+    Ok(json!({"model":recipe.model,"input":input,"response_format":format,"store":false}))
 }
 /// Documented blocked/error codes reported by the response, lower-cased.
 fn error_codes(value: &Value) -> Vec<String> {
@@ -167,7 +175,7 @@ pub(super) async fn generate(call: ApiCall<'_>) -> Result<Output> {
             "{}/interactions",
             profile.base_url.trim_end_matches('/')
         ))
-        .json(&request_body(recipe, &inputs));
+        .json(&request_body(recipe, &inputs)?);
     let reply = send(&DESCRIPTOR, key.as_deref(), &cancel, &stage, request).await?;
     let value: Value = serde_json::from_slice(&reply.body)
         .map_err(|_| outcome(Failure::Invalid("Image provider returned unreadable JSON")))?;

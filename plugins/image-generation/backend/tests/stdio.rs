@@ -185,8 +185,17 @@ async fn real_stdio_keeps_cancellation_and_reverse_replies_live_with_full_ordina
     assert!(replies
         .iter()
         .all(|r| !r.to_string().contains("fixture-key-kept-native")));
+    // Released workers finish asynchronously, so poll against a deadline: a
+    // fixed attempt count is exhausted early on a loaded machine.
     let mut quiesced = false;
-    for id in 2000..2100 {
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    for id in 2000.. {
+        if std::time::Instant::now() >= deadline {
+            break;
+        }
+        if id > 2000 {
+            std::thread::sleep(Duration::from_millis(10));
+        }
         write(
             &mut stdin,
             json!({"jsonrpc":"2.0","id":id,"method":"lifecycle.quiesce","params":{}}),
@@ -201,7 +210,7 @@ async fn real_stdio_keeps_cancellation_and_reverse_replies_live_with_full_ordina
     assert!(quiesced);
     write(
         &mut stdin,
-        json!({"jsonrpc":"2.0","id":2101,"method":"settings.read","params":{}}),
+        json!({"jsonrpc":"2.0","id":1000000,"method":"settings.read","params":{}}),
     );
     assert_eq!(receive()["error"]["data"]["code"], "unavailable");
     write(
