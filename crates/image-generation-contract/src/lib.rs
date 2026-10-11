@@ -229,6 +229,31 @@ pub struct OperationStatus {
     pub delivery: Delivery,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub diagnostics: Option<OperationDiagnostics>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(deserialize_with = "deserialize_optional_object")]
+    pub billing: Option<Billing>,
+}
+// Missing optional objects are legacy-compatible; present values must be
+// objects. A map visitor also preserves Serde's duplicate-field rejection.
+fn deserialize_object<'de, T: Deserialize<'de>, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<T, D::Error> {
+    struct Object<T>(std::marker::PhantomData<T>);
+    impl<'de, T: Deserialize<'de>> serde::de::Visitor<'de> for Object<T> {
+        type Value = T;
+        fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+            formatter.write_str("an object")
+        }
+        fn visit_map<M: serde::de::MapAccess<'de>>(self, map: M) -> Result<T, M::Error> {
+            T::deserialize(serde::de::value::MapAccessDeserializer::new(map))
+        }
+    }
+    deserializer.deserialize_map(Object(std::marker::PhantomData))
+}
+fn deserialize_optional_object<'de, T: Deserialize<'de>, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<T>, D::Error> {
+    deserialize_object(deserializer).map(Some)
 }
 pub fn valid_operation_id(id: &str) -> bool {
     !id.is_empty()
@@ -239,4 +264,102 @@ pub fn valid_operation_id(id: &str) -> bool {
 }
 pub fn valid_digest(digest: &str) -> bool {
     digest.len() == 64 && digest.bytes().all(|c| c.is_ascii_hexdigit())
+}
+
+/// Money for one operation, expressed in major units without floating point.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct JobCost {
+    pub amount: String,
+    pub currency: String,
+    pub estimated: bool,
+    pub source: String,
+}
+impl JobCost {
+    pub fn valid(&self) -> bool {
+        let mut parts = self.amount.split('.');
+        let whole = parts.next().unwrap_or("");
+        let fraction = parts.next();
+        !whole.is_empty()
+            && whole.bytes().all(|b| b.is_ascii_digit())
+            && fraction.is_none_or(|f| {
+                !f.is_empty() && f.len() <= 6 && f.bytes().all(|b| b.is_ascii_digit())
+            })
+            && parts.next().is_none()
+            && self.currency.len() == 3
+            && self.currency.bytes().all(|b| b.is_ascii_uppercase())
+            && !self.source.is_empty()
+            && self.source.chars().count() <= 64
+    }
+}
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct BillingEvidence {
+    pub schema: String,
+    pub values: std::collections::BTreeMap<String, serde_json::Value>,
+}
+impl BillingEvidence {
+    pub fn valid(&self) -> bool {
+        self.schema.chars().count() <= 64
+            && self.values.len() <= 32
+            && self.values.iter().all(|(k, v)| {
+                k.chars().count() <= 64
+                    && match v {
+                        serde_json::Value::String(s) => s.chars().count() <= 128,
+                        serde_json::Value::Null
+                        | serde_json::Value::Bool(_)
+                        | serde_json::Value::Number(_) => true,
+                        _ => false,
+                    }
+            })
+    }
+}
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+pub struct Billing {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost: Option<JobCost>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub evidence: Option<BillingEvidence>,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct UncheckedBilling {
+    #[serde(default, deserialize_with = "deserialize_optional_object")]
+    cost: Option<JobCost>,
+    #[serde(default, deserialize_with = "deserialize_optional_object")]
+    evidence: Option<BillingEvidence>,
+}
+impl<'de> Deserialize<'de> for Billing {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let unchecked: UncheckedBilling = deserialize_object(deserializer)?;
+        Self::try_from(unchecked).map_err(serde::de::Error::custom)
+    }
+}
+impl Billing {
+    pub fn valid(&self) -> bool {
+        self.cost.as_ref().is_none_or(JobCost::valid)
+            && self.evidence.as_ref().is_none_or(BillingEvidence::valid)
+    }
+}
+impl TryFrom<UncheckedBilling> for Billing {
+    type Error = &'static str;
+    fn try_from(value: UncheckedBilling) -> Result<Self, Self::Error> {
+        let billing = Self {
+            cost: value.cost,
+            evidence: value.evidence,
+        };
+        if billing.valid() {
+            Ok(billing)
+        } else {
+            Err("Invalid receipt billing")
+        }
+    }
+}
+/// Gate optional evidence at the wire boundary, leaving legacy JSON unchanged.
+pub fn receipt_value(status: &OperationStatus, billing_v1: bool) -> serde_json::Value {
+    let mut status = status.clone();
+    if !billing_v1 || status.billing.as_ref().is_some_and(|b| !b.valid()) {
+        status.billing = None;
+    }
+    serde_json::to_value(status).expect("receipt serialization")
 }

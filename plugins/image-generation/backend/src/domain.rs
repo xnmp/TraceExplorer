@@ -1,5 +1,6 @@
 //! Pure profile/recipe policy; never opens files or contacts a provider.
 pub mod backend_rules;
+pub mod billing;
 pub mod codex_evidence;
 pub mod credential_rules;
 pub mod stored_receipt;

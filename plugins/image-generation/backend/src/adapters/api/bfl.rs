@@ -371,6 +371,7 @@ async fn run(call: ApiCall<'_>, schedule: Schedule) -> Result<Output> {
         key,
         cancel,
         stage,
+        evidence,
     } = call;
     let model = model_name(recipe, profile)?;
     let body = validated_request_body(recipe, profile, &inputs)?;
@@ -391,6 +392,10 @@ async fn run(call: ApiCall<'_>, schedule: Schedule) -> Result<Output> {
     let reply = send(&DESCRIPTOR, key.as_deref(), &cancel, &quiet, submit).await?;
     let submitted: Value = serde_json::from_slice(&reply.body)
         .map_err(|_| outcome(Failure::Invalid("Image provider returned unreadable JSON")))?;
+    let billing = crate::domain::billing::bfl(&submitted, None);
+    if let Some(billing) = &billing {
+        evidence(Evidence::Billing(billing.clone()))?;
+    }
     let task = submitted["id"]
         .as_str()
         .filter(|id| bounded_id(id))
@@ -413,6 +418,8 @@ async fn run(call: ApiCall<'_>, schedule: Schedule) -> Result<Output> {
             &poll_url,
             &task,
             schedule,
+            billing,
+            &evidence,
         ),
         &cancel,
     )
@@ -476,6 +483,8 @@ async fn poll(
     url: &url::Url,
     task: &str,
     schedule: Schedule,
+    mut billing: Option<te_image_generation_contract::Billing>,
+    evidence: &EvidenceSink,
 ) -> Result<String> {
     let started = std::time::Instant::now();
     let mut delay = schedule.first;
@@ -512,6 +521,13 @@ async fn poll(
             let value = parsed.ok_or_else(|| {
                 outcome(Failure::Invalid("Image provider returned unreadable JSON"))
             })?;
+            if value["id"].as_str().is_some_and(|id| id != task) {
+                return Err(unknown("Image provider returned a different task"));
+            }
+            billing = crate::domain::billing::bfl(&value, billing.as_ref());
+            if let Some(billing) = &billing {
+                evidence(Evidence::Billing(billing.clone()))?;
+            }
             match classify(&value) {
                 Step::Continue => continue,
                 Step::Ready(sample) => return Ok(sample),
@@ -523,6 +539,10 @@ async fn poll(
         if let Some(value) =
             parsed.filter(|v| v["status"].is_string() && v["id"].as_str() == Some(task))
         {
+            billing = crate::domain::billing::bfl(&value, billing.as_ref());
+            if let Some(billing) = &billing {
+                evidence(Evidence::Billing(billing.clone()))?;
+            }
             if let Step::Done(e) = classify(&value) {
                 if e.code != "invalid_response" {
                     return Err(e);
@@ -740,6 +760,7 @@ mod tests {
             key: Some("secret-key".into()),
             cancel,
             stage: Arc::new(|_| {}),
+            evidence: Arc::new(|_| Ok(())),
         };
         tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -1211,6 +1232,65 @@ mod tests {
         assert!(started.elapsed() < Duration::from_secs(2));
     }
 
+    #[test]
+    fn submit_and_settled_billing_are_checkpointed_before_failed_download() {
+        for settled in [None, Some(8)] {
+            let api = Fake::start(move |req, _| {
+                let host = req.header("host").unwrap();
+                if req.method == "POST" {
+                    json_reply(
+                        json!({"id":"task-1","polling_url":format!("http://{host}/poll"),"cost":4.5,"input_mp":1,"output_mp":2}),
+                    )
+                } else if req.path == "/poll" {
+                    let mut response = json!({"id":"task-1","status":"Ready","result":{"sample":format!("http://{host}/sample")}});
+                    if let Some(cost) = settled {
+                        response["cost"] = json!(cost);
+                    }
+                    json_reply(response)
+                } else {
+                    http("403 Forbidden", "text/plain", b"expired")
+                }
+            });
+            let captured = Arc::new(Mutex::new(Vec::new()));
+            let events = captured.clone();
+            let evidence: EvidenceSink = Arc::new(move |event| {
+                if let Evidence::Billing(b) = event {
+                    events.lock().unwrap().push(b);
+                }
+                Ok(())
+            });
+            let profile = profile(&api.url());
+            let recipe = recipe("flux-2-pro", None);
+            let failure = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap()
+                .block_on(run(
+                    ApiCall {
+                        profile: &profile,
+                        recipe: &recipe,
+                        inputs: vec![],
+                        key: Some("secret-key".into()),
+                        cancel: Arc::new(AtomicBool::new(false)),
+                        stage: Arc::new(|_| {}),
+                        evidence,
+                    },
+                    fast(),
+                ))
+                .err()
+                .unwrap();
+            assert_eq!(failure.code, "remote_outcome_unknown");
+            let captured = captured.lock().unwrap();
+            assert_eq!(captured.len(), 2);
+            assert_eq!(captured[0].cost.as_ref().unwrap().amount, "0.045");
+            assert_eq!(
+                captured[1].cost.as_ref().unwrap().amount,
+                if settled.is_some() { "0.08" } else { "0.045" }
+            );
+            assert_eq!(captured[1].evidence.as_ref().unwrap().values["input_mp"], 1);
+            assert_eq!(api.requests().len(), 3);
+        }
+    }
     #[test]
     fn rate_limited_polls_back_off_but_other_client_errors_are_unknown() {
         let jpeg = encoded(image::ImageFormat::Jpeg, 70);

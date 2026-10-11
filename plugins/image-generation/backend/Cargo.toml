@@ -10,7 +10,7 @@ test-hooks = []
 te-plugin-runtime = { path = "../../../crates/plugin-runtime" }
 te-image-generation-contract = { path = "../../../crates/image-generation-contract" }
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+serde_json = { version = "1", features = ["arbitrary_precision"] }
 rusqlite = { version = "0.40.2", features = ["bundled"] }
 sha2 = "0.11"
 hex = "0.4"

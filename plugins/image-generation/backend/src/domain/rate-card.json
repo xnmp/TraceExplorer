@@ -1,0 +1,15 @@
+{
+  "date": "2026-10-11",
+  "rates": [
+    {"backend":"openai-images","model":"gpt-image-1","inputText":500,"inputImage":1000,"cachedText":125,"cachedImage":250,"outputText":null,"outputImage":4000},
+    {"backend":"openai-images","model":"gpt-image-1.5","inputText":500,"inputImage":800,"cachedText":125,"cachedImage":200,"outputText":1000,"outputImage":3200},
+    {"backend":"openai-images","model":"gpt-image-2","inputText":500,"inputImage":800,"cachedText":125,"cachedImage":200,"outputText":null,"outputImage":3000},
+    {"backend":"openai-images","model":"gpt-image-2.5-sunburst","inputText":500,"inputImage":800,"cachedText":125,"cachedImage":200,"outputText":null,"outputImage":3000},
+    {"backend":"openai-images","model":"gpt-image-2.5-flare","inputText":500,"inputImage":800,"cachedText":125,"cachedImage":200,"outputText":null,"outputImage":3000},
+    {"backend":"gemini","model":"gemini-2.5-flash-image","inputText":30,"inputImage":30,"cachedText":null,"cachedImage":null,"outputText":250,"outputImage":3000},
+    {"backend":"gemini","model":"gemini-3-pro-image","inputText":200,"inputImage":200,"cachedText":null,"cachedImage":null,"outputText":1200,"outputImage":12000},
+    {"backend":"gemini","model":"gemini-3.1-flash-image","inputText":50,"inputImage":50,"cachedText":null,"cachedImage":null,"outputText":300,"outputImage":6000},
+    {"backend":"gemini","model":"gemini-3.1-flash-lite-image","inputText":25,"inputImage":25,"cachedText":null,"cachedImage":null,"outputText":150,"outputImage":3000},
+    {"backend":"gemini","model":"gemini-nano-banana-2.1","inputText":150,"inputImage":150,"cachedText":null,"cachedImage":null,"outputText":750,"outputImage":3000}
+  ]
+}

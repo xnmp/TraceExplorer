@@ -109,6 +109,7 @@ async fn run(
             inputs,
             key: key.map(Into::into),
             cancel: Arc::new(AtomicBool::new(false)),
+            evidence: Arc::new(|_| Ok(())),
             stage: Arc::new(|_| {}),
         },
     )
@@ -389,6 +390,7 @@ async fn a_stalled_response_is_unknown_when_cancelled() {
             inputs: vec![],
             key: None,
             cancel,
+            evidence: Arc::new(|_| Ok(())),
             stage: Arc::new(|_| {}),
         },
     )

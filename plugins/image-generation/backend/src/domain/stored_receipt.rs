@@ -75,6 +75,7 @@ impl StoredReceipt {
                 .diagnostics
                 .as_ref()
                 .is_some_and(|d| !d.valid(succeeded))
+            || status.billing.as_ref().is_some_and(|b| !b.valid())
             || self.output_sha.as_deref().is_some_and(|v| !valid_digest(v))
             || self
                 .output

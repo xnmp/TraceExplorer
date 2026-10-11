@@ -15,7 +15,7 @@
 //!
 //! `service.rs` maps only an explicit list of codes to `Unknown`; every other
 //! code, including `provider_rejected` and `provider_refused`, is `Failed`.
-use super::{metadata, validate_image, Input, Output, StageSink};
+use super::{metadata, validate_image, Evidence, EvidenceSink, Input, Output, StageSink};
 use crate::{
     domain::{ApiKind, ApiProfile, MAX_OUTPUT},
     error::{error, Result},
@@ -68,6 +68,7 @@ pub struct ApiCall<'a> {
     pub key: Option<String>,
     pub cancel: Arc<AtomicBool>,
     pub stage: StageSink,
+    pub evidence: EvidenceSink,
 }
 pub fn descriptor(kind: ApiKind) -> &'static ApiDescriptor {
     match kind {
@@ -500,6 +501,7 @@ mod tests {
             key: None,
             cancel: Arc::new(AtomicBool::new(false)),
             stage: Arc::new(|_| {}),
+            evidence: Arc::new(|_| Ok(())),
         };
         let runtime = tokio::runtime::Builder::new_current_thread()
             .build()

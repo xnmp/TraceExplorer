@@ -622,6 +622,7 @@ fn stored(adapter: &str) -> image_generation_backend::domain::stored_receipt::St
         },
         delivery: Delivery::None {},
         diagnostics: None,
+        billing: None,
     };
     image_generation_backend::domain::stored_receipt::StoredReceipt {
         caller: "consumer.pkg".into(),

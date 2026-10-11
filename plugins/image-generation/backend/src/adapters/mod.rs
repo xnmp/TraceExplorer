@@ -23,6 +23,7 @@ pub struct Input {
     pub mime: String,
 }
 pub enum Evidence {
+    Billing(te_image_generation_contract::Billing),
     Turn(te_image_generation_contract::OperationDiagnostics),
     Failure {
         receipt: te_image_generation_contract::OperationDiagnostics,
@@ -170,6 +171,7 @@ pub async fn generate(
                 key,
                 cancel,
                 stage,
+                evidence,
             },
         )
         .await;

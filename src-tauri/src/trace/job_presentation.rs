@@ -1,59 +1,19 @@
-//! Job presentation rules and bounded provider billing, independent of providers.
+//! Job presentation rules, using shared provider billing validation.
 use super::*;
 use serde_json::{json, Value};
-use std::collections::BTreeMap;
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct JobCost {
-    pub amount: String,
-    pub currency: String,
-    pub estimated: bool,
-    pub source: String,
-}
-impl JobCost {
-    pub fn valid(&self) -> bool {
-        let (whole, fraction) = self.amount.split_once('.').unwrap_or((&self.amount, ""));
-        !whole.is_empty()
-            && whole.bytes().all(|b| b.is_ascii_digit())
-            && (!self.amount.contains('.') || !fraction.is_empty())
-            && fraction.len() <= 6
-            && fraction.bytes().all(|b| b.is_ascii_digit())
-            && self.currency.len() == 3
-            && self.currency.bytes().all(|b| b.is_ascii_uppercase())
-            && self.source.chars().count() <= 64
+use te_image_generation_contract::JobCost;
+/// Older Trace accepted an empty cost origin. Normalize only durable data;
+/// incoming receipts must satisfy the shared contract without this migration.
+pub(crate) fn stored_billing(mut billing: Value) -> Value {
+    if billing
+        .get("cost")
+        .and_then(|c| c.get("source"))
+        .and_then(Value::as_str)
+        == Some("")
+    {
+        billing["cost"]["source"] = json!("legacy:unspecified");
     }
-}
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct BillingEvidence {
-    schema: String,
-    values: BTreeMap<String, Value>,
-}
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct ProviderBilling {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub cost: Option<JobCost>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    evidence: Option<BillingEvidence>,
-}
-impl ProviderBilling {
-    pub fn valid(&self) -> bool {
-        self.cost.as_ref().is_none_or(JobCost::valid)
-            && self.evidence.as_ref().is_none_or(|e| {
-                e.schema.chars().count() <= 64
-                    && e.values.len() <= 32
-                    && e.values.iter().all(|(k, v)| {
-                        k.chars().count() <= 64
-                            && match v {
-                                Value::String(s) => s.chars().count() <= 128,
-                                Value::Number(_) | Value::Bool(_) | Value::Null => true,
-                                _ => false,
-                            }
-                    })
-            })
-    }
+    billing
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(
@@ -110,8 +70,9 @@ pub(crate) fn current(
         .unwrap_or(Value::Null);
     let cost = details
         .get("provider_billing")
-        .and_then(|b| b.get("cost"))
         .cloned()
+        .map(stored_billing)
+        .and_then(|b| b.get("cost").cloned())
         .and_then(|v| serde_json::from_value::<JobCost>(v).ok())
         .filter(JobCost::valid);
     let artifact: Option<(i64,String)> = connection.query_row(
@@ -193,6 +154,8 @@ pub(crate) fn completion(job: u64, value: Value) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeMap;
+    use te_image_generation_contract::Billing;
     #[test]
     fn storage_drives_reveal_and_later_save_changes_target() {
         assert_eq!(
@@ -213,7 +176,7 @@ mod tests {
     #[test]
     fn billing_bounds_and_malformed_values() {
         let valid = json!({"cost":{"amount":"0.045","currency":"USD","estimated":true,"source":"ratecard:fixture"},"evidence":{"schema":"usage.v1","values":{"tokens":4,"cached":false,"note":null}}});
-        let parse = |v| serde_json::from_value::<ProviderBilling>(v).is_ok_and(|b| b.valid());
+        let parse = |v| serde_json::from_value::<Billing>(v).is_ok_and(|b| b.valid());
         assert!(parse(valid.clone()));
         for amount in ["-1", "1e4", "0.1234567", "1.", "", "NaN"] {
             let mut v = valid.clone();
@@ -273,58 +236,5 @@ mod tests {
         let only_reveal = extend(old, r, Some(c), true, false);
         assert!(only_reveal.get("cost").is_none());
         assert!(only_reveal.get("reveal").is_some());
-    }
-}
-
-/// Consumer-local extension: shared provider receipts remain version 1.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct ImageReceipt {
-    receipt: te_image_generation_contract::OperationStatus,
-    pub billing: Option<ProviderBilling>,
-}
-impl std::ops::Deref for ImageReceipt {
-    type Target = te_image_generation_contract::OperationStatus;
-    fn deref(&self) -> &Self::Target {
-        &self.receipt
-    }
-}
-impl std::ops::DerefMut for ImageReceipt {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.receipt
-    }
-}
-impl From<te_image_generation_contract::OperationStatus> for ImageReceipt {
-    fn from(receipt: te_image_generation_contract::OperationStatus) -> Self {
-        Self {
-            receipt,
-            billing: None,
-        }
-    }
-}
-impl Serialize for ImageReceipt {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        let mut value = serde_json::to_value(&self.receipt).map_err(serde::ser::Error::custom)?;
-        if let Some(billing) = &self.billing {
-            value["billing"] = serde_json::to_value(billing).map_err(serde::ser::Error::custom)?;
-        }
-        value.serialize(serializer)
-    }
-}
-impl<'de> Deserialize<'de> for ImageReceipt {
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let mut value = Value::deserialize(deserializer)?;
-        let object = value
-            .as_object_mut()
-            .ok_or_else(|| serde::de::Error::custom("Receipt must be an object"))?;
-        let billing = object
-            .remove("billing")
-            .map(serde_json::from_value::<ProviderBilling>)
-            .transpose()
-            .map_err(serde::de::Error::custom)?;
-        if billing.as_ref().is_some_and(|b| !b.valid()) {
-            return Err(serde::de::Error::custom("Invalid provider billing"));
-        }
-        let receipt = serde_json::from_value(value).map_err(serde::de::Error::custom)?;
-        Ok(Self { receipt, billing })
     }
 }
