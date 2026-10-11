@@ -119,6 +119,8 @@
   let inspectingDrops = $state(false);
   let dropIssues = $state.raw<readonly ImageInputIntakeIssue[]>([]);
   let dropStatus = $state("");
+  // Replace the message nodes for every completion, even when their text is unchanged.
+  let dropResult = $state(0);
   let feedbackLimit = $state(8);
   const visibleDropIssues = $derived(dropIssues.slice(0, feedbackLimit));
   const intake = createImageInputIntake({
@@ -143,6 +145,7 @@
       dropIssues = issues;
       feedbackLimit = 8;
       dropStatus = imageInputIntakeStatus(addedPaths.length, images.length, issues.length);
+      dropResult += 1;
     },
   });
   function registerInputs(element: HTMLElement): { destroy: () => void } {
@@ -322,10 +325,12 @@
           {/if}
           {#if inspectingDrops}<span class="hint">Reading input images…</span>{/if}
           <div class="drop-feedback" role="status" aria-live="polite" aria-atomic="true">
-            {#if dropStatus}<p>{dropStatus}</p>{/if}
-            {#if visibleDropIssues.length}
-              <ul>{#each visibleDropIssues as issue}<li><span title={issue.path ?? undefined}>{issue.path ? basename(issue.path) : "Invalid path"}</span>: {issue.message}</li>{/each}</ul>
-            {/if}
+            {#key dropResult}
+              {#if dropStatus}<p>{dropStatus}</p>{/if}
+              {#if visibleDropIssues.length}
+                <ul>{#each visibleDropIssues as issue}<li><span title={issue.path ?? undefined}>{issue.path ? basename(issue.path) : "Invalid path"}</span>: {issue.message}</li>{/each}</ul>
+              {/if}
+            {/key}
           </div>
           {#if dropIssues.length > feedbackLimit}
             <button type="button" class="btn btn-secondary" onclick={() => { feedbackLimit += 8; }}>Show more reasons ({dropIssues.length - feedbackLimit} remaining)</button>

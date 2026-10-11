@@ -15,7 +15,7 @@ import StubFileTile from "./StubFileTile.svelte";
 import StubFileTiles from "./StubFileTiles.svelte";
 import { folderComponents, folderPage, isDirectFolderSeed, nativeStringOrder, type FolderNode } from "./folder-snapshot";
 import { isLocalAbsolutePath } from "$lib/domain/target-location";
-import { normalizeImageInputPath } from "$lib/domain/image-inputs";
+import { canonicalFixtureImagePath } from "./image-input-files";
 import { withNativeRequestCapacity } from "./request-capacity";
 
 export const DIRECTORY = "/pictures";
@@ -149,6 +149,7 @@ let pickerResult: string | null | undefined;
 let nextSaveFailure: string | null = null;
 /** How many of the next `openai_image_inputs` calls fail. */
 let inputFailures = 0;
+const inputSymlinks = new Map<string, string>();
 // Delay of the Preview-info queries, in ms: a native backend answers them over IPC, not within the same frame.
 let previewLatency = 0;
 // Delay of the folder index and component reads, in ms, like a native backend's IPC round trip.
@@ -286,7 +287,8 @@ configureBackend(withNativeRequestCapacity({
       case "openai_image_inputs": if (inputFailures > 0) { inputFailures -= 1; return Promise.reject(new Error("The image service is busy")); }
         if (!Array.isArray(params.paths) || params.paths.length > 8) return Promise.reject(new Error("At most eight input images are supported"));
         return reply((params.paths as string[]).map((path) => {
-          const canonicalPath = normalizeImageInputPath(path);
+          const canonicalPath = canonicalFixtureImagePath(path, inputSymlinks);
+          if (canonicalPath === null) return { path, error: "Cannot resolve input path" };
           return state.nodes.some((node) => node.path === canonicalPath && node.state === "present" && !node.discarded) || entryExtras.some((entry) => entry.path === canonicalPath && entry.kind === "file")
             ? { path, canonicalPath, digest: [...canonicalPath].reduce((hash, char) => (hash * 33 + char.charCodeAt(0)) % 1e9, 5381).toString(16).padStart(64, "0"), width: 160, height: 96 }
             : { path, error: "Path not found" };
@@ -485,6 +487,8 @@ export const backend = {
   failNextSave(message: string) { nextSaveFailure = message; },
   /** The next `count` reads of AI edit inputs fail. */
   failInputs(count: number) { inputFailures = count; },
+  /** Mock filesystem links; inspection traverses them before interpreting parent segments. */
+  symlinkInput(path: string, target: string) { inputSymlinks.set(path, target); },
   holdSaves() { holdSaves = true; },
   /** Answers run details, revision status and per-image traces after `ms`. */
   setPreviewLatency(ms: number) { previewLatency = ms; },
@@ -496,5 +500,5 @@ export const backend = {
   holdFolderReads() { folderReadsHeld = true; },
   releaseFolderReads() { folderReadsHeld = false; const pending = heldFolderReads; heldFolderReads = []; pending.forEach((release) => release()); },
   releaseSaves() { holdSaves = false; const pending = heldSaves; heldSaves = []; pending.forEach((run) => run()); },
-  reset() { nodeReadFailures = 0; previewLatency = 0; folderLatency = 0; pickerResult = undefined; nextSaveFailure = null; inputFailures = 0; imageRuns.clear(); imageJobs.clear(); imageOperations.clear(); billing.clear(); state = scenario(); version += 1; calls.length = 0; },
+  reset() { nodeReadFailures = 0; previewLatency = 0; folderLatency = 0; pickerResult = undefined; nextSaveFailure = null; inputFailures = 0; inputSymlinks.clear(); imageRuns.clear(); imageJobs.clear(); imageOperations.clear(); billing.clear(); state = scenario(); version += 1; calls.length = 0; },
 };

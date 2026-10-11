@@ -23,7 +23,7 @@ export interface ImageInput {
 
 const IMAGE = /\.(png|jpe?g|webp)$/i;
 
-/** Lexical comparison only: preserve POSIX backslashes and never resolve symlinks or change display paths. */
+/** Lexical comparison only: preserve .. (symlinks can change its meaning), POSIX backslashes and display paths. */
 export function normalizeImageInputPath(path: string): string {
   const drive = /^[A-Za-z]:[\\/]/.test(path);
   const unc = path.startsWith("\\\\");
@@ -33,8 +33,7 @@ export function normalizeImageInputPath(path: string): string {
   const segments: string[] = [];
   for (const part of parts.slice(drive ? 1 : unc ? 3 : 1)) {
     if (!part || part === ".") continue;
-    if (part === "..") segments.pop();
-    else segments.push(part);
+    segments.push(part);
   }
   return root + segments.join(windows ? "\\" : "/");
 }

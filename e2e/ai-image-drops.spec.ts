@@ -1,5 +1,5 @@
-import { expect, test, type Page } from "@playwright/test";
-import { openView } from "./support";
+import { expect, test, type Locator, type Page } from "@playwright/test";
+import { click, openView } from "./support";
 
 const dialog = (page: Page) => page.getByRole("dialog", { name: /Generate image with AI|Edit with AI/ });
 const cards = (page: Page) => dialog(page).locator("[data-input-path]");
@@ -15,6 +15,96 @@ async function openEmpty(page: Page, query = "") {
   await expect(dialog(page).getByRole("heading", { name: "Generate image with AI" })).toBeVisible();
   await expect(dialog(page).getByRole("combobox", { name: "Image connection" })).toBeEnabled();
 }
+
+/** Observe announcements in the persistent live region, rather than only its final text. */
+async function watchAnnouncements(region: Locator) {
+  await region.evaluate((element) => {
+    const messages: string[] = [];
+    (window as any).dropAnnouncements = messages;
+    new MutationObserver((records) => {
+      if (records.some((record) => record.type === "characterData" || [...record.addedNodes].some((node) => node.textContent?.trim()))) {
+        messages.push(element.textContent?.trim() ?? "");
+      }
+    }).observe(element, { childList: true, characterData: true, subtree: true });
+  });
+  return () => region.page().evaluate(() => [...(window as any).dropAnnouncements] as string[]);
+}
+
+for (const reason of ["duplicate", "unsupported", "unreadable"] as const) {
+  test(`repeated identical ${reason} drops mutate the live region each time`, async ({ page }) => {
+    await openEmpty(page);
+    const [warm] = await inputs(page, ["warm"]);
+    if (reason === "duplicate") {
+      await drop(page, [warm]);
+      await expect(cards(page)).toHaveCount(1);
+    }
+    const rejected = reason === "duplicate" ? warm : reason === "unsupported" ? "/pictures/animation.gif" : "/pictures/missing.png";
+    const feedback = dialog(page).locator('[aria-live="polite"]');
+    const announcements = await watchAnnouncements(feedback);
+    await drop(page, [rejected]);
+    await expect.poll(async () => (await announcements()).length).toBeGreaterThan(0);
+    const first = await announcements();
+    await drop(page, [rejected]);
+    await expect.poll(async () => (await announcements()).length).toBeGreaterThan(first.length);
+    expect((await announcements()).at(-1)).toBe(first.at(-1));
+    await expect(cards(page)).toHaveCount(reason === "duplicate" ? 1 : 0);
+  });
+}
+
+test("success after removing an input announces even when the previous success text is identical", async ({ page }) => {
+  await openEmpty(page);
+  const [warm, cool] = await inputs(page, ["warm", "cool"]);
+  await drop(page, [warm]);
+  await expect(cards(page)).toHaveCount(1);
+  const feedback = dialog(page).locator('[aria-live="polite"]');
+  const announcements = await watchAnnouncements(feedback);
+  await drop(page, [cool]);
+  await expect(feedback).toContainText("1 input added · 2 of 8");
+  await expect(cards(page)).toHaveCount(2);
+  const first = await announcements();
+  await dialog(page).getByRole("button", { name: "Remove Image 2", exact: true }).click();
+  await expect(cards(page)).toHaveCount(1);
+  await drop(page, [cool]);
+  await expect.poll(async () => (await announcements()).length).toBeGreaterThan(first.length);
+  expect((await announcements()).at(-1)).toBe(first.at(-1));
+  await expect(cards(page)).toHaveCount(2);
+});
+
+test("symlink parent traversal accepts distinct files and rejects only inspected canonical duplicates", async ({ page }) => {
+  await openEmpty(page);
+  const [warm, cool] = await inputs(page, ["warm", "cool"]);
+  await page.evaluate((cool) => {
+    const backend = (window as any).trace.backend;
+    backend.symlinkInput("/pictures/link", "/other/subdir");
+    backend.symlinkInput("/other/warm.png", cool);
+  }, cool);
+  const viaParent = "/pictures/link/../warm.png";
+  await drop(page, [warm, viaParent]);
+  await expect(cards(page)).toHaveCount(2);
+  expect(await cards(page).evaluateAll((cards) => cards.map((card) => (card as HTMLElement).dataset.inputPath))).toEqual([warm, viaParent]);
+  await drop(page, [cool]);
+  await expect(cards(page)).toHaveCount(2);
+  await expect(dialog(page).locator('[aria-live="polite"]')).toContainText("cool.png: Already an input");
+});
+
+test("fixed-aspect submission blocks failed input inspection and recovers with pinned revisions", async ({ page }) => {
+  await openView(page, 900, "?ai=1");
+  await click(page, "warm");
+  await page.evaluate(() => (window as any).trace.backend.failInputs(2));
+  await page.keyboard.press("Control+E");
+  await expect(dialog(page).getByRole("combobox", { name: "Image connection" })).toBeEnabled();
+  await expect(dialog(page).locator(".error")).toContainText("Could not read the input images: The image service is busy");
+  await dialog(page).getByRole("combobox", { name: "Aspect ratio" }).click();
+  await page.getByRole("option", { name: "16:9", exact: true }).click();
+  await dialog(page).getByRole("textbox", { name: "Edit prompt", exact: true }).fill("Keep this draft through a failed inspection");
+  await dialog(page).getByRole("button", { name: "Generate", exact: true }).click();
+  await expect(dialog(page).locator(".error")).toContainText("Could not read the input images: The image service is busy");
+  await expect(dialog(page).getByRole("button", { name: "Generate", exact: true })).toBeEnabled();
+  expect(await starts(page)).toEqual([]);
+  await dialog(page).getByRole("button", { name: "Generate", exact: true }).click();
+  await expect.poll(async () => (await starts(page)).length).toBe(1);
+  expect((await starts(page))[0].params.request.expectedSourceDigest).toMatch(/^[0-9a-f]{64}$/);
+});
 
 test("two dropped images turn an empty Ctrl+E draft into an edit and submit in delivery order", async ({ page }) => {
   await openEmpty(page);

@@ -58,15 +58,33 @@ describe("dropped image inputs", () => {
   it("rejects lexical aliases before inspection, including aliases of unreadable files", () => {
     const result = preflightDroppedImageInputs([{ path: "/photos/source.png" }],
       ["/photos/./source.png", "/photos/sub/../source.png", "/photos//source.png", "/bad.png", "/./bad.png"]);
-    expect(result.paths).toEqual(["/bad.png"]);
-    expect(result.issues.map((issue) => issue.code)).toEqual(["duplicate", "duplicate", "duplicate", "duplicate"]);
+    expect(result.paths).toEqual(["/photos/sub/../source.png", "/bad.png"]);
+    expect(result.issues.map((issue) => issue.code)).toEqual(["duplicate", "duplicate", "duplicate"]);
   });
   it("normalizes Windows aliases without changing the user's spelling or POSIX backslashes", () => {
     const delivered = ["C:\\photos\\source.png", "C:/photos//./source.png", "C:\\photos\\sub\\..\\source.png",
       "\\\\server\\share\\source.png", "\\\\server\\share\\..\\source.png", "/photos/a\\b.png", "/photos/a/b.png"];
     const result = preflightDroppedImageInputs([], delivered);
-    expect(result.paths).toEqual([delivered[0], delivered[3], delivered[5], delivered[6]]);
-    expect(result.issues.map((issue) => issue.path)).toEqual([delivered[1], delivered[2], delivered[4]]);
+    expect(result.paths).toEqual([delivered[0], delivered[2], delivered[3], delivered[4], delivered[5], delivered[6]]);
+    expect(result.issues.map((issue) => issue.path)).toEqual([delivered[1]]);
+  });
+  it("defers parent traversal identity to inspection, which resolves symlinks before ..", () => {
+    // /photos/link -> /other/subdir, so link/../source.png is /other/source.png.
+    const existing = [{ path: "/photos/source.png", canonicalPath: "/photos/source.png", digest: "photos" }];
+    const path = "/photos/link/../source.png";
+    expect(imageInputPaths([existing[0].path, path])).toEqual([existing[0].path, path]);
+    expect(preflightDroppedImageInputs(existing, [path])).toEqual({ paths: [path], issues: [] });
+    const descriptions = new Map([[path, { path, canonicalPath: "/other/source.png", digest: "other" }]]);
+    const distinct = mergeDroppedImageInputs(existing, [path], descriptions);
+    expect(distinct.addedPaths).toEqual([path]);
+    expect(distinct.issues).toEqual([]);
+    const duplicate = mergeDroppedImageInputs([{ path: "/other/source.png", digest: "other" }], [path], descriptions);
+    expect(duplicate.addedPaths).toEqual([]);
+    expect(duplicate.issues).toEqual([{ path, code: "duplicate", message: "Already an input" }]);
+  });
+  it("preserves leading and repeated parent traversals until canonical inspection", () => {
+    const delivered = ["/source.png", "/../source.png", "/photos/../../source.png", "c:/photos/../source.png", "C:/source.png"];
+    expect(preflightDroppedImageInputs([], delivered)).toEqual({ paths: delivered, issues: [] });
   });
   it("rejects canonical aliases within and across drops while preserving display paths", () => {
     const delivered = ["/links/source.png", "/photos/source.png", "/other.png"];
