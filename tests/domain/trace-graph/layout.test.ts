@@ -547,7 +547,7 @@ describe("pinned cover layout", () => {
     expect(failures).toEqual([]);
     // This bound tracks an existing, documented routing limit, not a new invariant.
     expect(counts.main).toBe(57);
-    expect(counts.pinned).toBeLessThanOrEqual(68);
+    expect(counts.pinned).toBeLessThanOrEqual(25);
   }, 180_000);
 
   it("holds a root alone at the absolute grid centre, including when the engine widens", () => {

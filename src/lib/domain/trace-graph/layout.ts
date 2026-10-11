@@ -402,12 +402,17 @@ function layoutPass(request: LayoutRequest, extra: { readonly left: number; read
   const spanCache = new Map<number, { key: NodeKey; x: number; width: number }[]>();
   const spans = (row: number) => {
     let cached = spanCache.get(row);
-    if (!cached) spanCache.set(row, cached = [
-      ...(rowKeys[row]?.keys ?? []).map((key) => ({ key, x: columns.get(key)!.x, width: items.get(key)!.width })),
-      ...(row === 0 && pinned ? (pinned.obstacles ?? [])
-        .filter((box) => Number.isFinite(box.x) && Number.isFinite(box.width) && box.width > 0 && box.x >= 0 && box.x + box.width <= budget)
-        .map((box, index) => ({ ...box, key: `__grid_obstacle_${index}` })) : []),
-    ].sort((a, b) => a.x - b.x));
+    if (!cached) {
+      // Tile placement already orders spans by x. Only grid obstacles need merging.
+      cached = (rowKeys[row]?.keys ?? []).map((key) => ({ key, x: columns.get(key)!.x, width: items.get(key)!.width }));
+      if (row === 0 && pinned) cached = [
+        ...cached,
+        ...(pinned.obstacles ?? [])
+          .filter((box) => Number.isFinite(box.x) && Number.isFinite(box.width) && box.width > 0 && box.x >= 0 && box.x + box.width <= budget)
+          .map((box, index) => ({ ...box, key: `__grid_obstacle_${index}` })),
+      ].sort((a, b) => a.x - b.x);
+      spanCache.set(row, cached);
+    }
     return cached;
   };
 
