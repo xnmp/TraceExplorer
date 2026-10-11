@@ -9,6 +9,7 @@ import { tracePanes } from "../trace/view/pane-registry.svelte";
 import { imageInputPaths, singleImagePath } from "$lib/domain/image-inputs";
 import { aiEditIntent, type AIEditIntent } from "$lib/domain/ai-edit-intent";
 import { combinedSelection } from "./workspace-selection";
+import { aiOutputDirectory, outputLocationProblem } from "$lib/domain/target-location";
 
 const EDITOR_TOOL_ID = "openai-image";
 const DIALOG_ID = "openai-image.create";
@@ -40,10 +41,10 @@ function commandIntent(ctx: PluginContext): { intent: AIEditIntent; outputDir: s
   const ordered = picks.length && entries.every((entry) => picks.includes(entry.path))
     ? picks.map((path) => entries.find((entry) => entry.path === path) ?? { path, name: basename(path), kind: "file" as const })
     : entries;
-  const intent = aiEditIntent([...ordered, ...combinedSelection(ctx.workspace)]);
+  const intent = aiEditIntent([...ordered, ...combinedSelection(ctx.workspace)], trace?.hasUnusableTarget() ?? false);
   // An older host can still supply the current Trace pane, or an edit's folder.
-  const outputDir = ctx.workspace.getCurrentDirectory?.() ?? trace?.directory
-    ?? (intent.kind === "edit" ? parentDir(intent.inputs[0]) : "");
+  const outputDir = aiOutputDirectory(ctx.workspace.getCurrentDirectory?.() ?? trace?.directory,
+    intent.kind === "edit" ? intent.inputs : []);
   return { intent, outputDir };
 }
 
@@ -104,6 +105,8 @@ export const openAIImagePlugin: Plugin = {
       handler: () => {
         const { intent, outputDir } = commandIntent(ctx);
         if (intent.kind === "invalid") { ctx.toast.show(intent.reason, "info"); return; }
+        const problem = intent.kind === "generate" && outputDir ? outputLocationProblem(outputDir) : null;
+        if (problem) { ctx.toast.show(problem, "info"); return; }
         return open(ctx, intent.kind === "edit" ? intent.inputs : [], outputDir);
       },
     });

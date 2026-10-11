@@ -14,9 +14,9 @@ export type AIEditEntry = Pick<FileEntry, "path" | "name" | "kind">;
 /** Selection is path-based: the same image selected in two panes is one input.
  * Validate every entry before deduplicating, so unsupported entries never disappear.
  */
-export function aiEditIntent(selection: readonly AIEditEntry[]): AIEditIntent {
+export function aiEditIntent(selection: readonly AIEditEntry[], hasUnusableTarget = false): AIEditIntent {
   const invalid: AIEditIntent = { kind: "invalid", reason: INVALID_AI_EDIT_SELECTION };
-  if (!Array.isArray(selection)) return invalid;
+  if (!Array.isArray(selection) || hasUnusableTarget) return invalid;
   if (selection.length === 0) return { kind: "generate" };
   if (selection.some((entry) => !entry || entry.kind !== "file"
     || typeof entry.path !== "string" || typeof entry.name !== "string"

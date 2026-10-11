@@ -235,7 +235,7 @@
     toggle() { return commands.get("plugin.trace.toggle")?.(); },
     disable() { enabled = false; disposed = true; tracePlugin.deactivate?.(); },
     enable() { enabled = true; activate(); },
-    navigate(path: string) { directory = path; entries = path === DIRECTORY ? files() : []; selected = []; anchor = null; target = null; },
+    navigate(path: string, listed?: FileEntry[]) { directory = path; entries = listed ?? (path === DIRECTORY ? files() : []); selected = []; anchor = null; target = null; },
     /** Hides the Trace view and shows it again, as the host does when switching away from its tab and back: the view unmounts, and a new one mounts. */
     leaveView: () => { fileView = null; },
     enterView: () => { fileView = "trace.view"; },

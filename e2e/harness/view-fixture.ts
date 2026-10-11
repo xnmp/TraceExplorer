@@ -10,6 +10,7 @@ import type { TraceNode } from "$lib/domain/trace-graph/model";
 import type { TileSizePreset } from "../../integration/plugin-sdk";
 import { TILE_IMAGE_PX } from "./tile-presets";
 import { connectedComponents, projectDag } from "$lib/domain/trace-graph/projection";
+import { basename, joinPath, parentDir } from "$lib/domain/path";
 import StubFileTiles from "./StubFileTiles.svelte";
 
 export const DIRECTORY = "/pictures";
@@ -76,6 +77,9 @@ let entryExtras = [
   { name: "refs", path: `${DIRECTORY}/refs`, kind: "directory" as const },
 ];
 const calls: Array<{ method: string; params: unknown }> = [];
+/** Accepted jobs keep the run recipe and save hint, like Trace's durable runs. */
+const imageRuns = new Map<number, { operation: string; parameters: Record<string, unknown>; directory: string; filename: string }>();
+const imageJobs = new Map<number, string>();
 let changeListener: (() => void) | null = null;
 /** Runs whose Interrupted placeholder the user dismissed (`runs.dismissed_at`). */
 const dismissedRuns = new Set<number>();
@@ -137,7 +141,7 @@ function componentsOf() {
 }
 
 export const files = () => [
-  ...state.nodes.filter((node) => node.scope === "current" && !node.temporary && node.path).map((node) => ({ name: node.path!.split("/").at(-1)!, path: node.path!, kind: "file" as const })),
+  ...state.nodes.filter((node) => node.scope === "current" && !node.temporary && node.path && !entryExtras.some((entry) => entry.path === node.path)).map((node) => ({ name: node.path!.split("/").at(-1)!, path: node.path!, kind: "file" as const })),
   ...entryExtras,
 ].map((entry) => ({ ...entry, size: 32, modified: "2026-10-05T00:00:00Z" }));
 
@@ -146,6 +150,15 @@ function update(key: string, patch: Partial<TraceNode>) {
   state = { ...state, nodes: state.nodes.map((node) => node.key === key ? { ...node, ...patch } : node) };
 }
 const byArtifact = (id: number) => state.nodes.find((node) => node.artifactId === id);
+function saveSuggestion(node: TraceNode | undefined) {
+  const run = node?.runId === null || node?.runId === undefined ? undefined : imageRuns.get(node.runId);
+  if (!run) return { directory: DIRECTORY, filename: `${node?.key ?? "image"}.png` };
+  const occupied = new Set(files().map((entry) => entry.path));
+  const stem = run.filename.replace(/\.png$/, "");
+  let filename = run.filename;
+  for (let index = 2; occupied.has(joinPath(run.directory, filename)); index++) filename = `${stem}_${index}.png`;
+  return { directory: run.directory, filename };
+}
 
 configureBackend({
   invoke<T>(method: string, params: Record<string, any> = {}): Promise<T> {
@@ -175,24 +188,33 @@ configureBackend({
       }
       case "trace_run_details": return later((params.runIds as number[]).map((id) => {
         const node = state.nodes.find((item) => item.runId === id);
+        const run = imageRuns.get(id);
         return {
-          id, operation: "openai.image.edit", parameters: { prompt: node?.prompt ?? "", resolution: "2k", aspect_ratio: "keep", quality: "high", seed: 7 },
+          id, operation: run?.operation ?? "openai.image.edit", parameters: run?.parameters ?? { prompt: node?.prompt ?? "", resolution: "2k", aspect_ratio: "keep", quality: "high", seed: 7 },
           createdAt: "2026-10-05T00:00:00Z", status: node?.state === "running" ? "running" : "succeeded", finishedAt: null, error: null, recovered: false,
-          details: { actual_size: { width: 1024, height: 768 } }, inputIds: [],
+          details: { actual_size: { width: 1024, height: 768 } }, inputIds: node?.parents.flatMap((key) => {
+            const id = state.nodes.find((parent) => parent.key === key)?.artifactId;
+            return id === null || id === undefined ? [] : [id];
+          }) ?? [],
         };
       }));
       case "trace_revision_status": return later("matched");
       case "trace_for_image": return later(null);
-      case "image_save_suggestion": return reply({ directory: DIRECTORY, filename: `${byArtifact(params.artifactId)?.key ?? "image"}.png` });
+      case "image_save_suggestion": return reply(saveSuggestion(byArtifact(params.artifactId)));
       case "save_generated_image": {
         const node = byArtifact(params.artifactId);
         if (!node) return Promise.reject(new Error("Unknown artifact"));
         if (nextSaveFailure) { const message = nextSaveFailure; nextSaveFailure = null; return Promise.reject(new Error(message)); }
         const name = [...state.names].find(([, key]) => key === node.key)?.[0] ?? "saved";
-        const path: string = params.target ?? `${DIRECTORY}/${name}.png`;
+        const suggestion = saveSuggestion(node);
+        const path: string = params.target ?? (node.runId !== null && imageRuns.has(node.runId)
+          ? joinPath(suggestion.directory, suggestion.filename) : `${DIRECTORY}/${name}.png`);
         const finish = () => {
           const inside = path.startsWith(`${DIRECTORY}/`) && !path.slice(DIRECTORY.length + 1).includes("/");
           update(node.key, { temporary: false, path, scope: inside ? "current" : "external", location: inside ? `./${path.split("/").at(-1)}` : path });
+          const run = node.runId === null ? undefined : imageRuns.get(node.runId);
+          if (run && node.runId !== null) imageRuns.set(node.runId, { ...run, directory: parentDir(path),
+            parameters: { ...run.parameters, output_storage: "saved", save_directory_hint: parentDir(path) } });
           changed();
         };
         if (holdSaves) return new Promise((resolve) => heldSaves.push(() => { finish(); resolve({ path } as T); }));
@@ -235,7 +257,36 @@ configureBackend({
         if (!(inputCount ? profile.capabilities.edit : profile.capabilities.generation)) return Promise.reject(new Error("Image connection does not support this operation"));
         if (inputCount > profile.capabilities.maxInputs) return Promise.reject(new Error("Too many image inputs"));
         if (profile.transport === "codex-cli" ? request.model !== null : typeof request.model !== "string" || !request.model.trim()) return Promise.reject(new Error("Invalid image model"));
-        return reply(900 + calls.filter((call) => call.method === "jobs.start").length);
+        const jobId = 900 + calls.filter((call) => call.method === "jobs.start").length;
+        const paths = [request.sourcePath, ...references].filter((path): path is string => typeof path === "string");
+        if (paths.some((path) => !state.nodes.some((node) => node.path === path)
+          && !entryExtras.some((entry) => entry.path === path && entry.kind === "file"))) return Promise.reject(new Error("Input image unavailable"));
+        // Recording a run indexes plain input files before connecting its output.
+        const parents = [...new Set(paths)].map((path) => {
+          const known = state.nodes.find((node) => node.path === path);
+          if (known) return known.key;
+          const source = make({ key: basename(path).replace(/\.[^.]+$/, "") });
+          state = { ...state, nodes: [...state.nodes, { ...source, path }] };
+          return source.key;
+        });
+        const runId = ++counter;
+        const key = `o:${runId}:0`;
+        const filename = request.sourcePath ? `${basename(String(request.sourcePath)).replace(/\.[^.]+$/, "")}_edit.png` : "generated.png";
+        const directory = imageRuns.get(state.nodes.find((node) => node.path === request.sourcePath)?.runId ?? -1)?.directory ?? String(request.outputDir);
+        imageRuns.set(runId, {
+          operation: inputCount ? "openai.image.edit" : "openai.image.generate",
+          parameters: { prompt: request.prompt, resolution: request.resolution, aspect_ratio: request.aspectRatio, quality: request.quality,
+            output_storage: "temporary", save_directory_hint: directory, suggested_filename: filename },
+          directory, filename,
+        });
+        imageJobs.set(jobId, key);
+        state.names.set(`job-${jobId}`, key);
+        state = { ...state, nodes: [...state.nodes, {
+          key, artifactId: null, runId, parents, path: null, scope: "current", location: "Generating",
+          state: "running", temporary: true, discarded: false, earlierRevision: false, order: runId, prompt: String(request.prompt),
+        }] };
+        changed();
+        return reply(jobId);
       }
       case "trace_prompt_title": return new Promise<T>((resolve) => { titleCalls.push(params.runId); titleWaiters.set(params.runId, (title) => resolve({title,configurationRevision:1,fingerprint:"f".repeat(64)} as T)); });
       default: return Promise.reject(new Error(`Unexpected method ${method}`));
@@ -264,6 +315,18 @@ let imageDescriptionsHeld = false;
 let imageDescriptionWaiters: Array<() => void> = [];
 
 export const backend = {
+  /** Publish an accepted job to private storage; Save later moves it to the hint folder. */
+  completeJob(jobId: number) {
+    const key = imageJobs.get(jobId);
+    const node = state.nodes.find((node) => node.key === key);
+    const run = node?.runId === null || node?.runId === undefined ? undefined : imageRuns.get(node.runId);
+    if (!node || !run || node.state !== "running") throw new Error("Job is not running");
+    update(node.key, { artifactId: ++counter, path: `${TEMP}/generation-${node.runId}/${run.filename}`, location: "Unsaved", state: "present" });
+    changed();
+    return node.key;
+  },
+  /** Changes availability/revision evidence, as the real folder index reports it. */
+  setNodeStatus(name: string, patch: Pick<Partial<TraceNode>, "state" | "earlierRevision">) { update(state.names.get(name)!, patch); changed(); },
   holdImageDescriptions() { imageDescriptionsHeld = true; },
   releaseImageDescriptions() { imageDescriptionsHeld = false; for (const resolve of imageDescriptionWaiters) resolve(); imageDescriptionWaiters = []; },
   imageService: () => structuredClone(imageService),
@@ -353,5 +416,5 @@ export const backend = {
   setPreviewLatency(ms: number) { previewLatency = ms; },
   setFolderLatency(ms: number) { folderLatency = ms; },
   releaseSaves() { holdSaves = false; const pending = heldSaves; heldSaves = []; pending.forEach((run) => run()); },
-  reset() { previewLatency = 0; folderLatency = 0; pickerResult = undefined; nextSaveFailure = null; inputFailures = 0; state = scenario(); version += 1; calls.length = 0; },
+  reset() { previewLatency = 0; folderLatency = 0; pickerResult = undefined; nextSaveFailure = null; inputFailures = 0; imageRuns.clear(); imageJobs.clear(); state = scenario(); version += 1; calls.length = 0; },
 };

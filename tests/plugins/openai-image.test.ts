@@ -3,7 +3,7 @@ vi.mock("$lib/plugins/trace/prompt-titles.svelte",()=>({promptTitles:{bind(){},u
 vi.mock("$lib/plugins/openai-image/OpenAIImageDialog.svelte",()=>({default:{}}));
 vi.mock("$lib/plugins/openai-image/OpenAIImageEditorTool.svelte",()=>({default:{}}));
 vi.mock("$lib/plugins/trace/view/pane-registry.svelte",()=>({tracePanes:{active:()=>activeTrace}}));
-let activeTrace:{directory:string;inputs():readonly string[]}|null=null;
+let activeTrace:{directory:string;inputs():readonly string[];hasUnusableTarget():boolean}|null=null;
 vi.mock("$lib/plugins/openai-image/OpenAIImageHistory.svelte",()=>({default:{}}));
 import {openAIImagePlugin} from "$lib/plugins/openai-image";
 import type {PluginContext} from "../../integration/plugin-sdk";
@@ -90,7 +90,7 @@ describe("OpenAI plugin SDK contributions",()=>{
   it("in an active Trace view, Ctrl+E takes its ordered picks, including images the host cannot select",async()=>{
     const f=fixture();await openAIImagePlugin.activate(f.ctx);
     const picked=["/media/b.png","/managed/generation-1/unsaved_edit.png","/media/refs/a.webp"];
-    activeTrace={directory:"/media",inputs:()=>picked};
+    activeTrace={hasUnusableTarget:()=>false,directory:"/media",inputs:()=>picked};
     try{
       f.setSelection([{...image,path:"/media/b.png",name:"b.png"}]);
       const command=f.commands.find(command=>command.id==="plugin.openai-image.edit")!;
@@ -101,7 +101,7 @@ describe("OpenAI plugin SDK contributions",()=>{
       await menu.handler([image]);
       expect(f.opened.at(-1)?.props).toMatchObject({inputs:[{path:image.path}],outputDir:"/media"});
       // Picks that cannot all be sent are never silently cut down.
-      activeTrace={directory:"/media",inputs:()=>[...picked,"/media/clip.gif"]};
+      activeTrace={hasUnusableTarget:()=>false,directory:"/media",inputs:()=>[...picked,"/media/clip.gif"]};
       f.setSelection([]);
       const opened=f.opened.length;await command.handler();
       expect(f.opened).toHaveLength(opened);
@@ -121,11 +121,37 @@ describe("OpenAI plugin SDK contributions",()=>{
     const f=fixture();await openAIImagePlugin.activate(f.ctx);
     await f.commands.find(c=>c.id==="plugin.openai-image.edit")!.handler();
     expect(f.opened.at(-1)?.props).toMatchObject({inputs:[],outputDir:""});
-    activeTrace={directory:"/trace",inputs:()=>[]};
+    activeTrace={hasUnusableTarget:()=>false,directory:"/trace",inputs:()=>[]};
     try{
       await f.commands.find(c=>c.id==="plugin.openai-image.edit")!.handler();
       expect(f.opened.at(-1)?.props).toMatchObject({inputs:[],outputDir:"/trace"});
     }finally{activeTrace=null;}
+  });
+  it("rejects an unusable Trace target instead of generating, including with other-pane inputs",async()=>{
+    const f=fixture();await openAIImagePlugin.activate(f.ctx);
+    activeTrace={directory:"/media",inputs:()=>[],hasUnusableTarget:()=>true};
+    try{
+      const command=f.commands.find(c=>c.id==="plugin.openai-image.edit")!;
+      await command.handler();
+      const workspace:CombinedSelectionWorkspace=f.ctx.workspace;
+      workspace.getCombinedSelection=()=>[image];
+      await command.handler();
+      expect(f.opened).toEqual([]);
+      expect(f.ctx.toast.show).toHaveBeenCalledTimes(2);
+      expect(f.ctx.toast.show).toHaveBeenLastCalledWith("Select one to eight PNG, JPEG, or WebP images first","info");
+    }finally{activeTrace=null;}
+  });
+  it("edits local images from virtual/search panes in their own folder and rejects generation there",async()=>{
+    for(const directory of ["demo://pictures","search://images"]){
+      const f=fixture();f.ctx.workspace.getCurrentDirectory=()=>directory;
+      await openAIImagePlugin.activate(f.ctx);
+      const command=f.commands.find(c=>c.id==="plugin.openai-image.edit")!;
+      f.setSelection([image]);await command.handler();
+      expect(f.opened.at(-1)?.props).toMatchObject({inputs:[{path:image.path}],outputDir:"/media"});
+      f.setSelection([]);await command.handler();
+      expect(f.opened).toHaveLength(1);
+      expect(f.ctx.toast.show).toHaveBeenLastCalledWith(expect.stringContaining("Open a local output folder"),"info");
+    }
   });
   it("uses the optional combined selection even when the active pane has no inputs",async()=>{
     const f=fixture();
@@ -145,7 +171,7 @@ describe("OpenAI plugin SDK contributions",()=>{
     f.setSelection([image]);
     const workspace:CombinedSelectionWorkspace=f.ctx.workspace;
     let combined=[image,second];workspace.getCombinedSelection=()=>combined;
-    activeTrace={directory:"/media",inputs:()=>["/managed/new.png",image.path]};
+    activeTrace={hasUnusableTarget:()=>false,directory:"/media",inputs:()=>["/managed/new.png",image.path]};
     try{
       await openAIImagePlugin.activate(f.ctx);
       const command=f.commands.find(c=>c.id==="plugin.openai-image.edit")!;

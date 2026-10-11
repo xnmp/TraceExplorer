@@ -1,11 +1,17 @@
 import { describe, expect, it } from "vitest";
-import { aiEditIntent, type AIEditEntry } from "$lib/domain/ai-edit-intent";
+import { aiEditIntent, INVALID_AI_EDIT_SELECTION, type AIEditEntry } from "$lib/domain/ai-edit-intent";
 
 const image = (path: string): AIEditEntry => ({ path, name: path.split(/[\\/]/).at(-1)!, kind: "file" });
 
 describe("AI edit intent", () => {
-  it("generates only for an empty selection", () => {
-    expect(aiEditIntent([])).toEqual({ kind: "generate" });
+  it("generates only for an empty selection without an unusable Trace target", () => {
+    expect(aiEditIntent([], false)).toEqual({ kind: "generate" });
+    expect(aiEditIntent([], true)).toEqual({ kind: "invalid", reason: INVALID_AI_EDIT_SELECTION });
+  });
+
+  it("rejects an unusable target even when other selected images are valid", () => {
+    expect(aiEditIntent([image("/pictures/a.png")], true)).toEqual({ kind: "invalid", reason: INVALID_AI_EDIT_SELECTION });
+    expect(aiEditIntent([image("/pictures/a.png"), image("/pictures/b.gif")], true)).toEqual({ kind: "invalid", reason: INVALID_AI_EDIT_SELECTION });
   });
 
   it("edits one to eight supported images in selection order", () => {
