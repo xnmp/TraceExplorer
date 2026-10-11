@@ -18,7 +18,7 @@ export async function prepareImageInputSubmission(options: InputSubmissionOption
   const current = options.getInputs();
   const unusable = current.find((input) => input.error);
   if (unusable) throw new Error(`Remove ${basename(unusable.path)}: ${unusable.error}`);
-  if (problem) throw new Error(problem);
+  if (problem) throw new Error(`${problem}. Try again`);
   const uninspected = current.find((input) => !input.digest);
   if (uninspected) throw new Error(`Cannot read ${basename(uninspected.path)}: inspection unavailable`);
   if (options.keepsSize && !current[0]?.size) throw new Error("Wait for Image 1 to load, or choose an aspect ratio");
