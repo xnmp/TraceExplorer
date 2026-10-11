@@ -79,3 +79,17 @@ test('Add Codex disappears once a Codex connection exists and returns when it is
   await expect(page.getByRole('button', { name: 'Add Codex' })).toBeVisible();
 });
 
+test('Add Nano Banana creates a Gemini connection with its defaults', async ({ page }) => {
+  await setup(page);
+  await page.getByRole('button', { name: 'Add Nano Banana' }).click();
+  await expect(page.getByLabel('Name', { exact: true })).toHaveValue('Nano Banana');
+  await expect(page.getByLabel('Gemini API root URL')).toHaveValue('https://generativelanguage.googleapis.com/v1beta');
+  await expect(page.getByLabel('Image model ID')).toHaveValue('gemini-nano-banana-2.1');
+  await page.getByRole('combobox', { name: 'Credential source' }).click();
+  await page.getByRole('option', { name: 'Environment variable' }).click();
+  await expect(page.getByLabel('Environment variable name')).toHaveValue('GEMINI_API_KEY');
+  await page.getByRole('button', { name: 'Save connections' }).click();
+  await expect(page.getByText('Connections saved.', { exact: true })).toBeVisible();
+  const saved = await page.evaluate(() => (window as any).imageConnectionFixture.snapshot());
+  expect(saved.profiles[0]).toMatchObject({ transport: 'gemini', baseUrl: 'https://generativelanguage.googleapis.com/v1beta', defaultModel: 'gemini-nano-banana-2.1', credential: { kind: 'environment', name: 'GEMINI_API_KEY' } });
+});

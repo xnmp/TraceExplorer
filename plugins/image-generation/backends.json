@@ -11,5 +11,18 @@
     "baseUrlLabel": "Images resource URL",
     "baseUrlNote": "Include the Images resource, usually /images. The adapter appends /generations or /edits.",
     "rejectedUrlSuffixes": ["generations", "edits"]
+  },
+  {
+    "transport": "gemini",
+    "label": "Nano Banana (Gemini)",
+    "addLabel": "Add Nano Banana",
+    "defaultName": "Nano Banana",
+    "defaultBaseUrl": "https://generativelanguage.googleapis.com/v1beta",
+    "defaultModel": "gemini-nano-banana-2.1",
+    "modelPlaceholder": "Nano Banana model id",
+    "credentialEnv": "GEMINI_API_KEY",
+    "baseUrlLabel": "Gemini API root URL",
+    "baseUrlNote": "Include the API version, usually /v1beta. The adapter appends /interactions.",
+    "rejectedUrlSuffixes": ["interactions", "models"]
   }
 ]
