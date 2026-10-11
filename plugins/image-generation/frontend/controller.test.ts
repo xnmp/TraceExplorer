@@ -104,3 +104,30 @@ describe('image connections contract', () => {
     await f.controller.initialize(); await f.controller.test('p'); expect(f.calls.filter(c => c.method === 'settings.test')).toHaveLength(1); f.controller.close();
   });
 });
+
+
+describe('start rejection recovery', () => {
+  test.each([new Error('Credential command exited with status 1'), { code: -32000, message: 'Credential command exited with status 1' }, { code: -32000, message: 'RPC failed', data: { code: 'unavailable', message: 'Credential command exited with status 1' } }])('shows a rejected start reason for native error shapes', async cause => {
+    const f = fixture(method => { if (method === 'settings.test') throw cause; return config(); });
+    await f.controller.initialize(); await f.controller.test('p');
+    expect(f.controller.snapshot().tests[0]).toMatchObject({ startFailed: true, error: 'Credential command exited with status 1' });
+    await f.controller.test('p');
+    expect(f.calls.filter(c => c.method === 'settings.test')).toHaveLength(1);
+    expect(f.pending.size).toBe(0); f.controller.close();
+  });
+  test('a cancellation without admission ends recovery with a clear reason', async () => {
+    const f = fixture(method => { if (method === 'settings.test') throw { message: 'This image provider chooses its own image size' }; if (method === 'settings.cancelTest') throw { code: -32000, data: { code: 'test_not_started', message: 'The test never started' } }; return config(); });
+    await f.controller.initialize(); await f.controller.test('p'); await f.controller.cancel('test-id');
+    expect(f.controller.snapshot().tests[0]).toMatchObject({ startFailed: true, neverStarted: true });
+    expect(f.controller.snapshot().tests[0].error).toContain('The test never started');
+    expect(f.controller.snapshot().tests[0].error).not.toContain('Cancellation could not be confirmed');
+    f.controller.close();
+    expect(f.calls.filter(c => c.method === 'settings.cancelTest')).toHaveLength(1);
+  });
+  test('a late start rejection preserves an already confirmed running receipt and cancellation', async () => {
+    const started = deferred<ImageOperationStatus>();
+    const f = fixture(method => method === 'settings.test' ? started.promise : method === 'settings.test.status' ? status('running', 2) : method === 'settings.cancelTest' ? status('cancelled', 3) : config());
+    await f.controller.initialize(); const work = f.controller.test('p'); await f.controller.poll('test-id'); started.reject({ message: 'Start reply lost' }); await work;
+    await f.controller.cancel('test-id'); expect(f.controller.snapshot().tests[0].status?.execution.state).toBe('cancelled'); f.controller.close();
+  });
+});

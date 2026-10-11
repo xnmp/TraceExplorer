@@ -86,6 +86,20 @@ const segmentRejected = (pattern: string, segment: string): boolean => {
 export function rejectedSegment(backend: ApiBackend | undefined, url: URL): string | undefined {
   return url.pathname.split('/').filter(Boolean).find(segment => backend?.rejectedPathSegments.some(p => segmentRejected(p, segment)));
 }
+/** Viewport units are unzoomed; account for every ancestor's CSS zoom. */
+export function effectiveZoom(values: readonly string[]): number {
+  return values.reduce((zoom, text) => {
+    const value = Number.parseFloat(text) / (text.endsWith('%') ? 100 : 1);
+    return Number.isFinite(value) && value > 0 ? zoom * value : zoom;
+  }, 1);
+}
+/** Each source owns exactly one section; saved-key entry is a UI choice until a key exists. */
+export function credentialSections(kind: ImageProfile['credential']['kind']) {
+  return { environment: kind === 'environment', command: kind === 'command', secret: kind === 'secret' };
+}
+export function credentialProblem(credential: ImageProfile['credential']): string | null {
+  return credential.kind === 'secret' && !credential.id.trim() ? 'Save a key for this connection' : null;
+}
 export function validation(value: ImageConfiguration): string | null {
   if (value.profiles.length > 32) return 'Keep at most 32 image connections.';
   if (value.defaultConnectionId !== null && !value.profiles.some(p => p.id === value.defaultConnectionId)) return 'Select an existing default connection.';
@@ -107,6 +121,7 @@ export function validation(value: ImageConfiguration): string | null {
       if (url.protocol !== 'https:' && !(url.protocol === 'http:' && (profile.allowInsecureHttp || ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname)))) return 'Use HTTPS or explicitly allow insecure HTTP.';
       const segment = rejectedSegment(backend, url);
       if (segment !== undefined) return `The ${backend?.baseUrlLabel ?? 'API URL'} cannot contain the path segment /${segment}.`;
+      const missingKey = credentialProblem(profile.credential); if (missingKey) return missingKey;
       if (profile.credential.kind === 'command') { const problem = commandProblem(profile.credential.argv); if (problem) return problem; }
       if (profile.credential.kind === 'environment' && !/^[A-Za-z_][A-Za-z0-9_]{0,127}$/.test(profile.credential.name)) return 'Enter a valid credential environment variable name.';
     }
@@ -151,7 +166,8 @@ export function validTestReceipt(status: ImageOperationStatus, requestId: string
   if (delivery.state === 'unavailable') return ['missing', 'corrupt', 'storage_unavailable'].includes(delivery.reason);
   return true;
 }
-export function testSummary(status: ImageOperationStatus): string {
+export function testSummary(status?: ImageOperationStatus, startFailed = false): string {
+  if (!status) return startFailed ? 'Test could not start.' : 'Waiting for the test acceptance reply…';
   const execution = status.execution;
   if (execution.state === 'succeeded') return status.delivery.state === 'discarded' ? 'Generation succeeded. Test output discarded.' : status.delivery.state === 'available' ? 'Generation succeeded. Test output is retained until you discard it.' : 'Generation succeeded; its output is unavailable. No new generation was started.';
   if (execution.state === 'failed' || execution.state === 'unknown') return `${execution.state === 'unknown' ? 'Remote outcome unknown' : 'Generation failed'}: ${execution.error.message}`;

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { API_BACKENDS, TRANSPORT_ID, canAddCodex, configuration, newProfile, removeProfile, setDefault, transportLabel, validConfiguration, validation, type ImageConfiguration, type ImageProfile } from './domain';
+import { API_BACKENDS, credentialSections, effectiveZoom, testSummary, TRANSPORT_ID, canAddCodex, configuration, newProfile, removeProfile, setDefault, transportLabel, validConfiguration, validation, type ImageConfiguration, type ImageProfile } from './domain';
 
 const config = (): ImageConfiguration => ({ schemaVersion: 1, documentRevision: 3, defaultConnectionId: 'a', profiles: [newProfile('a', 'codex-cli'), { ...newProfile('b', 'openai-images'), defaultModel: 'm' } as ImageConfiguration['profiles'][number]] });
 
@@ -105,4 +105,29 @@ describe('API backend registry', () => {
     for (const ok of ['flux-2-pro', 'flux.2_pro', 'a'.repeat(128)]) expect(check('bfl', ok), ok).toBeNull();
     for (const transport of ['openai-images', 'gemini']) for (const ok of ['vendor/model', 'gpt image', '..']) expect(check(transport, ok), `${transport} ${ok}`).toBeNull();
   });
+});
+
+
+describe('credential sections', () => {
+  it.each(['none', 'environment', 'command', 'secret', 'cli_saved_login'] as const)('shows only fields for %s', kind => {
+    expect(credentialSections(kind)).toEqual({ environment: kind === 'environment', command: kind === 'command', secret: kind === 'secret' });
+  });
+  it('requires an owned reference before a saved-key source is configured', () => {
+    const profile = newProfile('p', 'bfl');
+    const value = (id: string): ImageConfiguration => ({ schemaVersion: 1, documentRevision: 0, defaultConnectionId: 'p', profiles: [{ ...profile, credential: { kind: 'secret', id } } as ImageProfile] });
+    expect(validation(value(''))).toBe('Save a key for this connection');
+    expect(validation(value('owned-secret'))).toBeNull();
+  });
+});
+describe('zoomed viewport', () => {
+  it.each([['1.1', 1.1], ['125%', 1.25], ['normal', 1], ['0', 1], ['invalid', 1]] as const)('handles %s', (text, expected) => expect(effectiveZoom([text])).toBe(expected));
+  it('accounts for nested zoom and preserves the physical viewport margin', () => {
+    const zoom = effectiveZoom(['1.25', '110%']);
+    expect(zoom).toBeCloseTo(1.375);
+    expect((800 / zoom - 32) * zoom).toBeCloseTo(800 - 32 * zoom);
+  });
+});
+it('a rejected start stops showing waiting while an unresolved reply remains waiting', () => {
+  expect(testSummary(undefined, true)).toBe('Test could not start.');
+  expect(testSummary()).toBe('Waiting for the test acceptance reply…');
 });

@@ -13,7 +13,9 @@
   const results = new Map<string, ImageOperationStatus>();
   const calls: string[] = [];
   const emit = () => handlers.forEach(fn => fn({ documentRevision: current.documentRevision, affectedProfileIds: current.profiles.map(p => p.id) }));
+  let startFailure: unknown = null;
   const fixture = {
+    rejectStart: (reason: unknown) => startFailure = reason,
     snapshot: () => structuredClone(current), calls: () => [...calls],
     remoteName: (name: string) => { current = { ...current, documentRevision: current.documentRevision + 1, profiles: current.profiles.map(p => ({ ...p, name })) }; emit(); },
   };
@@ -32,10 +34,11 @@
     if (method === 'settings.check') return { available: true };
     const requestId = String(params.requestId);
     if (method === 'settings.test') {
+      if (startFailure) throw startFailure;
       if (params.expectedConfigurationRevision !== current.documentRevision) throw Error('Settings changed');
       const receipt: ImageOperationStatus = { version: 1, operationId: requestId, requestFingerprint: 'b'.repeat(64), provider: { packageId: 'xnmp.image-generation', serviceId: 'image-generation', major: 1 }, revision: 1, execution: { state: 'accepted' }, delivery: { state: 'none' } }; results.set(requestId, receipt); return structuredClone(receipt);
     }
-    const receipt = results.get(requestId); if (!receipt) throw Error('Unknown test');
+    const receipt = results.get(requestId); if (!receipt) throw { code: method === 'settings.cancelTest' ? 'test_not_started' : 'not_found', message: method === 'settings.cancelTest' ? 'The test never started' : 'Unknown image operation' };
     if (method === 'settings.test.status') {
       const completed: ImageOperationStatus = { ...receipt, revision: 2, execution: { state: 'succeeded', metadata: { adapter: 'openai-images', endpointIdentity: 'https://example.test/images', requestedModel: 'custom-image', actualModel: null, externalRequestId: null, threadId: null, options: { size: '1024x1024', quality: 'low', background: 'auto' }, remoteChargeUncertain: false } }, delivery: { state: 'available', output: { handle: 'opaque-fixture-handle', sha256: 'a'.repeat(64), byteLength: 100, mediaType: 'image/png' } } }; results.set(requestId, completed); return structuredClone(completed);
     }

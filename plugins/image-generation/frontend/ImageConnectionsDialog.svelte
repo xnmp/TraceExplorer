@@ -2,12 +2,14 @@
   import { onMount, untrack } from 'svelte';
   import Modal from '$lib/components/Modal.svelte';
   import { ConnectionsController, type Backend, type RevisionEvent, type TestRegistry } from './controller';
-  import { API_BACKENDS, commandDraftText, canAddCodex, isApi, newProfile, parseCommand, removeProfile, setDefault, transportLabel, validation, type CommandDraft, type ImageProfile } from './domain';
+  import { API_BACKENDS, effectiveZoom, commandDraftText, canAddCodex, isApi, newProfile, parseCommand, removeProfile, setDefault, transportLabel, validation, type CommandDraft, type ImageProfile } from './domain';
   import ProfileFields from './ProfileFields.svelte';
   import TestResults from './TestResults.svelte';
   let { open, onClose, backend, registry, subscribeRevision }: { open: boolean; onClose: () => void; backend: Backend; registry: TestRegistry; subscribeRevision: (fn: (event: RevisionEvent) => void) => () => void } = $props();
   const controller = untrack(() => new ConnectionsController(backend, registry));
   let view = $state(controller.snapshot());
+  let viewportZoom = $state(1);
+  let pendingSecrets = $state<Record<string, boolean>>({});
   let selectedId = $state('');
   let commandTexts = $state<Record<string, CommandDraft>>({});
   let commandSyntaxProblem = $derived(view.draft?.profiles.map(p => p.credential.kind === 'command' ? parseCommand(commandDraftText(p.credential.argv, commandTexts[p.id])).problem : null).find(Boolean) ?? null);
@@ -15,10 +17,33 @@
   let dirty = $derived(!!view.saved && !!view.draft && (JSON.stringify(view.saved) !== JSON.stringify(view.draft) || !!commandSyntaxProblem));
   let profile = $derived(view.draft?.profiles.find(p => p.id === selectedId) ?? view.draft?.profiles[0]);
   let invalid = $derived(commandSyntaxProblem ?? (view.draft ? validation(view.draft) : null));
-  let usable = $derived(!dirty && !view.busy && !view.conflict && !!profile && !!view.saved?.profiles.some(p => p.id === profile?.id));
+  let savedUsable = $derived(!dirty && !view.busy && !view.conflict && !!profile && !!view.saved?.profiles.some(p => p.id === profile?.id));
+  let needsKey = $derived(!!profile && isApi(profile) && !!pendingSecrets[profile.id] && (profile.credential.kind !== 'secret' || !profile.credential.id));
+  let usable = $derived(savedUsable && !needsKey);
   let full = $derived((view.draft?.profiles.length ?? 0) >= 32);
-  onMount(() => { const stop = controller.subscribe(value => view = value); const events = subscribeRevision(event => controller.revision(event)); void controller.initialize(); return () => { events(); stop(); controller.close(); }; });
+  function trackZoom(element: HTMLDivElement) {
+    const ancestors: HTMLElement[] = [];
+    for (let parent: HTMLElement | null = element; parent; parent = parent.parentElement) ancestors.push(parent);
+    const updateZoom = () => viewportZoom = effectiveZoom(ancestors.map(parent => getComputedStyle(parent).zoom));
+    updateZoom();
+    const resize = new ResizeObserver(updateZoom); resize.observe(document.documentElement);
+    const mutations = new MutationObserver(updateZoom);
+    for (const parent of ancestors.slice(1)) mutations.observe(parent, { attributes: true, attributeFilter: ['style', 'class'] });
+    window.addEventListener('resize', updateZoom);
+    return { destroy() { resize.disconnect(); mutations.disconnect(); window.removeEventListener('resize', updateZoom); } };
+  }
+  onMount(() => {
+    const stop = controller.subscribe(value => view = value); const events = subscribeRevision(event => controller.revision(event)); void controller.initialize(); return () => { events(); stop(); controller.close(); }; });
   function updateProfile(next: ImageProfile) { if (next.credential.kind !== 'command') { const { [next.id]: _, ...rest } = commandTexts; commandTexts = rest; } if (view.draft) controller.edit({ ...view.draft, profiles: view.draft.profiles.map(p => p.id === next.id ? next : p) }); }
+  function selectSource(kind: string) {
+    if (!profile || !isApi(profile)) return;
+    pendingSecrets = { ...pendingSecrets, [profile.id]: kind === 'secret' };
+    if (kind === 'secret') {
+      const saved = view.saved?.profiles.find(p => p.id === profile!.id);
+      // Restore the owned reference when an uncommitted source change is undone.
+      updateProfile({ ...profile, credential: saved && isApi(saved) && saved.credential.kind === 'secret' ? saved.credential : { kind: 'none' } });
+    }
+  }
   function updateCommand(text: string) {
     if (!profile || !isApi(profile)) return;
     const argv = parseCommand(text).argv ?? [];
@@ -35,18 +60,18 @@
   }
   function close() { if (view.busy) return; if (dirty) confirmingClose = true; else finishClose(); }
   function finishClose() { controller.close(); onClose(); }
-  async function reload() { commandTexts = {}; await controller.refresh(true); confirmingClose = false; }
+  async function reload() { commandTexts = {}; pendingSecrets = {}; await controller.refresh(true); confirmingClose = false; }
 </script>
 
 {#snippet plus()}<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M8 3v10M3 8h10" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" /></svg>{/snippet}
 
 <Modal {open} onClose={close} canClose={() => !view.busy} labelledby="image-connections-title">
-  <div class="connections">
+  <div class="connections" use:trackZoom style:--connections-zoom={viewportZoom}>
     <header>
       <div><h2 id="image-connections-title">Image connections</h2><p class="note">Shared by every image tool. Text models are set up separately.</p></div>
       <button type="button" class="icon" aria-label="Close image connections" disabled={view.busy} onclick={close}><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" /></svg></button>
     </header>
-    <div class="body" aria-busy={view.loading || view.busy}>
+    <div class="body" data-testid="connections-body" aria-busy={view.loading || view.busy}>
       {#if view.error}<p role="alert" class="banner critical">{view.error}</p>{/if}
       {#if view.message}<p role="status" class="banner">{view.message}</p>{/if}
       {#if view.conflict}<div class="banner caution" role="alert"><p>Settings changed in another window. Your edits are kept; reload the saved settings before saving or testing.</p><button type="button" disabled={view.busy} onclick={reload}>Reload saved settings</button></div>{/if}
@@ -83,10 +108,10 @@
                 {:else}<button type="button" disabled={view.busy} onclick={() => view.draft && controller.edit(setDefault(view.draft, profile!.id))}>Set as default</button>{/if}
               </div>
               {#if view.draft.defaultConnectionId === null}<p class="banner caution">Choose a default connection, then save, to enable image generation.</p>{/if}
-              {#key profile.id}<ProfileFields {profile} commandText={profile.credential.kind === 'command' ? commandDraftText(profile.credential.argv, commandTexts[profile.id]) : undefined} oncommand={updateCommand} disabled={view.busy} saved={usable} onchange={updateProfile} oncredential={key => controller.credential(profile!.id, key)} />{/key}
+              {#key profile.id}<ProfileFields {profile} choosingSecret={!!pendingSecrets[profile.id]} commandText={profile.credential.kind === 'command' ? commandDraftText(profile.credential.argv, commandTexts[profile.id]) : undefined} oncommand={updateCommand} disabled={view.busy} saved={savedUsable} onsource={selectSource} onchange={updateProfile} oncredential={key => controller.credential(profile!.id, key)} />{/key}
               <div class="verify">
                 <div class="actions"><button type="button" disabled={!usable} onclick={() => controller.check(profile!.id)}>Check locally</button><button type="button" disabled={!usable} onclick={() => controller.test(profile!.id)}>Test generation (may be billed)</button></div>
-                <p class="note">{dirty ? 'Save or discard your edits before checking, testing, or saving a key.' : 'Check locally confirms the executable or credentials are available. Test generation makes one real image.'}</p>
+                <p class="note">{dirty ? 'Save or discard your edits before checking or testing.' : 'Check locally confirms the executable or credentials are available. Test generation makes one real image.'}</p>
                 {#if view.check && view.check.profileId === profile.id}<p role="status">{view.check.message}</p>{/if}
               </div>
               <div class="danger-zone"><button type="button" class="danger" disabled={view.busy} onclick={() => view.draft && controller.edit(removeProfile(view.draft, profile!.id))}>Remove connection</button></div>
@@ -106,12 +131,12 @@
 </Modal>
 
 <style>
-  .connections { width: min(48rem, calc(100vw - 2rem)); max-height: calc(100dvh - 2rem); display: flex; flex-direction: column; border: 1px solid var(--surface-stroke); border-radius: var(--radius-lg); background: var(--background-solid); color: var(--text-primary); box-shadow: var(--shadow-dialog); font-family: var(--font-family); font-size: var(--font-size-body); }
-  header, footer { display: flex; justify-content: space-between; align-items: center; gap: var(--spacing-md); padding: var(--spacing-md) var(--spacing-lg); }
+  .connections { box-sizing: border-box; width: min(48rem, calc(100vw / var(--connections-zoom) - 2rem)); max-height: calc(100dvh / var(--connections-zoom) - 2rem); overflow: hidden; display: flex; flex-direction: column; border: 1px solid var(--surface-stroke); border-radius: var(--radius-lg); background: var(--background-solid); color: var(--text-primary); box-shadow: var(--shadow-dialog); font-family: var(--font-family); font-size: var(--font-size-body); }
+  header, footer { flex: none; display: flex; justify-content: space-between; align-items: center; gap: var(--spacing-md); padding: var(--spacing-md) var(--spacing-lg); }
   header { align-items: flex-start; border-bottom: 1px solid var(--divider); } footer { border-top: 1px solid var(--divider); flex-wrap: wrap; }
   h2 { font-size: var(--font-size-subtitle); font-weight: var(--font-weight-semibold); margin: 0 0 var(--spacing-xxs); } h3 { font-size: var(--font-size-subtitle); font-weight: var(--font-weight-semibold); margin: 0; overflow-wrap: anywhere; }
   p { margin: 0; line-height: var(--line-height-normal); overflow-wrap: anywhere; }
-  .body { padding: var(--spacing-lg); overflow-y: auto; display: grid; gap: var(--spacing-md); min-height: 0; }
+  .body { flex: 1 1 auto; grid-auto-rows: max-content; overscroll-behavior: contain; padding: var(--spacing-lg); overflow-y: auto; display: grid; gap: var(--spacing-md); min-height: 0; }
   .note { color: var(--text-secondary); font-size: var(--font-size-caption); }
   .banner { display: grid; gap: var(--spacing-sm); justify-items: start; padding: var(--spacing-sm) var(--spacing-md); border: 1px solid var(--control-stroke); border-radius: var(--radius-md); background: var(--background-card-secondary); }
   .banner.caution { border-color: color-mix(in srgb, var(--system-caution) 45%, transparent); background: color-mix(in srgb, var(--system-caution) 10%, var(--background-solid)); }

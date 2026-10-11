@@ -1311,10 +1311,18 @@ impl Service {
                 self.status("xnmp.image-generation", &text(&params, "requestId")?)?,
             )
             .map_err(storage)?),
-            "cancelTest" => Ok(serde_json::to_value(
-                self.cancel("xnmp.image-generation", &text(&params, "requestId")?)?,
-            )
-            .map_err(storage)?),
+            "cancelTest" => {
+                let status = self
+                    .cancel("xnmp.image-generation", &text(&params, "requestId")?)
+                    .map_err(|failure| {
+                        if failure.code == "not_found" {
+                            error("test_not_started", "The test never started")
+                        } else {
+                            failure
+                        }
+                    })?;
+                Ok(serde_json::to_value(status).map_err(storage)?)
+            }
             "test.discard" => {
                 let operation = text(&params, "requestId")?;
                 self.status("xnmp.image-generation", &operation)?;
@@ -1393,7 +1401,15 @@ impl Service {
             prompt: "Create a simple solid blue square, without text.".into(),
             inputs: vec![],
             options: ImageOptions {
-                size: "1024x1024".into(),
+                size: if profile
+                    .api()
+                    .is_some_and(|(kind, _)| !adapters::api::descriptor(kind).options.sizes)
+                {
+                    "auto"
+                } else {
+                    "1024x1024"
+                }
+                .into(),
                 resolution: None,
                 aspect_ratio: None,
                 quality: if profile.api().is_some_and(|(kind, _)| {

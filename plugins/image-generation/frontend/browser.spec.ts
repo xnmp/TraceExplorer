@@ -12,6 +12,8 @@ async function saveHttp(page: Page) {
 }
 test('configures independent custom API, write-only key, local check, and retained explicit test discard', async ({ page }) => {
   await setup(page); await expect(page.getByText('No image connections configured.', { exact: false })).toBeVisible(); await saveHttp(page);
+  await page.getByRole('combobox', { name: 'Credential source' }).click();
+  await page.getByRole('option', { name: 'Saved OS credential' }).click();
   await page.getByLabel('New API key').fill('private-fixture-key'); await page.getByRole('button', { name: 'Save key securely' }).click();
   await expect(page.getByLabel('New API key')).toHaveValue(''); await expect(page.getByText('A key is saved in the OS credential store.')).toBeVisible();
   await page.getByRole('button', { name: 'Check locally' }).click(); await expect(page.getByText('Local checks passed. Model generation has not been tested.')).toBeVisible();
@@ -58,16 +60,49 @@ test('removing the default leaves generation disabled until another default is c
   await page.getByRole('button', { name: 'Add Codex' }).click();
   await expect(page.getByRole('button', { name: /^Codex.*Default/ })).toBeVisible();
 });
-test('the credential source is a themed list whose disabled choice cannot be picked', async ({ page }) => {
+test('credential sources reveal only their own fields and saving a key requires saved metadata', async ({ page }) => {
   await setup(page); await page.getByRole('button', { name: 'Add Images API' }).click();
+  await page.getByLabel('Image model ID').fill('custom-image');
   const source = page.getByRole('combobox', { name: 'Credential source' });
-  await expect(source).toHaveText('No credential'); await expect(page.getByLabel('Environment variable name')).toHaveCount(0);
-  await source.click();
-  await page.getByRole('option', { name: 'Saved OS credential' }).click();
-  await expect(page.getByRole('listbox')).toBeVisible(); await expect(source).toHaveText('No credential');
-  await page.getByRole('option', { name: 'Environment variable' }).click();
-  await expect(page.getByRole('listbox')).toHaveCount(0); await expect(source).toHaveText('Environment variable');
+  await expect(source).toHaveText('No credential');
+  await expect(page.getByLabel('New API key')).toHaveCount(0);
+  await source.click(); await page.getByRole('option', { name: 'Command', exact: true }).click();
+  await expect(page.getByLabel('Credential command', { exact: true })).toBeVisible();
+  await expect(page.getByLabel('New API key')).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Save key securely' })).toHaveCount(0);
+  await source.click(); await page.getByRole('option', { name: 'Saved OS credential' }).click();
+  await expect(page.getByRole('listbox')).toHaveCount(0);
+  await expect(source).toHaveText('Saved OS credential');
+  await expect(page.getByLabel('Credential command', { exact: true })).toHaveCount(0);
+  await expect(page.getByLabel('New API key')).toBeVisible();
+  // The pending source intent survives changing the selected connection.
+  await page.getByRole('button', { name: 'Add Codex' }).click();
+  await page.getByRole('button', { name: /Images API.*Default/ }).click();
+  await expect(source).toHaveText('Saved OS credential');
+  await expect(page.getByLabel('New API key')).toBeVisible();
+  await page.getByLabel('New API key').fill('fixture-key');
+  await expect(page.getByText('Save connection edits before changing its saved key.')).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Save key securely' })).toBeDisabled();
+  await page.getByRole('button', { name: 'Save connections' }).click();
+  await expect(source).toHaveText('Saved OS credential');
+  await expect(page.getByRole('button', { name: 'Test generation (may be billed)', exact: true })).toBeDisabled();
+  await page.getByRole('button', { name: 'Save key securely' }).click();
+  await expect(page.getByText('A key is saved in the OS credential store.')).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Test generation (may be billed)', exact: true })).toBeEnabled();
+  const ownedKey = await page.evaluate(() => (window as any).imageConnectionFixture.snapshot().profiles[0].credential);
+  await source.click(); await page.getByRole('option', { name: 'Environment variable' }).click();
+  await source.click(); await page.getByRole('option', { name: 'Saved OS credential' }).click();
+  await expect(page.getByText('A key is saved in the OS credential store.')).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Save connections' })).toBeDisabled();
+  await expect(page.getByRole('button', { name: 'Test generation (may be billed)', exact: true })).toBeEnabled();
+  expect(await page.evaluate(() => (window as any).imageConnectionFixture.snapshot().profiles[0].credential)).toEqual(ownedKey);
+  await source.click(); await page.getByRole('option', { name: 'Environment variable' }).click();
   await expect(page.getByLabel('Environment variable name')).toHaveValue('OPENAI_API_KEY');
+  await expect(page.getByLabel('New API key')).toHaveCount(0);
+  await expect(page.getByText('Save connection edits before changing its saved key.')).toHaveCount(0);
+  await source.click(); await page.getByRole('option', { name: 'No credential' }).click();
+  await expect(page.getByLabel('Environment variable name')).toHaveCount(0);
+  await expect(page.getByLabel('New API key')).toHaveCount(0);
 });
 test('the Select popup stays anchored when root zoom changes', async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 1000 });
@@ -158,4 +193,38 @@ test('command source saves parsed argv and an unclosed quote blocks Save', async
   await command.fill('secret-tool "');
   await expect(page.getByText('Close the quote in the credential command.')).toBeVisible();
   await expect(save).toBeDisabled();
+});
+
+for (const zoom of [1, 1.1, 1.25]) {
+  test(`overflow scrolls to the last test action with fixed header/footer at CSS zoom ${zoom}`, async ({ page }) => {
+    await page.setViewportSize({ width: 800, height: 480 });
+    await setup(page); await saveHttp(page);
+    await page.evaluate(zoom => document.documentElement.style.zoom = String(zoom), zoom);
+    await page.getByRole('button', { name: 'Test generation (may be billed)', exact: true }).click();
+    const last = page.getByRole('button', { name: 'Discard test output', exact: true });
+    await expect(last).toBeAttached();
+    const body = page.getByTestId('connections-body');
+    await expect.poll(() => body.evaluate(element => element.scrollHeight > element.clientHeight)).toBe(true);
+    await body.evaluate(element => element.scrollTop = 0);
+    await expect(last).not.toBeInViewport();
+    // Exercise scrolling itself, instead of letting locator.click auto-scroll.
+    await body.evaluate(element => element.scrollTop = element.scrollHeight);
+    await expect(last).toBeInViewport();
+    await expect(page.getByRole('heading', { name: 'Image connections', exact: true })).toBeInViewport();
+    await expect(page.getByRole('button', { name: 'Close', exact: true })).toBeInViewport();
+    const bounds = await page.locator('.connections').evaluate(element => { const rect = element.getBoundingClientRect(); return { top: rect.top, bottom: rect.bottom, height: innerHeight }; });
+    expect(bounds.top).toBeGreaterThanOrEqual(0); expect(bounds.bottom).toBeLessThanOrEqual(bounds.height);
+  });
+}
+test('a rejected test start displays its fixed reason without an endless waiting state', async ({ page }) => {
+  await setup(page); await saveHttp(page);
+  await page.evaluate(() => (window as any).imageConnectionFixture.rejectStart({ code: -32000, data: { code: 'unavailable', message: 'Credential command exited with status 1' } }));
+  await page.getByRole('button', { name: 'Test generation (may be billed)', exact: true }).click();
+  await expect(page.getByText('Test could not start.', { exact: true })).toBeVisible();
+  await expect(page.getByRole('alert')).toHaveText('Credential command exited with status 1');
+  await expect(page.getByText('Waiting for the test acceptance reply…', { exact: true })).toHaveCount(0);
+  await page.getByRole('button', { name: 'Cancel test', exact: true }).click();
+  await expect(page.getByRole('alert')).toContainText('The test never started');
+  await expect(page.getByText('Cancellation could not be confirmed', { exact: false })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Cancel test', exact: true })).toHaveCount(0);
 });
