@@ -18,8 +18,8 @@ import type { TraceTargetData } from "./pane-registry.svelte";
 export interface TargetCallbacks {
   /** Captures the current selection; the returned check says whether it is unchanged. */
   capture?(): () => boolean;
-  /** Called with the saved file's path (only while the selection is unchanged) so the view can focus it. */
-  saved(path: string, key: string): void;
+  /** Called with every saved file's path, so the view knows it belongs to its stack before the index does; `select` is whether the selection is unchanged, so the view should focus it. */
+  saved(path: string, key: string, select: boolean): void;
   discarded(key: string): void;
 }
 
@@ -71,7 +71,7 @@ export function nodeTarget(node: TraceNode, componentId: string, directory: stri
       run: () => guarded(id, async () => {
         const current = callbacks.capture?.() ?? (() => true);
         const { path } = await saveGeneratedImage(id);
-        if (current()) callbacks.saved(path, node.key);
+        callbacks.saved(path, node.key, current());
       }) },
     { id: "save-as", label: "Save as…", icon: "save-as", title: "Choose a filename and folder", disabled: !present || imageActionState.busy(id),
       run: () => guarded(id, async () => {
@@ -80,7 +80,7 @@ export function nodeTarget(node: TraceNode, componentId: string, directory: stri
         const picked = await host().pickSaveFile({ ...suggestion, title: "Save generated image" });
         if (!picked) return;
         const { path } = await saveGeneratedImage(id, picked);
-        if (current()) callbacks.saved(path, node.key);
+        callbacks.saved(path, node.key, current());
       }) },
     { id: "delete", label: `Delete ${nodeTitle(node)}`, icon: "delete", title: "Delete unsaved image", disabled: imageActionState.busy(id),
       run: () => guarded(id, async () => { await discardGeneratedImage(id); callbacks.discarded(node.key); }) },

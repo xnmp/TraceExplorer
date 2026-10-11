@@ -31,7 +31,8 @@
         if (alive) onDiscard?.(selected,result.viewPath);
       } else {
         const result = await saveGeneratedImage(selected.id);
-        if (alive && artifact.id === selected.id) await onSelectFile(result.path, navigateAfterSave && stillSelected());
+        // Always report the file: the view must know it is part of its stack even if this control has been unmounted.
+        await onSelectFile(result.path, alive && artifact.id === selected.id && navigateAfterSave && stillSelected());
       }
       traceInvalidation.bump();
     } catch (cause) { error = extractError(cause); }

@@ -361,7 +361,7 @@
      * folder selects its file once the listing has it; one elsewhere needs
      * nothing: its pick follows the node to the saved path (followPicks).
      */
-    saved(path: string, key: NodeKey, select = true) {
+    saved(path: string, key: NodeKey, select: boolean) {
       if (!samePath(parentDir(path), directory)) return;
       claimed = new Map(claimed).set(path, session.index);
       if (select) pendingSave = { directory, path, key, picks };

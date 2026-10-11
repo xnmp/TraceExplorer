@@ -464,6 +464,49 @@ test("a closed stack shows that an edit is generating, and clears when it finish
   expect(await uncaught(page)).toEqual([]);
 });
 
+/** Columns of every grid cell, and whether the saved file shows as an ordinary tile. */
+const gridCells = (page: Page) => page.evaluate(() => Object.fromEntries([...document.querySelectorAll<HTMLElement>("[data-grid-cell]")].map((cell) => {
+  const rect = cell.getBoundingClientRect();
+  return [cell.dataset.gridCell!, [Math.round(rect.x), Math.round(rect.y)]];
+})));
+const backendCall = (page: Page, fn: string) => page.evaluate((fn) => (window as any).trace.backend[fn](), fn);
+
+test.describe("a save that outlives the control that started it still claims its file", () => {
+  async function finishWhileIndexLags(page: Page, before: Record<string, number[]>) {
+    await backendCall(page, "holdFolderReads");
+    await backendCall(page, "releaseSaves");
+    await expect.poll(() => page.evaluate(() => (window as any).trace.listing().some((entry: { path: string }) => entry.path === "/pictures/draft.png"))).toBe(true);
+    await expect(page.locator('[data-entry-path="/pictures/draft.png"]')).toHaveCount(0);
+    expect(await gridCells(page)).toEqual(before);
+    await backendCall(page, "releaseFolderReads"); await settle(page);
+    await expect(page.locator('[data-entry-path="/pictures/draft.png"]')).toHaveCount(0);
+    expect(await gridCells(page)).toEqual(before);
+    expect(await uncaught(page)).toEqual([]);
+  }
+
+  test("closing the stack while saving", async ({ page }) => {
+    await openView(page, 420, "?grouping=unsaved-root-joined-with-source", false);
+    await stack(page, "draft").locator("[data-stack-toggle]").click(); await settle(page);
+    await backendCall(page, "holdSaves");
+    const cover = page.locator('[data-tile-key="o:10:0"]');
+    await cover.hover();
+    await cover.getByRole("button", { name: "Save image permanently" }).click();
+    await stack(page, "draft").getByRole("button", { name: "Close stack" }).click(); await settle(page);
+    await expect(stack(page, "draft").locator("[data-grid-band]")).toHaveCount(0);
+    await finishWhileIndexLags(page, await gridCells(page));
+  });
+
+  test("saving from Preview, then selecting something else", async ({ page }) => {
+    await openView(page, 420, "?grouping=unsaved-root-joined-with-source", false);
+    await stack(page, "draft").locator("[data-stack-toggle]").click(); await settle(page);
+    await page.locator('[data-tile-key="o:10:0"] [data-node-key]').click(); await settle(page);
+    await backendCall(page, "holdSaves");
+    await page.getByRole("complementary", { name: "Preview" }).getByRole("button", { name: "Save", exact: true }).click();
+    await page.locator('[data-entry-path="/pictures/notes.txt"]').click(); await settle(page);
+    await finishWhileIndexLags(page, await gridCells(page));
+  });
+});
+
 const tabStops = (page: Page) => page.locator('[role="grid"] [tabindex="0"]');
 const focusIsInGrid = (page: Page) => page.evaluate(() => !!document.activeElement?.closest('[role="grid"]'));
 

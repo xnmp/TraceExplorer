@@ -145,9 +145,15 @@ describe("nodeTarget", () => {
     await action(nodeTarget(node(), "c", "/f", cb), "save").run!();
     expect(api.saveGeneratedImage).toHaveBeenCalledTimes(1);
     expect(api.saveGeneratedImage).toHaveBeenCalledWith(7);
-    expect(cb.saved).toHaveBeenCalledWith("/f/saved.png", "o:1:0");
+    expect(cb.saved).toHaveBeenCalledWith("/f/saved.png", "o:1:0", true);
     expect(traceInvalidation.revision).toBe(before + 1);
     expect(imageActionState.busy(7)).toBe(false);
+  });
+
+  it("reports the saved file even when the selection moved on, without asking the view to select it", async () => {
+    const cb = { ...callbacks(), capture: () => () => false };
+    await action(nodeTarget(node(), "c", "/f", cb), "save").run!();
+    expect(cb.saved).toHaveBeenCalledWith("/f/saved.png", "o:1:0", false);
   });
 
   it("running Save twice concurrently saves once", async () => {
@@ -180,7 +186,7 @@ describe("nodeTarget", () => {
     await action(nodeTarget(node(), "c", "/f", cb), "save-as").run!();
     expect(api.pickSaveFile).toHaveBeenCalledWith(expect.objectContaining({ directory: "/f", filename: "out.png" }));
     expect(api.saveGeneratedImage).toHaveBeenCalledWith(7, "/chosen/name.png");
-    expect(cb.saved).toHaveBeenCalledWith("/f/saved.png", "o:1:0");
+    expect(cb.saved).toHaveBeenCalledWith("/f/saved.png", "o:1:0", true);
   });
 
   it("Save as with a cancelled picker saves nothing", async () => {
