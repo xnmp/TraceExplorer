@@ -451,6 +451,19 @@ test("a context click on a cold unsaved stack resolves its image", async ({ page
   expect(await uncaught(page)).toEqual([]);
 });
 
+test("a closed stack shows that an edit is generating, and clears when it finishes", async ({ page }) => {
+  await openView(page, 900, "", false);
+  const village = stack(page, "village");
+  await expect(village.locator("[data-stack-toggle]")).toBeVisible();
+  const generating = village.locator("[data-stack-toggle]").getByRole("status", { name: "Generating" });
+  await expect(generating).toHaveCount(0);
+  await page.evaluate(() => (window as any).trace.backend.startGeneration("village", "pending-edit"));
+  await expect(generating).toHaveCount(1);
+  await page.evaluate(() => (window as any).trace.backend.completeGeneration("pending-edit"));
+  await expect(generating).toHaveCount(0);
+  expect(await uncaught(page)).toEqual([]);
+});
+
 const tabStops = (page: Page) => page.locator('[role="grid"] [tabindex="0"]');
 const focusIsInGrid = (page: Page) => page.evaluate(() => !!document.activeElement?.closest('[role="grid"]'));
 

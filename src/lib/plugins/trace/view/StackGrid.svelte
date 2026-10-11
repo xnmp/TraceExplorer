@@ -212,6 +212,7 @@
               oncontextmenu={(event) => { if (cell.entry) onordinarymenu(cell.entry, event); else onmenu(cell.id, event, summary.id); }}>
               <span class="cover-image" style:height="{tile.image}px">{#if node.path}<TraceThumbnail path={node.path} present={summary.cover?.present ?? false} {revision} label="" />{:else}▧{/if}</span>
               <span class="name">{summary.title}</span><span class="count">{summary.imageCount} images</span>
+              {#if summary.active}<span class="spinner" role="status" aria-label="Generating"></span>{/if}
               {#if summary.unsaved}<span class="unsaved">Unsaved</span>{/if}
             </button>
           {/if}
@@ -264,5 +265,8 @@
   .name { max-width: 100%; font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .count { font-size: 10px; color: var(--text-secondary); }
   .unsaved { font-size: 10px; color: var(--system-caution-text, var(--system-caution)); }
+  .spinner { position: absolute; top: 9px; right: 9px; width: 14px; height: 14px; border: 2px solid var(--divider); border-top-color: var(--accent); border-radius: 50%; animation: spin 800ms linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  @media (prefers-reduced-motion: reduce) { .spinner { animation: none; } }
   .loading { position: absolute; bottom: 50px; width: 100%; text-align: center; color: var(--text-secondary); }
 </style>
