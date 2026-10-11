@@ -911,6 +911,19 @@ describe("pane and folder open-stack snapshots", () => {
     session.dispose();
   });
 
+  it("a stack whose original image is deleted stays open while an edit survives", async () => {
+    const stack = { ...summary("s"), cover: { path: "/f/a.png", present: false }, coverKey: "a", imageCount: 1, nodeCount: 2 };
+    const backend = backendFor([stack], [["/f/b.png", "s", "b"]]);
+    backend.nodes.mockResolvedValue(nodePage([{ ...node("a", 1), state: "missing" }, node("b", 2, ["a"])]));
+    const session = sessionFor("pane", backend);
+    session.setDirectory("/f"); await flush();
+    session.setStackOpen("s", true); await session.ensure("s"); await flush();
+    expect(session.openStackKeys).toEqual(new Set(["a"]));
+    session.setStackOpen("s", false);
+    expect(session.openStackKeys.size).toBe(0);
+    session.dispose();
+  });
+
   it("reopens a resumed unsaved placeholder and forgets it after an explicit close", async () => {
     const backend = backendFor([summary("o:7:0")], []);
     backend.nodes.mockResolvedValue(nodePage([{ ...node("o:7:0", 7), path: null, state: "running", temporary: true }]));

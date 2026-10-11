@@ -83,10 +83,13 @@ export function createFolderSession(backend: TraceBackend = traceBackend, snapsh
   let paneState = $state.raw<PaneFolderSnapshot>(emptyPaneSnapshot());
   const stackMembership = $derived.by(() => {
     const available = (node: TraceNode) => !node.discarded && node.state !== "missing" && !node.referenceBadge;
+    // A stack is identified by its cover's revision while it has anything present to show, even when
+    // the cover image itself is gone: its surviving edits must stay openable.
+    const listed = new Set([...(index?.members.values() ?? [])].map((member) => member.componentId));
     const identities = new Map((index?.components ?? []).map((summary) => {
       const data = !stale.has(summary.id) ? components.get(summary.id) : undefined;
-      const cover = data?.dag.nodes.get(summary.coverKey);
-      return [summary.id, new Set<string>(!data || (cover && available(cover)) ? [revisionIdentity(summary.coverKey)] : [])];
+      const present = !data || data.nodes.some(available) || listed.has(summary.id);
+      return [summary.id, new Set<string>(present ? [revisionIdentity(summary.coverKey)] : [])];
     }));
     for (const [path, member] of index?.members ?? []) {
       identities.get(member.componentId)?.add(pathIdentity(path));
