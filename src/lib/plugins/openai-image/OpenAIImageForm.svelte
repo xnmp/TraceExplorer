@@ -7,6 +7,7 @@
   import { startImageJob } from "./image-jobs";
   import { describeInputs, inputRequestFields, moveInput, removeInput, withLiveInputs, type ImageInput } from "$lib/domain/image-inputs";
   import TraceThumbnail from "../trace/TraceThumbnail.svelte";
+  import Select from "../../../../integration/ui/Select.svelte";
   import { basename } from "$lib/domain/path";
   import { imageOutputFilename } from "$lib/domain/image-output-filename";
   import { imageGenerationSize, type ImageResolution, type ImageAspectRatio } from "$lib/domain/image-generation-settings";
@@ -211,21 +212,23 @@
     <div class="dialog-body">
       <div class="model-row">
         <label class="prompt-field model-field">Image connection
-          <select class="model-select" aria-label="Image connection" value={latestConnection?.id ?? ""} disabled={submitting || configuring || loadingConnections}
+          <Select aria-label="Image connection" value={latestConnection?.id ?? ""} disabled={submitting || configuring || loadingConnections}
             onchange={(event) => chooseConnection(event.currentTarget.value)}>
             <option value="">Select a connection</option>
             {#each availability?.description?.profiles ?? [] as connection (connection.id)}<option value={connection.id}>{connection.name}</option>{/each}
-          </select>
+          </Select>
         </label>
         <button type="button" class="btn btn-secondary" disabled={submitting || configuring} onclick={() => void configure()}>{configuring ? "Configuring…" : "Configure connections"}</button>
-        <button type="button" class="btn btn-secondary" disabled={submitting || configuring || loadingConnections} onclick={() => void refreshConnections()}>Reload connections</button>
+        <button type="button" class="btn btn-secondary icon-btn" aria-label="Reload connections" title="Reload connections" disabled={submitting || configuring || loadingConnections} onclick={() => void refreshConnections()}>
+          <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" class:spinning={loadingConnections}><path d="M13.5 8a5.5 5.5 0 1 1-1.6-3.9M13.5 2.5v3h-3" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" /></svg>
+        </button>
       </div>
       {#if availabilityError}<p class="error" role="status">{availabilityError}</p>{/if}
       {#if configurationError}<p class="error" role="alert">{configurationError}</p>{/if}
       {#if removedConnection}<p class="error" role="status">The selected connection was removed. Select another connection.</p>{/if}
       {#if needsReview}
         <p class="error" role="status">This connection changed. Review its updated model and options before generating.</p>
-        <p class="hint">Updated connection: {latestConnection?.name} · {latestConnection?.transport === "codex-cli" ? "Codex, adapter-managed model" : `HTTP, default model ${latestConnection?.defaultModel}`}</p>
+        <p class="hint">Updated connection: {latestConnection?.name} · {latestConnection?.transport === "codex-cli" ? "Codex, which chooses its own model" : `HTTP, default model ${latestConnection?.defaultModel}`}</p>
         <button type="button" class="btn btn-secondary" disabled={submitting || configuring || loadingConnections} onclick={reviewConnection}>Use updated connection</button>
       {/if}
       {#if profile?.transport === "openai-images"}
@@ -233,7 +236,7 @@
           <input class="prompt-input" aria-label="Image model" bind:value={modelOverride} placeholder={profile.defaultModel} disabled={submitting || configuring} maxlength="256" />
           <span class="hint">Leave blank to use {profile.defaultModel}. Custom model IDs are supported.</span>
         </label>
-      {:else if profile}<p class="hint">Codex uses saved login. The image model is adapter-managed.</p>{/if}
+      {/if}
       {#if images.length}
         <div class="prompt-field">
           <span id="openai-image-inputs-label">Inputs <span class="hint">— Image 1, Image 2, … in the order sent</span></span>
@@ -260,28 +263,28 @@
       </label>
       <div class="options">
         <label class="prompt-field">Resolution
-          <select class="model-select" aria-label="Resolution" bind:value={resolution} disabled={submitting || configuring}>
+          <Select aria-label="Resolution" bind:value={resolution} disabled={submitting || configuring}>
             <option value="1k">1K</option><option value="2k">2K</option><option value="4k">4K</option>
-          </select>
+          </Select>
         </label>
         <label class="prompt-field">Aspect ratio
-          <select class="model-select" aria-label="Aspect ratio" bind:value={aspectRatio} disabled={submitting || configuring}>
+          <Select aria-label="Aspect ratio" bind:value={aspectRatio} disabled={submitting || configuring}>
             {#if editing}<option value="keep">Keep (Image 1)</option>{/if}
             {#each ["1:1", "4:3", "3:4", "3:2", "2:3", "16:9", "9:16"] as ratio}<option value={ratio}>{ratio}</option>{/each}
-          </select>
+          </Select>
         </label>
         <label class="prompt-field">Images
           <input class="prompt-input" type="number" min="1" max="8" step="1" bind:value={count} disabled={submitting} aria-label="Images" />
         </label>
         <label class="prompt-field">Quality
-          <select class="model-select" aria-label="Quality" bind:value={quality} disabled={submitting || configuring || !profile}>
+          <Select aria-label="Quality" bind:value={quality} disabled={submitting || configuring || !profile}>
             {#each profile?.capabilities.quality ?? ["auto"] as option}<option value={option}>{option}</option>{/each}
-          </select>
+          </Select>
         </label>
         <label class="prompt-field">Background
-          <select class="model-select" aria-label="Background" bind:value={background} disabled={submitting || configuring || !profile}>
+          <Select aria-label="Background" bind:value={background} disabled={submitting || configuring || !profile}>
             {#each profile?.capabilities.background ?? ["auto"] as option}<option value={option}>{option}</option>{/each}
-          </select>
+          </Select>
         </label>
       </div>
       {#if error}<p class="error" role="alert">{error}</p>{/if}
@@ -296,10 +299,16 @@
   .dialog-body { overflow: auto; min-height: 0; }
   .model-row { display: flex; align-items: end; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
   .model-field { flex: 1; min-width: 150px; margin: 0; }
+  .model-row .btn { min-height: 34px; }
+  .icon-btn { display: inline-grid; place-items: center; width: 34px; padding: 0; color: var(--text-secondary); }
+  .icon-btn:hover:not(:disabled) { color: var(--text-primary); }
+  .spinning { animation: spin 0.9s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  @media (prefers-reduced-motion: reduce) { .spinning { animation: none; } }
   footer { flex-shrink: 0; padding: 0 20px 16px; display: flex; align-items: end; justify-content: flex-end; gap: 8px; }
   /* One row of settings in the dialog; fewer columns where it is narrow (the image editor's tool panel). */
   .options { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 10px 12px; }
-  .options .prompt-input, .options .model-select { width: 100%; box-sizing: border-box; min-width: 0; }
+  .options .prompt-input { width: 100%; box-sizing: border-box; min-width: 0; }
   .options .prompt-field { margin-bottom: 0; }
   label { font-size: 12px; color: var(--text-secondary); }
   textarea { resize: vertical; min-height: 88px; box-sizing: border-box; }

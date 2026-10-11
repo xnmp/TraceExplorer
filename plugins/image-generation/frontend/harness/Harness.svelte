@@ -5,7 +5,8 @@
   import { plugins } from '../index';
   let dialog = $state.raw<{ component: Component<any>; props: Record<string, unknown> } | null>(null);
   let configure = $state<(() => void | Promise<void>) | null>(null);
-  const dialogs = new Map<string, Component<any>>();
+  // Like the host, a dialog opens with the props it was registered with, overridden by any passed when opening.
+  const dialogs = new Map<string, { component: Component<any>; props: Record<string, unknown> }>();
   const handlers: ((event: unknown) => void)[] = [];
   let current: ImageConfiguration = { schemaVersion: 1, documentRevision: 0, defaultConnectionId: null, profiles: [] };
   const results = new Map<string, ImageOperationStatus>();
@@ -41,8 +42,8 @@
     if (method === 'settings.test.discard') { const discarded = { ...receipt, revision: 4, delivery: { state: 'discarded' } as const }; results.set(requestId, discarded); return structuredClone(discarded); }
     throw Error('Unknown fixture RPC');
   } };
-  plugins[0].activate({ backend, events: { listen: (_: string, fn: (event: unknown) => void) => handlers.push(fn) }, registerDialog: (entry: { id: string; component: Component<any> }) => dialogs.set(entry.id, entry.component), registerCommand: () => {}, registerSettingsSection: (section: { actions: { run: () => void | Promise<void> }[] }) => configure = section.actions[0].run,
-    openDialog: (id: string, props: Record<string, unknown>) => dialog = { component: dialogs.get(id)!, props } } as unknown as PluginContext);
+  plugins[0].activate({ backend, events: { listen: (_: string, fn: (event: unknown) => void) => handlers.push(fn) }, registerDialog: (entry: { id: string; component: Component<any>; props?: Record<string, unknown> }) => dialogs.set(entry.id, { component: entry.component, props: entry.props ?? {} }), registerCommand: () => {}, registerSettingsSection: (section: { actions: { run: () => void | Promise<void> }[] }) => configure = section.actions[0].run,
+    openDialog: (id: string, props: Record<string, unknown> = {}) => { const entry = dialogs.get(id)!; dialog = { component: entry.component, props: { ...entry.props, ...props } }; } } as unknown as PluginContext);
 </script>
 <main><h1>Image Generation settings fixture</h1><button type="button" onclick={() => configure?.()}>Configure connections</button></main>
 {#if dialog}{@const Dialog = dialog.component}<Dialog {...dialog.props} open={true} onClose={() => dialog = null} />{/if}

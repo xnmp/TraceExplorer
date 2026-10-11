@@ -1,4 +1,4 @@
 {
   "extends": "../../../tsconfig.json",
-  "include": ["./**/*.ts", "./**/*.svelte", "../../../integration/plugin-sdk/**/*.ts", "../../../integration/services/image-generation-v1.ts"]
+  "include": ["./**/*.ts", "./**/*.svelte", "../../../integration/plugin-sdk/**/*.ts", "../../../integration/services/image-generation-v1.ts", "../../../integration/ui/**/*.svelte"]
 }
