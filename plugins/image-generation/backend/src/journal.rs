@@ -564,12 +564,33 @@ impl Journal {
         })?;
         Ok(())
     }
+    /// Turn evidence whose result cannot be confirmed: forces `Unknown`.
     pub fn turn_failure(
         &self,
         caller: &str,
         operation: &str,
         receipt: te_image_generation_contract::OperationDiagnostics,
         failure: te_image_generation_contract::SafeError,
+    ) -> Result<()> {
+        self.settle_turn(caller, operation, receipt, Execution::Unknown { error: failure })
+    }
+    /// A completed turn that definitely made no image: terminal `Failed`, with
+    /// the same running-only and turn-identity guards as `turn_failure`.
+    pub fn turn_no_image(
+        &self,
+        caller: &str,
+        operation: &str,
+        receipt: te_image_generation_contract::OperationDiagnostics,
+        failure: te_image_generation_contract::SafeError,
+    ) -> Result<()> {
+        self.settle_turn(caller, operation, receipt, Execution::Failed { error: failure })
+    }
+    fn settle_turn(
+        &self,
+        caller: &str,
+        operation: &str,
+        receipt: te_image_generation_contract::OperationDiagnostics,
+        execution: Execution,
     ) -> Result<()> {
         if !receipt.valid(false) {
             return Err(error("invalid_response", "Invalid Codex failure receipt"));
@@ -586,7 +607,7 @@ impl Journal {
                 return Err(error("operation_conflict", "Image turn identity changed"));
             }
             status.diagnostics = Some(receipt);
-            status.execution = Execution::Unknown { error: failure };
+            status.execution = execution;
             status.delivery = Delivery::None {};
             Ok(true)
         })?;

@@ -186,6 +186,25 @@ impl Provider {
                     } else if self.case != "incomplete" {
                         events.push(json!({"type":"turn.completed","usage":{"input_tokens":3,"output_tokens":4,"cached_input_tokens":2,"untrusted":"not-retained"}}));
                     }
+                    if self.case == "nonzero" {
+                        // Completed turn, but the process did not exit cleanly.
+                        exit = 1;
+                    }
+                    if matches!(self.case, "missing" | "unreadable") {
+                        // The images root exists; only this thread's directory is absent.
+                        let root = self.root.join("home/generated_images");
+                        std::fs::create_dir_all(&root).unwrap();
+                        #[cfg(unix)]
+                        if self.case == "unreadable" {
+                            use std::os::unix::fs::PermissionsExt;
+                            std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0)).unwrap();
+                        }
+                    }
+                    if self.case == "empty" {
+                        // The thread's directory exists but holds no image.
+                        std::fs::create_dir_all(self.root.join("home/generated_images").join(THREAD))
+                            .unwrap();
+                    }
                     if self.case == "success" {
                         let directory = self.root.join("home/generated_images").join(THREAD);
                         std::fs::create_dir_all(&directory).unwrap();
@@ -372,13 +391,41 @@ fn discovery_success(stdin_host: bool) {
 #[cfg(unix)]
 #[test]
 fn native_discovery_and_failed_turn_receipts_survive_restart_without_replay() {
-    for case in ["missing", "failed", "incomplete"] {
+    for case in ["missing", "noroot", "unreadable", "empty", "nonzero", "failed", "incomplete"] {
+        // Permission bits do not bind root.
+        if case == "unreadable" && unsafe { libc::geteuid() } == 0 {
+            continue;
+        }
         let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().join("home/generated_images");
+        #[cfg(unix)]
+        let restore = || {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o755));
+        };
         let mut provider = Provider::new(directory.path(), case);
         let request = provider.prepare();
         provider.service("start", request.clone());
         let status = provider.terminal(request["operationId"].as_str().unwrap());
-        assert_eq!(status["execution"]["state"], "unknown");
+        #[cfg(unix)]
+        restore();
+        // Only a completed turn with no image directory at all is a definite
+        // failure; every other shortfall leaves the outcome unknown.
+        if case == "missing" {
+            assert_eq!(status["execution"]["state"], "failed");
+            assert_eq!(status["execution"]["error"]["code"], "no_image_generated");
+            assert!(status["execution"]["error"]["message"]
+                .as_str()
+                .unwrap()
+                .starts_with("Codex finished without generating an image"));
+        } else {
+            assert_eq!(status["execution"]["state"], "unknown");
+            assert_ne!(status["execution"]["error"]["code"], "no_image_generated");
+            assert_ne!(status["execution"]["error"]["code"], "storage_unavailable");
+            if case == "unreadable" {
+                assert_eq!(status["execution"]["error"]["code"], "codex_output_unreadable");
+            }
+        }
         assert_eq!(status["delivery"]["state"], "none");
         assert_eq!(status["diagnostics"]["threadId"], THREAD);
         assert_eq!(

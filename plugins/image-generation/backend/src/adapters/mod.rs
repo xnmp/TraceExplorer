@@ -28,6 +28,11 @@ pub enum Evidence {
         receipt: te_image_generation_contract::OperationDiagnostics,
         error: te_image_generation_contract::SafeError,
     },
+    /// A completed turn that definitely produced no image. Terminal `Failed`.
+    NoImage {
+        receipt: te_image_generation_contract::OperationDiagnostics,
+        error: te_image_generation_contract::SafeError,
+    },
 }
 pub type EvidenceSink = Arc<dyn Fn(Evidence) -> Result<()> + Send + Sync>;
 /// Reports that a named stage is happening now. Best effort and infallible:
@@ -83,6 +88,15 @@ pub fn read_input(path: &Path, descriptor: &ArtifactDescriptor) -> Result<Input>
     })
 }
 pub fn read_regular(path: &Path, max: usize) -> Result<Vec<u8>> {
+    read_regular_mapping(path, max, storage)
+}
+/// `read_regular` with the caller deciding how an IO failure is described, so a
+/// provider's own output problem is not reported as journal storage trouble.
+pub fn read_regular_mapping(
+    path: &Path,
+    max: usize,
+    io: impl Fn(std::io::Error) -> te_image_generation_contract::SafeError + Copy,
+) -> Result<Vec<u8>> {
     let mut options = std::fs::OpenOptions::new();
     options.read(true);
     #[cfg(unix)]
@@ -90,9 +104,9 @@ pub fn read_regular(path: &Path, max: usize) -> Result<Vec<u8>> {
         use std::os::unix::fs::OpenOptionsExt;
         options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
     }
-    let file = options.open(path).map_err(storage)?;
-    if !file.metadata().map_err(storage)?.is_file()
-        || file.metadata().map_err(storage)?.len() > max as u64
+    let file = options.open(path).map_err(io)?;
+    if !file.metadata().map_err(io)?.is_file()
+        || file.metadata().map_err(io)?.len() > max as u64
     {
         return Err(error(
             "invalid_response",
@@ -102,7 +116,7 @@ pub fn read_regular(path: &Path, max: usize) -> Result<Vec<u8>> {
     let mut bytes = vec![];
     file.take(max as u64 + 1)
         .read_to_end(&mut bytes)
-        .map_err(storage)?;
+        .map_err(io)?;
     if bytes.len() > max {
         return Err(error(
             "invalid_response",

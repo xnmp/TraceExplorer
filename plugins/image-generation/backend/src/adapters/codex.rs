@@ -61,6 +61,7 @@ fn run(
     args: Vec<String>,
     stdin: Option<String>,
     cwd: &Path,
+    home: &Path,
     cancel: &AtomicBool,
 ) -> Result<ProcessOutput> {
     let login = args == ["login", "status"];
@@ -73,6 +74,8 @@ fn run(
                 "PATH",
                 Some(executable.search_path.to_string_lossy().into_owned()),
             ),
+            // Codex and our output discovery must agree on one directory.
+            ("CODEX_HOME", Some(home.to_string_lossy().into_owned())),
             ("OPENAI_API_KEY", None),
             ("CODEX_API_KEY", None),
             ("CODEX_ACCESS_TOKEN", None),
@@ -122,6 +125,20 @@ fn args_is_login(out: &[u8], err: &[u8]) -> bool {
         .iter()
         .any(|bytes| String::from_utf8_lossy(bytes).contains("Logged in using ChatGPT"))
 }
+/// Pure: the one Codex home both the spawned process and discovery use. An
+/// empty `CODEX_HOME` counts as unset (as Codex treats it); a relative one is
+/// anchored at the backend's working directory, since Codex runs elsewhere.
+fn resolve_home(
+    configured: Option<std::ffi::OsString>,
+    user_home: Option<PathBuf>,
+    cwd: Option<PathBuf>,
+) -> Option<PathBuf> {
+    match configured.filter(|value| !value.is_empty()).map(PathBuf::from) {
+        Some(path) if path.is_absolute() => Some(path),
+        Some(path) => cwd.map(|cwd| cwd.join(path)),
+        None => user_home.map(|home| home.join(".codex")),
+    }
+}
 pub(super) fn generate(
     configured: &str,
     recipe: &EffectiveRecipe,
@@ -132,10 +149,12 @@ pub(super) fn generate(
     stage: &(dyn Fn(&'static str) + Send + Sync),
 ) -> Result<Output> {
     let executable = super::codex_executable::resolve(configured)?;
-    let home = std::env::var_os("CODEX_HOME")
-        .map(PathBuf::from)
-        .or_else(|| dirs::home_dir().map(|h| h.join(".codex")))
-        .ok_or_else(|| error("unavailable", "Codex home is unavailable"))?;
+    let home = resolve_home(
+        std::env::var_os("CODEX_HOME"),
+        dirs::home_dir(),
+        std::env::current_dir().ok(),
+    )
+    .ok_or_else(|| error("unavailable", "Codex home is unavailable"))?;
     generate_at(
         &executable,
         &home,
@@ -168,6 +187,7 @@ fn generate_at(
         vec!["login".into(), "status".into()],
         None,
         work.path(),
+        home,
         cancel,
     );
     stage("credential_check_done");
@@ -256,7 +276,7 @@ fn generate_at(
         }
     };
     stage("process_started");
-    let process = run(host, executable, args, stdin, work.path(), cancel);
+    let process = run(host, executable, args, stdin, work.path(), home, cancel);
     stage("process_finished");
     let process = process.map_err(|failure| {
         process_failure(
@@ -288,13 +308,17 @@ fn generate_at(
     // This owned local commit precedes all fresh-thread filesystem discovery.
     // A crash or missing output cannot erase the paid turn's safe identity.
     evidence(Evidence::Turn(receipt.clone()))?;
-    let failed = |failure| -> Result<Output> {
+    let explained = |failure| {
         let receipt = crate::domain::codex_evidence::failure(
             receipt.clone(),
             turn.reply.as_deref(),
             turn.error.as_deref(),
         );
         let failure = crate::domain::codex_evidence::error_message(failure, &receipt);
+        (receipt, failure)
+    };
+    let failed = |failure| -> Result<Output> {
+        let (receipt, failure) = explained(failure);
         evidence(Evidence::Failure {
             receipt,
             error: failure.clone(),
@@ -309,35 +333,104 @@ fn generate_at(
     }
     let bytes = match discover(home, &thread) {
         Ok(bytes) => bytes,
-        Err(failure) => return failed(failure),
+        Err(Discovery::NoImageDirectory) => {
+            let (receipt, failure) = explained(error(
+                NO_IMAGE_CODE,
+                "Codex finished without generating an image.",
+            ));
+            evidence(Evidence::NoImage {
+                receipt,
+                error: failure.clone(),
+            })?;
+            return Err(failure);
+        }
+        Err(Discovery::Unusable(failure)) => return failed(failure),
     };
     stage("output_found");
     let mut metadata = metadata(recipe);
     metadata.thread_id = Some(thread);
     Ok(Output { bytes, metadata })
 }
-fn discover(home: &Path, thread: &str) -> Result<Vec<u8>> {
-    let directory = home.join("generated_images").join(thread);
-    let info = std::fs::symlink_metadata(&directory).map_err(storage)?;
+/// Stable code for a normally completed Codex turn that left no image behind.
+pub const NO_IMAGE_CODE: &str = "no_image_generated";
+/// Why discovery found no usable image. Only an absent directory is a definite
+/// "no image"; everything else leaves the outcome unknown.
+#[derive(Debug)]
+enum Discovery {
+    NoImageDirectory,
+    Unusable(te_image_generation_contract::SafeError),
+}
+impl From<te_image_generation_contract::SafeError> for Discovery {
+    fn from(failure: te_image_generation_contract::SafeError) -> Self {
+        Self::Unusable(failure)
+    }
+}
+/// Pure: classify the result of inspecting the fresh thread's image directory.
+fn classify_directory(
+    inspected: std::io::Result<std::fs::Metadata>,
+) -> std::result::Result<std::fs::Metadata, Discovery> {
+    inspected.map_err(|failure| {
+        if failure.kind() == std::io::ErrorKind::NotFound {
+            Discovery::NoImageDirectory
+        } else {
+            Discovery::Unusable(output_unreadable(failure))
+        }
+    })
+}
+/// A filesystem problem reading Codex's output: not the journal's storage.
+fn output_unreadable(_: std::io::Error) -> te_image_generation_contract::SafeError {
+    error(
+        "codex_output_unreadable",
+        "Codex output for this image turn could not be read",
+    )
+}
+fn discover(home: &Path, thread: &str) -> std::result::Result<Vec<u8>, Discovery> {
+    let root = home.join("generated_images");
+    // Positive signal that we are looking where Codex writes: the images root
+    // must be a real directory. Otherwise we cannot tell "no image" apart from
+    // "looking in the wrong place".
+    let root_info = std::fs::symlink_metadata(&root).map_err(|failure| {
+        if failure.kind() == std::io::ErrorKind::NotFound {
+            error(
+                "invalid_response",
+                "Codex has no generated-images directory to search",
+            )
+        } else {
+            output_unreadable(failure)
+        }
+    })?;
+    if !root_info.is_dir() || root_info.file_type().is_symlink() {
+        return Err(error(
+            "invalid_response",
+            "Codex generated-images location is not a regular directory",
+        )
+        .into());
+    }
+    let directory = root.join(thread);
+    let info = classify_directory(std::fs::symlink_metadata(&directory))?;
     if !info.is_dir() || info.file_type().is_symlink() {
         return Err(error(
             "invalid_response",
             "Codex did not produce a fresh thread image directory",
-        ));
+        )
+        .into());
     }
     let mut selected = None;
-    for (index, entry) in std::fs::read_dir(&directory).map_err(storage)?.enumerate() {
+    for (index, entry) in std::fs::read_dir(&directory)
+        .map_err(output_unreadable)?
+        .enumerate()
+    {
         if index >= 16 {
-            return Err(error("invalid_response", "Too many Codex output files"));
+            return Err(error("invalid_response", "Too many Codex output files").into());
         }
-        let path = entry.map_err(storage)?.path();
+        let path = entry.map_err(output_unreadable)?.path();
         if path
             .extension()
             .and_then(|s| s.to_str())
             .is_some_and(|s| s.eq_ignore_ascii_case("png"))
             && selected.replace(path).is_some()
         {
-            return Err(error("invalid_response", "Codex returned multiple images"));
+            return Err(error("invalid_response", "Codex returned multiple images").into());
         }
     }
     let path = selected.ok_or_else(|| {
@@ -346,7 +439,7 @@ fn discover(home: &Path, thread: &str) -> Result<Vec<u8>> {
             "Codex saved no PNG image for this thread",
         )
     })?;
-    let bytes = read_regular(&path, MAX_OUTPUT)?;
+    let bytes = super::read_regular_mapping(&path, MAX_OUTPUT, output_unreadable)?;
     validate_image(&bytes, image::ImageFormat::Png)?;
     Ok(bytes)
 }
@@ -462,7 +555,7 @@ mod tests {
         recipe
     }
     #[test]
-    fn turn_commit_precedes_output_discovery_and_failed_explanation_survives_restart() {
+    fn turn_commit_precedes_output_discovery_and_no_image_failure_survives_restart() {
         let state = tempfile::tempdir().unwrap();
         let home = tempfile::tempdir().unwrap();
         let journal = Journal::open(state.path()).unwrap();
@@ -494,6 +587,9 @@ mod tests {
             Evidence::Failure { receipt, error } => {
                 journal.turn_failure("test.consumer", "checkpoint-order", receipt, error)
             }
+            Evidence::NoImage { receipt, error } => {
+                journal.turn_no_image("test.consumer", "checkpoint-order", receipt, error)
+            }
         };
         assert!(generate_at(
             &executable,
@@ -510,7 +606,15 @@ mod tests {
             .get("test.consumer", "checkpoint-order", None)
             .unwrap()
             .unwrap();
-        assert!(matches!(failed.execution, Execution::Unknown { .. }));
+        let Execution::Failed { error: failure } = &failed.execution else {
+            panic!("A completed turn without an image directory must be Failed");
+        };
+        assert_eq!(failure.code, NO_IMAGE_CODE);
+        assert!(failure
+            .message
+            .starts_with("Codex finished without generating an image"));
+        assert!(failure.message.contains("Fixture refusal"));
+        assert_eq!(failed.delivery, Delivery::None {});
         assert!(serde_json::to_string(&failed)
             .unwrap()
             .contains("Fixture refusal"));
@@ -582,5 +686,79 @@ mod tests {
         assert_eq!(turn_state, CodexTurnState::Completed);
         assert_eq!(explanation, None);
         assert_eq!(host.calls.load(Ordering::SeqCst), 2);
+    }
+    #[test]
+    fn only_an_absent_directory_is_a_definite_no_image() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(matches!(
+            classify_directory(std::fs::symlink_metadata(dir.path().join("absent"))),
+            Err(Discovery::NoImageDirectory)
+        ));
+        assert!(classify_directory(std::fs::symlink_metadata(dir.path())).is_ok());
+        let denied = std::io::Error::from(std::io::ErrorKind::PermissionDenied);
+        let Err(Discovery::Unusable(failure)) = classify_directory(Err(denied)) else {
+            panic!("Permission errors must stay unknown");
+        };
+        assert_eq!(failure.code, "codex_output_unreadable");
+        let other = std::io::Error::other("disk");
+        assert!(matches!(
+            classify_directory(Err(other)),
+            Err(Discovery::Unusable(_))
+        ));
+    }
+    #[test]
+    fn home_resolution_matches_codex_for_unset_empty_relative_and_absolute() {
+        let user = Some(PathBuf::from("/home/u"));
+        let cwd = Some(PathBuf::from("/work"));
+        let resolve = |v: Option<&str>| resolve_home(v.map(Into::into), user.clone(), cwd.clone());
+        assert_eq!(resolve(None), Some("/home/u/.codex".into()));
+        assert_eq!(resolve(Some("")), Some("/home/u/.codex".into()));
+        assert_eq!(resolve(Some("rel/codex")), Some("/work/rel/codex".into()));
+        assert_eq!(resolve(Some("/abs/codex")), Some("/abs/codex".into()));
+        assert_eq!(resolve_home(None, None, cwd), None);
+    }
+    #[test]
+    fn no_image_needs_a_real_images_root_with_only_the_thread_directory_absent() {
+        let home = tempfile::tempdir().unwrap();
+        let unknown = |home: &Path| matches!(discover(home, THREAD), Err(Discovery::Unusable(_)));
+        // Root missing: possibly the wrong place, never a definite no-image.
+        assert!(unknown(home.path()));
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(home.path().join("nowhere"), home.path().join("generated_images")).unwrap();
+            assert!(unknown(home.path()));
+            std::fs::remove_file(home.path().join("generated_images")).unwrap();
+        }
+        std::fs::write(home.path().join("generated_images"), b"file").unwrap();
+        assert!(unknown(home.path()));
+        std::fs::remove_file(home.path().join("generated_images")).unwrap();
+        std::fs::create_dir(home.path().join("generated_images")).unwrap();
+        assert!(matches!(
+            discover(home.path(), THREAD),
+            Err(Discovery::NoImageDirectory)
+        ));
+    }
+    #[test]
+    fn existing_but_empty_or_symlinked_directories_are_not_no_image() {
+        let home = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(home.path().join("generated_images").join(THREAD)).unwrap();
+        assert!(matches!(
+            discover(home.path(), THREAD),
+            Err(Discovery::Unusable(f)) if f.code == "invalid_response"
+        ));
+        #[cfg(unix)]
+        {
+            let other = tempfile::tempdir().unwrap();
+            let linked = "87654321-4321-4321-4321-cba987654321";
+            std::os::unix::fs::symlink(
+                other.path(),
+                home.path().join("generated_images").join(linked),
+            )
+            .unwrap();
+            assert!(matches!(
+                discover(home.path(), linked),
+                Err(Discovery::Unusable(f)) if f.code == "invalid_response"
+            ));
+        }
     }
 }
