@@ -16,6 +16,7 @@
   import type { ComponentData } from "./folder-session.svelte";
   import type { GraphScene } from "./graph-commit";
   import { cachedLayout, computeLayout, layoutNow } from "./layout-client";
+  import { selectableSelector } from "./selectable";
   import { captureGraph, carriesMotion, playGraph, prefersReducedMotion, zoomOf } from "./motion";
   import { nodeTitle } from "./node-target";
   import TraceTile from "./TraceTile.svelte";
@@ -254,7 +255,7 @@
     if (!next) return;
     onnavigate(next);
     // The view reveals the new tile once it has moved; focusing must not scroll first.
-    void tick().then(() => canvas?.querySelector<HTMLElement>(`[data-node-key="${CSS.escape(next)}"]`)?.focus({ preventScroll: true }));
+    void tick().then(() => canvas?.querySelector<HTMLElement>(selectableSelector(next))?.focus({ preventScroll: true }));
   }
 </script>
 

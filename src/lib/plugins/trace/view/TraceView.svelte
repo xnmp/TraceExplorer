@@ -24,6 +24,7 @@
   import { holdAnchor, zoomOf, scrollsByUser, USER_SCROLL, type AnchorHold, viewMoving } from "./motion";
 
   import StackGrid from "./StackGrid.svelte";
+  import { selectableSelector } from "./selectable";
   import { folderCells } from "./stack-grid";
 
   interface Props { pane: FileViewPane; session?: FolderSession }
@@ -266,7 +267,7 @@
   // programmatic navigation reveal it once motion settles.
   function anchorTile(key: NodeKey, componentId: string | undefined = undefined): HTMLElement | null {
     const section = componentId ? scroller?.querySelector<HTMLElement>(`section[data-component="${CSS.escape(componentId)}"]`) : scroller;
-    return section?.querySelector<HTMLElement>(`[data-tile-key="${CSS.escape(key)}"]`) ?? null;
+    return section?.querySelector<HTMLElement>(selectableSelector(key)) ?? null;
   }
   // Holds compensate every section commit, including while the clicked graph
   // is still computing. Reveals alone wait for their committed motion.
@@ -301,7 +302,7 @@
         if (pendingReveal !== request || request.signal.aborted) return;
         try { checkReveal(request.owner); } catch (error) { request.finish(error); return; }
         if (focus?.key !== request.key) { supersedeReveal(); return; }
-        const button = anchorTile(request.key, focus?.componentId)?.querySelector<HTMLElement>(`[data-node-key="${CSS.escape(request.key)}"]`);
+        const button = anchorTile(request.key, focus?.componentId);
         if (!button) { request.finish(new Error("Trace image could not be shown")); return; }
         button.scrollIntoView({ block: "nearest", inline: "nearest" });
         button.focus({ preventScroll: true });
@@ -317,7 +318,7 @@
       if (current.ownsSelection()) {
         const tile = anchorTile(current.key, current.componentId);
         tile?.scrollIntoView({ block: "nearest", inline: "nearest" });
-        tile?.querySelector<HTMLElement>("[data-node-key]")?.focus({ preventScroll: true });
+        tile?.focus({ preventScroll: true });
       }
     });
   }

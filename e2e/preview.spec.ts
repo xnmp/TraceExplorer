@@ -230,6 +230,24 @@ test.describe("Preview info", () => {
     expect((await state(page)).navigations).toEqual([]);
   });
 
+  test("choosing an outside input scrolls its reference badge into view and focuses it", async ({ page }) => {
+    await openView(page, undefined, "?many=8");
+    await click(page, "warm");
+    await openDetails(page);
+    const view = page.getByTestId("trace-view");
+    await view.evaluate((element) => { element.scrollTop = element.scrollHeight; });
+    await settle(page);
+    const badge = page.locator(`[data-reference-key="${await key(page, "lantern")}"]`).first();
+    const inView = () => Promise.all([badge.boundingBox(), view.boundingBox()]).then(([b, v]) => !!b && !!v && b.y >= v.y - 1 && b.y + b.height <= v.y + v.height + 1);
+    expect(await inView()).toBe(false);
+    await trace(page).getByRole("button", { name: /Preview input .*lantern/ }).click();
+    await settle(page);
+    await expect(badge).toHaveAttribute("aria-pressed", "true");
+    expect(await inView()).toBe(true);
+    expect(await page.evaluate(() => document.activeElement?.getAttribute("data-reference-key"))).toBe(await key(page, "lantern"));
+    expect(await uncaught(page)).toEqual([]);
+  });
+
   test("raw data is collapsed until opened", async ({ page }) => {
     await openView(page);
     await click(page, "warm");

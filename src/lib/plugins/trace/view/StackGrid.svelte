@@ -9,6 +9,7 @@
   import { hostFileTile } from "../../../../sdk";
   import type { FolderSession } from "./folder-session.svelte";
   import type { GraphScene } from "./graph-commit";
+  import { selectableSelector } from "./selectable";
   import { type FolderCell, folderCells, unlistedCovers, coverNode, gridNeighbor, attachBand, gridPins, rovingStop } from "./stack-grid";
   import { captureGrid, playGrid, prefersReducedMotion, zoomOf } from "./motion";
   import TraceGraph from "./TraceGraph.svelte";
@@ -134,7 +135,7 @@
     void tick().then(() => {
       const active = document.activeElement;
       if (!focusInside || !stop || (active && active !== document.body)) return;
-      grid?.querySelector<HTMLElement>(`[data-node-key="${CSS.escape(stop)}"], [data-entry-path="${CSS.escape(stop)}"]`)?.focus({ preventScroll: true });
+      grid?.querySelector<HTMLElement>(`${selectableSelector(stop)}, [data-entry-path="${CSS.escape(stop)}"]`)?.focus({ preventScroll: true });
     });
   });
   onDestroy(() => { motion++; for (const animation of running) animation.cancel(); });
@@ -175,7 +176,7 @@
       if (owner) onnavigate(next, owner[0], { shiftKey: event.shiftKey });
     }
     void tick().then(() => {
-      const element = grid?.querySelector<HTMLElement>(`[data-node-key="${CSS.escape(next)}"], [data-entry-path="${CSS.escape(next)}"]`);
+      const element = grid?.querySelector<HTMLElement>(`${selectableSelector(next)}, [data-entry-path="${CSS.escape(next)}"]`);
       element?.focus({ preventScroll: true }); element?.scrollIntoView({ block: "nearest", inline: "nearest" });
     });
   }
