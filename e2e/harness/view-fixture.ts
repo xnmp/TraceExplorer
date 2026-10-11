@@ -12,6 +12,8 @@ import { TILE_IMAGE_PX } from "./tile-presets";
 import { connectedComponents, projectDag } from "$lib/domain/trace-graph/projection";
 import { basename, joinPath, parentDir } from "$lib/domain/path";
 import StubFileTiles from "./StubFileTiles.svelte";
+import { displayedNodes, isDirectFolderSeed } from "./folder-snapshot";
+import { isLocalAbsolutePath } from "$lib/domain/target-location";
 
 export const DIRECTORY = "/pictures";
 const TEMP = "/managed";
@@ -110,21 +112,8 @@ function hasRelationship(nodes: readonly TraceNode[]): boolean {
     && node.state !== "running" && node.state !== "uncertain" && node.parents.length === 0);
 }
 
-/**
- * The nodes the backend displays (`load_snapshot`): a discarded output is no
- * seed, so it is shown only as the parent of a node that is.
- */
-function displayed(nodes: readonly TraceNode[]): TraceNode[] {
-  // A dismissal hides only a placeholder that is still Interrupted: a run that recovery resumed is shown again.
-  const hidden = (node: TraceNode) => node.artifactId === null && node.state === "uncertain" && node.runId !== null && dismissedRuns.has(node.runId);
-  nodes = nodes.filter((node) => !hidden(node));
-  const seeds = nodes.filter((node) => !node.discarded);
-  const parents = new Set(seeds.flatMap((node) => node.parents));
-  return nodes.filter((node) => !node.discarded || parents.has(node.key));
-}
-
 function componentsOf() {
-  const dag = projectDag(displayed(state.nodes));
+  const dag = projectDag(displayedNodes(state.nodes, dismissedRuns));
   return connectedComponents(dag).filter((members) => hasRelationship(members.map((key) => dag.nodes.get(key)!))).map((members) => {
     const first = members.map((key) => dag.nodes.get(key)!).sort((a, b) => a.order - b.order)[0];
     const name = [...state.names].find(([, key]) => key === first.key)?.[0] ?? first.key;
@@ -141,7 +130,7 @@ function componentsOf() {
 }
 
 export const files = () => [
-  ...state.nodes.filter((node) => node.scope === "current" && !node.temporary && node.path && !entryExtras.some((entry) => entry.path === node.path)).map((node) => ({ name: node.path!.split("/").at(-1)!, path: node.path!, kind: "file" as const })),
+  ...state.nodes.filter((node) => isDirectFolderSeed(node) && !entryExtras.some((entry) => entry.path === node.path)).map((node) => ({ name: node.path!.split("/").at(-1)!, path: node.path!, kind: "file" as const })),
   ...entryExtras,
 ].map((entry) => ({ ...entry, size: 32, modified: "2026-10-05T00:00:00Z" }));
 
@@ -177,7 +166,7 @@ configureBackend({
       case "trace_folder_members": {
         if (params.token !== token) return folderReply({ stale: true, total: 0, offset: 0, members: [] });
         const members = componentsOf().flatMap((component) => component.nodes
-          .filter((node) => node.scope === "current" && !node.temporary && node.path)
+          .filter(isDirectFolderSeed)
           .map((node) => ({ path: node.path!, componentId: component.id, key: node.key })));
         return folderReply({ stale: false, total: members.length, offset: params.offset, members: members.slice(params.offset) });
       }
@@ -272,7 +261,10 @@ configureBackend({
         const runId = ++counter;
         const key = `o:${runId}:0`;
         const filename = request.sourcePath ? `${basename(String(request.sourcePath)).replace(/\.[^.]+$/, "")}_edit.png` : "generated.png";
-        const directory = imageRuns.get(state.nodes.find((node) => node.path === request.sourcePath)?.runId ?? -1)?.directory ?? String(request.outputDir);
+        const inherited = imageRuns.get(state.nodes.find((node) => node.path === request.sourcePath)?.runId ?? -1)?.directory;
+        const outputDir = typeof request.outputDir === "string" ? request.outputDir : "";
+        const directory = isLocalAbsolutePath(outputDir) ? outputDir
+          : inherited && isLocalAbsolutePath(inherited) ? inherited : "";
         imageRuns.set(runId, {
           operation: inputCount ? "openai.image.edit" : "openai.image.generate",
           parameters: { prompt: request.prompt, resolution: request.resolution, aspect_ratio: request.aspectRatio, quality: request.quality,

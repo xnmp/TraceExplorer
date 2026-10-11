@@ -54,6 +54,7 @@ pub(crate) struct ImageRequest {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub expected_reference_digests: Vec<String>,
     pub prompt: String,
+    #[serde(default)]
     pub output_dir: String,
     pub output_filename: String,
     pub model: String,
@@ -623,6 +624,7 @@ pub(crate) async fn start_openai_image_job(
         .clone()
         .try_acquire_owned()
         .map_err(|_| invalid("The image generation queue is full"))?;
+    let output_dir = request.output_dir.clone();
     let temporary = crate::temporary_output::prepare(
         &crate::config::config_dir()?.join("generated"),
         request.source_path.as_deref().map(Path::new),
@@ -640,7 +642,7 @@ pub(crate) async fn start_openai_image_job(
         tokio::task::spawn_blocking(move || {
             let inputs = capture_inputs(&request)?;
             let mut temporary = temporary;
-            if let Some(directory) = inputs
+            let inherited = inputs
                 .first()
                 .map(|input| {
                     trace::inherited_save_directory(&trace::OperationInput {
@@ -649,10 +651,10 @@ pub(crate) async fn start_openai_image_job(
                     })
                 })
                 .transpose()?
-                .flatten()
-            {
-                temporary.save_directory_hint = directory;
-            }
+                .flatten();
+            temporary.save_directory_hint =
+                crate::temporary_output::save_directory_hint(&output_dir, inherited.as_deref())
+                    .to_owned();
             let mut start = recipe(&request, &inputs);
             start.parameters["output_storage"] = "temporary".into();
             start.parameters["save_directory_hint"] = temporary.save_directory_hint.clone().into();

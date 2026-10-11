@@ -89,6 +89,44 @@ test("Ctrl+E still edits selected Trace images in click order", async ({ page })
   expect(await page.evaluate(() => (window as any).trace.backend.calls("jobs.start")[0].params.request)).toMatchObject({ sourcePath: "/pictures/warm.png", referencePaths: ["/pictures/village.png"] });
 });
 
+test("editing an external generated parent saves into the current Trace folder", async ({ page }) => {
+  await openView(page, 1400, "?ai=1");
+  const generate = async (prompt: string, jobId: number) => {
+    await page.keyboard.press("Control+e");
+    const dialog = page.getByRole("dialog");
+    await dialog.getByRole("textbox", { name: /Image prompt|Edit prompt/ }).fill(prompt);
+    await expect(dialog.getByRole("button", { name: "Generate", exact: true })).toBeEnabled();
+    await page.keyboard.press("Control+Enter");
+    await expect(dialog).toHaveCount(0);
+    await page.evaluate((id) => (window as any).trace.backend.completeJob(id), jobId);
+  };
+  await generate("A lantern", 901);
+  await page.getByRole("region", { name: "job-901", exact: true }).getByRole("button", { name: /^job-901/ }).click();
+  await click(page, "job-901");
+  // A present child keeps the parent indexed after it is saved outside this folder.
+  await generate("A brighter lantern", 902);
+  await click(page, "job-901");
+  await page.evaluate(() => (window as any).trace.backend.setPicker("/elsewhere/lantern.png"));
+  await page.getByRole("complementary", { name: "Preview" }).getByRole("button", { name: "Save as…", exact: true }).click();
+  await expect.poll(() => page.evaluate(() => (window as any).trace.backend.node("job-901")))
+    .toMatchObject({ path: "/elsewhere/lantern.png", scope: "external", temporary: false });
+  await click(page, "job-901");
+  await generate("A blue lantern", 903);
+  expect(await page.evaluate(() => (window as any).trace.backend.calls("jobs.start").at(-1).params.request))
+    .toMatchObject({ sourcePath: "/elsewhere/lantern.png", outputDir: "/pictures" });
+  await click(page, "job-903");
+  const trace = page.getByRole("region", { name: "Trace", exact: true });
+  await trace.getByRole("button", { name: "Trace details", exact: true }).click();
+  await trace.locator("summary", { hasText: "Raw" }).click();
+  await expect.poll(async () => JSON.parse((await trace.locator("pre").textContent())!))
+    .toMatchObject({ run: { parameters: { save_directory_hint: "/pictures" } } });
+  await page.getByRole("complementary", { name: "Preview" }).getByRole("button", { name: "Save", exact: true }).click();
+  await expect(page.getByTestId("preview-badge")).toHaveCount(0);
+  await expect.poll(() => page.evaluate(() => (window as any).trace.state().selected)).toEqual(["/pictures/lantern_edit.png"]);
+  await expect(page.getByTestId("preview-title")).toHaveText("lantern_edit.png");
+  expect(await page.evaluate(() => (window as any).trace.errors)).toEqual([]);
+});
+
 test("an unsuitable pane folder rejects generation with actionable output guidance", async ({ page }) => {
   await openView(page, 1400, "?ai=1");
   await page.evaluate(() => { (window as any).trace.leaveView(); (window as any).trace.navigate("demo://pictures"); });
@@ -103,7 +141,14 @@ test("an unsuitable pane folder rejects generation with actionable output guidan
 for (const status of [{ earlierRevision: true }, { state: "unavailable" }, { state: "missing" }] as const) {
   test(`an unusable highlighted Trace target rejects Ctrl+E (${JSON.stringify(status)})`, async ({ page }) => {
     await openView(page, 1400, "?ai=1");
-    await page.evaluate((patch) => (window as any).trace.backend.setNodeStatus("merge", patch), status);
+    // Native indexing retains an unusable revision only as a seed's parent.
+    await page.evaluate((patch) => {
+      const backend = (window as any).trace.backend;
+      backend.startGeneration("merge", "merge-child");
+      backend.completeGeneration("merge-child");
+      backend.saveGeneration("merge-child");
+      backend.setNodeStatus("merge", patch);
+    }, status);
     await click(page, "warm");
     await click(page, "merge");
     await expect(page.getByTestId("preview-title")).toHaveText("merge.png");
