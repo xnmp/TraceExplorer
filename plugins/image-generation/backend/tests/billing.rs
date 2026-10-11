@@ -5,6 +5,85 @@ use te_image_generation_contract::*;
 fn recipe() -> EffectiveRecipe {
     serde_json::from_value(json!({"schemaVersion":1,"formatterVersion":1,"connectionId":"api","connectionRevision":"r1","adapter":"bfl","endpointIdentity":"https://api.bfl.ai/v1","model":"flux-2-pro","options":{"size":"auto","resolution":null,"aspectRatio":null,"quality":"auto","background":"auto"},"inputDigests":[],"inputRoles":[],"submittedPrompt":"a blue square","agentTask":null})).unwrap()
 }
+// The pre-billing contract rejects unknown fields on startup.
+#[derive(Debug, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct LegacyOperationStatus {
+    version: u32,
+    operation_id: String,
+    request_fingerprint: String,
+    provider: ProviderIdentity,
+    revision: u64,
+    execution: Execution,
+    delivery: Delivery,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    diagnostics: Option<OperationDiagnostics>,
+}
+
+#[test]
+fn cancelling_billed_running_and_terminal_receipts_preserves_old_journal_contract() {
+    for terminal in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let journal = Journal::open(dir.path()).unwrap();
+        journal.activate().unwrap();
+        let caller = Caller {
+            package_id: "consumer".into(),
+            package_digest: "a".repeat(64),
+            incarnation: 1,
+        };
+        journal
+            .accept(&caller, "operation", &"b".repeat(64), &recipe(), false)
+            .unwrap();
+        journal.claim(&caller.package_id, "operation").unwrap();
+        let billing = domain::billing::bfl(&json!({"cost":8}), None).unwrap();
+        journal
+            .record_billing(&caller.package_id, "operation", billing.clone())
+            .unwrap();
+        if terminal {
+            journal
+                .finish(
+                    &caller.package_id,
+                    "operation",
+                    download_failed(),
+                    Delivery::None {},
+                    None,
+                )
+                .unwrap();
+        }
+        let cancelled = journal.cancel(&caller.package_id, "operation").unwrap();
+        journal.checkpoint().unwrap();
+        drop(journal);
+        let db = rusqlite::Connection::open(dir.path().join("operations.sqlite")).unwrap();
+        let raw: String = db
+            .query_row("SELECT status FROM operations", [], |r| r.get(0))
+            .unwrap();
+        let legacy: LegacyOperationStatus = serde_json::from_str(&raw).unwrap();
+        assert_eq!(
+            serde_json::to_value(legacy).unwrap(),
+            receipt_value(&cancelled, false)
+        );
+        drop(db);
+        let journal = Journal::open(dir.path()).unwrap();
+        assert_eq!(
+            journal
+                .get(&caller.package_id, "operation", None)
+                .unwrap()
+                .unwrap()
+                .billing,
+            Some(billing)
+        );
+    }
+}
+
+fn download_failed() -> Execution {
+    Execution::Unknown {
+        error: SafeError {
+            code: "remote_outcome_unknown".into(),
+            message: "Download failed".into(),
+            correlation_id: None,
+        },
+    }
+}
 #[test]
 fn billing_replaces_repeated_poll_evidence_and_survives_failed_download_and_reopen() {
     let dir = tempfile::tempdir().unwrap();
@@ -28,11 +107,12 @@ fn billing_replaces_repeated_poll_evidence_and_survives_failed_download_and_reop
     journal
         .record_billing(&caller.package_id, "operation", settled.clone())
         .unwrap();
-    let revision = journal
+    let running = journal
         .get(&caller.package_id, "operation", None)
         .unwrap()
-        .unwrap()
-        .revision;
+        .unwrap();
+    assert_eq!(running.revision, 2);
+    assert_eq!(running.billing, Some(settled.clone()));
     journal
         .record_billing(&caller.package_id, "operation", settled.clone())
         .unwrap();
@@ -42,19 +122,13 @@ fn billing_replaces_repeated_poll_evidence_and_survives_failed_download_and_reop
             .unwrap()
             .unwrap()
             .revision,
-        revision
+        running.revision
     );
     journal
         .finish(
             &caller.package_id,
             "operation",
-            Execution::Unknown {
-                error: SafeError {
-                    code: "remote_outcome_unknown".into(),
-                    message: "Download failed".into(),
-                    correlation_id: None,
-                },
-            },
+            download_failed(),
             Delivery::None {},
             None,
         )
@@ -98,10 +172,34 @@ fn billing_replaces_repeated_poll_evidence_and_survives_failed_download_and_reop
         );
         assert_eq!(wire_value(payload.clone(), true), payload);
     }
-    // On/off gating is byte-identical to serializing the same legacy receipt.
+    // Compare with an independent run where billing capture is absent.
+    let legacy_dir = tempfile::tempdir().unwrap();
+    let legacy_journal = Journal::open(legacy_dir.path()).unwrap();
+    legacy_journal.activate().unwrap();
+    let (accepted, _) = legacy_journal
+        .accept(&caller, "operation", &"b".repeat(64), &recipe(), false)
+        .unwrap();
+    assert_eq!(accepted.revision, 1);
+    legacy_journal
+        .claim(&caller.package_id, "operation")
+        .unwrap();
+    legacy_journal
+        .finish(
+            &caller.package_id,
+            "operation",
+            download_failed(),
+            Delivery::None {},
+            None,
+        )
+        .unwrap();
+    let baseline = legacy_journal
+        .get(&caller.package_id, "operation", None)
+        .unwrap()
+        .unwrap();
+    assert_eq!(baseline.revision, 3);
     assert_eq!(
         serde_json::to_vec(&wire_value(receipt_value(&status, true), false)).unwrap(),
-        serde_json::to_vec(&old).unwrap()
+        serde_json::to_vec(&receipt_value(&baseline, false)).unwrap()
     );
 }
 #[test]

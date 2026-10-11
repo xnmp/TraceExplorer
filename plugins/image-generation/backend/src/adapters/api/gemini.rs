@@ -185,7 +185,7 @@ pub(super) async fn generate(call: ApiCall<'_>) -> Result<Output> {
 fn response_output(
     value: &Value,
     recipe: &EffectiveRecipe,
-    _profile: &ApiProfile,
+    profile: &ApiProfile,
     stage: &StageSink,
     evidence: &EvidenceSink,
     request_id: Option<String>,
@@ -195,6 +195,7 @@ fn response_output(
         value["model"]
             .as_str()
             .unwrap_or(recipe.model.as_deref().unwrap_or("")),
+        &profile.base_url,
     ) {
         evidence(Evidence::Billing(billing))?;
     }
@@ -230,7 +231,7 @@ mod billing_tests {
             serde_json::from_str(include_str!("../../../tests/fixtures/recipe-v1.json")).unwrap();
         recipe.adapter = "gemini".into();
         recipe.model = Some("gemini-3-pro-image".into());
-        let profile = ApiProfile {
+        let mut profile = ApiProfile {
             id: "api".into(),
             name: "API".into(),
             recipe_revision: "r".into(),
@@ -240,6 +241,7 @@ mod billing_tests {
             credential: crate::domain::Credential::None,
         };
         let captured = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let events_for_assertion = captured.clone();
         let events = captured.clone();
         let evidence: EvidenceSink = Arc::new(move |event| {
             if let Evidence::Billing(billing) = event {
@@ -257,5 +259,12 @@ mod billing_tests {
         assert_eq!(captured.len(), 1);
         assert_eq!(captured[0].cost.as_ref().unwrap().amount, "0.2432");
         assert!(captured[0].evidence.is_some());
+        drop(captured);
+        profile.base_url = "https://gateway.example/v1beta".into();
+        assert!(response_output(&value, &recipe, &profile, &stage, &evidence, None).is_err());
+        let captured = events_for_assertion.lock().unwrap();
+        assert_eq!(captured.len(), 2);
+        assert!(captured[1].cost.is_none());
+        assert_eq!(captured[1].evidence, captured[0].evidence);
     }
 }

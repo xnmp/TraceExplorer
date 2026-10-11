@@ -471,6 +471,8 @@ impl Journal {
     }
     /// Checkpoint a replacement snapshot before delivery IO. Repeated polling
     /// evidence is idempotent; later settled evidence survives any finish path.
+    /// Billing does not advance the legacy execution/delivery revision. Reads
+    /// and the next lifecycle receipt include the latest billing snapshot.
     pub fn record_billing(
         &self,
         caller: &str,
@@ -487,17 +489,11 @@ impl Journal {
         if stored.status.billing.as_ref() == Some(&billing) {
             return Ok(());
         }
-        let mut status = stored.status;
-        status.revision = status
-            .revision
-            .checked_add(1)
-            .ok_or_else(|| error("unavailable", "Operation revision exhausted"))?;
         transaction
             .execute(
-                "UPDATE operations SET billing=?,status=? WHERE caller=? AND operation=?",
+                "UPDATE operations SET billing=? WHERE caller=? AND operation=?",
                 params![
                     serde_json::to_string(&billing).map_err(storage)?,
-                    durable_status(&status)?,
                     caller,
                     operation
                 ],
@@ -574,12 +570,7 @@ impl Journal {
         transaction
             .execute(
                 "UPDATE operations SET status=?,cancel_requested=? WHERE caller=? AND operation=?",
-                params![
-                    serde_json::to_string(&stored.status).map_err(storage)?,
-                    cancel,
-                    caller,
-                    operation
-                ],
+                params![durable_status(&stored.status)?, cancel, caller, operation],
             )
             .map_err(storage)?;
         load_receipt(&transaction, caller, operation)?;

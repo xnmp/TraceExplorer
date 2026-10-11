@@ -110,6 +110,19 @@ fn weighted(tokens: u64, price: Option<u64>) -> Option<u128> {
         Some(u128::from(tokens) * u128::from(price?))
     }
 }
+/// Apply the public rate card only to the provider's official service. Accept
+/// its unversioned origin and known API base paths, never proxy paths or URLs
+/// with credentials, query overrides, or a different scheme/host/port.
+fn official_endpoint(base_url: &str, origin: &str, paths: &[&str]) -> bool {
+    url::Url::parse(base_url).is_ok_and(|url| {
+        url.origin().ascii_serialization() == origin
+            && url.username().is_empty()
+            && url.password().is_none()
+            && url.query().is_none()
+            && url.fragment().is_none()
+            && paths.contains(&url.path().trim_end_matches('/'))
+    })
+}
 /// Images API output_tokens means image tokens when there is no output breakdown
 /// (OpenAI Images reference). An explicit breakdown takes precedence.
 pub fn openai(response: &Value, model: &str, base_url: &str) -> Option<Billing> {
@@ -130,7 +143,11 @@ pub fn openai(response: &Value, model: &str, base_url: &str) -> Option<Billing> 
     }
     let mut billing = collect("openai.images.usage.v1", fields);
     let estimate = || -> Option<JobCost> {
-        if base_url.trim_end_matches('/') != "https://api.openai.com/v1/images" {
+        if !official_endpoint(
+            base_url,
+            "https://api.openai.com",
+            &["", "/v1", "/v1/images"],
+        ) {
             return None;
         }
         let r = rate("openai-images", model)?;
@@ -172,7 +189,7 @@ pub fn openai(response: &Value, model: &str, base_url: &str) -> Option<Billing> 
     billing.cost = estimate();
     Some(billing)
 }
-pub fn gemini(response: &Value, model: &str) -> Option<Billing> {
+pub fn gemini(response: &Value, model: &str, base_url: &str) -> Option<Billing> {
     let u = response.get("usage")?.as_object()?;
     let u = Value::Object(u.clone());
     let mut fields = Vec::new();
@@ -198,6 +215,13 @@ pub fn gemini(response: &Value, model: &str) -> Option<Billing> {
     }
     let mut billing = collect("gemini.interactions.usage.v1", fields);
     let estimate = || -> Option<JobCost> {
+        if !official_endpoint(
+            base_url,
+            "https://generativelanguage.googleapis.com",
+            &["", "/v1", "/v1beta", "/v1alpha"],
+        ) {
+            return None;
+        }
         let r = rate("gemini", model)?;
         let input = count(&u["total_input_tokens"])?;
         let output = count(&u["total_output_tokens"])?;
@@ -225,9 +249,10 @@ pub fn gemini(response: &Value, model: &str) -> Option<Billing> {
                 _ => return None,
             }
         }
-        if image.checked_add(text)? != output {
-            return None;
-        }
+        // Modality lists can be partial. Unlisted response tokens use the text
+        // rate; explicit counts must still fit within the reported total.
+        let remainder = output.checked_sub(image.checked_add(text)?)?;
+        let text = text.checked_add(remainder)?;
         // Interactions separates thoughts from generated responses; add once.
         let amount = weighted(input, Some(r.input_text))?
             + weighted(image, Some(r.output_image))?
@@ -348,9 +373,162 @@ mod tests {
             ("gemini-3.1-flash-lite-image", "0.06055"),
             ("gemini-nano-banana-2.1", "0.063"),
         ] {
-            assert_eq!(gemini(&u, model).unwrap().cost.unwrap().amount, amount);
+            assert_eq!(
+                gemini(
+                    &u,
+                    model,
+                    "https://generativelanguage.googleapis.com/v1beta"
+                )
+                .unwrap()
+                .cost
+                .unwrap()
+                .amount,
+                amount
+            );
         }
-        assert!(gemini(&u, "unknown").unwrap().cost.is_none());
+        assert!(gemini(
+            &u,
+            "unknown",
+            "https://generativelanguage.googleapis.com/v1beta"
+        )
+        .unwrap()
+        .cost
+        .is_none());
+    }
+    #[test]
+    fn gemini_partial_output_modalities_price_the_unlisted_remainder_as_text() {
+        // Mixed-image example output counts; zero input isolates output pricing.
+        let u = json!({"usage":{"total_input_tokens":0,"total_output_tokens":6099,"output_tokens_by_modality":[{"modality":"image","tokens":4480}]}});
+        assert_eq!(
+            gemini(
+                &u,
+                "gemini-3-pro-image",
+                "https://generativelanguage.googleapis.com/v1beta"
+            )
+            .unwrap()
+            .cost
+            .unwrap()
+            .amount,
+            "0.557028"
+        );
+        let mut explicit_text = u.clone();
+        explicit_text["usage"]["output_tokens_by_modality"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"modality":"text","tokens":100}));
+        assert_eq!(
+            gemini(
+                &explicit_text,
+                "gemini-3-pro-image",
+                "https://generativelanguage.googleapis.com/v1beta"
+            )
+            .unwrap()
+            .cost
+            .unwrap()
+            .amount,
+            "0.557028"
+        );
+    }
+    #[test]
+    fn gemini_inconsistent_output_breakdowns_keep_evidence_without_cost() {
+        for modalities in [
+            json!([{"modality":"image","tokens":10},{"modality":"text","tokens":1}]),
+            json!([{"modality":"image","tokens":11}]),
+            json!([{"modality":"image","tokens":1},{"modality":"image","tokens":1}]),
+            json!([{"modality":"audio","tokens":1}]),
+            json!([{"modality":"image","tokens":-1}]),
+            json!([{"modality":"image","tokens":u64::MAX}]),
+        ] {
+            let u = json!({"usage":{"total_input_tokens":1,"total_output_tokens":10,"output_tokens_by_modality":modalities}});
+            let b = gemini(
+                &u,
+                "gemini-3-pro-image",
+                "https://generativelanguage.googleapis.com/v1beta",
+            )
+            .unwrap();
+            assert!(b.cost.is_none());
+            assert!(b.evidence.is_some());
+        }
+    }
+    #[test]
+    fn openai_official_endpoint_normalizes_version_paths_and_trailing_slashes() {
+        let u = json!({"usage":{"input_tokens":0,"output_tokens":2000}});
+        for endpoint in [
+            "https://api.openai.com",
+            "https://api.openai.com/",
+            "https://api.openai.com/v1/",
+            "https://api.openai.com/v1/images/",
+        ] {
+            assert_eq!(
+                openai(&u, "gpt-image-1", endpoint)
+                    .unwrap()
+                    .cost
+                    .unwrap()
+                    .amount,
+                "0.08",
+                "{endpoint}"
+            );
+        }
+    }
+    #[test]
+    fn gemini_official_endpoint_normalizes_version_paths_and_trailing_slashes() {
+        let u = json!({"usage":{"total_input_tokens":0,"total_output_tokens":2000,"output_tokens_by_modality":[{"modality":"image","tokens":2000}]}});
+        for endpoint in [
+            "https://generativelanguage.googleapis.com",
+            "https://generativelanguage.googleapis.com/",
+            "https://generativelanguage.googleapis.com/v1/",
+            "https://generativelanguage.googleapis.com/v1beta/",
+            "https://generativelanguage.googleapis.com/v1alpha/",
+        ] {
+            assert_eq!(
+                gemini(&u, "gemini-3-pro-image", endpoint)
+                    .unwrap()
+                    .cost
+                    .unwrap()
+                    .amount,
+                "0.24",
+                "{endpoint}"
+            );
+        }
+    }
+    #[test]
+    fn custom_and_malformed_endpoints_keep_usage_without_public_rate_card_costs() {
+        let openai_usage = json!({"usage":{"input_tokens":0,"output_tokens":2000}});
+        let gemini_usage = json!({"usage":{"total_input_tokens":0,"total_output_tokens":2000,"output_tokens_by_modality":[{"modality":"image","tokens":2000}]}});
+        for (origin, model, usage, estimator) in [
+            (
+                "api.openai.com",
+                "gpt-image-1",
+                &openai_usage,
+                openai as fn(&Value, &str, &str) -> Option<Billing>,
+            ),
+            (
+                "generativelanguage.googleapis.com",
+                "gemini-3-pro-image",
+                &gemini_usage,
+                gemini,
+            ),
+        ] {
+            let expected = estimator(usage, model, &format!("https://{origin}"))
+                .unwrap()
+                .evidence;
+            for endpoint in [
+                String::new(),
+                "not a URL".into(),
+                "https://gateway.example/v1beta".into(),
+                format!("http://{origin}/v1"),
+                format!("https://{origin}.example/v1"),
+                format!("https://{origin}:8443/v1"),
+                format!("https://{origin}/proxy/v1"),
+                format!("https://user@{origin}/v1"),
+                format!("https://{origin}/v1?target=custom"),
+                format!("https://{origin}/v1#custom"),
+            ] {
+                let billing = estimator(usage, model, &endpoint).unwrap();
+                assert!(billing.cost.is_none(), "{endpoint}");
+                assert_eq!(billing.evidence, expected, "{endpoint}");
+            }
+        }
     }
     #[test]
     fn bfl_submit_and_settlement_replace_preserving_megapixels() {
@@ -391,12 +569,24 @@ mod tests {
         )
         .is_none());
         let u = json!({"usage":{"total_input_tokens":10,"total_output_tokens":10,"total_cached_tokens":1,"output_tokens_by_modality":[{"modality":"image","tokens":10}]}});
-        assert!(gemini(&u, "gemini-3-pro-image").unwrap().cost.is_none());
+        assert!(gemini(
+            &u,
+            "gemini-3-pro-image",
+            "https://generativelanguage.googleapis.com/v1beta"
+        )
+        .unwrap()
+        .cost
+        .is_none());
         let mut u = u;
         u["usage"]["total_cached_tokens"] = json!(0);
         u["usage"]["output_tokens_by_modality"] =
             json!([{ "modality":"x".repeat(100),"tokens":10}]);
-        let b = gemini(&u, "gemini-3-pro-image").unwrap();
+        let b = gemini(
+            &u,
+            "gemini-3-pro-image",
+            "https://generativelanguage.googleapis.com/v1beta",
+        )
+        .unwrap();
         assert!(b.valid());
         assert!(b.cost.is_none());
     }
