@@ -24,6 +24,7 @@ pub(super) async fn generate(
     inputs: Vec<Input>,
     key: Option<String>,
     cancel: Arc<AtomicBool>,
+    stage: StageSink,
 ) -> Result<Output> {
     // Inherited native configuration (plan §18.3): proxies come only from the
     // HTTP_PROXY/HTTPS_PROXY/ALL_PROXY/NO_PROXY environment (curl semantics,
@@ -77,6 +78,7 @@ pub(super) async fn generate(
     }
     interrupted(
         async {
+            stage("process_started");
             let response = request.send().await.map_err(|_| {
                 error(
                     "remote_outcome_unknown",
@@ -125,6 +127,7 @@ pub(super) async fn generate(
                 }
                 bytes.extend_from_slice(&chunk);
             }
+            stage("process_finished");
             let value: Value = serde_json::from_slice(&bytes).map_err(|_| {
                 error(
                     "invalid_response",
@@ -156,6 +159,7 @@ pub(super) async fn generate(
                 ));
             }
             validate_image(&bytes, image::ImageFormat::Png)?;
+            stage("output_found");
             let mut metadata = metadata(recipe);
             metadata.external_request_id = request_id;
             metadata.actual_model = value["model"]

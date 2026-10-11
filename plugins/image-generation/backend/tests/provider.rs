@@ -565,6 +565,142 @@ async fn custom_http_duplicates_and_ordered_inputs_produce_one_durable_result() 
         )
         .is_err());
 }
+/// The HTTP credential is resolved before the receipt is admitted.
+const HTTP_STAGES: [&str; 8] = [
+    "credential_check_started",
+    "credential_check_done",
+    "admitted",
+    "process_started",
+    "process_finished",
+    "output_found",
+    "output_stored",
+    "delivery_acquired",
+];
+/// Every stage is present, and the stages happened in the order given.
+fn assert_in_order(timings: &std::collections::BTreeMap<String, i64>, expected: &[&str]) {
+    let mut keys: Vec<_> = timings.keys().map(String::as_str).collect();
+    let mut wanted = expected.to_vec();
+    keys.sort_unstable();
+    wanted.sort_unstable();
+    assert_eq!(keys, wanted, "recorded stages");
+    let times: Vec<i64> = expected.iter().map(|stage| timings[*stage]).collect();
+    assert!(
+        times.windows(2).all(|pair| pair[0] <= pair[1]),
+        "stages out of order: {timings:?}"
+    );
+    assert!(times[0] > 1_600_000_000_000, "not epoch milliseconds");
+}
+async fn http_operation(service: &Arc<Service>, root: &str) -> (StartRequest, OperationStatus) {
+    let config = service
+        .profiles
+        .save(configuration(root), 0, None, None)
+        .unwrap();
+    let prepared = request(&config.profiles[0], vec![]);
+    let request = start(
+        prepared.clone(),
+        service.prepare(caller(), prepared).unwrap(),
+    );
+    service.start(caller(), request.clone(), false).unwrap();
+    let status = terminal(service, &request.operation_id).await;
+    (request, status)
+}
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn successful_http_operation_records_each_stage_in_order() {
+    let (root, _, _, server) = server(Duration::ZERO);
+    let directory = tempfile::tempdir().unwrap();
+    let service = Service::new(directory.path(), FakeHost::new()).unwrap();
+    service.activate().unwrap();
+    let (request, status) = http_operation(&service, &root).await;
+    let Delivery::Available { output } = status.delivery else {
+        panic!("Missing delivery")
+    };
+    service
+        .journal
+        .acknowledge(
+            "test.consumer",
+            &request.operation_id,
+            &output.sha256,
+            "acquired",
+            Some("fixture-transfer"),
+        )
+        .unwrap();
+    let timings = service
+        .journal
+        .timings("test.consumer", &request.operation_id)
+        .unwrap();
+    assert_in_order(&timings, &HTTP_STAGES);
+    // A repeated acknowledgement does not move a recorded stage.
+    service
+        .journal
+        .acknowledge(
+            "test.consumer",
+            &request.operation_id,
+            &output.sha256,
+            "acquired",
+            Some("fixture-transfer"),
+        )
+        .unwrap();
+    assert_eq!(
+        service
+            .journal
+            .timings("test.consumer", &request.operation_id)
+            .unwrap(),
+        timings
+    );
+    server.join().unwrap();
+}
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn failing_timing_writes_never_fail_the_operation() {
+    let (root, _, _, server) = server(Duration::ZERO);
+    let directory = tempfile::tempdir().unwrap();
+    let service = Service::new(directory.path(), FakeHost::new()).unwrap();
+    service.activate().unwrap();
+    service.journal.fail_timings_for_test(true);
+    let (request, status) = http_operation(&service, &root).await;
+    assert!(matches!(status.execution, Execution::Succeeded { .. }));
+    assert!(matches!(status.delivery, Delivery::Available { .. }));
+    let timings = service
+        .journal
+        .timings("test.consumer", &request.operation_id)
+        .unwrap();
+    assert_eq!(timings.keys().collect::<Vec<_>>(), vec!["admitted"]);
+    server.join().unwrap();
+}
+#[test]
+fn journal_without_timings_column_gains_it_and_keeps_its_receipts() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut configuration = configuration("https://custom.test/images");
+    configuration.profiles[0].set_revision("legacy-revision".into());
+    let prepared = request(&configuration.profiles[0], vec![]);
+    let recipe = image_generation_backend::domain::recipe(&configuration.profiles[0], &prepared)
+        .unwrap();
+    let journal = image_generation_backend::journal::Journal::open(directory.path()).unwrap();
+    journal.activate().unwrap();
+    journal
+        .accept(&caller(), "old-operation", &"a".repeat(64), &recipe, false)
+        .unwrap();
+    drop(journal);
+    // The shape of a journal written before timings existed.
+    let raw = rusqlite::Connection::open(directory.path().join("operations.sqlite")).unwrap();
+    raw.execute_batch("ALTER TABLE operations DROP COLUMN timings")
+        .unwrap();
+    drop(raw);
+    let journal = image_generation_backend::journal::Journal::open(directory.path()).unwrap();
+    journal.activate().unwrap();
+    assert!(journal
+        .get("test.consumer", "old-operation", None)
+        .unwrap()
+        .is_some());
+    assert!(journal
+        .timings("test.consumer", "old-operation")
+        .unwrap()
+        .is_empty());
+    journal.record_timing("test.consumer", "old-operation", "process_started");
+    let timings = journal.timings("test.consumer", "old-operation").unwrap();
+    assert_eq!(timings.keys().collect::<Vec<_>>(), vec!["process_started"]);
+    // Unknown operations are ignored, not an error.
+    journal.record_timing("test.consumer", "no-such-operation", "process_started");
+}
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn cancelling_dispatched_http_reports_unknown_without_retry() {
     let mut held = HeldServer::new();
@@ -1305,6 +1441,22 @@ async fn fake_cli_generation(stdin_bound: Option<usize>) {
         .map(|line| serde_json::from_str(line).unwrap())
         .collect();
     assert_eq!(received, vec![task], "Codex did not receive the exact task");
+    let timings = service
+        .journal
+        .timings("test.consumer", &request.operation_id)
+        .unwrap();
+    assert_in_order(
+        &timings,
+        &[
+            "admitted",
+            "credential_check_started",
+            "credential_check_done",
+            "process_started",
+            "process_finished",
+            "output_found",
+            "output_stored",
+        ],
+    );
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn explicit_settings_test_uses_owned_host_admission_and_remains_idempotent() {

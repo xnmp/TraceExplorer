@@ -134,13 +134,23 @@ pub(super) fn generate(
     host: &dyn Host,
     cancel: &AtomicBool,
     evidence: &(dyn Fn(Evidence) -> Result<()> + Send + Sync),
+    stage: &(dyn Fn(&'static str) + Send + Sync),
 ) -> Result<Output> {
     let executable = super::codex_executable::resolve(configured)?;
     let home = std::env::var_os("CODEX_HOME")
         .map(PathBuf::from)
         .or_else(|| dirs::home_dir().map(|h| h.join(".codex")))
         .ok_or_else(|| error("unavailable", "Codex home is unavailable"))?;
-    generate_at(&executable, &home, recipe, inputs, host, cancel, evidence)
+    generate_at(
+        &executable,
+        &home,
+        recipe,
+        inputs,
+        host,
+        cancel,
+        evidence,
+        stage,
+    )
 }
 fn generate_at(
     executable: &super::codex_executable::CodexExecutable,
@@ -150,11 +160,13 @@ fn generate_at(
     host: &dyn Host,
     cancel: &AtomicBool,
     evidence: &(dyn Fn(Evidence) -> Result<()> + Send + Sync),
+    stage: &(dyn Fn(&'static str) + Send + Sync),
 ) -> Result<Output> {
     let work = tempfile::Builder::new()
         .prefix("image-generation-codex-")
         .tempdir()
         .map_err(storage)?;
+    stage("credential_check_started");
     let login = run(
         host,
         executable,
@@ -162,8 +174,9 @@ fn generate_at(
         None,
         work.path(),
         cancel,
-    )
-    .map_err(|failure| {
+    );
+    stage("credential_check_done");
+    let login = login.map_err(|failure| {
         process_failure(
             ProcessStep::LoginStatus,
             failure,
@@ -247,7 +260,10 @@ fn generate_at(
             None
         }
     };
-    let process = run(host, executable, args, stdin, work.path(), cancel).map_err(|failure| {
+    stage("process_started");
+    let process = run(host, executable, args, stdin, work.path(), cancel);
+    stage("process_finished");
+    let process = process.map_err(|failure| {
         process_failure(
             ProcessStep::ImageTurn,
             failure,
@@ -300,6 +316,7 @@ fn generate_at(
         Ok(bytes) => bytes,
         Err(failure) => return failed(failure),
     };
+    stage("output_found");
     let mut metadata = metadata(recipe);
     metadata.thread_id = Some(thread);
     Ok(Output { bytes, metadata })
@@ -490,7 +507,8 @@ mod tests {
             &[],
             &host,
             &AtomicBool::new(false),
-            &sink
+            &sink,
+            &|_| {}
         )
         .is_err());
         let failed = journal
@@ -546,7 +564,8 @@ mod tests {
             &[],
             &host,
             &AtomicBool::new(false),
-            &sink
+            &sink,
+            &|_| {}
         )
         .is_err());
         drop(journal);
