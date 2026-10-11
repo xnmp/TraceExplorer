@@ -38,7 +38,7 @@ test("Ctrl+E with nothing selected generates an image with zero inputs", async (
   const trace = page.getByRole("region", { name: "Trace", exact: true });
   await expect(trace.getByTestId("trace-prompt")).toHaveText("A lighthouse above a misty sea");
   await trace.getByRole("button", { name: "Trace details", exact: true }).click();
-  await expect(trace.locator(".row", { has: trace.getByText("Operation", { exact: true }) })).toHaveText("OperationAI image");
+  await expect(trace.locator(".row").filter({ has: page.getByText("Operation", { exact: true }) })).toHaveText("OperationAI image");
   await expect(trace.getByRole("button", { name: /Preview input/ })).toHaveCount(0);
   await trace.locator("summary", { hasText: "Raw" }).click();
   const raw = await trace.locator("pre").textContent();
