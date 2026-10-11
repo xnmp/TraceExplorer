@@ -7,13 +7,14 @@ use std::{io::Read,path::Path};
 #[serde(rename_all="camelCase")]
 pub(crate) struct InputImage {
     path:String,
+    #[serde(skip_serializing_if="Option::is_none")] canonical_path:Option<String>,
     #[serde(skip_serializing_if="Option::is_none")] digest:Option<String>,
     #[serde(skip_serializing_if="Option::is_none")] width:Option<u32>,
     #[serde(skip_serializing_if="Option::is_none")] height:Option<u32>,
     #[serde(skip_serializing_if="Option::is_none")] error:Option<String>,
 }
 fn invalid(message:&str)->AppError {AppError::Other(message.into())}
-fn inspect(path:&str)->Result<(String,u32,u32),AppError> {
+fn inspect(path:&str)->Result<(String,String,u32,u32),AppError> {
     if !Path::new(path).is_absolute() {return Err(invalid("Input image path must be absolute"));}
     let physical=dunce::canonicalize(path)?;
     let mut options=std::fs::OpenOptions::new();options.read(true);
@@ -29,12 +30,12 @@ fn inspect(path:&str)->Result<(String,u32,u32),AppError> {
     let mut reader=image::ImageReader::with_format(std::io::Cursor::new(&bytes),format);
     let mut limits=image::Limits::default();limits.max_alloc=Some(128*1024*1024);reader.limits(limits);
     reader.decode().map_err(|_|invalid("Unreadable image data"))?;
-    Ok((hex::encode(Sha256::digest(bytes)),width,height))
+    Ok((physical.to_string_lossy().into_owned(),hex::encode(Sha256::digest(bytes)),width,height))
 }
 fn describe(path:&str)->InputImage {
     match inspect(path) {
-        Ok((digest,width,height))=>InputImage{path:path.into(),digest:Some(digest),width:Some(width),height:Some(height),error:None},
-        Err(error)=>InputImage{path:path.into(),digest:None,width:None,height:None,error:Some(error.to_string())},
+        Ok((canonical_path,digest,width,height))=>InputImage{path:path.into(),canonical_path:Some(canonical_path),digest:Some(digest),width:Some(width),height:Some(height),error:None},
+        Err(error)=>InputImage{path:path.into(),canonical_path:None,digest:None,width:None,height:None,error:Some(error.to_string())},
     }
 }
 pub(crate) async fn describe_inputs(paths:Vec<String>)->Result<Vec<InputImage>,AppError> {

@@ -10,6 +10,10 @@ export const MAX_IMAGE_INPUTS = 8;
 
 export interface ImageInput {
   readonly path: string;
+  /** Form-owned lifetime identity, retained through metadata updates; a re-add gets a new ID. */
+  readonly id?: symbol;
+  /** Filesystem identity returned by inspection; `path` retains the user's spelling. */
+  readonly canonicalPath?: string;
   /** The revision to send; checked before the provider is contacted. */
   readonly digest?: string;
   readonly size?: { readonly width: number; readonly height: number };
@@ -18,6 +22,24 @@ export interface ImageInput {
 }
 
 const IMAGE = /\.(png|jpe?g|webp)$/i;
+
+/** Lexical comparison only: preserve POSIX backslashes and never resolve symlinks or change display paths. */
+export function normalizeImageInputPath(path: string): string {
+  const drive = /^[A-Za-z]:[\\/]/.test(path);
+  const unc = path.startsWith("\\\\");
+  const windows = drive || unc;
+  const parts = path.split(windows ? /[\\/]+/ : /\/+/);
+  const root = drive ? `${parts[0].toUpperCase()}\\` : unc ? `\\\\${parts[1]}\\${parts[2]}\\` : "/";
+  const segments: string[] = [];
+  for (const part of parts.slice(drive ? 1 : unc ? 3 : 1)) {
+    if (!part || part === ".") continue;
+    if (part === "..") segments.pop();
+    else segments.push(part);
+  }
+  return root + segments.join(windows ? "\\" : "/");
+}
+
+const inputPathIdentity = (input: ImageInput): string => normalizeImageInputPath(input.canonicalPath ?? input.path);
 
 export type ImageInputIssueCode = "invalid-path" | "unsupported-format" | "duplicate" | "limit" | "unreadable";
 export interface ImageInputIssue {
@@ -47,14 +69,15 @@ export function imageInputPathIssue(value: unknown): ImageInputIssue | null {
 export function preflightDroppedImageInputs(existing: readonly ImageInput[], values: readonly unknown[]): {
   readonly paths: readonly string[]; readonly issues: readonly ImageInputIssue[];
 } {
-  const seen = new Set(existing.map((input) => input.path));
+  const seen = new Set(existing.flatMap((input) => [normalizeImageInputPath(input.path), inputPathIdentity(input)]));
   const paths: string[] = [], issues: ImageInputIssue[] = [];
   for (const value of values) {
     const problem = imageInputPathIssue(value);
     if (problem) { issues.push(problem); continue; }
     const path = value as string;
-    if (seen.has(path)) { issues.push({ path, code: "duplicate", message: "Already an input" }); continue; }
-    seen.add(path);
+    const identity = normalizeImageInputPath(path);
+    if (seen.has(identity)) { issues.push({ path, code: "duplicate", message: "Already an input" }); continue; }
+    seen.add(identity);
     paths.push(path);
   }
   return { paths, issues };
@@ -66,17 +89,23 @@ export function mergeDroppedImageInputs(
 ): ImageInputMergeResult {
   const preflight = preflightDroppedImageInputs(existing, paths);
   const inputs = [...existing], addedPaths: string[] = [], issues = [...preflight.issues];
+  const seen = new Set(existing.map(inputPathIdentity));
   for (const path of preflight.paths) {
+    const description = descriptions.get(path);
+    if (description?.path === path && seen.has(inputPathIdentity(description))) {
+      issues.push({ path, code: "duplicate", message: "Already an input" });
+      continue;
+    }
     if (!hasImageInputCapacity(inputs.length)) {
       issues.push({ path, code: "limit", message: `Up to ${MAX_IMAGE_INPUTS} inputs` });
       continue;
     }
-    const description = descriptions.get(path);
     if (!description || description.path !== path || description.error || !description.digest) {
       issues.push({ path, code: "unreadable", message: `Cannot read image: ${description?.error || "inspection unavailable"}` });
       continue;
     }
     inputs.push({ ...description });
+    seen.add(inputPathIdentity(description));
     addedPaths.push(path);
   }
   return { inputs, addedPaths, issues };
@@ -84,8 +113,8 @@ export function mergeDroppedImageInputs(
 
 /** Paths usable as AI edit inputs, in order: one to eight distinct local PNG, JPEG or WebP images; otherwise none. */
 export function imageInputPaths(paths: readonly string[]): string[] {
-  const usable = paths.length > 0 && hasImageInputCapacity(paths.length - 1) && new Set(paths).size === paths.length
-    && paths.every((path) => imageInputPathIssue(path) === null);
+  const usable = paths.length > 0 && hasImageInputCapacity(paths.length - 1)
+    && paths.every((path) => imageInputPathIssue(path) === null) && new Set(paths.map(normalizeImageInputPath)).size === paths.length;
   return usable ? [...paths] : [];
 }
 
@@ -112,16 +141,19 @@ export function describeInputs(inputs: readonly ImageInput[], described: readonl
   return inputs.map((input) => {
     const found = byPath.get(input.path);
     if (!found) return input;
-    if (found.error) return { path: input.path, error: found.error };
-    return { path: input.path, digest: input.digest ?? found.digest, size: input.size ?? found.size, error: undefined };
+    const identity = { path: input.path, ...(input.id ? { id: input.id } : {}),
+      ...(found.canonicalPath ? { canonicalPath: found.canonicalPath } : {}) };
+    if (found.error) return { ...identity, error: found.error };
+    return { ...identity, digest: input.digest ?? found.digest, size: input.size ?? found.size, error: undefined };
   });
 }
 
-/** An older read may update surviving captured entries, but cannot overwrite a removed/re-added input's newer inspection. */
+/** Metadata replacement preserves lifetime identity; IDs distinguish removed/re-added inputs. Untagged callers use paths. */
 export function describeInputSnapshot(current: readonly ImageInput[], captured: readonly ImageInput[], described: readonly ImageInput[]): readonly ImageInput[] {
-  const surviving = new Set(captured);
-  const updated = new Map(describeInputs(current.filter((input) => surviving.has(input)), described).map((input) => [input.path, input]));
-  return current.map((input) => surviving.has(input) ? updated.get(input.path)! : input);
+  const identity = (input: ImageInput): symbol | string => input.id ?? input.path;
+  const surviving = new Set(captured.map(identity));
+  const updated = new Map(describeInputs(current.filter((input) => surviving.has(identity(input))), described).map((input) => [identity(input), input]));
+  return current.map((input) => updated.get(identity(input)) ?? input);
 }
 
 /**

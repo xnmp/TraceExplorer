@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { createImageInputIntake, type ImageInputIntakeIssue } from "$lib/plugins/openai-image/image-input-intake";
+import { createImageInputIntake, imageInputIntakeStatus, type ImageInputIntakeIssue } from "$lib/plugins/openai-image/image-input-intake";
 import { moveInput, removeInput, type ImageInput } from "$lib/domain/image-inputs";
 
 const deferred = <T>() => {
@@ -26,6 +26,21 @@ function fixture(initial: readonly ImageInput[] = []) {
 }
 
 describe("per-form image input intake", () => {
+  it("announces the resulting input count after consecutive equal-size successful drops", async () => {
+    const f = fixture();
+    const messages: string[] = [];
+    for (const path of ["/a.png", "/b.png"]) {
+      const completion = f.intake.enqueue([path]);
+      f.reads.at(-1)!.result.resolve(described([path]));
+      await completion;
+      const feedback = f.feedback.at(-1)!;
+      messages.push(imageInputIntakeStatus(feedback.added.length, f.inputs().length, feedback.issues.length));
+    }
+    expect(messages).toEqual(["1 input added · 1 of 8", "1 input added · 2 of 8"]);
+    expect(imageInputIntakeStatus(2, 4, 1)).toBe("2 inputs added · 4 of 8. 1 file skipped");
+    expect(imageInputIntakeStatus(0, 4, 2)).toBe("2 files skipped");
+    expect(imageInputIntakeStatus(0, 0, 0)).toBe("");
+  });
   it("gates submission synchronously and processes separate batches FIFO", async () => {
     const f = fixture();
     const first = f.intake.enqueue(["/b.jpg", "/a.png"]);

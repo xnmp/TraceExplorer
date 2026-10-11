@@ -108,6 +108,53 @@ fn prepare_trace_store(backend: &mut Backend) {
     );
 }
 
+#[test]
+fn openai_image_inputs_returns_canonical_paths_and_preserves_requested_spelling() {
+    let data = test_support::tempdir().unwrap();
+    let source = data.path().join("source.png");
+    let png = include_bytes!("../test_support/fixtures/source32.png");
+    std::fs::write(&source, png).unwrap();
+    std::fs::create_dir(data.path().join("sub")).unwrap();
+    let paths = vec![
+        source.to_string_lossy().into_owned(),
+        data.path().join(".").join("source.png").to_string_lossy().into_owned(),
+        data.path().join("sub").join("..").join("source.png").to_string_lossy().into_owned(),
+    ];
+    let canonical = dunce::canonicalize(&source).unwrap().to_string_lossy().into_owned();
+    let mut backend = Backend::start(data.path());
+    backend.ready(vec![]);
+    let response = backend.call("openai_image_inputs", json!({"paths": paths}));
+    let descriptions = response["result"].as_array().expect("inspection result");
+    assert_eq!(descriptions.len(), paths.len());
+    for (path, description) in paths.iter().zip(descriptions) {
+        assert_eq!(description["path"], *path);
+        assert_eq!(description["canonicalPath"], canonical);
+        assert_eq!(description["digest"], hex::encode(Sha256::digest(png)));
+        assert!(description.get("error").is_none());
+        #[cfg(windows)]
+        assert!(!description["canonicalPath"].as_str().unwrap().starts_with(r"\\?\"));
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn openai_image_inputs_resolves_symlink_aliases_to_the_same_canonical_path() {
+    let data = test_support::tempdir().unwrap();
+    let source = data.path().join("source.png");
+    let alias = data.path().join("alias.png");
+    std::fs::write(&source, include_bytes!("../test_support/fixtures/source32.png")).unwrap();
+    std::os::unix::fs::symlink(&source, &alias).unwrap();
+    let paths = vec![source.to_string_lossy().into_owned(), alias.to_string_lossy().into_owned()];
+    let mut backend = Backend::start(data.path());
+    backend.ready(vec![]);
+    let response = backend.call("openai_image_inputs", json!({"paths": paths}));
+    let values = response["result"].as_array().expect("inspection result");
+    assert_eq!(values[0]["canonicalPath"], dunce::canonicalize(source).unwrap().to_string_lossy().as_ref());
+    assert_eq!(values[1]["canonicalPath"], values[0]["canonicalPath"]);
+    assert_eq!(values[1]["path"], paths[1]);
+    assert_eq!(values[1]["digest"], values[0]["digest"]);
+}
+
 fn seed_unsaved_output(
     database: &std::path::Path,
     folder: &std::path::Path,

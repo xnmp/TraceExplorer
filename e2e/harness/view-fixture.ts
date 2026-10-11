@@ -15,6 +15,7 @@ import StubFileTile from "./StubFileTile.svelte";
 import StubFileTiles from "./StubFileTiles.svelte";
 import { folderComponents, folderPage, isDirectFolderSeed, nativeStringOrder, type FolderNode } from "./folder-snapshot";
 import { isLocalAbsolutePath } from "$lib/domain/target-location";
+import { normalizeImageInputPath } from "$lib/domain/image-inputs";
 import { withNativeRequestCapacity } from "./request-capacity";
 
 export const DIRECTORY = "/pictures";
@@ -284,9 +285,12 @@ configureBackend(withNativeRequestCapacity({
       // AI edit inputs: every known image is present, 160×96, with a revision derived from its path.
       case "openai_image_inputs": if (inputFailures > 0) { inputFailures -= 1; return Promise.reject(new Error("The image service is busy")); }
         if (!Array.isArray(params.paths) || params.paths.length > 8) return Promise.reject(new Error("At most eight input images are supported"));
-        return reply((params.paths as string[]).map((path) => state.nodes.some((node) => node.path === path && node.state === "present" && !node.discarded) || entryExtras.some((entry) => entry.path === path && entry.kind === "file")
-        ? { path, digest: [...path].reduce((hash, char) => (hash * 33 + char.charCodeAt(0)) % 1e9, 5381).toString(16).padStart(64, "0"), width: 160, height: 96 }
-        : { path, error: "Path not found" }));
+        return reply((params.paths as string[]).map((path) => {
+          const canonicalPath = normalizeImageInputPath(path);
+          return state.nodes.some((node) => node.path === canonicalPath && node.state === "present" && !node.discarded) || entryExtras.some((entry) => entry.path === canonicalPath && entry.kind === "file")
+            ? { path, canonicalPath, digest: [...canonicalPath].reduce((hash, char) => (hash * 33 + char.charCodeAt(0)) % 1e9, 5381).toString(16).padStart(64, "0"), width: 160, height: 96 }
+            : { path, error: "Path not found" };
+        }));
       case "image_service_describe": {
         const snapshot = structuredClone(imageService);
         return imageDescriptionsHeld ? new Promise<T>((resolve) => { imageDescriptionWaiters.push(() => resolve(snapshot as T)); }) : reply(snapshot);

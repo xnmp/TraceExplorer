@@ -5,6 +5,12 @@ export type ImageInputIntakeIssue = ImageInputIssue | {
   readonly path: string | null; readonly code: "busy"; readonly message: string;
 };
 
+/** Completion text for the form's live region. */
+export function imageInputIntakeStatus(added: number, total: number, skipped: number): string {
+  return [added ? `${added} input${added === 1 ? "" : "s"} added · ${total} of ${MAX_IMAGE_INPUTS}` : "",
+    skipped ? `${skipped} file${skipped === 1 ? "" : "s"} skipped` : ""].filter(Boolean).join(". ");
+}
+
 interface IntakeOptions {
   readonly getInputs: () => readonly ImageInput[];
   /** Throws on an inspection failure; individual unreadable files carry `error`. */

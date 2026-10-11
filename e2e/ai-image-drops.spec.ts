@@ -75,6 +75,37 @@ test("duplicates and unsupported drops explain each file and add no cards", asyn
   expect(await page.evaluate(() => (window as any).trace.backend.calls("openai_image_inputs").length)).toBe(reads);
 });
 
+test("consecutive successful drops update the live region with the resulting input count", async ({ page }) => {
+  await openEmpty(page);
+  const [warm, cool] = await inputs(page, ["warm", "cool"]);
+  const feedback = dialog(page).locator('[aria-live="polite"]');
+  await drop(page, [warm]);
+  await expect(feedback).toContainText("1 input added · 1 of 8");
+  await drop(page, [cool]);
+  await expect(feedback).toContainText("1 input added · 2 of 8");
+  await expect(cards(page)).toHaveCount(2);
+});
+
+for (const paneDialogs of [true, false]) {
+  test(`reopening preserves the prompt draft and dropped inputs: paneDialogs=${paneDialogs}`, async ({ page }) => {
+    await openEmpty(page, `&paneDialogs=${Number(paneDialogs)}`);
+    const [warm] = await inputs(page, ["warm"]);
+    await drop(page, [warm]);
+    const prompt = "Keep this prompt when the same dialog is opened again";
+    await dialog(page).getByRole("textbox", { name: "Edit prompt", exact: true }).fill(prompt);
+    await page.evaluate(() => (window as any).trace.command("plugin.openai-image.edit"));
+    await expect(dialog(page)).toHaveCount(1);
+    await expect(dialog(page).getByRole("textbox", { name: "Edit prompt", exact: true })).toHaveValue(prompt);
+    await expect(cards(page)).toHaveCount(1);
+    expect(await cards(page).getAttribute("data-input-path")).toBe(warm);
+    expect(await page.evaluate(() => (window as any).trace.registeredDropTargets())).toBe(1);
+    await dialog(page).getByRole("textbox", { name: "Edit prompt", exact: true }).focus();
+    await page.keyboard.press("Control+Enter");
+    await expect.poll(async () => (await starts(page)).length).toBe(1);
+    expect((await starts(page))[0].params.request).toMatchObject({ prompt, sourcePath: warm });
+  });
+}
+
 test("the ninth input is rejected with the limit reason and the first eight remain ordered", async ({ page }) => {
   await openEmpty(page);
   const firstEight = await inputs(page, ["daylight", "warm", "cool", "village", "quiet", "mist", "merge", "rain"]);

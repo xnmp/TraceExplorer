@@ -20,6 +20,7 @@
   import { TILE_IMAGE_PX } from "./tile-presets";
   import { createFileDropTargets } from "./file-drop-targets";
   import DialogMount from "./DialogMount.svelte";
+  import { openHarnessDialog, type HarnessDialog } from "./dialogs";
 
   const dropTargets = createFileDropTargets();
   let dialogPane: PluginDialogPane = Object.freeze({ paneId: "pane-1" });
@@ -71,7 +72,8 @@
   const combinedSelectionApi = new URLSearchParams(location.search).has("combinedSelection");
   let otherPaneSelection = $state.raw<FileEntry[]>([]);
   const dialogs = new Map<string, Component<any>>();
-  let opened_dialogs = $state.raw<Array<{ id: string; props: Record<string, unknown>; options?: PluginDialogOptions }>>([]);
+  let opened_dialogs = $state.raw<readonly HarnessDialog[]>([]);
+  let dialogSequence = 0;
   let accepted = $state.raw<Array<{ label: string; detail: string }>>([]);
   /** The AI edit tool in a stand-in for the host's image editor: it stays mounted while the editor's source fills in. */
   let editorTool = $state.raw<{ component: Component<any>; props?: Record<string, unknown> } | null>(null);
@@ -134,10 +136,7 @@
         if (disposed) throw new Error("Plugin caller was disposed");
         if (!dialogs.has(id)) throw new Error("Dialog is not registered by this plugin");
         if (options?.scope === "pane" && (!paneDialogs || options.pane !== dialogPane)) throw new Error("Dialog pane is unavailable");
-        const existing = opened_dialogs.find((dialog) => dialog.id === id);
-        // Pane reopening retains its draft and owner; legacy window reopening replaces props.
-        if (existing?.options?.scope === "pane") return;
-        opened_dialogs = [...opened_dialogs.filter((dialog) => dialog.id !== id), { id, props, options }];
+        opened_dialogs = openHarnessDialog(opened_dialogs, id, props, options, ++dialogSequence);
       },
       closeDialog: (id: string) => { opened_dialogs = opened_dialogs.filter((dialog) => dialog.id !== id); },
       presentation: { ...(editorApi ? { openImageEditor: async (request: { path: string; tool: string }) => {
@@ -381,9 +380,9 @@
     {/key}
   </div>
 {/if}
-{#each opened_dialogs as dialog (dialog)}
+{#each opened_dialogs as dialog (dialog.instanceId)}
   {@const Dialog = dialogs.get(dialog.id)}
-  {#if Dialog}<DialogMount component={Dialog} props={dialog.props} options={dialog.options} width={viewWidth} onClose={() => { opened_dialogs = opened_dialogs.filter((other) => other !== dialog); }} />{/if}
+  {#if Dialog}<DialogMount component={Dialog} props={dialog.props} options={dialog.options} width={viewWidth} onClose={() => { opened_dialogs = opened_dialogs.filter((other) => other.instanceId !== dialog.instanceId); }} />{/if}
 {/each}
 
 <style>

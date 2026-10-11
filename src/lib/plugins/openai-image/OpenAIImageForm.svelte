@@ -12,7 +12,8 @@
   import { imageOutputFilename } from "$lib/domain/image-output-filename";
   import { imageGenerationSize, type ImageResolution, type ImageAspectRatio } from "$lib/domain/image-generation-settings";
   import { outputLocationProblem } from "$lib/domain/target-location";
-  import { createImageInputIntake, type ImageInputIntakeIssue } from "./image-input-intake";
+  import { createImageInputIntake, imageInputIntakeStatus, type ImageInputIntakeIssue } from "./image-input-intake";
+  import { prepareImageInputSubmission } from "./image-input-submission";
 
   interface Props {
     open: boolean;
@@ -31,7 +32,7 @@
   let { open, onBusyChange = () => {}, captureSelection, registerFileDropTarget, header, inputs = [], outputDir,
     configureConnections, jobs, toast, onClose }: Props = $props();
   /** The edit's images as arranged here: order, removals, and what the backend reported. */
-  let arranged = $state.raw<readonly ImageInput[]>(untrack(() => inputs));
+  let arranged = $state.raw<readonly ImageInput[]>(untrack(() => inputs.map((input) => ({ ...input, id: Symbol() }))));
   /**
    * The edit's images, numbered in this order, which is the order they are
    * sent. The caller stays live: the image editor keeps this form mounted while
@@ -123,10 +124,16 @@
   const intake = createImageInputIntake({
     getInputs: () => images,
     inspect: async (paths) => {
+      // Initial/editor inputs may still be awaiting inspection. Learn their
+      // physical identities before comparing dropped aliases against them.
+      if (images.some((input) => !input.canonicalPath && !input.error)) {
+        const problem = await describe();
+        if (problem) throw new Error(problem);
+      }
       const result = await describeImageInputs(paths);
       if (!result.ok) throw new Error(result.error);
-      return result.data.map(({ path, digest, width, height, error }) => ({
-        path, digest, error, size: width && height ? { width, height } : undefined,
+      return result.data.map(({ path, canonicalPath, digest, width, height, error }) => ({
+        path, canonicalPath, id: Symbol(), digest, error, size: width && height ? { width, height } : undefined,
       }));
     },
     commit: (result) => { arranged = result.inputs; },
@@ -135,8 +142,7 @@
     onFeedback: (addedPaths, issues) => {
       dropIssues = issues;
       feedbackLimit = 8;
-      dropStatus = [addedPaths.length ? `${addedPaths.length} input${addedPaths.length === 1 ? "" : "s"} added` : "",
-        issues.length ? `${issues.length} file${issues.length === 1 ? "" : "s"} skipped` : ""].filter(Boolean).join(". ");
+      dropStatus = imageInputIntakeStatus(addedPaths.length, images.length, issues.length);
     },
   });
   function registerInputs(element: HTMLElement): { destroy: () => void } {
@@ -157,8 +163,8 @@
     describing = describeImageInputs(snapshot.map((input) => input.path))
       .then((result) => {
         if (!result.ok) return `Could not read the input images: ${result.error}`;
-        if (alive) arranged = describeInputSnapshot(images, snapshot, result.data.map(({ path, digest, width, height, error }) => ({
-          path, digest, error, size: width && height ? { width, height } : undefined,
+        if (alive) arranged = describeInputSnapshot(images, snapshot, result.data.map(({ path, canonicalPath, digest, width, height, error }) => ({
+          path, canonicalPath, digest, error, size: width && height ? { width, height } : undefined,
         })));
         return null;
       }, (cause: unknown) => `Could not read the input images: ${cause instanceof Error ? cause.message : String(cause)}`)
@@ -208,15 +214,8 @@
       if (!connection) throw new Error("Select a configured image connection.");
       // Only a connection with pixel sizes needs Image 1's dimensions to resolve "keep".
       const keepsSize = !!connection.capabilities.sizes && editing && aspectRatio === "keep";
-      // A failed or unfinished read is tried again: it pins revisions and gives Image 1's size.
-      if (images.some((input) => !input.digest && !input.error) || (keepsSize && !images[0]?.size)) {
-        const problem = await describe();
-        if (problem && keepsSize && !images[0]?.size) throw new Error(`${problem}. Try again, or choose an aspect ratio`);
-      }
+      await prepareImageInputSubmission({ getInputs: () => images, pendingInspection: describing, inspect: describe, keepsSize });
       if (!alive) return;
-      const unusable = images.find((input) => input.error);
-      if (unusable) throw new Error(`Remove ${basename(unusable.path)}: ${unusable.error}`);
-      if (keepsSize && !images[0]?.size) throw new Error("Wait for Image 1 to load, or choose an aspect ratio");
       const offered = offeredOptions(connection);
       const size = connection.capabilities.sizes ? imageGenerationSize(resolution, aspectRatio, images[0]?.size) : "auto";
       const outputFilename = imageOutputFilename(images[0] ? basename(images[0].path) : null);

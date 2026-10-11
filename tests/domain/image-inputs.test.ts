@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { describeInputSnapshot, describeInputs, imageInputPaths, inputRequestFields, mergeDroppedImageInputs, moveInput, removeInput, singleImagePath, withLiveInputs, type ImageInput } from "$lib/domain/image-inputs";
+import { describeInputSnapshot, describeInputs, imageInputPaths, inputRequestFields, mergeDroppedImageInputs, moveInput, preflightDroppedImageInputs, removeInput, singleImagePath, withLiveInputs, type ImageInput } from "$lib/domain/image-inputs";
 
 const inputs: ImageInput[] = ["/a.png", "/b.jpg", "/c.webp"].map((path) => ({ path }));
 const paths = (list: readonly ImageInput[]) => list.map((input) => input.path);
@@ -55,9 +55,35 @@ describe("dropped image inputs", () => {
       { path: "/incomplete.webp", code: "unreadable", message: "Cannot read image: inspection unavailable" },
     ]);
   });
-  it("uses exact-string duplicate identity, including duplicates of unreadable files", () => {
-    const result = mergeDroppedImageInputs([{ path: "/a.png" }], ["/A.png", "/bad.png", "/bad.png"], inspected(["/A.png"]));
-    expect(result.addedPaths).toEqual(["/A.png"]);
+  it("rejects lexical aliases before inspection, including aliases of unreadable files", () => {
+    const result = preflightDroppedImageInputs([{ path: "/photos/source.png" }],
+      ["/photos/./source.png", "/photos/sub/../source.png", "/photos//source.png", "/bad.png", "/./bad.png"]);
+    expect(result.paths).toEqual(["/bad.png"]);
+    expect(result.issues.map((issue) => issue.code)).toEqual(["duplicate", "duplicate", "duplicate", "duplicate"]);
+  });
+  it("normalizes Windows aliases without changing the user's spelling or POSIX backslashes", () => {
+    const delivered = ["C:\\photos\\source.png", "C:/photos//./source.png", "C:\\photos\\sub\\..\\source.png",
+      "\\\\server\\share\\source.png", "\\\\server\\share\\..\\source.png", "/photos/a\\b.png", "/photos/a/b.png"];
+    const result = preflightDroppedImageInputs([], delivered);
+    expect(result.paths).toEqual([delivered[0], delivered[3], delivered[5], delivered[6]]);
+    expect(result.issues.map((issue) => issue.path)).toEqual([delivered[1], delivered[2], delivered[4]]);
+  });
+  it("rejects canonical aliases within and across drops while preserving display paths", () => {
+    const delivered = ["/links/source.png", "/photos/source.png", "/other.png"];
+    const descriptions = new Map(delivered.map((path) => [path, { path, digest: "same-bytes",
+      canonicalPath: path === "/other.png" ? path : "/photos/source.png" }]));
+    const first = mergeDroppedImageInputs([], delivered, descriptions);
+    expect(first.addedPaths).toEqual(["/links/source.png", "/other.png"]);
+    expect(first.inputs[0]).toMatchObject({ path: "/links/source.png", canonicalPath: "/photos/source.png" });
+    expect(first.issues).toEqual([{ path: "/photos/source.png", code: "duplicate", message: "Already an input" }]);
+    const next = mergeDroppedImageInputs(first.inputs, ["/another-link.png"],
+      new Map([["/another-link.png", { path: "/another-link.png", canonicalPath: "/photos/source.png", digest: "same-bytes" }]]));
+    expect(next.inputs).toEqual(first.inputs);
+    expect(next.issues[0].code).toBe("duplicate");
+  });
+  it("keeps duplicates of unreadable paths rejected", () => {
+    const result = mergeDroppedImageInputs([], ["/bad.png", "/bad.png"], new Map());
+    expect(result.addedPaths).toEqual([]);
     expect(result.issues).toEqual(expect.arrayContaining([
       { path: "/bad.png", code: "duplicate", message: "Already an input" },
       { path: "/bad.png", code: "unreadable", message: "Cannot read image: inspection unavailable" },
@@ -165,14 +191,29 @@ describe("AI edit inputs", () => {
   });
 
   it("applies a captured read after reorder/removal without overwriting a removed and re-dropped image", () => {
-    const captured = [{ path: "/a.png" }, { path: "/b.jpg" }, { path: "/c.webp" }];
-    const newer = { path: "/a.png", digest: "new-inspection", size: { width: 80, height: 60 } };
+    const captured = [{ path: "/a.png", id: Symbol() }, { path: "/b.jpg" }, { path: "/c.webp" }];
+    const newer = { path: "/a.png", id: Symbol(), digest: "new-inspection", size: { width: 80, height: 60 } };
     const current = [captured[2], captured[1], newer];
     expect(describeInputSnapshot(current, captured, [
       { path: "/a.png", error: "An older read failed" }, { path: "/b.jpg", digest: "b" }, { path: "/c.webp", digest: "c" },
     ])).toEqual([{ path: "/c.webp", digest: "c", error: undefined, size: undefined },
       { path: "/b.jpg", digest: "b", error: undefined, size: undefined }, newer]);
     expect(describeInputSnapshot([captured[1]], captured, [{ path: "/a.png", digest: "a" }])).toEqual([captured[1]]);
+  });
+
+  it("applies a late inspection rejection after live preview metadata replaces the input object", () => {
+    const captured = [{ path: "/missing.png", id: Symbol(), digest: "editor-revision" }];
+    const current = withLiveInputs(captured, [{ path: "/missing.png", size: { width: 80, height: 60 } }]);
+    expect(current[0].size).toEqual({ width: 80, height: 60 });
+    const result = describeInputSnapshot(current, captured, [{ path: "/missing.png", error: "Path not found" }]);
+    expect(result[0].error).toBe("Path not found");
+    expect(withLiveInputs(result, captured)[0].error).toBe("Path not found");
+  });
+
+  it("uses path identity when callers do not supply input IDs", () => {
+    const captured = [{ path: "/missing.png" }];
+    const current = withLiveInputs(captured, [{ path: "/missing.png", size: { width: 8, height: 6 } }]);
+    expect(describeInputSnapshot(current, captured, [{ path: "/missing.png", error: "Path not found" }])[0].error).toBe("Path not found");
   });
 });
 
