@@ -15,11 +15,16 @@ test("two chains sharing only a style render separate sections with one referenc
   // A duplicated node key must still select the clicked section's copy and
   // Preview path, and must enter the AI inputs only once.
   const a = page.locator('section[data-component][aria-label="photo-a"]');
+  const b = page.locator('section[data-component][aria-label="photo-b"]');
   await a.locator(`[data-node-key="${style}"]`).click();
   await settle(page);
   expect((await state(page)).inputs).toEqual(["/pictures/refs/style.png"]);
   expect((await state(page)).target?.title).toBe("style.png");
   await expect(a).not.toHaveClass(/dimmed/);
+  await expect(a.locator(`[data-tile-key="${style}"]`)).toHaveAttribute("data-tone", "focus");
+  await expect(b.locator(`[data-tile-key="${style}"]`)).toHaveAttribute("data-tone", "unrelated");
+  await expect(b.locator(`[data-tile-key="${await key(page, "photo-b-edit")}"]`)).toHaveAttribute("data-tone", "unrelated");
+  await expect(b.locator("path[data-route].branch, path[data-route].highlight")).toHaveCount(0);
   expect(await uncaught(page)).toEqual([]);
 });
 

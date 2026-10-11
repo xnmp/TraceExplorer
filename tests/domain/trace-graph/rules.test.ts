@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { connectedComponents, projectDag } from "$lib/domain/trace-graph/projection";
 import { lineage, toneOf } from "$lib/domain/trace-graph/lineage";
-import { planScene } from "$lib/domain/trace-graph/scene";
+import { planScene, routeStyle } from "$lib/domain/trace-graph/scene";
 import { TILE, tileSize } from "$lib/domain/trace-graph/metrics";
 import { visibleKeys, componentRoots, hiddenDescendantCount, SIBLING_LIMIT } from "$lib/domain/trace-graph/visibility";
 import { layoutGraph } from "$lib/domain/trace-graph/layout";
@@ -37,6 +37,21 @@ describe("graph projection", () => {
 
 describe("focus and lineage", () => {
   const dag = projectDag(mockupNodes());
+
+  it("focuses only the clicked component's shared reference and consuming branch", () => {
+    const family = projectDag([node("photo"), node("style", [], "external"), node("edit", ["photo", "style"])]);
+    const focus = { key: "style", componentId: "a" };
+    const own = planScene(family, family.order, focus, 900, { componentId: "a" });
+    expect(own.tiles.get("style")?.tone).toBe("focus");
+    expect(own.tiles.get("edit")?.tone).toBe("related");
+    const other = planScene(family, family.order, focus, 900, { componentId: "b" });
+    expect(other.tiles.get("style")?.tone).toBe("unrelated");
+    expect(other.tiles.get("edit")?.tone).toBe("unrelated");
+    const styles = layoutGraph(other.request).routes.map((route) => routeStyle(route, family, other.lineage));
+    expect(styles.length).toBeGreaterThan(0);
+    expect(styles.every((style) => !style.related && !style.highlighted)).toBe(true);
+    expect(planScene(family, family.order, null, 900, { componentId: "b" }).tiles.get("style")?.tone).toBe("neutral");
+  });
 
   it("never sizes a tile by the focus: every tile has one width and image size, whatever is selected", () => {
     const [members] = connectedComponents(dag);

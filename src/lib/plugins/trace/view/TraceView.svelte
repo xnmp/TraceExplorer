@@ -692,7 +692,7 @@
               <div class="placeholder" style:height="{heights.get(summary.id) ?? 160}px"></div>
             {:else if data}
               <div use:measure={summary.id}>
-                <TraceGraph {data} focus={focus?.key ?? null} selected={selectedKeys} {width} {tile} {revision} {scroller}
+                <TraceGraph {data} {focus} selected={selectedKeys} {width} {tile} {revision} {scroller}
                   onactivate={(key, event) => activate(key, event, summary.id)} onnavigate={(key) => focusNode(key, {}, "reveal", summary.id)} onopen={open} onmenu={(key, event) => menu(key, event, summary.id)}
                   {captureSelection} componentId={summary.id} orientations={session.orientations} reveal={revealScene}
                   onsaved={(key, path) => callbacks.saved(path, key)} ondiscarded={(key) => callbacks.discarded(key)} oncommit={keepAnchor}

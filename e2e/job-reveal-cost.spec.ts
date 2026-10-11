@@ -67,6 +67,30 @@ test("Show image loads an offscreen component and omits cost when unavailable", 
   await expect(page.getByRole("button", { name: "Save", exact: true })).toBeVisible();
 });
 
+test("Show image first-loads an unseen component published while Trace is closed", async ({ page }) => {
+  await openView(page, undefined, "?many=60");
+  const section = page.getByRole("region", { name: "m24", exact: true });
+  const componentId = await section.getAttribute("data-component");
+  expect(componentId).not.toBeNull();
+  await expect(section).not.toBeInViewport();
+  const nodeReads = () => page.evaluate((id) => (window as any).trace.backend.calls("trace_component_nodes")
+    .filter((call: { params: { componentId: string } }) => call.params.componentId === id).length, componentId);
+  expect(await nodeReads()).toBe(0);
+  // Publishing into an open Trace view ranks the output first and preloads
+  // it. Publish with the view closed to exercise its first-ever node read.
+  await page.evaluate(() => (window as any).trace.toggle());
+  await expect(page.getByTestId("trace-view")).toHaveCount(0);
+  await generated(page, "m24", false);
+  expect(await nodeReads()).toBe(0);
+  await page.evaluate(() => (window as any).trace.showJob(71));
+  await expect.poll(nodeReads).toBeGreaterThan(0);
+  await expect(page.getByTestId("preview-title")).toHaveText("revealed.png");
+  await expect(await tile(page, "revealed")).toHaveAttribute("data-tone", "focus");
+  await expect(await card(page, "revealed")).toBeFocused();
+  await expect(await tile(page, "revealed")).toBeInViewport();
+  await expect(section.locator(".heading")).toHaveAttribute("aria-expanded", "true");
+});
+
 test("aborting during loading preserves the existing focus and expansion", async ({ page }) => {
   await openView(page);
   await generated(page);

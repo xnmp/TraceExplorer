@@ -7,7 +7,7 @@
    */
   import { tick } from "svelte";
   import type { NodeKey } from "$lib/domain/trace-graph/model";
-  import { planScene, routeStyle, junctionRelated, type RouteStyle, type ScenePlan } from "$lib/domain/trace-graph/scene";
+  import { planScene, routeStyle, junctionRelated, type ComponentFocus, type RouteStyle, type ScenePlan } from "$lib/domain/trace-graph/scene";
   import { nearestInDirection, type Direction, type GraphLayout, type Orientation } from "$lib/domain/trace-graph/layout";
   import { endpointKey } from "$lib/domain/trace-graph/junctions";
   import { ARROW, tileMetrics, type TileMetrics } from "$lib/domain/trace-graph/metrics";
@@ -21,7 +21,7 @@
 
   interface Props {
     data: ComponentData;
-    focus: NodeKey | null;
+    focus: ComponentFocus | null;
     selected: ReadonlySet<NodeKey>;
     width: number;
     /** The size of every tile (the host's tile-size setting); defaults to the default tile. */
@@ -67,7 +67,7 @@
   /** Only the latest full commit plays; one superseded before rendering never starts. */
   let plays = 0;
 
-  const plan = $derived(planScene(data.dag, data.members, focus, width, { hint: ordering, previous: orientations.get(componentId), tile }));
+  const plan = $derived(planScene(data.dag, data.members, focus, width, { componentId, hint: ordering, previous: orientations.get(componentId), tile }));
 
   /** What later plans build on: the reading order and the orientation shown. */
   function remember(layout: GraphLayout): void {
@@ -119,7 +119,7 @@
     const next = plan;
     const requestedReveal = reveal;
     const scene: GraphScene = {
-      data, focus, reveal: requestedReveal,
+      data, focus: focus?.componentId === componentId ? focus.key : null, reveal: requestedReveal,
       isCurrent: () => plan === next && reveal === requestedReveal,
     };
     const ready = cachedLayout(next.request) ?? (next.request.items.length <= SYNC_LIMIT ? layoutNow(next.request) : null);
