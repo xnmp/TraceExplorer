@@ -46,6 +46,7 @@ pub struct ApiProfile {
 pub enum ApiKind {
     OpenAiImages,
     Gemini,
+    Bfl,
     /// Test-only extra backend proving a new kind needs no consumer changes.
     #[cfg(feature = "test-hooks")]
     Fixture,
@@ -55,6 +56,7 @@ impl ApiKind {
     pub const ALL: &'static [ApiKind] = &[
         ApiKind::OpenAiImages,
         ApiKind::Gemini,
+        ApiKind::Bfl,
         #[cfg(feature = "test-hooks")]
         ApiKind::Fixture,
     ];
@@ -88,6 +90,8 @@ pub enum Profile {
     OpenAiImages(ApiProfile),
     #[serde(rename = "gemini")]
     Gemini(ApiProfile),
+    #[serde(rename = "bfl")]
+    Bfl(ApiProfile),
     #[cfg(feature = "test-hooks")]
     #[serde(rename = "fixture-images")]
     Fixture(ApiProfile),
@@ -98,6 +102,7 @@ impl Profile {
             Self::Codex { .. } => None,
             Self::OpenAiImages(p) => Some((ApiKind::OpenAiImages, p)),
             Self::Gemini(p) => Some((ApiKind::Gemini, p)),
+            Self::Bfl(p) => Some((ApiKind::Bfl, p)),
             #[cfg(feature = "test-hooks")]
             Self::Fixture(p) => Some((ApiKind::Fixture, p)),
         }
@@ -107,6 +112,7 @@ impl Profile {
             Self::Codex { .. } => None,
             Self::OpenAiImages(p) => Some((ApiKind::OpenAiImages, p)),
             Self::Gemini(p) => Some((ApiKind::Gemini, p)),
+            Self::Bfl(p) => Some((ApiKind::Bfl, p)),
             #[cfg(feature = "test-hooks")]
             Self::Fixture(p) => Some((ApiKind::Fixture, p)),
         }

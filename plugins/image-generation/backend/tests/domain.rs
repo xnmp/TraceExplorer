@@ -584,3 +584,31 @@ fn options_problem_rejects_unsupported_resolution_and_aspect_ratio() {
     options.aspect_ratio = Some("1:1".into());
     assert!(options_problem(&BARE, &options).is_some());
 }
+
+#[test]
+fn the_bfl_backend_is_ratio_based_and_rejects_model_paths_in_its_root() {
+    let caps = capabilities(Kind::Api(ApiKind::Bfl));
+    assert!(caps.get("sizes").is_none());
+    assert!(caps.get("resolution").is_none());
+    assert_eq!(caps["maxInputs"], 8);
+    assert_eq!(caps["quality"], serde_json::json!(["auto"]));
+    assert_eq!(caps["aspectRatio"][0], "keep");
+    assert_eq!(ApiKind::Bfl.transport(), "bfl");
+    assert!(base_url(ApiKind::Bfl, "https://api.eu.bfl.ai/v1", false).is_ok());
+    assert!(base_url(ApiKind::Bfl, "https://api.bfl.ai/v1/flux-2-pro", false).is_err());
+    let json = serde_json::json!({"schemaVersion":1,"documentRevision":0,"defaultConnectionId":null,"profiles":[api_json("bfl")]});
+    let mut parsed: Configuration = serde_json::from_value(json).unwrap();
+    validate_configuration(&mut parsed).unwrap();
+    assert_eq!(parsed.profiles[0].kind(), Kind::Api(ApiKind::Bfl));
+    // The form's request (ratio, no resolution or pixel size) is accepted; a resolution is not.
+    let mut req = request();
+    req.connection_id = "api".into();
+    req.expected_connection_revision = "r1".into();
+    req.options.size = "auto".into();
+    req.options.quality = "auto".into();
+    req.options.background = "auto".into();
+    req.options.aspect_ratio = Some("16:9".into());
+    assert!(recipe(&parsed.profiles[0], &req).is_ok());
+    req.options.resolution = Some("2k".into());
+    assert!(recipe(&parsed.profiles[0], &req).is_err());
+}

@@ -8,8 +8,9 @@ export type ApiConnection = Exclude<ImageConnection, CodexConnection>;
 export function isCodexConnection(profile: ImageConnection): profile is CodexConnection { return profile.transport === "codex-cli"; }
 export function isApiConnection(profile: ImageConnection): profile is ApiConnection { return profile.transport !== "codex-cli"; }
 /** Known backends get a friendly name; any other transport is shown as its id. */
+const TRANSPORT_LABELS: ReadonlyMap<string, string> = new Map([["codex-cli", "Codex"], ["openai-images", "Images API"], ["gemini", "Nano Banana (Gemini)"], ["bfl", "Flux (Black Forest Labs)"]]);
 export function transportLabel(transport: string): string {
-  return transport === "codex-cli" ? "Codex" : transport === "openai-images" ? "Images API" : transport === "gemini" ? "Nano Banana" : transport;
+  return TRANSPORT_LABELS.get(transport) ?? transport;
 }
 
 export function connectionFor(description: ImageDescription | undefined, selected: string | null = null): ImageConnection | null {

@@ -60,6 +60,10 @@ Frontend:
 
 Nothing else changes: `id`, `revision`, `credential`, `execution_identity`, configuration validation, `recipe()`, per-connection `capabilities()` and the stored-receipt checks go through the descriptor or `Profile::api()`. Trace accepts any identifier transport (`openai-image.ts`, `image-retry.ts`, `service_images.rs`); optionally give it a friendly name in Trace's `transportLabel` (`src/lib/plugins/openai-image/connections.ts`), otherwise the transport id is shown. With the `test-hooks` feature the extra `fixture-images` kind (`adapters/api/fixture.rs`) exercises a third backend without any real provider.
 
+### Flux (Black Forest Labs), `bfl`
+
+`adapters/api/bfl.rs` (docs and status table in its module comment) is the one backend that polls: it submits to `{base}/{model}` with `x-key`, polls the returned `polling_url` (key sent only to the base's exact origin or an https `api.bfl.ai` / `api.<region>.bfl.ai` URL; anything else fails as `invalid_response` before a request), then downloads `result.sample` with a plain keyless GET bounded to 50 MiB. Moderation statuses are `provider_refused`, `Error`/`Failed` are `provider_failed` (shared `Failure::ProviderFailed`), `Task not found` and unrecognised statuses are Unknown. Polling is memory only: a crash while polling leaves the operation Unknown and the finished image is not recovered (no resume in v1). Only `flux-3-image` of the FLUX 3 family is accepted (`images` array, no `output_format`); others use `input_image[_N]`. Reference caps follow the model family (pro/max/flex 8, klein and Kontext 4, flux-3-image 10 capped to 8, unknown models 0) and fail as `invalid_request` before any request. A non-2xx poll with a terminal JSON status is classified by that status; 429 is retried like 5xx. A failed sample download is always Unknown. FLUX.2 ratios are mapped to fixed ~1 MP `width`/`height`.
+
 ## Verification
 
 From the repository worktree:

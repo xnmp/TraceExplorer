@@ -9,6 +9,8 @@
 //!   the status number; provider prose is never copied into receipts);
 //! - a 200 that explicitly refuses (safety/moderation): definitive
 //!   `provider_refused`, worded from a fixed table keyed by a structured reason;
+//! - an explicit provider-side task failure (asynchronous APIs): definitive
+//!   `provider_failed` with fixed wording;
 //! - a 200 that is unparseable or lacks the image: `invalid_response`, unknown.
 //!
 //! `service.rs` maps only an explicit list of codes to `Unknown`; every other
@@ -27,6 +29,7 @@ use std::{
     time::Duration,
 };
 use te_image_generation_contract::{EffectiveRecipe, SafeError};
+pub mod bfl;
 #[cfg(feature = "test-hooks")]
 mod fixture;
 pub mod gemini;
@@ -70,6 +73,7 @@ pub fn descriptor(kind: ApiKind) -> &'static ApiDescriptor {
     match kind {
         ApiKind::OpenAiImages => &openai_images::DESCRIPTOR,
         ApiKind::Gemini => &gemini::DESCRIPTOR,
+        ApiKind::Bfl => &bfl::DESCRIPTOR,
         #[cfg(feature = "test-hooks")]
         ApiKind::Fixture => &fixture::DESCRIPTOR,
     }
@@ -78,6 +82,7 @@ pub async fn generate(kind: ApiKind, call: ApiCall<'_>) -> Result<Output> {
     match kind {
         ApiKind::OpenAiImages => openai_images::generate(call).await,
         ApiKind::Gemini => gemini::generate(call).await,
+        ApiKind::Bfl => bfl::generate(call).await,
         #[cfg(feature = "test-hooks")]
         ApiKind::Fixture => fixture::generate(call).await,
     }
@@ -142,6 +147,8 @@ pub enum Failure {
     Status { code: u16 },
     /// A definitive 200 that says the provider refused, as a structured reason.
     Refused(Refusal),
+    /// A definitive answer that the provider accepted the task and then failed it.
+    ProviderFailed,
     /// A 200 that is unparseable or lacks the image.
     Invalid(&'static str),
 }
@@ -173,6 +180,10 @@ pub fn outcome(failure: Failure) -> SafeError {
         Failure::Refused(reason) => error(
             "provider_refused",
             &format!("The provider refused this request ({})", reason.wording()),
+        ),
+        Failure::ProviderFailed => error(
+            "provider_failed",
+            "The image provider reported that generation failed",
         ),
         Failure::Invalid(message) => error("invalid_response", message),
     }
@@ -401,6 +412,7 @@ mod tests {
             hostile.message,
             "The provider refused this request (no reason given)"
         );
+        assert_eq!(code(Failure::ProviderFailed), "provider_failed");
         assert_eq!(code(Failure::Invalid("no image")), "invalid_response");
         assert_eq!(code(Failure::Status { code: 200 }), "invalid_response");
     }

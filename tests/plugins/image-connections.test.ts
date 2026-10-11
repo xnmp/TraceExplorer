@@ -56,6 +56,9 @@ describe("shared image connection policy", () => {
     expect(capabilityProblem(future, { model: "", size: "1024x1024", quality: "auto", background: "auto" }, 0)).toContain("model ID");
     expect(transportLabel("future-images")).toBe("future-images");
     expect(transportLabel("openai-images")).toBe("Images API");
+    expect(transportLabel("bfl")).toBe("Flux (Black Forest Labs)");
+    expect(transportLabel("gemini")).toBe("Nano Banana (Gemini)");
+    expect(transportLabel("toString")).toBe("toString");
     for (const transport of ["Bad_Name", "", "9x", "a".repeat(65)]) {
       const bad = imageAvailability(); bad.description!.profiles[1] = { ...bad.description!.profiles[1], transport } as any;
       expect(validImageAvailability(bad), transport).toBe(false);
