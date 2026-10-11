@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { folderCells, attachBand, gridNeighbor, gridPins, rovingStop } from "$lib/plugins/trace/view/stack-grid";
+import { folderCells, unlistedCovers, attachBand, gridNeighbor, gridPins, rovingStop } from "$lib/plugins/trace/view/stack-grid";
 import { layoutGraph } from "$lib/domain/trace-graph/layout";
 import { gridFlow } from "$lib/domain/trace-graph/grid-flow";
 import { samplePathString } from "$lib/plugins/trace/view/path-sampling";
@@ -49,6 +49,19 @@ describe("folder grid rules", () => {
     it("order mixed artifact and run keys and tolerate keys of another shape", () => {
       expect(order(stacks("zzz", "o:3:1", "a:2", "o:3:0"))).toEqual(["a:2", "o:3:0", "o:3:1", "zzz"]);
     });
+  });
+  it("saving an unsaved stack's cover moves no cell when its place is held", () => {
+    const draft = (cover: string) => summary("c:a:5", cover, "o:7:0");
+    const unsaved: FolderIndex = { ...index, components: [summary("c:a:1", "/p/a"), draft("/managed/draft.png")], members: new Map([["/p/a", { key: "a:1", componentId: "c:a:1" }]]) };
+    // Saved: the draft's file now sorts first in the listing, and is a member of its stack.
+    const saved: FolderIndex = { ...index, components: [summary("c:a:1", "/p/a"), draft("/p/0-draft")], members: new Map([["/p/a", { key: "a:1", componentId: "c:a:1" }], ["/p/0-draft", { key: "o:7:0", componentId: "c:a:5" }]]) };
+    const before = folderCells([entry("/p/a"), entry("/p/notes")], unsaved);
+    const held = unlistedCovers(before, new Set());
+    expect(held).toEqual(new Set(["o:7:0"]));
+    const listing = [entry("/p/0-draft"), entry("/p/a"), entry("/p/notes")];
+    expect(folderCells(listing, saved, held).map((cell) => cell.id)).toEqual(before.map((cell) => cell.id));
+    // A fresh layout forgets the history and follows the listing.
+    expect(folderCells(listing, saved).map((cell) => cell.id)).toEqual(["o:7:0", "a:1", "/p/notes"]);
   });
   it("handles empty folders", () => { expect(folderCells([], { ...index, components: [], members: new Map() })).toEqual([]); });
   it("attaches several bands to the same pinned cover without changing any x or losing parentage", () => {

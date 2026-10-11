@@ -367,6 +367,22 @@ test("an unsaved cover that is not the component's namesake selects itself as th
   expect(await uncaught(page)).toEqual([]);
 });
 
+test("saving an unsaved cover through its Save button moves no cell", async ({ page }) => {
+  await openView(page, 420, "?grouping=unsaved-root-joined-with-source", false);
+  await stack(page, "draft").locator("[data-stack-toggle]").click(); await settle(page);
+  const cells = () => page.evaluate(() => Object.fromEntries([...document.querySelectorAll<HTMLElement>("[data-grid-cell]")].map((cell) => {
+    const rect = cell.getBoundingClientRect();
+    return [cell.dataset.gridCell!, [Math.round(rect.x), Math.round(rect.y)]];
+  })));
+  const before = await cells();
+  const cover = page.locator('[data-tile-key="o:10:0"]');
+  await cover.hover();
+  await cover.getByRole("button", { name: "Save image permanently" }).click(); await settle(page);
+  expect(await page.evaluate(() => (window as any).trace.backend.calls("save_generated_image").length)).toBeGreaterThan(0);
+  expect(await cells()).toEqual(before);
+  expect(await uncaught(page)).toEqual([]);
+});
+
 const tabStops = (page: Page) => page.locator('[role="grid"] [tabindex="0"]');
 const focusIsInGrid = (page: Page) => page.evaluate(() => !!document.activeElement?.closest('[role="grid"]'));
 

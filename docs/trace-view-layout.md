@@ -5,7 +5,11 @@ How the Trace view arranges one connected component, which way it runs, which no
 ## Grid bands and pinned covers
 
 The view uses one folder-order grid. `folderCells` collapses each lineage at
-its cover’s position in the host listing; unsaved-only stacks follow the listing.
+its cover’s position in the host listing. Stacks with no listed cover (unsaved) follow the
+listing, oldest cover first (creation order of the cover key), so a stack gaining members never
+moves another. No user action moves a cell: a stack that was unsaved **stays where it is after it is
+saved** (`held`, kept by `StackGrid`) until the grid is laid out afresh, i.e. the folder or the column
+count changes, when it takes its listed position. Its eventual file name cannot be known before it is saved.
 `gridFlow(items, open, columns, metrics)` takes the host-sorted list **already collapsed** to one
 `{id, kind: "stack"}` at each cover's position, plus ordinary files/folders.
 Use an entry path or cover key as `id`, rather than a component id (which can

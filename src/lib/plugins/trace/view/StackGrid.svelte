@@ -9,7 +9,7 @@
   import { hostFileTile } from "../../../../sdk";
   import type { FolderSession } from "./folder-session.svelte";
   import type { GraphScene } from "./graph-commit";
-  import { type FolderCell, folderCells, coverNode, gridNeighbor, attachBand, gridPins, rovingStop } from "./stack-grid";
+  import { type FolderCell, folderCells, unlistedCovers, coverNode, gridNeighbor, attachBand, gridPins, rovingStop } from "./stack-grid";
   import { captureGrid, playGrid, prefersReducedMotion, zoomOf } from "./motion";
   import TraceGraph from "./TraceGraph.svelte";
   import TraceTile from "./TraceTile.svelte";
@@ -50,12 +50,26 @@
   }
   let running: Animation[] = [];
   let motion = 0;
-  const cells = $derived(session.index ? folderCells(pane.entries, session.index) : []);
+  /** Stacks that have been unsaved since the grid was last laid out afresh: they keep their cell when saved. */
+  let held = $state.raw<ReadonlySet<string>>(new Set());
+  const cells = $derived(session.index ? folderCells(pane.entries, session.index, held) : []);
   const metrics = $derived(host?.tileGridMetrics(pane.tileSize?.preset) ?? { cellWidth: tile.width, cellHeight: tileSize({ foreign: false, hint: true }, tile).height, gap: 8, gridPadding: 0 });
   const innerWidth = $derived(Math.max(0, width - 2 * metrics.gridPadding));
   const columns = $derived(Math.max(1, Math.floor((innerWidth + metrics.gap) / (Math.max(metrics.cellWidth, tile.width) + metrics.gap))));
   const cellWidth = $derived(Math.max(tile.width, (innerWidth - (columns - 1) * metrics.gap) / columns));
   const cellHeight = $derived(Math.max(metrics.cellHeight, tileSize({ foreign: false, hint: true }, tile).height));
+  // `held` is history, not derivable: a stack that was unsaved stays placed after the listing until the
+  // grid is laid out afresh (another folder, or a new column count).
+  let laidOut = "";
+  $effect.pre(() => {
+    const stamp = `${session.index?.directory}|${columns}`, fresh = stamp !== laidOut, kept = fresh ? new Set<string>() : untrack(() => held);
+    const unlisted = unlistedCovers(cells, kept);
+    untrack(() => {
+      laidOut = stamp;
+      const next = new Set([...kept, ...unlisted]);
+      if (next.size !== held.size || [...next].some((key) => !held.has(key))) held = next;
+    });
+  });
   const flow = $derived(gridFlow(cells, new Map(cells.filter((cell) => cell.kind === "stack" && openKeys.has(cell.id)).map((cell) => [cell.id, heights.get(cell.id) ?? 160])), columns,
     { cellWidth, cellHeight, columnGap: metrics.gap, rowGap: metrics.gap }));
   const pins = $derived(gridPins(flow, openKeys));

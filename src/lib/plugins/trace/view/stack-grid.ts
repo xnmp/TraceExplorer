@@ -11,7 +11,13 @@ export interface FolderCell extends GridItem {
   readonly coverKey?: string;
 }
 
-export function folderCells(entries: readonly FileEntry[], index: FolderIndex): FolderCell[] {
+/**
+ * The cells in host listing order: a stack sits at its listed cover's position, and a stack with no
+ * listed cover (unsaved) follows the listing. `held` names stacks (by cover key) that have been
+ * unsaved in this layout: they keep their place after gaining a listed cover, so saving moves
+ * no cell. The caller forgets `held` when the grid is laid out afresh (resize, folder change).
+ */
+export function folderCells(entries: readonly FileEntry[], index: FolderIndex, held: ReadonlySet<string> = new Set()): FolderCell[] {
   const summaries = new Map(index.components.map((summary) => [summary.id, summary]));
   const emitted = new Set<string>();
   const result: FolderCell[] = [];
@@ -19,7 +25,7 @@ export function folderCells(entries: readonly FileEntry[], index: FolderIndex): 
     const member = index.members.get(entry.path);
     const summary = member && summaries.get(member.componentId);
     if (!summary) { result.push({ id: entry.path, kind: entry.kind === "directory" ? "folder" : "file", entry }); continue; }
-    if (summary.cover?.path !== entry.path) continue;
+    if (summary.cover?.path !== entry.path || held.has(summary.coverKey)) continue;
     emitted.add(summary.id);
     result.push({ id: summary.coverKey, kind: "stack", entry, summary, coverKey: summary.coverKey });
   }
@@ -27,9 +33,17 @@ export function folderCells(entries: readonly FileEntry[], index: FolderIndex): 
   // their covers were created: the index lists components newest-activity first, so using its order
   // would swap two stacks' columns whenever the older one gains a member.
   const unlisted = index.components.filter((summary) => !emitted.has(summary.id)).sort((a, b) => compareCreation(a.coverKey, b.coverKey));
-  for (const summary of unlisted) result.push({ id: summary.coverKey, kind: "stack", summary, coverKey: summary.coverKey });
+  const byPath = new Map(entries.map((entry) => [entry.path, entry]));
+  for (const summary of unlisted) {
+    const entry = held.has(summary.coverKey) && summary.cover ? byPath.get(summary.cover.path) : undefined;
+    result.push({ id: summary.coverKey, kind: "stack", ...(entry ? { entry } : {}), summary, coverKey: summary.coverKey });
+  }
   return result;
 }
+
+/** The stacks placed after the listing: with no listed cover, or held there. */
+export const unlistedCovers = (cells: readonly FolderCell[], held: ReadonlySet<string>): ReadonlySet<string> =>
+  new Set(cells.filter((cell) => cell.kind === "stack" && (!cell.entry || held.has(cell.coverKey!))).map((cell) => cell.coverKey!));
 
 /** Oldest first by the number in a node key (`a:<artifact>` or `o:<run>:<output>`), ties by the key itself. */
 export function compareCreation(a: string, b: string): number {
