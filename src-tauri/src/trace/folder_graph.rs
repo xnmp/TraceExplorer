@@ -55,7 +55,41 @@ const COUNTED_TABLES: [(&str, &[&str]); 6] = [
     ("image_folder_contexts", &["INSERT", "UPDATE", "DELETE"]),
 ];
 
-fn counter_triggers() -> Vec<(String, String)> {
+/// Further inputs of the index with explicitly named triggers. The existing
+/// `trace_revision_runs_update` keeps its old column list in databases that
+/// already have it, and `CREATE TRIGGER IF NOT EXISTS` cannot replace it, so
+/// later inputs get triggers of their own. A trigger is installed only once its
+/// table exists; a later open installs the rest.
+/// (name, event, table)
+const EXTRA_COUNTED: [(&str, &str, &str); 4] = [
+    // Dismissal and the evidence behind `TraceNode::dismissable`.
+    ("trace_revision_runs_evidence_update", "UPDATE OF result_details,dismissed_at", "runs"),
+    ("trace_revision_image_service_operations_insert", "INSERT", "image_service_operations"),
+    ("trace_revision_image_service_operations_update", "UPDATE", "image_service_operations"),
+    ("trace_revision_image_service_operations_delete", "DELETE", "image_service_operations"),
+];
+
+fn counter_triggers(connection: &Connection) -> Result<Vec<(String, String)>, AppError> {
+    let mut triggers = base_counter_triggers();
+    for (name, event, table) in EXTRA_COUNTED {
+        let exists: bool = connection
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1)",
+                [table],
+                |row| row.get(0),
+            )
+            .map_err(sql)?;
+        if exists {
+            triggers.push((
+                name.to_owned(),
+                format!("CREATE TRIGGER IF NOT EXISTS {name} AFTER {event} ON {table} BEGIN UPDATE trace_revision SET value=value+1 WHERE id=1; END;"),
+            ));
+        }
+    }
+    Ok(triggers)
+}
+
+fn base_counter_triggers() -> Vec<(String, String)> {
     COUNTED_TABLES
         .iter()
         .flat_map(|(table, events)| {
@@ -80,7 +114,7 @@ fn counter_triggers() -> Vec<(String, String)> {
 /// triggers, so `user_version` is unchanged. Checked read-only first so an
 /// ordinary connection never takes a write lock.
 pub(super) fn ensure_change_counter(connection: &Connection) -> Result<(), AppError> {
-    let triggers = counter_triggers();
+    let triggers = counter_triggers(connection)?;
     let names: Vec<&str> = triggers.iter().map(|(name, _)| name.as_str()).collect();
     let installed: i64 = batched(
         connection,
@@ -168,6 +202,8 @@ pub(crate) struct TraceNode {
     pub earlier_revision: bool,
     pub order: i64,
     pub prompt: String,
+    /// An Interrupted placeholder whose recorded evidence allows Dismiss.
+    pub dismissable: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -258,6 +294,7 @@ struct RunFacts {
     status: String,
     temporary: bool,
     prompt: String,
+    dismissable: bool,
     /// Input artifact IDs in position order, possibly repeated.
     inputs: Vec<i64>,
 }
@@ -572,6 +609,7 @@ fn build_index(facts: &Facts, layout: &Layout) -> FolderIndex {
                         earlier_revision: artifact.earlier_revision,
                         order: id,
                         prompt: run.map(|run| run.prompt.clone()).unwrap_or_default(),
+                        dismissable: false,
                     }
                 }
                 NodeRef::Placeholder(run_id) => {
@@ -593,6 +631,7 @@ fn build_index(facts: &Facts, layout: &Layout) -> FolderIndex {
                         earlier_revision: false,
                         order: PLACEHOLDER_ORDER + run_id,
                         prompt: run.map(|run| run.prompt.clone()).unwrap_or_default(),
+                        dismissable: run.is_some_and(|run| run.dismissable),
                     }
                 }
             }
@@ -1000,19 +1039,23 @@ fn load_snapshot(
     // (b) Unsaved generations meant for this folder, and their outputs.
     let mut statement = connection
         .prepare(
-            "SELECT r.id,r.status FROM image_folder_contexts c JOIN runs r ON r.id=c.run_id
+            "SELECT r.id,r.status,r.dismissed_at IS NOT NULL FROM image_folder_contexts c JOIN runs r ON r.id=c.run_id
              WHERE c.folder=?1 AND r.status IN ('running','uncertain','interrupted','succeeded')",
         )
         .map_err(sql)?;
     let contexts = statement
         .query_map([folder], |row| {
-            Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, bool>(2)?,
+            ))
         })
         .map_err(sql)?
         .collect::<Result<Vec<_>, _>>()
         .map_err(sql)?;
     drop(statement);
-    let context_runs: Vec<i64> = contexts.iter().map(|(run, _)| *run).collect();
+    let context_runs: Vec<i64> = contexts.iter().map(|(run, _, _)| *run).collect();
     let mut with_output = HashSet::new();
     let direct_candidates: HashSet<i64> = candidates.iter().map(|(id, _)| *id).collect();
     for (id, row) in batched(
@@ -1029,10 +1072,12 @@ fn load_snapshot(
     }
     let placeholders: Vec<i64> = contexts
         .iter()
-        .filter(|(run, status)| {
-            !with_output.contains(run) && matches!(status.as_str(), "running" | "uncertain")
+        .filter(|(run, status, dismissed)| {
+            !with_output.contains(run)
+                && matches!(status.as_str(), "running" | "uncertain")
+                && !dismiss::hides_placeholder(status, *dismissed)
         })
-        .map(|(run, _)| *run)
+        .map(|(run, _, _)| *run)
         .collect();
 
     // Only the newest, non-discarded revisions can be seeds. Presence is
@@ -1105,7 +1150,6 @@ fn load_snapshot(
         run_facts.insert(
             id,
             RunFacts {
-                status,
                 temporary: parameters
                     .get("output_storage")
                     .and_then(serde_json::Value::as_str)
@@ -1115,6 +1159,10 @@ fn load_snapshot(
                     .and_then(serde_json::Value::as_str)
                     .map(truncate_prompt)
                     .unwrap_or_default(),
+                dismissable: status == "uncertain"
+                    && placeholders.contains(&id)
+                    && dismiss::evidence_ok(connection, id)?,
+                status,
                 inputs: inputs.remove(&id).unwrap_or_default(),
             },
         );
@@ -2144,6 +2192,169 @@ mod tests {
         assert!(!done.component_of(&key).active);
     }
 
+    fn uncertain_run(f: &Fixture, operation: &str, inputs: Vec<OperationInput>) -> i64 {
+        let run = begin_operation_at(
+            &f.db,
+            OperationStart {
+                operation: operation.into(),
+                parameters: temporary(&f.folder),
+                inputs,
+            },
+        )
+        .unwrap();
+        mark_operation_uncertain(
+            &TraceRunHandle {
+                database: f.db.clone(),
+                id: run,
+            },
+            "test",
+        )
+        .unwrap();
+        run
+    }
+
+    #[test]
+    fn dismissing_an_interrupted_placeholder_hides_it_but_keeps_the_run() {
+        let f = fixture();
+        let source = image(&f.folder.join("source.png"), b"source");
+        let run = uncertain_run(&f, "openai.image.edit", vec![input(&source)]);
+        let key = format!("o:{run}:0");
+        assert_eq!(view(&f).keyed(&key).state, NodeState::Uncertain);
+        assert_eq!(view(&f).components.len(), 1);
+
+        dismiss::dismiss_at(&f.db, run).unwrap();
+        dismiss::dismiss_at(&f.db, run).unwrap();
+
+        let after = view(&f);
+        assert!(after.nodes.values().flatten().all(|node| node.key != key));
+        assert!(after.components.is_empty(), "a lone plain file is no component");
+        let (status, error, dismissed): (String, Option<String>, bool) = connection_at(&f.db)
+            .unwrap()
+            .query_row(
+                "SELECT status,error,dismissed_at IS NOT NULL FROM runs WHERE id=?1",
+                [run],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(status, "uncertain");
+        assert_eq!(error.as_deref(), Some("test"));
+        assert!(dismissed);
+    }
+
+    #[test]
+    fn dismissing_the_only_reason_for_eligibility_makes_the_folder_ineligible() {
+        let f = fixture();
+        let run = uncertain_run(&f, "openai.image.generate", vec![]);
+        assert!(folders::has_trace_at(&f.db, &f.folder).unwrap());
+        dismiss::dismiss_at(&f.db, run).unwrap();
+        assert!(!folders::has_trace_at(&f.db, &f.folder).unwrap());
+        assert!(view(&f).components.is_empty());
+    }
+
+    #[test]
+    fn running_and_unknown_runs_cannot_be_dismissed() {
+        let f = fixture();
+        let running = begin_operation_at(
+            &f.db,
+            OperationStart {
+                operation: "openai.image.generate".into(),
+                parameters: temporary(&f.folder),
+                inputs: vec![],
+            },
+        )
+        .unwrap();
+        assert!(dismiss::dismiss_at(&f.db, running).is_err());
+        assert!(dismiss::dismiss_at(&f.db, 999_999).is_err());
+        assert_eq!(
+            view(&f).keyed(&format!("o:{running}:0")).state,
+            NodeState::Running
+        );
+    }
+
+    #[test]
+    fn a_dismissed_run_that_recovery_resumes_is_visible_and_makes_the_folder_eligible() {
+        let f = fixture();
+        let run = uncertain_run(&f, "openai.image.generate", vec![]);
+        dismiss::dismiss_at(&f.db, run).unwrap();
+        assert!(!folders::has_trace_at(&f.db, &f.folder).unwrap());
+        // The transition publication applies before it stages the sealed image.
+        connection_at(&f.db)
+            .unwrap()
+            .execute(
+                "UPDATE runs SET status='running',error=NULL WHERE id=?1 AND status='uncertain'",
+                [run],
+            )
+            .unwrap();
+        assert!(folders::has_trace_at(&f.db, &f.folder).unwrap());
+        let shown = view(&f);
+        let node = shown.keyed(&format!("o:{run}:0"));
+        assert_eq!(node.state, NodeState::Running);
+        assert!(!node.dismissable);
+    }
+
+    #[test]
+    fn only_a_run_with_unknown_unrecoverable_evidence_is_dismissable() {
+        let f = fixture();
+        let source = image(&f.folder.join("source.png"), b"source");
+        let run = uncertain_run(&f, "openai.image.edit", vec![input(&source)]);
+        let key = format!("o:{run}:0");
+        assert!(view(&f).keyed(&key).dismissable);
+        connection_at(&f.db)
+            .unwrap()
+            .execute(
+                "UPDATE runs SET result_details=?2 WHERE id=?1",
+                params![run, r#"{"outcome":"unknown","provider_execution":{"state":"succeeded"}}"#],
+            )
+            .unwrap();
+        assert!(!view(&f).keyed(&key).dismissable);
+        assert!(dismiss::dismiss_at(&f.db, run).is_err());
+        // Still shown: the refused dismissal changed nothing.
+        assert_eq!(view(&f).keyed(&key).state, NodeState::Uncertain);
+    }
+
+    #[test]
+    fn output_arriving_after_dismissal_is_shown() {
+        let f = fixture();
+        let source = image(&f.folder.join("source.png"), b"source");
+        let run = begin_operation_at(
+            &f.db,
+            OperationStart {
+                operation: "openai.image.edit".into(),
+                parameters: temporary(&f.folder),
+                inputs: vec![input(&source)],
+            },
+        )
+        .unwrap();
+        // The output is prepared, then the outcome becomes unknown.
+        let output = f.generated.join("late.png");
+        let staging = tempfile::Builder::new()
+            .prefix(".tauri-explorer-stage-")
+            .tempdir_in(&f.generated)
+            .unwrap()
+            .keep();
+        let (payload, anchor) = (staging.join("payload"), staging.join("trace-anchor"));
+        fs::write(&payload, b"late").unwrap();
+        fs::hard_link(&payload, &anchor).unwrap();
+        let digest = hex::encode(Sha256::digest(b"late"));
+        prepare_output_at(&f.db, run, &output, &digest, Some(&anchor)).unwrap();
+        mark_operation_uncertain(
+            &TraceRunHandle {
+                database: f.db.clone(),
+                id: run,
+            },
+            "test",
+        )
+        .unwrap();
+        dismiss::dismiss_at(&f.db, run).unwrap();
+        assert!(view(&f).nodes.values().flatten().all(|n| n.run_id != Some(run)));
+        fs::rename(payload, &output).unwrap();
+        complete_run_at(&f.db, run, output.to_str().unwrap(), false).unwrap();
+        let after = view(&f);
+        let node = after.keyed(&format!("o:{run}:0"));
+        assert_eq!(node.state, NodeState::Present);
+        assert!(node.temporary);
+    }
+
     #[test]
     fn discarded_parent_is_kept_and_marked() {
         let f = fixture();
@@ -2613,6 +2824,7 @@ mod tests {
             earlier_revision: false,
             order: 1,
             prompt: String::new(),
+            dismissable: false,
         };
         let with = |change: fn(&mut TraceNode)| {
             let mut node = plain.clone();
@@ -2749,6 +2961,7 @@ mod tests {
             earlier_revision: true,
             order: 2,
             prompt: String::new(),
+            dismissable: false,
         };
         let value = serde_json::to_value(&node).unwrap();
         assert_eq!(value["artifactId"], 2);
@@ -2756,6 +2969,7 @@ mod tests {
         assert_eq!(value["earlierRevision"], true);
         assert_eq!(value["scope"], "subfolder");
         assert_eq!(value["state"], "uncertain");
+        assert_eq!(value["dismissable"], false);
         let member = serde_json::to_value(Member {
             path: "/x".into(),
             component_id: "c:1".into(),
@@ -2868,6 +3082,85 @@ mod tests {
         assert_eq!(truncated.chars().count(), MAX_PROMPT_CHARS);
         assert!(long.starts_with(&truncated));
         assert_eq!(truncate_prompt(""), "");
+    }
+
+    #[test]
+    fn index_inputs_beyond_status_and_parameters_change_the_counter() {
+        let f = fixture();
+        let source = image(&f.folder.join("source.png"), b"source");
+        let run = uncertain_run(&f, "openai.image.edit", vec![input(&source)]);
+        let connection = connection_at(&f.db).unwrap();
+        let counter = || -> i64 {
+            connection
+                .query_row("SELECT value FROM trace_revision", [], |row| row.get(0))
+                .unwrap()
+        };
+        let token = || components_at(&f.db, &f.folder, 0).unwrap().token;
+        let changes = |what: &str, act: &dyn Fn()| {
+            let (before_counter, before_token) = (counter(), token());
+            act();
+            assert!(counter() > before_counter, "{what}: counter");
+            assert_ne!(token(), before_token, "{what}: token");
+        };
+        changes("result_details", &|| {
+            connection
+                .execute("UPDATE runs SET result_details='{}' WHERE id=?1", [run])
+                .unwrap();
+        });
+        changes("operation link insert", &|| {
+            connection
+                .execute(
+                    "INSERT INTO image_service_operations(operation_id,run_id,job_id,request_digest,body) VALUES ('op',?1,1,'d','{}')",
+                    [run],
+                )
+                .unwrap();
+        });
+        changes("operation link update", &|| {
+            connection
+                .execute("UPDATE image_service_operations SET body='{\"output\":null}' WHERE run_id=?1", [run])
+                .unwrap();
+        });
+        changes("operation link delete", &|| {
+            connection
+                .execute("DELETE FROM image_service_operations WHERE run_id=?1", [run])
+                .unwrap();
+        });
+        changes("dismissal", &|| dismiss::dismiss_at(&f.db, run).unwrap());
+    }
+
+    #[test]
+    fn an_older_database_gains_the_evidence_triggers_idempotently() {
+        let f = fixture();
+        let a = image(&f.folder.join("a.png"), b"a");
+        let b = image(&f.folder.join("b.png"), b"b");
+        record(&f, serde_json::json!({}), &[&a], &b);
+        let names: Vec<&str> = EXTRA_COUNTED.iter().map(|(name, _, _)| *name).collect();
+        let installed = || -> i64 {
+            let connection = connection_at(&f.db).unwrap();
+            names
+                .iter()
+                .map(|name| {
+                    connection
+                        .query_row(
+                            "SELECT count(*) FROM sqlite_master WHERE type='trigger' AND name=?1",
+                            [name],
+                            |row| row.get::<_, i64>(0),
+                        )
+                        .unwrap()
+                })
+                .sum()
+        };
+        assert_eq!(installed(), names.len() as i64);
+        {
+            let connection = connection_at(&f.db).unwrap();
+            for name in &names {
+                connection
+                    .execute_batch(&format!("DROP TRIGGER {name};"))
+                    .unwrap();
+            }
+        }
+        assert_eq!(installed(), names.len() as i64, "reopening installs them");
+        assert_eq!(installed(), names.len() as i64, "and again is a no-op");
     }
 
     #[test]

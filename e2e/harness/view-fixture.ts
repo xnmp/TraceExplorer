@@ -77,6 +77,8 @@ let entryExtras = [
 ];
 const calls: Array<{ method: string; params: unknown }> = [];
 let changeListener: (() => void) | null = null;
+/** Runs whose Interrupted placeholder the user dismissed (`runs.dismissed_at`). */
+const dismissedRuns = new Set<number>();
 let holdSaves = false;
 let heldSaves: Array<() => void> = [];
 let titleConnection = false;
@@ -109,6 +111,9 @@ function hasRelationship(nodes: readonly TraceNode[]): boolean {
  * seed, so it is shown only as the parent of a node that is.
  */
 function displayed(nodes: readonly TraceNode[]): TraceNode[] {
+  // A dismissal hides only a placeholder that is still Interrupted: a run that recovery resumed is shown again.
+  const hidden = (node: TraceNode) => node.artifactId === null && node.state === "uncertain" && node.runId !== null && dismissedRuns.has(node.runId);
+  nodes = nodes.filter((node) => !hidden(node));
   const seeds = nodes.filter((node) => !node.discarded);
   const parents = new Set(seeds.flatMap((node) => node.parents));
   return nodes.filter((node) => !node.discarded || parents.has(node.key));
@@ -193,6 +198,15 @@ configureBackend({
         if (holdSaves) return new Promise((resolve) => heldSaves.push(() => { finish(); resolve({ path } as T); }));
         finish();
         return reply({ path });
+      }
+      case "dismiss_interrupted_run": {
+        // As the backend: repeating a dismissal succeeds; only a dismissable Interrupted placeholder qualifies.
+        if (dismissedRuns.has(params.runId)) return reply({});
+        const node = state.nodes.find((candidate) => candidate.runId === params.runId);
+        if (!node || node.state !== "uncertain" || node.artifactId !== null || !node.dismissable) return Promise.reject(new Error("Only an interrupted placeholder without output can be dismissed"));
+        dismissedRuns.add(params.runId);
+        changed();
+        return reply({});
       }
       case "discard_generated_image": {
         const node = byArtifact(params.artifactId);
@@ -288,6 +302,16 @@ export const backend = {
   /** Discards an unsaved output, as its Delete action would; it is then displayed only as a parent. */
   discardGeneration(name: string) {
     update(state.names.get(name)!, { discarded: true });
+    changed();
+  },
+  /** The provider outcome becomes unknown: the placeholder shows as Interrupted. */
+  interruptGeneration(name: string, dismissable = true) {
+    update(state.names.get(name)!, { state: "uncertain", dismissable });
+    changed();
+  },
+  /** Recovery resets an uncertain run to running while it publishes. */
+  resumeGeneration(name: string) {
+    update(state.names.get(name)!, { state: "running", dismissable: false });
     changed();
   },
   /** Fails a generation before any output: the backend shows no placeholder for a failed run. */

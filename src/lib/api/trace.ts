@@ -60,6 +60,11 @@ export async function discardGeneratedImage(artifactId: number): Promise<{viewPa
   return invoke("discard_generated_image", {artifactId});
 }
 
+/** Hides an Interrupted placeholder (an uncertain run without output). The run and its evidence are kept. */
+export async function dismissInterruptedRun(runId: number): Promise<void> {
+  await invoke("dismiss_interrupted_run", {runId});
+}
+
 // Folder-wide Trace index. Lists are paged explicitly: a page may hold fewer
 // than the maximum (pages also stop at a byte budget), so continue from
 // `offset + items.length` until `total` is reached. A `stale` page means the
@@ -82,6 +87,8 @@ export interface TraceNodeRecord {
   readonly state: TraceNodeState;
   readonly temporary: boolean;
   readonly discarded: boolean;
+  /** An Interrupted placeholder whose evidence allows Dismiss (no recoverable result). */
+  readonly dismissable?: boolean;
   readonly earlierRevision: boolean;
   readonly order: number;
   readonly prompt: string;
