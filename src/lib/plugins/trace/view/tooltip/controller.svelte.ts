@@ -6,7 +6,7 @@
  * Triggers register through the `tooltipTrigger` attachment. The bubble and
  * the window listeners exist only while at least one trigger is mounted.
  */
-import { mount, unmount } from "svelte";
+import { mount, unmount, untrack } from "svelte";
 import { deadline, initialTooltipState, stepTooltip, visibleTarget, type DismissReason, type TooltipEvent, type TooltipState } from "./machine";
 import type { TileTooltipContent } from "./content";
 import { isAnchorScroll } from "../motion";
@@ -44,7 +44,13 @@ export const tooltipView = {
   get current(): ShownTooltip | null { return shown; },
 };
 
-function dispatch(event: TooltipEvent<TooltipTarget>): void {
+/**
+ * Events reach here from DOM listeners, and the browser can fire one (focusout on a focused tile) synchronously while Svelte
+ * removes that tile, inside a block effect, where state may only be written untracked. The write is never a dependency.
+ */
+const dispatch = (event: TooltipEvent<TooltipTarget>): void => untrack(() => step(event));
+
+function step(event: TooltipEvent<TooltipTarget>): void {
   machine = stepTooltip(machine, event);
   clearTimeout(timer);
   timer = undefined;

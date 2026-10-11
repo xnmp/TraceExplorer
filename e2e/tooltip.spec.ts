@@ -201,6 +201,20 @@ test.describe("Trace tile tooltip", () => {
   });
 });
 
+test("removing the focused tile under its shown tooltip writes no state mid-render", async ({ page }) => {
+  await openView(page, 420, "", false);
+  await page.locator('section[aria-label="village"] [data-stack-toggle]').click(); await settle(page);
+  const target = await card(page, "daylight");
+  await page.keyboard.press("Tab"); await target.focus(); await page.keyboard.press("Shift+Tab"); await page.keyboard.press("Tab");
+  await target.focus();
+  await expect(bubble(page)).toBeVisible();
+  await page.locator('section[aria-label="village"]').getByRole("button", { name: "Close stack" }).evaluate((button: HTMLElement) => button.click());
+  await settle(page);
+  await expect(page.locator('section[aria-label="village"] [data-grid-band]')).toHaveCount(0);
+  await expect(bubble(page)).toHaveCount(0);
+  expect(await uncaught(page)).toEqual([]);
+});
+
 test.describe("unsaved output actions", () => {
   async function showMerge(page: Page, query = ""): Promise<Locator> {
     await openView(page, undefined, query);
