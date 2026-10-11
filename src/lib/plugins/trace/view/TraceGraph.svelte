@@ -46,7 +46,7 @@
     onnavigate: (key: NodeKey) => void;
     onopen: (key: NodeKey) => void;
     onmenu: (key: NodeKey, event: MouseEvent) => void;
-    onsaved: (key: NodeKey, path: string) => void;
+    onsaved: (key: NodeKey, path: string, select: boolean) => void;
     /** Selection lease for hover saves (see TraceImageActions). */
     captureSelection?: () => () => boolean;
     ondiscarded: (key: NodeKey) => void;
@@ -301,7 +301,7 @@
       <TraceTile {tile} badgeNodes={data.dag.nodes} focused={focusedKey === undefined || focusedKey === tile.key} onfocus={() => onfocuskey?.(tile.key)} badges={(shown.plan as BandScenePlan).badges?.get(tile.key) ?? []} badgeSelection={selected} onbadge={onactivate} onbadgehover={(key) => { hoveredBadge = key; onbadgehover?.(key); }} placed={attached!.nodes.get(tile.key)!} orientation={shown.layout.orientation} selected={selected.has(tile.key)} {revision}
         onactivate={(event) => onactivate(tile.key, event)} onopen={() => onopen(tile.key)}
         onmenu={(event) => onmenu(tile.key, event)} onkey={(event) => keydown(tile.key, event)}
-        {captureSelection} onsaved={(path) => onsaved(tile.key, path)} ondiscarded={() => ondiscarded(tile.key)} />
+        {captureSelection} onsaved={(path, select) => onsaved(tile.key, path, select)} ondiscarded={() => ondiscarded(tile.key)} />
     {/each}
   </div>
 {:else}

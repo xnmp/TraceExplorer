@@ -14,7 +14,7 @@
   import { tileMetrics } from "$lib/domain/trace-graph/metrics";
   import { traceInvalidation } from "../invalidation.svelte";
   import { promptTitles } from "../prompt-titles.svelte";
-  import { createFolderSession, type ComponentData, type FolderSession } from "./folder-session.svelte";
+  import { createFolderSession, type ComponentData, type FolderIndex, type FolderSession } from "./folder-session.svelte";
   import { tracePanes, isTraceTargetData, type TracePaneView } from "./pane-registry.svelte";
   import { NO_PICKS, clickListed, dropPick, followPicks, picksFromHost, pickOnly, pickable, replacePick, resolvePicks, selectionKey, settlePicks, togglePick, type PickLocation, type Picks } from "./input-picks";
   import { nodeTarget } from "./node-target";
@@ -40,6 +40,13 @@
   let clientWidth = $state(0);
   let near = $state.raw<ReadonlySet<string>>(new Set());
   /** A save into this folder waiting for the listing to contain its file; see `callbacks.saved`. */
+  /**
+   * Files this view just saved, by path, with the index read they predate. The host lists a saved file
+   * before Trace's index maps it into its stack; until a newer read lands it is part of that stack, not
+   * an ordinary file (which would duplicate the cover and shift every cell).
+   */
+  let claimed = $state.raw<ReadonlyMap<string, FolderIndex | null>>(new Map());
+  const claimedPaths = $derived(new Set([...claimed].filter(([, since]) => since === session.index).map(([path]) => path)));
   let pendingSave = $state.raw<{ directory: string; path: string; key: NodeKey; picks: Picks } | null>(null);
   type ScrollAnchor = { key: NodeKey; componentId: string; ownsSelection: () => boolean };
   let anchor: ScrollAnchor | null = null;
@@ -119,7 +126,7 @@
   const entriesByPath = $derived(new Map(pane.entries.map((entry) => [entry.path, entry])));
 
   // Session follows the pane's folder and Trace's invalidation signal.
-  $effect(() => { const dir = directory; untrack(() => { supersedeReveal(); releaseAnchors(); session.setDirectory(dir); }); });
+  $effect(() => { const dir = directory; untrack(() => { supersedeReveal(); releaseAnchors(); session.setDirectory(dir); claimed = new Map(); }); });
   let seenRevision = untrack(() => traceInvalidation.revision);
   $effect(() => {
     const current = traceInvalidation.revision;
@@ -354,7 +361,11 @@
      * folder selects its file once the listing has it; one elsewhere needs
      * nothing: its pick follows the node to the saved path (followPicks).
      */
-    saved(path: string, key: NodeKey) { if (samePath(parentDir(path), directory)) pendingSave = { directory, path, key, picks }; },
+    saved(path: string, key: NodeKey, select = true) {
+      if (!samePath(parentDir(path), directory)) return;
+      claimed = new Map(claimed).set(path, session.index);
+      if (select) pendingSave = { directory, path, key, picks };
+    },
     discarded(key: NodeKey) { commitPicks(dropPick(livePicks, key)); },
   };
 
@@ -694,12 +705,12 @@
       <button type="button" onclick={() => pane.exitView()}>Show files</button>
     </div>
   {:else}
-    <StackGrid {pane} {session} {focus} selected={selectedKeys} {tile} {revision} {scroller} {width} {openKeys}
+    <StackGrid {pane} {session} {focus} selected={selectedKeys} {tile} {revision} {scroller} {width} {openKeys} {claimedPaths}
       onexpand={setExpanded} onnear={(ids) => near = ids} onactivate={activate}
       onnavigate={navigateNode} onopen={open} onmenu={menu}
       onselect={(entry, event) => { supersedeReveal(); releaseAnchors(); keepFocusedOpen(); selectListed(entry, { ctrlKey: event.ctrlKey || event.metaKey, shiftKey: event.shiftKey }); }}
       onordinarymenu={(entry, event) => { supersedeReveal(); releaseAnchors(); if (!selectedPaths.has(entry.path)) { keepFocusedOpen(); selectListed(entry); } pane.contextMenu(event, entry); }}
-      {captureSelection} onsaved={(key, path) => callbacks.saved(path, key)} ondiscarded={(key) => callbacks.discarded(key)} oncommit={keepAnchor}
+      {captureSelection} onsaved={(key, path, select) => callbacks.saved(path, key, select)} ondiscarded={(key) => callbacks.discarded(key)} oncommit={keepAnchor}
       onlayout={(id, pending) => { if (pending) pendingLayouts.add(id); else pendingLayouts.delete(id); }} reveal={revealScene}
       onfailure={(scene, error) => { if (pendingReveal && scene.isCurrent() && scene.reveal === pendingReveal.owner && scene.focus === pendingReveal.key && scene.data.dag.nodes.has(pendingReveal.key)) pendingReveal.finish(error); }} />
     {#if session.error && session.index}<p class="notice" role="alert">{session.error}</p>{/if}

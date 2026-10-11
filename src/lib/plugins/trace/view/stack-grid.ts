@@ -15,15 +15,17 @@ export interface FolderCell extends GridItem {
  * The cells in host listing order: a stack sits at its listed cover's position, and a stack with no
  * listed cover (unsaved) follows the listing. `held` names stacks (by cover key) that have been
  * unsaved in this layout: they keep their place after gaining a listed cover, so saving moves
- * no cell. The caller forgets `held` when the grid is laid out afresh (resize, folder change).
+ * no cell. `claimed` names listed paths the view knows belong to a stack (a file it just saved) before
+ * the index maps them: they are not ordinary files. The caller forgets `held` when the grid is laid out afresh (resize, folder change).
  */
-export function folderCells(entries: readonly FileEntry[], index: FolderIndex, held: ReadonlySet<string> = new Set()): FolderCell[] {
+export function folderCells(entries: readonly FileEntry[], index: FolderIndex, held: ReadonlySet<string> = new Set(), claimed: ReadonlySet<string> = new Set()): FolderCell[] {
   const summaries = new Map(index.components.map((summary) => [summary.id, summary]));
   const emitted = new Set<string>();
   const result: FolderCell[] = [];
   for (const entry of entries) {
     const member = index.members.get(entry.path);
     const summary = member && summaries.get(member.componentId);
+    if (!member && claimed.has(entry.path)) continue;
     if (!summary) { result.push({ id: entry.path, kind: entry.kind === "directory" ? "folder" : "file", entry }); continue; }
     if (summary.cover?.path !== entry.path || held.has(summary.coverKey)) continue;
     emitted.add(summary.id);

@@ -63,6 +63,15 @@ describe("folder grid rules", () => {
     // A fresh layout forgets the history and follows the listing.
     expect(folderCells(listing, saved).map((cell) => cell.id)).toEqual(["o:7:0", "a:1", "/p/notes"]);
   });
+  it("treats a listed path the view knows belongs to a stack as part of it before the index maps it", () => {
+    const listing = [entry("/p/a"), entry("/p/draft"), entry("/p/notes")];
+    const ids = (claimed?: string[]) => folderCells(listing, index, new Set(), new Set(claimed)).map((cell) => cell.id);
+    expect(ids()).toContain("/p/draft");
+    expect(ids(["/p/draft"])).not.toContain("/p/draft");
+    // Once the index maps it, it is a member and no claim is needed.
+    const mapped: FolderIndex = { ...index, members: new Map([...index.members, ["/p/draft", { key: "a:1", componentId: "c:a:1" }]]) };
+    expect(folderCells(listing, mapped, new Set(), new Set(["/p/draft"])).map((cell) => cell.id)).toEqual(folderCells(listing, mapped).map((cell) => cell.id));
+  });
   it("handles empty folders", () => { expect(folderCells([], { ...index, components: [], members: new Map() })).toEqual([]); });
   it("attaches several bands to the same pinned cover without changing any x or losing parentage", () => {
     const layout = layoutGraph({ items: [{ key: "cover", width: 92, height: 97, order: 0, parents: [] }, { key: "child", width: 92, height: 97, order: 1, parents: ["cover"] }], maxWidth: 700, pinned: { key: "cover", x: 650 } });

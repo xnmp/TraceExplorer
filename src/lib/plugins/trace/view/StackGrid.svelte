@@ -17,17 +17,17 @@
   import TraceThumbnail from "../TraceThumbnail.svelte";
   import OrdinaryTile from "./OrdinaryTile.svelte";
 
-  let { pane, session, focus, selected, tile, revision, scroller, width, openKeys, onexpand, onnear,
+  let { pane, session, focus, selected, tile, revision, scroller, width, openKeys, claimedPaths, onexpand, onnear,
     onactivate, onnavigate, onopen, onmenu, onselect, onordinarymenu, captureSelection, onsaved, ondiscarded,
     oncommit, onlayout, onfailure, reveal }: {
     pane: FileViewPane; session: FolderSession; focus: ComponentFocus | null; selected: ReadonlySet<string>; tile: TileMetrics;
-    revision: number; scroller: HTMLElement | null; width: number; openKeys: ReadonlySet<string>;
+    revision: number; scroller: HTMLElement | null; width: number; openKeys: ReadonlySet<string>; claimedPaths: ReadonlySet<string>;
     onexpand: (id: string, open: boolean) => void; onnear: (ids: ReadonlySet<string>) => void;
     onactivate: (key: string, event: MouseEvent, componentId: string) => void;
     onnavigate: (key: string, componentId: string, modifiers?: { shiftKey?: boolean }) => void; onopen: (key: string) => void;
     onmenu: (key: string, event: MouseEvent, componentId: string) => void;
     onselect: (entry: FileEntry, event: MouseEvent) => void; onordinarymenu: (entry: FileEntry, event: MouseEvent) => void;
-    captureSelection: () => () => boolean; onsaved: (key: string, path: string) => void; ondiscarded: (key: string) => void;
+    captureSelection: () => () => boolean; onsaved: (key: string, path: string, select: boolean) => void; ondiscarded: (key: string) => void;
     oncommit: (scene: GraphScene) => void; onlayout: (id: string, pending: boolean) => void;
     onfailure: (scene: GraphScene, error: Error) => void; reveal: object | null;
   } = $props();
@@ -55,7 +55,7 @@
   let motion = 0;
   /** Stacks that have been unsaved since the grid was last laid out afresh: they keep their cell when saved. */
   let held = $state.raw<ReadonlySet<string>>(new Set());
-  const cells = $derived(session.index ? folderCells(pane.entries, session.index, held) : []);
+  const cells = $derived(session.index ? folderCells(pane.entries, session.index, held, claimedPaths) : []);
   const metrics = $derived(host?.tileGridMetrics(pane.tileSize?.preset) ?? { cellWidth: tile.width, cellHeight: tileSize({ foreign: false, hint: true }, tile).height, gap: 8, gridPadding: 0 });
   const innerWidth = $derived(Math.max(0, width - 2 * metrics.gridPadding));
   const columns = $derived(Math.max(1, Math.floor((innerWidth + metrics.gap) / (Math.max(metrics.cellWidth, tile.width) + metrics.gap))));
@@ -204,7 +204,7 @@
               selected={selected.has(cell.id)} {revision} badgeNodes={data.dag.nodes} badges={known?.plan.badges.get(cell.id) ?? []} badgeSelection={selected}
               onbadge={(key, event) => onactivate(key, event, summary.id)} onbadgehover={(key) => hoveredBadge = key} focused={stop === cell.id} onfocus={() => tabStop = cell.id} onclose={() => onexpand(summary.id, false)}
               onactivate={(event) => onactivate(cell.id, event, summary.id)} onopen={() => onopen(cell.id)} onmenu={(event) => onmenu(cell.id, event, summary.id)}
-              onkey={(event) => keydown(cell.id, event)} {captureSelection} onsaved={(path) => onsaved(cell.id, path)} ondiscarded={() => ondiscarded(cell.id)} />
+              onkey={(event) => keydown(cell.id, event)} {captureSelection} onsaved={(path, select) => onsaved(cell.id, path, select)} ondiscarded={() => ondiscarded(cell.id)} />
           {:else}
             <button type="button" class="heading" class:selected={selected.has(cell.id)} style:width="{tile.width}px" style:height="{cover.size.height}px" tabindex={stop === cell.id ? 0 : -1} onfocus={() => tabStop = cell.id} data-stack-toggle aria-expanded={!!band} data-tile-key={cell.id} data-node-key={cell.id} aria-pressed={selected.has(cell.id)}
               onclick={(event) => activateStack(cell, event, true)}

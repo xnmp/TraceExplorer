@@ -368,7 +368,7 @@ test("an unsaved cover that is not the component's namesake selects itself as th
   expect(await uncaught(page)).toEqual([]);
 });
 
-test("saving an unsaved cover through its Save button moves no cell", async ({ page }) => {
+test("saving an unsaved cover through its Save button moves no cell, even while the index lags the listing", async ({ page }) => {
   await openView(page, 420, "?grouping=unsaved-root-joined-with-source", false);
   await stack(page, "draft").locator("[data-stack-toggle]").click(); await settle(page);
   const cells = () => page.evaluate(() => Object.fromEntries([...document.querySelectorAll<HTMLElement>("[data-grid-cell]")].map((cell) => {
@@ -376,10 +376,18 @@ test("saving an unsaved cover through its Save button moves no cell", async ({ p
     return [cell.dataset.gridCell!, [Math.round(rect.x), Math.round(rect.y)]];
   })));
   const before = await cells();
+  const backend = (fn: string) => page.evaluate((fn) => (window as any).trace.backend[fn](), fn);
+  // The host lists the saved file while Trace's index read is still outstanding.
+  await backend("holdFolderReads");
   const cover = page.locator('[data-tile-key="o:10:0"]');
   await cover.hover();
-  await cover.getByRole("button", { name: "Save image permanently" }).click(); await settle(page);
-  expect(await page.evaluate(() => (window as any).trace.backend.calls("save_generated_image").length)).toBeGreaterThan(0);
+  await cover.getByRole("button", { name: "Save image permanently" }).click();
+  await expect.poll(() => page.evaluate(() => (window as any).trace.listing().some((entry: { path: string }) => entry.path === "/pictures/draft.png"))).toBe(true);
+  await expect.poll(() => page.evaluate(() => (window as any).trace.backend.calls("save_generated_image").length)).toBeGreaterThan(0);
+  await expect(page.locator('[data-entry-path="/pictures/draft.png"]')).toHaveCount(0);
+  expect(await cells()).toEqual(before);
+  await backend("releaseFolderReads"); await settle(page);
+  await expect(page.locator('[data-entry-path="/pictures/draft.png"]')).toHaveCount(0);
   expect(await cells()).toEqual(before);
   expect(await uncaught(page)).toEqual([]);
 });

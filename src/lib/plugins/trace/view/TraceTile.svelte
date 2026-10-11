@@ -33,7 +33,7 @@
     onopen: () => void;
     onmenu: (event: MouseEvent) => void;
     onkey: (event: KeyboardEvent) => void;
-    onsaved: (path: string) => void;
+    onsaved: (path: string, select: boolean) => void;
     ondiscarded: () => void;
     captureSelection?: () => () => boolean;
   }
@@ -101,7 +101,7 @@
   {#if hint}<span class="hint" style:height="{TILE.hint}px">{hint}</span>{/if}
   {#if artifact}
     <div class="actions">
-      <TraceImageActions {artifact} onSelectFile={async (path) => onsaved(path)} selectAfterSave={true} {captureSelection}
+      <TraceImageActions {artifact} onSelectFile={async (path, select) => onsaved(path, select)} selectAfterSave={true} {captureSelection}
         onDiscard={() => ondiscarded()} />
     </div>
   {/if}
