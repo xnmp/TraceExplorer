@@ -148,7 +148,8 @@ async fn real_stdio_keeps_cancellation_and_reverse_replies_live_with_full_ordina
     loop {
         let frame = receive();
         if frame["id"] == 999 {
-            assert_eq!(frame["error"]["data"]["code"], "not_found");
+            // An unknown test id is reported as a test that never started.
+            assert_eq!(frame["error"]["data"]["code"], "test_not_started");
             break;
         }
         replies.push(frame)

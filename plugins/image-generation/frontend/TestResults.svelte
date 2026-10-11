@@ -12,11 +12,11 @@
         <li>
           <strong>{test.profileName}</strong>
           {#if test.configurationRevision !== revision}<p class="note">Result from settings revision {test.configurationRevision}; current settings are revision {revision}. Test again to verify current settings.</p>{/if}
-          <p role="status">{test.status ? testSummary(test.status) : 'Waiting for the test acceptance reply…'}</p>
+          <p role="status">{testSummary(test.status, test.startFailed)}</p>
           {#if test.error}<p role="alert">{test.error}</p>{/if}
           <div class="actions">
             <button type="button" onclick={() => onrefresh(test.requestId)}>Refresh status</button>
-            {#if active(test.status)}<button type="button" onclick={() => oncancel(test.requestId)}>Cancel test</button>{/if}
+            {#if !test.neverStarted && active(test.status)}<button type="button" onclick={() => oncancel(test.requestId)}>Cancel test</button>{/if}
             {#if test.status?.execution.state === 'succeeded' && test.status.delivery.state !== 'discarded'}<button type="button" onclick={() => ondiscard(test.requestId)}>Discard test output</button>{/if}
           </div>
         </li>

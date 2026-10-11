@@ -1,8 +1,13 @@
 <script lang="ts">
   import Select, { type SelectOption } from '../../../integration/ui/Select.svelte';
-  import { backendFor, formatCommand, isCodex, type ImageProfile } from './domain';
-  let { profile, disabled, saved, commandText, oncommand, onchange, oncredential }: { profile: ImageProfile; disabled: boolean; saved: boolean; commandText?: string; oncommand: (text: string) => void; onchange: (profile: ImageProfile) => void; oncredential: (key: string | null) => Promise<void> } = $props();
-  const CREDENTIAL_SOURCES: SelectOption[] = [{ value: 'none', label: 'No credential' }, { value: 'environment', label: 'Environment variable' }, { value: 'command', label: 'Command' }, { value: 'secret', label: 'Saved OS credential', disabled: true }];
+  import { backendFor, credentialProblem, credentialSections, formatCommand, isCodex, type ImageProfile } from './domain';
+  let { profile, disabled, saved, choosingSecret, commandText, oncommand, onchange, oncredential, onsource }: { profile: ImageProfile; choosingSecret: boolean; disabled: boolean; saved: boolean; commandText?: string; oncommand: (text: string) => void; onchange: (profile: ImageProfile) => void; onsource: (kind: string) => void; oncredential: (key: string | null) => Promise<void> } = $props();
+  const CREDENTIAL_SOURCES: SelectOption[] = [{ value: 'none', label: 'No credential' }, { value: 'environment', label: 'Environment variable' }, { value: 'command', label: 'Command' }, { value: 'secret', label: 'Saved OS credential' }];
+  // The OS store creates the owned reference only when a key is saved. Keep
+  // the user's source choice in the dialog while saving connection metadata first.
+  const kind = $derived(choosingSecret ? 'secret' : profile.credential.kind);
+  const sections = $derived(credentialSections(kind));
+  const missingKey = $derived(credentialProblem(isCodex(profile) ? profile.credential : { kind: 'secret', id: profile.credential.kind === 'secret' ? profile.credential.id : '' }));
   const backend = $derived(isCodex(profile) ? undefined : backendFor(profile.transport));
   let key = $state('');
   let keyVisible = $state(false);
@@ -20,21 +25,23 @@
     {#if backend?.baseUrlNote}<p class="note">{backend.baseUrlNote}</p>{/if}
     <label>Image model ID<input value={profile.defaultModel} maxlength="256" placeholder={backend?.modelPlaceholder ?? 'Model supported by this API'} oninput={e => onchange({ ...profile, defaultModel: e.currentTarget.value })} /></label>
     <label class="checkbox"><input type="checkbox" checked={profile.allowInsecureHttp} onchange={e => onchange({ ...profile, allowInsecureHttp: e.currentTarget.checked })} />Allow insecure HTTP for this connection</label>
-    <label>Credential source<Select aria-label="Credential source" value={profile.credential.kind} options={CREDENTIAL_SOURCES} onchange={kind => { if (kind === 'none') onchange({ ...profile, credential: { kind: 'none' } }); else if (kind === 'environment') onchange({ ...profile, credential: { kind: 'environment', name: backend?.credentialEnv ?? '' } }); else if (kind === 'command') onchange({ ...profile, credential: { kind: 'command', argv: [] } }); }} /></label>
-    {#if profile.credential.kind === 'environment'}
+    <label>Credential source<Select aria-label="Credential source" value={kind} options={CREDENTIAL_SOURCES} onchange={kind => { onsource(kind); if (kind === 'none') onchange({ ...profile, credential: { kind: 'none' } }); else if (kind === 'environment') onchange({ ...profile, credential: { kind: 'environment', name: backend?.credentialEnv ?? '' } }); else if (kind === 'command') onchange({ ...profile, credential: { kind: 'command', argv: [] } }); }} /></label>
+    {#if sections.environment && profile.credential.kind === 'environment'}
       <label>Environment variable name<input value={profile.credential.name} maxlength="128" placeholder={backend?.credentialEnv ?? ''} oninput={e => onchange({ ...profile, credential: { kind: 'environment', name: e.currentTarget.value } })} /></label>
-      <p class="note">Read by the native provider from the app environment.</p>
     {/if}
-    {#if profile.credential.kind === 'command'}
+    {#if sections.command && profile.credential.kind === 'command'}
       <label>Credential command<input value={commandText ?? formatCommand(profile.credential.argv)} spellcheck="false" oninput={e => oncommand(e.currentTarget.value)} /></label>
       <p class="note">Runs without a shell; its output is used as the key. Example: secret-tool lookup service gemini</p>
     {/if}
+    {#if sections.secret}
     <div class="key-section">
-      <p>{profile.credential.kind === 'secret' ? 'A key is saved in the OS credential store.' : 'Save a key in the OS credential store, or use the source above.'}</p>
+      <p>{profile.credential.kind === 'secret' && profile.credential.id ? 'A key is saved in the OS credential store.' : 'Save a key in the OS credential store.'}</p>
+      {#if missingKey}<p class="note">{missingKey}</p>{/if}
       <label>New API key<input type={keyVisible ? 'text' : 'password'} bind:value={key} maxlength="4096" autocomplete="off" spellcheck="false" /></label>
       <div class="actions"><button type="button" onclick={() => keyVisible = !keyVisible} aria-pressed={keyVisible}>{keyVisible ? 'Hide key' : 'Show key'}</button><button type="button" disabled={!saved || !key.trim()} onclick={() => credential(key)}>Save key securely</button>{#if profile.credential.kind === 'secret'}<button type="button" disabled={!saved} onclick={() => credential(null)}>Clear saved key</button>{/if}</div>
       {#if !saved}<p class="note">Save connection edits before changing its saved key.</p>{/if}
     </div>
+    {/if}
   {/if}
 </fieldset>
 

@@ -3989,3 +3989,117 @@ async fn shutdown_interrupts_a_local_credential_check() {
     );
     assert_eq!(unsafe { libc::kill(pid, 0) }, -1);
 }
+
+#[cfg(unix)]
+#[tokio::test]
+async fn explicit_tests_use_backend_defaults_and_preserve_command_failure_without_dispatch() {
+    for transport in ["bfl", "gemini", "openai-images"] {
+        let directory = tempfile::tempdir().unwrap();
+        let host = FakeHost::new();
+        let service = Service::new(directory.path(), host.clone()).unwrap();
+        service.activate().unwrap();
+        // The helper cannot yield a credential, so this test cannot reach HTTP.
+        let mut api = match configuration("https://example.test/v1").profiles.remove(0) {
+            Profile::OpenAiImages(api) => api,
+            _ => unreachable!(),
+        };
+        api.default_model = "flux-2-pro".into();
+        api.credential = Credential::Command {
+            argv: vec!["/bin/sh".into(), "-c".into(), "exit 1".into()],
+        };
+        let profile = match transport {
+            "bfl" => Profile::Bfl(api),
+            "gemini" => Profile::Gemini(api),
+            _ => Profile::OpenAiImages(api),
+        };
+        let config = service
+            .profiles
+            .save(
+                Configuration {
+                    schema_version: 1,
+                    document_revision: 0,
+                    default_connection_id: Some("http".into()),
+                    profiles: vec![profile],
+                },
+                0,
+                None,
+                None,
+            )
+            .unwrap();
+        if transport != "openai-images" {
+            // Reproduce the former test options: rejection precedes credential IO
+            // and leaves no receipt, matching the production journal evidence.
+            let mut former = request(&config.profiles[0], vec![]);
+            former.options.quality = "auto".into();
+            former.options.background = "auto".into();
+            let operation = former.operation_id.clone();
+            let failure = service.prepare(caller(), former).unwrap_err();
+            assert_eq!(
+                failure.message,
+                "This image provider chooses its own image size"
+            );
+            assert_eq!(
+                service
+                    .status("test.consumer", &operation)
+                    .unwrap_err()
+                    .code,
+                "not_found"
+            );
+        }
+        let receipt = service
+            .settings(
+                "test",
+                json!({
+                    "profileId":"http", "requestId":"failed-command-test",
+                    "expectedConfigurationRevision":config.document_revision
+                }),
+            )
+            .unwrap();
+        assert_eq!(receipt["execution"]["state"], "failed", "{transport}");
+        assert_eq!(
+            receipt["execution"]["error"]["message"], "Credential command exited with status 1",
+            "{transport}"
+        );
+        let durable = service
+            .status("xnmp.image-generation", "failed-command-test")
+            .unwrap();
+        assert!(
+            matches!(durable.execution, Execution::Failed { error } if error.message == "Credential command exited with status 1")
+        );
+        assert!(host
+            .events
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|event| event["method"] != "host.services.test.begin"));
+        assert!(host.processes.lock().unwrap().is_empty());
+        service.wait_idle().await;
+    }
+}
+
+#[tokio::test]
+async fn cancelling_a_test_that_never_started_preserves_intent_and_explains_absent_receipt() {
+    let directory = tempfile::tempdir().unwrap();
+    let service = Service::new(directory.path(), FakeHost::new()).unwrap();
+    service.activate().unwrap();
+    let failure = service
+        .settings("cancelTest", json!({"requestId":"never-started-test"}))
+        .unwrap_err();
+    assert_eq!(failure.code, "test_not_started");
+    assert_eq!(failure.message, "The test never started");
+    assert_eq!(
+        service
+            .status("xnmp.image-generation", "never-started-test")
+            .unwrap_err()
+            .code,
+        "not_found"
+    );
+    // The generic consumer cancellation contract remains unchanged.
+    assert_eq!(
+        service
+            .cancel("test.consumer", "never-started-test")
+            .unwrap_err()
+            .code,
+        "not_found"
+    );
+}

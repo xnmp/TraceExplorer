@@ -1,7 +1,7 @@
 import { active, configuration, equal, validation, validConfiguration, validTestReceipt, type ImageConfiguration, type ImageOperationStatus, type ImageProfile } from './domain';
 export interface Backend { invoke<T>(method: string, params?: Record<string, unknown>): Promise<T> }
 export interface RevisionEvent { documentRevision: number; affectedProfileIds: readonly string[] }
-export interface TestResult { requestId: string; profileId: string; profileName: string; configurationRevision: number; status?: ImageOperationStatus; error?: string }
+export interface TestResult { requestId: string; profileId: string; profileName: string; configurationRevision: number; status?: ImageOperationStatus; startFailed?: boolean; neverStarted?: boolean; error?: string }
 export interface State { saved: ImageConfiguration | null; draft: ImageConfiguration | null; busy: boolean; loading: boolean; conflict: boolean; error: string; message: string; check: { profileId: string; message: string; available: boolean } | null; tests: readonly TestResult[] }
 export class TestRegistry {
   private records = new Map<string, TestResult>();
@@ -11,14 +11,23 @@ export class TestRegistry {
   set(result: TestResult): void {
     if (this.discarded.has(result.requestId)) return;
     this.records.set(result.requestId, result);
-    if (this.records.size > 64) for (const [id, record] of this.records) { if (this.records.size <= 64) break; if (record.status && ['failed', 'cancelled'].includes(record.status.execution.state)) this.records.delete(id); }
+    if (this.records.size > 64) for (const [id, record] of this.records) { if (this.records.size <= 64) break; if (record.neverStarted || record.status && ['failed', 'cancelled'].includes(record.status.execution.state)) this.records.delete(id); }
     for (const fn of this.listeners) fn();
   }
   remove(id: string): void { this.discarded.add(id); this.records.delete(id); for (const fn of this.listeners) fn(); }
   subscribe(fn: () => void): () => void { this.listeners.add(fn); return () => this.listeners.delete(fn); }
 }
+const pending = (test: TestResult): boolean => !test.neverStarted && active(test.status);
+const pollable = (test: TestResult): boolean => pending(test) && (!test.startFailed || !!test.status);
 const initial = (): State => ({ saved: null, draft: null, busy: false, loading: true, conflict: false, error: '', message: '', check: null, tests: [] });
-function message(cause: unknown): string { return typeof cause === 'string' ? cause.slice(0, 1024) : cause instanceof Error ? cause.message.slice(0, 1024) : 'The image service could not complete this request.'; }
+function message(cause: unknown): string {
+  // The native bridge rejects with JSON-RPC objects, not necessarily Error instances.
+  if (cause && typeof cause === 'object') {
+    const rpc = cause as { message?: unknown; data?: { message?: unknown }; error?: { message?: unknown } };
+    const detail = rpc.data?.message ?? rpc.error?.message ?? rpc.message;
+    if (typeof detail === 'string' && detail.trim()) return detail.slice(0, 1024);
+  }
+  return typeof cause === 'string' ? cause.slice(0, 1024) : cause instanceof Error ? cause.message.slice(0, 1024) : 'The image service could not complete this request.'; }
 type Schedule = (fn: () => void, delay: number) => () => void;
 const schedule: Schedule = (fn, delay) => { const timer = setTimeout(fn, delay); return () => clearTimeout(timer); };
 export class ConnectionsController {
@@ -39,7 +48,7 @@ export class ConnectionsController {
   subscribe(fn: (state: State) => void): () => void { this.listeners.add(fn); fn(this.state); return () => this.listeners.delete(fn); }
   get dirty(): boolean { return !!this.state.saved && !!this.state.draft && !equal(this.state.saved, this.state.draft); }
   private update(patch: Partial<State>): void { if (this.disposed) return; this.state = { ...this.state, ...patch }; for (const fn of this.listeners) fn(this.state); }
-  async initialize(): Promise<void> { await this.refresh(); for (const test of this.registry.all()) if (active(test.status)) void this.poll(test.requestId); }
+  async initialize(): Promise<void> { await this.refresh(); for (const test of this.registry.all()) if (pollable(test)) void this.poll(test.requestId); }
   revision(event: RevisionEvent): void {
     if (!Number.isSafeInteger(event.documentRevision) || event.documentRevision < 0) return;
     this.observed = Math.max(this.observed, event.documentRevision);
@@ -96,7 +105,7 @@ export class ConnectionsController {
   async test(profileId: string): Promise<void> {
     const profile = this.usable(profileId); if (!profile) return;
     const prior = this.registry.all();
-    const unresolved = (test: TestResult) => active(test.status) || test.status?.execution.state === 'unknown' || test.status?.execution.state === 'succeeded' && !['discarded', 'acquired'].includes(test.status.delivery.state);
+    const unresolved = (test: TestResult) => pending(test) || test.status?.execution.state === 'unknown' || test.status?.execution.state === 'succeeded' && !['discarded', 'acquired'].includes(test.status.delivery.state);
     if (prior.filter(unresolved).length >= 16 || prior.some(t => t.profileId === profileId && unresolved(t))) { this.update({ error: 'Resolve the retained test for this connection before starting another.' }); return; }
     const record: TestResult = { requestId: this.id(), profileId, profileName: profile.name, configurationRevision: this.state.saved!.documentRevision };
     this.registry.set(record);
@@ -104,13 +113,13 @@ export class ConnectionsController {
       this.accept(record, await this.backend.invoke<ImageOperationStatus>('settings.test', { profileId, requestId: record.requestId, expectedConfigurationRevision: record.configurationRevision }));
       if (this.disposed) { void this.cancel(record.requestId); return; }
       if (active(this.registry.all().find(t => t.requestId === record.requestId)?.status)) this.queue(record.requestId);
-    } catch (cause) { this.failure(record, `${message(cause)} The operation ID is retained; refresh status before starting another test.`); }
+    } catch (cause) { const latest = this.registry.all().find(t => t.requestId === record.requestId) ?? record; this.registry.set({ ...latest, startFailed: !latest.status, error: message(cause) }); }
   }
   private accept(record: TestResult, status: ImageOperationStatus): void {
     if (!validTestReceipt(status, record.requestId)) throw new Error('The service returned an invalid test receipt.');
     const old = this.registry.all().find(t => t.requestId === record.requestId);
     if (old?.status && status.revision < old.status.revision) return;
-    this.registry.set({ ...record, status, error: undefined });
+    this.registry.set({ ...record, status, startFailed: false, neverStarted: false, error: undefined });
   }
   private failure(record: TestResult, error: string): void { this.registry.set({ ...(this.registry.all().find(t => t.requestId === record.requestId) ?? record), error }); }
   private queue(requestId: string): void {
@@ -123,12 +132,20 @@ export class ConnectionsController {
     this.polling.add(requestId);
     try { this.accept(record, await this.backend.invoke<ImageOperationStatus>('settings.test.status', { requestId })); }
     catch (cause) { this.failure(record, message(cause)); }
-    finally { this.polling.delete(requestId); if (!this.disposed && active(this.registry.all().find(t => t.requestId === requestId)?.status)) this.queue(requestId); }
+    finally { this.polling.delete(requestId); if (!this.disposed && this.registry.all().some(t => t.requestId === requestId && pollable(t))) this.queue(requestId); }
   }
   async cancel(requestId: string): Promise<void> {
-    const record = this.registry.all().find(t => t.requestId === requestId); if (!record || !active(record.status)) return;
+    const record = this.registry.all().find(t => t.requestId === requestId); if (!record || !pending(record)) return;
     try { this.accept(record, await this.backend.invoke<ImageOperationStatus>('settings.cancelTest', { requestId })); if (!this.disposed && active(this.registry.all().find(t => t.requestId === requestId)?.status)) this.queue(requestId); }
-    catch (cause) { this.failure(record, `Cancellation could not be confirmed: ${message(cause)}`); }
+    catch (cause) {
+      const reason = message(cause);
+      if (reason === 'The test never started') {
+        const latest = this.registry.all().find(t => t.requestId === requestId) ?? record;
+        // A late accepted start reply remains authoritative and triggers cancellation again.
+        if (!latest.status) this.registry.set({ ...latest, startFailed: true, neverStarted: true, error: latest.error ? latest.error + '. The test never started' : reason });
+        else this.failure(latest, reason);
+      } else this.failure(record, `Cancellation could not be confirmed: ${reason}`);
+    }
   }
   async discard(requestId: string): Promise<void> {
     const record = this.registry.all().find(t => t.requestId === requestId);
@@ -140,6 +157,6 @@ export class ConnectionsController {
     if (this.disposed) return;
     this.disposed = true; this.actionSequence++; this.readSequence++; this.unsubscribe();
     for (const stop of this.timers.values()) stop(); this.timers.clear(); this.listeners.clear();
-    for (const test of this.registry.all()) if (active(test.status)) void this.cancel(test.requestId);
+    for (const test of this.registry.all()) if (pending(test)) void this.cancel(test.requestId);
   }
 }
