@@ -29,21 +29,25 @@ export const state = (page: Page) => page.evaluate(() => (window as any).trace.s
 });
 export const uncaught = (page: Page): Promise<string[]> => page.evaluate(() => [...(window as any).trace.errors]);
 
-/** Waits for layout and motion to finish. Looping spinners are not geometry motion. */
+/**
+ * Waits for layout and motion to finish: no layout queued or computing and no
+ * geometry animation, for several consecutive frames, so a layout that a
+ * final scroll or reveal starts late is waited for too. Looping spinners are
+ * not geometry motion.
+ */
 export async function settle(page: Page): Promise<void> {
-  const idle = () => document.getAnimations().filter((a) => {
-    const target = a.effect && (a.effect as KeyframeEffect).target;
-    return !(target instanceof Element && target.closest(".spinner, .title-spinner"));
-  }).length === 0;
-  // A layout still queued or computing (the worker is slow on a loaded machine) has started no motion yet.
-  const layoutsDone = () => ((window as any).trace?.layoutsPending?.() ?? 0) === 0;
-  const frames = () => page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
-  await frames();
-  await page.waitForFunction(layoutsDone);
-  await frames();
-  await page.waitForFunction(idle);
-  await frames();
-  await page.waitForFunction(idle);
+  await page.evaluate(() => { (window as any).__settleStreak = 0; });
+  await page.waitForFunction(() => {
+    const animating = document.getAnimations().some((a) => {
+      const target = a.effect && (a.effect as KeyframeEffect).target;
+      return !(target instanceof Element && target.closest(".spinner, .title-spinner"));
+    });
+    // A layout still queued or computing (the worker is slow on a loaded machine) has started no motion yet.
+    const laying = ((window as any).trace?.layoutsPending?.() ?? 0) > 0;
+    const w = window as any;
+    w.__settleStreak = animating || laying ? 0 : w.__settleStreak + 1;
+    return w.__settleStreak >= 4;
+  }, undefined, { polling: "raf" });
 }
 
 export async function click(page: Page, name: Name, options: Parameters<Locator["click"]>[0] = {}): Promise<void> {

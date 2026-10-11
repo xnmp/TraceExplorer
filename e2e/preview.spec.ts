@@ -114,13 +114,14 @@ test.describe("Preview info", () => {
     // The panel's height is a CSS transition. Hold it at chosen times instead of sampling elapsed time,
     // which a starved machine stretches.
     const toggleAndSeek = async () => {
-      await detailsToggle(page).evaluate((button) => (button as HTMLElement).click());
-      return page.evaluate(async () => {
+      return detailsToggle(page).evaluate(async (button) => {
         const element = document.querySelector<HTMLElement>("[data-testid=trace-details]")!;
-        // The transition starts at the next style recalculation after the change.
         const running = () => element.getAnimations().find((a): a is CSSTransition => a instanceof CSSTransition && a.transitionProperty === "grid-template-rows");
+        // Click and capture in one task: the transition can't finish in between, however starved the machine.
+        (button as HTMLElement).click();
         let transition = running();
-        for (let i = 0; i < 2000 && !transition; i++) { await new Promise((resolve) => requestAnimationFrame(resolve)); transition = running(); }
+        // Svelte applies the change in a microtask; a style read then starts the transition synchronously.
+        for (let i = 0; i < 100 && !transition; i++) { await Promise.resolve(); void getComputedStyle(element).gridTemplateRows; transition = running(); }
         if (!transition) throw new Error("no transition started");
         transition.pause();
         const timing = transition.effect!.getTiming();

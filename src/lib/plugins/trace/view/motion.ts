@@ -372,6 +372,18 @@ function displacedRoute(target: readonly Point[], path: SVGPathElement, before: 
 export const viewMoving = (scroller: HTMLElement): boolean => scroller.getAnimations({ subtree: true }).some((animation) =>
   (animation.pending || animation.playState === "running") && animation.effect?.getTiming().iterations !== Infinity);
 
+const anchorOffsets = new WeakMap<Element, { top: number; left: number }>();
+
+/**
+ * Whether a scroll event only reports an offset the anchor hold set itself, as
+ * opposed to a user scroll, so other listeners (the tooltip) can ignore it.
+ */
+export function isAnchorScroll(target: EventTarget | null): boolean {
+  const set = target instanceof Element ? anchorOffsets.get(target) : undefined;
+  return !!target && !!set && !releasesAnchor({ type: "scroll", actual: (target as Element).scrollTop, expected: set.top })
+    && !releasesAnchor({ type: "scroll", actual: (target as Element).scrollLeft, expected: set.left });
+}
+
 export interface AnchorHold { update(): void; release(): void }
 
 /**
@@ -388,6 +400,8 @@ export function holdAnchor(scroller: HTMLElement, element: HTMLElement, onReleas
   const release = () => {
     if (!held) return;
     held = false;
+    anchorOffsets.delete(scroller);
+    if (horizontal) anchorOffsets.delete(horizontal);
     cancelAnimationFrame(frame);
     for (const type of USER_SCROLL) scroller.removeEventListener(type, onInput, true);
     scroller.removeEventListener("scroll", onScroll, true);
@@ -459,6 +473,8 @@ export function holdAnchor(scroller: HTMLElement, element: HTMLElement, onReleas
     const requestedLeft = expectedLeft + dx;
     if (horizontal && dx) horizontal.scrollLeft = requestedLeft;
     expectedLeft = horizontal?.scrollLeft ?? 0;
+    if (dy) anchorOffsets.set(scroller, { top: scroller.scrollTop, left: scroller.scrollLeft });
+    if (horizontal && dx) anchorOffsets.set(horizontal, { top: horizontal.scrollTop, left: horizontal.scrollLeft });
     // Horizontal preservation is best effort: a graph can move sideways even
     // when its section has no horizontal overflow. That must not end the hold
     // on the view's vertical scroll axis.

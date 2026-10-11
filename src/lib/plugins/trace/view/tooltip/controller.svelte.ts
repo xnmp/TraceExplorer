@@ -9,6 +9,7 @@
 import { mount, unmount } from "svelte";
 import { deadline, initialTooltipState, stepTooltip, visibleTarget, type DismissReason, type TooltipEvent, type TooltipState } from "./machine";
 import type { TileTooltipContent } from "./content";
+import { isAnchorScroll } from "../motion";
 import TileTooltip from "./TileTooltip.svelte";
 
 export interface TooltipSource {
@@ -64,7 +65,10 @@ function dispatch(event: TooltipEvent<TooltipTarget>): void {
 const dismiss = (reason: DismissReason) => () => dispatch({ type: "dismiss", reason, at: now() });
 
 function listen(): () => void {
-  const press = dismiss("press"), scroll = dismiss("scroll"), blur = dismiss("blur"), resize = dismiss("resize"), escape = dismiss("escape");
+  const dismissScroll = dismiss("scroll");
+  // The scroll anchor's own corrections are not the user scrolling.
+  const scroll = (event: Event) => { if (!isAnchorScroll(event.target)) dismissScroll(); };
+  const press = dismiss("press"), blur = dismiss("blur"), resize = dismiss("resize"), escape = dismiss("escape");
   const key = (event: KeyboardEvent) => { if (event.key === "Escape") escape(); };
   // Capture phase: scroll does not bubble, and presses must close the tooltip before handlers move things around.
   const options = { capture: true, passive: true } as const;
