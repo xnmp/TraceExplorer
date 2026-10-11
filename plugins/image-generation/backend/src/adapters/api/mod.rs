@@ -58,8 +58,6 @@ pub struct ApiDescriptor {
     pub auth: Auth,
     pub options: Options,
     pub max_inputs: usize,
-    /// Backend-specific rule on a base URL that already passed the generic checks.
-    pub validate_base_url: fn(&url::Url) -> Result<()>,
 }
 pub struct ApiCall<'a> {
     pub profile: &'a ApiProfile,

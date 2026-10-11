@@ -84,8 +84,25 @@ describe('API backend registry', () => {
     expect(validConfiguration({ ...broken, profiles: [{ id: 'x', name: 'n', recipeRevision: 'r', transport: 'future-images', credential: { kind: 'none' } } as unknown as ImageProfile] })).toBe(false);
   });
   it("applies a backend's own URL rule only to that backend", () => {
-    const rooted = (transport: string) => { const c = withBackend(transport); return validation({ ...c, profiles: [{ ...c.profiles[0], baseUrl: 'https://gateway.test/v1/images/edits' } as ImageProfile] }); };
-    expect(rooted('openai-images')).toMatch(/without \/generations or \/edits/);
-    expect(rooted('future-images')).toBeNull();
+    const check = (transport: string, baseUrl: string, defaultModel = 'm') => { const c = withBackend(transport); return validation({ ...c, profiles: [{ ...c.profiles[0], baseUrl, defaultModel } as ImageProfile] }); };
+    expect(check('openai-images', 'https://gateway.test/v1/images/edits')).toMatch(/\/edits/);
+    expect(check('future-images', 'https://gateway.test/v1/images/edits')).toBeNull();
+  });
+  it('rejects the same base URLs as the native rules, matching every segment case-insensitively', () => {
+    const check = (transport: string, baseUrl: string) => { const c = withBackend(transport); return validation({ ...c, profiles: [{ ...c.profiles[0], baseUrl, defaultModel: 'flux-2-pro' } as ImageProfile] }); };
+    for (const ok of ['https://g.test/v1/images', 'https://g.test/v1/images/', 'https://g.test/models/v1/images']) expect(check('openai-images', ok), ok).toBeNull();
+    for (const bad of ['https://g.test/v1/images/edits/', 'https://g.test/v1/images/GENERATIONS', 'https://g.test/v1/edits/images']) expect(check('openai-images', bad), bad).not.toBeNull();
+    for (const ok of ['https://g.test/v1beta', 'https://g.test/v1beta/', 'https://g.test/modelsx/v1beta']) expect(check('gemini', ok), ok).toBeNull();
+    for (const bad of ['https://g.test/v1beta/models', 'https://g.test/v1beta/Models/', 'https://g.test/v1beta/models/gemini-x:generateContent', 'https://g.test/models/v1beta', 'https://g.test/v1beta/interactions']) expect(check('gemini', bad), bad).not.toBeNull();
+    for (const ok of ['https://api.bfl.ai/v1', 'https://api.bfl.ai/v1/', 'https://api.eu.bfl.ai']) expect(check('bfl', ok), ok).toBeNull();
+    for (const bad of ['https://api.bfl.ai/v1/flux-2-pro', 'https://api.bfl.ai/V1/FLUX-2-PRO', 'https://api.bfl.ai/fluxproxy/v1', 'https://api.bfl.ai/v1/flux-3-image/']) expect(check('bfl', bad), bad).not.toBeNull();
+    expect(check('gemini', 'https://g.test/v1beta/models')).toContain('/models');
+    expect(check('gemini', 'https://g.test/v1beta/models')).toContain('Gemini API root URL');
+  });
+  it('requires a path-safe model ID only where the backend puts it in the URL', () => {
+    const check = (transport: string, defaultModel: string) => { const c = withBackend(transport); return validation({ ...c, profiles: [{ ...c.profiles[0], baseUrl: 'https://api.bfl.ai/v1', defaultModel } as ImageProfile] }); };
+    for (const bad of ['flux 2 pro', '.', '..', '-x', 'a/b', 'a'.repeat(129)]) expect(check('bfl', bad), bad).toMatch(/only letters, digits, "\.", "_" and "-"/);
+    for (const ok of ['flux-2-pro', 'flux.2_pro', 'a'.repeat(128)]) expect(check('bfl', ok), ok).toBeNull();
+    for (const transport of ['openai-images', 'gemini']) for (const ok of ['vendor/model', 'gpt image', '..']) expect(check(transport, ok), `${transport} ${ok}`).toBeNull();
   });
 });

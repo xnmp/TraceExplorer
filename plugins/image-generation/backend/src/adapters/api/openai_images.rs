@@ -17,23 +17,7 @@ pub const DESCRIPTOR: ApiDescriptor = ApiDescriptor {
         sizes: true,
     },
     max_inputs: 8,
-    validate_base_url,
 };
-/// The root is the images resource, not one of its operations.
-fn validate_base_url(url: &url::Url) -> Result<()> {
-    let last = url
-        .path()
-        .trim_end_matches('/')
-        .rsplit('/')
-        .next()
-        .unwrap_or("");
-    if ["generations", "edits"].contains(&last) {
-        return Err(crate::error::invalid(
-            "Enter the images resource root, without generations or edits",
-        ));
-    }
-    Ok(())
-}
 pub(super) async fn generate(call: ApiCall<'_>) -> Result<Output> {
     let ApiCall {
         profile,

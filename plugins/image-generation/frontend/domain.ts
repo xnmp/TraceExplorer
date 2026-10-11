@@ -17,8 +17,10 @@ export interface ApiBackend {
   readonly credentialEnv: string;
   readonly baseUrlLabel: string;
   readonly baseUrlNote: string;
-  /** Last URL path segments this backend refuses (it appends its own). */
-  readonly rejectedUrlSuffixes: readonly string[];
+  /** Base-URL path segments this backend refuses: matched case-insensitively against every segment; a trailing `*` is a prefix match. */
+  readonly rejectedPathSegments: readonly string[];
+  /** The model id becomes a URL path segment, so it must be a safe one. */
+  readonly modelIdInPath: boolean;
 }
 export const API_BACKENDS: readonly ApiBackend[] = backends;
 export const TRANSPORT_ID = /^[a-z][a-z0-9-]{0,63}$/;
@@ -41,6 +43,15 @@ export function newProfile(id: string, transport: string): ImageProfile {
 export function removeProfile(value: ImageConfiguration, id: string): ImageConfiguration {
   return { ...value, profiles: value.profiles.filter(p => p.id !== id), defaultConnectionId: value.defaultConnectionId === id ? null : value.defaultConnectionId };
 }
+const PATH_SAFE_MODEL_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
+const segmentRejected = (pattern: string, segment: string): boolean => {
+  const p = pattern.toLowerCase(), s = segment.toLowerCase();
+  return p.endsWith('*') ? s.startsWith(p.slice(0, -1)) : s === p;
+};
+/** The first base-URL path segment `backend` refuses, if any. Mirrors `domain/backend_rules.rs`. */
+export function rejectedSegment(backend: ApiBackend | undefined, url: URL): string | undefined {
+  return url.pathname.split('/').filter(Boolean).find(segment => backend?.rejectedPathSegments.some(p => segmentRejected(p, segment)));
+}
 export function validation(value: ImageConfiguration): string | null {
   if (value.profiles.length > 32) return 'Keep at most 32 image connections.';
   if (value.defaultConnectionId !== null && !value.profiles.some(p => p.id === value.defaultConnectionId)) return 'Select an existing default connection.';
@@ -53,12 +64,14 @@ export function validation(value: ImageConfiguration): string | null {
       if (profile.executablePath.length > 8192 || /[\u0000-\u001f\u007f]/.test(profile.executablePath) || profile.executablePath && !/^(\/|[A-Za-z]:[\\/]|\\\\)/.test(profile.executablePath)) return 'Use an absolute Codex executable path, or leave it empty for discovery.';
     } else {
       if (!profile.defaultModel.trim() || [...profile.defaultModel].length > 256 || /[\u0000-\u001f\u007f]/.test(profile.defaultModel)) return `Enter the model ID supported by this ${transportLabel(profile)}.`;
+      const backend = backendFor(profile.transport);
+      if (backend?.modelIdInPath && !PATH_SAFE_MODEL_ID.test(profile.defaultModel)) return `The ${transportLabel(profile)} model ID can contain only letters, digits, ".", "_" and "-", start with a letter or digit, and be at most 128 characters.`;
       let url: URL;
       try { url = new URL(profile.baseUrl); } catch { return `Enter an absolute ${backendFor(profile.transport)?.baseUrlLabel ?? 'API URL'}.`; }
       if (profile.baseUrl.length > 2048 || !url.hostname || url.username || url.password || url.search || url.hash) return `The ${transportLabel(profile)} URL cannot contain credentials, a query, or a fragment.`;
       if (url.protocol !== 'https:' && !(url.protocol === 'http:' && (profile.allowInsecureHttp || ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname)))) return 'Use HTTPS or explicitly allow insecure HTTP.';
-      const rejected = backendFor(profile.transport)?.rejectedUrlSuffixes ?? [];
-      if (rejected.includes(url.pathname.replace(/\/+$/, '').split('/').pop() ?? '')) return `Use the ${transportLabel(profile)} resource root, without /${rejected.join(' or /')}.`;
+      const segment = rejectedSegment(backend, url);
+      if (segment !== undefined) return `The ${backend?.baseUrlLabel ?? 'API URL'} cannot contain the path segment /${segment}.`;
       if (profile.credential.kind === 'environment' && !/^[A-Za-z_][A-Za-z0-9_]{0,127}$/.test(profile.credential.name)) return 'Enter a valid credential environment variable name.';
     }
   }

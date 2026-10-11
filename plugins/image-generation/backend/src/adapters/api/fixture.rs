@@ -16,7 +16,6 @@ pub const DESCRIPTOR: ApiDescriptor = ApiDescriptor {
         sizes: false,
     },
     max_inputs: 2,
-    validate_base_url: |_| Ok(()),
 };
 /// A model named `refuse-<code>` makes the fixture answer like a provider that
 /// refused (structured code `<CODE>`), exercising the Failed/provider_refused path.
