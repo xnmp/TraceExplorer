@@ -477,10 +477,17 @@
     if (entry) void pane.open(entry);
   }
 
-  function menu(key: NodeKey, event: MouseEvent, componentId: string | undefined = undefined): void {
+  async function menu(key: NodeKey, event: MouseEvent, componentId: string | undefined = undefined): Promise<void> {
     supersedeReveal();
     releaseAnchors();
-    const found = findNode(key, componentId);
+    let found = findNode(key, componentId);
+    if (!found && componentId) {
+      // A stack not loaded yet: resolve its image the way activation does, then act as for a loaded one.
+      event.preventDefault();
+      const holder = await reachNode(key, componentId, ++activations);
+      found = holder ? findNode(key, holder) : null;
+      if (!found) return;
+    }
     const entry = found && fileEntry(found.node);
     if (entry) {
       if (!selectedPaths.has(entry.path)) { keepFocusedOpen(); selectListed(entry); }

@@ -443,6 +443,14 @@ test("a delayed activation does not undo an explicit close", async ({ page }) =>
   expect(await uncaught(page)).toEqual([]);
 });
 
+test("a context click on a cold unsaved stack resolves its image", async ({ page }) => {
+  await openView(page, 420, "?grouping=unsaved-and-placeholder", false);
+  expect((await state(page)).target).toBeNull();
+  await stack(page, "out").locator("[data-stack-toggle]").click({ button: "right" });
+  await expect.poll(async () => (await state(page)).target).toMatchObject({ id: "trace:o:11:0" });
+  expect(await uncaught(page)).toEqual([]);
+});
+
 const tabStops = (page: Page) => page.locator('[role="grid"] [tabindex="0"]');
 const focusIsInGrid = (page: Page) => page.evaluate(() => !!document.activeElement?.closest('[role="grid"]'));
 
