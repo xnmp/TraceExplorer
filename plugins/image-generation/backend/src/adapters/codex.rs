@@ -1,6 +1,5 @@
 //! Saved-login CLI uses host-owned process trees and only fresh thread output.
 use super::*;
-use serde_json::json;
 use std::path::PathBuf;
 struct ProcessOutput {
     stdout: Vec<u8>,
@@ -115,11 +114,7 @@ fn run(
             exit_status,
         })
     })();
-    let _ = host.call(
-        "host.process.release",
-        json!({"handle":result["handle"]}),
-        &AtomicBool::new(false),
-    );
+    host.release_process(&result["handle"]);
     read
 }
 fn args_is_login(out: &[u8], err: &[u8]) -> bool {
@@ -359,6 +354,7 @@ fn discover(home: &Path, thread: &str) -> Result<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
     use crate::{
         domain::{self, Credential, Profile},
         journal::Journal,
@@ -402,13 +398,12 @@ mod tests {
                     std::fs::write(&stderr, []).unwrap();
                     Ok(json!({"status":0,"handle":"owned-process","stdout":stdout,"stderr":stderr}))
                 }
-                "host.process.release" => {
-                    std::fs::remove_file(self.home.join("stdout")).unwrap();
-                    std::fs::remove_file(self.home.join("stderr")).unwrap();
-                    Ok(serde_json::Value::Null)
-                }
                 _ => panic!("Unexpected reverse IO"),
             }
+        }
+        fn release_process(&self, _: &serde_json::Value) {
+            std::fs::remove_file(self.home.join("stdout")).unwrap();
+            std::fs::remove_file(self.home.join("stderr")).unwrap();
         }
         fn event(&self, _: &str, _: serde_json::Value) -> Result<()> {
             Ok(())

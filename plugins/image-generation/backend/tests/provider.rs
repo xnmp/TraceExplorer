@@ -226,7 +226,6 @@ impl Host for FakeHost {
                     json!({"handle":format!("process-{index}"),"status":if output.status.success(){0}else{1},"stdout":stdout,"stderr":stderr}),
                 )
             }
-            "host.process.release" => Ok(Value::Null),
             _ => Err(error("method_not_found", "Fake host method unavailable")),
         }
     }

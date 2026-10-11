@@ -211,6 +211,12 @@ impl Provider {
                 json!({"handle":format!("process-{}",self.processes),"status":exit,"stdout":stdout,"stderr":stderr})
             }
             "host.process.release" => {
+                // Like the real host: release is a notification and is never
+                // answered, so a provider that waits for a reply stalls.
+                assert!(
+                    frame.get("id").is_none(),
+                    "host.process.release must be a notification"
+                );
                 let i = p["handle"]
                     .as_str()
                     .unwrap()
@@ -219,7 +225,7 @@ impl Provider {
                 for prefix in ["stdout", "stderr"] {
                     std::fs::remove_file(self.root.join(format!("{prefix}-{i}"))).unwrap();
                 }
-                Value::Null
+                return;
             }
             "host.artifacts.stage" => {
                 self.stages += 1;
