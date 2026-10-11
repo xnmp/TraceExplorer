@@ -13,10 +13,24 @@ export const coverIdentity = (summary: ComponentSummary, members: ReadonlyMap<st
   summary.cover?.present && members.get(summary.cover.path)?.componentId === summary.id
     ? pathIdentity(summary.cover.path) : revisionIdentity(summary.coverKey);
 
+/** The one identity a stack keeps for its whole life, whether or not its cover file is still there. */
+export const stackIdentity = (summary: ComponentSummary): string => revisionIdentity(summary.coverKey);
+/**
+ * Every identity a stack is remembered by: its stable one, and its cover's path while that is a
+ * listed file. Remembering both lets the stack reopen whichever the folder later shows, and lets
+ * an explicit close forget both.
+ */
+export const coverAliases = (summary: ComponentSummary, members: ReadonlyMap<string, { readonly componentId: string }>): readonly string[] => {
+  const primary = coverIdentity(summary, members), stable = stackIdentity(summary);
+  return primary === stable ? [stable] : [stable, primary];
+};
+
 export interface OpenStackComponent {
   readonly coverKey: string;
   /** Stable identity of the current cover, used to forget missing predecessors on close. */
   readonly coverIdentity?: string;
+  /** Every identity the stack is remembered by, forgotten together when it is closed. */
+  readonly aliases?: readonly string[];
   /** Present paths/revisions belonging to this component, including former covers. */
   readonly identities: ReadonlySet<string>;
 }
@@ -61,5 +75,6 @@ export function resolveOpenStacks(remembered: unknown, components: readonly Open
 /** Closing a stack also forgets missing covers last resolved into that stack. */
 export function forgetOpenStack(state: ReturnType<typeof resolveOpenStacks>, component: OpenStackComponent): ReadonlySet<string> {
   const owner = component.coverIdentity ?? revisionIdentity(component.coverKey);
-  return new Set([...state.remembered].filter((key) => key !== owner && !component.identities.has(key) && state.owners.get(key) !== owner));
+  const gone = new Set([owner, ...(component.aliases ?? [])]);
+  return new Set([...state.remembered].filter((key) => !gone.has(key) && !component.identities.has(key) && !gone.has(state.owners.get(key) ?? "")));
 }

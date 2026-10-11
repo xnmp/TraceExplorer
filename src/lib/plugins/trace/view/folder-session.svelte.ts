@@ -14,7 +14,7 @@ import { traceBackend, type TraceBackend } from "./backend";
 import { createSnapshotCache, type SnapshotCache } from "./folder-snapshots";
 import { componentRequest } from "./component-requests";
 import { parentDir, samePath } from "$lib/domain/path";
-import { coverIdentity, forgetOpenStack, pathIdentity, revisionIdentity, resolveOpenStacks } from "./open-stacks";
+import { coverAliases, coverIdentity, forgetOpenStack, stackIdentity, pathIdentity, revisionIdentity, resolveOpenStacks } from "./open-stacks";
 
 export interface ComponentData {
   readonly nodes: readonly TraceNode[];
@@ -100,7 +100,7 @@ export function createFolderSession(backend: TraceBackend = traceBackend, snapsh
       identities.get(id)?.add(revisionIdentity(node.key));
       if (node.path && !node.earlierRevision) identities.get(id)?.add(pathIdentity(node.path));
     }
-    return (index?.components ?? []).map((summary) => ({ coverKey: summary.coverKey, coverIdentity: coverIdentity(summary, index!.members), identities: identities.get(summary.id)! }));
+    return (index?.components ?? []).map((summary) => ({ coverKey: summary.coverKey, coverIdentity: stackIdentity(summary), aliases: coverAliases(summary, index!.members), identities: identities.get(summary.id)! }));
   });
   const openStacks = $derived(resolveOpenStacks(paneState.openCovers, stackMembership, paneState.openOwners));
   /** Same identity while the open set's contents are unchanged, so consumers (the grid's motion capture) do not re-run on a no-op rewrite of the pane state. */
@@ -335,8 +335,7 @@ export function createFolderSession(backend: TraceBackend = traceBackend, snapsh
       if (!summary) return;
       let keys = new Set(paneState.openCovers);
       if (opening) {
-        const key = coverIdentity(summary, index!.members);
-        keys.delete(key); keys.add(key);
+        for (const key of coverAliases(summary, index!.members)) { keys.delete(key); keys.add(key); }
       }
       else {
         const membership = stackMembership.find((component) => component.coverKey === summary.coverKey);
@@ -350,9 +349,9 @@ export function createFolderSession(backend: TraceBackend = traceBackend, snapsh
     followSelection(choice: string, ids: ReadonlySet<string>) {
       if (!index) return;
       const selected = index.components.filter((summary) => ids.has(summary.id)).map((summary) => coverIdentity(summary, index!.members));
-      const added = selected.filter((key) => choice !== paneState.selectionChoice || !paneState.selectionCovers.has(key));
+      const added = index.components.filter((summary) => ids.has(summary.id) && (choice !== paneState.selectionChoice || !paneState.selectionCovers.has(coverIdentity(summary, index!.members))));
       const keys = new Set(paneState.openCovers);
-      for (const key of added) { keys.delete(key); keys.add(key); }
+      for (const summary of added) for (const key of coverAliases(summary, index.members)) { keys.delete(key); keys.add(key); }
       const resolved = resolveOpenStacks(keys, stackMembership, openStacks.owners);
       paneState = { openCovers: resolved.remembered, openOwners: resolved.owners, selectionChoice: choice, selectionCovers: new Set(selected) };
       remember();

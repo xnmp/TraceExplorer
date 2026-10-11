@@ -924,6 +924,59 @@ describe("pane and folder open-stack snapshots", () => {
     session.dispose();
   });
 
+  describe("a stack whose cover file is deleted and restored", () => {
+    const present = { ...summary("s"), cover: { path: "/f/a.png", present: true }, coverKey: "a", imageCount: 2, nodeCount: 2 };
+    const gone = { ...present, cover: { path: "/f/a.png", present: false }, imageCount: 1 };
+    const both: [string, string, string][] = [["/f/a.png", "s", "a"], ["/f/b.png", "s", "b"]];
+    const only: [string, string, string][] = [["/f/b.png", "s", "b"]];
+    const nodes = (cover: "present" | "missing") => nodePage([{ ...node("a", 1), state: cover }, node("b", 2, ["a"])]);
+    async function show(session: ReturnType<typeof sessionFor>, backend: ReturnType<typeof backendFor>, cover: "present" | "missing") {
+      backend.components.mockResolvedValue({ ...compPage("t" + Math.random(), []), components: [cover === "present" ? present : gone], total: 1 });
+      backend.members.mockResolvedValue(memPage(cover === "present" ? both : only));
+      backend.nodes.mockResolvedValue(nodes(cover));
+      await session.refresh(); await session.ensure("s"); await flush();
+    }
+    it("stays open when its cover is deleted, and stays closed after an explicit close when it returns", async () => {
+      const backend = backendFor([present], both);
+      backend.nodes.mockResolvedValue(nodes("present"));
+      const session = sessionFor("pane", backend);
+      session.setDirectory("/f"); await flush();
+      session.setStackOpen("s", true); await session.ensure("s");
+      expect(session.openStackKeys).toEqual(new Set(["a"]));
+      await show(session, backend, "missing");
+      expect(session.openStackKeys).toEqual(new Set(["a"]));
+      session.setStackOpen("s", false);
+      await show(session, backend, "present");
+      expect(session.openStackKeys.size).toBe(0);
+      session.dispose();
+    });
+    it("is forgotten entirely by a close made while the cover is missing", async () => {
+      const backend = backendFor([present], both);
+      backend.nodes.mockResolvedValue(nodes("present"));
+      const session = sessionFor("pane", backend);
+      session.setDirectory("/f"); await flush();
+      session.setStackOpen("s", true); await session.ensure("s");
+      await show(session, backend, "missing");
+      session.setStackOpen("s", false);
+      session.setStackOpen("s", true);
+      session.setStackOpen("s", false);
+      await show(session, backend, "present");
+      expect(session.openStackKeys.size).toBe(0);
+      session.dispose();
+    });
+    it("reopens through the cover's path when only that identity is remembered by an earlier snapshot of the folder", async () => {
+      const backend = backendFor([present], both);
+      backend.nodes.mockResolvedValue(nodes("present"));
+      const session = sessionFor("pane", backend);
+      session.setDirectory("/f"); await flush();
+      session.setStackOpen("s", true);
+      await show(session, backend, "missing");
+      await show(session, backend, "present");
+      expect(session.openStackKeys).toEqual(new Set(["a"]));
+      session.dispose();
+    });
+  });
+
   it("reopens a resumed unsaved placeholder and forgets it after an explicit close", async () => {
     const backend = backendFor([summary("o:7:0")], []);
     backend.nodes.mockResolvedValue(nodePage([{ ...node("o:7:0", 7), path: null, state: "running", temporary: true }]));
