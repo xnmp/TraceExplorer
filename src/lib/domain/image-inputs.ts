@@ -19,10 +19,73 @@ export interface ImageInput {
 
 const IMAGE = /\.(png|jpe?g|webp)$/i;
 
+export type ImageInputIssueCode = "invalid-path" | "unsupported-format" | "duplicate" | "limit" | "unreadable";
+export interface ImageInputIssue {
+  readonly path: string | null;
+  readonly code: ImageInputIssueCode;
+  readonly message: string;
+}
+export interface ImageInputMergeResult {
+  readonly inputs: readonly ImageInput[];
+  readonly addedPaths: readonly string[];
+  readonly issues: readonly ImageInputIssue[];
+}
+
+export const hasImageInputCapacity = (count: number): boolean => count < MAX_IMAGE_INPUTS;
+
+/** Filesystem paths only; no URI conversion, relative resolution or guessed DOM file paths. */
+export function imageInputPathIssue(value: unknown): ImageInputIssue | null {
+  const path = typeof value === "string" ? value : null;
+  const absolute = path !== null && (path.startsWith("/") || /^[A-Za-z]:[\\/]/.test(path) || /^\\\\[^\\]+\\[^\\]+\\/.test(path));
+  if (!path || path.includes("\0") || isVirtualPath(path) || !absolute) {
+    return { path, code: "invalid-path", message: "Use an absolute local file path" };
+  }
+  return IMAGE.test(path) ? null : { path, code: "unsupported-format", message: "Unsupported format. Use PNG, JPEG or WebP" };
+}
+
+/** Synchronous preflight shared with intake. Repeated paths are duplicates even when the first cannot be read. */
+export function preflightDroppedImageInputs(existing: readonly ImageInput[], values: readonly unknown[]): {
+  readonly paths: readonly string[]; readonly issues: readonly ImageInputIssue[];
+} {
+  const seen = new Set(existing.map((input) => input.path));
+  const paths: string[] = [], issues: ImageInputIssue[] = [];
+  for (const value of values) {
+    const problem = imageInputPathIssue(value);
+    if (problem) { issues.push(problem); continue; }
+    const path = value as string;
+    if (seen.has(path)) { issues.push({ path, code: "duplicate", message: "Already an input" }); continue; }
+    seen.add(path);
+    paths.push(path);
+  }
+  return { paths, issues };
+}
+
+/** Append inspected drops in delivered order, preserving existing objects and pinned revisions. */
+export function mergeDroppedImageInputs(
+  existing: readonly ImageInput[], paths: readonly unknown[], descriptions: ReadonlyMap<string, ImageInput>,
+): ImageInputMergeResult {
+  const preflight = preflightDroppedImageInputs(existing, paths);
+  const inputs = [...existing], addedPaths: string[] = [], issues = [...preflight.issues];
+  for (const path of preflight.paths) {
+    if (!hasImageInputCapacity(inputs.length)) {
+      issues.push({ path, code: "limit", message: `Up to ${MAX_IMAGE_INPUTS} inputs` });
+      continue;
+    }
+    const description = descriptions.get(path);
+    if (!description || description.path !== path || description.error || !description.digest) {
+      issues.push({ path, code: "unreadable", message: `Cannot read image: ${description?.error || "inspection unavailable"}` });
+      continue;
+    }
+    inputs.push({ ...description });
+    addedPaths.push(path);
+  }
+  return { inputs, addedPaths, issues };
+}
+
 /** Paths usable as AI edit inputs, in order: one to eight distinct local PNG, JPEG or WebP images; otherwise none. */
 export function imageInputPaths(paths: readonly string[]): string[] {
-  const usable = paths.length > 0 && paths.length <= MAX_IMAGE_INPUTS && new Set(paths).size === paths.length
-    && paths.every((path) => !isVirtualPath(path) && IMAGE.test(path));
+  const usable = paths.length > 0 && hasImageInputCapacity(paths.length - 1) && new Set(paths).size === paths.length
+    && paths.every((path) => imageInputPathIssue(path) === null);
   return usable ? [...paths] : [];
 }
 
@@ -52,6 +115,13 @@ export function describeInputs(inputs: readonly ImageInput[], described: readonl
     if (found.error) return { path: input.path, error: found.error };
     return { path: input.path, digest: input.digest ?? found.digest, size: input.size ?? found.size, error: undefined };
   });
+}
+
+/** An older read may update surviving captured entries, but cannot overwrite a removed/re-added input's newer inspection. */
+export function describeInputSnapshot(current: readonly ImageInput[], captured: readonly ImageInput[], described: readonly ImageInput[]): readonly ImageInput[] {
+  const surviving = new Set(captured);
+  const updated = new Map(describeInputs(current.filter((input) => surviving.has(input)), described).map((input) => [input.path, input]));
+  return current.map((input) => surviving.has(input) ? updated.get(input.path)! : input);
 }
 
 /**

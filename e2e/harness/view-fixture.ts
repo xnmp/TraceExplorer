@@ -283,7 +283,8 @@ configureBackend(withNativeRequestCapacity({
       case "trace_cancel_prompt_title": return reply({cancelled:true});
       // AI edit inputs: every known image is present, 160×96, with a revision derived from its path.
       case "openai_image_inputs": if (inputFailures > 0) { inputFailures -= 1; return Promise.reject(new Error("The image service is busy")); }
-        return reply((params.paths as string[]).map((path) => state.nodes.some((node) => node.path === path) || entryExtras.some((entry) => entry.path === path)
+        if (!Array.isArray(params.paths) || params.paths.length > 8) return Promise.reject(new Error("At most eight input images are supported"));
+        return reply((params.paths as string[]).map((path) => state.nodes.some((node) => node.path === path && node.state === "present" && !node.discarded) || entryExtras.some((entry) => entry.path === path && entry.kind === "file")
         ? { path, digest: [...path].reduce((hash, char) => (hash * 33 + char.charCodeAt(0)) % 1e9, 5381).toString(16).padStart(64, "0"), width: 160, height: 96 }
         : { path, error: "Path not found" }));
       case "image_service_describe": {
@@ -348,10 +349,13 @@ const fileTiles = new URLSearchParams(globalThis.location?.search ?? "").has("fi
 // `?tileSize=<preset>` simulates a host with the `tileSize` capability whose pane reports that preset; without it, an older host.
 const tileQuery = new URLSearchParams(globalThis.location?.search ?? "").get("tileSize");
 export const initialTileSize: TileSizePreset | null = tileQuery && tileQuery in TILE_IMAGE_PX ? tileQuery as TileSizePreset : null;
+// Independently toggled so every compatibility combination can be exercised.
+export const paneDialogs = new URLSearchParams(globalThis.location?.search ?? "").get("paneDialogs") !== "0";
+export const fileDropTargets = new URLSearchParams(globalThis.location?.search ?? "").get("fileDropTargets") !== "0";
 const color = (path: string) => `hsl(${[...path].reduce((sum, char) => (sum * 31 + char.charCodeAt(0)) % 360, 7)} 45% 55%)`;
 (globalThis as any).__TAURI_EXPLORER_PLUGIN_SDK__ = {
   sdkVersion: 1, apiVersion: 2, svelteVersion: "5.56.3",
-  capabilities: ["fileViews", "previewInfo", "previewTargets", "blobWorkers", "jobReveal", "jobCost", "fileViewReveal", ...(fileTile ? ["fileTile"] : []), ...(fileTiles ? ["fileTiles"] : []), ...(initialTileSize ? ["tileSize"] : [])],
+  capabilities: ["fileViews", "previewInfo", "previewTargets", "blobWorkers", "jobReveal", "jobCost", "fileViewReveal", ...(fileTile ? ["fileTile"] : []), ...(fileTiles ? ["fileTiles"] : []), ...(initialTileSize ? ["tileSize"] : []), ...(paneDialogs ? ["paneDialogs"] : []), ...(fileDropTargets ? ["fileDropTargets"] : [])],
   modules: {
     ...(fileTiles ? { "ui/file-tiles": { default: StubFileTiles } } : {}),
     ...(fileTile ? { "ui/file-tile": { default: StubFileTile, tileGridMetrics: (size: TileSizePreset = "medium") => {

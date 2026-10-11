@@ -10,6 +10,7 @@ import { imageInputPaths, singleImagePath } from "$lib/domain/image-inputs";
 import { aiEditIntent, type AIEditIntent } from "$lib/domain/ai-edit-intent";
 import { combinedSelection } from "./workspace-selection";
 import { aiOutputDirectory, outputLocationProblem } from "$lib/domain/target-location";
+import { hostCapturePane, hostRegisterFileDropTarget } from "../../../sdk";
 
 const EDITOR_TOOL_ID = "openai-image";
 const DIALOG_ID = "openai-image.create";
@@ -49,12 +50,19 @@ function commandIntent(ctx: PluginContext): { intent: AIEditIntent; outputDir: s
 }
 
 async function open(ctx: PluginContext, inputs: readonly string[], outputDir: string): Promise<void> {
-  ctx.openDialog(DIALOG_ID, {
+  // Capture synchronously: later async preparation must never retarget to another active pane.
+  const capturePane = hostCapturePane(ctx.workspace);
+  const pane = capturePane?.();
+  if (capturePane && !pane) throw new Error("The dialog's pane is unavailable. Choose an open pane and try again.");
+  const props = {
     inputs: inputs.map((path) => ({ path })), outputDir,
     jobs: ctx.jobs, toast: ctx.toast,
     configureConnections: () => configureConnections(ctx),
     captureSelection: ctx.workspace.captureSelection,
-  });
+    registerFileDropTarget: hostRegisterFileDropTarget(ctx.workspace) ?? undefined,
+  };
+  if (pane) ctx.openDialog(DIALOG_ID, props, { scope: "pane", pane });
+  else ctx.openDialog(DIALOG_ID, props);
 }
 
 /** Await the provider-owned modal so callers can refresh capability state after closure. */

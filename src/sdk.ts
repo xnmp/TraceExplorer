@@ -1,5 +1,5 @@
 import type { Component } from "svelte";
-import type { FileTileModule, FileTilesProps, RuntimeSDK } from "../integration/plugin-sdk";
+import type { FileTileModule, FileTilesProps, PluginContext, RuntimeSDK } from "../integration/plugin-sdk";
 export const SVELTE_ABI = "5.56.3";
 export function host(): RuntimeSDK {
   const sdk = (globalThis as typeof globalThis & { __TAURI_EXPLORER_PLUGIN_SDK__?: RuntimeSDK }).__TAURI_EXPLORER_PLUGIN_SDK__;
@@ -37,5 +37,20 @@ export function hostFileTile(): FileTileModule | null {
     if (!sdk.capabilities?.includes("fileTile")) return null;
     const module = sdk.modules["ui/file-tile"] as Partial<FileTileModule> | undefined;
     return typeof module?.default === "function" && typeof module.tileGridMetrics === "function" ? module as FileTileModule : null;
+  } catch { return null; }
+}
+
+/** Optional workspace APIs require both the announced capability and a callable method. */
+export function hostCapturePane(workspace: PluginContext["workspace"]): PluginContext["workspace"]["capturePane"] | null {
+  try {
+    return host().capabilities?.includes("paneDialogs") && typeof workspace.capturePane === "function"
+      ? workspace.capturePane.bind(workspace) : null;
+  } catch { return null; }
+}
+
+export function hostRegisterFileDropTarget(workspace: PluginContext["workspace"]): PluginContext["workspace"]["registerFileDropTarget"] | null {
+  try {
+    return host().capabilities?.includes("fileDropTargets") && typeof workspace.registerFileDropTarget === "function"
+      ? workspace.registerFileDropTarget.bind(workspace) : null;
   } catch { return null; }
 }

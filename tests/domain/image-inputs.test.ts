@@ -1,8 +1,96 @@
 import { describe, expect, it } from "vitest";
-import { describeInputs, imageInputPaths, inputRequestFields, moveInput, removeInput, singleImagePath, withLiveInputs, type ImageInput } from "$lib/domain/image-inputs";
+import { describeInputSnapshot, describeInputs, imageInputPaths, inputRequestFields, mergeDroppedImageInputs, moveInput, removeInput, singleImagePath, withLiveInputs, type ImageInput } from "$lib/domain/image-inputs";
 
 const inputs: ImageInput[] = ["/a.png", "/b.jpg", "/c.webp"].map((path) => ({ path }));
 const paths = (list: readonly ImageInput[]) => list.map((input) => input.path);
+
+describe("dropped image inputs", () => {
+  const inspected = (paths: readonly string[]) => new Map(paths.map((path) => [path, { path, digest: `digest:${path}`, size: { width: 160, height: 96 } }]));
+  it("appends supported files in delivery order, including uppercase and native Windows paths", () => {
+    const delivered = ["/b.JPG", "C:\\pictures\\a.PNG", "\\\\server\\share\\c.WebP", "/d.jpeg"];
+    const result = mergeDroppedImageInputs([], delivered, inspected(delivered));
+    expect(paths(result.inputs)).toEqual(delivered);
+    expect(result.addedPaths).toEqual(delivered);
+    expect(result.issues).toEqual([]);
+    expect(mergeDroppedImageInputs([], [], new Map())).toEqual({ inputs: [], addedPaths: [], issues: [] });
+  });
+  it("keeps existing order, pinned metadata and immutable arguments", () => {
+    const existing = Object.freeze([Object.freeze({ path: "/old.png", digest: "pinned", size: Object.freeze({ width: 1, height: 2 }) })]);
+    const delivered = Object.freeze(["/new.webp", "/old.png", "/new.webp"]);
+    const descriptions = inspected(delivered);
+    const before = structuredClone([...descriptions]);
+    const result = mergeDroppedImageInputs(existing, delivered, descriptions);
+    expect(result.inputs[0]).toBe(existing[0]);
+    expect(result.inputs[0]).toEqual({ path: "/old.png", digest: "pinned", size: { width: 1, height: 2 } });
+    expect(result.addedPaths).toEqual(["/new.webp"]);
+    expect(result.issues).toEqual([
+      { path: "/old.png", code: "duplicate", message: "Already an input" },
+      { path: "/new.webp", code: "duplicate", message: "Already an input" },
+    ]);
+    expect([...descriptions]).toEqual(before);
+    expect(delivered).toEqual(["/new.webp", "/old.png", "/new.webp"]);
+  });
+  it("reports every malformed, relative, URL, virtual and NUL path without coercion", () => {
+    const malformed = [null, undefined, 42, {}, [], true, "", "photo.png", "./photo.png", "../photo.png", "C:photo.png", "\\photo.png",
+      "https://example.com/photo.png", "file:///photo.png", "demo://photo.png", "data:image/png;base64,a.png", "/bad\0.png"];
+    const result = mergeDroppedImageInputs([], malformed, new Map());
+    expect(result.inputs).toEqual([]);
+    expect(result.issues).toHaveLength(malformed.length);
+    expect(result.issues.every((issue) => issue.code === "invalid-path")).toBe(true);
+    expect(result.issues[0].path).toBeNull();
+    expect(result.issues[3].path).toBeNull();
+    expect(imageInputPaths(malformed as string[])).toEqual([]);
+  });
+  it("partially accepts a mixed batch and rejects absent, failed and incomplete inspections", () => {
+    const delivered = ["/a.png", "/animated.gif", "/bad.jpg", "/missing.png", "/incomplete.webp", "/b.webp"];
+    const descriptions: Map<string, ImageInput> = inspected(["/a.png", "/b.webp"]);
+    descriptions.set("/bad.jpg", { path: "/bad.jpg", error: "Permission denied" });
+    descriptions.set("/incomplete.webp", { path: "/incomplete.webp" });
+    const result = mergeDroppedImageInputs([], delivered, descriptions);
+    expect(result.addedPaths).toEqual(["/a.png", "/b.webp"]);
+    expect(result.issues).toEqual([
+      { path: "/animated.gif", code: "unsupported-format", message: "Unsupported format. Use PNG, JPEG or WebP" },
+      { path: "/bad.jpg", code: "unreadable", message: "Cannot read image: Permission denied" },
+      { path: "/missing.png", code: "unreadable", message: "Cannot read image: inspection unavailable" },
+      { path: "/incomplete.webp", code: "unreadable", message: "Cannot read image: inspection unavailable" },
+    ]);
+  });
+  it("uses exact-string duplicate identity, including duplicates of unreadable files", () => {
+    const result = mergeDroppedImageInputs([{ path: "/a.png" }], ["/A.png", "/bad.png", "/bad.png"], inspected(["/A.png"]));
+    expect(result.addedPaths).toEqual(["/A.png"]);
+    expect(result.issues).toEqual(expect.arrayContaining([
+      { path: "/bad.png", code: "duplicate", message: "Already an input" },
+      { path: "/bad.png", code: "unreadable", message: "Cannot read image: inspection unavailable" },
+    ]));
+  });
+  it("accepts the next readable file into slot eight and explains overflow, even when already full", () => {
+    const existing = Array.from({ length: 7 }, (_, i) => ({ path: `/existing-${i}.png` }));
+    const delivered = ["/bad.png", "/fits.jpg", "/ninth.webp"];
+    const result = mergeDroppedImageInputs(existing, delivered, inspected(["/fits.jpg", "/ninth.webp"]));
+    expect(paths(result.inputs)).toEqual([...paths(existing), "/fits.jpg"]);
+    expect(result.issues).toEqual([
+      { path: "/bad.png", code: "unreadable", message: "Cannot read image: inspection unavailable" },
+      { path: "/ninth.webp", code: "limit", message: "Up to 8 inputs" },
+    ]);
+    const full = mergeDroppedImageInputs(result.inputs, ["/tenth.png", "/fits.jpg", "/no.gif"], new Map());
+    expect(full.addedPaths).toEqual([]);
+    expect(full.issues.map((issue) => issue.code)).toEqual(["duplicate", "unsupported-format", "limit"]);
+  });
+  it("merges against a reordered/removed arrangement without restoring removed inputs", () => {
+    const arranged = removeInput(moveInput(inputs, 2, 0), 1);
+    const result = mergeDroppedImageInputs(arranged, ["/a.png", "/c.webp"], inspected(["/a.png"]));
+    expect(paths(result.inputs)).toEqual(["/c.webp", "/b.jpg", "/a.png"]);
+    expect(result.issues[0].code).toBe("duplicate");
+  });
+  it("handles a very large batch in linear work and explains every skipped file", () => {
+    const delivered = Array.from({ length: 100_000 }, (_, i) => `/drop-${i}.png`);
+    const result = mergeDroppedImageInputs([], delivered, inspected(delivered.slice(0, 8)));
+    expect(result.addedPaths).toEqual(delivered.slice(0, 8));
+    expect(result.issues).toHaveLength(99_992);
+    expect(result.issues[0]).toEqual({ path: "/drop-8.png", code: "limit", message: "Up to 8 inputs" });
+    expect(result.issues.at(-1)?.path).toBe("/drop-99999.png");
+  });
+});
 
 describe("AI edit inputs", () => {
   it("accepts one to eight distinct local images, in order", () => {
@@ -74,6 +162,17 @@ describe("AI edit inputs", () => {
       { path: "/b.jpg", error: "Path not found" },
       { path: "/c.webp" },
     ]);
+  });
+
+  it("applies a captured read after reorder/removal without overwriting a removed and re-dropped image", () => {
+    const captured = [{ path: "/a.png" }, { path: "/b.jpg" }, { path: "/c.webp" }];
+    const newer = { path: "/a.png", digest: "new-inspection", size: { width: 80, height: 60 } };
+    const current = [captured[2], captured[1], newer];
+    expect(describeInputSnapshot(current, captured, [
+      { path: "/a.png", error: "An older read failed" }, { path: "/b.jpg", digest: "b" }, { path: "/c.webp", digest: "c" },
+    ])).toEqual([{ path: "/c.webp", digest: "c", error: undefined, size: undefined },
+      { path: "/b.jpg", digest: "b", error: undefined, size: undefined }, newer]);
+    expect(describeInputSnapshot([captured[1]], captured, [{ path: "/a.png", digest: "a" }])).toEqual([captured[1]]);
   });
 });
 

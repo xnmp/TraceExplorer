@@ -1,22 +1,25 @@
 <script lang="ts">
-  import { tick, untrack, onDestroy, onMount } from "svelte";
+  import { tick, untrack, onDestroy, onMount, type Snippet } from "svelte";
   import "../plugin-dialog.css";
-  import type { PluginJobs, PluginToast } from "../api";
+  import type { PluginContext, PluginJobs, PluginToast } from "../api";
   import { describeImageInputs, describeImageService, type ImageServiceAvailability, type OpenAIImageRequest } from "$lib/api/openai-image";
   import { availabilityProblem, capabilityProblem, connectionFields, connectionFor, connectionNeedsReview, fallbackOption, isApiConnection, offeredOptions, transportLabel, type ImageConnection } from "./connections";
   import { startImageJob } from "./image-jobs";
-  import { describeInputs, inputRequestFields, moveInput, removeInput, withLiveInputs, type ImageInput } from "$lib/domain/image-inputs";
+  import { describeInputSnapshot, inputRequestFields, moveInput, removeInput, withLiveInputs, type ImageInput } from "$lib/domain/image-inputs";
   import TraceThumbnail from "../trace/TraceThumbnail.svelte";
   import Select, { type SelectOption } from "../../../../integration/ui/Select.svelte";
   import { basename } from "$lib/domain/path";
   import { imageOutputFilename } from "$lib/domain/image-output-filename";
   import { imageGenerationSize, type ImageResolution, type ImageAspectRatio } from "$lib/domain/image-generation-settings";
   import { outputLocationProblem } from "$lib/domain/target-location";
+  import { createImageInputIntake, type ImageInputIntakeIssue } from "./image-input-intake";
 
   interface Props {
     open: boolean;
     onBusyChange?: (busy: boolean) => void;
     captureSelection?: ()=>()=>boolean;
+    registerFileDropTarget?: PluginContext["workspace"]["registerFileDropTarget"];
+    header?: Snippet<[editing: boolean]>;
     /** The images to edit, in the order they are numbered and sent; none for a new image. */
     inputs?: readonly ImageInput[];
     outputDir: string;
@@ -25,7 +28,7 @@
     toast: PluginToast;
     onClose: () => void;
   }
-  let { open, onBusyChange = () => {}, captureSelection, inputs = [], outputDir,
+  let { open, onBusyChange = () => {}, captureSelection, registerFileDropTarget, header, inputs = [], outputDir,
     configureConnections, jobs, toast, onClose }: Props = $props();
   /** The edit's images as arranged here: order, removals, and what the backend reported. */
   let arranged = $state.raw<readonly ImageInput[]>(untrack(() => inputs));
@@ -35,7 +38,7 @@
    * its source fills in (Image 1's size arrives once its preview has loaded).
    */
   const images = $derived(withLiveInputs(arranged, inputs));
-  const editing = untrack(() => inputs.length > 0);
+  const editing = $derived(images.length > 0);
   const locationProblem = $derived(outputLocationProblem(outputDir));
   let stripRef = $state<HTMLOListElement | null>(null);
   let availability = $state.raw<ImageServiceAvailability | null>(null);
@@ -90,7 +93,7 @@
     pinnedProvider = availability?.providerDigest;
   }
   async function configure(): Promise<void> {
-    if (configuring || submitting) return;
+    if (configuring || submitting || inspectingDrops) return;
     configuring = true;
     configurationError = "";
     try {
@@ -101,16 +104,46 @@
     finally { if (alive) configuring = false; }
   }
   let alive = true;
-  onDestroy(()=>{alive=false;});
+  onDestroy(()=>{alive=false; intake.dispose();});
   let prompt = $state("");
   let resolution = $state<ImageResolution>("2k");
-  const defaultAspectRatio: ImageAspectRatio = editing ? "keep" : "1:1";
+  // This initial default is deliberately stable when an empty form receives inputs.
+  const defaultAspectRatio: ImageAspectRatio = untrack(() => inputs.length > 0 ? "keep" : "1:1");
   let aspectRatio = $state<ImageAspectRatio>(defaultAspectRatio);
   let count = $state(1);
   let submitting = $state(false);
   let error = $state("");
   let formRef = $state<HTMLFormElement | null>(null);
   let promptRef = $state<HTMLTextAreaElement | null>(null);
+  let inspectingDrops = $state(false);
+  let dropIssues = $state.raw<readonly ImageInputIntakeIssue[]>([]);
+  let dropStatus = $state("");
+  let feedbackLimit = $state(8);
+  const visibleDropIssues = $derived(dropIssues.slice(0, feedbackLimit));
+  const intake = createImageInputIntake({
+    getInputs: () => images,
+    inspect: async (paths) => {
+      const result = await describeImageInputs(paths);
+      if (!result.ok) throw new Error(result.error);
+      return result.data.map(({ path, digest, width, height, error }) => ({
+        path, digest, error, size: width && height ? { width, height } : undefined,
+      }));
+    },
+    commit: (result) => { arranged = result.inputs; },
+    blockedReason: () => !open || !alive ? "The form is closed" : submitting ? "Wait for submission to finish" : configuring ? "Close connection settings before adding inputs" : null,
+    onPendingChange: (pending) => { inspectingDrops = pending; },
+    onFeedback: (addedPaths, issues) => {
+      dropIssues = issues;
+      feedbackLimit = 8;
+      dropStatus = [addedPaths.length ? `${addedPaths.length} input${addedPaths.length === 1 ? "" : "s"} added` : "",
+        issues.length ? `${issues.length} file${issues.length === 1 ? "" : "s"} skipped` : ""].filter(Boolean).join(". ");
+    },
+  });
+  function registerInputs(element: HTMLElement): { destroy: () => void } {
+    const dispose = registerFileDropTarget?.(element, (paths) => intake.enqueue(paths),
+      { enabled: () => open && alive && !submitting && !configuring });
+    return { destroy: () => dispose?.() };
+  }
   $effect(() => { onBusyChange(submitting || configuring); });
   $effect(() => {
     if (!open) return;
@@ -119,10 +152,12 @@
   let describing: Promise<string | null> | null = null;
   /** Reads each input's revision and size; resolves to why it could not, if it could not. Inputs keep what is already known. */
   function describe(): Promise<string | null> {
-    describing ??= describeImageInputs(arranged.map((input) => input.path))
+    if (describing) return describing;
+    const snapshot = images;
+    describing = describeImageInputs(snapshot.map((input) => input.path))
       .then((result) => {
         if (!result.ok) return `Could not read the input images: ${result.error}`;
-        if (alive) arranged = describeInputs(arranged, result.data.map(({ path, digest, width, height, error }) => ({
+        if (alive) arranged = describeInputSnapshot(images, snapshot, result.data.map(({ path, digest, width, height, error }) => ({
           path, digest, error, size: width && height ? { width, height } : undefined,
         })));
         return null;
@@ -158,7 +193,7 @@
     (next && !next.disabled ? next : stripRef)?.focus();
   }
   async function submit(): Promise<void> {
-    if (submitting || configuring || loadingConnections || !prompt.trim()) return;
+    if (submitting || configuring || inspectingDrops || loadingConnections || !prompt.trim()) return;
     submits += 1;
     submitting = true;
     error = "";
@@ -235,6 +270,7 @@
 
 <svelte:window onkeydown={(event) => { if (event.target instanceof Node && formRef?.contains(event.target)) keydown(event); }} />
 
+  {@render header?.(editing)}
   <form bind:this={formRef} onsubmit={(event) => { event.preventDefault(); void submit(); }} aria-label="Image generation">
     <div class="dialog-body">
       <div class="model-row">
@@ -242,7 +278,7 @@
           <Select aria-label="Image connection" value={latestConnection?.id ?? ""} disabled={submitting || configuring || loadingConnections}
             options={connectionOptions} placeholder="Select a connection" onchange={chooseConnection} />
         </label>
-        <button type="button" class="btn btn-secondary" disabled={submitting || configuring} onclick={() => void configure()}>{configuring ? "Configuring…" : "Configure connections"}</button>
+        <button type="button" class="btn btn-secondary" disabled={submitting || configuring || inspectingDrops} onclick={() => void configure()}>{configuring ? "Configuring…" : "Configure connections"}</button>
         <button type="button" class="btn btn-secondary icon-btn" aria-label="Reload connections" title="Reload connections" disabled={submitting || configuring || loadingConnections} onclick={() => void refreshConnections()}>
           <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" class:spinning={loadingConnections}><path d="M13.5 8a5.5 5.5 0 1 1-1.6-3.9M13.5 2.5v3h-3" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" /></svg>
         </button>
@@ -261,9 +297,14 @@
           <span class="hint">Leave blank to use {profile.defaultModel}. Custom model IDs are supported.</span>
         </label>
       {/if}
-      {#if images.length}
-        <div class="prompt-field">
-          <span id="openai-image-inputs-label">Inputs <span class="hint">— Image 1, Image 2, … in the order sent</span></span>
+        <section class="prompt-field inputs" class:drop-enabled={!!registerFileDropTarget} aria-labelledby="openai-image-inputs-label" aria-busy={inspectingDrops} use:registerInputs>
+          <span id="openai-image-inputs-label">Inputs <span class="hint">{images.length} / 8{images.length ? " — Image 1, Image 2, … in the order sent" : ""}</span></span>
+          {#if registerFileDropTarget}
+            <div class="drop-hint" class:empty={!images.length}>Drop PNG, JPEG or WebP images here <span class="hint">Up to 8 inputs</span></div>
+          {:else if !images.length}
+            <span class="hint">No input images</span>
+          {/if}
+          {#if images.length}
           <ol class="strip" aria-labelledby="openai-image-inputs-label" tabindex="-1" bind:this={stripRef}>
             {#each images as input, index (input.path)}
               <li class="input-card" class:invalid={!!input.error} data-input-path={input.path} aria-label="Image {index + 1}: {basename(input.path)}">
@@ -279,8 +320,18 @@
               </li>
             {/each}
           </ol>
-        </div>
-      {/if}
+          {/if}
+          {#if inspectingDrops}<span class="hint">Reading input images…</span>{/if}
+          <div class="drop-feedback" role="status" aria-live="polite" aria-atomic="true">
+            {#if dropStatus}<p>{dropStatus}</p>{/if}
+            {#if visibleDropIssues.length}
+              <ul>{#each visibleDropIssues as issue}<li><span title={issue.path ?? undefined}>{issue.path ? basename(issue.path) : "Invalid path"}</span>: {issue.message}</li>{/each}</ul>
+            {/if}
+          </div>
+          {#if dropIssues.length > feedbackLimit}
+            <button type="button" class="btn btn-secondary" onclick={() => { feedbackLimit += 8; }}>Show more reasons ({dropIssues.length - feedbackLimit} remaining)</button>
+          {/if}
+        </section>
       <label class="prompt-field">{editing ? "Edit prompt" : "Image prompt"}
         <textarea class="prompt-input" rows="4" maxlength="16000" bind:value={prompt} bind:this={promptRef} disabled={submitting} required
           placeholder={images.length > 1 ? "Describe your edit. Refer to images by number, e.g. “the hat in Image 2”…" : editing ? "Describe your edit…" : "Describe your image…"}></textarea>
@@ -314,12 +365,12 @@
       {#if error}<p class="error" role="alert">{error}</p>{/if}
     </div>
     <footer>
-      <button class="btn btn-primary" type="submit" disabled={!prompt.trim() || submitting || configuring || loadingConnections || !profile || !!availabilityError || removedConnection || needsReview || !!locationProblem} title="Ctrl+Enter">{submitting ? "Starting…" : "Generate"}</button>
+      <button class="btn btn-primary" type="submit" disabled={!prompt.trim() || submitting || configuring || inspectingDrops || loadingConnections || !profile || !!availabilityError || removedConnection || needsReview || !!locationProblem} title="Ctrl+Enter">{submitting ? "Starting…" : "Generate"}</button>
     </footer>
   </form>
 
 <style>
-  form { display: flex; flex-direction: column; min-height: 0; }
+  form { display: flex; flex: 1; flex-direction: column; min-height: 0; min-width: 0; }
   .dialog-body { overflow: auto; min-height: 0; }
   .model-row { display: flex; align-items: end; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
   .model-field { flex: 1; min-width: 150px; margin: 0; }
@@ -331,12 +382,20 @@
   @media (prefers-reduced-motion: reduce) { .spinning { animation: none; } }
   footer { flex-shrink: 0; padding: 0 20px 16px; display: flex; align-items: end; justify-content: flex-end; gap: 8px; }
   /* One row of settings in the dialog; fewer columns where it is narrow (the image editor's tool panel). */
-  .options { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 10px 12px; }
+  .options { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(170px, 100%), 1fr)); gap: 10px 12px; }
   .options .prompt-input { width: 100%; box-sizing: border-box; min-width: 0; }
   .options .prompt-field { margin-bottom: 0; }
   label { font-size: 12px; color: var(--text-secondary); }
   textarea { resize: vertical; min-height: 88px; box-sizing: border-box; }
   .hint { color: var(--text-tertiary); }
+  .inputs { min-width: 0; }
+  .inputs.drop-enabled { padding: 8px; border: 1px dashed var(--control-stroke); border-radius: var(--radius-sm); }
+  .inputs:global(.drop-target) { border-color: var(--accent); background: var(--subtle-fill-secondary); }
+  .drop-hint { font-size: 12px; color: var(--text-secondary); display: flex; flex-wrap: wrap; gap: 4px 12px; }
+  .drop-hint.empty { padding: 12px 0; }
+  .drop-feedback { font-size: 12px; color: var(--text-secondary); overflow-wrap: anywhere; }
+  .drop-feedback p { margin: 0; }
+  .drop-feedback ul { margin: 4px 0 0; padding-left: 16px; }
   .strip { display: flex; gap: 8px; margin: 0; padding: 2px 2px 6px; list-style: none; overflow-x: auto; }
   .strip:focus-visible { outline: 2px solid var(--focus-stroke-outer); outline-offset: 1px; }
   .input-card { position: relative; flex: 0 0 96px; display: flex; flex-direction: column; gap: 2px; padding: 6px; border: 1px solid var(--control-stroke); border-radius: var(--radius-sm); background: var(--control-fill); }
