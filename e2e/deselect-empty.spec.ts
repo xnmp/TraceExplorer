@@ -96,7 +96,10 @@ test("canvas drag gestures preserve selection, including dragging away and back"
 test("section controls preserve selection; background right-click clears like the host list", async ({ page }) => {
   await openView(page, 1400);
   const before = await selectImages(page);
-  const section = page.locator("section[data-component]").filter({ has: await card(page, "warm") });
+  // Pin the section by its id: collapsing unmounts its cards, so a locator
+  // filtered by a card stops matching once the section collapses.
+  const component = await page.locator("section[data-component]").filter({ has: await card(page, "warm") }).getAttribute("data-component");
+  const section = page.locator(`section[data-component="${component}"]`);
   const heading = section.locator("button.heading");
   await heading.locator(".name").click();
   await expect(heading).toHaveAttribute("aria-expanded", "false");
