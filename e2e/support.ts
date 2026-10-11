@@ -39,9 +39,11 @@ export async function click(page: Page, name: Name, options: Parameters<Locator[
 export interface Box { x: number; y: number; width: number; height: number }
 
 /** Tile boxes keyed by node key, relative to the graph that holds them. */
-export function tileBoxes(page: Page, component: number): Promise<Record<string, Box>> {
+export function tileBoxes(page: Page, component: number | Name): Promise<Record<string, Box>> {
   return page.evaluate((index) => {
-    const section = document.querySelectorAll("section.component[data-component]")[index];
+    const sections = [...document.querySelectorAll("section.component[data-component]")];
+    const section = typeof index === "number" ? sections[index] : sections.find((element) =>
+      element.querySelector(`[data-tile-key="${CSS.escape((window as any).trace.backend.key(index))}"]`))!;
     const graph = section.querySelector(".graph")!.getBoundingClientRect();
     return Object.fromEntries([...section.querySelectorAll<HTMLElement>("[data-tile-key]")].map((element) => {
       const r = element.getBoundingClientRect();

@@ -214,7 +214,9 @@ test.describe("wide layouts", () => {
     const [forest, mist, autumn] = await Promise.all(names.map((name) => key(page, name)));
     await click(page, "forest-mist");
     const columns = async () => {
-      const boxes = await tileBoxes(page, 1);
+      // Native newest-first summaries can move this section when a generation
+      // starts; keep asserting the forest's geometry, not its old list index.
+      const boxes = await tileBoxes(page, "forest");
       runsRight(boxes, [[forest, mist], [forest, autumn], ...batch.map((k) => [forest, k] as [string, string])]);
       expect(overlaps(boxes)).toEqual([]);
       return Object.fromEntries([forest, mist, autumn].map((k) => [k, Math.round(boxes[k].x)]));
@@ -242,7 +244,7 @@ test.describe("wide layouts", () => {
     await openView(page, 900);
     const [forest, mist, autumn] = await Promise.all(["forest", "forest-mist", "autumn"].map((name) => key(page, name)));
     const flow = async () => {
-      const boxes = await tileBoxes(page, 1);
+      const boxes = await tileBoxes(page, "forest");
       const children = [mist, autumn, ...extra].filter((k) => boxes[k]);
       if (children.every((k) => boxes[k].x >= boxes[forest].x + boxes[forest].width)) return "right";
       if (children.every((k) => boxes[k].y >= boxes[forest].y + boxes[forest].height)) return "down";

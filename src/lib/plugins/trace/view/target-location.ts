@@ -19,16 +19,17 @@ export interface TargetIndex {
 
 /**
  * Found: in current data, in its own component or in the one it merged into.
- * Gone: the index no longer lists its component and no current data holds it,
- * or its own component, loaded current, no longer holds it. Unknown otherwise
- * (no index yet, or its component is not loaded current), so the target stays.
+ * Prefer the issued component when a badge has several copies. A saved ID
+ * cannot prove disappearance after a merge or split: return Gone only after
+ * all currently listed components are loaded fresh and none holds the key.
  */
 export function locateTarget(key: NodeKey, componentId: string, index: TargetIndex): TargetLocation {
   if (!index.listed) return "unknown";
+  const own = index.components.get(componentId)?.dag.nodes.get(key);
+  if (own && index.listed.has(componentId) && !index.isStale(componentId)) return { node: own, componentId };
   for (const [id, data] of index.components) {
     const node = data.dag.nodes.get(key);
-    if (node && !index.isStale(id)) return { node, componentId: id };
+    if (node && index.listed.has(id) && !index.isStale(id)) return { node, componentId: id };
   }
-  if (!index.listed.has(componentId)) return "gone";
-  return index.components.has(componentId) && !index.isStale(componentId) ? "gone" : "unknown";
+  return [...index.listed].some((id) => !index.components.has(id) || index.isStale(id)) ? "unknown" : "gone";
 }

@@ -51,7 +51,7 @@
   let heights = new Map<string, number>();
   /** A save into this folder waiting for the listing to contain its file; see `callbacks.saved`. */
   let pendingSave = $state.raw<{ directory: string; path: string; key: NodeKey; picks: Picks } | null>(null);
-  let anchor: { key: NodeKey; mode: "hold" | "reveal"; rect: DOMRect | null; until: number } | null = null;
+  let anchor: { key: NodeKey; componentId: string | undefined; mode: "hold" | "reveal"; rect: DOMRect | null; until: number } | null = null;
   let releaseAnchor: (() => void) | null = null;
   type RevealOwner = { controller: AbortController; ownsSelection: () => boolean };
   let activeReveal: RevealOwner | null = null;
@@ -152,7 +152,9 @@
    * "unknown" until reloaded, as is a node in no loaded component while some
    * component is not loaded fresh.
    */
-  function locateExtra(key: NodeKey): PickLocation {
+  function locateExtra(key: NodeKey, preferred: string | undefined = undefined): PickLocation {
+    const own = preferred ? session.components.get(preferred)?.dag.nodes.get(key) : undefined;
+    if (own && !session.isStale(preferred!)) return { node: own, componentId: preferred! };
     let unknown = false;
     for (const [componentId, data] of session.components) {
       const node = data.dag.nodes.get(key);
@@ -176,6 +178,14 @@
       const own = extra.componentId;
       if (own && listed.has(own) && (!fresh(own) || session.components.get(own)!.dag.nodes.has(extra.key))) { ids.add(own); continue; }
       for (const summary of summaries) if (!fresh(summary.id)) ids.add(summary.id);
+    }
+    // A Preview target may be unpickable (missing reference or placeholder),
+    // so extras alone cannot resolve it after components merge or split.
+    if (targetData) {
+      const located = locateTarget(targetData.key, targetData.componentId, {
+        listed, components: session.components, isStale: (id) => session.isStale(id),
+      });
+      if (located === "unknown") for (const summary of summaries) if (!fresh(summary.id)) ids.add(summary.id);
     }
     return ids;
   });
@@ -220,7 +230,9 @@
     });
   });
 
-  function findNode(key: NodeKey): { node: TraceNode; componentId: string } | null {
+  function findNode(key: NodeKey, preferred: string | undefined = undefined): { node: TraceNode; componentId: string } | null {
+    const own = preferred ? session.components.get(preferred)?.dag.nodes.get(key) : undefined;
+    if (own) return { node: own, componentId: preferred! };
     for (const [componentId, data] of session.components) {
       const node = data.dag.nodes.get(key);
       if (node) return { node, componentId };
@@ -234,9 +246,13 @@
   // How the view keeps the chosen tile in sight through the relayout it
   // causes: a click holds the tile where it was on screen; keyboard and
   // programmatic navigation reveal it once motion settles.
-  function captureAnchor(key: NodeKey, mode: "hold" | "reveal"): void {
-    const element = scroller?.querySelector<HTMLElement>(`[data-tile-key="${CSS.escape(key)}"]`);
-    anchor = element || mode === "reveal" ? { key, mode, rect: element?.getBoundingClientRect() ?? null, until: performance.now() + ANCHOR_WINDOW_MS } : null;
+  function anchorTile(key: NodeKey, componentId: string | undefined = undefined): HTMLElement | null {
+    const section = componentId ? scroller?.querySelector<HTMLElement>(`section[data-component="${CSS.escape(componentId)}"]`) : scroller;
+    return section?.querySelector<HTMLElement>(`[data-tile-key="${CSS.escape(key)}"]`) ?? null;
+  }
+  function captureAnchor(key: NodeKey, mode: "hold" | "reveal", componentId: string | undefined = undefined): void {
+    const element = anchorTile(key, componentId);
+    anchor = element || mode === "reveal" ? { key, componentId, mode, rect: element?.getBoundingClientRect() ?? null, until: performance.now() + ANCHOR_WINDOW_MS } : null;
   }
 
   // The anchor belongs to the commit the selection caused: only the graph
@@ -246,7 +262,8 @@
     if (!scene.isCurrent()) return;
     const data = scene.data;
     const request = pendingReveal;
-    if (request && scene.reveal === request.owner && scene.focus === request.key && data.dag.nodes.has(request.key)) {
+    if (request && scene.reveal === request.owner && scene.focus === request.key && data.dag.nodes.has(request.key)
+      && data === session.components.get(focus?.componentId ?? "")) {
       anchor = null;
       releaseAnchor?.();
       releaseAnchor = null;
@@ -256,7 +273,7 @@
         // A relayout during motion must settle through its own commit callback.
         if (!scene.isCurrent()) return;
         if (focus?.key !== request.key) { supersedeReveal(); return; }
-        const button = scroller?.querySelector<HTMLElement>(`[data-node-key="${CSS.escape(request.key)}"]`);
+        const button = anchorTile(request.key, focus?.componentId)?.querySelector<HTMLElement>(`[data-node-key="${CSS.escape(request.key)}"]`);
         if (!button) { request.finish(new Error("Trace image could not be shown")); return; }
         button.scrollIntoView({ block: "nearest", inline: "nearest" });
         button.focus({ preventScroll: true });
@@ -265,10 +282,11 @@
       return;
     }
     const current = anchor;
-    if (!current || !scroller || performance.now() > current.until || !data.dag.nodes.has(current.key)) return;
+    if (!current || !scroller || performance.now() > current.until || !data.dag.nodes.has(current.key)
+      || (current.componentId && data !== session.components.get(current.componentId))) return;
     anchor = null;
     releaseAnchor?.();
-    const find = () => scroller?.querySelector<HTMLElement>(`[data-tile-key="${CSS.escape(current.key)}"]`) ?? null;
+    const find = () => anchorTile(current.key, current.componentId);
     if (current.mode === "hold" && current.rect) {
       releaseAnchor = holdAnchor(scroller, find, current.rect, prefersReducedMotion() ? 0 : MOTION_MS + 40);
       return;
@@ -318,16 +336,16 @@
     pane.setPreviewTarget(next);
   }
 
-  function focusNode(key: NodeKey, modifiers: { ctrlKey?: boolean; shiftKey?: boolean } = {}, keep: "hold" | "reveal" = "reveal"): void {
+  function focusNode(key: NodeKey, modifiers: { ctrlKey?: boolean; shiftKey?: boolean } = {}, keep: "hold" | "reveal" = "reveal", componentId: string | undefined = undefined): void {
     supersedeReveal();
-    applyFocusNode(key, modifiers, keep);
+    applyFocusNode(key, modifiers, keep, componentId);
   }
 
-  function applyFocusNode(key: NodeKey, modifiers: { ctrlKey?: boolean; shiftKey?: boolean } = {}, keep: "hold" | "reveal" = "reveal"): void {
-    const found = findNode(key);
+  function applyFocusNode(key: NodeKey, modifiers: { ctrlKey?: boolean; shiftKey?: boolean } = {}, keep: "hold" | "reveal" = "reveal", componentId: string | undefined = undefined): void {
+    const found = findNode(key, componentId);
     if (!found) return;
     keepFocusedOpen();
-    captureAnchor(key, keep);
+    captureAnchor(key, keep, found.componentId);
     const entry = fileEntry(found.node);
     if (entry) { selectListed(entry, modifiers); return; }
     if (modifiers.ctrlKey || modifiers.shiftKey) {
@@ -354,8 +372,8 @@
     commitPicks(pickable(node) ? pickOnly({ path: node.path!, key: node.key, componentId }, false) : NO_PICKS);
   }
 
-  function activate(key: NodeKey, event: MouseEvent): void {
-    focusNode(key, { ctrlKey: event.ctrlKey || event.metaKey, shiftKey: event.shiftKey }, "hold");
+  function activate(key: NodeKey, event: MouseEvent, componentId: string): void {
+    focusNode(key, { ctrlKey: event.ctrlKey || event.metaKey, shiftKey: event.shiftKey }, "hold", componentId);
   }
 
   function open(key: NodeKey): void {
@@ -364,9 +382,9 @@
     if (entry) void pane.open(entry);
   }
 
-  function menu(key: NodeKey, event: MouseEvent): void {
+  function menu(key: NodeKey, event: MouseEvent, componentId: string | undefined = undefined): void {
     supersedeReveal();
-    const found = findNode(key);
+    const found = findNode(key, componentId);
     const entry = found && fileEntry(found.node);
     if (entry) {
       if (!selectedPaths.has(entry.path)) { keepFocusedOpen(); selectListed(entry); }
@@ -516,7 +534,7 @@
         checkReveal(owner);
         overrides = new Map(overrides).set(found.componentId, true);
         near = new Set(near).add(found.componentId);
-        applyFocusNode(found.node.key);
+        applyFocusNode(found.node.key, {}, "reveal", found.componentId);
         owner.ownsSelection = captureSelection();
         revealScene = owner;
         visible = awaitReveal(owner, found.node.key);
@@ -536,10 +554,10 @@
     node: (key) => findNode(key)?.node ?? null,
     nodeForPath: (path) => { const member = session.componentOf(path); return member ? findNode(member.key)?.node ?? null : null; },
     focus: (key) => {
-      const found = findNode(key);
+      const found = findNode(key, targetData?.key === key ? targetData.componentId : undefined);
       if (found && !summaries.some((summary, index) => summary.id === found.componentId && isExpanded(summary, index))) setExpanded(found.componentId, true);
       else if (found) overrides = new Map(overrides).set(found.componentId, true);
-      focusNode(key);
+      focusNode(key, {}, "reveal", found?.componentId);
     },
     get active() { return pane.active; },
     inputs: () => inputs,
@@ -686,7 +704,7 @@
             {:else if data}
               <div use:measure={summary.id}>
                 <TraceGraph {data} focus={focus?.key ?? null} selected={selectedKeys} {width} {tile} {revision} {scroller}
-                  onactivate={activate} onnavigate={(key) => focusNode(key)} onopen={open} onmenu={menu}
+                  onactivate={(key, event) => activate(key, event, summary.id)} onnavigate={(key) => focusNode(key, {}, "reveal", summary.id)} onopen={open} onmenu={(key, event) => menu(key, event, summary.id)}
                   {captureSelection} componentId={summary.id} orientations={session.orientations} reveal={revealScene}
                   onsaved={(key, path) => callbacks.saved(path, key)} ondiscarded={(key) => callbacks.discarded(key)} oncommit={keepAnchor}
                   onfailure={(scene, error) => { if (pendingReveal && scene.isCurrent() && scene.reveal === pendingReveal.owner && scene.focus === pendingReveal.key && scene.data.dag.nodes.has(pendingReveal.key)) pendingReveal.finish(error); }} />

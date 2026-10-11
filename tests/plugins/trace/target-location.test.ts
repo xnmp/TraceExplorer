@@ -44,6 +44,22 @@ describe("Preview target location", () => {
 
   it("does not trust a copy of the node in out-of-date data", () => {
     expect(locateTarget("o:2:0", "c:a:1", index(["c:a:1"], { "c:a:1": ["a:1", "o:2:0"] }, ["c:a:1"]))).toBe("unknown");
-    expect(locateTarget("o:2:0", "c:a:1", index(["c:a:7"], { "c:a:7": ["a:7", "o:2:0"] }, ["c:a:7"]))).toBe("gone");
+    expect(locateTarget("o:2:0", "c:a:1", index(["c:a:7"], { "c:a:7": ["a:7", "o:2:0"] }, ["c:a:7"]))).toBe("unknown");
+  });
+
+  it("keeps a target while a merge or split replacement is still loading", () => {
+    expect(locateTarget("o:2:0", "old", index(["left", "right"], { left: ["a:1"] }))).toBe("unknown");
+    expect(locateTarget("o:2:0", "old", index(["left", "right"], { left: ["a:1"], right: ["o:2:0"] })))
+      .toMatchObject({ componentId: "right", node: { key: "o:2:0" } });
+    // A split can retain the old ID on the other half. It is still no proof
+    // that a key vanished before the newly created half has been read.
+    expect(locateTarget("o:2:0", "left", index(["left", "right"], { left: ["a:1"] }))).toBe("unknown");
+  });
+
+  it("keeps the issuing component when a shared reference has several copies", () => {
+    expect(locateTarget("a:9", "right", index(["left", "right"], { left: ["a:9"], right: ["a:9"] })))
+      .toMatchObject({ componentId: "right" });
+    expect(locateTarget("a:9", "removed", index(["right"], { removed: ["a:9"], right: ["a:9"] })))
+      .toMatchObject({ componentId: "right" });
   });
 });

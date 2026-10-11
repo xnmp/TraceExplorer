@@ -1,0 +1,1738 @@
+[
+  {
+    "name": "empty",
+    "nodes": [],
+    "expected": [],
+    "members": []
+  },
+  {
+    "name": "two-chains",
+    "nodes": [
+      {
+        "key": "a:1",
+        "artifactId": 1,
+        "runId": null,
+        "parents": [],
+        "path": "/pictures/refs/style.png",
+        "scope": "subfolder",
+        "location": "refs/style.png",
+        "state": "present",
+        "temporary": false,
+        "discarded": false,
+        "earlierRevision": false,
+        "order": 1,
+        "prompt": "",
+        "dismissable": false
+      },
+      {
+        "key": "a:2",
+        "artifactId": 2,
+        "runId": null,
+        "parents": [],
+        "path": "/pictures/photo-a.png",
+        "scope": "current",
+        "location": "./photo-a.png",
+        "state": "present",
+        "temporary": false,
+        "discarded": false,
+        "earlierRevision": false,
+        "order": 2,
+        "prompt": "",
+        "dismissable": false
+      },
+      {
+        "key": "o:10:0",
+        "artifactId": 3,
+        "runId": 10,
+        "parents": [
+          "a:2",
+          "a:1",
+          "a:1"
+        ],
+        "path": "/pictures/photo-a-edit.png",
+        "scope": "current",
+        "location": "./photo-a-edit.png",
+        "state": "present",
+        "temporary": false,
+        "discarded": false,
+        "earlierRevision": false,
+        "order": 3,
+        "prompt": "",
+        "dismissable": false
+      },
+      {
+        "key": "a:4",
+        "artifactId": 4,
+        "runId": null,
+        "parents": [],
+        "path": "/pictures/photo-b.png",
+        "scope": "current",
+        "location": "./photo-b.png",
+        "state": "present",
+        "temporary": false,
+        "discarded": false,
+        "earlierRevision": false,
+        "order": 4,
+        "prompt": "",
+        "dismissable": false
+      },
+      {
+        "key": "o:11:0",
+        "artifactId": 5,
+        "runId": 11,
+        "parents": [
+          "a:4",
+          "a:1"
+        ],
+        "path": "/pictures/photo-b-edit.png",
+        "scope": "current",
+        "location": "./photo-b-edit.png",
+        "state": "present",
+        "temporary": false,
+        "discarded": false,
+        "earlierRevision": false,
+        "order": 5,
+        "prompt": "",
+        "dismissable": false
+      }
+    ],
+    "expected": [
+      {
+        "summary": {
+          "id": "c:a:4",
+          "title": "photo-b",
+          "cover": {
+            "path": "/pictures/photo-b.png",
+            "present": true
+          },
+          "imageCount": 2,
+          "nodeCount": 3,
+          "active": false,
+          "unsaved": false
+        },
+        "keys": [
+          "a:1",
+          "a:4",
+          "o:11:0"
+        ],
+        "badges": [
+          {
+            "key": "a:1",
+            "path": "/pictures/refs/style.png",
+            "scope": "subfolder",
+            "artifactId": 1,
+            "consumers": [
+              "o:11:0"
+            ]
+          }
+        ]
+      },
+      {
+        "summary": {
+          "id": "c:a:2",
+          "title": "photo-a",
+          "cover": {
+            "path": "/pictures/photo-a.png",
+            "present": true
+          },
+          "imageCount": 2,
+          "nodeCount": 3,
+          "active": false,
+          "unsaved": false
+        },
+        "keys": [
+          "a:1",
+          "a:2",
+          "o:10:0"
+        ],
+        "badges": [
+          {
+            "key": "a:1",
+            "path": "/pictures/refs/style.png",
+            "scope": "subfolder",
+            "artifactId": 1,
+            "consumers": [
+              "o:10:0"
+            ]
+          }
+        ]
+      }
+    ],
+    "members": [
+      {
+        "path": "/pictures/photo-a-edit.png",
+        "componentId": "c:a:2",
+        "key": "o:10:0"
+      },
+      {
+        "path": "/pictures/photo-a.png",
+        "componentId": "c:a:2",
+        "key": "a:2"
+      },
+      {
+        "path": "/pictures/photo-b-edit.png",
+        "componentId": "c:a:4",
+        "key": "o:11:0"
+      },
+      {
+        "path": "/pictures/photo-b.png",
+        "componentId": "c:a:4",
+        "key": "a:4"
+      }
+    ]
+  },
+  {
+    "name": "style-many",
+    "nodes": [
+      {
+        "key": "a:1",
+        "artifactId": 1,
+        "runId": null,
+        "parents": [],
+        "path": "/pictures/refs/style.png",
+        "scope": "subfolder",
+        "location": "refs/style.png",
+        "state": "present",
+        "temporary": false,
+        "discarded": false,
+        "earlierRevision": false,
+        "order": 1,
+        "prompt": "",
+        "dismissable": false
+      },
+      {
+        "key": "a:2",
+        "artifactId": 2,
+        "runId": null,
+        "parents": [],
+        "path": "/pictures/photo-a.png",
+        "scope": "current",
+        "location": "./photo-a.png",
+        "state": "present",
+        "temporary": false,
+        "discarded": false,
+        "earlierRevision": false,
+        "order": 2,
+        "prompt": "",
+        "dismissable": false
+      },
+      {
+        "key": "o:10:0",
+        "artifactId": 3,
+        "runId": 10,
+        "parents": [
+          "a:2",
+          "a:1",
+          "a:1"
+        ],
+        "path": "/pictures/photo-a-edit.png",
+        "scope": "current",
+        "location": "./photo-a-edit.png",
+        "state": "present",
+        "temporary": false,
+        "discarded": false,
+        "earlierRevision": false,
+        "order": 3,
+        "prompt": "",
+        "dismissable": false
+      },
+      {
+        "key": "a:4",
+        "artifactId": 4,
+        "runId": null,
+        "parents": [],
+        "path": "/pictures/photo-b.png",
+        "scope": "current",
+        "location": "./photo-b.png",
+        "state": "present",
+        "temporary": false,
+        "discarded": false,
+        "earlierRevision": false,
+        "order": 4,
+        "prompt": "",
+        "dismissable": false
+      },
+      {
+        "key": "o:11:0",
+        "artifactId": 5,
+        "runId": 11,
+        "parents": [
+          "a:4",
+          "a:1"
+        ],
+        "path": "/pictures/photo-b-edit.png",
+        "scope": "current",
+        "location": "./photo-b-edit.png",
+        "state": "present",
+        "temporary": false,
+        "discarded": false,
+        "earlierRevision": false,
+        "order": 5,
+        "prompt": "",
+        "dismissable": false
+      },
+      {
+        "key": "a:6",
+        "artifactId": 6,
+        "runId": null,
+        "parents": [],
+        "path": "/pictures/photo-c.png",
+        "scope": "current",
+        "location": "./photo-c.png",
+        "state": "present",
+        "temporary": false,
+        "discarded": false,
+        "earlierRevision": false,
+        "order": 6,
+        "prompt": "",
+        "dismissable": false
+      },
+      {
+        "key": "o:12:0",
+        "artifactId": 7,
+        "runId": 12,
+        "parents": [
+          "a:6",
+          "a:1"
+        ],
+        "path": "/pictures/photo-c-edit.png",
+        "scope": "current",
+        "location": "./photo-c-edit.png",
+        "state": "present",
+        "temporary": false,
+        "discarded": false,
+        "earlierRevision": false,
+        "order": 7,
+        "prompt": "",
+        "dismissable": false
+      },
+      {
+        "key": "a:8",
+        "artifactId": 8,
+        "runId": null,
+        "parents": [],
+        "path": "/pictures/photo-d.png",
+        "scope": "current",
+        "location": "./photo-d.png",
+        "state": "present",
+        "temporary": false,
+        "discarded": false,
+        "earlierRevision": false,
+        "order": 8,
+        "prompt": "",
+        "dismissable": false
+      },
+      {
+        "key": "o:13:0",
+        "artifactId": 9,
+        "runId": 13,
+        "parents": [
+          "a:8",
+          "a:1"
+        ],
+        "path": "/pictures/photo-d-edit.png",
+        "scope": "current",
+        "location": "./photo-d-edit.png",
+        "state": "present",
+        "temporary": false,
+        "discarded": false,
+        "earlierRevision": false,
+        "order": 9,
+        "prompt": "",
+        "dismissable": false
+      }
+    ],
+    "expected": [
+      {
+        "summary": {
+          "id": "c:a:8",
+          "title": "photo-d",
+          "cover": {
+            "path": "/pictures/photo-d.png",
+            "present": true
+          },
+          "imageCount": 2,
+          "nodeCount": 3,
+          "active": false,
+          "unsaved": false
+        },
+        "keys": [
+          "a:1",
+          "a:8",
+          "o:13:0"
+        ],
+        "badges": [
+          {
+            "key": "a:1",
+            "path": "/pictures/refs/style.png",
+            "scope": "subfolder",
+            "artifactId": 1,
+            "consumers": [
+              "o:13:0"
+            ]
+          }
+        ]
+      },
+      {
+        "summary": {
+          "id": "c:a:6",
+          "title": "photo-c",
+          "cover": {
+            "path": "/pictures/photo-c.png",
+            "present": true
+          },
+          "imageCount": 2,
+          "nodeCount": 3,
+          "active": false,
+          "unsaved": false
+        },
+        "keys": [
+          "a:1",
+          "a:6",
+          "o:12:0"
+        ],
+        "badges": [
+          {
+            "key": "a:1",
+            "path": "/pictures/refs/style.png",
+            "scope": "subfolder",
+            "artifactId": 1,
+            "consumers": [
+              "o:12:0"
+            ]
+          }
+        ]
+      },
+      {
+        "summary": {
+          "id": "c:a:4",
+          "title": "photo-b",
+          "cover": {
+            "path": "/pictures/photo-b.png",
+            "present": true
+          },
+          "imageCount": 2,
+          "nodeCount": 3,
+          "active": false,
+          "unsaved": false
+        },
+        "keys": [
+          "a:1",
+          "a:4",
+          "o:11:0"
+        ],
+        "badges": [
+          {
+            "key": "a:1",
+            "path": "/pictures/refs/style.png",
+            "scope": "subfolder",
+            "artifactId": 1,
+            "consumers": [
+              "o:11:0"
+            ]
+          }
+        ]
+      },
+      {
+        "summary": {
+          "id": "c:a:2",
+          "title": "photo-a",
+          "cover": {
+            "path": "/pictures/photo-a.png",
+            "present": true
+          },
+          "imageCount": 2,
+          "nodeCount": 3,
+          "active": false,
+          "unsaved": false
+        },
+        "keys": [
+          "a:1",
+          "a:2",
+          "o:10:0"
+        ],
+        "badges": [
+          {
+            "key": "a:1",
+            "path": "/pictures/refs/style.png",
+            "scope": "subfolder",
+            "artifactId": 1,
+            "consumers": [
+              "o:10:0"
+            ]
+          }
+        ]
+      }
+    ],
+    "members": [
+      {
+        "path": "/pictures/photo-a-edit.png",
+        "componentId": "c:a:2",
+        "key": "o:10:0"
+      },
+      {
+        "path": "/pictures/photo-a.png",
+        "componentId": "c:a:2",
+        "key": "a:2"
+      },
+      {
+        "path": "/pictures/photo-b-edit.png",
+        "componentId": "c:a:4",
+        "key": "o:11:0"
+      },
+      {
+        "path": "/pictures/photo-b.png",
+        "componentId": "c:a:4",
+        "key": "a:4"
+      },
+      {
+        "path": "/pictures/photo-c-edit.png",
+        "componentId": "c:a:6",
+        "key": "o:12:0"
+      },
+      {
+        "path": "/pictures/photo-c.png",
+        "componentId": "c:a:6",
+        "key": "a:6"
+      },
+      {
+        "path": "/pictures/photo-d-edit.png",
+        "componentId": "c:a:8",
+        "key": "o:13:0"
+      },
+      {
+        "path": "/pictures/photo-d.png",
+        "componentId": "c:a:8",
+        "key": "a:8"
+      }
+    ]
+  },
+  {
+    "name": "external-cover",
+    "nodes": [
+      {
+        "key": "a:1",
+        "artifactId": 1,
+        "runId": null,
+        "parents": [],
+        "path": "/elsewhere/reference.png",
+        "scope": "external",
+        "location": "/elsewhere/reference.png",
+        "state": "present",
+        "temporary": false,
+        "discarded": false,
+        "earlierRevision": false,
+        "order": 1,
+        "prompt": "",
+        "dismissable": false
+      },
+      {
+        "key": "o:9:0",
+        "artifactId": 2,
+        "runId": 9,
+        "parents": [
+          "a:1"
+        ],
+        "path": "/pictures/cover.png",
+        "scope": "current",
+        "location": "./cover.png",
+        "state": "present",
+        "temporary": false,
+        "discarded": false,
+        "earlierRevision": false,
+        "order": 2,
+        "prompt": "",
+        "dismissable": false
+      },
+      {
+        "key": "o:10:0",
+        "artifactId": 3,
+        "runId": 10,
+        "parents": [
+          "o:9:0",
+          "a:1"
+        ],
+        "path": "/pictures/cover-edit.png",
+        "scope": "current",
+        "location": "./cover-edit.png",
+        "state": "present",
+        "temporary": false,
+        "discarded": false,
+        "earlierRevision": false,
+        "order": 3,
+        "prompt": "",
+        "dismissable": false
+      }
+    ],
+    "expected": [
+      {
+        "summary": {
+          "id": "c:o:9:0",
+          "title": "cover",
+          "cover": {
+            "path": "/pictures/cover.png",
+            "present": true
+          },
+          "imageCount": 2,
+          "nodeCount": 3,
+          "active": false,
+          "unsaved": false
+        },
+        "keys": [
+          "a:1",
+          "o:9:0",
+          "o:10:0"
+        ],
+        "badges": [
+          {
+            "key": "a:1",
+            "path": "/elsewhere/reference.png",
+            "scope": "external",
+            "artifactId": 1,
+            "consumers": [
+              "o:9:0",
+              "o:10:0"
+            ]
+          }
+        ]
+      }
+    ],
+    "members": [
+      {
+        "path": "/pictures/cover-edit.png",
+        "componentId": "c:o:9:0",
+        "key": "o:10:0"
+      },
+      {
+        "path": "/pictures/cover.png",
+        "componentId": "c:o:9:0",
+        "key": "o:9:0"
+      }
+    ]
+  },
+  {
+    "name": "foreign-parent-joins",
+    "nodes": [
+      {
+        "key": "a:1",
+        "artifactId": 1,
+        "runId": null,
+        "parents": [],
+        "path": "/pictures/root.png",
+        "scope": "current",
+        "location": "./root.png",
+        "state": "present",
+        "temporary": false,
+        "discarded": false,
+        "earlierRevision": false,
+        "order": 1,
+        "prompt": "",
+        "dismissable": false
+      },
+      {
+        "key": "o:10:0",
+        "artifactId": 2,
+        "runId": 10,
+        "parents": [
+          "a:1"
+        ],
+        "path": "/elsewhere/foreign-edit.png",
+        "scope": "external",
+        "location": "/elsewhere/foreign-edit.png",
+        "state": "present",
+        "temporary": false,
+        "discarded": false,
+        "earlierRevision": false,
+        "order": 2,
+        "prompt": "",
+        "dismissable": false
+      },
+      {
+        "key": "o:11:0",
+        "artifactId": 3,
+        "runId": 11,
+        "parents": [
+          "o:10:0"
+        ],
+        "path": "/pictures/a.png",
+        "scope": "current",
+        "location": "./a.png",
+        "state": "present",
+        "temporary": false,
+        "discarded": false,
+        "earlierRevision": false,
+        "order": 3,
+        "prompt": "",
+        "dismissable": false
+      },
+      {
+        "key": "o:12:0",
+        "artifactId": 4,
+        "runId": 12,
+        "parents": [
+          "o:10:0"
+        ],
+        "path": "/pictures/b.png",
+        "scope": "current",
+        "location": "./b.png",
+        "state": "present",
+        "temporary": false,
+        "discarded": false,
+        "earlierRevision": false,
+        "order": 4,
+        "prompt": "",
+        "dismissable": false
+      }
+    ],
+    "expected": [
+      {
+        "summary": {
+          "id": "c:a:1",
+          "title": "root",
+          "cover": {
+            "path": "/pictures/root.png",
+            "present": true
+          },
+          "imageCount": 3,
+          "nodeCount": 4,
+          "active": false,
+          "unsaved": false
+        },
+        "keys": [
+          "a:1",
+          "o:10:0",
+          "o:11:0",
+          "o:12:0"
+        ],
+        "badges": []
+      }
+    ],
+    "members": [
+      {
+        "path": "/pictures/a.png",
+        "componentId": "c:a:1",
+        "key": "o:11:0"
+      },
+      {
+        "path": "/pictures/b.png",
+        "componentId": "c:a:1",
+        "key": "o:12:0"
+      },
+      {
+        "path": "/pictures/root.png",
+        "componentId": "c:a:1",
+        "key": "a:1"
+      }
+    ]
+  },
+  {
+    "name": "hidden-ancestor",
+    "nodes": [
+      {
+        "key": "a:1",
+        "artifactId": 1,
+        "runId": null,
+        "parents": [],
+        "path": "/elsewhere/hidden.png",
+        "scope": "external",
+        "location": "/elsewhere/hidden.png",
+        "state": "present",
+        "temporary": false,
+        "discarded": false,
+        "earlierRevision": false,
+        "order": 1,
+        "prompt": "",
+        "dismissable": false
+      },
+      {
+        "key": "o:8:0",
+        "artifactId": 2,
+        "runId": 8,
+        "parents": [
+          "a:1"
+        ],
+        "path": "/elsewhere/recorded-reference.png",
+        "scope": "external",
+        "location": "/elsewhere/recorded-reference.png",
+        "state": "present",
+        "temporary": false,
+        "discarded": false,
+        "earlierRevision": false,
+        "order": 2,
+        "prompt": "",
+        "dismissable": false
+      },
+      {
+        "key": "o:9:0",
+        "artifactId": 3,
+        "runId": 9,
+        "parents": [
+          "o:8:0"
+        ],
+        "path": "/pictures/a.png",
+        "scope": "current",
+        "location": "./a.png",
+        "state": "present",
+        "temporary": false,
+        "discarded": false,
+        "earlierRevision": false,
+        "order": 3,
+        "prompt": "",
+        "dismissable": false
+      },
+      {
+        "key": "o:10:0",
+        "artifactId": 4,
+        "runId": 10,
+        "parents": [
+          "o:8:0"
+        ],
+        "path": "/pictures/b.png",
+        "scope": "current",
+        "location": "./b.png",
+        "state": "present",
+        "temporary": false,
+        "discarded": false,
+        "earlierRevision": false,
+        "order": 4,
+        "prompt": "",
+        "dismissable": false
+      }
+    ],
+    "expected": [
+      {
+        "summary": {
+          "id": "c:o:10:0",
+          "title": "b",
+          "cover": {
+            "path": "/pictures/b.png",
+            "present": true
+          },
+          "imageCount": 1,
+          "nodeCount": 2,
+          "active": false,
+          "unsaved": false
+        },
+        "keys": [
+          "o:8:0",
+          "o:10:0"
+        ],
+        "badges": [
+          {
+            "key": "o:8:0",
+            "path": "/elsewhere/recorded-reference.png",
+            "scope": "external",
+            "artifactId": 2,
+            "consumers": [
+              "o:10:0"
+            ]
+          }
+        ]
+      },
+      {
+        "summary": {
+          "id": "c:o:9:0",
+          "title": "a",
+          "cover": {
+            "path": "/pictures/a.png",
+            "present": true
+          },
+          "imageCount": 1,
+          "nodeCount": 2,
+          "active": false,
+          "unsaved": false
+        },
+        "keys": [
+          "o:8:0",
+          "o:9:0"
+        ],
+        "badges": [
+          {
+            "key": "o:8:0",
+            "path": "/elsewhere/recorded-reference.png",
+            "scope": "external",
+            "artifactId": 2,
+            "consumers": [
+              "o:9:0"
+            ]
+          }
+        ]
+      }
+    ],
+    "members": [
+      {
+        "path": "/pictures/a.png",
+        "componentId": "c:o:9:0",
+        "key": "o:9:0"
+      },
+      {
+        "path": "/pictures/b.png",
+        "componentId": "c:o:10:0",
+        "key": "o:10:0"
+      }
+    ]
+  },
+  {
+    "name": "missing-and-unknown",
+    "nodes": [
+      {
+        "key": "a:1",
+        "artifactId": 1,
+        "runId": null,
+        "parents": [],
+        "path": "/elsewhere/unavailable.png",
+        "scope": "external",
+        "location": "/elsewhere/unavailable.png",
+        "state": "missing",
+        "temporary": false,
+        "discarded": false,
+        "earlierRevision": true,
+        "order": 1,
+        "prompt": "",
+        "dismissable": false
+      },
+      {
+        "key": "o:10:0",
+        "artifactId": 2,
+        "runId": 10,
+        "parents": [
+          "a:1",
+          "a:999"
+        ],
+        "path": "/pictures/out.png",
+        "scope": "current",
+        "location": "./out.png",
+        "state": "present",
+        "temporary": false,
+        "discarded": false,
+        "earlierRevision": false,
+        "order": 2,
+        "prompt": "",
+        "dismissable": false
+      },
+      {
+        "key": "a:3",
+        "artifactId": 3,
+        "runId": null,
+        "parents": [],
+        "path": "/pictures/plain.png",
+        "scope": "current",
+        "location": "./plain.png",
+        "state": "present",
+        "temporary": false,
+        "discarded": false,
+        "earlierRevision": false,
+        "order": 3,
+        "prompt": "",
+        "dismissable": false
+      }
+    ],
+    "expected": [
+      {
+        "summary": {
+          "id": "c:o:10:0",
+          "title": "out",
+          "cover": {
+            "path": "/pictures/out.png",
+            "present": true
+          },
+          "imageCount": 1,
+          "nodeCount": 2,
+          "active": false,
+          "unsaved": false
+        },
+        "keys": [
+          "a:1",
+          "o:10:0"
+        ],
+        "badges": [
+          {
+            "key": "a:1",
+            "path": "/elsewhere/unavailable.png",
+            "scope": "external",
+            "artifactId": 1,
+            "consumers": [
+              "o:10:0"
+            ]
+          }
+        ]
+      }
+    ],
+    "members": [
+      {
+        "path": "/pictures/out.png",
+        "componentId": "c:o:10:0",
+        "key": "o:10:0"
+      }
+    ]
+  },
+  {
+    "name": "unsaved-and-placeholder",
+    "nodes": [
+      {
+        "key": "a:1",
+        "artifactId": 1,
+        "runId": null,
+        "parents": [],
+        "path": "/elsewhere/reference.png",
+        "scope": "external",
+        "location": "/elsewhere/reference.png",
+        "state": "present",
+        "temporary": false,
+        "discarded": false,
+        "earlierRevision": false,
+        "order": 1,
+        "prompt": "",
+        "dismissable": false
+      },
+      {
+        "key": "o:10:0",
+        "artifactId": null,
+        "runId": 10,
+        "parents": [
+          "a:1"
+        ],
+        "path": null,
+        "scope": "current",
+        "location": "./job.png",
+        "state": "uncertain",
+        "temporary": true,
+        "discarded": false,
+        "earlierRevision": false,
+        "order": 1000000000010,
+        "prompt": "",
+        "dismissable": true
+      },
+      {
+        "key": "o:11:0",
+        "artifactId": 3,
+        "runId": 11,
+        "parents": [
+          "a:1"
+        ],
+        "path": "/managed/out.png",
+        "scope": "external",
+        "location": "Temporary \u00b7 not yet saved",
+        "state": "present",
+        "temporary": true,
+        "discarded": false,
+        "earlierRevision": false,
+        "order": 3,
+        "prompt": "",
+        "dismissable": false
+      }
+    ],
+    "expected": [
+      {
+        "summary": {
+          "id": "c:o:10:0",
+          "title": "reference",
+          "cover": {
+            "path": "/elsewhere/reference.png",
+            "present": true
+          },
+          "imageCount": 0,
+          "nodeCount": 2,
+          "active": true,
+          "unsaved": true
+        },
+        "keys": [
+          "a:1",
+          "o:10:0"
+        ],
+        "badges": [
+          {
+            "key": "a:1",
+            "path": "/elsewhere/reference.png",
+            "scope": "external",
+            "artifactId": 1,
+            "consumers": [
+              "o:10:0"
+            ]
+          }
+        ]
+      },
+      {
+        "summary": {
+          "id": "c:o:11:0",
+          "title": "out",
+          "cover": {
+            "path": "/managed/out.png",
+            "present": true
+          },
+          "imageCount": 1,
+          "nodeCount": 2,
+          "active": false,
+          "unsaved": true
+        },
+        "keys": [
+          "a:1",
+          "o:11:0"
+        ],
+        "badges": [
+          {
+            "key": "a:1",
+            "path": "/elsewhere/reference.png",
+            "scope": "external",
+            "artifactId": 1,
+            "consumers": [
+              "o:11:0"
+            ]
+          }
+        ]
+      }
+    ],
+    "members": []
+  },
+  {
+    "name": "numeric-source-identity",
+    "nodes": [
+      {
+        "key": "o:10:0",
+        "artifactId": 2,
+        "runId": 10,
+        "parents": [
+          "o:9:0"
+        ],
+        "path": "/pictures/later-output.png",
+        "scope": "current",
+        "location": "./later-output.png",
+        "state": "present",
+        "temporary": false,
+        "discarded": false,
+        "earlierRevision": false,
+        "order": 2,
+        "prompt": "",
+        "dismissable": false
+      },
+      {
+        "key": "a:10",
+        "artifactId": 10,
+        "runId": null,
+        "parents": [],
+        "path": "/pictures/newer-source.png",
+        "scope": "current",
+        "location": "./newer-source.png",
+        "state": "present",
+        "temporary": false,
+        "discarded": false,
+        "earlierRevision": false,
+        "order": 10,
+        "prompt": "",
+        "dismissable": false
+      },
+      {
+        "key": "o:9:0",
+        "artifactId": 1,
+        "runId": 9,
+        "parents": [
+          "a:10"
+        ],
+        "path": "/pictures/early-output.png",
+        "scope": "current",
+        "location": "./early-output.png",
+        "state": "present",
+        "temporary": false,
+        "discarded": false,
+        "earlierRevision": false,
+        "order": 1,
+        "prompt": "",
+        "dismissable": false
+      }
+    ],
+    "expected": [
+      {
+        "summary": {
+          "id": "c:a:10",
+          "title": "newer-source",
+          "cover": {
+            "path": "/pictures/newer-source.png",
+            "present": true
+          },
+          "imageCount": 3,
+          "nodeCount": 3,
+          "active": false,
+          "unsaved": false
+        },
+        "keys": [
+          "o:9:0",
+          "o:10:0",
+          "a:10"
+        ],
+        "badges": []
+      }
+    ],
+    "members": [
+      {
+        "path": "/pictures/early-output.png",
+        "componentId": "c:a:10",
+        "key": "o:9:0"
+      },
+      {
+        "path": "/pictures/later-output.png",
+        "componentId": "c:a:10",
+        "key": "o:10:0"
+      },
+      {
+        "path": "/pictures/newer-source.png",
+        "componentId": "c:a:10",
+        "key": "a:10"
+      }
+    ]
+  },
+  {
+    "name": "real-merge",
+    "nodes": [
+      {
+        "key": "a:1",
+        "artifactId": 1,
+        "runId": null,
+        "parents": [],
+        "path": "/pictures/refs/style.png",
+        "scope": "subfolder",
+        "location": "refs/style.png",
+        "state": "present",
+        "temporary": false,
+        "discarded": false,
+        "earlierRevision": false,
+        "order": 1,
+        "prompt": "",
+        "dismissable": false
+      },
+      {
+        "key": "a:2",
+        "artifactId": 2,
+        "runId": null,
+        "parents": [],
+        "path": "/pictures/a.png",
+        "scope": "current",
+        "location": "./a.png",
+        "state": "present",
+        "temporary": false,
+        "discarded": false,
+        "earlierRevision": false,
+        "order": 2,
+        "prompt": "",
+        "dismissable": false
+      },
+      {
+        "key": "a:3",
+        "artifactId": 3,
+        "runId": null,
+        "parents": [],
+        "path": "/pictures/b.png",
+        "scope": "current",
+        "location": "./b.png",
+        "state": "present",
+        "temporary": false,
+        "discarded": false,
+        "earlierRevision": false,
+        "order": 3,
+        "prompt": "",
+        "dismissable": false
+      },
+      {
+        "key": "o:9:0",
+        "artifactId": 4,
+        "runId": 9,
+        "parents": [
+          "a:2",
+          "a:3",
+          "a:1"
+        ],
+        "path": "/pictures/joined.png",
+        "scope": "current",
+        "location": "./joined.png",
+        "state": "present",
+        "temporary": false,
+        "discarded": false,
+        "earlierRevision": false,
+        "order": 4,
+        "prompt": "",
+        "dismissable": false
+      },
+      {
+        "key": "o:10:0",
+        "artifactId": 5,
+        "runId": 10,
+        "parents": [
+          "o:9:0",
+          "a:1"
+        ],
+        "path": "/pictures/later.png",
+        "scope": "current",
+        "location": "./later.png",
+        "state": "present",
+        "temporary": false,
+        "discarded": false,
+        "earlierRevision": false,
+        "order": 5,
+        "prompt": "",
+        "dismissable": false
+      }
+    ],
+    "expected": [
+      {
+        "summary": {
+          "id": "c:a:2",
+          "title": "a",
+          "cover": {
+            "path": "/pictures/a.png",
+            "present": true
+          },
+          "imageCount": 4,
+          "nodeCount": 5,
+          "active": false,
+          "unsaved": false
+        },
+        "keys": [
+          "a:1",
+          "a:2",
+          "a:3",
+          "o:9:0",
+          "o:10:0"
+        ],
+        "badges": [
+          {
+            "key": "a:1",
+            "path": "/pictures/refs/style.png",
+            "scope": "subfolder",
+            "artifactId": 1,
+            "consumers": [
+              "o:9:0",
+              "o:10:0"
+            ]
+          }
+        ]
+      }
+    ],
+    "members": [
+      {
+        "path": "/pictures/a.png",
+        "componentId": "c:a:2",
+        "key": "a:2"
+      },
+      {
+        "path": "/pictures/b.png",
+        "componentId": "c:a:2",
+        "key": "a:3"
+      },
+      {
+        "path": "/pictures/joined.png",
+        "componentId": "c:a:2",
+        "key": "o:9:0"
+      },
+      {
+        "path": "/pictures/later.png",
+        "componentId": "c:a:2",
+        "key": "o:10:0"
+      }
+    ]
+  },
+  {
+    "name": "subfolder-parent-joins",
+    "nodes": [
+      {
+        "key": "a:1",
+        "artifactId": 1,
+        "runId": null,
+        "parents": [],
+        "path": "/pictures/root.png",
+        "scope": "current",
+        "location": "./root.png",
+        "state": "present",
+        "temporary": false,
+        "discarded": false,
+        "earlierRevision": false,
+        "order": 1,
+        "prompt": "",
+        "dismissable": false
+      },
+      {
+        "key": "o:10:0",
+        "artifactId": 2,
+        "runId": 10,
+        "parents": [
+          "a:1"
+        ],
+        "path": "/pictures/refs/foreign-edit.png",
+        "scope": "subfolder",
+        "location": "/elsewhere/foreign-edit.png",
+        "state": "present",
+        "temporary": false,
+        "discarded": false,
+        "earlierRevision": false,
+        "order": 2,
+        "prompt": "",
+        "dismissable": false
+      },
+      {
+        "key": "o:11:0",
+        "artifactId": 3,
+        "runId": 11,
+        "parents": [
+          "o:10:0"
+        ],
+        "path": "/pictures/a.png",
+        "scope": "current",
+        "location": "./a.png",
+        "state": "present",
+        "temporary": false,
+        "discarded": false,
+        "earlierRevision": false,
+        "order": 3,
+        "prompt": "",
+        "dismissable": false
+      },
+      {
+        "key": "o:12:0",
+        "artifactId": 4,
+        "runId": 12,
+        "parents": [
+          "o:10:0"
+        ],
+        "path": "/pictures/b.png",
+        "scope": "current",
+        "location": "./b.png",
+        "state": "present",
+        "temporary": false,
+        "discarded": false,
+        "earlierRevision": false,
+        "order": 4,
+        "prompt": "",
+        "dismissable": false
+      }
+    ],
+    "expected": [
+      {
+        "summary": {
+          "id": "c:a:1",
+          "title": "root",
+          "cover": {
+            "path": "/pictures/root.png",
+            "present": true
+          },
+          "imageCount": 3,
+          "nodeCount": 4,
+          "active": false,
+          "unsaved": false
+        },
+        "keys": [
+          "a:1",
+          "o:10:0",
+          "o:11:0",
+          "o:12:0"
+        ],
+        "badges": []
+      }
+    ],
+    "members": [
+      {
+        "path": "/pictures/a.png",
+        "componentId": "c:a:1",
+        "key": "o:11:0"
+      },
+      {
+        "path": "/pictures/b.png",
+        "componentId": "c:a:1",
+        "key": "o:12:0"
+      },
+      {
+        "path": "/pictures/root.png",
+        "componentId": "c:a:1",
+        "key": "a:1"
+      }
+    ]
+  },
+  {
+    "name": "malformed-self-parent",
+    "nodes": [
+      {
+        "key": "o:7:0",
+        "artifactId": 1,
+        "runId": 7,
+        "parents": [
+          "o:7:0"
+        ],
+        "path": "/elsewhere/cyclic.png",
+        "scope": "external",
+        "location": "/elsewhere/cyclic.png",
+        "state": "present",
+        "temporary": false,
+        "discarded": false,
+        "earlierRevision": false,
+        "order": 1,
+        "prompt": "",
+        "dismissable": false
+      },
+      {
+        "key": "o:8:0",
+        "artifactId": 2,
+        "runId": 8,
+        "parents": [
+          "o:7:0"
+        ],
+        "path": "/pictures/a.png",
+        "scope": "current",
+        "location": "./a.png",
+        "state": "present",
+        "temporary": false,
+        "discarded": false,
+        "earlierRevision": false,
+        "order": 2,
+        "prompt": "",
+        "dismissable": false
+      },
+      {
+        "key": "o:9:0",
+        "artifactId": 3,
+        "runId": 9,
+        "parents": [
+          "o:7:0"
+        ],
+        "path": "/pictures/b.png",
+        "scope": "current",
+        "location": "./b.png",
+        "state": "present",
+        "temporary": false,
+        "discarded": false,
+        "earlierRevision": false,
+        "order": 3,
+        "prompt": "",
+        "dismissable": false
+      }
+    ],
+    "expected": [
+      {
+        "summary": {
+          "id": "c:o:7:0",
+          "title": "a",
+          "cover": {
+            "path": "/pictures/a.png",
+            "present": true
+          },
+          "imageCount": 2,
+          "nodeCount": 3,
+          "active": false,
+          "unsaved": false
+        },
+        "keys": [
+          "o:7:0",
+          "o:8:0",
+          "o:9:0"
+        ],
+        "badges": []
+      }
+    ],
+    "members": [
+      {
+        "path": "/pictures/a.png",
+        "componentId": "c:o:7:0",
+        "key": "o:8:0"
+      },
+      {
+        "path": "/pictures/b.png",
+        "componentId": "c:o:7:0",
+        "key": "o:9:0"
+      }
+    ]
+  },
+  {
+    "name": "native-path-order",
+    "nodes": [
+      {
+        "key": "a:1",
+        "artifactId": 1,
+        "runId": null,
+        "parents": [],
+        "path": "/pictures/A.png",
+        "scope": "current",
+        "location": "./A.png",
+        "state": "present",
+        "temporary": false,
+        "discarded": false,
+        "earlierRevision": false,
+        "order": 1,
+        "prompt": "",
+        "dismissable": false
+      },
+      {
+        "key": "o:2:0",
+        "artifactId": 2,
+        "runId": 2,
+        "parents": [
+          "a:1"
+        ],
+        "path": "/pictures/a.png",
+        "scope": "current",
+        "location": "./a.png",
+        "state": "present",
+        "temporary": false,
+        "discarded": false,
+        "earlierRevision": false,
+        "order": 2,
+        "prompt": "",
+        "dismissable": false
+      },
+      {
+        "key": "a:3",
+        "artifactId": 3,
+        "runId": null,
+        "parents": [],
+        "path": "/pictures/B.png",
+        "scope": "current",
+        "location": "./B.png",
+        "state": "present",
+        "temporary": false,
+        "discarded": false,
+        "earlierRevision": false,
+        "order": 3,
+        "prompt": "",
+        "dismissable": false
+      },
+      {
+        "key": "o:4:0",
+        "artifactId": 4,
+        "runId": 4,
+        "parents": [
+          "a:3"
+        ],
+        "path": "/pictures/b.png",
+        "scope": "current",
+        "location": "./b.png",
+        "state": "present",
+        "temporary": false,
+        "discarded": false,
+        "earlierRevision": false,
+        "order": 4,
+        "prompt": "",
+        "dismissable": false
+      },
+      {
+        "key": "a:5",
+        "artifactId": 5,
+        "runId": null,
+        "parents": [],
+        "path": "/pictures/\ue000.png",
+        "scope": "current",
+        "location": "./\ue000.png",
+        "state": "present",
+        "temporary": false,
+        "discarded": false,
+        "earlierRevision": false,
+        "order": 5,
+        "prompt": "",
+        "dismissable": false
+      },
+      {
+        "key": "o:6:0",
+        "artifactId": 6,
+        "runId": 6,
+        "parents": [
+          "a:5"
+        ],
+        "path": "/pictures/\ud83d\ude00.png",
+        "scope": "current",
+        "location": "./\ud83d\ude00.png",
+        "state": "present",
+        "temporary": false,
+        "discarded": false,
+        "earlierRevision": false,
+        "order": 6,
+        "prompt": "",
+        "dismissable": false
+      }
+    ],
+    "expected": [
+      {
+        "summary": {
+          "id": "c:a:5",
+          "title": "\ue000",
+          "cover": {
+            "path": "/pictures/\ue000.png",
+            "present": true
+          },
+          "imageCount": 2,
+          "nodeCount": 2,
+          "active": false,
+          "unsaved": false
+        },
+        "keys": [
+          "a:5",
+          "o:6:0"
+        ],
+        "badges": []
+      },
+      {
+        "summary": {
+          "id": "c:a:3",
+          "title": "B",
+          "cover": {
+            "path": "/pictures/B.png",
+            "present": true
+          },
+          "imageCount": 2,
+          "nodeCount": 2,
+          "active": false,
+          "unsaved": false
+        },
+        "keys": [
+          "a:3",
+          "o:4:0"
+        ],
+        "badges": []
+      },
+      {
+        "summary": {
+          "id": "c:a:1",
+          "title": "A",
+          "cover": {
+            "path": "/pictures/A.png",
+            "present": true
+          },
+          "imageCount": 2,
+          "nodeCount": 2,
+          "active": false,
+          "unsaved": false
+        },
+        "keys": [
+          "a:1",
+          "o:2:0"
+        ],
+        "badges": []
+      }
+    ],
+    "members": [
+      {
+        "path": "/pictures/A.png",
+        "componentId": "c:a:1",
+        "key": "a:1"
+      },
+      {
+        "path": "/pictures/B.png",
+        "componentId": "c:a:3",
+        "key": "a:3"
+      },
+      {
+        "path": "/pictures/a.png",
+        "componentId": "c:a:1",
+        "key": "o:2:0"
+      },
+      {
+        "path": "/pictures/b.png",
+        "componentId": "c:a:3",
+        "key": "o:4:0"
+      },
+      {
+        "path": "/pictures/\ue000.png",
+        "componentId": "c:a:5",
+        "key": "a:5"
+      },
+      {
+        "path": "/pictures/\ud83d\ude00.png",
+        "componentId": "c:a:5",
+        "key": "o:6:0"
+      }
+    ]
+  }
+]
