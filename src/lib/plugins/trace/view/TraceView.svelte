@@ -8,6 +8,7 @@
   import { flushSync, onDestroy, untrack } from "svelte";
   import type { FileViewPane, PreviewTarget } from "../../../../../integration/plugin-sdk";
   import type { FileEntry } from "$lib/domain/file";
+  import { isDeselectClick, type PointerPosition } from "$lib/domain/deselect-click";
   import { parentDir, samePath } from "$lib/domain/path";
   import type { ComponentSummary, NodeKey, TraceNode } from "$lib/domain/trace-graph/model";
   import { tileMetrics } from "$lib/domain/trace-graph/metrics";
@@ -306,12 +307,49 @@
     }
   }
 
-  function background(event: MouseEvent): void {
-    if (event.target !== event.currentTarget) return;
+  function background(): void {
     keepFocusedOpen();
     pane.clearSelection();
     if (targetData) pane.setPreviewTarget(null);
     commitPicks(NO_PICKS);
+  }
+
+  /** Observe gestures without capturing the pointer or changing the host's pan/control handlers. */
+  function backgroundSelection(element: HTMLElement) {
+    const controls = 'button, a, input, select, textarea, summary, [role="button"], [role="link"], [role="checkbox"], [role="menuitem"], [tabindex], [contenteditable]:not([contenteditable="false"]), [data-tile-key], [data-entry-path]';
+    const empty = (target: EventTarget | null) => {
+      if (!(target instanceof Element) || !element.contains(target)) return false;
+      const control = target.closest(controls);
+      return !control || !element.contains(control);
+    };
+    const position = (event: PointerEvent): PointerPosition => ({ x: event.clientX, y: event.clientY });
+    let gesture: { id: number; down: PointerPosition; moved: boolean } | null = null;
+    const down = (event: PointerEvent) => {
+      gesture = event.isPrimary && event.button === 0 && empty(event.target)
+        ? { id: event.pointerId, down: position(event), moved: false } : null;
+    };
+    const move = (event: PointerEvent) => {
+      if (gesture?.id === event.pointerId && !isDeselectClick(gesture.down, position(event), true)) gesture.moved = true;
+    };
+    const up = (event: PointerEvent) => {
+      if (gesture?.id !== event.pointerId) return;
+      const before = gesture;
+      gesture = null;
+      if (event.button === 0 && !before.moved && isDeselectClick(before.down, position(event), empty(event.target))) background();
+    };
+    const cancel = () => { gesture = null; };
+    element.addEventListener("pointerdown", down, true);
+    window.addEventListener("pointermove", move, true);
+    window.addEventListener("pointerup", up, true);
+    window.addEventListener("pointercancel", cancel, true);
+    window.addEventListener("blur", cancel);
+    return { destroy() {
+      element.removeEventListener("pointerdown", down, true);
+      window.removeEventListener("pointermove", move, true);
+      window.removeEventListener("pointerup", up, true);
+      window.removeEventListener("pointercancel", cancel, true);
+      window.removeEventListener("blur", cancel);
+    } };
   }
 
   // A just-saved image becomes selected once the listing contains it, in its
@@ -487,8 +525,8 @@
   const graphData = (id: string): ComponentData | undefined => session.components.get(id);
 </script>
 
-<!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
-<div class="trace-view" bind:this={scroller} bind:clientWidth onclick={background}
+<!-- svelte-ignore a11y_no_static_element_interactions -->
+<div class="trace-view" bind:this={scroller} bind:clientWidth use:backgroundSelection
   oncontextmenu={(event) => { if (event.target === event.currentTarget) pane.contextMenu(event); }}
   data-testid="trace-view">
   {#if session.status === "loading" && !session.index}

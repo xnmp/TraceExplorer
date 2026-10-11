@@ -13,6 +13,7 @@
   import type { FileEntry } from "$lib/domain/file";
   import { tracePlugin } from "$lib/plugins/trace";
   import { forgetFolderSnapshots } from "$lib/plugins/trace/view/folder-session.svelte";
+  import { tracePanes } from "$lib/plugins/trace/view/pane-registry.svelte";
   import { openAIImagePlugin } from "$lib/plugins/openai-image";
   import { DIRECTORY, files, backend, initialTileSize } from "./view-fixture";
   import { TILE_IMAGE_PX } from "./tile-presets";
@@ -211,7 +212,7 @@
     enterView: () => { fileView = "trace.view"; },
     /** Forgets what each folder last showed, as if no view had shown them yet. */
     forgetFolders: () => forgetFolderSnapshots(),
-    state: () => ({ selected: [...selected], cursor, target: target ? { id: target.id, title: target.title, badge: target.badge ?? null } : null, fileView, opened: [...opened], menus: [...menus], navigations: [...navigations] }),
+    state: () => ({ selected: [...selected], inputs: tracePanes.get("pane-1")?.inputs() ?? [], cursor, target: target ? { id: target.id, title: target.title, badge: target.badge ?? null } : null, fileView, opened: [...opened], menus: [...menus], navigations: [...navigations] }),
     selectPath(path: string) { pane.setSelection([path], path); },
     /** The host replaces the selection itself (another pane, a command), as `explorer.selectPaths` does. */
     setSelection(paths: string[]) { pane.setSelection(paths); },

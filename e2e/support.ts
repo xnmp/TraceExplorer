@@ -15,7 +15,7 @@ export const key = (page: Page, name: Name): Promise<string> => page.evaluate((n
 export const tile = async (page: Page, name: Name): Promise<Locator> => page.locator(`[data-tile-key="${await key(page, name)}"]`);
 export const card = async (page: Page, name: Name): Promise<Locator> => page.locator(`[data-node-key="${await key(page, name)}"]`);
 export const state = (page: Page) => page.evaluate(() => (window as any).trace.state() as {
-  selected: string[]; cursor: string | null; target: { id: string; title: string; badge: string | null } | null;
+  selected: string[]; inputs: string[]; cursor: string | null; target: { id: string; title: string; badge: string | null } | null;
   fileView: string | null; opened: string[]; menus: Array<string | null>; navigations: string[];
 });
 export const uncaught = (page: Page): Promise<string[]> => page.evaluate(() => [...(window as any).trace.errors]);
