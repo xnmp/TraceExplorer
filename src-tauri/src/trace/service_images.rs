@@ -2987,6 +2987,7 @@ mod tests {
                         },
                         revision: 1,
                         diagnostics: None,
+                        billing: None,
                         execution,
                         delivery,
                     }.into();
