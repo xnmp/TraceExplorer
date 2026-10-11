@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { newProfile, removeProfile, setDefault, transportLabel, validation, type ImageConfiguration } from './domain';
+import { canAddCodex, newProfile, removeProfile, setDefault, transportLabel, validation, type ImageConfiguration } from './domain';
 
 const config = (): ImageConfiguration => ({ schemaVersion: 1, documentRevision: 3, defaultConnectionId: 'a', profiles: [newProfile('a', 'codex-cli'), { ...newProfile('b', 'openai-images'), defaultModel: 'm' } as ImageConfiguration['profiles'][number]] });
 
@@ -29,3 +29,19 @@ describe('transportLabel', () => {
     expect(transportLabel({ transport: 'openai-images' })).toBe('Images API');
   });
 });
+
+describe('canAddCodex', () => {
+  const config = (...transports: ('codex-cli' | 'openai-images')[]): ImageConfiguration =>
+    ({ schemaVersion: 1, documentRevision: 0, defaultConnectionId: null, profiles: transports.map((t, i) => newProfile(`p${i}`, t)) });
+  it('offers Codex until a Codex connection exists', () => {
+    expect(canAddCodex(config())).toBe(true);
+    expect(canAddCodex(config('openai-images', 'openai-images'))).toBe(true);
+    expect(canAddCodex(config('codex-cli'))).toBe(false);
+    expect(canAddCodex(config('openai-images', 'codex-cli'))).toBe(false);
+  });
+  it('offers it again once the Codex connection is removed', () => {
+    const withCodex = config('openai-images', 'codex-cli');
+    expect(canAddCodex(removeProfile(withCodex, 'p1'))).toBe(true);
+  });
+});
+

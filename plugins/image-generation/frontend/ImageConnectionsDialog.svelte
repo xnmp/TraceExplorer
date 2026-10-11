@@ -2,7 +2,7 @@
   import { onMount, untrack } from 'svelte';
   import Modal from '$lib/components/Modal.svelte';
   import { ConnectionsController, type Backend, type RevisionEvent, type TestRegistry } from './controller';
-  import { newProfile, removeProfile, setDefault, transportLabel, validation, type ImageProfile } from './domain';
+  import { canAddCodex, newProfile, removeProfile, setDefault, transportLabel, validation, type ImageProfile } from './domain';
   import ProfileFields from './ProfileFields.svelte';
   import TestResults from './TestResults.svelte';
   let { open, onClose, backend, registry, subscribeRevision }: { open: boolean; onClose: () => void; backend: Backend; registry: TestRegistry; subscribeRevision: (fn: (event: RevisionEvent) => void) => () => void } = $props();
@@ -58,7 +58,7 @@
               </ul>
             {/if}
             <div class="add">
-              <button type="button" class="ghost" disabled={view.busy || full} onclick={() => add('codex-cli')}>{@render plus()}Add Codex</button>
+              {#if canAddCodex(view.draft)}<button type="button" class="ghost" disabled={view.busy || full} onclick={() => add('codex-cli')}>{@render plus()}Add Codex</button>{/if}
               <button type="button" class="ghost" disabled={view.busy || full} onclick={() => add('openai-images')}>{@render plus()}Add Images API</button>
             </div>
           </nav>
