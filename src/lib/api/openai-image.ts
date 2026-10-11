@@ -33,11 +33,16 @@ export function validImageAvailability(value: unknown): value is ImageServiceAva
     seen.add(p.id);
     if (p.transport === "codex-cli" ? false : !apiProfileShape(p)) return false;
     const c = p.capabilities, s = c?.sizes;
-    if (!c || typeof c.generation !== "boolean" || typeof c.edit !== "boolean" || !Number.isInteger(c.maxInputs) || c.maxInputs < 0 || c.maxInputs > 8 || !s || typeof s.auto !== "boolean") return false;
+    if (c && s !== undefined && (!s || typeof s !== "object")) return false;
+    if (!c || typeof c.generation !== "boolean" || typeof c.edit !== "boolean" || !Number.isInteger(c.maxInputs) || c.maxInputs < 0 || c.maxInputs > 8 || (s !== undefined && typeof s.auto !== "boolean")) return false;
     if (typeof c.modelSelection !== "boolean" || c.modelSelection !== (p.transport !== "codex-cli")) return false;
     if (![[c.maxInputBytes, 20 * 1024 * 1024], [c.maxTotalInputBytes, 64 * 1024 * 1024], [c.maxOutputBytes, 50 * 1024 * 1024]].every(([n, max]) => Number.isSafeInteger(n) && n > 0 && n <= max)) return false;
     if (![c.inputFormats, c.outputFormats].every((a) => Array.isArray(a) && a.length > 0 && a.length <= 3 && a.every((v: unknown) => typeof v === "string" && ["image/png", "image/jpeg", "image/webp"].includes(v)))) return false;
-    if (![s.maxEdge, s.multipleOf, s.minPixels, s.maxPixels].every((n) => Number.isSafeInteger(n) && n > 0) || s.minPixels > s.maxPixels) return false;
+    if (s !== undefined && (![s.maxEdge, s.multipleOf, s.minPixels, s.maxPixels].every((n) => Number.isSafeInteger(n) && n > 0) || s.minPixels > s.maxPixels)) return false;
+    // A backend without pixel sizes must offer resolution or aspect ratio instead; each list is checked when present.
+    const listed = (a: unknown, allowed: readonly string[]) => a === undefined || (Array.isArray(a) && a.length > 0 && a.length <= allowed.length && a.every((v: unknown) => typeof v === "string" && allowed.includes(v)));
+    if (!listed(c.resolution, ["1k", "2k", "4k"]) || !listed(c.aspectRatio, ["keep", "1:1", "4:3", "3:4", "3:2", "2:3", "16:9", "9:16"])) return false;
+    if (s === undefined && c.resolution === undefined && c.aspectRatio === undefined) return false;
     if (![c.quality, c.background].every((a) => Array.isArray(a) && a.length > 0 && a.length <= 4)) return false;
     if (!c.quality.every((v: unknown) => typeof v === "string" && ["auto", "low", "medium", "high"].includes(v)) || !c.background.every((v: unknown) => typeof v === "string" && ["auto", "opaque", "transparent"].includes(v))) return false;
   }

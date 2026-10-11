@@ -32,14 +32,25 @@ export function connectionNeedsReview(pinned: ImageConnection, latest: ImageConn
   return pinned.recipeRevision !== latest.recipeRevision || pinned.transport !== latest.transport
     || pinnedProvider !== currentProvider || JSON.stringify(pinned.capabilities) !== JSON.stringify(latest.capabilities);
 }
-export function capabilityProblem(profile: ImageConnection, request: Pick<OpenAIImageRequest, "model" | "size" | "quality" | "background">, inputCount: number): string | null {
+/** Which image controls a connection offers. Pixel sizes are chosen through Resolution and Aspect ratio. */
+export function offeredOptions(profile: ImageConnection | null | undefined): { resolution: boolean; aspectRatio: boolean; quality: boolean; background: boolean } {
+  const caps = profile?.capabilities;
+  if (!caps) return { resolution: true, aspectRatio: true, quality: true, background: true };
+  return { resolution: !!caps.sizes || !!caps.resolution?.length, aspectRatio: !!caps.sizes || !!caps.aspectRatio?.length,
+    quality: caps.quality.length > 0, background: caps.background.length > 0 };
+}
+export function capabilityProblem(profile: ImageConnection, request: Pick<OpenAIImageRequest, "model" | "size" | "quality" | "background"> & Partial<Pick<OpenAIImageRequest, "resolution" | "aspectRatio">>, inputCount: number): string | null {
   const caps = profile.capabilities;
   if (!(inputCount ? caps.edit : caps.generation)) return `This connection does not support ${inputCount ? "editing" : "generation"}. Choose another connection.`;
   if (inputCount > caps.maxInputs) return `This connection supports at most ${caps.maxInputs} input images.`;
   if (isApiConnection(profile) && (!request.model?.trim() || Array.from(request.model).length > 256 || /\p{Cc}/u.test(request.model))) return "Enter an image model ID of 1–256 characters.";
   if (!caps.quality.includes(request.quality) || !caps.background.includes(request.background)) return "These image options are unavailable on the selected connection.";
+  if (request.resolution !== undefined && caps.resolution && !caps.resolution.includes(request.resolution)) return "This resolution is unavailable on the selected connection.";
+  if (request.aspectRatio !== undefined && caps.aspectRatio && !caps.aspectRatio.includes(request.aspectRatio)) return "This aspect ratio is unavailable on the selected connection.";
   const sizes: unknown = caps.sizes;
-  if (Array.isArray(sizes)) {
+  if (sizes === undefined) {
+    if (request.size !== "auto") return "This connection chooses its own image size.";
+  } else if (Array.isArray(sizes)) {
     if (!sizes.includes(request.size)) return "This image size is unavailable on the selected connection.";
   } else if (sizes && typeof sizes === "object") {
     const range = sizes as { auto?: boolean; maxEdge?: number; multipleOf?: number; minPixels?: number; maxPixels?: number };

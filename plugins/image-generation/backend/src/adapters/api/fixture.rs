@@ -13,7 +13,7 @@ pub const DESCRIPTOR: ApiDescriptor = ApiDescriptor {
         background: &["auto"],
         resolution: true,
         aspect_ratio: true,
-        sizes: true,
+        sizes: false,
     },
     max_inputs: 2,
     validate_base_url: |_| Ok(()),

@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { imageAvailability } from "../fixtures/image-connections";
-import { availabilityProblem, capabilityProblem, connectionFields, connectionFor, connectionNeedsReview, transportLabel } from "$lib/plugins/openai-image/connections";
+import { availabilityProblem, capabilityProblem, connectionFields, connectionFor, connectionNeedsReview, offeredOptions, transportLabel } from "$lib/plugins/openai-image/connections";
 import { describeImageService, validImageAvailability } from "$lib/api/openai-image";
 import { configureBackend } from "$lib/api/common";
 
@@ -64,6 +64,42 @@ describe("shared image connection policy", () => {
     expect(validImageAvailability(noShape)).toBe(false);
     const wrongSelection = imageAvailability(); wrongSelection.description!.profiles.push({ ...wrongSelection.description!.profiles[1], id: "f2", transport: "future-images", capabilities: { ...wrongSelection.description!.profiles[1].capabilities, modelSelection: false } });
     expect(validImageAvailability(wrongSelection)).toBe(false);
+  });
+  describe("a connection without pixel sizes", () => {
+    const ratioOnly = () => {
+      const value = imageAvailability();
+      const { sizes: _sizes, ...caps } = value.description!.profiles[1].capabilities;
+      const profile = { ...value.description!.profiles[1], id: "ratio", transport: "future-images", capabilities: { ...caps, resolution: ["1k", "2k"], aspectRatio: ["1:1", "16:9"] } };
+      value.description!.profiles.push(profile as any);
+      return { value, profile: profile as any };
+    };
+    it("is valid when it advertises resolution or aspect ratio, and not when it offers neither", () => {
+      expect(validImageAvailability(ratioOnly().value)).toBe(true);
+      const neither = ratioOnly(); delete neither.profile.capabilities.resolution; delete neither.profile.capabilities.aspectRatio;
+      expect(validImageAvailability(neither.value)).toBe(false);
+    });
+    it("validates resolution and aspect-ratio lists whenever present", () => {
+      for (const mutate of [(c: any) => { c.resolution = ["8k"]; }, (c: any) => { c.resolution = []; }, (c: any) => { c.aspectRatio = ["7:5"]; }, (c: any) => { c.aspectRatio = "1:1"; }, (c: any) => { c.sizes = 3; }]) {
+        const bad = ratioOnly(); mutate(bad.profile.capabilities);
+        expect(validImageAvailability(bad.value)).toBe(false);
+      }
+      const withSizes = imageAvailability(); (withSizes.description!.profiles[1].capabilities as any).resolution = ["2k"];
+      expect(validImageAvailability(withSizes)).toBe(true);
+    });
+    it("offers only the controls its capabilities name", () => {
+      expect(offeredOptions(ratioOnly().profile)).toMatchObject({ resolution: true, aspectRatio: true });
+      const { profile } = ratioOnly(); delete profile.capabilities.aspectRatio;
+      expect(offeredOptions(profile)).toMatchObject({ resolution: true, aspectRatio: false });
+      expect(offeredOptions(imageAvailability().description!.profiles[0])).toMatchObject({ resolution: true, aspectRatio: true });
+    });
+    it("takes size auto and refuses values outside its lists", () => {
+      const { profile } = ratioOnly();
+      const base = { model: "m", size: "auto", quality: "auto" as const, background: "auto" as const };
+      expect(capabilityProblem(profile, { ...base, resolution: "1k", aspectRatio: "16:9" }, 0)).toBeNull();
+      expect(capabilityProblem(profile, { ...base, resolution: "4k" }, 0)).toContain("resolution");
+      expect(capabilityProblem(profile, { ...base, aspectRatio: "3:2" }, 0)).toContain("aspect ratio");
+      expect(capabilityProblem(profile, { ...base, size: "1024x1024" }, 0)).toContain("own image size");
+    });
   });
   it("rejects malformed descriptions before they enable generation", () => {
     expect(validImageAvailability(imageAvailability())).toBe(true);

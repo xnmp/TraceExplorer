@@ -42,11 +42,11 @@ An HTTP backend is one adapter module, one descriptor and one registry entry. Al
 | Provider result | Code | State |
 |---|---|---|
 | transport failure, broken response stream, 5xx, 408 | `remote_outcome_unknown` | Unknown |
-| any other non-2xx | `provider_rejected` (bounded, sanitised provider message, credential redacted) | Failed |
-| 200 that explicitly refuses (safety/moderation) | `provider_refused` (bounded reason) | Failed |
+| any other non-2xx | `provider_rejected` (fixed wording plus the HTTP status number; provider prose is never stored) | Failed |
+| 200 that explicitly refuses (safety/moderation) | `provider_refused` (fixed wording chosen from a structured reason via `refused(code, table)`, e.g. Gemini `finishReason` or BFL `status`) | Failed |
 | 200 that is unparseable or lacks the image | `invalid_response` | Unknown |
 
-`service.rs` marks only an explicit list of codes Unknown; `provider_rejected` and `provider_refused` are deliberately absent, so they are Failed. A backend module only builds its request, calls `send()` and parses the body (returning `Failure::Refused` for an explicit refusal), then `output()`.
+`service.rs` marks only an explicit list of codes Unknown; `provider_rejected` and `provider_refused` are deliberately absent, so they are Failed. A backend module only builds its request, calls `send()` and parses the body (returning `refused(structured_code, &TABLE)` for an explicit refusal; never pass response prose), then `output()`.
 
 Checklist. Rust, backend module plus nine touch points in three files:
 

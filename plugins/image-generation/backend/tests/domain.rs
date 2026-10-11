@@ -332,6 +332,29 @@ fn capabilities_are_built_per_connection_kind_from_the_descriptor() {
     assert_eq!(fixture["maxInputs"], 2);
     assert_eq!(fixture["quality"], serde_json::json!(["auto"]));
     assert_eq!(fixture["resolution"], serde_json::json!(["1k", "2k", "4k"]));
+    // A ratio-based backend publishes no pixel sizes.
+    assert!(fixture.get("sizes").is_none());
+    assert!(openai.get("sizes").is_some());
+}
+#[test]
+fn a_connection_without_pixel_sizes_accepts_the_request_its_form_sends() {
+    let configuration = serde_json::json!({"schemaVersion":1,"documentRevision":0,"defaultConnectionId":null,"profiles":[api_json("fixture-images")]});
+    let mut parsed: Configuration = serde_json::from_value(configuration).unwrap();
+    validate_configuration(&mut parsed).unwrap();
+    let mut req = request();
+    req.connection_id = "api".into();
+    req.expected_connection_revision = "r1".into();
+    req.options.size = "auto".into();
+    req.options.resolution = Some("2k".into());
+    req.options.aspect_ratio = Some("16:9".into());
+    let recipe = recipe(&parsed.profiles[0], &req).unwrap();
+    assert_eq!(recipe.options.size, "auto");
+    assert_eq!(recipe.options.resolution.as_deref(), Some("2k"));
+    assert_eq!(recipe.options.aspect_ratio.as_deref(), Some("16:9"));
+    // Hidden controls are omitted (null) and still valid.
+    req.options.resolution = None;
+    req.options.aspect_ratio = None;
+    assert!(self::recipe(&parsed.profiles[0], &req).is_ok());
 }
 #[test]
 fn transport_names_follow_the_host_identifier_rule() {
@@ -396,4 +419,83 @@ fn frontend_registry_matches_the_backend_descriptors() {
         // The advertised default URL must be acceptable to the backend itself.
         assert!(base_url(*kind, d.default_base_url, false).is_ok());
     }
+}
+fn stored(adapter: &str) -> image_generation_backend::domain::stored_receipt::StoredReceipt {
+    let recipe = EffectiveRecipe {
+        schema_version: 1,
+        formatter_version: 1,
+        connection_id: "api".into(),
+        connection_revision: "r1".into(),
+        adapter: adapter.into(),
+        endpoint_identity: "https://gateway.test/v1/images".into(),
+        model: Some("model-x".into()),
+        options: ImageOptions {
+            size: "1024x1024".into(),
+            resolution: None,
+            aspect_ratio: None,
+            quality: "auto".into(),
+            background: "auto".into(),
+        },
+        input_digests: vec![],
+        input_roles: vec![],
+        submitted_prompt: "p".into(),
+        agent_task: None,
+    };
+    let status = OperationStatus {
+        version: 1,
+        operation_id: "12345678-1234-1234-1234-123456789abc".into(),
+        request_fingerprint: recipe.digest(),
+        provider: ProviderIdentity {
+            package_id: "xnmp.image-generation".into(),
+            service_id: "image-generation".into(),
+            major: 1,
+        },
+        revision: 1,
+        execution: Execution::Failed {
+            error: SafeError {
+                code: "provider_rejected".into(),
+                message: "Image provider rejected the request (HTTP 400)".into(),
+                correlation_id: None,
+            },
+        },
+        delivery: Delivery::None {},
+        diagnostics: None,
+    };
+    image_generation_backend::domain::stored_receipt::StoredReceipt {
+        caller: "consumer.pkg".into(),
+        operation: status.operation_id.clone(),
+        semantic: "b".repeat(64),
+        context: Caller {
+            package_id: "consumer.pkg".into(),
+            package_digest: "c".repeat(64),
+            incarnation: 1,
+        },
+        recipe: Some(recipe),
+        status,
+        output_sha: None,
+        output: None,
+        cancelled: false,
+        test: false,
+        admitted: 0,
+        deadline: 0,
+    }
+}
+#[test]
+fn stored_receipts_accept_any_valid_api_adapter_id_and_reject_invalid_ones() {
+    assert!(stored("openai-images").valid());
+    assert!(stored("future-images").valid());
+    for bad in [
+        "",
+        "Future",
+        "1abc",
+        "has_underscore",
+        "a b",
+        &"a".repeat(65),
+    ] {
+        assert!(!stored(bad).valid(), "{bad}");
+    }
+    // API receipts still need a model and no agent task.
+    let mut no_model = stored("future-images");
+    no_model.recipe.as_mut().unwrap().model = None;
+    assert!(!no_model.valid());
 }

@@ -654,9 +654,7 @@ fn assert_key_contained(route: Route, expected: (&str, Option<&str>)) {
             .any(|line| line.eq_ignore_ascii_case(&format!("authorization: Bearer {key}"))));
     }
     untouched.assert_untouched();
-    // Outcome is the classified safe error. A definite rejection carries the
-    // provider's bounded message, with the credential redacted, but never the
-    // echoed request/body.
+    // Outcome is the classified safe error, never the echoed body.
     assert_eq!(status["execution"]["state"], expected.0, "{status}");
     assert_eq!(
         status["execution"]["error"]["code"].as_str(),
@@ -666,11 +664,7 @@ fn assert_key_contained(route: Route, expected: (&str, Option<&str>)) {
     for value in [&status, &settings, &described, &checked] {
         let text = value.to_string();
         assert!(!text.contains(&key), "{text}");
-        assert!(!text.contains("X-Echo-Key"), "{text}");
-        assert!(!text.contains("echo"), "{text}");
-    }
-    for value in [&settings, &described, &checked] {
-        assert!(!value.to_string().contains("Incorrect API key"), "{value}");
+        assert!(!text.contains("Incorrect API key"), "{text}");
     }
     // Every provider-written frame (replies, events, reverse requests) is
     // key-free except the single write-only secret store request.
@@ -679,6 +673,9 @@ fn assert_key_contained(route: Route, expected: (&str, Option<&str>)) {
     let put: Value = serde_json::from_str(leaking[0]).unwrap();
     assert_eq!(put["method"], "host.credentials.put");
     assert_eq!(put["params"]["key"], key);
+    assert!(emitted
+        .iter()
+        .all(|line| !line.contains("Incorrect API key")));
     assert!(!stderr.contains(&key), "{stderr}");
     assert!(!stderr.contains("Incorrect API key"), "{stderr}");
     assert_eq!(
@@ -686,7 +683,7 @@ fn assert_key_contained(route: Route, expected: (&str, Option<&str>)) {
         Vec::<std::path::PathBuf>::new()
     );
     assert_eq!(
-        files_containing(data.path(), "X-Echo-Key"),
+        files_containing(data.path(), "Incorrect API key"),
         Vec::<std::path::PathBuf>::new()
     );
 }

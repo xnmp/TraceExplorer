@@ -3,7 +3,7 @@
   import "../plugin-dialog.css";
   import type { PluginJobs, PluginToast } from "../api";
   import { describeImageInputs, describeImageService, type ImageServiceAvailability, type OpenAIImageRequest } from "$lib/api/openai-image";
-  import { availabilityProblem, capabilityProblem, connectionFields, connectionFor, connectionNeedsReview, isApiConnection, transportLabel, type ImageConnection } from "./connections";
+  import { availabilityProblem, capabilityProblem, connectionFields, connectionFor, connectionNeedsReview, isApiConnection, offeredOptions, transportLabel, type ImageConnection } from "./connections";
   import { startImageJob } from "./image-jobs";
   import { describeInputs, inputRequestFields, moveInput, removeInput, withLiveInputs, type ImageInput } from "$lib/domain/image-inputs";
   import TraceThumbnail from "../trace/TraceThumbnail.svelte";
@@ -71,8 +71,14 @@
     pinnedConnection = connectionFor(availability?.description, id);
     pinnedProvider = availability?.providerDigest;
     modelOverride = pinnedConnection && isApiConnection(pinnedConnection) ? pinnedConnection.defaultModel : "";
+    // Controls the new connection does not offer return to their defaults, so nothing hidden is submitted.
+    const offered = offeredOptions(pinnedConnection);
+    const caps = pinnedConnection?.capabilities;
     quality = "auto";
     background = "auto";
+    if (!offered.resolution) resolution = "2k";
+    else if (caps?.resolution && !caps.resolution.includes(resolution)) resolution = caps.resolution[0] as ImageResolution;
+    if (!offered.aspectRatio || (caps?.aspectRatio && !caps.aspectRatio.includes(aspectRatio))) aspectRatio = defaultAspectRatio;
   }
   function reviewConnection(): void {
     if (!latestConnection) return;
@@ -94,7 +100,8 @@
   onDestroy(()=>{alive=false;});
   let prompt = $state("");
   let resolution = $state<ImageResolution>("2k");
-  let aspectRatio = $state<ImageAspectRatio>(editing ? "keep" : "1:1");
+  const defaultAspectRatio: ImageAspectRatio = editing ? "keep" : "1:1";
+  let aspectRatio = $state<ImageAspectRatio>(defaultAspectRatio);
   let count = $state(1);
   let submitting = $state(false);
   let error = $state("");
@@ -159,7 +166,8 @@
       if (needsReview) throw new Error("Review the updated connection before generating.");
       const connection = profile;
       if (!connection) throw new Error("Select a configured image connection.");
-      const keepsSize = editing && aspectRatio === "keep";
+      // Only a connection with pixel sizes needs Image 1's dimensions to resolve "keep".
+      const keepsSize = !!connection.capabilities.sizes && editing && aspectRatio === "keep";
       // A failed or unfinished read is tried again: it pins revisions and gives Image 1's size.
       if (images.some((input) => !input.digest && !input.error) || (keepsSize && !images[0]?.size)) {
         const problem = await describe();
@@ -169,10 +177,12 @@
       const unusable = images.find((input) => input.error);
       if (unusable) throw new Error(`Remove ${basename(unusable.path)}: ${unusable.error}`);
       if (keepsSize && !images[0]?.size) throw new Error("Wait for Image 1 to load, or choose an aspect ratio");
-      const size = imageGenerationSize(resolution, aspectRatio, images[0]?.size);
+      const offered = offeredOptions(connection);
+      const size = connection.capabilities.sizes ? imageGenerationSize(resolution, aspectRatio, images[0]?.size) : "auto";
       const outputFilename = imageOutputFilename(images[0] ? basename(images[0].path) : null);
       const fields = inputRequestFields(images);
-      const settings = { ...connectionFields(connection, modelOverride), size, quality, background };
+      const settings = { ...connectionFields(connection, modelOverride), size, quality, background,
+        ...(offered.resolution ? { resolution } : {}), ...(offered.aspectRatio ? { aspectRatio } : {}) };
       const problem = capabilityProblem(connection, settings, images.length);
       if (problem) throw new Error(problem);
       const batchId = count > 1 ? crypto.randomUUID() : null;
@@ -182,7 +192,7 @@
         { label: count > 1 ? `${outputFilename} (${index + 1}/${count})` : outputFilename, detail: prompt.trim() },
         { ...fields, outputDir,
           ...(batchId ? {batch:{id:batchId,index,count}} : {}),
-          prompt: prompt.trim(), outputFilename, ...settings, resolution, aspectRatio });
+          prompt: prompt.trim(), outputFilename, ...settings });
       if (!result.ok) throw new Error(result.error);
       accepted += 1;
       }
@@ -201,10 +211,12 @@
   const plain = (values: readonly string[]): SelectOption[] => values.map((value) => ({ value, label: value }));
   const RESOLUTIONS: SelectOption[] = [{ value: "1k", label: "1K" }, { value: "2k", label: "2K" }, { value: "4k", label: "4K" }];
   const connectionOptions = $derived((availability?.description?.profiles ?? []).map((connection): SelectOption => ({ value: connection.id, label: connection.name })));
-  const aspectRatioOptions = ([
+  const offered = $derived(offeredOptions(profile));
+  const resolutionOptions = $derived(profile?.capabilities.resolution ? RESOLUTIONS.filter((o) => profile.capabilities.resolution!.includes(o.value)) : RESOLUTIONS);
+  const aspectRatioOptions = $derived([
     ...(editing ? [{ value: "keep", label: "Keep (Image 1)" }] : []),
     ...plain(["1:1", "4:3", "3:4", "3:2", "2:3", "16:9", "9:16"]),
-  ]);
+  ].filter((o) => !profile?.capabilities.aspectRatio || profile.capabilities.aspectRatio.includes(o.value)));
   const qualityOptions = $derived(plain(profile?.capabilities.quality ?? ["auto"]));
   const backgroundOptions = $derived(plain(profile?.capabilities.background ?? ["auto"]));
 
@@ -269,21 +281,29 @@
           placeholder={images.length > 1 ? "Describe your edit. Refer to images by number, e.g. “the hat in Image 2”…" : editing ? "Describe your edit…" : "Describe your image…"}></textarea>
       </label>
       <div class="options">
+        {#if offered.resolution}
         <label class="prompt-field">Resolution
-          <Select aria-label="Resolution" bind:value={resolution} disabled={submitting || configuring} options={RESOLUTIONS} />
+          <Select aria-label="Resolution" bind:value={resolution} disabled={submitting || configuring} options={resolutionOptions} />
         </label>
+        {/if}
+        {#if offered.aspectRatio}
         <label class="prompt-field">Aspect ratio
           <Select aria-label="Aspect ratio" bind:value={aspectRatio} disabled={submitting || configuring} options={aspectRatioOptions} />
         </label>
+        {/if}
         <label class="prompt-field">Images
           <input class="prompt-input" type="number" min="1" max="8" step="1" bind:value={count} disabled={submitting} aria-label="Images" />
         </label>
+        {#if offered.quality}
         <label class="prompt-field">Quality
           <Select aria-label="Quality" bind:value={quality} disabled={submitting || configuring || !profile} options={qualityOptions} />
         </label>
+        {/if}
+        {#if offered.background}
         <label class="prompt-field">Background
           <Select aria-label="Background" bind:value={background} disabled={submitting || configuring || !profile} options={backgroundOptions} />
         </label>
+        {/if}
       </div>
       {#if error}<p class="error" role="alert">{error}</p>{/if}
     </div>

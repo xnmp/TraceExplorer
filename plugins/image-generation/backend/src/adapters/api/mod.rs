@@ -5,9 +5,10 @@
 //! Outcome rule, applied to every backend through [`outcome`]:
 //! - transport failure, interrupted response, 5xx or 408: the provider may have
 //!   generated (and charged), so the result is `remote_outcome_unknown`;
-//! - any other non-2xx status: definitive `provider_rejected`;
+//! - any other non-2xx status: definitive `provider_rejected` (fixed wording and
+//!   the status number; provider prose is never copied into receipts);
 //! - a 200 that explicitly refuses (safety/moderation): definitive
-//!   `provider_refused` with the provider's bounded reason;
+//!   `provider_refused`, worded from a fixed table keyed by a structured reason;
 //! - a 200 that is unparseable or lacks the image: `invalid_response`, unknown.
 //!
 //! `service.rs` maps only an explicit list of codes to `Unknown`; every other
@@ -80,8 +81,6 @@ pub async fn generate(kind: ApiKind, call: ApiCall<'_>) -> Result<Output> {
 }
 
 const RESPONSE_LIMIT: usize = 70 * 1024 * 1024;
-const ERROR_BODY_LIMIT: usize = 16 * 1024;
-const MESSAGE_LIMIT: usize = 200;
 
 /// Inherited native configuration (plan §18.3): proxies come only from the
 /// HTTP_PROXY/HTTPS_PROXY/ALL_PROXY/NO_PROXY environment (curl semantics,
@@ -128,10 +127,10 @@ pub enum Failure {
     Transport,
     /// The response body ended or errored mid-stream.
     Interrupted,
-    /// A non-success HTTP status, with the provider's raw (unsanitised) message.
-    Status { code: u16, message: Option<String> },
-    /// A definitive 200 that says the provider refused (safety or moderation).
-    Refused { reason: String },
+    /// A non-success HTTP status.
+    Status { code: u16 },
+    /// A definitive 200 that says the provider refused, as a structured reason.
+    Refused(Refusal),
     /// A 200 that is unparseable or lacks the image.
     Invalid(&'static str),
 }
@@ -146,65 +145,54 @@ pub fn outcome(failure: Failure) -> SafeError {
             "remote_outcome_unknown",
             "Image provider response was interrupted",
         ),
-        Failure::Status { code, .. } if code >= 500 || code == 408 => error(
+        Failure::Status { code } if code >= 500 || code == 408 => error(
             "remote_outcome_unknown",
             "Image provider did not confirm an outcome; generation may have occurred",
         ),
-        Failure::Status { code, .. } if (200..300).contains(&code) => error(
+        Failure::Status { code } if (200..300).contains(&code) => error(
             "invalid_response",
             "Image provider returned an unexpected status",
         ),
-        Failure::Status { message, .. } => {
-            let base = "Image provider rejected the request; check endpoint, model and credentials";
-            match message.and_then(|m| bounded_message(&m, None)) {
-                Some(m) => error("provider_rejected", &format!("{base}: {m}")),
-                None => error("provider_rejected", base),
-            }
-        }
-        Failure::Refused { reason } => {
-            let base = "Image provider refused the request";
-            match bounded_message(&reason, None) {
-                Some(m) => error("provider_refused", &format!("{base}: {m}")),
-                None => error("provider_refused", base),
-            }
-        }
+        Failure::Status { code } => error(
+            "provider_rejected",
+            &format!(
+                "Image provider rejected the request (HTTP {code}); check endpoint, model and credentials"
+            ),
+        ),
+        Failure::Refused(reason) => error(
+            "provider_refused",
+            &format!("The provider refused this request ({})", reason.wording()),
+        ),
         Failure::Invalid(message) => error("invalid_response", message),
     }
 }
-/// Collapses whitespace and control characters, hides the credential if the
-/// provider echoed it, and bounds the length. `None` when nothing is left.
-pub fn bounded_message(raw: &str, key: Option<&str>) -> Option<String> {
-    let redacted = match key.filter(|k| !k.is_empty()) {
-        Some(key) => raw.replace(key, "[redacted]"),
-        None => raw.to_owned(),
-    };
-    let text = redacted.split_whitespace().collect::<Vec<_>>().join(" ");
-    let text: String = text.chars().filter(|c| !c.is_control()).collect();
-    let text = text.trim();
-    if text.is_empty() {
-        return None;
-    }
-    if text.chars().count() <= MESSAGE_LIMIT {
-        return Some(text.to_owned());
-    }
-    Some(format!(
-        "{}…",
-        text.chars().take(MESSAGE_LIMIT - 1).collect::<String>()
-    ))
+/// Why a provider refused a request. Adapters map the provider's structured
+/// field (Gemini `finishReason`, BFL `status`, ...) to one of these; response
+/// prose is never used, so receipts hold only our own wording.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Refusal {
+    Safety,
+    Policy,
+    Other,
 }
-/// Best-effort provider message from a JSON error body (`error.message`,
-/// `error`, `message` or `detail`), already redacted of `key` and bounded.
-pub fn provider_message(body: &[u8], key: Option<&str>) -> Option<String> {
-    let value: serde_json::Value = serde_json::from_slice(body).ok()?;
-    let found = [
-        &value["error"]["message"],
-        &value["error"],
-        &value["message"],
-        &value["detail"],
-    ]
-    .into_iter()
-    .find_map(|v| v.as_str());
-    found.and_then(|m| bounded_message(m, key))
+impl Refusal {
+    fn wording(self) -> &'static str {
+        match self {
+            Refusal::Safety => "safety",
+            Refusal::Policy => "content policy",
+            Refusal::Other => "no reason given",
+        }
+    }
+}
+/// Builds the refusal failure from a provider's structured reason code, using
+/// the adapter's table of known codes; unknown codes become `Refusal::Other`.
+pub fn refused(reason_code: &str, table: &[(&str, Refusal)]) -> Failure {
+    Failure::Refused(
+        table
+            .iter()
+            .find(|(code, _)| *code == reason_code)
+            .map_or(Refusal::Other, |(_, r)| *r),
+    )
 }
 
 pub struct Reply {
@@ -231,12 +219,8 @@ pub async fn send(
                 .map_err(|_| outcome(Failure::Transport))?;
             let status = response.status();
             if !status.is_success() {
-                let body = read_body(response, ERROR_BODY_LIMIT)
-                    .await
-                    .unwrap_or_default();
                 return Err(outcome(Failure::Status {
                     code: status.as_u16(),
-                    message: provider_message(&body, key),
                 }));
             }
             let request_id = response
@@ -348,76 +332,38 @@ mod tests {
         assert_eq!(code(Failure::Transport), "remote_outcome_unknown");
         assert_eq!(code(Failure::Interrupted), "remote_outcome_unknown");
         for status in [408, 500, 502, 503, 504, 599] {
-            let failure = Failure::Status {
-                code: status,
-                message: Some("x".into()),
-            };
-            assert_eq!(code(failure), "remote_outcome_unknown", "{status}");
+            assert_eq!(
+                code(Failure::Status { code: status }),
+                "remote_outcome_unknown",
+                "{status}"
+            );
         }
     }
     #[test]
-    fn other_client_errors_are_definite_rejections_with_a_bounded_message() {
+    fn other_client_errors_are_definite_rejections_with_fixed_wording() {
         for status in [400, 401, 403, 404, 409, 422, 429] {
-            let err = outcome(Failure::Status {
-                code: status,
-                message: Some("bad  model\n id".into()),
-            });
+            let err = outcome(Failure::Status { code: status });
             assert_eq!(err.code, "provider_rejected", "{status}");
-            assert!(err.message.ends_with(": bad model id"), "{}", err.message);
+            assert_eq!(
+                err.message,
+                format!("Image provider rejected the request (HTTP {status}); check endpoint, model and credentials")
+            );
         }
-        let err = outcome(Failure::Status {
-            code: 400,
-            message: None,
-        });
-        assert_eq!(err.code, "provider_rejected");
-        assert!(!err.message.contains(':'));
-        let long = outcome(Failure::Status {
-            code: 400,
-            message: Some("é".repeat(5000)),
-        });
-        assert!(long.message.chars().count() < 400, "{}", long.message.len());
     }
     #[test]
-    fn an_explicit_refusal_is_definite_and_unparseable_success_is_invalid() {
-        let err = outcome(Failure::Refused {
-            reason: "blocked by safety".into(),
-        });
+    fn a_refusal_is_definite_and_uses_only_our_wording() {
+        let table = [("SAFETY", Refusal::Safety), ("PROHIBITED", Refusal::Policy)];
+        let err = outcome(refused("SAFETY", &table));
         assert_eq!(err.code, "provider_refused");
-        assert!(err.message.contains("blocked by safety"));
+        assert_eq!(err.message, "The provider refused this request (safety)");
+        // Unknown codes, including hostile prose, never reach the message.
+        let hostile = outcome(refused("sk-abc***xyz you are blocked", &table));
         assert_eq!(
-            outcome(Failure::Refused {
-                reason: "  ".into()
-            })
-            .code,
-            "provider_refused"
+            hostile.message,
+            "The provider refused this request (no reason given)"
         );
         assert_eq!(code(Failure::Invalid("no image")), "invalid_response");
-        assert_eq!(
-            code(Failure::Status {
-                code: 200,
-                message: None
-            }),
-            "invalid_response"
-        );
-    }
-    #[test]
-    fn provider_messages_are_sanitised_and_hide_the_credential() {
-        assert_eq!(bounded_message("a\u{0}b\tc", None).as_deref(), Some("ab c"));
-        assert_eq!(
-            bounded_message("bad key sk-123 given", Some("sk-123")).as_deref(),
-            Some("bad key [redacted] given")
-        );
-        assert_eq!(bounded_message(" \n ", None), None);
-        let body = br#"{"error":{"message":"No access\nto model"}}"#;
-        assert_eq!(
-            provider_message(body, None).as_deref(),
-            Some("No access to model")
-        );
-        assert_eq!(
-            provider_message(br#"{"error":"plain"}"#, None).as_deref(),
-            Some("plain")
-        );
-        assert_eq!(provider_message(b"<html>", None), None);
+        assert_eq!(code(Failure::Status { code: 200 }), "invalid_response");
     }
     fn encoded(format: image::ImageFormat) -> Vec<u8> {
         let image = image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(
