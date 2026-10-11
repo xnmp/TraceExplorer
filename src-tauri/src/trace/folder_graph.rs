@@ -168,6 +168,8 @@ pub(crate) struct TraceNode {
     pub earlier_revision: bool,
     pub order: i64,
     pub prompt: String,
+    /// An Interrupted placeholder whose recorded evidence allows Dismiss.
+    pub dismissable: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -258,6 +260,7 @@ struct RunFacts {
     status: String,
     temporary: bool,
     prompt: String,
+    dismissable: bool,
     /// Input artifact IDs in position order, possibly repeated.
     inputs: Vec<i64>,
 }
@@ -572,6 +575,7 @@ fn build_index(facts: &Facts, layout: &Layout) -> FolderIndex {
                         earlier_revision: artifact.earlier_revision,
                         order: id,
                         prompt: run.map(|run| run.prompt.clone()).unwrap_or_default(),
+                        dismissable: false,
                     }
                 }
                 NodeRef::Placeholder(run_id) => {
@@ -593,6 +597,7 @@ fn build_index(facts: &Facts, layout: &Layout) -> FolderIndex {
                         earlier_revision: false,
                         order: PLACEHOLDER_ORDER + run_id,
                         prompt: run.map(|run| run.prompt.clone()).unwrap_or_default(),
+                        dismissable: run.is_some_and(|run| run.dismissable),
                     }
                 }
             }
@@ -1036,7 +1041,7 @@ fn load_snapshot(
         .filter(|(run, status, dismissed)| {
             !with_output.contains(run)
                 && matches!(status.as_str(), "running" | "uncertain")
-                && !dismissed
+                && !dismiss::hides_placeholder(status, *dismissed)
         })
         .map(|(run, _, _)| *run)
         .collect();
@@ -1111,7 +1116,6 @@ fn load_snapshot(
         run_facts.insert(
             id,
             RunFacts {
-                status,
                 temporary: parameters
                     .get("output_storage")
                     .and_then(serde_json::Value::as_str)
@@ -1121,6 +1125,10 @@ fn load_snapshot(
                     .and_then(serde_json::Value::as_str)
                     .map(truncate_prompt)
                     .unwrap_or_default(),
+                dismissable: status == "uncertain"
+                    && placeholders.contains(&id)
+                    && dismiss::evidence_ok(connection, id)?,
+                status,
                 inputs: inputs.remove(&id).unwrap_or_default(),
             },
         );
@@ -2230,6 +2238,47 @@ mod tests {
     }
 
     #[test]
+    fn a_dismissed_run_that_recovery_resumes_is_visible_and_makes_the_folder_eligible() {
+        let f = fixture();
+        let run = uncertain_run(&f, "openai.image.generate", vec![]);
+        dismiss::dismiss_at(&f.db, run).unwrap();
+        assert!(!folders::has_trace_at(&f.db, &f.folder).unwrap());
+        // The transition publication applies before it stages the sealed image.
+        connection_at(&f.db)
+            .unwrap()
+            .execute(
+                "UPDATE runs SET status='running',error=NULL WHERE id=?1 AND status='uncertain'",
+                [run],
+            )
+            .unwrap();
+        assert!(folders::has_trace_at(&f.db, &f.folder).unwrap());
+        let shown = view(&f);
+        let node = shown.keyed(&format!("o:{run}:0"));
+        assert_eq!(node.state, NodeState::Running);
+        assert!(!node.dismissable);
+    }
+
+    #[test]
+    fn only_a_run_with_unknown_unrecoverable_evidence_is_dismissable() {
+        let f = fixture();
+        let source = image(&f.folder.join("source.png"), b"source");
+        let run = uncertain_run(&f, "openai.image.edit", vec![input(&source)]);
+        let key = format!("o:{run}:0");
+        assert!(view(&f).keyed(&key).dismissable);
+        connection_at(&f.db)
+            .unwrap()
+            .execute(
+                "UPDATE runs SET result_details=?2 WHERE id=?1",
+                params![run, r#"{"outcome":"unknown","provider_execution":{"state":"succeeded"}}"#],
+            )
+            .unwrap();
+        assert!(!view(&f).keyed(&key).dismissable);
+        assert!(dismiss::dismiss_at(&f.db, run).is_err());
+        // Still shown: the refused dismissal changed nothing.
+        assert_eq!(view(&f).keyed(&key).state, NodeState::Uncertain);
+    }
+
+    #[test]
     fn output_arriving_after_dismissal_is_shown() {
         let f = fixture();
         let source = image(&f.folder.join("source.png"), b"source");
@@ -2741,6 +2790,7 @@ mod tests {
             earlier_revision: false,
             order: 1,
             prompt: String::new(),
+            dismissable: false,
         };
         let with = |change: fn(&mut TraceNode)| {
             let mut node = plain.clone();
@@ -2877,6 +2927,7 @@ mod tests {
             earlier_revision: true,
             order: 2,
             prompt: String::new(),
+            dismissable: false,
         };
         let value = serde_json::to_value(&node).unwrap();
         assert_eq!(value["artifactId"], 2);
@@ -2884,6 +2935,7 @@ mod tests {
         assert_eq!(value["earlierRevision"], true);
         assert_eq!(value["scope"], "subfolder");
         assert_eq!(value["state"], "uncertain");
+        assert_eq!(value["dismissable"], false);
         let member = serde_json::to_value(Member {
             path: "/x".into(),
             component_id: "c:1".into(),

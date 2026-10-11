@@ -87,6 +87,8 @@ export interface TraceNodeRecord {
   readonly state: TraceNodeState;
   readonly temporary: boolean;
   readonly discarded: boolean;
+  /** An Interrupted placeholder whose evidence allows Dismiss (no recoverable result). */
+  readonly dismissable?: boolean;
   readonly earlierRevision: boolean;
   readonly order: number;
   readonly prompt: string;

@@ -379,6 +379,62 @@ test.describe("Interrupted placeholders", () => {
     expect(await uncaught(page)).toEqual([]);
   });
 
+  test("a recoverable Interrupted placeholder offers no Dismiss", async ({ page }) => {
+    await openView(page);
+    await click(page, "warm");
+    const identity = await page.evaluate(() => {
+      const backend = (window as any).trace.backend;
+      const made = backend.startGeneration("warm", "gen") as string;
+      backend.interruptGeneration("gen", false);
+      return made;
+    });
+    await settle(page);
+    await page.locator(`[data-tile-key="${identity}"] .card`).click();
+    await settle(page);
+    await expect(page.getByTestId("preview-badge")).toHaveText("Interrupted");
+    await expect(dismiss(page)).toHaveCount(0);
+  });
+
+  test("dismissing the only edit of a lone image returns it to the other files, as the backend does", async ({ page }) => {
+    await openView(page, undefined, "?lone=1");
+    const others = page.getByRole("list", { name: "Other files and folders" });
+    const identity = await page.evaluate(() => {
+      const backend = (window as any).trace.backend;
+      const made = backend.startGeneration("lonely", "retry") as string;
+      backend.interruptGeneration("retry");
+      return made;
+    });
+    const section = page.locator("section.component[data-component]", { has: page.locator(".heading .name", { hasText: /^lonely$/ }) });
+    await expect(section).toHaveCount(1);
+    await section.locator(".heading").click();
+    await settle(page);
+    await page.locator(`[data-tile-key="${identity}"] .card`).click();
+    await settle(page);
+    await dismiss(page).click();
+    await expect(section).toHaveCount(0);
+    await expect(others.locator('[data-entry-path="/pictures/lonely.png"]')).toHaveCount(1);
+    expect(await uncaught(page)).toEqual([]);
+  });
+
+  test("a dismissed run that recovery resumes is shown again", async ({ page }) => {
+    await openView(page, undefined, "?lone=1");
+    const identity = await page.evaluate(() => {
+      const backend = (window as any).trace.backend;
+      const made = backend.startGeneration("lonely", "retry") as string;
+      backend.interruptGeneration("retry");
+      return made;
+    });
+    const section = page.locator("section.component[data-component]", { has: page.locator(".heading .name", { hasText: /^lonely$/ }) });
+    await section.locator(".heading").click();
+    await settle(page);
+    await page.locator(`[data-tile-key="${identity}"] .card`).click();
+    await dismiss(page).click();
+    await expect(section).toHaveCount(0);
+    await page.evaluate(() => (window as any).trace.backend.resumeGeneration("retry"));
+    await expect(section).toHaveCount(1);
+    await expect(page.locator(`[data-tile-key="${identity}"]`).getByRole("status", { name: "Generating" })).toBeVisible();
+  });
+
   test("a running placeholder cannot be dismissed", async ({ page }) => {
     await openView(page);
     await click(page, "warm");

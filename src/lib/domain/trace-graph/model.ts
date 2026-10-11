@@ -25,6 +25,8 @@ export interface TraceNode {
   readonly state: NodeState;
   readonly temporary: boolean;
   readonly discarded: boolean;
+  /** An Interrupted placeholder whose evidence allows Dismiss (no recoverable result). */
+  readonly dismissable?: boolean;
   readonly earlierRevision: boolean;
   /** Stable creation order used to break ties deterministically. */
   readonly order: number;

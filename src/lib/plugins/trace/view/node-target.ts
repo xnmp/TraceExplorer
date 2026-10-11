@@ -45,10 +45,12 @@ export function nodeStatus(node: TraceNode): string {
 
 /**
  * Whether a node is an Interrupted placeholder the user may dismiss: an
- * uncertain run with no recorded output. A running placeholder is still active.
+ * uncertain run with no recorded output whose evidence shows no recoverable
+ * result (`dismissable`, decided by the backend). A running placeholder is
+ * still active.
  */
 export function canDismissNode(node: TraceNode): boolean {
-  return node.state === "uncertain" && node.artifactId === null && node.runId !== null && !node.discarded;
+  return node.state === "uncertain" && node.artifactId === null && node.runId !== null && !node.discarded && node.dismissable === true;
 }
 
 async function guarded(id: number, work: () => Promise<void>): Promise<void> {

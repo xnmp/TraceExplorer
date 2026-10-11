@@ -63,7 +63,7 @@ describe("nodeTitle / nodeTypeLabel / nodeStatus", () => {
 });
 
 const interrupted = (over: Partial<TraceNode> = {}) =>
-  node({ artifactId: null, runId: 4, path: null, state: "uncertain", ...over });
+  node({ artifactId: null, runId: 4, path: null, state: "uncertain", dismissable: true, ...over });
 
 describe("canDismissNode", () => {
   it("accepts only an uncertain run that has no output", () => {
@@ -72,6 +72,9 @@ describe("canDismissNode", () => {
     expect(canDismissNode(interrupted({ artifactId: 9 }))).toBe(false);
     expect(canDismissNode(interrupted({ runId: null }))).toBe(false);
     expect(canDismissNode(interrupted({ discarded: true }))).toBe(false);
+    // The backend found a recoverable or sealed result, or said nothing.
+    expect(canDismissNode(interrupted({ dismissable: false }))).toBe(false);
+    expect(canDismissNode(interrupted({ dismissable: undefined }))).toBe(false);
     for (const state of ["present", "missing", "unavailable"] as const) {
       expect(canDismissNode(interrupted({ state }))).toBe(false);
     }

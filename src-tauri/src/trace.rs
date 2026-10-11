@@ -383,6 +383,25 @@ fn sql(error: rusqlite::Error) -> AppError {
     AppError::Other(format!("Trace database: {error}"))
 }
 
+/// Adds `runs.dismissed_at`. The check and the `ALTER` share one write
+/// transaction, so two processes opening an older database cannot both alter it.
+fn ensure_dismissed_at(connection: &mut Connection) -> Result<(), AppError> {
+    let exists = |connection: &Connection| -> Result<bool, AppError> {
+        connection
+            .query_row("SELECT EXISTS(SELECT 1 FROM pragma_table_info('runs') WHERE name='dismissed_at')", [], |row| row.get(0))
+            .map_err(sql)
+    };
+    if exists(connection)? {
+        return Ok(());
+    }
+    // The connection's default behaviour is IMMEDIATE: the write lock is taken here.
+    let tx = connection.transaction().map_err(sql)?;
+    if !exists(&tx)? {
+        tx.execute_batch("ALTER TABLE runs ADD COLUMN dismissed_at TEXT;").map_err(sql)?;
+    }
+    tx.commit().map_err(sql)
+}
+
 fn connection_at(path: &Path) -> Result<Connection, AppError> {
     let _schema = SCHEMA_SETUP
         .lock()
@@ -572,12 +591,7 @@ fn connection_at(path: &Path) -> Result<Connection, AppError> {
     connection.execute_batch("CREATE TABLE IF NOT EXISTS image_prompt_titles_v1 (prompt_digest TEXT NOT NULL,recipe_version INTEGER NOT NULL,context_fingerprint TEXT NOT NULL,title TEXT NOT NULL,profile_id TEXT NOT NULL,requested_model TEXT NOT NULL,actual_model TEXT,PRIMARY KEY(prompt_digest,recipe_version,context_fingerprint));").map_err(sql)?;
     // Additive and idempotent, like the cache above: a dismissed Interrupted
     // placeholder (see `dismiss`). Older builds ignore the column.
-    let has_dismissed: bool = connection
-        .query_row("SELECT EXISTS(SELECT 1 FROM pragma_table_info('runs') WHERE name='dismissed_at')", [], |row| row.get(0))
-        .map_err(sql)?;
-    if !has_dismissed {
-        connection.execute_batch("ALTER TABLE runs ADD COLUMN dismissed_at TEXT;").map_err(sql)?;
-    }
+    ensure_dismissed_at(&mut connection)?;
     service_images::ensure_schema(&connection)?;
     folder_graph::ensure_change_counter(&connection)?;
     Ok(connection)
@@ -2388,5 +2402,27 @@ mod tests {
             .unwrap();
         assert_eq!(columns(&db), 1);
         assert_eq!(columns(&db), 1);
+    }
+
+    #[test]
+    fn dismissed_at_migration_is_a_no_op_when_a_second_connection_already_added_it() {
+        let root = crate::test_support::tempdir().unwrap();
+        let db = root.path().join("trace.sqlite");
+        connection_at(&db).unwrap();
+        // Two connections that both saw the column missing, as in a race.
+        let mut first = Connection::open(&db).unwrap();
+        let mut second = Connection::open(&db).unwrap();
+        first.busy_timeout(Duration::from_secs(5)).unwrap();
+        second.busy_timeout(Duration::from_secs(5)).unwrap();
+        first.set_transaction_behavior(rusqlite::TransactionBehavior::Immediate);
+        second.set_transaction_behavior(rusqlite::TransactionBehavior::Immediate);
+        first.execute_batch("ALTER TABLE runs DROP COLUMN dismissed_at;").unwrap();
+        ensure_dismissed_at(&mut first).unwrap();
+        ensure_dismissed_at(&mut second).unwrap();
+        ensure_dismissed_at(&mut first).unwrap();
+        let count: i64 = second
+            .query_row("SELECT count(*) FROM pragma_table_info('runs') WHERE name='dismissed_at'", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(count, 1);
     }
 }
