@@ -74,6 +74,8 @@ function scenario(): { nodes: FolderNode[]; names: Map<string, string> } {
   ] satisfies Seed[]) add(seed);
   // Large uncached scenes exercise the view's worker layout path during reveal.
   if (query.has("revealLarge")) for (let index = 0; index < 85; index++) add({ key: `wide-${index}`, parents: ["fan"] });
+  // `?fanChildren=N` gives the fan N more direct children: enough tiles that the graph windows them.
+  for (let index = 0; index < Number(query.get("fanChildren") ?? 0); index++) add({ key: `fan-child-${index}`, parents: ["fan"] });
   for (const seed of [
     { key: "forest-mist", parents: ["forest"] }, { key: "autumn", parents: ["forest"] },
   ] satisfies Seed[]) add(seed);
@@ -113,6 +115,10 @@ function scenario(): { nodes: FolderNode[]; names: Map<string, string> } {
       { key: "anchor-a-last", parents: ["anchor-a-middle"] },
     ] satisfies Seed[]) add(seed);
   }
+  // `?wideRoots=N`: N separate roots joined by multi-input edits into one component, whose first row is far wider than a narrow pane.
+  const wideRoots = Number(query.get("wideRoots") ?? 0);
+  for (let index = 0; index < wideRoots; index++) add({ key: `wr-${index}` });
+  for (let index = 0; index + 1 < wideRoots; index++) add({ key: `wr-edit-${index}`, parents: [`wr-${index}`, `wr-${index + 1}`] });
   return { nodes, names };
 }
 

@@ -225,7 +225,8 @@
   .grid { position: relative; overflow-x: clip; }
   .component { position: absolute; left: 0; width: 100%; pointer-events: none; }
   .cell { position: absolute; top: 0; pointer-events: auto; z-index: 2; }
-  .content { position: absolute; top: 0; left: 0; width: 100%; pointer-events: none; }
+  /* A band wider than the pane scrolls within itself, as the sections did. */
+  .content { position: absolute; top: 0; left: 0; width: 100%; pointer-events: none; overflow-x: auto; overflow-y: hidden; scrollbar-width: thin; }
   .content :global(.tile) { pointer-events: auto; }
   .content::before { content: ""; position: absolute; inset: 100px 0 0; background: color-mix(in srgb, var(--accent) 3%, transparent); box-shadow: 0 0 18px color-mix(in srgb, var(--accent) 5%, transparent); }
   .heading { position: relative; display: flex; flex-direction: column; align-items: center; width: 100%; height: 100%; margin: 0 auto; box-sizing: border-box; padding: 5px; border: 0; background: none; color: var(--text-primary); font: inherit; cursor: pointer; }

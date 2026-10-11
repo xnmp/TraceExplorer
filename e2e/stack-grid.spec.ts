@@ -280,6 +280,40 @@ test("clicking a closed in-place-edit stack selects its cover revision, as click
   expect(await uncaught(page)).toEqual([]);
 });
 
+test("a band wider than the pane scrolls sideways to reach every tile", async ({ page }) => {
+  await openView(page, 220, "?wideRoots=24", false);
+  await stack(page, "wr-0").locator("[data-stack-toggle]").click(); await settle(page);
+  const band = stack(page, "wr-0").locator("[data-grid-band]");
+  const unreachable = await band.evaluate((element) => {
+    const box = element.getBoundingClientRect(), missed: string[] = [];
+    for (const tile of element.querySelectorAll<HTMLElement>("[data-tile-key]")) {
+      // Scroll so the tile's left edge meets the band's left edge, then it must lie inside the band.
+      element.scrollLeft += tile.getBoundingClientRect().left - box.left;
+      const rect = tile.getBoundingClientRect();
+      if (rect.left < box.left - 1 || rect.right > box.right + 1) missed.push(tile.dataset.tileKey!);
+    }
+    return missed;
+  });
+  expect(unreachable).toEqual([]);
+  expect(await band.evaluate((element) => element.scrollWidth > element.clientWidth)).toBe(true);
+  expect(await uncaught(page)).toEqual([]);
+});
+
+test("the focused tile stays mounted when windowing scrolls it out of range", async ({ page }) => {
+  await openView(page, 420, "?fanChildren=140", false);
+  await stack(page, "fan").locator("[data-stack-toggle]").click(); await settle(page);
+  const target = page.locator(`[data-node-key="${await key(page, "fan-1")}"]`);
+  const box = (await target.boundingBox())!;
+  // Press, drag outside the tile and release: the tile takes focus but nothing is selected.
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  await page.mouse.down(); await page.mouse.move(box.x + box.width / 2, box.y + box.height + 400); await page.mouse.up();
+  await page.getByTestId("trace-view").evaluate((view) => { view.scrollTop = view.scrollHeight; });
+  await settle(page);
+  expect(await page.evaluate(() => document.activeElement?.getAttribute("data-node-key") ?? null)).not.toBeNull();
+  await expect(tabStops(page)).toHaveCount(1);
+  expect(await uncaught(page)).toEqual([]);
+});
+
 test("an in-place edit's stack hangs from its root revision, inside the view and joined to the edit by a route", async ({ page }) => {
   await openView(page, 420, "?grouping=in-place-edit", false);
   await page.locator("[data-stack-toggle]").click(); await settle(page);

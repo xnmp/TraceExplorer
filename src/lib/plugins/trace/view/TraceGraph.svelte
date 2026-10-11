@@ -208,7 +208,7 @@
     return [...current.tiles.values()].filter((tile) => {
       const placed = attached?.nodes.get(tile.key);
       if (!placed || tile.key === pinned?.key) return false;
-      if (!band || tile.key === current.lineage.focus || selected.has(tile.key)) return true;
+      if (!band || tile.key === current.lineage.focus || tile.key === focusedKey || selected.has(tile.key)) return true;
       return placed.y + placed.height >= band.top && placed.y <= band.bottom;
     });
   });
