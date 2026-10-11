@@ -10,9 +10,10 @@ if (query.get("scrollbars") === "host") document.head.append(Object.assign(docum
 // `?zoom=1.25` zooms the whole document the way the host applies its zoom level (CSS zoom on the root).
 if (query.has("zoom")) document.documentElement.style.zoom = query.get("zoom")!;
 import { promptTitles } from "$lib/plugins/trace/prompt-titles.svelte";
+import { layoutsPending } from "$lib/plugins/trace/view/layout-client";
 import ViewHarness from "./ViewHarness.svelte";
 const errors: string[] = [];
 window.addEventListener("error", (event) => errors.push(event.message));
 window.addEventListener("unhandledrejection", (event) => errors.push(String(event.reason)));
 const application = mount(ViewHarness, { target: document.querySelector("#app")! }) as { harness: Record<string, unknown> };
-(window as any).trace = { ...application.harness, errors, configureTitles: (settings: Record<string, unknown> = {}) => promptTitles.configure(settings) };
+(window as any).trace = { ...application.harness, errors, layoutsPending, configureTitles: (settings: Record<string, unknown> = {}) => promptTitles.configure(settings) };

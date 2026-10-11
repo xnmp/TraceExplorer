@@ -18,8 +18,10 @@
  */
 import { displace, polyline, samplePathString, type Point } from "./path-sampling";
 import type { Orientation } from "$lib/domain/trace-graph/layout";
+import { anchorDelta, releasesAnchor } from "$lib/domain/scroll-anchor";
 
 export const MOTION_MS = 160;
+
 const EASING = "cubic-bezier(.2,.8,.2,1)";
 const SAMPLES = 24;
 /** Above this many connectors they snap instead of morphing; animating every `d` would cost more than a frame. */
@@ -366,40 +368,111 @@ function displacedRoute(target: readonly Point[], path: SVGPathElement, before: 
   return displace(target, shift(path.dataset.from, true, target[0]), shift(path.dataset.to, false, target.at(-1)!));
 }
 
+/** Infinite spinners never keep geometry sampling or navigation waiting. */
+export const viewMoving = (scroller: HTMLElement): boolean => scroller.getAnimations({ subtree: true }).some((animation) =>
+  (animation.pending || animation.playState === "running") && animation.effect?.getTiming().iterations !== Infinity);
+
+export interface AnchorHold { update(): void; release(): void }
+
 /**
- * Keeps an element at its captured screen position while layout settles.
- * Any scrolling input from the user ends the hold at once.
+ * Capture before changing selection. One frame loop samples all finite view
+ * motion (WAAPI drives the animations); commits/toggles wake it via update.
+ * Idle motion leaves the anchor valid without a frame or a pending promise.
  */
-export function holdAnchor(scroller: HTMLElement, find: () => HTMLElement | null, before: DOMRect, duration: number): () => void {
+export function holdAnchor(scroller: HTMLElement, element: HTMLElement, onRelease: () => void = () => {}, onLayoutChange?: () => void): AnchorHold {
+  const before = element.getBoundingClientRect();
+  const horizontal = element.closest<HTMLElement>("[data-horizontal-scroll]");
+  let expectedTop = scroller.scrollTop, expectedLeft = horizontal?.scrollLeft ?? 0;
   let frame = 0;
   let held = true;
-  const started = performance.now();
   const release = () => {
     if (!held) return;
     held = false;
     cancelAnimationFrame(frame);
-    for (const type of USER_SCROLL) scroller.removeEventListener(type, onInput);
+    for (const type of USER_SCROLL) scroller.removeEventListener(type, onInput, true);
+    scroller.removeEventListener("scroll", onScroll, true);
+    observer.disconnect();
+    resize.disconnect();
+    onRelease();
   };
-  const onInput = (event: Event) => { if (scrollsByUser(event)) release(); };
-  for (const type of USER_SCROLL) scroller.addEventListener(type, onInput, { passive: true });
+  const onInput = (event: Event) => {
+    if (event.type === "keydown") {
+      if (releasesAnchor({ type: "keydown", key: (event as KeyboardEvent).key })) release();
+    } else if (event.type === "pointerdown") {
+      // Content clicks can toggle sections while retaining the anchor. A
+      // classic scrollbar is outside the target scroller's client area.
+      const target = event.target;
+      if (target !== scroller && target !== horizontal) return;
+      const container = target as HTMLElement, box = container.getBoundingClientRect(), zoom = zoomOf(container, box);
+      const { clientX: x, clientY: y } = event as PointerEvent;
+      const left = box.left + container.clientLeft * zoom, top = box.top + container.clientTop * zoom;
+      if (releasesAnchor({ type: "pointerdown", scrollbar: x < left || x >= left + container.clientWidth * zoom || y < top || y >= top + container.clientHeight * zoom })) release();
+    } else release();
+  };
+  const movedByOther = () => {
+    // Removing content can clamp scrolling as part of layout, before we can
+    // adjust. Use that actual offset to compute the remaining displacement;
+    // the anchor may already be satisfied, or still be reachable from there.
+    const maxTop = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
+    if (expectedTop > maxTop && !releasesAnchor({ type: "scroll", actual: scroller.scrollTop, expected: maxTop })) expectedTop = scroller.scrollTop;
+    if (horizontal) {
+      const maxLeft = Math.max(0, horizontal.scrollWidth - horizontal.clientWidth);
+      if (expectedLeft > maxLeft && !releasesAnchor({ type: "scroll", actual: horizontal.scrollLeft, expected: maxLeft })) expectedLeft = horizontal.scrollLeft;
+    }
+    return releasesAnchor({ type: "scroll", actual: scroller.scrollTop, expected: expectedTop })
+      || (!!horizontal && releasesAnchor({ type: "scroll", actual: horizontal.scrollLeft, expected: expectedLeft }));
+  };
+  const onScroll = (event: Event) => { if ((event.target === scroller || event.target === horizontal) && movedByOther()) release(); };
+  const changed = () => {
+    if (!held) return;
+    if (!scroller.contains(element)) { release(); return; }
+    if (onLayoutChange) onLayoutChange(); else update();
+  };
+  // An idle anchor must also survive index/placeholder/header changes, without
+  // waiting for the next worker commit. Observe only current section roots;
+  // rebuilding on structural changes drops removed section references.
+  const resize = new ResizeObserver(changed);
+  const observeSizes = () => {
+    resize.disconnect();
+    resize.observe(scroller);
+    for (const child of scroller.children) resize.observe(child);
+  };
+  const observer = new MutationObserver((records) => {
+    if (!held) return;
+    if (records.some((record) => record.type === "childList" && record.target === scroller)) observeSizes();
+    changed();
+  });
+  observer.observe(scroller, { childList: true, subtree: true, attributes: true, characterData: true });
+  observeSizes();
+  for (const type of USER_SCROLL) scroller.addEventListener(type, onInput, { passive: true, capture: true });
+  scroller.addEventListener("scroll", onScroll, { passive: true, capture: true });
   const adjust = () => {
-    const element = find();
-    if (!element) return;
+    if (!held) return;
+    if (!scroller.contains(element) || movedByOther()) { release(); return; }
     // Rects may be in zoomed pixels; scroll offsets are in the scroller's own.
     const box = element.getBoundingClientRect();
     const zoom = zoomOf(scroller);
-    if (Math.abs(box.top - before.top) >= 0.5) scroller.scrollTop += (box.top - before.top) / zoom;
-    const horizontal = element.closest<HTMLElement>("[data-horizontal-scroll]");
-    if (horizontal && Math.abs(box.left - before.left) >= 0.5) horizontal.scrollLeft += (box.left - before.left) / zoom;
+    const dy = anchorDelta(before.top, box.top, zoom), dx = anchorDelta(before.left, box.left, zoom);
+    const requestedTop = expectedTop + dy;
+    if (dy) scroller.scrollTop = requestedTop;
+    expectedTop = scroller.scrollTop;
+    const requestedLeft = expectedLeft + dx;
+    if (horizontal && dx) horizontal.scrollLeft = requestedLeft;
+    expectedLeft = horizontal?.scrollLeft ?? 0;
+    // Horizontal preservation is best effort: a graph can move sideways even
+    // when its section has no horizontal overflow. That must not end the hold
+    // on the view's vertical scroll axis.
+    if (releasesAnchor({ type: "adjustment", actual: expectedTop, requested: requestedTop })) release();
   };
+  const schedule = () => { if (held && !frame && viewMoving(scroller)) frame = requestAnimationFrame(step); };
   const step = () => {
-    if (!held) return;
+    frame = 0;
     adjust();
-    if (performance.now() - started < duration) frame = requestAnimationFrame(step);
-    else release();
+    schedule();
   };
-  step();
-  return release;
+  const update = () => { adjust(); schedule(); };
+  update();
+  return { update, release };
 }
 
 /** Input that may mean the user is scrolling (or about to) themselves; see `scrollsByUser`. */

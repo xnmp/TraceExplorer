@@ -8,7 +8,7 @@
  * returning to a Trace tab never shows "Loading Trace…" again.
  */
 import type { ComponentSummary, NodeKey, TraceNode } from "$lib/domain/trace-graph/model";
-import type { Orientation } from "$lib/domain/trace-graph/layout";
+import type { OrientationHistory } from "$lib/domain/trace-graph/orientation";
 import { projectDag, type TraceDag } from "$lib/domain/trace-graph/projection";
 import { traceBackend, type TraceBackend } from "./backend";
 import { createSnapshotCache, type SnapshotCache } from "./folder-snapshots";
@@ -39,7 +39,7 @@ export interface FolderSnapshot {
   readonly index: FolderIndex;
   readonly components: ReadonlyMap<string, ComponentData>;
   readonly stale: ReadonlySet<string>;
-  readonly orientations: ReadonlyMap<string, Orientation>;
+  readonly orientations: ReadonlyMap<string, OrientationHistory>;
 }
 /** Members and nodes a snapshot holds, which bound the cache's memory. */
 export const snapshotWeight = (snapshot: FolderSnapshot): number =>
@@ -66,8 +66,8 @@ export function createFolderSession(backend: TraceBackend = traceBackend, snapsh
   let wanted = new Set<string>();
   /** Loaded data predating the index: stays visible until its fresh load completes. */
   let stale = $state.raw<ReadonlySet<string>>(new Set());
-  /** Orientation each component of this folder was last laid out with, by id: hysteresis that survives collapse and remount. The layout writes it. */
-  let orientations = $state.raw(new Map<string, Orientation>());
+  /** Displayed orientations by component and tile width: hysteresis that survives collapse and remount. */
+  let orientations = $state.raw(new Map<string, OrientationHistory>());
   /** Writes stop once the cache is cleared (the plugin was disabled) after this session began. */
   const epoch = snapshots.epoch;
 

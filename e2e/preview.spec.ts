@@ -111,24 +111,41 @@ test.describe("Preview info", () => {
     await openView(page);
     await click(page, "warm");
     const panel = trace(page).getByTestId("trace-details");
-    const heights = await page.evaluate(async () => {
-      const element = document.querySelector<HTMLElement>("[data-testid=trace-details]")!;
-      const button = [...document.querySelectorAll("button")].find((candidate) => candidate.textContent?.trim() === "Trace details")!;
-      const samples: Array<[number, number]> = [];
-      const start = performance.now();
-      button.click();
-      await new Promise<void>((resolve) => {
-        const tick = () => { samples.push([performance.now() - start, element.getBoundingClientRect().height]); if (performance.now() - start < 600) requestAnimationFrame(tick); else resolve(); };
-        requestAnimationFrame(tick);
+    // The panel's height is a CSS transition. Hold it at chosen times instead of sampling elapsed time,
+    // which a starved machine stretches.
+    const toggleAndSeek = async () => {
+      await detailsToggle(page).evaluate((button) => (button as HTMLElement).click());
+      return page.evaluate(async () => {
+        const element = document.querySelector<HTMLElement>("[data-testid=trace-details]")!;
+        // The transition starts at the next style recalculation after the change.
+        const running = () => element.getAnimations().find((a): a is CSSTransition => a instanceof CSSTransition && a.transitionProperty === "grid-template-rows");
+        let transition = running();
+        for (let i = 0; i < 2000 && !transition; i++) { await new Promise((resolve) => requestAnimationFrame(resolve)); transition = running(); }
+        if (!transition) throw new Error("no transition started");
+        transition.pause();
+        const timing = transition.effect!.getTiming();
+        const duration = Number(timing.duration);
+        const heights: number[] = [];
+        for (let i = 0; i <= 10; i++) { transition.currentTime = (duration * i) / 10; heights.push(element.getBoundingClientRect().height); }
+        transition.finish();
+        return { duration, easing: String(timing.easing), heights };
       });
-      return samples;
-    });
-    const final = heights.at(-1)![1];
-    const intermediate = heights.filter(([, height]) => height > 1 && height < final - 1);
-    expect(intermediate.length, "the panel passes through intermediate heights").toBeGreaterThan(0);
-    const opened = heights.find(([, height]) => Math.abs(height - final) < 0.5)![0];
-    expect(opened, "and is fully open quickly").toBeLessThan(350);
-    await expect(panel).toBeVisible();
+    };
+    for (const opening of [true, false]) {
+      const { duration, easing, heights } = await toggleAndSeek();
+      await settle(page);
+      await expect(detailsToggle(page)).toHaveAttribute("aria-expanded", String(opening));
+      expect(Math.abs(heights.at(-1)! - heights[0]), "the panel changes height").toBeGreaterThan(100);
+      // Short and eased, and passing through intermediate heights on a monotonic way.
+      expect(duration).toBeGreaterThan(0);
+      expect(duration).toBeLessThanOrEqual(350);
+      expect(easing).not.toBe("linear");
+      const between = heights.filter((height) => height > Math.min(...heights) + 1 && height < Math.max(...heights) - 1);
+      expect(between.length, `the panel passes through intermediate heights: ${heights.map(Math.round)}`).toBeGreaterThan(0);
+      const sign = opening ? 1 : -1;
+      heights.forEach((height, i) => { if (i) expect(sign * (height - heights[i - 1])).toBeGreaterThanOrEqual(-0.5); });
+    }
+    await expect(panel).toBeHidden();
   });
 
   test("rows line up with the host's own info rows", async ({ page }) => {

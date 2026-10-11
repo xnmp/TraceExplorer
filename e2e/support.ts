@@ -1,4 +1,4 @@
-import { expect, type Locator, type Page } from "@playwright/test";
+import { expect, test, type Locator, type Page } from "@playwright/test";
 
 /** Scenario names used by the fixture (see harness/view-fixture.ts). */
 export type Name = string;
@@ -7,9 +7,18 @@ export async function openView(page: Page, width?: number, query = ""): Promise<
   await page.goto(`/view.html${query}`);
   await page.waitForFunction(() => !!(window as any).trace);
   if (width) await page.evaluate((w) => (window as any).trace.setWidth(w), width);
-  await expect(page.locator("[data-tile-key]").first()).toBeVisible();
+  // The first tiles wait on the layout worker (an inline blob worker) and the
+  // folder session, on top of the module graph that the Vite dev server
+  // transforms on the first request. On a starved machine (load far above the
+  // core count) that takes well over the 5 s default `expect` timeout; it is
+  // not product latency, so only this wait is extended, not timeouts globally.
+  // The test's own budget grows by the same amount, so a slow start does not eat it.
+  test.info().setTimeout(test.info().timeout + FIRST_TILES_TIMEOUT_MS);
+  await expect(page.locator("[data-tile-key]").first()).toBeVisible({ timeout: FIRST_TILES_TIMEOUT_MS });
   await settle(page);
 }
+
+const FIRST_TILES_TIMEOUT_MS = 20_000;
 
 export const key = (page: Page, name: Name): Promise<string> => page.evaluate((n) => (window as any).trace.backend.key(n), name);
 export const tile = async (page: Page, name: Name): Promise<Locator> => page.locator(`[data-tile-key="${await key(page, name)}"]`);
@@ -26,8 +35,14 @@ export async function settle(page: Page): Promise<void> {
     const target = a.effect && (a.effect as KeyframeEffect).target;
     return !(target instanceof Element && target.closest(".spinner, .title-spinner"));
   }).length === 0;
+  // A layout still queued or computing (the worker is slow on a loaded machine) has started no motion yet.
+  const layoutsDone = () => ((window as any).trace?.layoutsPending?.() ?? 0) === 0;
+  const frames = () => page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+  await frames();
+  await page.waitForFunction(layoutsDone);
+  await frames();
   await page.waitForFunction(idle);
-  await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+  await frames();
   await page.waitForFunction(idle);
 }
 

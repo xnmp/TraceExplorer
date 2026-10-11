@@ -644,13 +644,14 @@ describe("returning to a folder (a Trace tab shown again)", () => {
     first.setDirectory("/f");
     await flush();
     await first.ensure("c1");
-    first.orientations.set("c1", "right");
+    first.orientations.set("c1", new Map([[92, "right"], [172, "down"]]));
     first.dispose();
     const back = createFolderSession(fakeBackend({ components: vi.fn(() => new Promise<FolderComponentsPage>(() => {})) }));
     back.setDirectory("/f");
-    expect(back.orientations.get("c1")).toBe("right");
+    expect(back.orientations.get("c1")).toEqual(new Map([[92, "right"], [172, "down"]]));
     // The restored memory is this session's own: changing it does not rewrite the other's.
-    back.orientations.set("c1", "down");
+    back.orientations.set("c1", new Map([[92, "down"]]));
+    expect(first.orientations.get("c1")).toEqual(new Map([[92, "right"], [172, "down"]]));
     const other = createFolderSession(fakeBackend({ components: vi.fn(() => new Promise<FolderComponentsPage>(() => {})) }));
     other.setDirectory("/g");
     expect(other.orientations.size).toBe(0);

@@ -9,8 +9,8 @@ import type { BadgeProjection, ReferenceBadge, TraceDag } from "./projection";
 import { lineage, lineageWithBadges, toneOf, type Lineage, type NodeTone } from "./lineage";
 import { hiddenDescendantCount, visibleKeys, type VisibilityOptions } from "./visibility";
 import { tileMetrics, tileSize, type TileMetrics, type TileSize } from "./metrics";
-import { chooseOrientation, generationProfile, sidewaysWidth } from "./orientation";
-import type { GraphLayout, LayoutItem, LayoutRequest, Orientation, PinnedCover, PlacedRoute } from "./layout";
+import { chooseOrientation, generationProfile, sidewaysWidth, type OrientationHistory } from "./orientation";
+import type { GraphLayout, LayoutItem, LayoutRequest, PinnedCover, PlacedRoute } from "./layout";
 
 export interface SceneTile {
   readonly key: NodeKey;
@@ -35,10 +35,11 @@ export interface SceneOptions {
   /** Previous reading order, so siblings keep their places (see `LayoutRequest.hint`). */
   readonly hint?: ReadonlyMap<NodeKey, number>;
   /**
-   * The orientation the component is currently shown with, if any; it is
-   * kept until the rule fails by a clear margin (orientation.ts).
+   * Orientations last displayed at each tile width. Hysteresis uses only this
+   * size's committed orientation, so a resize round trip restores it while
+   * the profile and pane width still allow it (orientation.ts).
    */
-  readonly previous?: Orientation;
+  readonly previous?: OrientationHistory;
   /** The size of the view's tiles (`tileMetrics`); defaults to the default tile. */
   readonly tile?: TileMetrics;
 }
@@ -57,7 +58,7 @@ export function planScene(dag: TraceDag, members: readonly NodeKey[], focus: Nod
   // Decided from the whole component, never the focus, so selection cannot flip it.
   // Running right, the canvas is sized for the whole component, so it does not re-centre as generations appear.
   const profile = generationProfile(dag, members);
-  const orientation = chooseOrientation(profile, maxWidth, previous, tile);
+  const orientation = chooseOrientation(profile, maxWidth, previous?.get(tile.width), tile);
   const extent = orientation === "right" ? sidewaysWidth(profile, tile) : undefined;
   return { lineage: effective, tiles, request: { items, maxWidth, hint, orientation, extent, tileWidth: tile.width } };
 }

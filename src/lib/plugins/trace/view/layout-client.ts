@@ -20,6 +20,9 @@ let queue: Job[] = [];
 let running: Job | null = null;
 /** Bumped by `disposeLayouts`, so results arriving afterwards are not cached. */
 let generation = 0;
+/** Layouts requested and not yet delivered (queued, computing or yielding); lets tests wait for the view to be quiescent. */
+let outstanding = 0;
+export const layoutsPending = (): number => outstanding;
 
 const aborted = () => new DOMException("Trace layout was superseded", "AbortError");
 const asError = (error: unknown) => error instanceof Error ? error : new Error(String(error));
@@ -104,6 +107,14 @@ function workerInstance(): Worker | null {
  * computed finishes and is cached.
  */
 export function computeLayout(request: LayoutRequest, signal?: AbortSignal): Promise<GraphLayout> {
+  const pending = computeLayoutNow(request, signal);
+  outstanding++;
+  const done = () => { outstanding--; };
+  pending.then(done, done);
+  return pending;
+}
+
+function computeLayoutNow(request: LayoutRequest, signal?: AbortSignal): Promise<GraphLayout> {
   const signature = layoutSignature(request);
   const cached = cache.get(signature);
   if (cached) return Promise.resolve(remember(signature, cached));

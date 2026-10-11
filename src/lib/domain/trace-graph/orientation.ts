@@ -17,16 +17,24 @@
  * - all its drawn generations fit side by side in the pane.
  * Otherwise it runs top to bottom, where wide generations wrap onto rows.
  *
- * Hysteresis: given the orientation it was last shown with, a component keeps
- * it until the rule fails by a clear margin (see `chooseOrientation`), so a
- * component near the threshold does not flip back and forth as images are
- * saved or the pane is resized by a few pixels.
+ * Hysteresis: a component keeps the orientation it was last shown with at
+ * this tile width until the rule fails by a clear margin (see
+ * `chooseOrientation`), so a component near the threshold does not flip back
+ * and forth as images are saved or the pane is resized by a few pixels.
  */
 import type { NodeKey, TraceNode } from "./model";
 import type { TraceDag } from "./projection";
 import type { Orientation } from "./layout";
 import { buildInputJunctions, type Junction } from "./junctions";
 import { bendZones, spacingFor, tileMetrics, TRACK_HEIGHT, type Spacing, type TileMetrics } from "./metrics";
+
+/** Displayed orientations by tile width: resizing tiles must not overwrite another size's hysteresis. */
+export type OrientationHistory = ReadonlyMap<number, Orientation>;
+
+/** Only call after displaying a layout. Planning (including superseded plans) never changes history. */
+export function rememberOrientation(history: OrientationHistory | undefined, orientation: Orientation, tileWidth: number = tileMetrics().width): OrientationHistory {
+  return new Map([...history ?? [], [tileWidth, orientation]]);
+}
 
 export interface GenerationProfile {
   /** Number of generations of the component's settled images (longest parent chain, counted in images). */
