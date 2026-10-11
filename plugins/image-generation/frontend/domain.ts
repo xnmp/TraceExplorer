@@ -83,6 +83,8 @@ export function testSummary(status: ImageOperationStatus): string {
   return execution.state === 'cancelled' ? 'Test cancelled.' : execution.state === 'running' ? 'Generating a test image…' : 'Test accepted; waiting for generation…';
 }
 /** The short, user-facing name of a connection's kind. */
+/** Codex has one saved login and discovers its own executable, so one Codex connection is enough. */
+export function canAddCodex(value: Pick<ImageConfiguration, 'profiles'>): boolean { return !value.profiles.some(p => p.transport === 'codex-cli'); }
 export function transportLabel(profile: Pick<ImageProfile, 'transport'>): string { return profile.transport === 'codex-cli' ? 'Codex' : 'Images API'; }
 export function setDefault(value: ImageConfiguration, id: string): ImageConfiguration {
   return value.profiles.some(p => p.id === id) ? { ...value, defaultConnectionId: id } : value;

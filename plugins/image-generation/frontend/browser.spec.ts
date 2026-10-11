@@ -69,3 +69,13 @@ test('the credential source is a themed list whose disabled choice cannot be pic
   await expect(page.getByRole('listbox')).toHaveCount(0); await expect(source).toHaveText('Environment variable');
   await expect(page.getByLabel('Environment variable name')).toHaveValue('OPENAI_API_KEY');
 });
+test('Add Codex disappears once a Codex connection exists and returns when it is removed', async ({ page }) => {
+  await setup(page); await saveHttp(page);
+  await page.getByRole('button', { name: 'Add Codex' }).click();
+  await expect(page.getByRole('heading', { name: 'Codex', level: 3 })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Add Codex' })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Add Images API' })).toBeVisible();
+  await page.getByRole('button', { name: 'Remove connection' }).click();
+  await expect(page.getByRole('button', { name: 'Add Codex' })).toBeVisible();
+});
+
