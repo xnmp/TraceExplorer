@@ -1000,19 +1000,23 @@ fn load_snapshot(
     // (b) Unsaved generations meant for this folder, and their outputs.
     let mut statement = connection
         .prepare(
-            "SELECT r.id,r.status FROM image_folder_contexts c JOIN runs r ON r.id=c.run_id
+            "SELECT r.id,r.status,r.dismissed_at IS NOT NULL FROM image_folder_contexts c JOIN runs r ON r.id=c.run_id
              WHERE c.folder=?1 AND r.status IN ('running','uncertain','interrupted','succeeded')",
         )
         .map_err(sql)?;
     let contexts = statement
         .query_map([folder], |row| {
-            Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, bool>(2)?,
+            ))
         })
         .map_err(sql)?
         .collect::<Result<Vec<_>, _>>()
         .map_err(sql)?;
     drop(statement);
-    let context_runs: Vec<i64> = contexts.iter().map(|(run, _)| *run).collect();
+    let context_runs: Vec<i64> = contexts.iter().map(|(run, _, _)| *run).collect();
     let mut with_output = HashSet::new();
     let direct_candidates: HashSet<i64> = candidates.iter().map(|(id, _)| *id).collect();
     for (id, row) in batched(
@@ -1029,10 +1033,12 @@ fn load_snapshot(
     }
     let placeholders: Vec<i64> = contexts
         .iter()
-        .filter(|(run, status)| {
-            !with_output.contains(run) && matches!(status.as_str(), "running" | "uncertain")
+        .filter(|(run, status, dismissed)| {
+            !with_output.contains(run)
+                && matches!(status.as_str(), "running" | "uncertain")
+                && !dismissed
         })
-        .map(|(run, _)| *run)
+        .map(|(run, _, _)| *run)
         .collect();
 
     // Only the newest, non-discarded revisions can be seeds. Presence is
@@ -2142,6 +2148,128 @@ mod tests {
         assert_eq!(node.state, NodeState::Present);
         assert!(node.temporary);
         assert!(!done.component_of(&key).active);
+    }
+
+    fn uncertain_run(f: &Fixture, operation: &str, inputs: Vec<OperationInput>) -> i64 {
+        let run = begin_operation_at(
+            &f.db,
+            OperationStart {
+                operation: operation.into(),
+                parameters: temporary(&f.folder),
+                inputs,
+            },
+        )
+        .unwrap();
+        mark_operation_uncertain(
+            &TraceRunHandle {
+                database: f.db.clone(),
+                id: run,
+            },
+            "test",
+        )
+        .unwrap();
+        run
+    }
+
+    #[test]
+    fn dismissing_an_interrupted_placeholder_hides_it_but_keeps_the_run() {
+        let f = fixture();
+        let source = image(&f.folder.join("source.png"), b"source");
+        let run = uncertain_run(&f, "openai.image.edit", vec![input(&source)]);
+        let key = format!("o:{run}:0");
+        assert_eq!(view(&f).keyed(&key).state, NodeState::Uncertain);
+        assert_eq!(view(&f).components.len(), 1);
+
+        dismiss::dismiss_at(&f.db, run).unwrap();
+        dismiss::dismiss_at(&f.db, run).unwrap();
+
+        let after = view(&f);
+        assert!(after.nodes.values().flatten().all(|node| node.key != key));
+        assert!(after.components.is_empty(), "a lone plain file is no component");
+        let (status, error, dismissed): (String, Option<String>, bool) = connection_at(&f.db)
+            .unwrap()
+            .query_row(
+                "SELECT status,error,dismissed_at IS NOT NULL FROM runs WHERE id=?1",
+                [run],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(status, "uncertain");
+        assert_eq!(error.as_deref(), Some("test"));
+        assert!(dismissed);
+    }
+
+    #[test]
+    fn dismissing_the_only_reason_for_eligibility_makes_the_folder_ineligible() {
+        let f = fixture();
+        let run = uncertain_run(&f, "openai.image.generate", vec![]);
+        assert!(folders::has_trace_at(&f.db, &f.folder).unwrap());
+        dismiss::dismiss_at(&f.db, run).unwrap();
+        assert!(!folders::has_trace_at(&f.db, &f.folder).unwrap());
+        assert!(view(&f).components.is_empty());
+    }
+
+    #[test]
+    fn running_and_unknown_runs_cannot_be_dismissed() {
+        let f = fixture();
+        let running = begin_operation_at(
+            &f.db,
+            OperationStart {
+                operation: "openai.image.generate".into(),
+                parameters: temporary(&f.folder),
+                inputs: vec![],
+            },
+        )
+        .unwrap();
+        assert!(dismiss::dismiss_at(&f.db, running).is_err());
+        assert!(dismiss::dismiss_at(&f.db, 999_999).is_err());
+        assert_eq!(
+            view(&f).keyed(&format!("o:{running}:0")).state,
+            NodeState::Running
+        );
+    }
+
+    #[test]
+    fn output_arriving_after_dismissal_is_shown() {
+        let f = fixture();
+        let source = image(&f.folder.join("source.png"), b"source");
+        let run = begin_operation_at(
+            &f.db,
+            OperationStart {
+                operation: "openai.image.edit".into(),
+                parameters: temporary(&f.folder),
+                inputs: vec![input(&source)],
+            },
+        )
+        .unwrap();
+        // The output is prepared, then the outcome becomes unknown.
+        let output = f.generated.join("late.png");
+        let staging = tempfile::Builder::new()
+            .prefix(".tauri-explorer-stage-")
+            .tempdir_in(&f.generated)
+            .unwrap()
+            .keep();
+        let (payload, anchor) = (staging.join("payload"), staging.join("trace-anchor"));
+        fs::write(&payload, b"late").unwrap();
+        fs::hard_link(&payload, &anchor).unwrap();
+        let digest = hex::encode(Sha256::digest(b"late"));
+        prepare_output_at(&f.db, run, &output, &digest, Some(&anchor)).unwrap();
+        mark_operation_uncertain(
+            &TraceRunHandle {
+                database: f.db.clone(),
+                id: run,
+            },
+            "test",
+        )
+        .unwrap();
+        dismiss::dismiss_at(&f.db, run).unwrap();
+        assert!(view(&f).nodes.values().flatten().all(|n| n.run_id != Some(run)));
+        fs::rename(payload, &output).unwrap();
+        complete_run_at(&f.db, run, output.to_str().unwrap(), false).unwrap();
+        let after = view(&f);
+        let node = after.keyed(&format!("o:{run}:0"));
+        assert_eq!(node.state, NodeState::Present);
+        assert!(node.temporary);
     }
 
     #[test]

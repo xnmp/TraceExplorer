@@ -194,6 +194,13 @@ configureBackend({
         finish();
         return reply({ path });
       }
+      case "dismiss_interrupted_run": {
+        const node = state.nodes.find((candidate) => candidate.runId === params.runId);
+        if (!node || node.state !== "uncertain" || node.artifactId !== null) return Promise.reject(new Error("Only an interrupted placeholder without output can be dismissed"));
+        state = { ...state, nodes: state.nodes.filter((candidate) => candidate !== node) };
+        changed();
+        return reply({});
+      }
       case "discard_generated_image": {
         const node = byArtifact(params.artifactId);
         if (node) { update(node.key, { discarded: true }); changed(); }
@@ -288,6 +295,11 @@ export const backend = {
   /** Discards an unsaved output, as its Delete action would; it is then displayed only as a parent. */
   discardGeneration(name: string) {
     update(state.names.get(name)!, { discarded: true });
+    changed();
+  },
+  /** The provider outcome becomes unknown: the placeholder shows as Interrupted. */
+  interruptGeneration(name: string) {
+    update(state.names.get(name)!, { state: "uncertain" });
     changed();
   },
   /** Fails a generation before any output: the backend shows no placeholder for a failed run. */

@@ -4,17 +4,19 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 const api = vi.hoisted(() => ({
   saveGeneratedImage: vi.fn(),
   discardGeneratedImage: vi.fn(),
+  dismissInterruptedRun: vi.fn(),
   imageSaveSuggestion: vi.fn(),
   pickSaveFile: vi.fn(),
 }));
 vi.mock("$lib/api/trace", () => ({
   saveGeneratedImage: api.saveGeneratedImage,
   discardGeneratedImage: api.discardGeneratedImage,
+  dismissInterruptedRun: api.dismissInterruptedRun,
   imageSaveSuggestion: api.imageSaveSuggestion,
 }));
 vi.mock("../../../src/sdk", () => ({ host: () => ({ pickSaveFile: api.pickSaveFile }) }));
 
-import { nodeStatus, nodeTarget, nodeTitle, nodeTypeLabel } from "$lib/plugins/trace/view/node-target";
+import { canDismissNode, nodeStatus, nodeTarget, nodeTitle, nodeTypeLabel } from "$lib/plugins/trace/view/node-target";
 import { traceInvalidation } from "$lib/plugins/trace/invalidation.svelte";
 import { imageActionState } from "$lib/plugins/trace/image-actions.svelte";
 import type { TraceNode } from "$lib/domain/trace-graph/model";
@@ -31,6 +33,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   api.saveGeneratedImage.mockResolvedValue({ path: "/f/saved.png" });
   api.discardGeneratedImage.mockResolvedValue({ viewPath: null });
+  api.dismissInterruptedRun.mockResolvedValue(undefined);
   api.imageSaveSuggestion.mockResolvedValue({ directory: "/f", filename: "out.png" });
 });
 
@@ -59,7 +62,43 @@ describe("nodeTitle / nodeTypeLabel / nodeStatus", () => {
   });
 });
 
+const interrupted = (over: Partial<TraceNode> = {}) =>
+  node({ artifactId: null, runId: 4, path: null, state: "uncertain", ...over });
+
+describe("canDismissNode", () => {
+  it("accepts only an uncertain run that has no output", () => {
+    expect(canDismissNode(interrupted())).toBe(true);
+    expect(canDismissNode(interrupted({ state: "running" }))).toBe(false);
+    expect(canDismissNode(interrupted({ artifactId: 9 }))).toBe(false);
+    expect(canDismissNode(interrupted({ runId: null }))).toBe(false);
+    expect(canDismissNode(interrupted({ discarded: true }))).toBe(false);
+    for (const state of ["present", "missing", "unavailable"] as const) {
+      expect(canDismissNode(interrupted({ state }))).toBe(false);
+    }
+  });
+});
+
 describe("nodeTarget", () => {
+  it("gives an Interrupted placeholder only Dismiss, which hides it and clears its pick", async () => {
+    const callbacksFor = callbacks();
+    const target = nodeTarget(interrupted(), "c1", "/f", callbacksFor);
+    expect(target.actions!.map((a) => a.id)).toEqual(["dismiss"]);
+    expect(target.badge).toBe("Interrupted");
+    const bump = vi.spyOn(traceInvalidation, "bump");
+    await action(target, "dismiss").run();
+    expect(api.dismissInterruptedRun).toHaveBeenCalledWith(4);
+    expect(callbacksFor.discarded).toHaveBeenCalledWith("o:1:0");
+    expect(bump).toHaveBeenCalled();
+  });
+
+  it("leaves the pick alone when dismissal fails", async () => {
+    api.dismissInterruptedRun.mockRejectedValue(new Error("refused"));
+    const callbacksFor = callbacks();
+    const target = nodeTarget(interrupted(), "c1", "/f", callbacksFor);
+    await expect(action(target, "dismiss").run()).rejects.toThrow("refused");
+    expect(callbacksFor.discarded).not.toHaveBeenCalled();
+  });
+
   it("gives unsaved nodes Save, Save as… and Delete, and an Unsaved badge", () => {
     const target = nodeTarget(node(), "c1", "/f", callbacks());
     expect(target.actions!.map((a) => a.id)).toEqual(["save", "save-as", "delete"]);

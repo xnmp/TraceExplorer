@@ -124,17 +124,19 @@ fn may_have_trace_at(database: &Path, directory: &Path) -> Result<(bool, bool), 
     // an active run is shown, and a finished or interrupted run is shown
     // through any newest revision of its outputs that is present and not
     // discarded.
-    let mut contexts = connection.prepare("SELECT r.id,r.status FROM image_folder_contexts c JOIN runs r ON r.id=c.run_id WHERE c.folder=?1 AND r.status IN ('running','uncertain','interrupted','succeeded')").map_err(sql)?;
+    let mut contexts = connection.prepare("SELECT r.id,r.status,r.dismissed_at IS NOT NULL FROM image_folder_contexts c JOIN runs r ON r.id=c.run_id WHERE c.folder=?1 AND r.status IN ('running','uncertain','interrupted','succeeded')").map_err(sql)?;
     let rows = contexts
         .query_map([directory], |row| {
-            Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+            Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?, row.get::<_, bool>(2)?))
         })
         .map_err(sql)?;
     let mut has_context = false;
     for row in rows {
         has_context = true;
-        let (id, status) = row.map_err(sql)?;
-        if matches!(status.as_str(), "running" | "uncertain") {
+        let (id, status, dismissed) = row.map_err(sql)?;
+        // A dismissed Interrupted run still counts as a context (so the answer
+        // is not cached by mtime) but no longer makes the folder eligible.
+        if matches!(status.as_str(), "running" | "uncertain") && !dismissed {
             return Ok((true, false));
         }
         let mut outputs=connection.prepare("SELECT a.path FROM artifacts a WHERE a.generating_run=?1 AND NOT EXISTS(SELECT 1 FROM image_discards d WHERE d.artifact_id=a.id AND d.completed=1) AND NOT EXISTS(SELECT 1 FROM artifacts n WHERE n.path=a.path AND n.id>a.id)").map_err(sql)?;

@@ -2,6 +2,7 @@
 //! Artifact identity includes content and path; source revisions are never
 //! inferred from a filename after it has changed.
 use crate::{config, error::AppError, image_crop};
+pub(crate) mod dismiss;
 pub(crate) mod folder_graph;
 pub(crate) mod folders;
 pub(crate) mod jobs;
@@ -569,6 +570,14 @@ fn connection_at(path: &Path) -> Result<Connection, AppError> {
     // Additive presentation cache: old releases can still read schema 8 and
     // the legacy Codex cache is never relabelled as another provider's output.
     connection.execute_batch("CREATE TABLE IF NOT EXISTS image_prompt_titles_v1 (prompt_digest TEXT NOT NULL,recipe_version INTEGER NOT NULL,context_fingerprint TEXT NOT NULL,title TEXT NOT NULL,profile_id TEXT NOT NULL,requested_model TEXT NOT NULL,actual_model TEXT,PRIMARY KEY(prompt_digest,recipe_version,context_fingerprint));").map_err(sql)?;
+    // Additive and idempotent, like the cache above: a dismissed Interrupted
+    // placeholder (see `dismiss`). Older builds ignore the column.
+    let has_dismissed: bool = connection
+        .query_row("SELECT EXISTS(SELECT 1 FROM pragma_table_info('runs') WHERE name='dismissed_at')", [], |row| row.get(0))
+        .map_err(sql)?;
+    if !has_dismissed {
+        connection.execute_batch("ALTER TABLE runs ADD COLUMN dismissed_at TEXT;").map_err(sql)?;
+    }
     service_images::ensure_schema(&connection)?;
     folder_graph::ensure_change_counter(&connection)?;
     Ok(connection)
@@ -2355,5 +2364,29 @@ mod tests {
             fs::metadata(&db).unwrap().permissions().mode() & 0o777,
             0o600
         );
+    }
+
+    #[test]
+    fn dismissed_at_migration_is_idempotent_on_an_older_database() {
+        let root = crate::test_support::tempdir().unwrap();
+        let db = root.path().join("trace.sqlite");
+        let columns = |db: &Path| -> i64 {
+            connection_at(db)
+                .unwrap()
+                .query_row(
+                    "SELECT count(*) FROM pragma_table_info('runs') WHERE name='dismissed_at'",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap()
+        };
+        assert_eq!(columns(&db), 1);
+        // A database written before the column existed.
+        connection_at(&db)
+            .unwrap()
+            .execute_batch("ALTER TABLE runs DROP COLUMN dismissed_at;")
+            .unwrap();
+        assert_eq!(columns(&db), 1);
+        assert_eq!(columns(&db), 1);
     }
 }

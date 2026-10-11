@@ -352,6 +352,45 @@ test.describe("generation", () => {
   });
 });
 
+test.describe("Interrupted placeholders", () => {
+  const dismiss = (page: Page) => preview(page).getByRole("button", { name: "Dismiss", exact: true });
+
+  test("Dismiss removes the placeholder from the graph and moves the selection off it", async ({ page }) => {
+    await openView(page);
+    await click(page, "warm");
+    const identity = await page.evaluate(() => {
+      const backend = (window as any).trace.backend;
+      const made = backend.startGeneration("warm", "gen") as string;
+      backend.interruptGeneration("gen");
+      return made;
+    });
+    const placeholder = page.locator(`[data-tile-key="${identity}"]`);
+    await settle(page);
+    await expect(placeholder).toHaveCount(1);
+    await placeholder.locator(".card").click();
+    await settle(page);
+    await expect(page.getByTestId("preview-badge")).toHaveText("Interrupted");
+    await dismiss(page).click();
+    await expect.poll(async () => (await state(page)).target).toBeNull();
+    await settle(page);
+    await expect(placeholder).toHaveCount(0);
+    // The image it was made from is still there.
+    await expect(await tile(page, "warm")).toHaveCount(1);
+    expect(await uncaught(page)).toEqual([]);
+  });
+
+  test("a running placeholder cannot be dismissed", async ({ page }) => {
+    await openView(page);
+    await click(page, "warm");
+    const identity = await page.evaluate(() => (window as any).trace.backend.startGeneration("warm", "gen") as string);
+    await settle(page);
+    await page.locator(`[data-tile-key="${identity}"] .card`).click();
+    await settle(page);
+    await expect(page.getByTestId("preview-badge")).toHaveText("Generating");
+    await expect(dismiss(page)).toHaveCount(0);
+  });
+});
+
 test.describe("titles", () => {
   test("unconfigured titles show the prompt with no spinner and no model request", async ({ page }) => {
     await openView(page);

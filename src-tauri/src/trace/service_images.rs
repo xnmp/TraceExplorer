@@ -5572,4 +5572,19 @@ mod tests {
             assert_eq!(f.host.count("host.artifacts.release"), 1, "{variant}");
         }
     }
+
+    #[test]
+    fn a_dismissed_unconfirmed_run_keeps_its_evidence_and_stays_retryable() {
+        let f = Fixture::new();
+        let source = f.accept(OP);
+        f.host.behavior.lock().unwrap().unknown = true;
+        f.run(OP, true);
+        super::super::dismiss::dismiss_at(&f.database, source.run_id).unwrap();
+        assert_eq!(f.snapshot(OP)["status"], "uncertain");
+        assert_eq!(f.snapshot(OP)["outcomeUnknown"], true);
+        f.host.behavior.lock().unwrap().unknown = false;
+        let retry_op = "66666666666666666666666666666666";
+        let retry = accept_job(&f, retry_op, 10, retry_of(source.run_id)).unwrap();
+        assert_ne!(retry.link.run_id, source.run_id);
+    }
 }

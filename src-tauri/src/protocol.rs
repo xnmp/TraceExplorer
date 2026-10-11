@@ -180,6 +180,11 @@ async fn execute(app: EventEmitter, request: &Request) -> Result<Value, AppError
             let _ = app.emit("trace:changed", ());
             Ok(json!({"viewPath":view_path}))
         }
+        "dismiss_interrupted_run" => {
+            trace::dismiss::dismiss(field(p, "runId")?).await?;
+            let _ = app.emit("trace:changed", ());
+            Ok(json!({}))
+        }
         "openai_image_inputs" => Ok(serde_json::to_value(
             crate::image_inputs::describe_inputs(field(p, "paths")?).await?,
         )
