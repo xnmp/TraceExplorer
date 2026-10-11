@@ -27,6 +27,45 @@ pub enum Credential {
     Secret { id: String },
     CliSavedLogin,
 }
+/// One HTTP image-API connection. Every API backend shares this exact shape;
+/// the backend is chosen by the owning `Profile` variant's `transport` tag.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ApiProfile {
+    pub id: String,
+    pub name: String,
+    pub recipe_revision: String,
+    pub base_url: String,
+    pub default_model: String,
+    pub allow_insecure_http: bool,
+    pub credential: Credential,
+}
+/// The HTTP image backends. Each kind has a descriptor and adapter module in
+/// `adapters::api`; see the provider README for the add-a-backend checklist.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ApiKind {
+    OpenAiImages,
+    /// Test-only extra backend proving a new kind needs no consumer changes.
+    #[cfg(feature = "test-hooks")]
+    Fixture,
+}
+impl ApiKind {
+    /// Every kind, for registry consistency tests.
+    pub const ALL: &'static [ApiKind] = &[
+        ApiKind::OpenAiImages,
+        #[cfg(feature = "test-hooks")]
+        ApiKind::Fixture,
+    ];
+    pub fn transport(&self) -> &'static str {
+        crate::adapters::api::descriptor(*self).transport
+    }
+}
+/// What a connection is: the Codex CLI or an HTTP API of some kind.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Kind {
+    Codex,
+    Api(ApiKind),
+}
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(
     tag = "transport",
@@ -44,50 +83,74 @@ pub enum Profile {
         credential: Credential,
     },
     #[serde(rename = "openai-images")]
-    Http {
-        id: String,
-        name: String,
-        recipe_revision: String,
-        base_url: String,
-        default_model: String,
-        allow_insecure_http: bool,
-        credential: Credential,
-    },
+    OpenAiImages(ApiProfile),
+    #[cfg(feature = "test-hooks")]
+    #[serde(rename = "fixture-images")]
+    Fixture(ApiProfile),
 }
 impl Profile {
+    pub fn api(&self) -> Option<(ApiKind, &ApiProfile)> {
+        match self {
+            Self::Codex { .. } => None,
+            Self::OpenAiImages(p) => Some((ApiKind::OpenAiImages, p)),
+            #[cfg(feature = "test-hooks")]
+            Self::Fixture(p) => Some((ApiKind::Fixture, p)),
+        }
+    }
+    pub fn api_mut(&mut self) -> Option<(ApiKind, &mut ApiProfile)> {
+        match self {
+            Self::Codex { .. } => None,
+            Self::OpenAiImages(p) => Some((ApiKind::OpenAiImages, p)),
+            #[cfg(feature = "test-hooks")]
+            Self::Fixture(p) => Some((ApiKind::Fixture, p)),
+        }
+    }
+    pub fn kind(&self) -> Kind {
+        self.api().map_or(Kind::Codex, |(kind, _)| Kind::Api(kind))
+    }
     pub fn id(&self) -> &str {
         match self {
-            Self::Codex { id, .. } | Self::Http { id, .. } => id,
+            Self::Codex { id, .. } => id,
+            _ => self.api().map_or("", |(_, p)| &p.id),
         }
     }
     pub fn revision(&self) -> &str {
         match self {
             Self::Codex {
                 recipe_revision, ..
-            }
-            | Self::Http {
-                recipe_revision, ..
             } => recipe_revision,
+            _ => self.api().map_or("", |(_, p)| &p.recipe_revision),
         }
     }
     pub fn set_revision(&mut self, value: String) {
         match self {
             Self::Codex {
                 recipe_revision, ..
-            }
-            | Self::Http {
-                recipe_revision, ..
             } => *recipe_revision = value,
+            _ => {
+                if let Some((_, p)) = self.api_mut() {
+                    p.recipe_revision = value
+                }
+            }
         }
     }
     pub fn credential(&self) -> &Credential {
         match self {
-            Self::Codex { credential, .. } | Self::Http { credential, .. } => credential,
+            Self::Codex { credential, .. } => credential,
+            _ => self.api().map_or(&Credential::None, |(_, p)| &p.credential),
         }
     }
     pub fn credential_mut(&mut self) -> &mut Credential {
         match self {
-            Self::Codex { credential, .. } | Self::Http { credential, .. } => credential,
+            Self::Codex { credential, .. } => credential,
+            // Every non-Codex variant is an API variant, so `api_mut` is Some.
+            other => {
+                &mut other
+                    .api_mut()
+                    .expect("non-Codex profile is an API profile")
+                    .1
+                    .credential
+            }
         }
     }
     pub fn execution_identity(&self) -> serde_json::Value {
@@ -97,21 +160,26 @@ impl Profile {
                 credential,
                 ..
             } => json!(["codex-cli", executable_path, credential]),
-            Self::Http {
-                base_url,
-                default_model,
-                allow_insecure_http,
-                credential,
-                ..
-            } => json!([
-                "openai-images",
-                base_url,
-                default_model,
-                allow_insecure_http,
-                credential
-            ]),
+            _ => self.api().map_or(json!(null), |(kind, p)| {
+                json!([
+                    kind.transport(),
+                    p.base_url,
+                    p.default_model,
+                    p.allow_insecure_http,
+                    p.credential
+                ])
+            }),
         }
     }
+}
+/// Transport and adapter names: `^[a-z][a-z0-9-]{0,63}$`, the same rule the host
+/// applies to receipts.
+pub fn transport_id(value: &str) -> bool {
+    value.len() <= 64
+        && value.bytes().next().is_some_and(|b| b.is_ascii_lowercase())
+        && value
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -141,7 +209,11 @@ pub fn id(value: &str) -> bool {
 fn label(value: &str) -> bool {
     !value.trim().is_empty() && value.chars().count() <= 256 && !value.chars().any(char::is_control)
 }
+/// Normalises an API base URL: the generic rules, then the backend's own hook.
 pub fn root(value: &str, allow_http: bool) -> Result<String> {
+    base_url(ApiKind::OpenAiImages, value, allow_http)
+}
+pub fn base_url(kind: ApiKind, value: &str, allow_http: bool) -> Result<String> {
     if value.len() > 2048 {
         return Err(invalid("Images resource root exceeds 2048 bytes"));
     }
@@ -164,19 +236,8 @@ pub fn root(value: &str, allow_http: bool) -> Result<String> {
     if url.scheme() != "https" && !(url.scheme() == "http" && (allow_http || local)) {
         return Err(invalid("Use HTTPS or explicitly allow insecure HTTP"));
     }
-    let value = url.as_str().trim_end_matches('/').to_owned();
-    if ["generations", "edits"].contains(
-        &url.path()
-            .trim_end_matches('/')
-            .rsplit('/')
-            .next()
-            .unwrap_or(""),
-    ) {
-        return Err(invalid(
-            "Enter the images resource root, without generations or edits",
-        ));
-    }
-    Ok(value)
+    (crate::adapters::api::descriptor(kind).validate_base_url)(&url)?;
+    Ok(url.as_str().trim_end_matches('/').to_owned())
 }
 pub fn validate_configuration(configuration: &mut Configuration) -> Result<()> {
     if configuration.schema_version != 1 {
@@ -209,19 +270,15 @@ pub fn validate_configuration(configuration: &mut Configuration) -> Result<()> {
                     return Err(invalid("Codex uses saved login and an optional absolute executable path, with an adapter-managed image model"));
                 }
             }
-            Profile::Http {
-                name,
-                base_url,
-                default_model,
-                allow_insecure_http,
-                credential,
-                ..
-            } => {
-                if !label(name) || !label(default_model) {
+            api => {
+                let Some((kind, api)) = api.api_mut() else {
+                    continue;
+                };
+                if !label(&api.name) || !label(&api.default_model) {
                     return Err(invalid("Enter bounded profile name and model ID"));
                 }
-                *base_url = root(base_url, *allow_insecure_http)?;
-                match credential {
+                api.base_url = base_url(kind, &api.base_url, api.allow_insecure_http)?;
+                match &api.credential {
                     Credential::Environment { name }
                         if name.len() > 128
                             || name.is_empty()
@@ -305,10 +362,10 @@ pub fn validate_prepare(request: &PrepareRequest) -> Result<()> {
         || !matches!(o.background.as_str(), "auto" | "opaque" | "transparent")
         || o.resolution
             .as_deref()
-            .is_some_and(|v| !["1k", "2k", "4k"].contains(&v))
-        || o.aspect_ratio.as_deref().is_some_and(|v| {
-            !["keep", "1:1", "4:3", "3:4", "3:2", "2:3", "16:9", "9:16"].contains(&v)
-        })
+            .is_some_and(|v| !RESOLUTIONS.contains(&v))
+        || o.aspect_ratio
+            .as_deref()
+            .is_some_and(|v| !ASPECT_RATIOS.contains(&v))
     {
         return Err(invalid("Unsupported image options"));
     }
@@ -325,23 +382,6 @@ pub fn recipe(profile: &Profile, request: &PrepareRequest) -> Result<EffectiveRe
         return Err(invalid("Image connection changed; prepare again"));
     }
     let (adapter, endpoint, model, submitted_prompt, agent_task) = match profile {
-        Profile::Http { base_url, .. } => {
-            let model = request
-                .model
-                .clone()
-                .filter(|m| label(m))
-                .ok_or_else(|| invalid("Enter a nonempty image model ID"))?;
-            let prompt = if request.inputs.len() <= 1 {
-                request.prompt.clone()
-            } else {
-                format!(
-                    "{} User's visual request: {}",
-                    framing(request.inputs.len()).unwrap(),
-                    json!({"prompt":request.prompt})
-                )
-            };
-            ("openai-images", base_url.clone(), Some(model), prompt, None)
-        }
         Profile::Codex {
             executable_path, ..
         } => {
@@ -364,6 +404,39 @@ pub fn recipe(profile: &Profile, request: &PrepareRequest) -> Result<EffectiveRe
                 None,
                 request.prompt.clone(),
                 Some(task),
+            )
+        }
+        api => {
+            let (kind, api) = api
+                .api()
+                .ok_or_else(|| invalid("Unsupported image connection"))?;
+            let descriptor = crate::adapters::api::descriptor(kind);
+            if request.inputs.len() > descriptor.max_inputs {
+                return Err(invalid("Too many input images for this image provider"));
+            }
+            if let Some(problem) = options_problem(descriptor, &request.options) {
+                return Err(invalid(problem));
+            }
+            let model = request
+                .model
+                .clone()
+                .filter(|m| label(m))
+                .ok_or_else(|| invalid("Enter a nonempty image model ID"))?;
+            let prompt = if request.inputs.len() <= 1 {
+                request.prompt.clone()
+            } else {
+                format!(
+                    "{} User's visual request: {}",
+                    framing(request.inputs.len()).unwrap(),
+                    json!({"prompt":request.prompt})
+                )
+            };
+            (
+                descriptor.transport,
+                api.base_url.clone(),
+                Some(model),
+                prompt,
+                None,
             )
         }
     };
@@ -389,6 +462,48 @@ pub fn semantic(request: &StartRequest) -> String {
     let canonical = json!({"operationId":request.operation_id,"connectionId":request.connection_id,"connectionRevision":request.expected_connection_revision,"model":request.model,"prompt":request.prompt,"inputs":request.inputs.iter().map(|a|json!({"sha256":a.sha256,"byteLength":a.byte_length,"mediaType":a.media_type})).collect::<Vec<_>>(),"options":request.options,"effectiveRecipeDigest":request.effective_recipe_digest});
     hex::encode(Sha256::digest(serde_json::to_vec(&canonical).unwrap()))
 }
-pub fn capabilities(cli: bool) -> serde_json::Value {
-    json!({"generation":true,"edit":true,"maxInputs":8,"maxInputBytes":MAX_INPUT,"maxTotalInputBytes":MAX_TOTAL,"maxOutputBytes":MAX_OUTPUT,"inputFormats":["image/png","image/jpeg","image/webp"],"outputFormats":["image/png"],"modelSelection":!cli,"sizes":{"auto":true,"maxEdge":3840,"multipleOf":16,"minPixels":655360,"maxPixels":8294400},"quality":if cli{vec!["auto"]}else{vec!["auto","low","medium","high"]},"background":if cli{vec!["auto"]}else{vec!["auto","opaque","transparent"]}})
+/// Why a backend cannot honour these options, using the same descriptor tables
+/// `capabilities()` publishes. Resolution and aspect ratio are also what a client
+/// derives pixel sizes from, so a backend with `sizes` accepts them as well.
+pub fn options_problem(
+    d: &crate::adapters::api::ApiDescriptor,
+    o: &te_image_generation_contract::ImageOptions,
+) -> Option<&'static str> {
+    let o_ = &d.options;
+    if !o_.quality.contains(&o.quality.as_str()) || !o_.background.contains(&o.background.as_str())
+    {
+        Some("This image provider does not support that quality or background")
+    } else if !o_.sizes && o.size != "auto" {
+        Some("This image provider chooses its own image size")
+    } else if o.resolution.is_some() && !(o_.sizes || o_.resolution) {
+        Some("This image provider does not support a resolution")
+    } else if o.aspect_ratio.is_some() && !(o_.sizes || o_.aspect_ratio) {
+        Some("This image provider does not support an aspect ratio")
+    } else {
+        None
+    }
 }
+/// Per-connection capabilities, built from the backend's descriptor for API kinds.
+/// `sizes` is part of the published contract and is omitted only for a backend
+/// that sets `options.sizes = false`; `resolution` / `aspectRatio` are additive.
+pub fn capabilities(kind: Kind) -> serde_json::Value {
+    let mut value = json!({"generation":true,"edit":true,"maxInputs":8,"maxInputBytes":MAX_INPUT,"maxTotalInputBytes":MAX_TOTAL,"maxOutputBytes":MAX_OUTPUT,"inputFormats":["image/png","image/jpeg","image/webp"],"outputFormats":["image/png"],"modelSelection":kind != Kind::Codex,"sizes":{"auto":true,"maxEdge":3840,"multipleOf":16,"minPixels":655360,"maxPixels":8294400},"quality":["auto"],"background":["auto"]});
+    if let Kind::Api(kind) = kind {
+        let d = crate::adapters::api::descriptor(kind);
+        value["maxInputs"] = json!(d.max_inputs);
+        value["quality"] = json!(d.options.quality);
+        value["background"] = json!(d.options.background);
+        if !d.options.sizes {
+            value.as_object_mut().map(|o| o.remove("sizes"));
+        }
+        if d.options.resolution {
+            value["resolution"] = json!(RESOLUTIONS);
+        }
+        if d.options.aspect_ratio {
+            value["aspectRatio"] = json!(ASPECT_RATIOS);
+        }
+    }
+    value
+}
+pub const RESOLUTIONS: [&str; 3] = ["1k", "2k", "4k"];
+pub const ASPECT_RATIOS: [&str; 8] = ["keep", "1:1", "4:3", "3:4", "3:2", "2:3", "16:9", "9:16"];

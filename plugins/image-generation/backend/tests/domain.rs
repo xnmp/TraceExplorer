@@ -1,7 +1,8 @@
+use image_generation_backend::domain::ApiProfile;
 use image_generation_backend::domain::*;
 use te_image_generation_contract::*;
 fn profile() -> Profile {
-    Profile::Http {
+    Profile::OpenAiImages(ApiProfile {
         id: "custom".into(),
         name: "Custom".into(),
         recipe_revision: "revision-1".into(),
@@ -9,7 +10,7 @@ fn profile() -> Profile {
         default_model: "free-model-id".into(),
         allow_insecure_http: false,
         credential: Credential::None,
-    }
+    })
 }
 fn request() -> PrepareRequest {
     PrepareRequest {
@@ -70,9 +71,9 @@ fn recipes_exclude_transient_handles_secrets_labels_and_caller_epochs() {
     let mut changed = request();
     changed.inputs[0].handle = "different-handle".into();
     let mut renamed = profile();
-    if let Profile::Http {
+    if let Profile::OpenAiImages(ApiProfile {
         name, credential, ..
-    } = &mut renamed
+    }) = &mut renamed
     {
         *name = "Other name".into();
         *credential = Credential::Secret {
@@ -258,4 +259,328 @@ fn turn_facts_bound_usage_and_failures_without_retaining_successful_transcripts(
     };
     assert_eq!(explanation.kind, ExplanationKind::Error);
     assert_eq!(explanation.text, "Reported refusal");
+}
+
+// ---- API connection registry ----
+
+fn api_json(transport: &str) -> serde_json::Value {
+    serde_json::json!({"transport":transport,"id":"api","name":"Api","recipeRevision":"r1","baseUrl":"https://gateway.test/v1/images","defaultModel":"model-x","allowInsecureHttp":false,"credential":{"kind":"environment","name":"SOME_KEY"}})
+}
+#[test]
+fn api_profiles_round_trip_the_exact_serialized_shape_and_reject_unknown_fields() {
+    let value = api_json("openai-images");
+    let parsed: Profile = serde_json::from_value(value.clone()).unwrap();
+    assert!(
+        matches!(parsed.api(), Some((ApiKind::OpenAiImages, p)) if p.default_model == "model-x")
+    );
+    assert_eq!(serde_json::to_value(&parsed).unwrap(), value);
+    let mut extra = value.clone();
+    extra["surprise"] = true.into();
+    assert!(serde_json::from_value::<Profile>(extra).is_err());
+    let mut missing = value;
+    missing.as_object_mut().unwrap().remove("baseUrl");
+    assert!(serde_json::from_value::<Profile>(missing).is_err());
+    assert!(serde_json::from_value::<Profile>(api_json("no-such-backend")).is_err());
+}
+#[test]
+fn a_third_api_transport_loads_validates_and_round_trips() {
+    let configuration = serde_json::json!({"schemaVersion":1,"documentRevision":3,"defaultConnectionId":"api","profiles":[api_json("fixture-images")]});
+    let mut parsed: Configuration = serde_json::from_value(configuration.clone()).unwrap();
+    validate_configuration(&mut parsed).unwrap();
+    assert_eq!(
+        serde_json::to_value(&parsed).unwrap()["profiles"][0]["transport"],
+        "fixture-images"
+    );
+    let (kind, _) = parsed.profiles[0].api().unwrap();
+    assert_eq!(kind.transport(), "fixture-images");
+    assert_eq!(parsed.profiles[0].id(), "api");
+    assert_eq!(parsed.profiles[0].revision(), "r1");
+    // The generic recipe uses the transport as adapter and requires a model.
+    let mut req = request();
+    req.connection_id = "api".into();
+    req.expected_connection_revision = "r1".into();
+    req.options.quality = "auto".into();
+    req.options.size = "auto".into();
+    let recipe = recipe(&parsed.profiles[0], &req).unwrap();
+    assert_eq!(recipe.adapter, "fixture-images");
+    assert_eq!(recipe.endpoint_identity, "https://gateway.test/v1/images");
+    req.model = None;
+    assert!(self::recipe(&parsed.profiles[0], &req).is_err());
+    // Descriptor limits apply: the fixture accepts at most two inputs.
+    let mut many = request();
+    many.connection_id = "api".into();
+    many.expected_connection_revision = "r1".into();
+    many.options.quality = "auto".into();
+    many.options.size = "auto".into();
+    assert!(self::recipe(&parsed.profiles[0], &{
+        let mut one = many.clone();
+        one.inputs.truncate(2);
+        one
+    })
+    .is_ok());
+    many.inputs = vec![request().inputs[0].clone(); 3];
+    assert!(self::recipe(&parsed.profiles[0], &many).is_err());
+}
+#[test]
+fn capabilities_are_built_per_connection_kind_from_the_descriptor() {
+    let codex = capabilities(Kind::Codex);
+    assert_eq!(codex["modelSelection"], false);
+    assert_eq!(codex["quality"], serde_json::json!(["auto"]));
+    let openai = capabilities(Kind::Api(ApiKind::OpenAiImages));
+    assert_eq!(openai["modelSelection"], true);
+    assert_eq!(openai["maxInputs"], 8);
+    assert_eq!(
+        openai["quality"],
+        serde_json::json!(["auto", "low", "medium", "high"])
+    );
+    assert_eq!(
+        openai["background"],
+        serde_json::json!(["auto", "opaque", "transparent"])
+    );
+    assert!(openai.get("resolution").is_none());
+    let fixture = capabilities(Kind::Api(ApiKind::Fixture));
+    assert_eq!(fixture["maxInputs"], 2);
+    assert_eq!(fixture["quality"], serde_json::json!(["auto"]));
+    assert_eq!(fixture["resolution"], serde_json::json!(["1k", "2k", "4k"]));
+    // A ratio-based backend publishes no pixel sizes.
+    assert!(fixture.get("sizes").is_none());
+    assert!(openai.get("sizes").is_some());
+}
+#[test]
+fn a_connection_without_pixel_sizes_accepts_the_request_its_form_sends() {
+    let configuration = serde_json::json!({"schemaVersion":1,"documentRevision":0,"defaultConnectionId":null,"profiles":[api_json("fixture-images")]});
+    let mut parsed: Configuration = serde_json::from_value(configuration).unwrap();
+    validate_configuration(&mut parsed).unwrap();
+    let mut req = request();
+    req.connection_id = "api".into();
+    req.expected_connection_revision = "r1".into();
+    req.options.size = "auto".into();
+    req.options.quality = "auto".into();
+    req.options.background = "auto".into();
+    req.options.resolution = Some("2k".into());
+    req.options.aspect_ratio = Some("16:9".into());
+    let recipe = recipe(&parsed.profiles[0], &req).unwrap();
+    assert_eq!(recipe.options.size, "auto");
+    assert_eq!(recipe.options.resolution.as_deref(), Some("2k"));
+    assert_eq!(recipe.options.aspect_ratio.as_deref(), Some("16:9"));
+    // Hidden controls are omitted (null) and still valid.
+    req.options.resolution = None;
+    req.options.aspect_ratio = None;
+    assert!(self::recipe(&parsed.profiles[0], &req).is_ok());
+}
+#[test]
+fn transport_names_follow_the_host_identifier_rule() {
+    for ok in ["openai-images", "a", "gemini-2", &"a".repeat(64)] {
+        assert!(transport_id(ok), "{ok}");
+    }
+    for bad in [
+        "",
+        "1abc",
+        "-a",
+        "A",
+        "has_underscore",
+        "a b",
+        &"a".repeat(65),
+    ] {
+        assert!(!transport_id(bad), "{bad}");
+    }
+}
+#[test]
+fn the_base_url_hook_is_the_backends_own_rule() {
+    assert!(base_url(
+        ApiKind::OpenAiImages,
+        "https://x.test/v1/images/edits",
+        false
+    )
+    .is_err());
+    assert!(base_url(ApiKind::Fixture, "https://x.test/v1/images/edits", false).is_ok());
+    // Generic rules apply to every backend.
+    assert!(base_url(ApiKind::Fixture, "https://u:p@x.test/v1", false).is_err());
+    assert!(base_url(ApiKind::Fixture, "http://private.test/v1", false).is_err());
+}
+#[test]
+fn frontend_registry_matches_the_backend_descriptors() {
+    // `backends.json` is the frontend's registry; the descriptors must agree on
+    // everything both sides know. The test-only fixture backend is not offered to users.
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct Entry {
+        transport: String,
+        default_base_url: String,
+        credential_env: String,
+    }
+    let entries: Vec<Entry> = serde_json::from_str(include_str!("../../backends.json")).unwrap();
+    let real: Vec<_> = ApiKind::ALL
+        .iter()
+        .filter(|k| k.transport() != "fixture-images")
+        .collect();
+    assert_eq!(
+        entries.len(),
+        real.len(),
+        "every backend needs exactly one registry entry"
+    );
+    for kind in real {
+        let d = image_generation_backend::adapters::api::descriptor(*kind);
+        let entry = entries
+            .iter()
+            .find(|e| e.transport == d.transport)
+            .unwrap_or_else(|| panic!("no registry entry for {}", d.transport));
+        assert_eq!(entry.default_base_url, d.default_base_url);
+        assert_eq!(entry.credential_env, d.credential_env);
+        assert!(transport_id(d.transport) && d.transport != "codex-cli");
+        // The advertised default URL must be acceptable to the backend itself.
+        assert!(base_url(*kind, d.default_base_url, false).is_ok());
+    }
+}
+fn stored(adapter: &str) -> image_generation_backend::domain::stored_receipt::StoredReceipt {
+    let recipe = EffectiveRecipe {
+        schema_version: 1,
+        formatter_version: 1,
+        connection_id: "api".into(),
+        connection_revision: "r1".into(),
+        adapter: adapter.into(),
+        endpoint_identity: "https://gateway.test/v1/images".into(),
+        model: Some("model-x".into()),
+        options: ImageOptions {
+            size: "1024x1024".into(),
+            resolution: None,
+            aspect_ratio: None,
+            quality: "auto".into(),
+            background: "auto".into(),
+        },
+        input_digests: vec![],
+        input_roles: vec![],
+        submitted_prompt: "p".into(),
+        agent_task: None,
+    };
+    let status = OperationStatus {
+        version: 1,
+        operation_id: "12345678-1234-1234-1234-123456789abc".into(),
+        request_fingerprint: recipe.digest(),
+        provider: ProviderIdentity {
+            package_id: "xnmp.image-generation".into(),
+            service_id: "image-generation".into(),
+            major: 1,
+        },
+        revision: 1,
+        execution: Execution::Failed {
+            error: SafeError {
+                code: "provider_rejected".into(),
+                message: "Image provider rejected the request (HTTP 400)".into(),
+                correlation_id: None,
+            },
+        },
+        delivery: Delivery::None {},
+        diagnostics: None,
+    };
+    image_generation_backend::domain::stored_receipt::StoredReceipt {
+        caller: "consumer.pkg".into(),
+        operation: status.operation_id.clone(),
+        semantic: "b".repeat(64),
+        context: Caller {
+            package_id: "consumer.pkg".into(),
+            package_digest: "c".repeat(64),
+            incarnation: 1,
+        },
+        recipe: Some(recipe),
+        status,
+        output_sha: None,
+        output: None,
+        cancelled: false,
+        test: false,
+        admitted: 0,
+        deadline: 0,
+    }
+}
+#[test]
+fn stored_receipts_accept_any_valid_api_adapter_id_and_reject_invalid_ones() {
+    assert!(stored("openai-images").valid());
+    assert!(stored("future-images").valid());
+    for bad in [
+        "",
+        "Future",
+        "1abc",
+        "has_underscore",
+        "a b",
+        &"a".repeat(65),
+    ] {
+        assert!(!stored(bad).valid(), "{bad}");
+    }
+    // API receipts still need a model and no agent task.
+    let mut no_model = stored("future-images");
+    no_model.recipe.as_mut().unwrap().model = None;
+    assert!(!no_model.valid());
+}
+fn api_request(id: &str, rev: &str) -> PrepareRequest {
+    let mut req = request();
+    req.connection_id = id.into();
+    req.expected_connection_revision = rev.into();
+    req.inputs.truncate(1);
+    req.options.quality = "auto".into();
+    req.options.background = "auto".into();
+    req
+}
+fn loaded(transport: &str) -> Profile {
+    let mut parsed: Configuration = serde_json::from_value(serde_json::json!({"schemaVersion":1,"documentRevision":0,"defaultConnectionId":null,"profiles":[api_json(transport)]})).unwrap();
+    validate_configuration(&mut parsed).unwrap();
+    parsed.profiles.remove(0)
+}
+#[test]
+fn recipes_enforce_the_descriptors_option_tables() {
+    // openai-images: all qualities/backgrounds; sizes, so resolution/aspect are accepted as size inputs.
+    let openai = loaded("openai-images");
+    let mut req = api_request("api", "r1");
+    req.options.quality = "high".into();
+    req.options.background = "transparent".into();
+    req.options.resolution = Some("2k".into());
+    req.options.aspect_ratio = Some("keep".into());
+    assert!(recipe(&openai, &req).is_ok());
+    // fixture-images: auto only, no pixel sizes.
+    let fixture = loaded("fixture-images");
+    let mut req = api_request("api", "r1");
+    req.options.size = "auto".into();
+    req.options.resolution = Some("2k".into());
+    req.options.aspect_ratio = Some("16:9".into());
+    assert!(recipe(&fixture, &req).is_ok());
+    for mutate in [
+        (|r: &mut PrepareRequest| r.options.quality = "high".into()) as fn(&mut PrepareRequest),
+        |r| r.options.background = "transparent".into(),
+        |r| r.options.size = "1024x1024".into(),
+    ] {
+        let mut bad = req.clone();
+        mutate(&mut bad);
+        assert!(recipe(&fixture, &bad).is_err());
+    }
+    let mut bad = api_request("api", "r1");
+    bad.options.quality = "ultra".into();
+    assert!(recipe(&openai, &bad).is_err());
+}
+#[test]
+fn options_problem_rejects_unsupported_resolution_and_aspect_ratio() {
+    use image_generation_backend::adapters::api::{ApiDescriptor, Auth, Options};
+    const BARE: ApiDescriptor = ApiDescriptor {
+        transport: "bare-images",
+        default_base_url: "https://bare.test",
+        credential_env: "BARE_KEY",
+        auth: Auth::Bearer,
+        options: Options {
+            quality: &["auto"],
+            background: &["auto"],
+            resolution: false,
+            aspect_ratio: false,
+            sizes: false,
+        },
+        max_inputs: 1,
+        validate_base_url: |_| Ok(()),
+    };
+    let mut options = request().options;
+    options.size = "auto".into();
+    options.quality = "auto".into();
+    options.background = "auto".into();
+    assert_eq!(options_problem(&BARE, &options), None);
+    options.resolution = Some("2k".into());
+    assert!(options_problem(&BARE, &options).is_some());
+    options.resolution = None;
+    options.aspect_ratio = Some("1:1".into());
+    assert!(options_problem(&BARE, &options).is_some());
 }

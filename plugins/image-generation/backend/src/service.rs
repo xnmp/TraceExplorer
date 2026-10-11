@@ -333,8 +333,12 @@ impl Service {
     pub fn describe(&self) -> Result<Value> {
         let configuration = self.profiles.read()?;
         let mut profiles = self.sanitized(configuration.clone())?["profiles"].take();
-        for profile in profiles.as_array_mut().unwrap() {
-            profile["capabilities"] = domain::capabilities(profile["transport"] == "codex-cli");
+        for (profile, item) in configuration
+            .profiles
+            .iter()
+            .zip(profiles.as_array_mut().unwrap())
+        {
+            item["capabilities"] = domain::capabilities(profile.kind());
         }
         Ok(
             json!({"version":1,"configurationRevision":configuration.document_revision,"defaultConnectionId":configuration.default_connection_id,"profiles":profiles}),
@@ -513,7 +517,7 @@ impl Service {
         // The HTTP credential is resolved before the receipt exists, so its two
         // moments, captured above, are attached now. Codex checks its login in
         // the adapter instead.
-        if matches!(profile, Profile::Http { .. }) {
+        if profile.api().is_some() {
             for (stage, at) in [
                 ("credential_check_started", credential_started),
                 ("credential_check_done", credential_done),
@@ -781,6 +785,9 @@ impl Service {
         {
             Ok(output) => output,
             Err(failure) => {
+                // Only these codes leave the remote outcome unknown. Definitive
+                // provider answers (`provider_rejected`, `provider_refused`) are
+                // not listed on purpose: they are terminal `Failed`.
                 let uncertain = matches!(
                     failure.code.as_str(),
                     "cancelled_after_dispatch"
@@ -817,8 +824,11 @@ impl Service {
             output.metadata.clone(),
             &sha,
         )?;
-        self.journal
-            .record_timing(&work.caller.package_id, &work.request.operation_id, "output_stored");
+        self.journal.record_timing(
+            &work.caller.package_id,
+            &work.request.operation_id,
+            "output_stored",
+        );
         let host = self.host.clone();
         let caller = work.caller.package_id.clone();
         let operation = work.request.operation_id.clone();
@@ -1317,17 +1327,19 @@ impl Service {
             operation_id: operation.clone(),
             connection_id: profile.id().into(),
             expected_connection_revision: profile.revision().into(),
-            model: match &profile {
-                Profile::Http { default_model, .. } => Some(default_model.clone()),
-                _ => None,
-            },
+            model: profile.api().map(|(_, api)| api.default_model.clone()),
             prompt: "Create a simple solid blue square, without text.".into(),
             inputs: vec![],
             options: ImageOptions {
                 size: "1024x1024".into(),
                 resolution: None,
                 aspect_ratio: None,
-                quality: if matches!(profile, Profile::Http { .. }) {
+                quality: if profile.api().is_some_and(|(kind, _)| {
+                    adapters::api::descriptor(kind)
+                        .options
+                        .quality
+                        .contains(&"low")
+                }) {
                     "low"
                 } else {
                     "auto"

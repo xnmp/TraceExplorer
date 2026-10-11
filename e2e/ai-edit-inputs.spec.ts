@@ -463,3 +463,83 @@ test.describe("when the inputs cannot be read", () => {
     expect(width / height).toBeCloseTo(16 / 9, 1);
   });
 });
+
+test("a connection without pixel sizes offers only its resolution and aspect ratios, and submits them", async ({ page }) => {
+  await openView(page, 1400, "?ai=1");
+  // A ratio-based backend: no `sizes`, and it advertises the resolutions and aspect ratios it supports.
+  await page.evaluate(() => {
+    const backend = (window as any).trace.backend, value = backend.imageService();
+    const http = value.description.profiles.find((p: any) => p.id === "custom-http");
+    const { sizes: _sizes, ...caps } = http.capabilities;
+    value.description.profiles.push({ ...http, id: "ratio-only", name: "Ratio only", transport: "future-images", recipeRevision: "ratio-revision",
+      capabilities: { ...caps, quality: ["auto"], background: ["auto"], resolution: ["1k", "2k"], aspectRatio: ["1:1", "16:9"] } });
+    backend.setImageService(value);
+  });
+  await click(page, "warm");
+  await command(page, "plugin.openai-image.generate");
+  const pick = async (name: string) => { await dialog(page).getByRole("combobox", { name: "Image connection" }).click(); await page.getByRole("option", { name }).click(); };
+  // Codex (the default) offers both controls; choose a non-default aspect ratio first.
+  await dialog(page).getByRole("combobox", { name: "Aspect ratio" }).click();
+  await page.getByRole("option", { name: "16:9" }).click();
+  await pick("Ratio only");
+  await expect(dialog(page).getByRole("combobox", { name: "Resolution" })).toBeVisible();
+  await expect(dialog(page).getByRole("combobox", { name: "Aspect ratio" })).toBeVisible();
+  await expect(dialog(page).getByRole("combobox", { name: "Aspect ratio" })).toHaveAttribute("data-value", "16:9");
+  await dialog(page).getByRole("combobox", { name: "Resolution" }).click();
+  await expect(page.getByRole("option")).toHaveText(["1K", "2K"]);
+  await page.getByRole("option", { name: "1K" }).click();
+  await dialog(page).getByRole("textbox", { name: "Image prompt" }).fill("A paper boat");
+  await page.keyboard.press("Control+Enter");
+  await expect.poll(() => page.evaluate(() => (window as any).trace.backend.calls("jobs.start").length)).toBe(1);
+  const [start] = await page.evaluate(() => (window as any).trace.backend.calls("jobs.start"));
+  expect(start.params.request).toMatchObject({ connectionId: "ratio-only", size: "auto", resolution: "1k", aspectRatio: "16:9", quality: "auto", background: "auto" });
+});
+
+test("switching to a connection that hides a control resets it and does not submit it", async ({ page }) => {
+  await openView(page, 1400, "?ai=1");
+  await page.evaluate(() => {
+    const backend = (window as any).trace.backend, value = backend.imageService();
+    const http = value.description.profiles.find((p: any) => p.id === "custom-http");
+    const { sizes: _sizes, ...caps } = http.capabilities;
+    value.description.profiles.push({ ...http, id: "res-only", name: "Resolution only", transport: "future-images", recipeRevision: "res-revision",
+      capabilities: { ...caps, resolution: ["1k", "2k", "4k"] } });
+    backend.setImageService(value);
+  });
+  await click(page, "warm");
+  await command(page, "plugin.openai-image.generate");
+  await dialog(page).getByRole("combobox", { name: "Image connection" }).click();
+  await page.getByRole("option", { name: "Resolution only" }).click();
+  await expect(dialog(page).getByRole("combobox", { name: "Aspect ratio" })).toHaveCount(0);
+  await dialog(page).getByRole("textbox", { name: "Image prompt" }).fill("A paper boat");
+  await page.keyboard.press("Control+Enter");
+  await expect.poll(() => page.evaluate(() => (window as any).trace.backend.calls("jobs.start").length)).toBe(1);
+  const [start] = await page.evaluate(() => (window as any).trace.backend.calls("jobs.start"));
+  expect(start.params.request.connectionId).toBe("res-only");
+  expect(start.params.request.size).toBe("auto");
+  expect(start.params.request).not.toHaveProperty("aspectRatio");
+});
+
+test("in edit mode, a connection that does not offer Keep falls back to an offered aspect ratio and still generates", async ({ page }) => {
+  await openView(page, 1400, "?ai=1");
+  await page.evaluate(() => {
+    const backend = (window as any).trace.backend, value = backend.imageService();
+    const http = value.description.profiles.find((p: any) => p.id === "custom-http");
+    const { sizes: _sizes, ...caps } = http.capabilities;
+    value.description.profiles.push({ ...http, id: "ratio-only", name: "Ratio only", transport: "future-images", recipeRevision: "ratio-revision",
+      capabilities: { ...caps, resolution: ["1k", "2k"], aspectRatio: ["1:1", "16:9"] } });
+    backend.setImageService(value);
+  });
+  await click(page, "warm");
+  await command(page, "plugin.openai-image.edit");
+  await expect(dialog(page).getByRole("combobox", { name: "Aspect ratio" })).toHaveAttribute("data-value", "keep");
+  await dialog(page).getByRole("combobox", { name: "Image connection" }).click();
+  await page.getByRole("option", { name: "Ratio only" }).click();
+  const ratio = dialog(page).getByRole("combobox", { name: "Aspect ratio" });
+  await expect(ratio).toHaveAttribute("data-value", "1:1");
+  await expect(ratio).toHaveText("1:1");
+  await dialog(page).getByRole("textbox", { name: "Edit prompt" }).fill("Make it blue");
+  await page.keyboard.press("Control+Enter");
+  await expect.poll(() => page.evaluate(() => (window as any).trace.backend.calls("jobs.start").length)).toBe(1);
+  const [start] = await page.evaluate(() => (window as any).trace.backend.calls("jobs.start"));
+  expect(start.params.request).toMatchObject({ connectionId: "ratio-only", size: "auto", aspectRatio: "1:1", resolution: "2k" });
+});

@@ -18,10 +18,16 @@ export type ImageDelivery =
   | {state:"unavailable";reason:"missing"|"corrupt"|"storage_unavailable"};
 export interface CodexTurnReceipt {kind:"codex_image_turn";threadId:string;turnState:"completed"|"failed"|"incomplete";usage?:{inputTokens?:number|null;cachedInputTokens?:number|null;outputTokens?:number|null}|null;explanation?:{kind:"reply"|"error";text:string;truncated:boolean}|null}
 export interface ImageOperationStatus {version:1;operationId:string;requestFingerprint:string;provider:{packageId:string;serviceId:string;major:1};revision:number;execution:ImageExecution;delivery:ImageDelivery;diagnostics?:CodexTurnReceipt}
-export interface ImageCapabilities {generation:boolean;edit:boolean;maxInputs:number;maxInputBytes:number;maxTotalInputBytes:number;maxOutputBytes:number;inputFormats:readonly string[];outputFormats:readonly string[];modelSelection:boolean;sizes:{auto:boolean;maxEdge:number;multipleOf:number;minPixels:number;maxPixels:number};quality:readonly string[];background:readonly string[]}
+export interface ImageCapabilities {generation:boolean;edit:boolean;maxInputs:number;maxInputBytes:number;maxTotalInputBytes:number;maxOutputBytes:number;inputFormats:readonly string[];outputFormats:readonly string[];modelSelection:boolean;sizes?:{auto:boolean;maxEdge:number;multipleOf:number;minPixels:number;maxPixels:number};resolution?:readonly string[];aspectRatio?:readonly string[];quality:readonly string[];background:readonly string[]}
 export type ImageCredential = {kind:"none"}|{kind:"environment";name:string}|{kind:"secret";id:string};
-export type ImageProfile =
-  | {id:string;name:string;recipeRevision:string;transport:"codex-cli";executablePath:string;modelSelection:false;credential:{kind:"cli_saved_login"}}
-  | {id:string;name:string;recipeRevision:string;transport:"openai-images";baseUrl:string;defaultModel:string;allowInsecureHttp:boolean;credential:ImageCredential;hasCredential?:boolean};
+export interface CodexProfile {id:string;name:string;recipeRevision:string;transport:"codex-cli";executablePath:string;modelSelection:false;credential:{kind:"cli_saved_login"}}
+/**
+ * Any HTTP image backend. `transport` names the backend and matches
+ * `^[a-z][a-z0-9-]{0,63}$` (the host's receipt rule); it is never "codex-cli".
+ * TypeScript cannot exclude one string, so narrow with `transport === "codex-cli"`
+ * through a type guard rather than relying on discriminated-union narrowing.
+ */
+export interface ApiProfile {id:string;name:string;recipeRevision:string;transport:string;baseUrl:string;defaultModel:string;allowInsecureHttp:boolean;credential:ImageCredential;hasCredential?:boolean}
+export type ImageProfile = CodexProfile | ApiProfile;
 export interface ImageConfiguration {schemaVersion:1;documentRevision:number;defaultConnectionId:string|null;profiles:readonly ImageProfile[]}
 export interface ImageDescription {version:1;configurationRevision:number;defaultConnectionId:string|null;profiles:readonly (ImageProfile&{capabilities:ImageCapabilities})[]}

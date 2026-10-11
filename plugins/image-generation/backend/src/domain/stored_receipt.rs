@@ -101,7 +101,7 @@ impl StoredReceipt {
             || recipe.formatter_version != 1
             || !id(&recipe.connection_id)
             || !id(&recipe.connection_revision)
-            || !matches!(recipe.adapter.as_str(), "openai-images" | "codex-cli")
+            || !(recipe.adapter == "codex-cli" || super::transport_id(&recipe.adapter))
             || recipe.endpoint_identity.len() > 8192
             || recipe.endpoint_identity.chars().any(char::is_control)
             || !recipe.options.valid()
@@ -123,7 +123,7 @@ impl StoredReceipt {
         }
         // Old private CLI receipts may carry the previous empty discovery identity.
         // Preserve their canonical digest; all newly prepared recipes use the sentinel.
-        if recipe.adapter == "openai-images" {
+        if recipe.adapter != "codex-cli" {
             if !url::Url::parse(&recipe.endpoint_identity).is_ok_and(|url| {
                 matches!(url.scheme(), "http" | "https")
                     && url.host_str().is_some()
@@ -167,7 +167,7 @@ impl StoredReceipt {
                     return false;
                 }
             }
-            if recipe.adapter == "openai-images" && metadata.thread_id.is_some() {
+            if recipe.adapter != "codex-cli" && metadata.thread_id.is_some() {
                 return false;
             }
             match &status.delivery {

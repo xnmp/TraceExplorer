@@ -1,4 +1,5 @@
 //! Actual subprocess contract: reverse replies/control stay live under saturation.
+use image_generation_backend::domain::ApiProfile;
 use image_generation_backend::{
     domain::{Configuration, Credential, Profile},
     error::{error, Result},
@@ -40,7 +41,7 @@ async fn real_stdio_keeps_cancellation_and_reverse_replies_live_with_full_ordina
                 schema_version: 1,
                 document_revision: 0,
                 default_connection_id: Some("fixture".into()),
-                profiles: vec![Profile::Http {
+                profiles: vec![Profile::OpenAiImages(ApiProfile {
                     id: "fixture".into(),
                     name: "Fixture".into(),
                     recipe_revision: "".into(),
@@ -50,7 +51,7 @@ async fn real_stdio_keeps_cancellation_and_reverse_replies_live_with_full_ordina
                     credential: Credential::Secret {
                         id: "fixture-secret-reference".into(),
                     },
-                }],
+                })],
             },
             0,
             Some(("fixture", "fixture-secret-reference")),

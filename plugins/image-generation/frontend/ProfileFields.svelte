@@ -1,8 +1,9 @@
 <script lang="ts">
   import Select, { type SelectOption } from '../../../integration/ui/Select.svelte';
-  import type { ImageProfile } from './domain';
+  import { backendFor, isCodex, type ImageProfile } from './domain';
   let { profile, disabled, saved, onchange, oncredential }: { profile: ImageProfile; disabled: boolean; saved: boolean; onchange: (profile: ImageProfile) => void; oncredential: (key: string | null) => Promise<void> } = $props();
   const CREDENTIAL_SOURCES: SelectOption[] = [{ value: 'none', label: 'No credential' }, { value: 'environment', label: 'Environment variable' }, { value: 'secret', label: 'Saved OS credential', disabled: true }];
+  const backend = $derived(isCodex(profile) ? undefined : backendFor(profile.transport));
   let key = $state('');
   let keyVisible = $state(false);
   async function credential(value: string | null) { const submitted = value; key = ''; keyVisible = false; await oncredential(submitted); }
@@ -11,17 +12,17 @@
 <fieldset {disabled}>
   <legend class="sr-only">Connection details</legend>
   <label>Name<input value={profile.name} maxlength="256" oninput={e => onchange({ ...profile, name: e.currentTarget.value })} /></label>
-  {#if profile.transport === 'codex-cli'}
+  {#if isCodex(profile)}
     <p class="note">Codex uses its saved ChatGPT sign-in and chooses the image model itself.</p>
     <label>Codex executable path<input value={profile.executablePath} maxlength="8192" placeholder="Leave empty to discover Codex" oninput={e => onchange({ ...profile, executablePath: e.currentTarget.value })} /></label>
   {:else}
-    <label>Images resource URL<input value={profile.baseUrl} maxlength="2048" inputmode="url" placeholder="https://api.openai.com/v1/images" oninput={e => onchange({ ...profile, baseUrl: e.currentTarget.value })} /></label>
-    <p class="note">Include the Images resource, usually /images. The adapter appends /generations or /edits.</p>
-    <label>Image model ID<input value={profile.defaultModel} maxlength="256" placeholder="Model supported by this API" oninput={e => onchange({ ...profile, defaultModel: e.currentTarget.value })} /></label>
+    <label>{backend?.baseUrlLabel ?? 'API URL'}<input value={profile.baseUrl} maxlength="2048" inputmode="url" placeholder={backend?.defaultBaseUrl ?? ''} oninput={e => onchange({ ...profile, baseUrl: e.currentTarget.value })} /></label>
+    {#if backend?.baseUrlNote}<p class="note">{backend.baseUrlNote}</p>{/if}
+    <label>Image model ID<input value={profile.defaultModel} maxlength="256" placeholder={backend?.modelPlaceholder ?? 'Model supported by this API'} oninput={e => onchange({ ...profile, defaultModel: e.currentTarget.value })} /></label>
     <label class="checkbox"><input type="checkbox" checked={profile.allowInsecureHttp} onchange={e => onchange({ ...profile, allowInsecureHttp: e.currentTarget.checked })} />Allow insecure HTTP for this connection</label>
-    <label>Credential source<Select aria-label="Credential source" value={profile.credential.kind} options={CREDENTIAL_SOURCES} onchange={kind => { if (kind === 'none') onchange({ ...profile, credential: { kind: 'none' } }); else if (kind === 'environment') onchange({ ...profile, credential: { kind: 'environment', name: 'OPENAI_API_KEY' } }); }} /></label>
+    <label>Credential source<Select aria-label="Credential source" value={profile.credential.kind} options={CREDENTIAL_SOURCES} onchange={kind => { if (kind === 'none') onchange({ ...profile, credential: { kind: 'none' } }); else if (kind === 'environment') onchange({ ...profile, credential: { kind: 'environment', name: backend?.credentialEnv ?? '' } }); }} /></label>
     {#if profile.credential.kind === 'environment'}
-      <label>Environment variable name<input value={profile.credential.name} maxlength="128" placeholder="OPENAI_API_KEY" oninput={e => onchange({ ...profile, credential: { kind: 'environment', name: e.currentTarget.value } })} /></label>
+      <label>Environment variable name<input value={profile.credential.name} maxlength="128" placeholder={backend?.credentialEnv ?? ''} oninput={e => onchange({ ...profile, credential: { kind: 'environment', name: e.currentTarget.value } })} /></label>
       <p class="note">Read by the native provider from the app environment.</p>
     {/if}
     <div class="key-section">

@@ -1,10 +1,11 @@
+use image_generation_backend::domain::ApiProfile;
 use image_generation_backend::{
     domain::{Configuration, Credential, Profile},
     profiles::Profiles,
 };
 use serde_json::{json, Value};
 fn profile(id: &str) -> Profile {
-    Profile::Http {
+    Profile::OpenAiImages(ApiProfile {
         id: id.into(),
         name: "Imported".into(),
         recipe_revision: "".into(),
@@ -14,7 +15,7 @@ fn profile(id: &str) -> Profile {
         credential: Credential::Secret {
             id: format!("owned-secret-{id}"),
         },
-    }
+    })
 }
 fn import(profiles: Vec<Profile>, expected: u64) -> Value {
     json!({"sourceId":"trace-openai-image-v1","sourceDigest":"a".repeat(64),"expectedRevision":expected,"defaultConnectionId":profiles.first().map(|p|p.id()),"profiles":profiles})
