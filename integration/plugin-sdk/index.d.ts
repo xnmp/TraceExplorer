@@ -134,6 +134,10 @@ export interface PluginContext {
     getCurrentDirectory?(): string | null;
     onDirectoryChanged?(handler: (path:string|null)=>void): void;
     getSelection(): FileEntry[];
+    /** Selected entries in this window's active explorer tab: focused pane first,
+     * then other panes in visual order, preserving each pane's selection order
+     * and deduplicating by path. Absent on hosts without cross-pane selection. */
+    getCombinedSelection?(): FileEntry[];
     captureSelection(): () => boolean;
     selectFile(path: string): Promise<void>;
     onFilesChanged(handler: (directories: readonly string[]) => void | Promise<void>): void;

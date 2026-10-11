@@ -17,7 +17,6 @@
   import { openAIImagePlugin } from "$lib/plugins/openai-image";
   import { DIRECTORY, files, backend, initialTileSize } from "./view-fixture";
   import { TILE_IMAGE_PX } from "./tile-presets";
-  import type { CombinedSelectionWorkspace } from "$lib/plugins/openai-image/workspace-selection";
 
   let views = $state.raw<FileViewContribution[]>([]);
   let sections = $state.raw<PreviewInfoContribution[]>([]);
@@ -105,7 +104,7 @@
         toggleFileView: (id: string) => { fileView = fileView === id ? null : id; },
         getFileView: () => fileView,
         getSelection: () => entries.filter((entry) => selected.includes(entry.path)),
-        ...(combinedSelectionApi ? { getCombinedSelection: () => [...entries.filter((entry) => selected.includes(entry.path)), ...otherPaneSelection] } satisfies Pick<CombinedSelectionWorkspace, "getCombinedSelection"> : {}),
+        ...(combinedSelectionApi ? { getCombinedSelection: () => [...entries.filter((entry) => selected.includes(entry.path)), ...otherPaneSelection] } satisfies Pick<PluginContext["workspace"], "getCombinedSelection"> : {}),
         captureSelection: () => () => true,
         selectFile: async () => {},
       },
