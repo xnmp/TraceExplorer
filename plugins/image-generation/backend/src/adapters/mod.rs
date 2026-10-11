@@ -30,6 +30,9 @@ pub enum Evidence {
     },
 }
 pub type EvidenceSink = Arc<dyn Fn(Evidence) -> Result<()> + Send + Sync>;
+/// Reports that a named stage is happening now. Best effort and infallible:
+/// timing diagnostics never change an operation's outcome.
+pub type StageSink = Arc<dyn Fn(&'static str) + Send + Sync>;
 pub struct Output {
     pub bytes: Vec<u8>,
     pub metadata: ImageMetadata,
@@ -135,6 +138,7 @@ pub async fn generate(
     host: Arc<dyn Host>,
     cancel: Arc<AtomicBool>,
     evidence: EvidenceSink,
+    stage: StageSink,
 ) -> Result<Output> {
     if cancel.load(Ordering::Acquire) {
         return Err(error(
@@ -144,7 +148,7 @@ pub async fn generate(
     }
     match profile {
         Profile::Http { base_url, .. } => {
-            http::generate(&base_url, &recipe, inputs, key, cancel).await
+            http::generate(&base_url, &recipe, inputs, key, cancel, stage).await
         }
         Profile::Codex {
             executable_path, ..
@@ -156,6 +160,7 @@ pub async fn generate(
                 host.as_ref(),
                 &cancel,
                 evidence.as_ref(),
+                stage.as_ref(),
             )
         })
         .await

@@ -485,7 +485,9 @@ impl Service {
                     .ok_or_else(|| invalid("Host returned no captured input path"))?,
             ));
         }
+        let credential_started = epoch_millis().ok();
         let key = self.credential(&profile)?;
+        let credential_done = epoch_millis().ok();
         let (status, accepted) = self.profiles.admit(&profile, || {
             self.journal.accept_with_budget(
                 &caller,
@@ -507,6 +509,18 @@ impl Service {
         }
         if status.execution != (Execution::Accepted {}) {
             return Ok(status);
+        }
+        // The HTTP credential is resolved before the receipt exists, so its two
+        // moments, captured above, are attached now. Codex checks its login in
+        // the adapter instead.
+        if matches!(profile, Profile::Http { .. }) {
+            for (stage, at) in [
+                ("credential_check_started", credential_started),
+                ("credential_check_done", credential_done),
+            ] {
+                self.journal
+                    .record_timing_at(&caller.package_id, &request.operation_id, stage, at);
+            }
         }
         let deadline = self
             .journal
@@ -740,6 +754,14 @@ impl Service {
                     .turn_failure(&evidence_caller, &evidence_operation, receipt, error)
             }
         });
+        let stage_service = self.clone();
+        let stage_caller = work.caller.package_id.clone();
+        let stage_operation = work.request.operation_id.clone();
+        let stage: adapters::StageSink = Arc::new(move |name| {
+            stage_service
+                .journal
+                .record_timing(&stage_caller, &stage_operation, name)
+        });
         let output = match adapters::generate(
             work.profile,
             work.recipe,
@@ -748,6 +770,7 @@ impl Service {
             self.host.clone(),
             work.cancel.clone(),
             evidence,
+            stage,
         )
         .await
         {
@@ -789,6 +812,8 @@ impl Service {
             output.metadata.clone(),
             &sha,
         )?;
+        self.journal
+            .record_timing(&work.caller.package_id, &work.request.operation_id, "output_stored");
         let host = self.host.clone();
         let caller = work.caller.package_id.clone();
         let operation = work.request.operation_id.clone();

@@ -282,7 +282,7 @@ fn impossible_live_capacity_fails_before_activation_writes_or_recovery() {
     let db = Connection::open(&path).unwrap();
     for i in 0..37 {
         let operation = format!("pending-{i}");
-        db.execute("INSERT INTO operations SELECT caller,?,semantic,context,recipe,json_set(json_remove(status,'$.execution.error'),'$.operationId',?,'$.execution.state','accepted'),output_sha256,output_descriptor,cancel_requested,test,admitted_at_ms,deadline_at_ms FROM operations WHERE operation='receipt'",params![operation,operation]).unwrap();
+        db.execute("INSERT INTO operations(caller,operation,semantic,context,recipe,status,output_sha256,output_descriptor,cancel_requested,test,admitted_at_ms,deadline_at_ms) SELECT caller,?,semantic,context,recipe,json_set(json_remove(status,'$.execution.error'),'$.operationId',?,'$.execution.state','accepted'),output_sha256,output_descriptor,cancel_requested,test,admitted_at_ms,deadline_at_ms FROM operations WHERE operation='receipt'",params![operation,operation]).unwrap();
     }
     drop(db);
     let before = std::fs::read(&path).unwrap();

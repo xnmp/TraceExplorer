@@ -17,6 +17,14 @@ pub struct Journal {
     /// Fault injection for tests: `get` fails as a storage read error would.
     #[cfg(feature = "test-hooks")]
     read_fault: std::sync::atomic::AtomicBool,
+    /// Fault injection for tests: timing writes fail as a storage error would.
+    #[cfg(feature = "test-hooks")]
+    timing_fault: std::sync::atomic::AtomicBool,
+    /// Fault injection for tests: adding the `timings` column fails.
+    #[cfg(feature = "test-hooks")]
+    migration_fault: std::sync::atomic::AtomicBool,
+    /// Whether the active journal has the optional `timings` column.
+    has_timings: std::sync::atomic::AtomicBool,
 }
 impl Journal {
     pub fn open(directory: &Path) -> Result<Self> {
@@ -62,6 +70,11 @@ impl Journal {
             fresh,
             #[cfg(feature = "test-hooks")]
             read_fault: std::sync::atomic::AtomicBool::new(false),
+            #[cfg(feature = "test-hooks")]
+            timing_fault: std::sync::atomic::AtomicBool::new(false),
+            #[cfg(feature = "test-hooks")]
+            migration_fault: std::sync::atomic::AtomicBool::new(false),
+            has_timings: std::sync::atomic::AtomicBool::new(false),
         })
     }
     pub fn activate(&self) -> Result<()> {
@@ -114,6 +127,18 @@ impl Journal {
             Some(2) => {},
             _ => unreachable!(),
         }
+        // Additive and idempotent, so the schema version is unchanged and an
+        // older build still opens this journal (it selects explicit columns).
+        // Optional diagnostics: a journal that cannot take the column still works.
+        let present = match self.ensure_timings_column(&connection) {
+            Ok(present) => present,
+            Err(failure) => {
+                eprintln!("image journal timings unavailable: {}", failure.message);
+                false
+            }
+        };
+        self.has_timings
+            .store(present, std::sync::atomic::Ordering::SeqCst);
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -132,6 +157,96 @@ impl Journal {
         self.read_fault
             .store(on, std::sync::atomic::Ordering::SeqCst);
     }
+    /// Test hook: while set, adding the `timings` column fails.
+    #[cfg(feature = "test-hooks")]
+    #[doc(hidden)]
+    pub fn fail_timings_migration_for_test(&self, on: bool) {
+        self.migration_fault
+            .store(on, std::sync::atomic::Ordering::SeqCst);
+    }
+    /// Adds the nullable `timings` column when absent and reports whether it is
+    /// present. Additive and idempotent.
+    fn ensure_timings_column(&self, connection: &Connection) -> Result<bool> {
+        if has_column(connection, "timings")? {
+            return Ok(true);
+        }
+        #[cfg(feature = "test-hooks")]
+        if self.migration_fault.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err(error("storage_unavailable", "Injected timings migration failure"));
+        }
+        connection
+            .execute_batch("ALTER TABLE operations ADD COLUMN timings TEXT")
+            .map_err(storage)?;
+        has_column(connection, "timings")
+    }
+    /// Test hook: while set, timing writes fail. The operation must not.
+    #[cfg(feature = "test-hooks")]
+    #[doc(hidden)]
+    pub fn fail_timings_for_test(&self, on: bool) {
+        self.timing_fault
+            .store(on, std::sync::atomic::Ordering::SeqCst);
+    }
+    /// Stage timings (stage -> epoch ms) of an operation, `{}` when none exist.
+    /// Diagnostics only: never part of a receipt or of the shared contract.
+    pub fn timings(
+        &self,
+        caller: &str,
+        operation: &str,
+    ) -> Result<std::collections::BTreeMap<String, i64>> {
+        if !self.has_timings.load(std::sync::atomic::Ordering::SeqCst) {
+            return Ok(Default::default());
+        }
+        let connection = self.connection.lock().map_err(storage)?;
+        let raw: Option<String> = connection
+            .query_row(
+                "SELECT timings FROM operations WHERE caller=? AND operation=?",
+                params![caller, operation],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(storage)?
+            .flatten();
+        Ok(raw
+            .and_then(|raw| serde_json::from_str(&raw).ok())
+            .unwrap_or_default())
+    }
+    /// Record that `stage` happened now. The first time wins, earlier stages are
+    /// kept, and a failed write is logged and dropped: diagnostics must never
+    /// change the outcome of an operation.
+    pub fn record_timing(&self, caller: &str, operation: &str, stage: &'static str) {
+        self.record_timing_at(caller, operation, stage, epoch_millis().ok());
+    }
+    /// As `record_timing`, for a moment captured earlier than the row existed.
+    pub fn record_timing_at(
+        &self,
+        caller: &str,
+        operation: &str,
+        stage: &'static str,
+        at_ms: Option<i64>,
+    ) {
+        if !self.has_timings.load(std::sync::atomic::Ordering::SeqCst) {
+            return;
+        }
+        let write = || -> Result<()> {
+            #[cfg(feature = "test-hooks")]
+            if self.timing_fault.load(std::sync::atomic::Ordering::SeqCst) {
+                return Err(error("storage_unavailable", "Injected timing write failure"));
+            }
+            let at = at_ms.ok_or_else(|| error("storage_unavailable", "Clock unavailable"))?;
+            let connection = self.connection.lock().map_err(storage)?;
+            connection
+                .execute(
+                    "UPDATE operations SET timings=json_insert(COALESCE(timings,'{}'),'$.'||?,?) WHERE caller=? AND operation=?",
+                    params![stage, at, caller, operation],
+                )
+                .map_err(storage)?;
+            Ok(())
+        };
+        if let Err(failure) = write() {
+            eprintln!("image timing {stage} not recorded: {}", failure.message);
+        }
+    }
+
     pub fn get(
         &self,
         caller: &str,
@@ -235,6 +350,8 @@ impl Journal {
         transaction.execute("INSERT INTO operations(caller,operation,semantic,context,recipe,status,test,admitted_at_ms,deadline_at_ms) VALUES(?,?,?,?,?,?,?,?,?)",params![caller.package_id,operation,semantic,serde_json::to_string(caller).map_err(storage)?,serde_json::to_string(recipe).map_err(storage)?,serde_json::to_string(&status).map_err(storage)?,test,admitted_at,deadline_at]).map_err(storage)?;
         load_receipt(&transaction, &caller.package_id, operation)?;
         transaction.commit().map_err(storage)?;
+        drop(connection);
+        self.record_timing_at(&caller.package_id, operation, "admitted", Some(admitted_at));
         Ok((status, true))
     }
     /// Admission rejection is authoritative and retryable only with a new operation ID.
@@ -651,7 +768,7 @@ impl Journal {
                 "Output digest does not match the successful operation",
             ));
         }
-        Ok(self
+        let (status, changed) = self
             .change(caller, operation, |status, _| {
                 if !matches!(status.execution, Execution::Succeeded { .. }) {
                     return Err(error(
@@ -685,8 +802,11 @@ impl Journal {
                 }
                 status.delivery = next;
                 Ok(true)
-            })?
-            .0)
+            })?;
+        if changed && disposition == "acquired" {
+            self.record_timing(caller, operation, "delivery_acquired");
+        }
+        Ok(status)
     }
     pub fn output_descriptor(
         &self,
@@ -909,6 +1029,17 @@ fn validate_schema(connection: &Connection) -> Result<i64> {
 }
 fn schema(connection: &Connection) -> Result<()> {
     connection.execute_batch("BEGIN IMMEDIATE; CREATE TABLE cancellations(caller TEXT NOT NULL,operation TEXT NOT NULL,PRIMARY KEY(caller,operation)); CREATE TABLE operations(caller TEXT NOT NULL,operation TEXT NOT NULL,semantic TEXT NOT NULL,context TEXT NOT NULL,recipe TEXT NOT NULL,status TEXT NOT NULL,output_sha256 TEXT,output_descriptor TEXT,cancel_requested INTEGER NOT NULL DEFAULT 0,test INTEGER NOT NULL DEFAULT 0,admitted_at_ms INTEGER NOT NULL,deadline_at_ms INTEGER NOT NULL,PRIMARY KEY(caller,operation)); PRAGMA user_version=2; COMMIT;").map_err(storage)
+}
+fn has_column(connection: &Connection, column: &str) -> Result<bool> {
+    let mut statement = connection
+        .prepare("PRAGMA table_info(operations)")
+        .map_err(storage)?;
+    let names = statement
+        .query_map([], |row| row.get::<_, String>(1))
+        .map_err(storage)?
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(storage)?;
+    Ok(names.iter().any(|name| name == column))
 }
 
 // SQL slices limit allocation before decoding; loading a corrupt multi-megabyte

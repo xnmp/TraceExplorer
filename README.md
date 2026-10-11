@@ -48,6 +48,8 @@ python3 scripts/package-plugin.py
 
 The package contains a frontend module, stylesheet, and native backend executable. TraceExplorer owns its provider adapters and SQLite journal. The host supplies the shared UI runtime, workspace operations, package lifecycle, optional recording bridge, and controlled CLI process service. [SDK and protocol integration](integration/README.md).
 
+To see where the time went in a slow AI image job, run `python3 -I scripts/image-job-timings.py` (`-n N` for more jobs, `--operation <id>` for one). It reads, read-only, the per-stage wall-clock times that Trace and the image provider each keep in their private databases, and marks the largest gap. Jobs from before this was recorded show no stages. `--self-test` checks the script against temporary databases.
+
 [Product direction](PRODUCT_PLAN.md) · [Stage 1 specification](STAGE_1_TRACE_PLUGIN.md) · [Requested UI changes](CHANGES.md)
 
 MIT license.
