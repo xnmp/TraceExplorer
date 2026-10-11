@@ -383,6 +383,19 @@ test("saving an unsaved cover through its Save button moves no cell", async ({ p
   expect(await uncaught(page)).toEqual([]);
 });
 
+test("a refresh that merges the stack during activation still selects the clicked cover", async ({ page }) => {
+  await openView(page, 420, "?grouping=unsaved-and-placeholder", false);
+  const backend = (fn: string, ...args: unknown[]) => page.evaluate(([fn, args]) => (window as any).trace.backend[fn as string](...(args as unknown[])), [fn, args] as const);
+  await backend("holdFolderReads");
+  // An unsaved cover is not a listed file, so pressing it loads its component before selecting.
+  await stack(page, "out").locator("[data-stack-toggle]").click();
+  await backend("joinGeneration", ["o:10:0", "out"], "joined");
+  await backend("releaseFolderReads");
+  await settle(page);
+  await expect.poll(async () => (await state(page)).target).toMatchObject({ id: "trace:o:11:0" });
+  expect(await uncaught(page)).toEqual([]);
+});
+
 const tabStops = (page: Page) => page.locator('[role="grid"] [tabindex="0"]');
 const focusIsInGrid = (page: Page) => page.evaluate(() => !!document.activeElement?.closest('[role="grid"]'));
 

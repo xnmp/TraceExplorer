@@ -418,24 +418,39 @@
     commitPicks(pickable(node) ? pickOnly({ path: node.path!, key: node.key, componentId }, false) : NO_PICKS);
   }
 
-  async function navigateNode(key: NodeKey, componentId: string, modifiers: { shiftKey?: boolean } = {}): Promise<void> {
-    if (!findNode(key, componentId)) {
-      const dir = directory, owns = captureSelection();
-      await session.ensure(componentId);
-      if (dir !== directory || !owns()) return;
-      componentId = findNode(key)?.componentId ?? componentId;
+  /**
+   * Loads the component holding `key` and returns the id of the component that has it. A refresh that
+   * lands meanwhile (a merge renaming components) cancels the load: wait for it, then look the node up
+   * in the new index by what identifies it (its component if that survives, else the stack it covers).
+   * Null when the folder changed, the selection moved on, or the node is gone.
+   */
+  async function reachNode(key: NodeKey, componentId: string): Promise<string | null> {
+    const dir = directory, owns = captureSelection();
+    for (let round = 0; round < 4; round++) {
+      const hit = findNode(key, componentId);
+      if (hit) return hit.componentId;
+      await session.settled();
+      if (dir !== directory || !owns()) return null;
+      const index = session.index;
+      const holder = index?.components.find((summary) => summary.id === componentId)
+        ?? index?.components.find((summary) => summary.coverKey === key)
+        ?? index?.components.find((summary) => summary.id === [...index.members.values()].find((member) => member.key === key)?.componentId);
+      if (!holder) return null;
+      componentId = holder.id;
+      await session.ensure(holder.id);
+      if (dir !== directory || !owns()) return null;
     }
-    focusNode(key, modifiers, "reveal", componentId);
+    return findNode(key)?.componentId ?? null;
+  }
+
+  async function navigateNode(key: NodeKey, componentId: string, modifiers: { shiftKey?: boolean } = {}): Promise<void> {
+    const holder = findNode(key, componentId) ? componentId : await reachNode(key, componentId);
+    if (holder) focusNode(key, modifiers, "reveal", holder);
   }
 
   async function activate(key: NodeKey, event: MouseEvent, componentId: string): Promise<void> {
-    if (!findNode(key, componentId)) {
-      const dir = directory, owns = captureSelection();
-      await session.ensure(componentId);
-      if (dir !== directory || !owns()) return;
-      componentId = findNode(key)?.componentId ?? componentId;
-    }
-    focusNode(key, { ctrlKey: event.ctrlKey || event.metaKey, shiftKey: event.shiftKey }, "hold", componentId);
+    const holder = findNode(key, componentId) ? componentId : await reachNode(key, componentId);
+    if (holder) focusNode(key, { ctrlKey: event.ctrlKey || event.metaKey, shiftKey: event.shiftKey }, "hold", holder);
   }
 
   function open(key: NodeKey): void {

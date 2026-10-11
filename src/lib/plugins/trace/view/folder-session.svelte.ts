@@ -209,7 +209,14 @@ export function createFolderSession(backend: TraceBackend = traceBackend, snapsh
     reconcileOpenStacks();
   }
 
-  async function open(dir: string | null, keepVisible: boolean): Promise<void> {
+  /** The latest index read; `settled` waits for it, since a read replaces component ids and cancels loads. */
+  let opening: Promise<void> = Promise.resolve();
+  const open = (dir: string | null, keepVisible: boolean): Promise<void> => (opening = openIndex(dir, keepVisible));
+  async function settled(): Promise<void> {
+    for (let seen: Promise<void> | null = null; seen !== opening;) { seen = opening; await seen; }
+  }
+
+  async function openIndex(dir: string | null, keepVisible: boolean): Promise<void> {
     const current = ++generation;
     cancelLoads();
     directory = dir;
@@ -379,6 +386,7 @@ export function createFolderSession(backend: TraceBackend = traceBackend, snapsh
     refresh,
     resolveArtifact,
     ensure,
+    settled,
     release(id: string) {
       wanted.delete(id);
       const key = index ? `${index.token}:${id}` : null;
