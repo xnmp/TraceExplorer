@@ -166,12 +166,17 @@ export function validTestReceipt(status: ImageOperationStatus, requestId: string
   if (delivery.state === 'unavailable') return ['missing', 'corrupt', 'storage_unavailable'].includes(delivery.reason);
   return true;
 }
-export function testSummary(status?: ImageOperationStatus, startFailed = false): string {
-  if (!status) return startFailed ? 'Test could not start.' : 'Waiting for the test acceptance reply…';
+/** Only settled outcomes get a line; progress belongs to the button. */
+export function testSummary(status?: ImageOperationStatus, startFailed = false, reason?: string, elapsedMs?: number): string {
+  if (!status) return startFailed ? `✗ ${reason || 'Test could not start.'}` : '';
   const execution = status.execution;
-  if (execution.state === 'succeeded') return status.delivery.state === 'discarded' ? 'Generation succeeded. Test output discarded.' : status.delivery.state === 'available' ? 'Generation succeeded. Test output is retained until you discard it.' : 'Generation succeeded; its output is unavailable. No new generation was started.';
-  if (execution.state === 'failed' || execution.state === 'unknown') return `${execution.state === 'unknown' ? 'Remote outcome unknown' : 'Generation failed'}: ${execution.error.message}`;
-  return execution.state === 'cancelled' ? 'Test cancelled.' : execution.state === 'running' ? 'Generating a test image…' : 'Test accepted; waiting for generation…';
+  if (execution.state === 'succeeded') {
+    const duration = elapsedMs !== undefined && Number.isFinite(elapsedMs) && elapsedMs >= 0 ? ` in ${Math.round(elapsedMs / 1000)} s` : '';
+    return `✓ Generated a test image${duration}`;
+  }
+  if (execution.state === 'failed') return `✗ ${execution.error.message}`;
+  if (execution.state === 'unknown') return `? Outcome unknown: ${execution.error.message}`;
+  return execution.state === 'cancelled' ? '✗ Test cancelled.' : '';
 }
 /** The short, user-facing name of a connection's kind. */
 /** Codex has one saved login and discovers its own executable, so one Codex connection is enough. */

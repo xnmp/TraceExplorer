@@ -43,6 +43,8 @@ pub enum Auth {
 }
 /// Image options a backend honours; they drive the published capabilities.
 pub struct Options {
+    /// Smallest test dimensions this backend accepts within the shared size policy.
+    pub test_size: &'static str,
     pub quality: &'static [&'static str],
     pub background: &'static [&'static str],
     pub resolution: bool,

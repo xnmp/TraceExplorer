@@ -10,6 +10,7 @@ pub const DESCRIPTOR: ApiDescriptor = ApiDescriptor {
     credential_env: "OPENAI_API_KEY",
     auth: Auth::Bearer,
     options: Options {
+        test_size: "1024x1024",
         quality: &["auto", "low", "medium", "high"],
         background: &["auto", "opaque", "transparent"],
         resolution: false,

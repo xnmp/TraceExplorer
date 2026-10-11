@@ -160,7 +160,7 @@ impl Host for FakeHost {
                     .lock()
                     .unwrap()
                     .push(json!({"method":method,"params":p}));
-                Ok(json!({"accepted":true}))
+                Ok(json!({"accepted":true,"resolved":p["resolve"] == true}))
             }
             "host.process.run" => {
                 // Like the native host: a host without stdin refuses the
@@ -4102,4 +4102,217 @@ async fn cancelling_a_test_that_never_started_preserves_intent_and_explains_abse
             .code,
         "not_found"
     );
+}
+
+/// Entirely local: the test-hooks provider returns a canned image, no sockets.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn retained_unknown_test_discard_preserves_evidence_and_allows_next_test() {
+    let directory = tempfile::tempdir().unwrap();
+    let host = FakeHost::new();
+    let service = Service::new(directory.path(), host.clone()).unwrap();
+    service.activate().unwrap();
+    let profile = Profile::Fixture(ApiProfile {
+        id: "fixture".into(),
+        name: "Fixture".into(),
+        recipe_revision: "draft".into(),
+        base_url: "https://fixture.test/v1".into(),
+        default_model: "fixture".into(),
+        allow_insecure_http: false,
+        credential: Credential::None,
+    });
+    service
+        .profiles
+        .save(
+            Configuration {
+                schema_version: 1,
+                document_revision: 0,
+                default_connection_id: Some("fixture".into()),
+                profiles: vec![profile],
+            },
+            0,
+            None,
+            None,
+        )
+        .unwrap();
+    let profile = service.profiles.read().unwrap().profiles.remove(0);
+    let caller = Caller {
+        package_id: "xnmp.image-generation".into(),
+        package_digest: "a".repeat(64),
+        incarnation: 1,
+    };
+    let request = PrepareRequest {
+        operation_id: "stale-test".into(),
+        connection_id: profile.id().into(),
+        expected_connection_revision: profile.revision().into(),
+        model: Some("fixture".into()),
+        prompt: "A blue dot.".into(),
+        inputs: vec![],
+        options: image_generation_backend::domain::test_recipe_options(profile.kind()),
+    };
+    let recipe = image_generation_backend::domain::recipe(&profile, &request).unwrap();
+    service
+        .journal
+        .accept(&caller, "stale-test", &"b".repeat(64), &recipe, true)
+        .unwrap();
+    assert!(service
+        .settings("test.discard", json!({"requestId":"stale-test"}))
+        .is_err());
+    assert!(service
+        .journal
+        .claim(&caller.package_id, "stale-test")
+        .unwrap());
+    let unknown = service
+        .journal
+        .finish(
+            &caller.package_id,
+            "stale-test",
+            Execution::Unknown {
+                error: error("remote_outcome_unknown", "Interrupted test"),
+            },
+            Delivery::None {},
+            None,
+        )
+        .unwrap();
+    assert_eq!(
+        service
+            .settings("test.list", json!({}))
+            .unwrap()
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    let discarded = service
+        .settings("test.discard", json!({"requestId":"stale-test"}))
+        .unwrap();
+    assert_eq!(discarded, json!(unknown));
+    assert_eq!(
+        service
+            .settings("test.discard", json!({"requestId":"stale-test"}))
+            .unwrap(),
+        discarded
+    );
+    assert!(service
+        .settings("test.list", json!({}))
+        .unwrap()
+        .as_array()
+        .unwrap()
+        .is_empty());
+    service.settings("test", json!({"profileId":"fixture","requestId":"next-test","expectedConfigurationRevision":1})).unwrap();
+    let complete = loop {
+        let status: OperationStatus = serde_json::from_value(
+            service
+                .settings("test.status", json!({"requestId":"next-test"}))
+                .unwrap(),
+        )
+        .unwrap();
+        if !matches!(
+            status.execution,
+            Execution::Accepted {} | Execution::Running {}
+        ) {
+            break status;
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    };
+    assert!(matches!(complete.execution, Execution::Succeeded { .. }));
+    service
+        .settings("test.discard", json!({"requestId":"next-test"}))
+        .unwrap();
+    assert!(service
+        .settings("test.list", json!({}))
+        .unwrap()
+        .as_array()
+        .unwrap()
+        .is_empty());
+    while !service
+        .operation_idle("xnmp.image-generation", "next-test")
+        .unwrap()
+    {
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    service.quiesce().unwrap();
+    drop(service);
+    let recovered = Service::new(directory.path(), host).unwrap();
+    recovered.activate().unwrap();
+    assert!(recovered
+        .settings("test.list", json!({}))
+        .unwrap()
+        .as_array()
+        .unwrap()
+        .is_empty());
+    assert_eq!(
+        recovered.status(&caller.package_id, "stale-test").unwrap(),
+        unknown
+    );
+}
+
+struct HeldTestSeal {
+    inner: Arc<FakeHost>,
+    reached: std::sync::mpsc::Sender<()>,
+    release: Arc<std::sync::Barrier>,
+}
+impl Host for HeldTestSeal {
+    fn call(&self, method: &str, params: Value, cancel: &AtomicBool) -> Result<Value> {
+        if method == "host.artifacts.seal" {
+            self.reached.send(()).unwrap();
+            self.release.wait();
+        }
+        self.inner.call(method, params, cancel)
+    }
+    fn event(&self, name: &str, params: Value) -> Result<()> {
+        self.inner.event(name, params)
+    }
+}
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn retained_test_enumeration_masks_success_until_owned_output_sealing_finishes() {
+    let directory = tempfile::tempdir().unwrap();
+    let (reached, sealing) = std::sync::mpsc::channel();
+    let release = Arc::new(std::sync::Barrier::new(2));
+    let host = Arc::new(HeldTestSeal {
+        inner: FakeHost::new(),
+        reached,
+        release: release.clone(),
+    });
+    let service = Service::new(directory.path(), host).unwrap();
+    service.activate().unwrap();
+    service
+        .profiles
+        .save(
+            Configuration {
+                schema_version: 1,
+                document_revision: 0,
+                default_connection_id: Some("fixture".into()),
+                profiles: vec![Profile::Fixture(ApiProfile {
+                    id: "fixture".into(),
+                    name: "Fixture".into(),
+                    recipe_revision: "draft".into(),
+                    base_url: "https://fixture.test/v1".into(),
+                    default_model: "fixture".into(),
+                    allow_insecure_http: false,
+                    credential: Credential::None,
+                })],
+            },
+            0,
+            None,
+            None,
+        )
+        .unwrap();
+    service.settings("test", json!({"profileId":"fixture","requestId":"held-test","expectedConfigurationRevision":1})).unwrap();
+    sealing.recv_timeout(Duration::from_secs(3)).unwrap();
+    let tests = service.settings("test.list", json!({})).unwrap();
+    // Always release the worker before assertions so a failing assertion cannot hang the runtime.
+    release.wait();
+    assert_eq!(tests[0]["status"]["execution"]["state"], "running");
+    loop {
+        let status = service
+            .settings("test.status", json!({"requestId":"held-test"}))
+            .unwrap();
+        if status["execution"]["state"] == "succeeded" {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    service
+        .settings("test.discard", json!({"requestId":"held-test"}))
+        .unwrap();
 }

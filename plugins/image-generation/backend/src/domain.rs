@@ -535,5 +535,27 @@ pub fn capabilities(kind: Kind) -> serde_json::Value {
     }
     value
 }
+/// Cheapest explicit test options from the same descriptor used for capabilities.
+/// Codex chooses its own model and dimensions.
+pub fn test_recipe_options(kind: Kind) -> te_image_generation_contract::ImageOptions {
+    let descriptor = match kind {
+        Kind::Codex => None,
+        Kind::Api(kind) => Some(crate::adapters::api::descriptor(kind)),
+    };
+    te_image_generation_contract::ImageOptions {
+        size: descriptor.map_or("auto", |d| d.options.test_size).into(),
+        resolution: descriptor
+            .filter(|d| d.options.resolution)
+            .map(|_| RESOLUTIONS[0].into()),
+        aspect_ratio: None,
+        quality: if descriptor.is_some_and(|d| d.options.quality.contains(&"low")) {
+            "low"
+        } else {
+            "auto"
+        }
+        .into(),
+        background: "auto".into(),
+    }
+}
 pub const RESOLUTIONS: [&str; 3] = ["1k", "2k", "4k"];
 pub const ASPECT_RATIOS: [&str; 8] = ["keep", "1:1", "4:3", "3:4", "3:2", "2:3", "16:9", "9:16"];

@@ -9,6 +9,7 @@ pub const DESCRIPTOR: ApiDescriptor = ApiDescriptor {
     credential_env: "FIXTURE_API_KEY",
     auth: Auth::Header("x-fixture-key"),
     options: Options {
+        test_size: "auto",
         quality: &["auto"],
         background: &["auto"],
         resolution: true,

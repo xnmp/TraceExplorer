@@ -52,6 +52,7 @@ pub const DESCRIPTOR: ApiDescriptor = ApiDescriptor {
     credential_env: "GEMINI_API_KEY",
     auth: Auth::Header("x-goog-api-key"),
     options: Options {
+        test_size: "auto",
         quality: &["auto"],
         background: &["auto"],
         resolution: true,

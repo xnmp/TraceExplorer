@@ -714,6 +714,7 @@ fn options_problem_rejects_unsupported_resolution_and_aspect_ratio() {
         credential_env: "BARE_KEY",
         auth: Auth::Bearer,
         options: Options {
+            test_size: "auto",
             quality: &["auto"],
             background: &["auto"],
             resolution: false,
@@ -842,5 +843,32 @@ fn windows_batch_targets_require_an_explicit_interpreter() {
         "/usr/bin/secret-tool",
     ] {
         assert!(!implicit_windows_shell(program));
+    }
+}
+
+#[test]
+fn test_recipes_choose_minimal_descriptor_options() {
+    for (kind, size, resolution, quality) in [
+        (Kind::Api(ApiKind::OpenAiImages), "1024x1024", None, "low"),
+        (Kind::Api(ApiKind::Gemini), "auto", Some("1k"), "auto"),
+        (Kind::Api(ApiKind::Bfl), "auto", None, "auto"),
+        (Kind::Codex, "auto", None, "auto"),
+    ] {
+        let options = test_recipe_options(kind);
+        assert_eq!(options.size, size);
+        assert_eq!(options.resolution.as_deref(), resolution);
+        assert_eq!(options.quality, quality);
+        assert_eq!(options.background, "auto");
+        assert_eq!(options.aspect_ratio, None);
+        assert!(options.valid());
+        if let Kind::Api(kind) = kind {
+            assert_eq!(
+                options_problem(
+                    image_generation_backend::adapters::api::descriptor(kind),
+                    &options
+                ),
+                None
+            );
+        }
     }
 }

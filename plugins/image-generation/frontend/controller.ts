@@ -1,7 +1,7 @@
 import { active, configuration, equal, validation, validConfiguration, validTestReceipt, type ImageConfiguration, type ImageOperationStatus, type ImageProfile } from './domain';
 export interface Backend { invoke<T>(method: string, params?: Record<string, unknown>): Promise<T> }
 export interface RevisionEvent { documentRevision: number; affectedProfileIds: readonly string[] }
-export interface TestResult { requestId: string; profileId: string; profileName: string; configurationRevision: number; status?: ImageOperationStatus; startFailed?: boolean; neverStarted?: boolean; error?: string }
+export interface TestResult { requestId: string; profileId: string; profileName: string; configurationRevision: number; status?: ImageOperationStatus; startFailed?: boolean; neverStarted?: boolean; error?: string; startedAt?: number; elapsedMs?: number; resolved?: boolean; cancelRequested?: boolean }
 export interface State { saved: ImageConfiguration | null; draft: ImageConfiguration | null; busy: boolean; loading: boolean; conflict: boolean; error: string; message: string; check: { profileId: string; message: string; available: boolean } | null; tests: readonly TestResult[] }
 export class TestRegistry {
   private records = new Map<string, TestResult>();
@@ -11,14 +11,20 @@ export class TestRegistry {
   set(result: TestResult): void {
     if (this.discarded.has(result.requestId)) return;
     this.records.set(result.requestId, result);
-    if (this.records.size > 64) for (const [id, record] of this.records) { if (this.records.size <= 64) break; if (record.neverStarted || record.status && ['failed', 'cancelled'].includes(record.status.execution.state)) this.records.delete(id); }
+    if (this.records.size > 64) {
+      const latest = new Map([...this.records.values()].map(record => [record.profileId, record.requestId]));
+      for (const [id, record] of this.records) {
+        if (this.records.size <= 64) break;
+        if (latest.get(record.profileId) !== id && (record.resolved || record.startFailed || record.neverStarted)) this.records.delete(id);
+      }
+    }
     for (const fn of this.listeners) fn();
   }
   remove(id: string): void { this.discarded.add(id); this.records.delete(id); for (const fn of this.listeners) fn(); }
   subscribe(fn: () => void): () => void { this.listeners.add(fn); return () => this.listeners.delete(fn); }
 }
-const pending = (test: TestResult): boolean => !test.neverStarted && active(test.status);
-const pollable = (test: TestResult): boolean => pending(test) && (!test.startFailed || !!test.status);
+export const pending = (test: TestResult): boolean => !test.neverStarted && (!test.startFailed || !!test.status) && active(test.status);
+const pollable = (test: TestResult): boolean => pending(test) || !!test.status && !test.resolved;
 const initial = (): State => ({ saved: null, draft: null, busy: false, loading: true, conflict: false, error: '', message: '', check: null, tests: [] });
 function message(cause: unknown): string {
   // The native bridge rejects with JSON-RPC objects, not necessarily Error instances.
@@ -39,6 +45,8 @@ export class ConnectionsController {
   private actionSequence = 0;
   private timers = new Map<string, () => void>();
   private polling = new Set<string>();
+  private starting = new Set<string>();
+  private resolving = new Map<string, Promise<void>>();
   private unsubscribe: () => void;
   constructor(private backend: Backend, private registry: TestRegistry, private timer: Schedule = schedule, private id: () => string = () => crypto.randomUUID()) {
     this.state.tests = registry.all();
@@ -48,7 +56,19 @@ export class ConnectionsController {
   subscribe(fn: (state: State) => void): () => void { this.listeners.add(fn); fn(this.state); return () => this.listeners.delete(fn); }
   get dirty(): boolean { return !!this.state.saved && !!this.state.draft && !equal(this.state.saved, this.state.draft); }
   private update(patch: Partial<State>): void { if (this.disposed) return; this.state = { ...this.state, ...patch }; for (const fn of this.listeners) fn(this.state); }
-  async initialize(): Promise<void> { await this.refresh(); for (const test of this.registry.all()) if (pollable(test)) void this.poll(test.requestId); }
+  async initialize(): Promise<void> {
+    await this.refresh();
+    try {
+      const retained = await this.backend.invoke<{ profileId: string; status: ImageOperationStatus }[]>('settings.test.list');
+      if (!Array.isArray(retained)) throw new Error('The service returned an invalid test list.');
+      for (const entry of retained) {
+        const profile = this.state.saved?.profiles.find(p => p.id === entry.profileId);
+        const record = this.registry.all().find(t => t.requestId === entry.status?.operationId) ?? { requestId: entry.status?.operationId, profileId: entry.profileId, profileName: profile?.name ?? entry.profileId, configurationRevision: this.state.saved?.documentRevision ?? 0 };
+        this.accept(record, entry.status);
+      }
+    } catch (cause) { this.update({ error: message(cause) }); }
+    await Promise.all(this.registry.all().map(test => pending(test) ? this.poll(test.requestId) : this.discard(test.requestId)));
+  }
   revision(event: RevisionEvent): void {
     if (!Number.isSafeInteger(event.documentRevision) || event.documentRevision < 0) return;
     this.observed = Math.max(this.observed, event.documentRevision);
@@ -105,23 +125,32 @@ export class ConnectionsController {
   async test(profileId: string): Promise<void> {
     const profile = this.usable(profileId); if (!profile) return;
     const prior = this.registry.all();
-    const unresolved = (test: TestResult) => pending(test) || test.status?.execution.state === 'unknown' || test.status?.execution.state === 'succeeded' && !['discarded', 'acquired'].includes(test.status.delivery.state);
-    if (prior.filter(unresolved).length >= 16 || prior.some(t => t.profileId === profileId && unresolved(t))) { this.update({ error: 'Resolve the retained test for this connection before starting another.' }); return; }
-    const record: TestResult = { requestId: this.id(), profileId, profileName: profile.name, configurationRevision: this.state.saved!.documentRevision };
+    if (prior.some(t => t.profileId === profileId && pending(t))) return;
+    // Finish any interrupted cleanup before admitting another test for this connection.
+    const cleanup = prior.filter(t => t.profileId === profileId && t.status && !active(t.status) && !t.resolved);
+    if (cleanup.length) await Promise.all(cleanup.map(t => this.discard(t.requestId)));
+    if (this.disposed || !this.usable(profileId)) return;
+    if (this.registry.all().some(t => t.profileId === profileId && pending(t))) return;
+    const record: TestResult = { requestId: this.id(), profileId, profileName: profile.name, configurationRevision: this.state.saved!.documentRevision, startedAt: Date.now() };
     this.registry.set(record);
+    this.starting.add(record.requestId);
     try {
       this.accept(record, await this.backend.invoke<ImageOperationStatus>('settings.test', { profileId, requestId: record.requestId, expectedConfigurationRevision: record.configurationRevision }));
-      if (this.disposed) { void this.cancel(record.requestId); return; }
+      if (this.disposed || this.registry.all().find(t => t.requestId === record.requestId)?.cancelRequested) { await this.cancel(record.requestId); await this.discard(record.requestId); return; }
       if (active(this.registry.all().find(t => t.requestId === record.requestId)?.status)) this.queue(record.requestId);
-    } catch (cause) { const latest = this.registry.all().find(t => t.requestId === record.requestId) ?? record; this.registry.set({ ...latest, startFailed: !latest.status, error: message(cause) }); }
+      else await this.discard(record.requestId);
+    } catch (cause) { const latest = this.registry.all().find(t => t.requestId === record.requestId) ?? record; this.registry.set({ ...latest, startFailed: !latest.status, error: message(cause) }); await this.poll(record.requestId); }
+    finally { this.starting.delete(record.requestId); }
   }
   private accept(record: TestResult, status: ImageOperationStatus): void {
     if (!validTestReceipt(status, record.requestId)) throw new Error('The service returned an invalid test receipt.');
     const old = this.registry.all().find(t => t.requestId === record.requestId);
     if (old?.status && status.revision < old.status.revision) return;
-    this.registry.set({ ...record, status, startFailed: false, neverStarted: false, error: undefined });
+    this.registry.set({ ...record, ...old, status, startFailed: false, neverStarted: false, error: undefined,
+      elapsedMs: old?.elapsedMs ?? (!active(status) && record.startedAt !== undefined ? Date.now() - record.startedAt : undefined) });
+    if (!active(status)) { this.timers.get(record.requestId)?.(); this.timers.delete(record.requestId); }
   }
-  private failure(record: TestResult, error: string): void { this.registry.set({ ...(this.registry.all().find(t => t.requestId === record.requestId) ?? record), error }); }
+  private failure(record: TestResult, error: string): void { const latest = this.registry.all().find(t => t.requestId === record.requestId) ?? record; this.registry.set({ ...latest, error: latest.startFailed && latest.error ? latest.error : error }); }
   private queue(requestId: string): void {
     this.timers.get(requestId)?.();
     this.timers.delete(requestId);
@@ -130,28 +159,38 @@ export class ConnectionsController {
   async poll(requestId: string): Promise<void> {
     const record = this.registry.all().find(t => t.requestId === requestId); if (!record || this.polling.has(requestId) || this.disposed) return;
     this.polling.add(requestId);
-    try { this.accept(record, await this.backend.invoke<ImageOperationStatus>('settings.test.status', { requestId })); }
+    try { this.accept(record, await this.backend.invoke<ImageOperationStatus>('settings.test.status', { requestId })); await this.discard(requestId); }
     catch (cause) { this.failure(record, message(cause)); }
     finally { this.polling.delete(requestId); if (!this.disposed && this.registry.all().some(t => t.requestId === requestId && pollable(t))) this.queue(requestId); }
   }
   async cancel(requestId: string): Promise<void> {
     const record = this.registry.all().find(t => t.requestId === requestId); if (!record || !pending(record)) return;
-    try { this.accept(record, await this.backend.invoke<ImageOperationStatus>('settings.cancelTest', { requestId })); if (!this.disposed && active(this.registry.all().find(t => t.requestId === requestId)?.status)) this.queue(requestId); }
+    this.registry.set({ ...record, cancelRequested: true });
+    try { this.accept(record, await this.backend.invoke<ImageOperationStatus>('settings.cancelTest', { requestId })); if (!this.disposed && active(this.registry.all().find(t => t.requestId === requestId)?.status)) this.queue(requestId); else await this.discard(requestId); }
     catch (cause) {
       const reason = message(cause);
       if (reason === 'The test never started') {
         const latest = this.registry.all().find(t => t.requestId === requestId) ?? record;
         // A late accepted start reply remains authoritative and triggers cancellation again.
-        if (!latest.status) this.registry.set({ ...latest, startFailed: true, neverStarted: true, error: latest.error ? latest.error + '. The test never started' : reason });
+        if (!latest.status && !this.starting.has(requestId)) this.registry.set({ ...latest, startFailed: true, neverStarted: true, error: latest.error ? latest.error + '. The test never started' : reason });
         else this.failure(latest, reason);
       } else this.failure(record, `Cancellation could not be confirmed: ${reason}`);
     }
   }
   async discard(requestId: string): Promise<void> {
+    const existing = this.resolving.get(requestId); if (existing) return existing;
     const record = this.registry.all().find(t => t.requestId === requestId);
-    if (!record || record.status?.execution.state !== 'succeeded' || this.disposed) return;
-    try { const status = await this.backend.invoke<ImageOperationStatus>('settings.test.discard', { requestId }); this.accept(record, status); if (status.delivery.state === 'discarded') this.registry.remove(requestId); }
-    catch (cause) { this.failure(record, `Test output remains retained: ${message(cause)}`); }
+    if (!record?.status || active(record.status) || record.resolved) return;
+    const work = (async () => {
+      try {
+        const status = await this.backend.invoke<ImageOperationStatus>('settings.test.discard', { requestId });
+        this.accept(record, status);
+        const latest = this.registry.all().find(t => t.requestId === requestId)!;
+        this.registry.set({ ...latest, resolved: true });
+      } catch (cause) { this.failure(record, `Test cleanup could not be confirmed: ${message(cause)}`); this.queue(requestId); }
+    })();
+    this.resolving.set(requestId, work);
+    try { await work; } finally { this.resolving.delete(requestId); }
   }
   close(): void {
     if (this.disposed) return;

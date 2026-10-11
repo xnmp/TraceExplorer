@@ -10,18 +10,22 @@ async function saveHttp(page: Page) {
   await page.getByRole('button', { name: 'Save connections' }).click();
   await expect(page.getByText('Connections saved.', { exact: true })).toBeVisible();
 }
-test('configures independent custom API, write-only key, local check, and retained explicit test discard', async ({ page }) => {
+test('configures independent custom API, write-only key, local check, and automatic test cleanup', async ({ page }) => {
   await setup(page); await expect(page.getByText('No image connections configured.', { exact: false })).toBeVisible(); await saveHttp(page);
   await page.getByRole('combobox', { name: 'Credential source' }).click();
   await page.getByRole('option', { name: 'Saved OS credential' }).click();
   await page.getByLabel('New API key').fill('private-fixture-key'); await page.getByRole('button', { name: 'Save key securely' }).click();
   await expect(page.getByLabel('New API key')).toHaveValue(''); await expect(page.getByText('A key is saved in the OS credential store.')).toBeVisible();
   await page.getByRole('button', { name: 'Check locally' }).click(); await expect(page.getByText('Local checks passed. Model generation has not been tested.')).toBeVisible();
-  await page.getByRole('button', { name: 'Test generation (may be billed)', exact: true }).click(); await expect(page.getByText('Generation succeeded. Test output is retained until you discard it.')).toBeVisible();
-  await page.getByRole('button', { name: 'Close', exact: true }).click(); await expect(page.getByRole('dialog')).toHaveCount(0);
-  const calls = await page.evaluate(() => (window as any).imageConnectionFixture.calls()); expect(calls).not.toContain('settings.test.discard');
-  await page.getByRole('button', { name: 'Configure connections', exact: true }).click(); await expect(page.getByText('Generation succeeded. Test output is retained until you discard it.')).toBeVisible();
-  await page.getByRole('button', { name: 'Discard test output', exact: true }).click(); await expect(page.getByRole('heading', { name: 'Connection tests' })).toHaveCount(0);
+  await page.getByRole('button', { name: 'Test generation (may be billed)', exact: true }).click();
+  const cancel = page.getByRole('button', { name: 'Cancel test', exact: true });
+  await expect(cancel.locator('.spinner')).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Check locally' })).toBeEnabled();
+  await expect(page.getByRole('heading', { name: 'Connection tests' })).toHaveCount(0);
+  await expect(page.getByRole('status').filter({ hasText: /^✓ Generated a test image in \d+ s$/ })).toBeVisible();
+  await expect.poll(() => page.evaluate(() => (window as any).imageConnectionFixture.calls())).toContain('settings.test.discard');
+  await expect(page.getByRole('button', { name: 'Refresh status' })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Discard test output' })).toHaveCount(0);
   const saved = await page.evaluate(() => (window as any).imageConnectionFixture.snapshot()); expect(saved.profiles[0]).toMatchObject({ baseUrl: 'https://example.test/v1/images', defaultModel: 'custom-image', credential: { kind: 'secret' } }); expect(JSON.stringify(saved)).not.toContain('private-fixture-key');
 });
 test('remote revision preserves draft until explicit reload; keyboard close protects dirty changes', async ({ page }) => {
@@ -196,12 +200,12 @@ test('command source saves parsed argv and an unclosed quote blocks Save', async
 });
 
 for (const zoom of [1, 1.1, 1.25]) {
-  test(`overflow scrolls to the last test action with fixed header/footer at CSS zoom ${zoom}`, async ({ page }) => {
+  test(`overflow scrolls to connection actions with fixed header/footer at CSS zoom ${zoom}`, async ({ page }) => {
     await page.setViewportSize({ width: 800, height: 480 });
     await setup(page); await saveHttp(page);
     await page.evaluate(zoom => document.documentElement.style.zoom = String(zoom), zoom);
     await page.getByRole('button', { name: 'Test generation (may be billed)', exact: true }).click();
-    const last = page.getByRole('button', { name: 'Discard test output', exact: true });
+    const last = page.getByRole('button', { name: 'Remove connection', exact: true });
     await expect(last).toBeAttached();
     const body = page.getByTestId('connections-body');
     await expect.poll(() => body.evaluate(element => element.scrollHeight > element.clientHeight)).toBe(true);
@@ -220,11 +224,39 @@ test('a rejected test start displays its fixed reason without an endless waiting
   await setup(page); await saveHttp(page);
   await page.evaluate(() => (window as any).imageConnectionFixture.rejectStart({ code: -32000, data: { code: 'unavailable', message: 'Credential command exited with status 1' } }));
   await page.getByRole('button', { name: 'Test generation (may be billed)', exact: true }).click();
-  await expect(page.getByText('Test could not start.', { exact: true })).toBeVisible();
-  await expect(page.getByRole('alert')).toHaveText('Credential command exited with status 1');
-  await expect(page.getByText('Waiting for the test acceptance reply…', { exact: true })).toHaveCount(0);
-  await page.getByRole('button', { name: 'Cancel test', exact: true }).click();
-  await expect(page.getByRole('alert')).toContainText('The test never started');
-  await expect(page.getByText('Cancellation could not be confirmed', { exact: false })).toHaveCount(0);
+  await expect(page.getByRole('status').filter({ hasText: '✗ Credential command exited with status 1' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Test generation (may be billed)', exact: true })).toBeEnabled();
   await expect(page.getByRole('button', { name: 'Cancel test', exact: true })).toHaveCount(0);
+});
+
+test('unknown outcome is inline and a new test can start', async ({ page }) => {
+  await setup(page); await saveHttp(page);
+  await page.evaluate(() => (window as any).imageConnectionFixture.outcome('unknown'));
+  const generate = page.getByRole('button', { name: 'Test generation (may be billed)', exact: true });
+  await generate.click();
+  await expect(page.getByText('? Outcome unknown: Codex turn was interrupted', { exact: true })).toBeVisible();
+  await page.evaluate(() => (window as any).imageConnectionFixture.outcome('succeeded'));
+  await generate.click();
+  await expect(page.getByRole('status').filter({ hasText: /^✓ Generated a test image/ })).toBeVisible();
+});
+test('stale retained unknown on open is automatically resolved without a banner', async ({ page }) => {
+  await setup(page); await saveHttp(page); await page.getByRole('button', { name: 'Close', exact: true }).click();
+  await page.evaluate(() => (window as any).imageConnectionFixture.staleUnknown());
+  await page.getByRole('button', { name: 'Configure connections', exact: true }).click();
+  await expect(page.getByText('? Outcome unknown: Codex turn was interrupted', { exact: true })).toBeVisible();
+  await expect(page.getByText('Resolve the retained test', { exact: false })).toHaveCount(0);
+  await expect(page.getByRole('heading', { name: 'Connection tests' })).toHaveCount(0);
+  await page.getByRole('button', { name: 'Test generation (may be billed)', exact: true }).click();
+  await expect(page.getByRole('status').filter({ hasText: /^✓ Generated a test image/ })).toBeVisible();
+});
+test('the spinning test button cancels generation and each connection keeps its own result', async ({ page }) => {
+  await setup(page); await saveHttp(page);
+  await page.evaluate(() => (window as any).imageConnectionFixture.outcome('running'));
+  await page.getByRole('button', { name: 'Test generation (may be billed)', exact: true }).click();
+  await page.getByRole('button', { name: 'Cancel test', exact: true }).click();
+  await expect(page.getByText('✗ Test cancelled.', { exact: true })).toBeVisible();
+  await page.getByRole('button', { name: 'Add Codex' }).click();
+  await expect(page.getByText('✗ Test cancelled.', { exact: true })).toHaveCount(0);
+  await page.getByRole('button', { name: /Saved Images/ }).click();
+  await expect(page.getByText('✗ Test cancelled.', { exact: true })).toBeVisible();
 });

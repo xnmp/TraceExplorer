@@ -86,6 +86,7 @@ pub const DESCRIPTOR: ApiDescriptor = ApiDescriptor {
     credential_env: "BFL_API_KEY",
     auth: Auth::Header("x-key"),
     options: Options {
+        test_size: "auto",
         quality: &["auto"],
         background: &["auto"],
         resolution: false,

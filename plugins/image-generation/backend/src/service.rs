@@ -1307,6 +1307,20 @@ impl Service {
                 })
             }
             "test" => self.test(params),
+            "test.list" => {
+                let tests = self.journal.retained_tests("xnmp.image-generation")?;
+                let mut visible_tests = Vec::new();
+                for (profile_id, status) in tests {
+                    let visible = self
+                        .visible("xnmp.image-generation", &status.operation_id, || {
+                            self.journal
+                                .get("xnmp.image-generation", &status.operation_id, None)
+                        })?
+                        .ok_or_else(|| error("not_found", "Unknown image test"))?;
+                    visible_tests.push(json!({"profileId":profile_id,"status":visible}));
+                }
+                Ok(json!(visible_tests))
+            }
             "test.status" => Ok(serde_json::to_value(
                 self.status("xnmp.image-generation", &text(&params, "requestId")?)?,
             )
@@ -1325,18 +1339,54 @@ impl Service {
             }
             "test.discard" => {
                 let operation = text(&params, "requestId")?;
-                self.status("xnmp.image-generation", &operation)?;
-                let sha = self
-                    .journal
-                    .output_sha256("xnmp.image-generation", &operation)?
-                    .ok_or_else(|| invalid("Successful test output required for discard"))?;
-                let status =
-                    self.acknowledge("xnmp.image-generation", &operation, &sha, "discarded", None)?;
-                self.host.call(
+                if !self.journal.is_test("xnmp.image-generation", &operation)? {
+                    return Err(invalid("Only a test operation can be discarded here"));
+                }
+                let before = self
+                    .visible("xnmp.image-generation", &operation, || {
+                        self.journal.get("xnmp.image-generation", &operation, None)
+                    })?
+                    .ok_or_else(|| error("not_found", "Unknown image test"))?;
+                if matches!(
+                    before.execution,
+                    Execution::Accepted {} | Execution::Running {}
+                ) {
+                    return Err(invalid("Only a settled test can be discarded"));
+                }
+                let status = if matches!(before.execution, Execution::Succeeded { .. }) {
+                    let sha = self
+                        .journal
+                        .output_sha256("xnmp.image-generation", &operation)?
+                        .ok_or_else(|| {
+                            invalid("Successful test output digest required for discard")
+                        })?;
+                    self.acknowledge("xnmp.image-generation", &operation, &sha, "discarded", None)?
+                } else {
+                    before
+                };
+                let unknown = matches!(status.execution, Execution::Unknown { .. });
+                let no_output = !matches!(status.execution, Execution::Succeeded { .. });
+                if no_output && self.operation_has_io("xnmp.image-generation", &operation)? {
+                    return Err(error(
+                        "busy",
+                        "Test cancellation is still stopping local work",
+                    ));
+                }
+                let updated = self.host.call(
                     "host.services.test.update",
-                    json!({"operationId":operation,"status":status}),
+                    json!({"operationId":operation,"status":status,"resolve":true,"noLiveWorker":no_output}),
                     &AtomicBool::new(false),
                 )?;
+                // Feature negotiation: older hosts retain unknown execution
+                // reservations. Never claim cleanup until the host confirms it.
+                if unknown && updated["resolved"] != true {
+                    return Err(error(
+                        "host_unavailable",
+                        "The host cannot yet resolve unknown connection tests",
+                    ));
+                }
+                self.journal
+                    .resolve_test("xnmp.image-generation", &operation)?;
                 Ok(serde_json::to_value(status).map_err(storage)?)
             }
             _ => Err(error(
@@ -1398,33 +1448,9 @@ impl Service {
             connection_id: profile.id().into(),
             expected_connection_revision: profile.revision().into(),
             model: profile.api().map(|(_, api)| api.default_model.clone()),
-            prompt: "Create a simple solid blue square, without text.".into(),
+            prompt: "A blue dot.".into(),
             inputs: vec![],
-            options: ImageOptions {
-                size: if profile
-                    .api()
-                    .is_some_and(|(kind, _)| !adapters::api::descriptor(kind).options.sizes)
-                {
-                    "auto"
-                } else {
-                    "1024x1024"
-                }
-                .into(),
-                resolution: None,
-                aspect_ratio: None,
-                quality: if profile.api().is_some_and(|(kind, _)| {
-                    adapters::api::descriptor(kind)
-                        .options
-                        .quality
-                        .contains(&"low")
-                }) {
-                    "low"
-                } else {
-                    "auto"
-                }
-                .into(),
-                background: "auto".into(),
-            },
+            options: domain::test_recipe_options(profile.kind()),
         };
         let preparation = self.prepare(caller.clone(), prepared.clone())?;
 

@@ -127,6 +127,7 @@ impl Journal {
             Some(2) => {},
             _ => unreachable!(),
         }
+        connection.execute_batch("CREATE TABLE IF NOT EXISTS resolved_tests(caller TEXT NOT NULL,operation TEXT NOT NULL,PRIMARY KEY(caller,operation))").map_err(storage)?;
         // Additive and idempotent, so the schema version is unchanged and an
         // older build still opens this journal (it selects explicit columns).
         // Optional diagnostics: a journal that cannot take the column still works.
@@ -171,8 +172,14 @@ impl Journal {
             return Ok(true);
         }
         #[cfg(feature = "test-hooks")]
-        if self.migration_fault.load(std::sync::atomic::Ordering::SeqCst) {
-            return Err(error("storage_unavailable", "Injected timings migration failure"));
+        if self
+            .migration_fault
+            .load(std::sync::atomic::Ordering::SeqCst)
+        {
+            return Err(error(
+                "storage_unavailable",
+                "Injected timings migration failure",
+            ));
         }
         connection
             .execute_batch("ALTER TABLE operations ADD COLUMN timings TEXT")
@@ -230,7 +237,10 @@ impl Journal {
         let write = || -> Result<()> {
             #[cfg(feature = "test-hooks")]
             if self.timing_fault.load(std::sync::atomic::Ordering::SeqCst) {
-                return Err(error("storage_unavailable", "Injected timing write failure"));
+                return Err(error(
+                    "storage_unavailable",
+                    "Injected timing write failure",
+                ));
             }
             let at = at_ms.ok_or_else(|| error("storage_unavailable", "Clock unavailable"))?;
             let connection = self.connection.lock().map_err(storage)?;
@@ -572,7 +582,12 @@ impl Journal {
         receipt: te_image_generation_contract::OperationDiagnostics,
         failure: te_image_generation_contract::SafeError,
     ) -> Result<()> {
-        self.settle_turn(caller, operation, receipt, Execution::Unknown { error: failure })
+        self.settle_turn(
+            caller,
+            operation,
+            receipt,
+            Execution::Unknown { error: failure },
+        )
     }
     /// A completed turn that definitely made no image: terminal `Failed`, with
     /// the same running-only and turn-identity guards as `turn_failure`.
@@ -583,7 +598,12 @@ impl Journal {
         receipt: te_image_generation_contract::OperationDiagnostics,
         failure: te_image_generation_contract::SafeError,
     ) -> Result<()> {
-        self.settle_turn(caller, operation, receipt, Execution::Failed { error: failure })
+        self.settle_turn(
+            caller,
+            operation,
+            receipt,
+            Execution::Failed { error: failure },
+        )
     }
     fn settle_turn(
         &self,
@@ -789,41 +809,40 @@ impl Journal {
                 "Output digest does not match the successful operation",
             ));
         }
-        let (status, changed) = self
-            .change(caller, operation, |status, _| {
-                if !matches!(status.execution, Execution::Succeeded { .. }) {
+        let (status, changed) = self.change(caller, operation, |status, _| {
+            if !matches!(status.execution, Execution::Succeeded { .. }) {
+                return Err(error(
+                    "invalid_request",
+                    "Only a successful result can be acknowledged",
+                ));
+            }
+            let next = match disposition {
+                "acquired" => Delivery::Acquired {
+                    transfer_receipt: receipt
+                        .filter(|r| !r.is_empty() && r.len() <= 128)
+                        .ok_or_else(|| {
+                            error("invalid_request", "Acquisition requires a transfer receipt")
+                        })?
+                        .into(),
+                },
+                "discarded" => Delivery::Discarded {},
+                _ => return Err(error("invalid_request", "Invalid output disposition")),
+            };
+            if matches!(
+                status.delivery,
+                Delivery::Acquired { .. } | Delivery::Discarded {}
+            ) {
+                if status.delivery != next {
                     return Err(error(
-                        "invalid_request",
-                        "Only a successful result can be acknowledged",
+                        "operation_conflict",
+                        "Output already has another disposition",
                     ));
                 }
-                let next = match disposition {
-                    "acquired" => Delivery::Acquired {
-                        transfer_receipt: receipt
-                            .filter(|r| !r.is_empty() && r.len() <= 128)
-                            .ok_or_else(|| {
-                                error("invalid_request", "Acquisition requires a transfer receipt")
-                            })?
-                            .into(),
-                    },
-                    "discarded" => Delivery::Discarded {},
-                    _ => return Err(error("invalid_request", "Invalid output disposition")),
-                };
-                if matches!(
-                    status.delivery,
-                    Delivery::Acquired { .. } | Delivery::Discarded {}
-                ) {
-                    if status.delivery != next {
-                        return Err(error(
-                            "operation_conflict",
-                            "Output already has another disposition",
-                        ));
-                    }
-                    return Ok(false);
-                }
-                status.delivery = next;
-                Ok(true)
-            })?;
+                return Ok(false);
+            }
+            status.delivery = next;
+            Ok(true)
+        })?;
         if changed && disposition == "acquired" {
             self.record_timing(caller, operation, "delivery_acquired");
         }
@@ -914,6 +933,59 @@ impl Journal {
         Ok(recovered)
     }
 
+    /// Private test retention is separate from public delivery: an unknown
+    /// receipt has no output, and keeps its original execution evidence.
+    pub fn resolve_test(&self, caller: &str, operation: &str) -> Result<()> {
+        let connection = self.connection.lock().map_err(storage)?;
+        let stored = load_receipt(&connection, caller, operation)?
+            .ok_or_else(|| error("not_found", "Unknown image operation"))?;
+        if !stored.test
+            || matches!(
+                stored.status.execution,
+                Execution::Accepted {} | Execution::Running {}
+            )
+        {
+            return Err(error(
+                "invalid_request",
+                "Only a settled test can be discarded",
+            ));
+        }
+        if matches!(stored.status.execution, Execution::Succeeded { .. })
+            && !matches!(stored.status.delivery, Delivery::Discarded {})
+        {
+            return Err(error(
+                "invalid_request",
+                "Discard successful test output first",
+            ));
+        }
+        connection
+            .execute(
+                "INSERT OR IGNORE INTO resolved_tests(caller,operation) VALUES(?,?)",
+                params![caller, operation],
+            )
+            .map_err(storage)?;
+        Ok(())
+    }
+    pub fn retained_tests(&self, caller: &str) -> Result<Vec<(String, OperationStatus)>> {
+        let connection = self.connection.lock().map_err(storage)?;
+        let mut query = connection.prepare("SELECT operation FROM operations o WHERE caller=? AND test=1 AND NOT EXISTS(SELECT 1 FROM resolved_tests r WHERE r.caller=o.caller AND r.operation=o.operation) ORDER BY rowid").map_err(storage)?;
+        let operations = query
+            .query_map([caller], |row| row.get::<_, String>(0))
+            .map_err(storage)?;
+        let mut tests = Vec::new();
+        for operation in operations {
+            let operation = operation.map_err(storage)?;
+            let stored = load_receipt(&connection, caller, &operation)?
+                .ok_or_else(|| error("not_found", "Unknown image test"))?;
+            tests.push((
+                stored
+                    .recipe
+                    .map_or_else(String::new, |recipe| recipe.connection_id),
+                stored.status,
+            ));
+        }
+        Ok(tests)
+    }
     pub fn is_test(&self, caller: &str, operation: &str) -> Result<bool> {
         let connection = self.connection.lock().map_err(storage)?;
         load_receipt(&connection, caller, operation)?
