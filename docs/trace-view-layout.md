@@ -27,10 +27,11 @@ including null for arrivals/departures. The domain does not animate anything.
 
 For a fully paged graph, `projectReferenceBadges(projectDag(nodes))` removes
 foreign root images (scope `subfolder`/`external`, with a path and no accepted
-parent in the supplied DAG) from the drawable DAG. It preserves each reference's
+parent in the supplied DAG; the index sends an outside image with no current-folder ancestor
+without parents, so a chain A → B of outside inputs is all badges) from the drawable DAG. It preserves each reference's
 path, scope, key and ordered direct consumers, indexed by consumer. Keep all
 badges in domain data; display up to three and a `+n` overflow in the view.
-Path-null placeholders and foreign images with parents remain tiles. Compute
+Path-null placeholders and foreign images below a current image remain tiles. Compute
 drawable components **after** this projection: sharing only a reference no
 longer joins two edit chains. Projection requires complete parent relationships,
 before visibility filtering; a partial graph cannot establish reference roots.

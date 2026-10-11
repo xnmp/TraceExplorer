@@ -1024,7 +1024,7 @@
         ],
         "path": "/managed/out.png",
         "scope": "external",
-        "location": "Temporary \u00b7 not yet saved",
+        "location": "Temporary · not yet saved",
         "state": "present",
         "temporary": true,
         "discarded": false,
@@ -1520,35 +1520,74 @@
     "expected": [
       {
         "summary": {
-          "id": "c:o:7:0",
+          "id": "c:o:9:0",
+          "title": "b",
+          "cover": {
+            "path": "/pictures/b.png",
+            "present": true
+          },
+          "coverKey": "o:9:0",
+          "imageCount": 1,
+          "nodeCount": 2,
+          "active": false,
+          "unsaved": false
+        },
+        "keys": [
+          "o:7:0",
+          "o:9:0"
+        ],
+        "badges": [
+          {
+            "key": "o:7:0",
+            "path": "/elsewhere/cyclic.png",
+            "scope": "external",
+            "artifactId": 1,
+            "consumers": [
+              "o:9:0"
+            ]
+          }
+        ]
+      },
+      {
+        "summary": {
+          "id": "c:o:8:0",
           "title": "a",
           "cover": {
             "path": "/pictures/a.png",
             "present": true
           },
           "coverKey": "o:8:0",
-          "imageCount": 2,
-          "nodeCount": 3,
+          "imageCount": 1,
+          "nodeCount": 2,
           "active": false,
           "unsaved": false
         },
         "keys": [
           "o:7:0",
-          "o:8:0",
-          "o:9:0"
+          "o:8:0"
         ],
-        "badges": []
+        "badges": [
+          {
+            "key": "o:7:0",
+            "path": "/elsewhere/cyclic.png",
+            "scope": "external",
+            "artifactId": 1,
+            "consumers": [
+              "o:8:0"
+            ]
+          }
+        ]
       }
     ],
     "members": [
       {
         "path": "/pictures/a.png",
-        "componentId": "c:o:7:0",
+        "componentId": "c:o:8:0",
         "key": "o:8:0"
       },
       {
         "path": "/pictures/b.png",
-        "componentId": "c:o:7:0",
+        "componentId": "c:o:9:0",
         "key": "o:9:0"
       }
     ]
@@ -1629,9 +1668,9 @@
         "artifactId": 5,
         "runId": null,
         "parents": [],
-        "path": "/pictures/\ue000.png",
+        "path": "/pictures/.png",
         "scope": "current",
-        "location": "./\ue000.png",
+        "location": "./.png",
         "state": "present",
         "temporary": false,
         "discarded": false,
@@ -1647,9 +1686,9 @@
         "parents": [
           "a:5"
         ],
-        "path": "/pictures/\ud83d\ude00.png",
+        "path": "/pictures/😀.png",
         "scope": "current",
-        "location": "./\ud83d\ude00.png",
+        "location": "./😀.png",
         "state": "present",
         "temporary": false,
         "discarded": false,
@@ -1663,9 +1702,9 @@
       {
         "summary": {
           "id": "c:a:5",
-          "title": "\ue000",
+          "title": "",
           "cover": {
-            "path": "/pictures/\ue000.png",
+            "path": "/pictures/.png",
             "present": true
           },
           "coverKey": "a:5",
@@ -1743,12 +1782,12 @@
         "key": "o:4:0"
       },
       {
-        "path": "/pictures/\ue000.png",
+        "path": "/pictures/.png",
         "componentId": "c:a:5",
         "key": "a:5"
       },
       {
-        "path": "/pictures/\ud83d\ude00.png",
+        "path": "/pictures/😀.png",
         "componentId": "c:a:5",
         "key": "o:6:0"
       }
@@ -2309,13 +2348,13 @@
     "expected": [
       {
         "summary": {
-          "id": "c:o:2:0",
+          "id": "c:o:3:0",
           "title": "c",
           "cover": {
-            "path": "/elsewhere/b.png",
+            "path": "/pictures/c.png",
             "present": true
           },
-          "coverKey": "o:2:0",
+          "coverKey": "o:3:0",
           "imageCount": 1,
           "nodeCount": 3,
           "active": false,
@@ -2333,7 +2372,15 @@
             "scope": "external",
             "artifactId": 1,
             "consumers": [
-              "o:2:0",
+              "o:3:0"
+            ]
+          },
+          {
+            "key": "o:2:0",
+            "path": "/elsewhere/b.png",
+            "scope": "external",
+            "artifactId": 2,
+            "consumers": [
               "o:3:0"
             ]
           }
@@ -2343,8 +2390,214 @@
     "members": [
       {
         "path": "/pictures/c.png",
-        "componentId": "c:o:2:0",
+        "componentId": "c:o:3:0",
         "key": "o:3:0"
+      }
+    ]
+  },
+  {
+    "name": "two-stacks-share-an-external-chain",
+    "nodes": [
+      {
+        "key": "a:1",
+        "artifactId": 1,
+        "runId": null,
+        "parents": [],
+        "path": "/pictures/r1.png",
+        "scope": "current",
+        "location": "./r1.png",
+        "state": "present",
+        "temporary": false,
+        "discarded": false,
+        "earlierRevision": false,
+        "order": 1,
+        "prompt": "",
+        "dismissable": false
+      },
+      {
+        "key": "a:2",
+        "artifactId": 2,
+        "runId": null,
+        "parents": [],
+        "path": "/pictures/r2.png",
+        "scope": "current",
+        "location": "./r2.png",
+        "state": "present",
+        "temporary": false,
+        "discarded": false,
+        "earlierRevision": false,
+        "order": 2,
+        "prompt": "",
+        "dismissable": false
+      },
+      {
+        "key": "a:3",
+        "artifactId": 3,
+        "runId": null,
+        "parents": [],
+        "path": "/elsewhere/a.png",
+        "scope": "external",
+        "location": "/elsewhere/a.png",
+        "state": "present",
+        "temporary": false,
+        "discarded": false,
+        "earlierRevision": false,
+        "order": 3,
+        "prompt": "",
+        "dismissable": false
+      },
+      {
+        "key": "o:4:0",
+        "artifactId": 4,
+        "runId": 4,
+        "parents": [
+          "a:3"
+        ],
+        "path": "/elsewhere/b.png",
+        "scope": "external",
+        "location": "/elsewhere/b.png",
+        "state": "present",
+        "temporary": false,
+        "discarded": false,
+        "earlierRevision": false,
+        "order": 4,
+        "prompt": "",
+        "dismissable": false
+      },
+      {
+        "key": "o:5:0",
+        "artifactId": 5,
+        "runId": 5,
+        "parents": [
+          "a:1",
+          "a:3",
+          "o:4:0"
+        ],
+        "path": "/pictures/e1.png",
+        "scope": "current",
+        "location": "./e1.png",
+        "state": "present",
+        "temporary": false,
+        "discarded": false,
+        "earlierRevision": false,
+        "order": 5,
+        "prompt": "",
+        "dismissable": false
+      },
+      {
+        "key": "o:6:0",
+        "artifactId": 6,
+        "runId": 6,
+        "parents": [
+          "a:2",
+          "o:4:0"
+        ],
+        "path": "/pictures/e2.png",
+        "scope": "current",
+        "location": "./e2.png",
+        "state": "present",
+        "temporary": false,
+        "discarded": false,
+        "earlierRevision": false,
+        "order": 6,
+        "prompt": "",
+        "dismissable": false
+      }
+    ],
+    "expected": [
+      {
+        "summary": {
+          "id": "c:a:2",
+          "title": "r2",
+          "cover": {
+            "path": "/pictures/r2.png",
+            "present": true
+          },
+          "coverKey": "a:2",
+          "imageCount": 2,
+          "nodeCount": 3,
+          "active": false,
+          "unsaved": false
+        },
+        "keys": [
+          "a:2",
+          "o:4:0",
+          "o:6:0"
+        ],
+        "badges": [
+          {
+            "key": "o:4:0",
+            "path": "/elsewhere/b.png",
+            "scope": "external",
+            "artifactId": 4,
+            "consumers": [
+              "o:6:0"
+            ]
+          }
+        ]
+      },
+      {
+        "summary": {
+          "id": "c:a:1",
+          "title": "r1",
+          "cover": {
+            "path": "/pictures/r1.png",
+            "present": true
+          },
+          "coverKey": "a:1",
+          "imageCount": 2,
+          "nodeCount": 4,
+          "active": false,
+          "unsaved": false
+        },
+        "keys": [
+          "a:1",
+          "a:3",
+          "o:4:0",
+          "o:5:0"
+        ],
+        "badges": [
+          {
+            "key": "a:3",
+            "path": "/elsewhere/a.png",
+            "scope": "external",
+            "artifactId": 3,
+            "consumers": [
+              "o:5:0"
+            ]
+          },
+          {
+            "key": "o:4:0",
+            "path": "/elsewhere/b.png",
+            "scope": "external",
+            "artifactId": 4,
+            "consumers": [
+              "o:5:0"
+            ]
+          }
+        ]
+      }
+    ],
+    "members": [
+      {
+        "path": "/pictures/e1.png",
+        "componentId": "c:a:1",
+        "key": "o:5:0"
+      },
+      {
+        "path": "/pictures/e2.png",
+        "componentId": "c:a:2",
+        "key": "o:6:0"
+      },
+      {
+        "path": "/pictures/r1.png",
+        "componentId": "c:a:1",
+        "key": "a:1"
+      },
+      {
+        "path": "/pictures/r2.png",
+        "componentId": "c:a:2",
+        "key": "a:2"
       }
     ]
   }

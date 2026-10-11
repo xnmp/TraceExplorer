@@ -83,7 +83,15 @@ export function folderComponents(input: readonly FolderNode[], dismissedRuns: Re
       parents: [...new Set(node.parents.filter((key) => known.has(key)))] };
   });
   const byKey = new Map(nodes.map((node) => [node.key, node]));
-  const badges = new Set(nodes.filter((node) => node.scope !== "current" && node.parents.length === 0).map((node) => node.key));
+  // An out-of-folder image is a reference badge unless a current-folder image is among its ancestors
+  // (an edit saved elsewhere is drawn). Mirrors folder_graph.rs.
+  const childrenOf = new Map<string, string[]>();
+  for (const node of nodes) for (const parent of node.parents) childrenOf.set(parent, [...(childrenOf.get(parent) ?? []), node.key]);
+  const fromCurrent = new Set<string>();
+  for (const pending = nodes.filter((node) => node.scope === "current").map((node) => node.key); pending.length;) {
+    for (const child of childrenOf.get(pending.pop()!) ?? []) if (!fromCurrent.has(child)) { fromCurrent.add(child); pending.push(child); }
+  }
+  const badges = new Set(nodes.filter((node) => node.scope !== "current" && !fromCurrent.has(node.key)).map((node) => node.key));
   const roots = new Map(nodes.map((node) => [node.key, node.key]));
   const find = (key: string): string => {
     while (roots.get(key) !== key) { roots.set(key, roots.get(roots.get(key)!)!); key = roots.get(key)!; }
@@ -96,7 +104,7 @@ export function folderComponents(input: readonly FolderNode[], dismissedRuns: Re
     if (group) group.push(node); else groups.set(root, [node]);
   }
   const references = new Map<string, Map<string, string[]>>();
-  for (const node of nodes) for (const parent of node.parents) if (badges.has(parent)) {
+  for (const node of nodes) if (!badges.has(node.key)) for (const parent of node.parents) if (badges.has(parent)) {
     const root = find(node.key);
     let attached = references.get(root);
     if (!attached) { attached = new Map(); references.set(root, attached); }
@@ -107,7 +115,7 @@ export function folderComponents(input: readonly FolderNode[], dismissedRuns: Re
   const drawnCover = (members: readonly TraceNode[]) => {
     const sorted = [...members].sort(byOrder), drawn = new Set(members.map((node) => node.key));
     const roots = sorted.filter((node) => !node.parents.some((key) => drawn.has(key)));
-    return roots.find((node) => node.path && node.scope === "current") ?? roots.find((node) => node.path)
+    return roots.find((node) => node.path && node.scope === "current")
       // A cycle leaves no root: fall back to the title's rule.
       ?? sorted.find((node) => node.path && node.scope === "current" && !node.parents.some((key) => byKey.get(key)!.scope === "current"))
       ?? sorted.find((node) => node.path) ?? sorted[0];
@@ -118,7 +126,7 @@ export function folderComponents(input: readonly FolderNode[], dismissedRuns: Re
     const newest = members.reduce((order, node) => Math.max(order, node.order), -Infinity);
     const attached = [...(references.get(root) ?? [])].map(([key, consumers]): TraceNode => {
       const node = byKey.get(key)!;
-      return { ...node, referenceBadge: { key, path: node.path!, scope: node.scope as "subfolder" | "external", artifactId: node.artifactId!,
+      return { ...node, parents: [], referenceBadge: { key, path: node.path!, scope: node.scope as "subfolder" | "external", artifactId: node.artifactId!,
         consumers: consumers.sort((a, b) => byOrder(byKey.get(a)!, byKey.get(b)!)) } };
     });
     const all = [...members, ...attached].sort(byOrder);

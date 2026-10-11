@@ -680,12 +680,31 @@ fn build_index(facts: &Facts, layout: &Layout) -> FolderIndex {
         })
         .collect();
 
-    // Only parents in the displayed folder graph matter. An outside image
-    // may have recorded ancestors that were not imported; it is still a badge
-    // here. Managed unsaved outputs have already been classified as Current.
+    // An out-of-folder image is a reference badge unless a current-folder image is among its
+    // ancestors (an edit saved elsewhere is drawn). Recorded ancestors that were not imported do not
+    // matter. Managed unsaved outputs have already been classified as Current.
+    let mut children: Vec<Vec<usize>> = vec![Vec::new(); nodes.len()];
+    for (child, parents) in parents.iter().enumerate() {
+        for &parent in parents {
+            children[parent].push(child);
+        }
+    }
+    let mut descends_from_current = vec![false; nodes.len()];
+    let mut pending: Vec<usize> = (0..nodes.len())
+        .filter(|index| nodes[*index].scope == NodeScope::Current)
+        .collect();
+    while let Some(index) = pending.pop() {
+        for &child in &children[index] {
+            if !descends_from_current[child] {
+                descends_from_current[child] = true;
+                pending.push(child);
+            }
+        }
+    }
     let badges: Vec<bool> = nodes
         .iter()
-        .map(|node| node.scope != NodeScope::Current && node.parents.is_empty())
+        .enumerate()
+        .map(|(index, node)| node.scope != NodeScope::Current && !descends_from_current[index])
         .collect();
     let mut sets = UnionFind::new(nodes.len());
     for (child, parents) in parents.iter().enumerate() {
@@ -705,6 +724,9 @@ fn build_index(facts: &Facts, layout: &Layout) -> FolderIndex {
     // for every stack (a shared style can feed thousands of separate stacks).
     let mut references: HashMap<usize, HashMap<usize, Vec<usize>>> = HashMap::new();
     for (child, parents) in parents.iter().enumerate() {
+        if badges[child] {
+            continue;
+        }
         for &parent in parents {
             if badges[parent] {
                 references
@@ -741,6 +763,8 @@ fn build_index(facts: &Facts, layout: &Layout) -> FolderIndex {
                 .map(|index| {
                     let mut node = nodes[*index].clone();
                     if let Some(consumers) = component_badges.get(index) {
+                        // A badge is an input, not part of the drawn lineage: its own ancestry is not drawn.
+                        node.parents.clear();
                         let mut consumers = consumers.clone();
                         consumers.sort_by(|a, b| {
                             nodes[*a]
@@ -837,13 +861,13 @@ fn summarize(
         is_current(*index) && !parents[*index].iter().any(|parent| is_current(*parent))
     }))
     .or_else(|| oldest_with_path(&mut members.iter().copied()));
-    // The cover as a tile is a root of what is drawn: no drawn parent. Reference badges are not
-    // drawn, but an external tile is, so a current image consuming one is not a root.
+    // The cover is the oldest current-folder image with no current-folder parent. Every drawn root
+    // is a current-folder image (an out-of-folder image is drawn only below one), so it is a root of
+    // what is drawn.
     let drawn_root = |index: &usize| !parents[*index].iter().any(|parent| drawn.contains(parent));
     let cover_index = oldest_with_path(&mut drawn.iter().copied().filter(|index| {
         is_current(*index) && drawn_root(index)
     }))
-    .or_else(|| oldest_with_path(&mut drawn.iter().copied().filter(|index| drawn_root(index))))
     // A cycle leaves no root: fall back to the title's rule.
     .or_else(|| oldest_with_path(&mut drawn.iter().copied().filter(|index| {
         is_current(*index) && !parents[*index].iter().any(|parent| is_current(*parent))
