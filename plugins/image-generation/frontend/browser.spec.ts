@@ -93,3 +93,14 @@ test('Add Nano Banana creates a Gemini connection with its defaults', async ({ p
   const saved = await page.evaluate(() => (window as any).imageConnectionFixture.snapshot());
   expect(saved.profiles[0]).toMatchObject({ transport: 'gemini', baseUrl: 'https://generativelanguage.googleapis.com/v1beta', defaultModel: 'gemini-nano-banana-2.1', credential: { kind: 'environment', name: 'GEMINI_API_KEY' } });
 });
+test('Add Flux creates a connection with the Black Forest Labs defaults', async ({ page }) => {
+  await setup(page); await page.getByRole('button', { name: 'Add Flux' }).click();
+  await expect(page.getByLabel('API root URL')).toHaveValue('https://api.bfl.ai/v1');
+  await expect(page.getByLabel('Image model ID')).toHaveValue('flux-2-pro');
+  await page.getByRole('combobox', { name: 'Credential source' }).click(); await page.getByRole('option', { name: 'Environment variable' }).click();
+  await expect(page.getByLabel('Environment variable name')).toHaveValue('BFL_API_KEY');
+  await page.getByRole('button', { name: 'Save connections' }).click();
+  await expect(page.getByText('Connections saved.', { exact: true })).toBeVisible();
+  const saved = await page.evaluate(() => (window as any).imageConnectionFixture.snapshot());
+  expect(saved.profiles[0]).toMatchObject({ transport: 'bfl', baseUrl: 'https://api.bfl.ai/v1', defaultModel: 'flux-2-pro', credential: { kind: 'environment', name: 'BFL_API_KEY' } });
+});
