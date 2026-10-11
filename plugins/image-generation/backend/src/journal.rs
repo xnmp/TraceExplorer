@@ -127,7 +127,23 @@ impl Journal {
             Some(2) => {},
             _ => unreachable!(),
         }
-        connection.execute_batch("CREATE TABLE IF NOT EXISTS resolved_tests(caller TEXT NOT NULL,operation TEXT NOT NULL,PRIMARY KEY(caller,operation))").map_err(storage)?;
+        // Private UI history is local; host settlement never needs an acknowledgement.
+        connection.execute_batch("CREATE TABLE IF NOT EXISTS shown_tests(caller TEXT NOT NULL,operation TEXT NOT NULL,PRIMARY KEY(caller,operation))").map_err(storage)?;
+        let old_markers: bool = connection.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='resolved_tests')", [], |row| row.get(0)).map_err(storage)?;
+        if old_markers {
+            connection
+                .execute_batch(
+                    "INSERT OR IGNORE INTO shown_tests SELECT caller,operation FROM resolved_tests",
+                )
+                .map_err(storage)?;
+        }
+        // Required durable association, including failures before a recipe exists.
+        // Keep the version unchanged so older builds can read explicit columns.
+        if !has_column(&connection, "connection_id")? {
+            connection
+                .execute_batch("ALTER TABLE operations ADD COLUMN connection_id TEXT")
+                .map_err(storage)?;
+        }
         // Additive and idempotent, so the schema version is unchanged and an
         // older build still opens this journal (it selects explicit columns).
         // Optional diagnostics: a journal that cannot take the column still works.
@@ -357,7 +373,7 @@ impl Journal {
                     "Image operation deadline exceeds storage bounds",
                 )
             })?;
-        transaction.execute("INSERT INTO operations(caller,operation,semantic,context,recipe,status,test,admitted_at_ms,deadline_at_ms) VALUES(?,?,?,?,?,?,?,?,?)",params![caller.package_id,operation,semantic,serde_json::to_string(caller).map_err(storage)?,serde_json::to_string(recipe).map_err(storage)?,serde_json::to_string(&status).map_err(storage)?,test,admitted_at,deadline_at]).map_err(storage)?;
+        transaction.execute("INSERT INTO operations(caller,operation,semantic,context,recipe,status,test,admitted_at_ms,deadline_at_ms,connection_id) VALUES(?,?,?,?,?,?,?,?,?,?)",params![caller.package_id,operation,semantic,serde_json::to_string(caller).map_err(storage)?,serde_json::to_string(recipe).map_err(storage)?,serde_json::to_string(&status).map_err(storage)?,test,admitted_at,deadline_at,recipe.connection_id]).map_err(storage)?;
         load_receipt(&transaction, &caller.package_id, operation)?;
         transaction.commit().map_err(storage)?;
         drop(connection);
@@ -372,6 +388,7 @@ impl Journal {
         operation: &str,
         semantic: &str,
         fingerprint: &str,
+        connection_id: &str,
         failure: te_image_generation_contract::SafeError,
         test: bool,
     ) -> Result<OperationStatus> {
@@ -401,8 +418,8 @@ impl Journal {
             diagnostics: None,
         };
         transaction.execute(
-            "INSERT INTO operations(caller,operation,semantic,context,recipe,status,test,admitted_at_ms,deadline_at_ms) VALUES(?,?,?,?,?,?,?,?,?)",
-            params![caller.package_id, operation, semantic, serde_json::to_string(caller).map_err(storage)?, "null", serde_json::to_string(&status).map_err(storage)?, test, 0, 0],
+            "INSERT INTO operations(caller,operation,semantic,context,recipe,status,test,admitted_at_ms,deadline_at_ms,connection_id) VALUES(?,?,?,?,?,?,?,?,?,?)",
+            params![caller.package_id, operation, semantic, serde_json::to_string(caller).map_err(storage)?, "null", serde_json::to_string(&status).map_err(storage)?, test, 0, 0, connection_id],
         ).map_err(storage)?;
         load_receipt(&transaction, &caller.package_id, operation)?;
         transaction.commit().map_err(storage)?;
@@ -933,9 +950,8 @@ impl Journal {
         Ok(recovered)
     }
 
-    /// Private test retention is separate from public delivery: an unknown
-    /// receipt has no output, and keeps its original execution evidence.
-    pub fn resolve_test(&self, caller: &str, operation: &str) -> Result<()> {
+    /// Hide a delivered inline result locally while keeping its execution evidence.
+    pub fn mark_test_shown(&self, caller: &str, operation: &str) -> Result<()> {
         let connection = self.connection.lock().map_err(storage)?;
         let stored = load_receipt(&connection, caller, operation)?
             .ok_or_else(|| error("not_found", "Unknown image operation"))?;
@@ -960,7 +976,7 @@ impl Journal {
         }
         connection
             .execute(
-                "INSERT OR IGNORE INTO resolved_tests(caller,operation) VALUES(?,?)",
+                "INSERT OR IGNORE INTO shown_tests(caller,operation) VALUES(?,?)",
                 params![caller, operation],
             )
             .map_err(storage)?;
@@ -968,19 +984,38 @@ impl Journal {
     }
     pub fn retained_tests(&self, caller: &str) -> Result<Vec<(String, OperationStatus)>> {
         let connection = self.connection.lock().map_err(storage)?;
-        let mut query = connection.prepare("SELECT operation FROM operations o WHERE caller=? AND test=1 AND NOT EXISTS(SELECT 1 FROM resolved_tests r WHERE r.caller=o.caller AND r.operation=o.operation) ORDER BY rowid").map_err(storage)?;
+        let mut query = connection.prepare("SELECT operation,substr(CAST(connection_id AS BLOB),1,129),typeof(connection_id) FROM operations o WHERE caller=? AND test=1 AND NOT EXISTS(SELECT 1 FROM shown_tests r WHERE r.caller=o.caller AND r.operation=o.operation) ORDER BY rowid").map_err(storage)?;
         let operations = query
-            .query_map([caller], |row| row.get::<_, String>(0))
+            .query_map([caller], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, Option<Vec<u8>>>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            })
             .map_err(storage)?;
         let mut tests = Vec::new();
         for operation in operations {
-            let operation = operation.map_err(storage)?;
+            let (operation, connection_id, kind) = operation.map_err(storage)?;
+            let connection_id = match (connection_id, kind.as_str()) {
+                (None, "null") => None,
+                (Some(bytes), "text") => {
+                    let id = String::from_utf8(bytes).map_err(|_| corrupt_receipt())?;
+                    if !crate::domain::id(&id) {
+                        return Err(corrupt_receipt());
+                    }
+                    Some(id)
+                }
+                _ => return Err(corrupt_receipt()),
+            };
             let stored = load_receipt(&connection, caller, &operation)?
                 .ok_or_else(|| error("not_found", "Unknown image test"))?;
             tests.push((
-                stored
-                    .recipe
-                    .map_or_else(String::new, |recipe| recipe.connection_id),
+                connection_id.unwrap_or_else(|| {
+                    stored
+                        .recipe
+                        .map_or_else(String::new, |recipe| recipe.connection_id)
+                }),
                 stored.status,
             ));
         }

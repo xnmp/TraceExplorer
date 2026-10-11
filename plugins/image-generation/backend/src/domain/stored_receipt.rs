@@ -104,7 +104,11 @@ impl StoredReceipt {
             || !(recipe.adapter == "codex-cli" || super::transport_id(&recipe.adapter))
             || recipe.endpoint_identity.len() > 8192
             || recipe.endpoint_identity.chars().any(char::is_control)
-            || !recipe.options.valid()
+            || !super::recipe_options_valid(
+                &recipe.adapter,
+                recipe.model.as_deref(),
+                &recipe.options,
+            )
             || recipe.input_digests.len() > 8
             || recipe.input_digests.iter().any(|d| !valid_digest(d))
             || recipe.input_roles

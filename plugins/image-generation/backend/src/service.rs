@@ -10,7 +10,7 @@ use crate::{
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -81,6 +81,21 @@ impl Drop for AdmissionCancel {
     }
 }
 
+/// Serializes user-initiated tests per connection, including admission IO.
+struct TestLease {
+    service: Arc<Service>,
+    connection_id: String,
+}
+impl Drop for TestLease {
+    fn drop(&mut self) {
+        self.service
+            .tests
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&self.connection_id);
+    }
+}
+
 /// A proven success whose output this process is still staging and sealing.
 /// Holds the last receipt consumers could have observed until the terminal
 /// receipt is committed (plan §8.3 step 8), then forgets it on any exit path.
@@ -142,6 +157,7 @@ pub struct Service {
     pub journal: Journal,
     host: Arc<dyn Host>,
     preparations: Mutex<HashMap<String, Prepared>>,
+    tests: Mutex<HashSet<String>>,
     controls: Mutex<HashMap<(String, String), Arc<AtomicBool>>>,
     admission_io: Mutex<HashMap<(String, String), usize>>,
     admission_cancels: Mutex<HashMap<OperationKey, Vec<Arc<AtomicBool>>>>,
@@ -179,6 +195,7 @@ impl Service {
             journal: Journal::open(directory)?,
             host,
             preparations: Mutex::new(HashMap::new()),
+            tests: Mutex::new(HashSet::new()),
             controls: Mutex::new(HashMap::new()),
             admission_io: Mutex::new(HashMap::new()),
             admission_cancels: Mutex::new(HashMap::new()),
@@ -436,7 +453,29 @@ impl Service {
         if !valid_digest(&request.effective_recipe_digest) {
             return Err(invalid("Invalid prepared image recipe digest"));
         }
-        match self.start_prepared(caller.clone(), request.clone(), test, semantic.clone()) {
+        let test_lease = if test {
+            let mut tests = self.tests.lock().map_err(storage)?;
+            if tests.contains(&request.connection_id) {
+                return Err(error(
+                    "test_already_running",
+                    "A test is already running for this connection",
+                ));
+            }
+            tests.insert(request.connection_id.clone());
+            Some(TestLease {
+                service: self.clone(),
+                connection_id: request.connection_id.clone(),
+            })
+        } else {
+            None
+        };
+        match self.start_prepared(
+            caller.clone(),
+            request.clone(),
+            test,
+            semantic.clone(),
+            test_lease,
+        ) {
             Ok(status) => Ok(status),
             Err(failure) if failure.code == "operation_conflict" => Err(failure),
             Err(failure) => self
@@ -447,6 +486,7 @@ impl Service {
                             &request.operation_id,
                             &semantic,
                             &request.effective_recipe_digest,
+                            &request.connection_id,
                             failure,
                             test,
                         )
@@ -461,6 +501,7 @@ impl Service {
         request: StartRequest,
         test: bool,
         semantic: String,
+        test_lease: Option<TestLease>,
     ) -> Result<OperationStatus> {
         let recipe = {
             let tokens = self.preparations.lock().map_err(storage)?;
@@ -624,6 +665,7 @@ impl Service {
                         .lock()
                         .unwrap_or_else(|e| e.into_inner())
                         .remove(&identity);
+                    drop(test_lease);
                     drop(service);
                     drop(admission);
                 });
@@ -656,6 +698,7 @@ impl Service {
                 .remove(&identity);
             // The admission permit is released last: once wait_idle observes it,
             // no worker retains this instance (or its state-directory lease).
+            drop(test_lease);
             drop(service);
             drop(admission);
         });
@@ -1317,6 +1360,15 @@ impl Service {
                                 .get("xnmp.image-generation", &status.operation_id, None)
                         })?
                         .ok_or_else(|| error("not_found", "Unknown image test"))?;
+                    if !matches!(
+                        visible.execution,
+                        Execution::Accepted {}
+                            | Execution::Running {}
+                            | Execution::Succeeded { .. }
+                    ) {
+                        self.journal
+                            .mark_test_shown("xnmp.image-generation", &status.operation_id)?;
+                    }
                     visible_tests.push(json!({"profileId":profile_id,"status":visible}));
                 }
                 Ok(json!(visible_tests))
@@ -1364,29 +1416,17 @@ impl Service {
                 } else {
                     before
                 };
-                let unknown = matches!(status.execution, Execution::Unknown { .. });
-                let no_output = !matches!(status.execution, Execution::Succeeded { .. });
-                if no_output && self.operation_has_io("xnmp.image-generation", &operation)? {
-                    return Err(error(
-                        "busy",
-                        "Test cancellation is still stopping local work",
-                    ));
-                }
-                let updated = self.host.call(
-                    "host.services.test.update",
-                    json!({"operationId":operation,"status":status,"resolve":true,"noLiveWorker":no_output}),
-                    &AtomicBool::new(false),
-                )?;
-                // Feature negotiation: older hosts retain unknown execution
-                // reservations. Never claim cleanup until the host confirms it.
-                if unknown && updated["resolved"] != true {
-                    return Err(error(
-                        "host_unavailable",
-                        "The host cannot yet resolve unknown connection tests",
-                    ));
+                // Only successful output needs host delivery cleanup. Failed,
+                // cancelled and unknown tests have no output or user workflow.
+                if matches!(status.execution, Execution::Succeeded { .. }) {
+                    self.host.call(
+                        "host.services.test.update",
+                        json!({"operationId":operation,"status":status}),
+                        &AtomicBool::new(false),
+                    )?;
                 }
                 self.journal
-                    .resolve_test("xnmp.image-generation", &operation)?;
+                    .mark_test_shown("xnmp.image-generation", &operation)?;
                 Ok(serde_json::to_value(status).map_err(storage)?)
             }
             _ => Err(error(
@@ -1450,7 +1490,10 @@ impl Service {
             model: profile.api().map(|(_, api)| api.default_model.clone()),
             prompt: "A blue dot.".into(),
             inputs: vec![],
-            options: domain::test_recipe_options(profile.kind()),
+            options: domain::test_recipe_options(
+                profile.kind(),
+                profile.api().map(|(_, api)| api.default_model.as_str()),
+            ),
         };
         let preparation = self.prepare(caller.clone(), prepared.clone())?;
 

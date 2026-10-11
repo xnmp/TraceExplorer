@@ -512,3 +512,168 @@ mod tests {
         assert_eq!(output.metadata.adapter, "fixture-images");
     }
 }
+
+#[cfg(test)]
+mod minimal_test_recipes {
+    use super::*;
+    use crate::domain::{self, Credential, Kind, Profile};
+    use serde_json::json;
+    use te_image_generation_contract::PrepareRequest;
+
+    #[test]
+    fn every_catalogued_test_recipe_validates_and_builds_the_real_adapter_body_without_io() {
+        for (kind, models) in [
+            (
+                ApiKind::OpenAiImages,
+                &[
+                    "gpt-image-2",
+                    "gpt-image-2.5-sunburst",
+                    "gpt-image-2.5-flare",
+                    "custom",
+                ][..],
+            ),
+            (
+                ApiKind::Gemini,
+                &[
+                    "gemini-nano-banana-2.1",
+                    "gemini-3.1-flash-image",
+                    "gemini-3.1-flash-lite-image",
+                    "gemini-3-pro-image",
+                    "gemini-2.5-flash-image",
+                    "custom",
+                ][..],
+            ),
+            (
+                ApiKind::Bfl,
+                &[
+                    "flux-2-pro",
+                    "flux-2-pro-preview",
+                    "flux-2-max",
+                    "flux-2-flex",
+                    "flux-2-klein-9b",
+                    "flux-2-klein-9b-preview",
+                    "flux-2-klein-4b",
+                    "flux-kontext-pro",
+                    "flux-kontext-max",
+                    "flux-3-image",
+                    "flux-pro-1.1",
+                    "flux-dev",
+                    "custom",
+                ][..],
+            ),
+        ] {
+            let descriptor = descriptor(kind);
+            for model in models {
+                let profile = ApiProfile {
+                    id: "test".into(),
+                    name: "Test".into(),
+                    recipe_revision: "r1".into(),
+                    base_url: descriptor.default_base_url.into(),
+                    default_model: (*model).into(),
+                    allow_insecure_http: false,
+                    credential: Credential::None,
+                };
+                let connection = match kind {
+                    ApiKind::OpenAiImages => Profile::OpenAiImages(profile.clone()),
+                    ApiKind::Gemini => Profile::Gemini(profile.clone()),
+                    ApiKind::Bfl => Profile::Bfl(profile.clone()),
+                    #[cfg(feature = "test-hooks")]
+                    ApiKind::Fixture => unreachable!(),
+                };
+                let request = PrepareRequest {
+                    operation_id: "12345678-1234-1234-1234-123456789abc".into(),
+                    connection_id: "test".into(),
+                    expected_connection_revision: "r1".into(),
+                    model: Some((*model).into()),
+                    prompt: "A blue dot.".into(),
+                    inputs: vec![],
+                    options: domain::test_recipe_options(Kind::Api(kind), Some(model)),
+                };
+                domain::validate_prepare(&request).unwrap();
+                let recipe = domain::recipe(&connection, &request).unwrap();
+                let body = match kind {
+                    ApiKind::OpenAiImages => openai_images::request_body(&recipe),
+                    ApiKind::Gemini => gemini::request_body(&recipe, &[]),
+                    ApiKind::Bfl => bfl::validated_request_body(&recipe, &profile, &[]),
+                    #[cfg(feature = "test-hooks")]
+                    ApiKind::Fixture => unreachable!(),
+                }
+                .unwrap();
+                assert!(serde_json::to_vec(&body).is_ok(), "{model}");
+                match kind {
+                    ApiKind::OpenAiImages => {
+                        assert_eq!(body["size"], "1024x1024");
+                        assert_eq!(body["quality"], "low");
+                        assert_eq!(body["n"], 1);
+                    }
+                    ApiKind::Gemini => {
+                        assert_eq!(body["input"], json!([{"type":"text","text":"A blue dot."}]));
+                        assert_eq!(
+                            body["response_format"]["image_size"],
+                            if *model == "gemini-3.1-flash-image" {
+                                "512"
+                            } else {
+                                "1K"
+                            }
+                        );
+                    }
+                    ApiKind::Bfl => match *model {
+                        "flux-2-pro"
+                        | "flux-2-pro-preview"
+                        | "flux-2-max"
+                        | "flux-2-flex"
+                        | "flux-2-klein-9b"
+                        | "flux-2-klein-9b-preview"
+                        | "flux-2-klein-4b" => {
+                            assert_eq!(body["width"], 64);
+                            assert_eq!(body["height"], 64);
+                        }
+                        "flux-pro-1.1" | "flux-dev" => {
+                            assert_eq!(body["width"], 256);
+                            assert_eq!(body["height"], 256);
+                        }
+                        "flux-3-image" => {
+                            assert_eq!(body["resolution"], "768sq");
+                            assert!(body.get("output_format").is_none());
+                        }
+                        _ => {
+                            assert!(body.get("width").is_none());
+                            assert!(body.get("resolution").is_none());
+                        }
+                    },
+                    #[cfg(feature = "test-hooks")]
+                    ApiKind::Fixture => unreachable!(),
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn codex_test_keeps_adapter_managed_settings_and_builds_one_minimal_image_task() {
+        let profile = Profile::Codex {
+            id: "test".into(),
+            name: "Test".into(),
+            recipe_revision: "r1".into(),
+            executable_path: String::new(),
+            model_selection: false,
+            credential: Credential::CliSavedLogin,
+        };
+        let request = PrepareRequest {
+            operation_id: "12345678-1234-1234-1234-123456789abc".into(),
+            connection_id: "test".into(),
+            expected_connection_revision: "r1".into(),
+            model: None,
+            prompt: "A blue dot.".into(),
+            inputs: vec![],
+            options: domain::test_recipe_options(Kind::Codex, None),
+        };
+        let recipe = domain::recipe(&profile, &request).unwrap();
+        assert!(recipe.model.is_none());
+        assert_eq!(recipe.options.quality, "auto");
+        let task = recipe.agent_task.unwrap();
+        assert!(task.contains("image generation tool exactly once"));
+        assert!(task.contains("A blue dot."));
+        assert!(task.contains("Do not copy or move the result"));
+        assert!(task.contains("\"size\":\"1024x1024\""));
+    }
+}

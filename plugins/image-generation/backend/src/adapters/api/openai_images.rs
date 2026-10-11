@@ -19,6 +19,18 @@ pub const DESCRIPTOR: ApiDescriptor = ApiDescriptor {
     },
     max_inputs: 8,
 };
+pub(super) fn request_body(recipe: &EffectiveRecipe) -> Result<Value> {
+    if let Some(problem) = crate::domain::model_options_problem(
+        ApiKind::OpenAiImages,
+        recipe.model.as_deref(),
+        &recipe.options,
+    ) {
+        return Err(error("invalid_request", problem));
+    }
+    Ok(
+        json!({"model":recipe.model,"prompt":recipe.submitted_prompt,"size":recipe.options.size,"quality":recipe.options.quality,"background":recipe.options.background,"output_format":"png","n":1}),
+    )
+}
 pub(super) async fn generate(call: ApiCall<'_>) -> Result<Output> {
     let ApiCall {
         profile,
@@ -29,7 +41,7 @@ pub(super) async fn generate(call: ApiCall<'_>) -> Result<Output> {
         stage,
     } = call;
     let client = client()?;
-    let fields = json!({"model":recipe.model,"prompt":recipe.submitted_prompt,"size":recipe.options.size,"quality":recipe.options.quality,"background":recipe.options.background,"output_format":"png","n":1});
+    let fields = request_body(recipe)?;
     let mut request = client.post(format!(
         "{}/{}",
         profile.base_url.trim_end_matches('/'),

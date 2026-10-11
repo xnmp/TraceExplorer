@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'vitest';
-import { ConnectionsController, TestRegistry, type Backend } from './controller';
-import { configuration, newProfile, removeProfile, validation, type ImageConfiguration, type ImageOperationStatus } from './domain';
+import { ConnectionsController, TestRegistry, pending as testPending, type Backend } from './controller';
+import { connectionFixture, fixtureStatus } from './harness/fixture';
+import { configuration, newProfile, removeProfile, validation, testSummary, type ImageConfiguration, type ImageOperationStatus } from './domain';
 const config = (revision = 1): ImageConfiguration => ({ schemaVersion: 1, documentRevision: revision, defaultConnectionId: 'p', profiles: [{ ...newProfile('p', 'openai-images'), transport: 'openai-images', baseUrl: 'https://example.com/v1/images', defaultModel: 'arbitrary-image-model', allowInsecureHttp: false, credential: { kind: 'none' } }] });
 const status = (state: 'accepted' | 'running' | 'cancelled' | 'succeeded' = 'accepted', revision = 1): ImageOperationStatus => ({ version: 1, operationId: 'test-id', requestFingerprint: 'b'.repeat(64), provider: { packageId: 'xnmp.image-generation', serviceId: 'image-generation', major: 1 }, revision, execution: state === 'succeeded' ? { state, metadata: { adapter: 'openai-images', endpointIdentity: '', requestedModel: 'arbitrary-image-model', actualModel: null, externalRequestId: null, threadId: null, options: { size: '1024x1024', quality: 'low', background: 'auto' }, remoteChargeUncertain: false } } : { state }, delivery: state === 'succeeded' ? { state: 'available', output: { handle: 'h', sha256: 'a'.repeat(64), byteLength: 100, mediaType: 'image/png' } } : { state: 'none' } });
 function deferred<T>() { let resolve!: (value: T) => void; let reject!: (reason: unknown) => void; const promise = new Promise<T>((yes, no) => { resolve = yes; reject = no; }); return { promise, resolve, reject }; }
@@ -65,11 +66,11 @@ describe('image connections contract', () => {
     const started = deferred<ImageOperationStatus>(); let cancellations = 0;
     const f = fixture(method => { if (method === 'settings.test') return started.promise; if (method === 'settings.cancelTest') { if (++cancellations === 1) throw Error('not accepted yet'); return status('cancelled', 3); } if (method === 'settings.test.discard') return status('cancelled', 3); return config(); });
     await f.controller.initialize(); const work = f.controller.test('p'); f.controller.close(); await settle(); started.resolve(status()); await work; await settle();
-    expect(cancellations).toBe(2); expect(f.registry.all()[0].status?.execution.state).toBe('cancelled'); expect(f.calls.some(c => c.method === 'settings.test.discard')).toBe(true); expect(f.pending.size).toBe(0);
+    expect(cancellations).toBe(2); expect(f.registry.all()[0].status?.execution.state).toBe('cancelled'); expect(f.calls.some(c => c.method === 'settings.test.discard')).toBe(false); expect(f.pending.size).toBe(0);
   });
   test('success is automatically discarded but its outcome remains in the open dialog', async () => {
     const f = fixture(method => method === 'settings.test' ? status('succeeded', 3) : method === 'settings.test.discard' ? { ...status('succeeded', 4), delivery: { state: 'discarded' } } : config()); await f.controller.initialize(); await f.controller.test('p');
-    expect(f.controller.snapshot().tests[0]).toMatchObject({ resolved: true, status: { execution: { state: 'succeeded' }, delivery: { state: 'discarded' } } });
+    expect(f.controller.snapshot().tests[0]).toMatchObject({ status: { execution: { state: 'succeeded' }, delivery: { state: 'discarded' } } });
     expect(f.calls.filter(c => c.method === 'settings.test.discard')).toHaveLength(1); f.controller.close();
   });
   test('configuration changes leave historical test evidence explicitly tied to old revision', async () => {
@@ -96,7 +97,7 @@ describe('image connections contract', () => {
   test('late read cannot resurrect output after confirmed explicit discard', async () => {
     const read = deferred<ImageOperationStatus>(); const f = fixture(method => method === 'settings.test' ? status('succeeded', 3) : method === 'settings.test.status' ? read.promise : method === 'settings.test.discard' ? { ...status('succeeded', 4), delivery: { state: 'discarded' } } : config());
     await f.controller.initialize(); await f.controller.test('p'); const work = f.controller.poll('test-id'); await f.controller.discard('test-id'); read.resolve(status('succeeded', 3)); await work;
-    expect(f.registry.all()[0].status?.delivery.state).toBe('discarded'); expect(f.controller.snapshot().tests[0].resolved).toBe(true); expect(f.pending.size).toBe(0); f.controller.close();
+    expect(f.registry.all()[0].status?.delivery.state).toBe('discarded'); expect(f.controller.snapshot().tests[0].status?.delivery.state).toBe('discarded'); expect(f.pending.size).toBe(0); f.controller.close();
   });
   test('resolved historical tests do not consume active test quota', async () => {
     const f = fixture(method => method === 'settings.test' ? status() : config());
@@ -106,42 +107,125 @@ describe('image connections contract', () => {
 });
 
 
-describe('start rejection recovery', () => {
-  test.each([new Error('Credential command exited with status 1'), { code: -32000, message: 'Credential command exited with status 1' }, { code: -32000, message: 'RPC failed', data: { code: 'unavailable', message: 'Credential command exited with status 1' } }])('shows a rejected start reason for native error shapes', async cause => {
-    const f = fixture(method => { if (method === 'settings.test') throw cause; return config(); });
+describe('start rejection recovery with the browser host fixture', () => {
+  function harness() {
+    const host = connectionFixture(config());
+    const timers = new Map<() => void, number>();
+    const registry = new TestRegistry();
+    let id = 0;
+    const controller = new ConnectionsController(host.backend, registry, (fn, delay) => { timers.set(fn, delay); return () => { timers.delete(fn); }; }, () => `test-${++id}`);
+    const visible = () => { const result = controller.snapshot().tests.at(-1); return { spinning: !!result && testPending(result), text: result ? testSummary(result.status, result.startFailed || result.neverStarted, result.error, result.elapsedMs) : '' }; };
+    return { host, timers, registry, controller, visible };
+  }
+  test.each(['configuration_changed', 'invalid_request', 'test_already_running', 'test_not_started'])('a definite %s rejection permits a fresh user test', async code => {
+    const f = harness(); f.host.rejectStart({ code: -32000, data: { code, message: 'Test could not start.' } });
     await f.controller.initialize(); await f.controller.test('p');
-    expect(f.controller.snapshot().tests[0]).toMatchObject({ startFailed: true, error: 'Credential command exited with status 1' });
-    await f.controller.test('p');
-    expect(f.calls.filter(c => c.method === 'settings.test')).toHaveLength(2);
-    expect(f.pending.size).toBe(0); f.controller.close();
+    expect(f.visible()).toEqual({ spinning: false, text: '✗ Test could not start.' });
+    await f.controller.test('p'); expect(f.host.calls().filter(c => c.method === 'settings.test')).toHaveLength(2); expect(f.timers.size).toBe(0); f.controller.close();
   });
-  test('a rejected start can be retried without a recovery action', async () => {
-    const f = fixture(method => { if (method === 'settings.test') throw { message: 'This image provider chooses its own image size' }; return config(); });
-    await f.controller.initialize(); await f.controller.test('p'); await f.controller.test('p');
-    expect(f.calls.filter(c => c.method === 'settings.test')).toHaveLength(2); f.controller.close();
+  test.each([new Error('Start reply lost'), { code: -32000, message: 'Timeout' }, { code: 'host_unavailable', message: 'Transport unavailable' }])('lost acceptance plus a failed immediate read stays running and cancellable', async cause => {
+    const f = harness(); f.host.outcome('running');
+    f.host.startReply(async () => { throw cause; }); f.host.failNextStatus(new Error('Read temporarily unavailable'));
+    await f.controller.initialize(); await f.controller.test('p');
+    expect(f.visible()).toEqual({ spinning: true, text: '' }); expect(f.timers.size).toBe(1);
+    await f.controller.test('p'); expect(f.host.calls().filter(c => c.method === 'settings.test')).toHaveLength(1);
+    f.controller.close(); await settle();
+    expect(f.host.calls().filter(c => c.method === 'settings.cancelTest')).toHaveLength(1);
+    expect(f.registry.all()[0].status?.execution.state).toBe('cancelled');
   });
-  test('a late start rejection preserves an already confirmed running receipt and cancellation', async () => {
-    const started = deferred<ImageOperationStatus>();
-    const f = fixture(method => method === 'settings.test' ? started.promise : method === 'settings.test.status' ? status('running', 2) : method === 'settings.cancelTest' ? status('cancelled', 3) : config());
-    await f.controller.initialize(); const work = f.controller.test('p'); await f.controller.poll('test-id'); started.reject({ message: 'Start reply lost' }); await work;
-    await f.controller.cancel('test-id'); expect(f.controller.snapshot().tests[0].status?.execution.state).toBe('cancelled'); f.controller.close();
+  test('an uncertain reply recovers the original operation by polling without replay', async () => {
+    const f = harness(); f.host.startReply(async () => { throw new Error('Lost reply'); }); f.host.failNextStatus(new Error('Transient read'));
+    await f.controller.initialize(); await f.controller.test('p');
+    [...f.timers.keys()].forEach(run => { f.timers.delete(run); run(); }); await settle(); await settle();
+    expect(f.visible().spinning).toBe(false); expect(f.visible().text).toMatch(/^✓ Generated a test image/);
+    expect(f.host.calls().filter(c => c.method === 'settings.test')).toHaveLength(1); f.controller.close();
   });
-});
-
-test('retained unknown on open is resolved automatically and permits another test', async () => {
-  const unknown: ImageOperationStatus = { ...status(), execution: { state: 'unknown', error: { code: 'remote_outcome_unknown', message: 'Codex turn was interrupted' } } };
-  const registry = new TestRegistry(); let starts = 0; let discards = 0;
-  const backend: Backend = { async invoke<T>(method: string) {
-    if (method === 'settings.read') return config() as T;
-    if (method === 'settings.test.list') return [{ profileId: 'p', status: unknown }] as T;
-    if (method === 'settings.test.discard') { discards++; return unknown as T; }
-    if (method === 'settings.test') { starts++; return { ...status(), operationId: 'next-test' } as T; }
-    return { ...status('cancelled'), operationId: 'next-test' } as T;
-  } };
-  const controller = new ConnectionsController(backend, registry, () => () => {}, () => 'next-test');
-  await controller.initialize();
-  expect(controller.snapshot().tests[0]).toMatchObject({ resolved: true, status: { execution: { state: 'unknown' } } });
-  expect(discards).toBe(1); await controller.test('p'); expect(starts).toBe(1); expect(controller.snapshot().error).toBe(''); controller.close();
+  test('a lost host update after durable output discard is retried', async () => {
+    const f = harness(); f.host.failNextCleanup(new Error('Host update unavailable'));
+    await f.controller.initialize(); await f.controller.test('p');
+    [...f.timers.keys()].forEach(run => { f.timers.delete(run); run(); }); await settle(); await settle();
+    expect(f.visible().text).toMatch(/^✓ Generated a test image/);
+    expect(f.controller.snapshot().tests[0].status?.delivery.state).toBe('available');
+    const durable = await f.host.backend.invoke<ImageOperationStatus>('settings.test.status', { requestId: 'test-1' });
+    expect(durable.delivery.state).toBe('discarded');
+    expect(f.timers.size).toBe(1);
+    [...f.timers.keys()].forEach(run => { f.timers.delete(run); run(); }); await settle(); await settle();
+    expect(f.host.calls().filter(c => c.method === 'settings.test.discard')).toHaveLength(2);
+    expect(f.timers.size).toBe(0); expect(await f.host.backend.invoke('settings.test.list')).toEqual([]); f.controller.close();
+  });
+  test('retained success with unavailable output is shown and discarded without replay', async () => {
+    const f = harness(); f.host.retain('p', { ...fixtureStatus('retained', 'succeeded', 2), delivery: { state: 'unavailable', reason: 'storage_unavailable' } });
+    await f.controller.initialize();
+    expect(f.visible()).toEqual({ spinning: false, text: '✓ Generated a test image' });
+    expect(f.controller.snapshot().tests[0].status?.delivery.state).toBe('discarded');
+    expect(f.host.calls().some(c => c.method === 'settings.test')).toBe(false);
+    expect(await f.host.backend.invoke('settings.test.list')).toEqual([]); f.controller.close();
+  });
+  test('closing after durable output discard continues a failed host update', async () => {
+    const f = harness();
+    f.host.retain('p', fixtureStatus('test-1', 'succeeded', 2));
+    f.host.failNextCleanup(new Error('Host update unavailable'));
+    // Use a retained success to exercise cleanup without a second generation.
+    await f.controller.initialize(); expect(f.timers.size).toBe(1);
+    f.controller.close(); await settle(); await settle();
+    expect(f.registry.all()[0].status?.delivery.state).toBe('discarded');
+    expect(f.host.calls().filter(c => c.method === 'settings.test.discard')).toHaveLength(2);
+    expect(f.timers.size).toBe(0);
+  });
+  test('transient discovery failure retries while keeping the test gated', async () => {
+    const f = harness(); let reads = 0;
+    f.host.discovery(async () => { if (++reads === 1) throw new Error('Discovery temporarily unavailable'); });
+    await f.controller.initialize(); await f.controller.test('p');
+    expect(f.controller.snapshot().recoveringTests).toBe(true); expect(f.host.calls().some(c => c.method === 'settings.test')).toBe(false);
+    [...f.timers.keys()].forEach(run => { f.timers.delete(run); run(); }); await settle(); await settle();
+    expect(f.controller.snapshot().recoveringTests).toBe(false); await f.controller.test('p'); expect(f.visible().spinning).toBe(true); f.controller.close();
+  });
+  test('cancel without a receipt after an uncertain reply keeps inspecting even after close', async () => {
+    const f = harness(); const backend: Backend = { invoke: (method, params) => method === 'settings.test' ? Promise.reject(new Error('Transport lost before reply')) : f.host.backend.invoke(method, params) };
+    const timers = new Map<() => void, number>();
+    const controller = new ConnectionsController(backend, f.registry, fn => { timers.set(fn, 750); return () => { timers.delete(fn); }; }, () => 'uncertain');
+    await controller.initialize(); await controller.test('p'); await controller.cancel('uncertain');
+    expect(testPending(controller.snapshot().tests[0])).toBe(true); expect(timers.size).toBe(1);
+    controller.close(); await settle();
+    f.host.retain('p', fixtureStatus('uncertain')); f.host.outcome('running');
+    [...timers.keys()].forEach(run => { timers.delete(run); run(); }); await settle(); await settle();
+    expect(f.registry.all()[0].status?.execution.state).toBe('cancelled'); expect(timers.size).toBe(0); f.controller.close();
+  });
+  test('discovery gates generation until a retained active test is known', async () => {
+    const f = harness(); const discovery = deferred<void>(); f.host.discovery(() => discovery.promise); f.host.outcome('running');
+    f.host.retain('p', fixtureStatus('retained', 'accepted'));
+    const work = f.controller.initialize(); await settle(); await f.controller.test('p');
+    expect(f.controller.snapshot().recoveringTests).toBe(true); expect(f.host.calls().some(c => c.method === 'settings.test')).toBe(false);
+    discovery.resolve(); await work;
+    expect(f.visible()).toEqual({ spinning: true, text: '' }); await f.controller.test('p');
+    expect(f.host.calls().some(c => c.method === 'settings.test')).toBe(false); f.controller.close();
+  });
+  test('retained Unknown is inline once, never needs cleanup, and permits a new operation', async () => {
+    const f = harness(); f.host.staleUnknown(); await f.controller.initialize();
+    expect(f.visible()).toEqual({ spinning: false, text: '? Outcome unknown: The app closed during the test' });
+    expect(f.host.calls().some(c => c.method === 'settings.test.discard')).toBe(false); expect(f.timers.size).toBe(0);
+    expect(await f.host.backend.invoke('settings.test.list')).toEqual([]);
+    await f.controller.test('p'); expect(f.visible().spinning).toBe(true); expect(f.host.calls().filter(c => c.method === 'settings.test')).toHaveLength(1); f.controller.close();
+  });
+  test('a never-admitted credential failure keeps its connection after restart', async () => {
+    const f = harness(); f.host.failCredential(); await f.controller.initialize(); await f.controller.test('p');
+    expect(f.visible()).toEqual({ spinning: false, text: '✗ Credential command exited with status 1' }); f.controller.close();
+    const restarted = new ConnectionsController(f.host.backend, new TestRegistry(), () => () => {});
+    await restarted.initialize(); expect(restarted.snapshot().tests[0].profileId).toBe('p');
+    expect(testSummary(restarted.snapshot().tests[0].status)).toBe('✗ Credential command exited with status 1');
+    expect(f.host.calls().some(c => c.method === 'settings.test.discard')).toBe(false); restarted.close();
+  });
+  test('cancel no-receipt evidence survives a definite delayed start rejection', async () => {
+    const f = harness(); const reply = deferred<ImageOperationStatus>();
+    // Admission has not happened while the original request is waiting.
+    const backend: Backend = { invoke: (method, params) => method === 'settings.test' ? reply.promise as never : f.host.backend.invoke(method, params) };
+    const controller = new ConnectionsController(backend, f.registry, () => () => {}, () => 'delayed');
+    await controller.initialize(); const work = controller.test('p'); await controller.cancel('delayed');
+    expect(testPending(controller.snapshot().tests[0])).toBe(true);
+    reply.reject({ code: 'configuration_changed', message: 'Settings changed' }); await work;
+    const result = controller.snapshot().tests[0];
+    expect(testPending(result)).toBe(false); expect(testSummary(result.status, result.startFailed || result.neverStarted, result.error)).toBe('✗ The test never started'); controller.close(); f.controller.close();
+  });
 });
 
 test('cancel before admission is reissued when the late start reply arrives', async () => {
@@ -149,7 +233,7 @@ test('cancel before admission is reissued when the late start reply arrives', as
   const f = fixture(method => {
     if (method === 'settings.test') return started.promise;
     if (method === 'settings.cancelTest') {
-      if (++cancellations === 1) throw { message: 'The test never started' };
+      if (++cancellations === 1) throw { code: 'test_not_started', message: 'The test never started' };
       return status('cancelled', 3);
     }
     if (method === 'settings.test.discard') return status('cancelled', 3);
@@ -160,29 +244,20 @@ test('cancel before admission is reissued when the late start reply arrives', as
   expect(f.calls.filter(call => call.method === 'settings.test')).toHaveLength(1);
   started.resolve(status()); await work;
   expect(cancellations).toBe(2);
-  expect(f.controller.snapshot().tests[0]).toMatchObject({ resolved: true, status: { execution: { state: 'cancelled' } } });
+  expect(f.controller.snapshot().tests[0]).toMatchObject({ status: { execution: { state: 'cancelled' } } });
   f.controller.close();
 });
-test('closing while retained cleanup is pending never starts another generation', async () => {
-  const cleanup = deferred<ImageOperationStatus>();
-  const f = fixture(method => method === 'settings.test.discard' ? cleanup.promise : config());
-  await f.controller.initialize();
-  f.registry.set({ requestId: 'test-id', profileId: 'p', profileName: 'p', configurationRevision: 1, status: status('cancelled') });
-  const work = f.controller.test('p'); f.controller.close(); cleanup.resolve(status('cancelled')); await work;
-  expect(f.calls.some(call => call.method === 'settings.test')).toBe(false);
-});
-
 test('a late successful acceptance after close releases its output automatically', async () => {
   const started = deferred<ImageOperationStatus>();
   const f = fixture(method => {
     if (method === 'settings.test') return started.promise;
-    if (method === 'settings.cancelTest') throw { message: 'The test never started' };
+    if (method === 'settings.cancelTest') throw { code: 'test_not_started', message: 'The test never started' };
     if (method === 'settings.test.discard') return { ...status('succeeded', 4), delivery: { state: 'discarded' } };
     return config();
   });
   await f.controller.initialize(); const work = f.controller.test('p'); f.controller.close();
   started.resolve(status('succeeded', 3)); await work;
-  expect(f.registry.all()[0]).toMatchObject({ resolved: true, status: { delivery: { state: 'discarded' } } });
+  expect(f.registry.all()[0]).toMatchObject({ status: { delivery: { state: 'discarded' } } });
 });
 
 test('cleanup retries automatically after a transient failure', async () => {
@@ -196,15 +271,23 @@ test('cleanup retries automatically after a transient failure', async () => {
     return config();
   });
   await f.controller.initialize(); await f.controller.test('p');
-  expect(f.controller.snapshot().tests[0].resolved).not.toBe(true);
+  expect(f.controller.snapshot().tests[0].status?.delivery.state).toBe('available');
   const scheduled = [...f.pending.keys()]; scheduled.forEach(run => run()); await settle();
-  expect(f.controller.snapshot().tests[0]).toMatchObject({ resolved: true, status: { delivery: { state: 'discarded' } } });
+  expect(f.controller.snapshot().tests[0]).toMatchObject({ status: { delivery: { state: 'discarded' } } });
   expect(discards).toBe(2); f.controller.close();
 });
 test('many tests on another connection preserve each connection’s last result', () => {
   const registry = new TestRegistry();
-  registry.set({ requestId: 'first', profileId: 'a', profileName: 'A', configurationRevision: 1, status: { ...status('cancelled'), operationId: 'first' }, resolved: true });
-  for (let i = 0; i < 100; i++) registry.set({ requestId: `b-${i}`, profileId: 'b', profileName: 'B', configurationRevision: 1, status: { ...status('cancelled'), operationId: `b-${i}` }, resolved: true });
+  registry.set({ requestId: 'first', profileId: 'a', profileName: 'A', configurationRevision: 1, status: { ...status('cancelled'), operationId: 'first' } });
+  for (let i = 0; i < 100; i++) registry.set({ requestId: `b-${i}`, profileId: 'b', profileName: 'B', configurationRevision: 1, status: { ...status('cancelled'), operationId: `b-${i}` } });
   expect(registry.all().find(test => test.profileId === 'a')?.status?.execution.state).toBe('cancelled');
   expect(registry.all().filter(test => test.profileId === 'b').at(-1)?.requestId).toBe('b-99');
+});
+
+test('retaining the last result never drops an older success still awaiting output cleanup', () => {
+  const registry = new TestRegistry();
+  registry.set({ requestId: 'paid', profileId: 'p', profileName: 'P', configurationRevision: 1, status: fixtureStatus('paid', 'succeeded') });
+  for (let i = 0; i < 100; i++) registry.set({ requestId: `past-${i}`, profileId: 'p', profileName: 'P', configurationRevision: 1, status: fixtureStatus(`past-${i}`, 'cancelled') });
+  expect(registry.all().find(result => result.requestId === 'paid')?.status?.delivery.state).toBe('available');
+  expect(registry.all().at(-1)?.requestId).toBe('past-99');
 });

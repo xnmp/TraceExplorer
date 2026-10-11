@@ -222,7 +222,7 @@ for (const zoom of [1, 1.1, 1.25]) {
 }
 test('a rejected test start displays its fixed reason without an endless waiting state', async ({ page }) => {
   await setup(page); await saveHttp(page);
-  await page.evaluate(() => (window as any).imageConnectionFixture.rejectStart({ code: -32000, data: { code: 'unavailable', message: 'Credential command exited with status 1' } }));
+  await page.evaluate(() => (window as any).imageConnectionFixture.failCredential());
   await page.getByRole('button', { name: 'Test generation (may be billed)', exact: true }).click();
   await expect(page.getByRole('status').filter({ hasText: '✗ Credential command exited with status 1' })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Test generation (may be billed)', exact: true })).toBeEnabled();
@@ -234,18 +234,20 @@ test('unknown outcome is inline and a new test can start', async ({ page }) => {
   await page.evaluate(() => (window as any).imageConnectionFixture.outcome('unknown'));
   const generate = page.getByRole('button', { name: 'Test generation (may be billed)', exact: true });
   await generate.click();
-  await expect(page.getByText('? Outcome unknown: Codex turn was interrupted', { exact: true })).toBeVisible();
+  await expect(page.getByText('? Outcome unknown: The app closed during the test', { exact: true })).toBeVisible();
   await page.evaluate(() => (window as any).imageConnectionFixture.outcome('succeeded'));
   await generate.click();
   await expect(page.getByRole('status').filter({ hasText: /^✓ Generated a test image/ })).toBeVisible();
 });
-test('stale retained unknown on open is automatically resolved without a banner', async ({ page }) => {
+test('stale retained unknown is shown once without blocking a new test or adding a banner', async ({ page }) => {
   await setup(page); await saveHttp(page); await page.getByRole('button', { name: 'Close', exact: true }).click();
   await page.evaluate(() => (window as any).imageConnectionFixture.staleUnknown());
   await page.getByRole('button', { name: 'Configure connections', exact: true }).click();
-  await expect(page.getByText('? Outcome unknown: Codex turn was interrupted', { exact: true })).toBeVisible();
+  await expect(page.getByText('? Outcome unknown: The app closed during the test', { exact: true })).toBeVisible();
   await expect(page.getByText('Resolve the retained test', { exact: false })).toHaveCount(0);
   await expect(page.getByRole('heading', { name: 'Connection tests' })).toHaveCount(0);
+  await expect(page.locator('.banner')).toHaveCount(0);
+  expect(await page.evaluate(() => (window as any).imageConnectionFixture.calls())).not.toContain('settings.test.discard');
   await page.getByRole('button', { name: 'Test generation (may be billed)', exact: true }).click();
   await expect(page.getByRole('status').filter({ hasText: /^✓ Generated a test image/ })).toBeVisible();
 });
@@ -259,4 +261,28 @@ test('the spinning test button cancels generation and each connection keeps its 
   await expect(page.getByText('✗ Test cancelled.', { exact: true })).toHaveCount(0);
   await page.getByRole('button', { name: /Saved Images/ }).click();
   await expect(page.getByText('✗ Test cancelled.', { exact: true })).toBeVisible();
+});
+
+test('retained discovery gates the test button until an active test is recovered', async ({ page }) => {
+  await setup(page); await saveHttp(page); await page.getByRole('button', { name: 'Close', exact: true }).click();
+  await page.evaluate(() => {
+    const fixture = (window as any).imageConnectionFixture;
+    fixture.discovery(() => new Promise<void>(resolve => { (window as any).finishTestDiscovery = resolve; }));
+  });
+  await page.getByRole('button', { name: 'Configure connections', exact: true }).click();
+  const generate = page.getByRole('button', { name: 'Test generation (may be billed)', exact: true });
+  await expect(generate).toBeDisabled();
+  await page.evaluate(() => {
+    const fixture = (window as any).imageConnectionFixture;
+    fixture.retain(fixture.snapshot().profiles[0].id, {
+      version: 1, operationId: 'retained-active', requestFingerprint: 'b'.repeat(64),
+      provider: { packageId: 'xnmp.image-generation', serviceId: 'image-generation', major: 1 },
+      revision: 1, execution: { state: 'accepted' }, delivery: { state: 'none' },
+    });
+    fixture.outcome('running'); (window as any).finishTestDiscovery();
+  });
+  const cancel = page.getByRole('button', { name: 'Cancel test', exact: true });
+  await expect(cancel.locator('.spinner')).toBeVisible(); await cancel.click();
+  await expect(page.getByText('✗ Test cancelled.', { exact: true })).toBeVisible();
+  await expect(generate).toBeEnabled(); await expect(page.locator('.banner')).toHaveCount(0);
 });

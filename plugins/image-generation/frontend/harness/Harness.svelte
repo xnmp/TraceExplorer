@@ -1,65 +1,16 @@
 <script lang="ts">
   import type { Component } from 'svelte';
   import type { PluginContext } from '../../../../integration/plugin-sdk';
-  import type { ImageConfiguration, ImageOperationStatus } from '../../../../integration/services/image-generation-v1';
   import { plugins } from '../index';
-  import { isApi } from '../domain';
+  import { connectionFixture } from './fixture';
   let dialog = $state.raw<{ component: Component<any>; props: Record<string, unknown> } | null>(null);
   let configure = $state<(() => void | Promise<void>) | null>(null);
   // Like the host, a dialog opens with the props it was registered with, overridden by any passed when opening.
   const dialogs = new Map<string, { component: Component<any>; props: Record<string, unknown> }>();
   const handlers: ((event: unknown) => void)[] = [];
-  let current: ImageConfiguration = { schemaVersion: 1, documentRevision: 0, defaultConnectionId: null, profiles: [] };
-  const results = new Map<string, ImageOperationStatus>();
-  const owners = new Map<string, string>();
-  const resolved = new Set<string>();
-  let outcome: "succeeded" | "unknown" | "running" = "succeeded";
-  const calls: string[] = [];
-  const emit = () => handlers.forEach(fn => fn({ documentRevision: current.documentRevision, affectedProfileIds: current.profiles.map(p => p.id) }));
-  let startFailure: unknown = null;
-  const fixture = {
-    outcome: (value: typeof outcome) => outcome = value,
-    staleUnknown: () => {
-      const profileId = current.profiles[0].id;
-      owners.set('stale-test', profileId);
-      results.set('stale-test', { version: 1, operationId: 'stale-test', requestFingerprint: 'b'.repeat(64), provider: { packageId: 'xnmp.image-generation', serviceId: 'image-generation', major: 1 }, revision: 2, execution: { state: 'unknown', error: { code: 'remote_outcome_unknown', message: 'Codex turn was interrupted' } }, delivery: { state: 'none' } });
-    },
-    rejectStart: (reason: unknown) => startFailure = reason,
-    snapshot: () => structuredClone(current), calls: () => [...calls],
-    remoteName: (name: string) => { current = { ...current, documentRevision: current.documentRevision + 1, profiles: current.profiles.map(p => ({ ...p, name })) }; emit(); },
-  };
-  Object.assign(window, { imageConnectionFixture: fixture });
-  const backend = { async invoke(method: string, params: Record<string, unknown> = {}) {
-    calls.push(method);
-    if (method === 'settings.read') return structuredClone(current);
-    if (method === 'settings.save') {
-      if (params.expectedRevision !== current.documentRevision) throw Error('Image connections changed; reload before saving');
-      current = { ...structuredClone(params.configuration as ImageConfiguration), documentRevision: current.documentRevision + 1 }; emit(); return structuredClone(current);
-    }
-    if (method === 'settings.credential.set' || method === 'settings.credential.clear') {
-      if (params.expectedRevision !== current.documentRevision) throw Error('Settings changed');
-      current = { ...current, documentRevision: current.documentRevision + 1, profiles: current.profiles.map(p => p.id === params.profileId && isApi(p) ? { ...p, credential: method.endsWith('.clear') ? { kind: 'none' } : { kind: 'secret', id: 'owned-secret-reference' } } : p) }; emit(); return structuredClone(current);
-    }
-    if (method === 'settings.test.list') return [...results].filter(([id]) => !resolved.has(id)).map(([id, status]) => ({ profileId: owners.get(id), status: structuredClone(status) }));
-    if (method === 'settings.check') return { available: true };
-    const requestId = String(params.requestId);
-    if (method === 'settings.test') {
-      if (startFailure) throw startFailure;
-      if ([...results].some(([id, status]) => owners.get(id) === params.profileId && ['accepted', 'running'].includes(status.execution.state))) throw Error('Test already running');
-      owners.set(requestId, String(params.profileId));
-      if (params.expectedConfigurationRevision !== current.documentRevision) throw Error('Settings changed');
-      const receipt: ImageOperationStatus = { version: 1, operationId: requestId, requestFingerprint: 'b'.repeat(64), provider: { packageId: 'xnmp.image-generation', serviceId: 'image-generation', major: 1 }, revision: 1, execution: { state: 'accepted' }, delivery: { state: 'none' } }; results.set(requestId, receipt); return structuredClone(receipt);
-    }
-    const receipt = results.get(requestId); if (!receipt) throw { code: method === 'settings.cancelTest' ? 'test_not_started' : 'not_found', message: method === 'settings.cancelTest' ? 'The test never started' : 'Unknown image operation' };
-    if (method === 'settings.test.status') {
-      if (!['accepted', 'running'].includes(receipt.execution.state) || outcome === 'running') return structuredClone(receipt);
-      if (outcome === 'unknown') { const unknown: ImageOperationStatus = { ...receipt, revision: receipt.revision + 1, execution: { state: 'unknown', error: { code: 'remote_outcome_unknown', message: 'Codex turn was interrupted' } } }; results.set(requestId, unknown); return structuredClone(unknown); }
-      const completed: ImageOperationStatus = { ...receipt, revision: 2, execution: { state: 'succeeded', metadata: { adapter: 'openai-images', endpointIdentity: 'https://example.test/images', requestedModel: 'custom-image', actualModel: null, externalRequestId: null, threadId: null, options: { size: '1024x1024', quality: 'low', background: 'auto' }, remoteChargeUncertain: false } }, delivery: { state: 'available', output: { handle: 'opaque-fixture-handle', sha256: 'a'.repeat(64), byteLength: 100, mediaType: 'image/png' } } }; results.set(requestId, completed); return structuredClone(completed);
-    }
-    if (method === 'settings.cancelTest') { const cancelled = { ...receipt, revision: 3, execution: { state: 'cancelled' } as const }; results.set(requestId, cancelled); return structuredClone(cancelled); }
-    if (method === 'settings.test.discard') { if (['accepted', 'running'].includes(receipt.execution.state)) throw Error('Only a settled test can be discarded'); const discarded = receipt.execution.state === 'succeeded' ? { ...receipt, revision: receipt.revision + 1, delivery: { state: 'discarded' } as const } : receipt; results.set(requestId, discarded); resolved.add(requestId); return structuredClone(discarded); }
-    throw Error('Unknown fixture RPC');
-  } };
+  const fixture = connectionFixture(undefined, current => handlers.forEach(fn => fn({ documentRevision: current.documentRevision, affectedProfileIds: current.profiles.map(p => p.id) })));
+  Object.assign(window, { imageConnectionFixture: { ...fixture, calls: () => fixture.calls().map(call => call.method) } });
+  const backend = fixture.backend;
   plugins[0].activate({ backend, events: { listen: (_: string, fn: (event: unknown) => void) => handlers.push(fn) }, registerDialog: (entry: { id: string; component: Component<any>; props?: Record<string, unknown> }) => dialogs.set(entry.id, { component: entry.component, props: entry.props ?? {} }), registerCommand: () => {}, registerSettingsSection: (section: { actions: { run: () => void | Promise<void> }[] }) => configure = section.actions[0].run,
     openDialog: (id: string, props: Record<string, unknown> = {}) => { const entry = dialogs.get(id)!; dialog = { component: entry.component, props: { ...entry.props, ...props } }; } } as unknown as PluginContext);
 </script>

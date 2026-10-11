@@ -160,7 +160,15 @@ impl Host for FakeHost {
                     .lock()
                     .unwrap()
                     .push(json!({"method":method,"params":p}));
-                Ok(json!({"accepted":true,"resolved":p["resolve"] == true}))
+                assert!(p.get("resolve").is_none());
+                assert!(p.get("noLiveWorker").is_none());
+                if method == "host.services.test.begin" {
+                    Ok(
+                        json!({"accepted":true,"caller":{"packageId":"xnmp.image-generation","packageDigest":"a".repeat(64),"incarnation":1}}),
+                    )
+                } else {
+                    Ok(json!({"updated":true}))
+                }
             }
             "host.process.run" => {
                 // Like the native host: a host without stdin refuses the
@@ -2100,6 +2108,7 @@ async fn rejection_cannot_replace_an_existing_accepted_receipt() {
                 &request.operation_id,
                 &semantic,
                 &request.effective_recipe_digest,
+                &request.connection_id,
                 error("busy", "No admission"),
                 false
             )
@@ -2114,6 +2123,7 @@ async fn rejection_cannot_replace_an_existing_accepted_receipt() {
                 &request.operation_id,
                 "different-semantic",
                 &request.effective_recipe_digest,
+                &request.connection_id,
                 error("busy", "No admission"),
                 false
             )
@@ -2295,6 +2305,7 @@ async fn quiesce_reports_busy_checkpoint_and_restores_admissions_until_reader_dr
             &request.operation_id,
             &image_generation_backend::domain::semantic(&request),
             &request.effective_recipe_digest,
+            &request.connection_id,
             error("busy", "Fixture rejected"),
             false,
         )
@@ -4074,6 +4085,36 @@ async fn explicit_tests_use_backend_defaults_and_preserve_command_failure_withou
             .all(|event| event["method"] != "host.services.test.begin"));
         assert!(host.processes.lock().unwrap().is_empty());
         service.wait_idle().await;
+        service.quiesce().unwrap();
+        drop(service);
+        let restored = Service::new(directory.path(), host.clone()).unwrap();
+        restored.activate().unwrap();
+        let tests = restored.settings("test.list", json!({})).unwrap();
+        assert_eq!(tests[0]["profileId"], "http", "{transport}");
+        assert_eq!(tests[0]["status"], receipt);
+        assert!(restored
+            .operation_idle("xnmp.image-generation", "failed-command-test")
+            .unwrap());
+        assert!(restored
+            .settings("test.list", json!({}))
+            .unwrap()
+            .as_array()
+            .unwrap()
+            .is_empty());
+        // No host admission means there is no host cleanup transaction at all.
+        assert!(host
+            .events
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|event| event["method"] != "host.services.test.begin"
+                && event["method"] != "host.services.test.update"));
+        assert_eq!(
+            restored
+                .settings("test.status", json!({"requestId":"failed-command-test"}))
+                .unwrap(),
+            receipt
+        );
     }
 }
 
@@ -4106,7 +4147,7 @@ async fn cancelling_a_test_that_never_started_preserves_intent_and_explains_abse
 
 /// Entirely local: the test-hooks provider returns a canned image, no sockets.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn retained_unknown_test_discard_preserves_evidence_and_allows_next_test() {
+async fn retained_unknown_test_is_shown_once_preserves_evidence_and_allows_next_test() {
     let directory = tempfile::tempdir().unwrap();
     let host = FakeHost::new();
     let service = Service::new(directory.path(), host.clone()).unwrap();
@@ -4147,7 +4188,10 @@ async fn retained_unknown_test_discard_preserves_evidence_and_allows_next_test()
         model: Some("fixture".into()),
         prompt: "A blue dot.".into(),
         inputs: vec![],
-        options: image_generation_backend::domain::test_recipe_options(profile.kind()),
+        options: image_generation_backend::domain::test_recipe_options(
+            profile.kind(),
+            Some("fixture"),
+        ),
     };
     let recipe = image_generation_backend::domain::recipe(&profile, &request).unwrap();
     service
@@ -4182,6 +4226,24 @@ async fn retained_unknown_test_discard_preserves_evidence_and_allows_next_test()
             .len(),
         1
     );
+    assert!(service
+        .operation_idle("xnmp.image-generation", "stale-test")
+        .unwrap());
+    assert!(service
+        .settings("test.list", json!({}))
+        .unwrap()
+        .as_array()
+        .unwrap()
+        .is_empty());
+    // An outcome with no output is local history. No host acknowledgement,
+    // replay or explicit cleanup is necessary to admit a fresh user test.
+    assert!(host
+        .events
+        .lock()
+        .unwrap()
+        .iter()
+        .all(|event| event["method"] != "host.services.test.update"));
+    service.settings("test", json!({"profileId":"fixture","requestId":"next-test","expectedConfigurationRevision":1})).unwrap();
     let discarded = service
         .settings("test.discard", json!({"requestId":"stale-test"}))
         .unwrap();
@@ -4192,13 +4254,6 @@ async fn retained_unknown_test_discard_preserves_evidence_and_allows_next_test()
             .unwrap(),
         discarded
     );
-    assert!(service
-        .settings("test.list", json!({}))
-        .unwrap()
-        .as_array()
-        .unwrap()
-        .is_empty());
-    service.settings("test", json!({"profileId":"fixture","requestId":"next-test","expectedConfigurationRevision":1})).unwrap();
     let complete = loop {
         let status: OperationStatus = serde_json::from_value(
             service
@@ -4300,9 +4355,18 @@ async fn retained_test_enumeration_masks_success_until_owned_output_sealing_fini
     service.settings("test", json!({"profileId":"fixture","requestId":"held-test","expectedConfigurationRevision":1})).unwrap();
     sealing.recv_timeout(Duration::from_secs(3)).unwrap();
     let tests = service.settings("test.list", json!({})).unwrap();
+    let rejected = service.settings("test", json!({"profileId":"fixture","requestId":"second-window-test","expectedConfigurationRevision":1}));
     // Always release the worker before assertions so a failing assertion cannot hang the runtime.
     release.wait();
     assert_eq!(tests[0]["status"]["execution"]["state"], "running");
+    assert_eq!(rejected.unwrap_err().code, "test_already_running");
+    assert_eq!(
+        service
+            .settings("test.status", json!({"requestId":"second-window-test"}))
+            .unwrap_err()
+            .code,
+        "not_found"
+    );
     loop {
         let status = service
             .settings("test.status", json!({"requestId":"held-test"}))
@@ -4315,4 +4379,144 @@ async fn retained_test_enumeration_masks_success_until_owned_output_sealing_fini
     service
         .settings("test.discard", json!({"requestId":"held-test"}))
         .unwrap();
+}
+
+/// Additive migrations preserve old receipt evidence and are safe to repeat.
+#[test]
+fn legacy_test_journal_gains_connection_association_and_local_shown_markers_idempotently() {
+    use image_generation_backend::{domain, journal::Journal};
+    let directory = tempfile::tempdir().unwrap();
+    let mut profile = configuration("https://custom.test/images")
+        .profiles
+        .remove(0);
+    profile.set_revision("legacy-revision".into());
+    let prepared = request(&profile, vec![]);
+    let recipe = domain::recipe(&profile, &prepared).unwrap();
+    let journal = Journal::open(directory.path()).unwrap();
+    journal.activate().unwrap();
+    let status = journal
+        .accept(&caller(), "legacy-test", &"a".repeat(64), &recipe, true)
+        .unwrap()
+        .0;
+    drop(journal);
+    let raw = rusqlite::Connection::open(directory.path().join("operations.sqlite")).unwrap();
+    raw.execute_batch("ALTER TABLE operations DROP COLUMN connection_id; DROP TABLE shown_tests; CREATE TABLE resolved_tests(caller TEXT NOT NULL,operation TEXT NOT NULL,PRIMARY KEY(caller,operation));").unwrap();
+    drop(raw);
+    for _ in 0..2 {
+        let journal = Journal::open(directory.path()).unwrap();
+        journal.activate().unwrap();
+        assert_eq!(
+            journal.retained_tests("test.consumer").unwrap(),
+            vec![("http".into(), status.clone())]
+        );
+        assert_eq!(
+            journal.get("test.consumer", "legacy-test", None).unwrap(),
+            Some(status.clone())
+        );
+    }
+}
+
+/// Guard admission IO too: another window cannot race credential capture.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn second_connection_test_is_rejected_before_the_first_has_a_receipt() {
+    let directory = tempfile::tempdir().unwrap();
+    let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+    let (release_tx, release_rx) = std::sync::mpsc::channel();
+    let host = Arc::new(HeldCredential {
+        inner: FakeHost::new(),
+        entered: Mutex::new(Some(entered_tx)),
+        release: Mutex::new(release_rx),
+    });
+    let service = Service::new(directory.path(), host.clone()).unwrap();
+    service.activate().unwrap();
+    service
+        .profiles
+        .save(configuration("https://example.test/images"), 0, None, None)
+        .unwrap();
+    service
+        .settings(
+            "credential.set",
+            json!({"profileId":"http","key":"fixture-key","expectedRevision":1}),
+        )
+        .unwrap();
+    let revision = service.profiles.read().unwrap().document_revision;
+    let admission = tokio::task::spawn_blocking({
+        let service = service.clone();
+        move || {
+            service.settings("test", json!({"profileId":"http","requestId":"first-window-test","expectedConfigurationRevision":revision}))
+        }
+    });
+    tokio::task::spawn_blocking(move || entered_rx.recv_timeout(Duration::from_secs(3)).unwrap())
+        .await
+        .unwrap();
+    let rejection = service.settings("test", json!({"profileId":"http","requestId":"second-window-test","expectedConfigurationRevision":revision}));
+    // Change the credential while admission is held, so it terminates locally
+    // and cannot issue any provider network request after the fixture releases.
+    service
+        .settings(
+            "credential.set",
+            json!({"profileId":"http","key":"changed-key","expectedRevision":revision}),
+        )
+        .unwrap();
+    release_tx.send(()).unwrap();
+    let first = admission.await.unwrap().unwrap();
+    assert_eq!(rejection.unwrap_err().code, "test_already_running");
+    assert_eq!(
+        service
+            .settings("test.status", json!({"requestId":"second-window-test"}))
+            .unwrap_err()
+            .code,
+        "not_found"
+    );
+    assert_eq!(first["execution"]["state"], "failed");
+    assert_eq!(first["execution"]["error"]["code"], "configuration_changed");
+    assert!(host
+        .inner
+        .events
+        .lock()
+        .unwrap()
+        .iter()
+        .all(|event| event["method"] != "host.services.test.begin"));
+}
+
+#[test]
+fn retained_test_connection_ids_are_bounded_and_legacy_null_uses_recipe() {
+    use image_generation_backend::{domain, journal::Journal};
+    let directory = tempfile::tempdir().unwrap();
+    let mut profile = configuration("https://custom.test/images")
+        .profiles
+        .remove(0);
+    profile.set_revision("fixture-revision".into());
+    let prepared = request(&profile, vec![]);
+    let recipe = domain::recipe(&profile, &prepared).unwrap();
+    let journal = Journal::open(directory.path()).unwrap();
+    journal.activate().unwrap();
+    journal
+        .accept(
+            &caller(),
+            "test-connection-id",
+            &"a".repeat(64),
+            &recipe,
+            true,
+        )
+        .unwrap();
+    let raw = rusqlite::Connection::open(directory.path().join("operations.sqlite")).unwrap();
+    for invalid in [
+        "".to_owned(),
+        "contains/slash".into(),
+        "a".repeat(1024 * 1024),
+    ] {
+        raw.execute("UPDATE operations SET connection_id=?", [invalid])
+            .unwrap();
+        assert_eq!(
+            journal.retained_tests("test.consumer").unwrap_err().code,
+            "storage_unavailable"
+        );
+    }
+    raw.execute("UPDATE operations SET connection_id=NULL", [])
+        .unwrap();
+    assert_eq!(
+        journal.retained_tests("test.consumer").unwrap()[0].0,
+        "http"
+    );
 }
