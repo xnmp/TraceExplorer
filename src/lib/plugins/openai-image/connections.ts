@@ -9,7 +9,7 @@ export function isCodexConnection(profile: ImageConnection): profile is CodexCon
 export function isApiConnection(profile: ImageConnection): profile is ApiConnection { return profile.transport !== "codex-cli"; }
 /** Known backends get a friendly name; any other transport is shown as its id. */
 export function transportLabel(transport: string): string {
-  return transport === "codex-cli" ? "Codex" : transport === "openai-images" ? "Images API" : transport;
+  return transport === "codex-cli" ? "Codex" : transport === "openai-images" ? "Images API" : transport === "gemini" ? "Nano Banana" : transport;
 }
 
 export function connectionFor(description: ImageDescription | undefined, selected: string | null = null): ImageConnection | null {

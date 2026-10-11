@@ -45,6 +45,7 @@ pub struct ApiProfile {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ApiKind {
     OpenAiImages,
+    Gemini,
     /// Test-only extra backend proving a new kind needs no consumer changes.
     #[cfg(feature = "test-hooks")]
     Fixture,
@@ -53,6 +54,7 @@ impl ApiKind {
     /// Every kind, for registry consistency tests.
     pub const ALL: &'static [ApiKind] = &[
         ApiKind::OpenAiImages,
+        ApiKind::Gemini,
         #[cfg(feature = "test-hooks")]
         ApiKind::Fixture,
     ];
@@ -84,6 +86,8 @@ pub enum Profile {
     },
     #[serde(rename = "openai-images")]
     OpenAiImages(ApiProfile),
+    #[serde(rename = "gemini")]
+    Gemini(ApiProfile),
     #[cfg(feature = "test-hooks")]
     #[serde(rename = "fixture-images")]
     Fixture(ApiProfile),
@@ -93,6 +97,7 @@ impl Profile {
         match self {
             Self::Codex { .. } => None,
             Self::OpenAiImages(p) => Some((ApiKind::OpenAiImages, p)),
+            Self::Gemini(p) => Some((ApiKind::Gemini, p)),
             #[cfg(feature = "test-hooks")]
             Self::Fixture(p) => Some((ApiKind::Fixture, p)),
         }
@@ -101,6 +106,7 @@ impl Profile {
         match self {
             Self::Codex { .. } => None,
             Self::OpenAiImages(p) => Some((ApiKind::OpenAiImages, p)),
+            Self::Gemini(p) => Some((ApiKind::Gemini, p)),
             #[cfg(feature = "test-hooks")]
             Self::Fixture(p) => Some((ApiKind::Fixture, p)),
         }

@@ -29,6 +29,7 @@ use std::{
 use te_image_generation_contract::{EffectiveRecipe, SafeError};
 #[cfg(feature = "test-hooks")]
 mod fixture;
+pub mod gemini;
 pub mod openai_images;
 
 /// How a backend authenticates; the key itself is applied by [`send`].
@@ -68,6 +69,7 @@ pub struct ApiCall<'a> {
 pub fn descriptor(kind: ApiKind) -> &'static ApiDescriptor {
     match kind {
         ApiKind::OpenAiImages => &openai_images::DESCRIPTOR,
+        ApiKind::Gemini => &gemini::DESCRIPTOR,
         #[cfg(feature = "test-hooks")]
         ApiKind::Fixture => &fixture::DESCRIPTOR,
     }
@@ -75,6 +77,7 @@ pub fn descriptor(kind: ApiKind) -> &'static ApiDescriptor {
 pub async fn generate(kind: ApiKind, call: ApiCall<'_>) -> Result<Output> {
     match kind {
         ApiKind::OpenAiImages => openai_images::generate(call).await,
+        ApiKind::Gemini => gemini::generate(call).await,
         #[cfg(feature = "test-hooks")]
         ApiKind::Fixture => fixture::generate(call).await,
     }
