@@ -15,10 +15,9 @@ use std::{
     time::{Instant, SystemTime, UNIX_EPOCH},
 };
 use te_image_generation_contract::{
-    ArtifactDescriptor, Delivery, EffectiveRecipe, Execution, Preparation,
+    ArtifactDescriptor, Delivery, EffectiveRecipe, Execution, OperationStatus, Preparation,
     PrepareRequest, StartRequest,
 };
-use super::job_presentation::ImageReceipt as OperationStatus;
 const SCHEMA: i64 = 1;
 const APPLICATION_ID: i64 = 0x54454943;
 const MAX_OUTPUT: u64 = 50 * 1024 * 1024;
@@ -78,12 +77,29 @@ struct Link {
     captured: Vec<Captured>,
     target: PathBuf,
     phase: String,
+    #[serde(default, deserialize_with = "deserialize_stored_receipt")]
     receipt: Option<OperationStatus>,
     output: Option<ArtifactDescriptor>,
     transfer_receipt: Option<String>,
     preparation_release_pending: bool,
     error: Option<String>,
     deadline_ms: u64,
+}
+fn deserialize_stored_receipt<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<OperationStatus>, D::Error> {
+    let value = Option::<Value>::deserialize(deserializer)?;
+    value
+        .map(|mut receipt| {
+            let object = receipt
+                .as_object_mut()
+                .ok_or_else(|| serde::de::Error::custom("Stored receipt must be an object"))?;
+            if let Some(billing) = object.get_mut("billing") {
+                *billing = super::job_presentation::stored_billing(billing.clone());
+            }
+            serde_json::from_value(receipt).map_err(serde::de::Error::custom)
+        })
+        .transpose()
 }
 /// Known additive extension; initialized links are never healed after loss.
 pub(crate) fn ensure_schema(connection: &Connection) -> Result<(), AppError> {
@@ -2678,8 +2694,8 @@ mod tests {
         /// The provider is unreachable after publication: status and
         /// acknowledge fail without changing its receipt.
         ack_down: bool,
-        start_billing: Option<super::job_presentation::ProviderBilling>,
-        ack_billing: Option<Option<super::job_presentation::ProviderBilling>>,
+        start_billing: Option<te_image_generation_contract::Billing>,
+        ack_billing: Option<Option<te_image_generation_contract::Billing>>,
     }
     #[derive(Default)]
     struct IoGate {
@@ -2976,7 +2992,7 @@ mod tests {
                             output: self.output.clone(),
                         }
                     };
-                    let mut receipt: OperationStatus = te_image_generation_contract::OperationStatus {
+                    let mut receipt = OperationStatus {
                         version: 1,
                         operation_id: request.operation_id,
                         request_fingerprint: request.effective_recipe_digest,
@@ -2990,7 +3006,7 @@ mod tests {
                         billing: None,
                         execution,
                         delivery,
-                    }.into();
+                    };
                     receipt.billing = behavior.start_billing.clone();
                     self.states
                         .lock()
@@ -3923,7 +3939,7 @@ mod tests {
     }
     #[test]
     fn acknowledgement_announces_added_replaced_and_removed_billing() {
-        let billing = |amount: &str| serde_json::from_value::<super::job_presentation::ProviderBilling>(json!({"cost":{"amount":amount,"currency":"USD","estimated":false,"source":"fixture"}})).unwrap();
+        let billing = |amount: &str| serde_json::from_value::<te_image_generation_contract::Billing>(json!({"cost":{"amount":amount,"currency":"USD","estimated":false,"source":"fixture"}})).unwrap();
         for (before,after) in [(None,Some(billing("0.04"))),(Some(billing("0.08")),Some(billing("0.04"))),(Some(billing("0.08")),None)] {
             let f = Fixture::new();
             {
@@ -3950,37 +3966,213 @@ mod tests {
         let f = Fixture::new();
         let link = f.accept(OP);
         f.run(OP, true);
-        let original = read_link(&f.database, OP).unwrap().unwrap().receipt.unwrap();
+        let original = read_link(&f.database, OP)
+            .unwrap()
+            .unwrap()
+            .receipt
+            .unwrap();
         let mut raw = serde_json::to_value(&original).unwrap();
         raw["revision"] = json!(original.revision + 1);
         raw["billing"] = json!({"cost":{"amount":"0.04","currency":"USD","estimated":true,"source":"fixture"},"evidence":{"schema":"usage.v1","values":{"credits":4}}});
         observe(&f.database, OP, raw.clone()).unwrap();
         let connection = connection_at(&f.database).unwrap();
-        let details: String = connection.query_row("SELECT result_details FROM runs WHERE id=?1",[link.run_id],|r|r.get(0)).unwrap();
-        assert_eq!(parse::<Value>(&details).unwrap()["provider_billing"],raw["billing"]);
-        let old = snapshot_with_capabilities(&f.database,OP,false,false,false).unwrap().unwrap();
+        let details: String = connection
+            .query_row(
+                "SELECT result_details FROM runs WHERE id=?1",
+                [link.run_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            parse::<Value>(&details).unwrap()["provider_billing"],
+            raw["billing"]
+        );
+        let old = snapshot_with_capabilities(&f.database, OP, false, false, false)
+            .unwrap()
+            .unwrap();
         assert!(old.get("cost").is_none() && old.get("reveal").is_none());
-        let status = snapshot_with_capabilities(&f.database,OP,false,true,true).unwrap().unwrap();
-        assert_eq!(status["cost"],raw["billing"]["cost"]);
-        assert_eq!(status["reveal"]["kind"],"view");
+        let status = snapshot_with_capabilities(&f.database, OP, false, true, true)
+            .unwrap()
+            .unwrap();
+        assert_eq!(status["cost"], raw["billing"]["cost"]);
+        assert_eq!(status["reveal"]["kind"], "view");
         let mut stripped = status.clone();
         stripped.as_object_mut().unwrap().remove("cost");
         stripped.as_object_mut().unwrap().remove("reveal");
-        assert_eq!(serde_json::to_string(&stripped).unwrap(),serde_json::to_string(&old).unwrap());
-        let mut invalid = raw.clone();
-        invalid["revision"] = json!(original.revision + 2);
-        invalid["billing"]["evidence"]["values"] = json!({"nested":[]});
-        assert!(observe(&f.database,OP,invalid).is_err());
+        assert_eq!(
+            serde_json::to_string(&stripped).unwrap(),
+            serde_json::to_string(&old).unwrap()
+        );
+        for billing in [
+            json!(null),
+            json!([]),
+            json!({"cost":{"amount":"0.04","currency":"USD","estimated":"true","source":"fixture"}}),
+            json!({"cost":{"amount":"0.1234567","currency":"USD","estimated":false,"source":"fixture"}}),
+            json!({"cost":{"amount":"0.04","currency":"USD","estimated":false,"source":""}}),
+            json!({"evidence":{"schema":"s".repeat(65),"values":{}}}),
+            json!({"evidence":{"schema":"s","values":{"nested":[]}}}),
+            json!({"evidence":{"schema":"s","values":{"k":"v".repeat(129)}}}),
+        ] {
+            let mut invalid = raw.clone();
+            invalid["revision"] = json!(original.revision + 2);
+            invalid["billing"] = billing;
+            assert!(observe(&f.database, OP, invalid).is_err());
+            assert_eq!(
+                read_link(&f.database, OP)
+                    .unwrap()
+                    .unwrap()
+                    .receipt
+                    .unwrap()
+                    .revision,
+                original.revision + 1
+            );
+            let unchanged: String = connection
+                .query_row(
+                    "SELECT result_details FROM runs WHERE id=?1",
+                    [link.run_id],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(unchanged, details);
+            assert_eq!(
+                snapshot_with_capabilities(&f.database, OP, false, true, true)
+                    .unwrap()
+                    .unwrap()["cost"],
+                raw["billing"]["cost"]
+            );
+        }
         raw["revision"] = json!(original.revision + 2);
         raw["billing"]["cost"]["amount"] = json!("0.02");
-        observe(&f.database,OP,raw.clone()).unwrap();
-        assert_eq!(snapshot_with_capabilities(&f.database,OP,false,true,true).unwrap().unwrap()["cost"]["amount"],"0.02");
+        observe(&f.database, OP, raw.clone()).unwrap();
+        assert_eq!(
+            snapshot_with_capabilities(&f.database, OP, false, true, true)
+                .unwrap()
+                .unwrap()["cost"]["amount"],
+            "0.02"
+        );
         raw["revision"] = json!(original.revision + 3);
         raw.as_object_mut().unwrap().remove("billing");
-        observe(&f.database,OP,raw).unwrap();
-        assert!(snapshot_with_capabilities(&f.database,OP,false,true,true).unwrap().unwrap().get("cost").is_none());
-        let details: String = connection.query_row("SELECT result_details FROM runs WHERE id=?1",[link.run_id],|r|r.get(0)).unwrap();
-        assert!(parse::<Value>(&details).unwrap().get("provider_billing").is_none());
+        observe(&f.database, OP, raw).unwrap();
+        assert!(
+            snapshot_with_capabilities(&f.database, OP, false, true, true)
+                .unwrap()
+                .unwrap()
+                .get("cost")
+                .is_none()
+        );
+        let details: String = connection
+            .query_row(
+                "SELECT result_details FROM runs WHERE id=?1",
+                [link.run_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(parse::<Value>(&details)
+            .unwrap()
+            .get("provider_billing")
+            .is_none());
+    }
+    #[test]
+    fn stored_empty_billing_source_loads_without_weakening_incoming_validation() {
+        let f = Fixture::new();
+        let link = f.accept(OP);
+        f.run(OP, true);
+        let connection = connection_at(&f.database).unwrap();
+        let body: String = connection
+            .query_row(
+                "SELECT body FROM image_service_operations WHERE operation_id=?1",
+                [OP],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let details: String = connection
+            .query_row(
+                "SELECT result_details FROM runs WHERE id=?1",
+                [link.run_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let billing = json!({"cost":{"amount":"0.045","currency":"USD","estimated":false,"source":""},"evidence":{"schema":"usage.v1","values":{"credits":4.5}}});
+        let mut stored: Value = parse(&body).unwrap();
+        stored["receipt"]["billing"] = billing.clone();
+        let body = stored.to_string();
+        connection
+            .execute(
+                "UPDATE image_service_operations SET body=?2 WHERE operation_id=?1",
+                params![OP, body],
+            )
+            .unwrap();
+        let mut details: Value = parse(&details).unwrap();
+        details["provider_billing"] = billing;
+        let details = details.to_string();
+        connection
+            .execute(
+                "UPDATE runs SET result_details=?2 WHERE id=?1",
+                params![link.run_id, details],
+            )
+            .unwrap();
+
+        let loaded = read_link(&f.database, OP).unwrap().unwrap();
+        let mut expected = stored["receipt"]["billing"].clone();
+        expected["cost"]["source"] = json!("legacy:unspecified");
+        assert_eq!(json!(loaded.receipt.unwrap().billing.unwrap()), expected);
+        assert!(validate_history_run(&connection, link.run_id).is_ok());
+        assert_eq!(links_at(&connection).unwrap().len(), 1);
+        let status = snapshot_with_capabilities(&f.database, OP, false, true, true)
+            .unwrap()
+            .unwrap();
+        assert_eq!(status["cost"], expected["cost"]);
+        assert!(
+            snapshot_with_capabilities(&f.database, OP, false, false, false)
+                .unwrap()
+                .unwrap()
+                .get("cost")
+                .is_none()
+        );
+        let unchanged: String = connection
+            .query_row(
+                "SELECT body FROM image_service_operations WHERE operation_id=?1",
+                [OP],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(unchanged, body);
+        let unchanged: String = connection
+            .query_row(
+                "SELECT result_details FROM runs WHERE id=?1",
+                [link.run_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(unchanged, details);
+        let mut incoming = stored["receipt"].clone();
+        incoming["revision"] = json!(incoming["revision"].as_u64().unwrap() + 1);
+        assert!(observe(&f.database, OP, incoming).is_err());
+
+        stored["receipt"]["billing"]["cost"]["amount"] = json!("-1");
+        connection
+            .execute(
+                "UPDATE image_service_operations SET body=?2 WHERE operation_id=?1",
+                params![OP, stored.to_string()],
+            )
+            .unwrap();
+        assert!(read_link(&f.database, OP).is_err());
+        stored["receipt"] = json!([
+            stored["receipt"]["version"],
+            stored["receipt"]["operationId"],
+            stored["receipt"]["requestFingerprint"],
+            stored["receipt"]["provider"],
+            stored["receipt"]["revision"],
+            stored["receipt"]["execution"],
+            stored["receipt"]["delivery"]
+        ]);
+        connection
+            .execute(
+                "UPDATE image_service_operations SET body=?2 WHERE operation_id=?1",
+                params![OP, stored.to_string()],
+            )
+            .unwrap();
+        assert!(read_link(&f.database, OP).is_err());
     }
     #[test]
     fn status_recomputes_reveal_after_save_and_subsequent_move() {
@@ -4709,7 +4901,12 @@ mod tests {
     fn legacy_history_without_service_ownership_remains_readable() {
         let f = Fixture::new();
         let run=begin_operation_at(&f.database,OperationStart{operation:"openai.image.generate".into(),parameters:json!({"provider":"openai","prompt":"Historical prompt","model":"old-arbitrary-model"}),inputs:vec![]}).unwrap();
-        assert!(validate_history_run(&connection_at(&f.database).unwrap(), run).is_ok());
+        let connection = connection_at(&f.database).unwrap();
+        assert!(validate_history_run(&connection, run).is_ok());
+        assert_eq!(
+            super::job_presentation::current(&connection, run).unwrap(),
+            (None, None)
+        );
     }
     async fn wait_native_terminal(f: &Fixture, operations: &[String], state: &str) {
         let deadline = Instant::now() + Duration::from_secs(8);

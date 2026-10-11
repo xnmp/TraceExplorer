@@ -58,6 +58,17 @@ fn receipt_billing_accepts_only_bounded_money_and_scalar_evidence() {
     assert!(serde_json::from_value::<Billing>(valid.clone()).is_ok());
     for (field, value) in [
         ("amount", json!("-1")),
+        ("amount", json!("")),
+        ("amount", json!("1.")),
+        ("amount", json!(".1")),
+        ("amount", json!("1.2.3")),
+        ("amount", json!("+1")),
+        ("amount", json!("NaN")),
+        ("amount", json!("雪")),
+        ("estimated", json!("true")),
+        ("estimated", json!(1)),
+        ("estimated", json!(null)),
+        ("source", json!("")),
         ("amount", json!(1.5)),
         ("amount", json!("1e3")),
         ("amount", json!("0.1234567")),
@@ -75,6 +86,11 @@ fn receipt_billing_accepts_only_bounded_money_and_scalar_evidence() {
     }
     for bad in [
         json!({"extra":true}),
+        json!([]),
+        json!({"cost": null}),
+        json!({"evidence": null}),
+        json!({"cost": ["0.04", "USD", false, "fixture"]}),
+        json!({"evidence": ["usage.v1", {}]}),
         json!({"evidence":{"schema":"x".repeat(65),"values":{}}}),
         json!({"evidence":{"schema":"s","values":{"x".repeat(65):0}}}),
     ] {
@@ -91,5 +107,60 @@ fn receipt_billing_accepts_only_bounded_money_and_scalar_evidence() {
         let mut good = valid.clone();
         good["cost"]["amount"] = json!(amount);
         assert!(serde_json::from_value::<Billing>(good).is_ok());
+    }
+}
+
+#[test]
+fn receipt_billing_preserves_v1_legacy_json_and_rejects_explicit_null() {
+    let legacy = json!({
+        "version": 1, "operationId": "fixture", "requestFingerprint": "a".repeat(64),
+        "provider": {"packageId": "fixture", "serviceId": "image-generation", "major": 1},
+        "revision": 1, "execution": {"state": "running"}, "delivery": {"state": "none"}
+    });
+    let status: OperationStatus = serde_json::from_value(legacy.clone()).unwrap();
+    assert!(status.billing.is_none());
+    assert_eq!(serde_json::to_value(&status).unwrap(), legacy);
+    let billing = json!({"cost": {"amount": "0.045", "currency": "USD", "estimated": true, "source": "fixture"}});
+    let mut receipt = legacy.clone();
+    receipt["billing"] = billing.clone();
+    let status: OperationStatus = serde_json::from_value(receipt.clone()).unwrap();
+    assert_eq!(receipt_value(&status, true), receipt);
+    assert_eq!(receipt_value(&status, false), legacy);
+    for invalid in [json!(null), json!(false), json!([]), json!({"extra": true})] {
+        receipt["billing"] = invalid;
+        assert!(
+            serde_json::from_value::<OperationStatus>(receipt.clone()).is_err(),
+            "{receipt}"
+        );
+    }
+}
+
+#[test]
+fn billing_limits_count_characters_and_accept_the_exact_boundaries() {
+    let values = (0..32)
+        .map(|i| {
+            (
+                format!("{i:02}{}", "雪".repeat(62)),
+                json!("雪".repeat(128)),
+            )
+        })
+        .collect::<serde_json::Map<_, _>>();
+    let mut billing = json!({
+        "cost": {"amount": "0.123456", "currency": "USD", "estimated": false, "source": "雪".repeat(64)},
+        "evidence": {"schema": "雪".repeat(64), "values": values}
+    });
+    assert!(serde_json::from_value::<Billing>(billing.clone()).is_ok());
+    billing["cost"]["source"] = json!("雪".repeat(65));
+    assert!(serde_json::from_value::<Billing>(billing).is_err());
+}
+
+#[test]
+fn billing_rejects_duplicate_fields_in_json() {
+    for raw in [
+        r#"{"evidence":{"schema":"s","values":{}},"evidence":{"schema":"s","values":{}}}"#,
+        r#"{"evidence":{"schema":"s","schema":"other","values":{}}}"#,
+        r#"{"cost":{"amount":"0","amount":"1","currency":"USD","estimated":false,"source":"fixture"}}"#,
+    ] {
+        assert!(serde_json::from_str::<Billing>(raw).is_err());
     }
 }

@@ -230,7 +230,30 @@ pub struct OperationStatus {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub diagnostics: Option<OperationDiagnostics>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(deserialize_with = "deserialize_optional_object")]
     pub billing: Option<Billing>,
+}
+// Missing optional objects are legacy-compatible; present values must be
+// objects. A map visitor also preserves Serde's duplicate-field rejection.
+fn deserialize_object<'de, T: Deserialize<'de>, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<T, D::Error> {
+    struct Object<T>(std::marker::PhantomData<T>);
+    impl<'de, T: Deserialize<'de>> serde::de::Visitor<'de> for Object<T> {
+        type Value = T;
+        fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+            formatter.write_str("an object")
+        }
+        fn visit_map<M: serde::de::MapAccess<'de>>(self, map: M) -> Result<T, M::Error> {
+            T::deserialize(serde::de::value::MapAccessDeserializer::new(map))
+        }
+    }
+    deserializer.deserialize_map(Object(std::marker::PhantomData))
+}
+fn deserialize_optional_object<'de, T: Deserialize<'de>, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<T>, D::Error> {
+    deserialize_object(deserializer).map(Some)
 }
 pub fn valid_operation_id(id: &str) -> bool {
     !id.is_empty()
@@ -291,8 +314,7 @@ impl BillingEvidence {
             })
     }
 }
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(try_from = "UncheckedBilling")]
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 pub struct Billing {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cost: Option<JobCost>,
@@ -302,10 +324,16 @@ pub struct Billing {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct UncheckedBilling {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_optional_object")]
     cost: Option<JobCost>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_optional_object")]
     evidence: Option<BillingEvidence>,
+}
+impl<'de> Deserialize<'de> for Billing {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let unchecked: UncheckedBilling = deserialize_object(deserializer)?;
+        Self::try_from(unchecked).map_err(serde::de::Error::custom)
+    }
 }
 impl Billing {
     pub fn valid(&self) -> bool {

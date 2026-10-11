@@ -259,3 +259,27 @@ fn invalid_or_oversized_durable_billing_fails_closed() {
         assert!(Journal::open(dir.path()).is_err());
     }
 }
+
+#[test]
+fn provider_emissions_round_trip_through_shared_billing_validation() {
+    for billing in [
+        domain::billing::bfl(&json!({"cost": 4.5, "input_mp": 1}), None).unwrap(),
+        domain::billing::openai(
+            &json!({"usage": {"input_tokens": 0, "output_tokens": 1000}}),
+            "gpt-image-1",
+            "https://api.openai.com/v1/images",
+        )
+        .unwrap(),
+        domain::billing::gemini(
+            &json!({"usage": {"total_input_tokens": 0, "total_output_tokens": 1000,
+                "output_tokens_by_modality": [{"modality": "image", "tokens": 1000}]}}),
+            "gemini-3-pro-image",
+            "https://generativelanguage.googleapis.com/v1beta",
+        )
+        .unwrap(),
+    ] {
+        assert!(billing.cost.is_some());
+        let wire = serde_json::to_value(&billing).unwrap();
+        assert_eq!(serde_json::from_value::<Billing>(wire).unwrap(), billing);
+    }
+}
