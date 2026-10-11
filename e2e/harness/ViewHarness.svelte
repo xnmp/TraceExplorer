@@ -13,6 +13,7 @@
   import type { FileEntry } from "$lib/domain/file";
   import { tracePlugin } from "$lib/plugins/trace";
   import { forgetFolderSnapshots } from "$lib/plugins/trace/view/folder-session.svelte";
+  import { tracePanes } from "$lib/plugins/trace/view/pane-registry.svelte";
   import { openAIImagePlugin } from "$lib/plugins/openai-image";
   import { DIRECTORY, files, backend, initialTileSize } from "./view-fixture";
   import { TILE_IMAGE_PX } from "./tile-presets";
@@ -180,11 +181,20 @@
     },
     clearSelection() { replaceSelection([]); anchor = null; },
     async open(entry) { opened = [...opened, entry.path]; },
-    contextMenu(event, entry) { event.preventDefault(); menus = [...menus, entry?.path ?? null]; },
+    // The host's PluginFileView pane handle consumes entry menus before FileList.
+    contextMenu(event, entry) { event.preventDefault(); event.stopPropagation(); if (!entry) pane.clearSelection(); menus = [...menus, entry?.path ?? null]; },
     async navigate(path) { navigations = [...navigations, path]; },
     setPreviewTarget(next) { if (next) { replaceSelection([]); anchor = null; target = next; } else target = null; },
     exitView() { fileView = null; },
   };
+
+  /** Mirrors FileList's bubbling background handler, including plugin views. */
+  function backgroundContextMenu(event: MouseEvent): void {
+    if ((event.target as HTMLElement).closest(".entry-item")) return;
+    event.preventDefault();
+    pane.clearSelection();
+    menus = [...menus, null];
+  }
 
   const active = $derived(enabled ? views.find((view) => view.id === fileView && (view.available?.(directory) ?? true)) ?? null : null);
   const subject = $derived<PreviewSubject | null>(target ? { kind: "target", target, pluginId: "trace", paneId: "pane-1" }
@@ -211,7 +221,7 @@
     enterView: () => { fileView = "trace.view"; },
     /** Forgets what each folder last showed, as if no view had shown them yet. */
     forgetFolders: () => forgetFolderSnapshots(),
-    state: () => ({ selected: [...selected], cursor, target: target ? { id: target.id, title: target.title, badge: target.badge ?? null } : null, fileView, opened: [...opened], menus: [...menus], navigations: [...navigations] }),
+    state: () => ({ selected: [...selected], inputs: tracePanes.get("pane-1")?.inputs() ?? [], cursor, target: target ? { id: target.id, title: target.title, badge: target.badge ?? null } : null, fileView, opened: [...opened], menus: [...menus], navigations: [...navigations] }),
     selectPath(path: string) { pane.setSelection([path], path); },
     /** The host replaces the selection itself (another pane, a command), as `explorer.selectPaths` does. */
     setSelection(paths: string[]) { pane.setSelection(paths); },
@@ -237,7 +247,7 @@
 </script>
 
 <main style:--view-width="{viewWidth}px">
-  <section class="explorer" aria-label="Explorer pane">
+  <section class="explorer" aria-label="Explorer pane" oncontextmenu={backgroundContextMenu}>
     {#if active}
       {@const View = active.component as Component<any>}
       <div class="file-view" data-file-view={active.id}><View {...active.props} {pane} /></div>

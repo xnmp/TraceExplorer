@@ -10,7 +10,9 @@ for (const host of [
 ]) {
   test(`with ${host.name}, the ordinary section lists files without provenance and keeps selection, opening and menus working`, async ({ page }) => {
     await openView(page, undefined, host.query);
-    const list = page.getByRole("list", { name: "Other files and folders" });
+    // The host's Tiles view is a grid of gridcells with aria-selected; the built-in fallback is a list of buttons with aria-pressed.
+    const list = page.getByRole(host.module ? "grid" : "list", { name: "Other files and folders" });
+    const selectedAttribute = host.module ? "aria-selected" : "aria-pressed";
     const entry = (path: string) => list.locator(`[data-entry-path="${path}"]`);
     await expect(list.locator("[data-entry-path]")).toHaveCount(3);
     for (const path of ["/pictures/notes.txt", "/pictures/plain.png", "/pictures/refs"]) await expect(entry(path)).toHaveCount(1);
@@ -20,7 +22,7 @@ for (const host of [
 
     const notes = entry("/pictures/notes.txt");
     await notes.click();
-    await expect(notes).toHaveAttribute("aria-pressed", "true");
+    await expect(notes).toHaveAttribute(selectedAttribute, "true");
     expect((await state(page)).selected).toEqual(["/pictures/notes.txt"]);
     await entry("/pictures/plain.png").click({ modifiers: ["Control"] });
     expect((await state(page)).selected.sort()).toEqual(["/pictures/notes.txt", "/pictures/plain.png"]);
@@ -28,7 +30,7 @@ for (const host of [
     expect((await state(page)).opened).toContain("/pictures/notes.txt");
     await entry("/pictures/plain.png").click();
     expect((await state(page)).selected).toEqual(["/pictures/plain.png"]);
-    await expect(notes).toHaveAttribute("aria-pressed", "false");
+    await expect(notes).toHaveAttribute(selectedAttribute, "false");
     // Selecting something without provenance removes any lineage dimming.
     expect(await rendered(page, "tone", "focus")).toEqual([]);
 
@@ -38,11 +40,13 @@ for (const host of [
     expect(after.menus.at(-1)).toBe("/pictures/refs");
     expect(after.selected).toEqual(["/pictures/refs"]);
 
-    // Keyboard: entries are focusable and Space selects.
+    // Keyboard: entries are focusable; the built-in buttons select on Space (the host's gridcells do not).
     await notes.focus();
-    await page.keyboard.press("Space");
-    expect((await state(page)).selected).toEqual(["/pictures/notes.txt"]);
     await expect(notes).toBeFocused();
+    if (!host.module) {
+      await page.keyboard.press("Space");
+      expect((await state(page)).selected).toEqual(["/pictures/notes.txt"]);
+    }
   });
 }
 

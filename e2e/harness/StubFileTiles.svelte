@@ -13,24 +13,28 @@
   const preset = $derived(size ?? "small");
 </script>
 
-<ul class="host-file-tiles" aria-label={label} data-host-file-tiles data-size={size ?? "default"}>
-  {#each entries as entry (entry.path)}
-    <li>
-      <button type="button" data-entry-path={entry.path} aria-pressed={selected.has(entry.path)} style:width="{TILE_GRID_PX[preset]}px"
-        onclick={(event) => onselect(entry, event)} ondblclick={() => onopen(entry)} oncontextmenu={(event) => onmenu(entry, event)}
+<!-- Mirrors the host's FileTiles DOM and ARIA contract: grid > row > focusable gridcell with aria-selected. -->
+<div class="host-file-tiles" role="grid" aria-label={label} aria-multiselectable={true} data-host-file-tiles data-size={size ?? "default"}>
+  <div role="row" class="row">
+    {#each entries as entry, index (entry.path)}
+      <div role="gridcell" class="tile-item" aria-selected={selected.has(entry.path)} aria-colindex={index + 1}
+        tabindex={index === 0 ? 0 : -1} data-entry-path={entry.path} style:width="{TILE_GRID_PX[preset]}px"
+        onclick={(event) => onselect(entry, event)} ondblclick={() => onopen(entry)}
+        oncontextmenu={(event) => { event.preventDefault(); onmenu(entry, event); }}
         onkeydown={(event) => { if (event.key === "Enter") { event.preventDefault(); onopen(entry); } }}>
         <span class="thumb" data-thumbnail style:width="{TILE_IMAGE_PX[preset]}px" style:height="{TILE_IMAGE_PX[preset]}px"></span>
         <span class="kind">{entry.kind}</span> {entry.name}
-      </button>
-    </li>
-  {/each}
-</ul>
+      </div>
+    {/each}
+  </div>
+</div>
 
 <style>
-  .host-file-tiles { display: flex; flex-wrap: wrap; gap: 6px; margin: 0; padding: 10px 12px; list-style: none; }
-  button { padding: 6px 10px; font: inherit; color: var(--text-primary); background: var(--control-fill); border: 1px solid var(--control-stroke); border-radius: var(--radius-sm); }
-  button[aria-pressed="true"] { border-color: var(--accent); }
+  .host-file-tiles { padding: 10px 12px; }
+  .row { display: flex; flex-wrap: wrap; gap: 6px; }
+  .tile-item { padding: 6px 10px; font: inherit; color: var(--text-primary); background: var(--control-fill); border: 1px solid var(--control-stroke); border-radius: var(--radius-sm);
+    display: flex; flex-direction: column; align-items: center; box-sizing: border-box; overflow: hidden; }
+  .tile-item[aria-selected="true"] { border-color: var(--accent); }
   .kind { color: var(--text-secondary); font-size: 11px; }
-  button { display: flex; flex-direction: column; align-items: center; box-sizing: border-box; overflow: hidden; }
   .thumb { display: block; flex: none; background: var(--subtle-fill-secondary, rgba(127,127,127,.15)); border-radius: 2px; }
 </style>
