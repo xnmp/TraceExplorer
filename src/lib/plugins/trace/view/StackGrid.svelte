@@ -9,7 +9,7 @@
   import { hostFileTile } from "../../../../sdk";
   import type { FolderSession } from "./folder-session.svelte";
   import type { GraphScene } from "./graph-commit";
-  import { folderCells, coverNode, gridNeighbor, attachBand, gridPins, rovingStop } from "./stack-grid";
+  import { type FolderCell, folderCells, coverNode, gridNeighbor, attachBand, gridPins, rovingStop } from "./stack-grid";
   import { captureGrid, playGrid, prefersReducedMotion, zoomOf } from "./motion";
   import TraceGraph from "./TraceGraph.svelte";
   import TraceTile from "./TraceTile.svelte";
@@ -42,6 +42,12 @@
   /** Whether the listed file is the cover revision itself: an in-place edit's file holds its newest revision, so the earlier cover is selected as a node. */
   const listsCover = (cell: { entry?: { path: string }; coverKey?: string }) =>
     !!cell.entry && session.index?.members.get(cell.entry.path)?.key === cell.coverKey;
+  /** Pressing a closed stack, by mouse or keyboard: select what its open cover selects, then open it. */
+  function activateStack(cell: FolderCell, event: MouseEvent): void {
+    const summary = cell.summary!;
+    if (cell.entry && listsCover(cell)) onselect(cell.entry, event); else onactivate(cell.id, event, summary.id);
+    onexpand(summary.id, true);
+  }
   let running: Animation[] = [];
   let motion = 0;
   const cells = $derived(session.index ? folderCells(pane.entries, session.index) : []);
@@ -144,14 +150,10 @@
     if (!next) return;
     event.preventDefault(); tabStop = next;
     const cell = cells.find((cell) => cell.id === next || cell.entry?.path === next);
-    if (cell?.entry) {
-      onselect(cell.entry, new MouseEvent("click", { shiftKey: event.shiftKey }));
-      if (cell.summary) onexpand(cell.summary.id, true);
-    }
-    else if (cell?.summary) {
-      onexpand(cell.summary.id, true);
-      onnavigate(next, cell.summary.id, { shiftKey: event.shiftKey });
-    } else {
+    const press = new MouseEvent("click", { shiftKey: event.shiftKey });
+    if (cell?.summary) activateStack(cell, press);
+    else if (cell?.entry) onselect(cell.entry, press);
+    else {
       const owner = [...session.components].find(([, data]) => data.dag.nodes.has(next));
       if (owner) onnavigate(next, owner[0], { shiftKey: event.shiftKey });
     }
@@ -185,7 +187,7 @@
               onkey={(event) => keydown(cell.id, event)} {captureSelection} onsaved={(path) => onsaved(cell.id, path)} ondiscarded={() => ondiscarded(cell.id)} />
           {:else}
             <button type="button" class="heading" class:selected={selected.has(cell.id)} style:width="{tile.width}px" style:height="{cover.size.height}px" tabindex={stop === cell.id ? 0 : -1} onfocus={() => tabStop = cell.id} data-stack-toggle aria-expanded={!!band} data-tile-key={cell.id} data-node-key={cell.id} aria-pressed={selected.has(cell.id)}
-              onclick={(event) => { if (cell.entry && listsCover(cell)) onselect(cell.entry, event); else onactivate(cell.id, event, summary.id); onexpand(summary.id, true); }}
+              onclick={(event) => activateStack(cell, event)}
               ondblclick={() => { if (cell.entry) void pane.open(cell.entry); else onopen(cell.id); }} onkeydown={(event) => keydown(cell.id, event)}
               oncontextmenu={(event) => { if (cell.entry) onordinarymenu(cell.entry, event); else onmenu(cell.id, event, summary.id); }}>
               <span class="cover-image" style:height="{tile.image}px">{#if node.path}<TraceThumbnail path={node.path} present={summary.cover?.present ?? false} {revision} label="" />{:else}▧{/if}</span>

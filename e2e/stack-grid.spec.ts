@@ -314,6 +314,18 @@ test("the focused tile stays mounted when windowing scrolls it out of range", as
   expect(await uncaught(page)).toEqual([]);
 });
 
+test("arrowing into a closed in-place-edit stack selects its cover revision, as clicking it does", async ({ page }) => {
+  await openView(page, 420, "?grouping=in-place-edit", false);
+  const ordinary = page.locator("[data-grid-cell]:not([data-stack-key]) [data-entry-path]").first();
+  await ordinary.focus();
+  const heading = page.locator("[data-stack-toggle]");
+  const stackX = (await heading.boundingBox())!.x, ordinaryX = (await ordinary.boundingBox())!.x;
+  await page.keyboard.press(stackX < ordinaryX ? "ArrowLeft" : "ArrowRight"); await settle(page);
+  expect(await page.evaluate(() => document.activeElement?.getAttribute("data-node-key"))).toBe("a:1");
+  expect((await state(page)).target).toMatchObject({ id: "trace:a:1", badge: "Earlier revision" });
+  expect(await uncaught(page)).toEqual([]);
+});
+
 test("an in-place edit's stack hangs from its root revision, inside the view and joined to the edit by a route", async ({ page }) => {
   await openView(page, 420, "?grouping=in-place-edit", false);
   await page.locator("[data-stack-toggle]").click(); await settle(page);
