@@ -753,6 +753,11 @@ impl Service {
                     .journal
                     .turn_failure(&evidence_caller, &evidence_operation, receipt, error)
             }
+            adapters::Evidence::NoImage { receipt, error } => {
+                service
+                    .journal
+                    .turn_no_image(&evidence_caller, &evidence_operation, receipt, error)
+            }
         });
         let stage_service = self.clone();
         let stage_caller = work.caller.package_id.clone();
@@ -783,6 +788,7 @@ impl Service {
                         | "host_unavailable"
                         | "interrupted"
                         | "invalid_response"
+                        | "codex_output_unreadable"
                         | "storage_unavailable"
                 );
                 return self.journal.finish(
