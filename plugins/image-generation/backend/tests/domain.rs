@@ -761,3 +761,86 @@ fn the_bfl_backend_is_ratio_based_and_rejects_model_paths_in_its_root() {
     req.options.resolution = Some("2k".into());
     assert!(recipe(&parsed.profiles[0], &req).is_err());
 }
+
+#[test]
+fn command_credentials_validate_argv_and_serialize_as_metadata() {
+    for argv in [
+        vec![],
+        vec!["relative/helper".into()],
+        vec!["C:helper.exe".into()],
+        vec![".".into()],
+        vec!["..".into()],
+        vec!["relative\\helper".into()],
+        vec!["helper".into(), "bad\nargument".into()],
+        vec!["helper".into(); 33],
+        vec!["helper".into(), "".into()],
+        vec!["helper".into(), "é".repeat(2049)],
+    ] {
+        let mut p = profile();
+        *p.credential_mut() = Credential::Command { argv };
+        let mut config = Configuration {
+            profiles: vec![p],
+            ..Configuration::default()
+        };
+        assert!(validate_configuration(&mut config).is_err());
+    }
+    for argv in [
+        vec![
+            "secret-tool".into(),
+            "lookup".into(),
+            "service".into(),
+            "gemini".into(),
+        ],
+        vec![std::env::current_exe().unwrap().to_str().unwrap().into()],
+        vec!["helper".into(); 32],
+        vec!["helper".into(), "é".repeat(2048)],
+    ] {
+        let credential = Credential::Command { argv: argv.clone() };
+        assert_eq!(
+            serde_json::to_value(&credential).unwrap(),
+            serde_json::json!({"kind":"command","argv":argv})
+        );
+        let mut p = profile();
+        *p.credential_mut() = credential;
+        let mut config = Configuration {
+            profiles: vec![p],
+            ..Configuration::default()
+        };
+        validate_configuration(&mut config).unwrap();
+    }
+    let mut config = Configuration {
+        profiles: vec![Profile::Codex {
+            id: "cli".into(),
+            name: "CLI".into(),
+            recipe_revision: "r1".into(),
+            executable_path: "".into(),
+            model_selection: false,
+            credential: Credential::Command {
+                argv: vec!["helper".into()],
+            },
+        }],
+        ..Configuration::default()
+    };
+    assert!(validate_configuration(&mut config).is_err());
+}
+
+#[test]
+fn windows_batch_targets_require_an_explicit_interpreter() {
+    use credential_rules::implicit_windows_shell;
+    for program in [
+        "helper.bat",
+        "helper.CMD",
+        "C:\\Tools\\helper.cmd",
+        "helper.cmd .",
+    ] {
+        assert!(implicit_windows_shell(program));
+    }
+    for program in [
+        "pwsh",
+        "helper.exe",
+        "C:\\Tools\\helper.com",
+        "/usr/bin/secret-tool",
+    ] {
+        assert!(!implicit_windows_shell(program));
+    }
+}

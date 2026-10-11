@@ -43,6 +43,40 @@ export function newProfile(id: string, transport: string): ImageProfile {
 export function removeProfile(value: ImageConfiguration, id: string): ImageConfiguration {
   return { ...value, profiles: value.profiles.filter(p => p.id !== id), defaultConnectionId: value.defaultConnectionId === id ? null : value.defaultConnectionId };
 }
+export type ParsedCommand = { argv: string[]; problem: null } | { argv: null; problem: string };
+const hasUnpairedSurrogate = (text: string): boolean => /[\uD800-\uDFFF]/u.test(text);
+/** Tokenize argv only: quotes group, backslashes escape, and nothing expands. */
+export function parseCommand(text: string): ParsedCommand {
+  if (hasUnpairedSurrogate(text)) return { argv: null, problem: 'Credential command must contain valid Unicode.' };
+  const argv: string[] = [];
+  let token = '', started = false, quote: "'" | '"' | null = null, escaped = false;
+  for (const char of text) {
+    if (escaped) { token += char; escaped = false; started = true; }
+    else if (char === '\\' && quote !== "'") { escaped = true; started = true; }
+    else if (quote) { if (char === quote) quote = null; else token += char; }
+    else if (char === "'" || char === '"') { quote = char; started = true; }
+    else if (/\s/u.test(char)) { if (started) { argv.push(token); token = ''; started = false; } }
+    else { token += char; started = true; }
+  }
+  if (quote) return { argv: null, problem: 'Close the quote in the credential command.' };
+  if (escaped) return { argv: null, problem: 'Complete the escape in the credential command.' };
+  if (started) argv.push(token);
+  return { argv, problem: null };
+}
+export function formatCommand(argv: readonly string[]): string {
+  return argv.map(arg => arg && !/[\s'"\\]/u.test(arg) ? arg : `"${arg.replace(/["\\]/g, '\\$&')}"`).join(' ');
+}
+export interface CommandDraft { readonly text: string; readonly argv: readonly string[] }
+/** Raw syntax belongs to these argv; a newly adopted configuration must display its own command. */
+export function commandDraftText(argv: readonly string[], draft?: CommandDraft): string {
+  return draft && JSON.stringify(argv) === JSON.stringify(draft.argv) ? draft.text : formatCommand(argv);
+}
+/** Mirrors the backend's UTF-8 byte and control-character policy. */
+export function commandProblem(argv: readonly string[]): string | null {
+  if (argv.length < 1 || argv.length > 32 || argv.some(arg => typeof arg !== 'string' || !arg || hasUnpairedSurrogate(arg) || new TextEncoder().encode(arg).length > 4096 || /\p{Cc}/u.test(arg))) return 'Credential command needs 1–32 nonempty arguments, each at most 4096 bytes without control characters.';
+  if (!/^(\/|[A-Za-z]:[\\/]|\\\\)/.test(argv[0]) && (/[\\/:]/.test(argv[0]) || ['.', '..'].includes(argv[0]))) return 'Credential command must use an absolute executable path or a bare program name.';
+  return null;
+}
 const PATH_SAFE_MODEL_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const segmentRejected = (pattern: string, segment: string): boolean => {
   const p = pattern.toLowerCase(), s = segment.toLowerCase();
@@ -61,6 +95,7 @@ export function validation(value: ImageConfiguration): string | null {
     ids.add(profile.id);
     if (!profile.name.trim() || [...profile.name].length > 256 || /[\u0000-\u001f\u007f]/.test(profile.name)) return 'Enter a connection name of at most 256 characters.';
     if (isCodex(profile)) {
+      if (profile.credential.kind !== 'cli_saved_login') return 'Codex uses its saved login.';
       if (profile.executablePath.length > 8192 || /[\u0000-\u001f\u007f]/.test(profile.executablePath) || profile.executablePath && !/^(\/|[A-Za-z]:[\\/]|\\\\)/.test(profile.executablePath)) return 'Use an absolute Codex executable path, or leave it empty for discovery.';
     } else {
       if (!profile.defaultModel.trim() || [...profile.defaultModel].length > 256 || /[\u0000-\u001f\u007f]/.test(profile.defaultModel)) return `Enter the model ID supported by this ${transportLabel(profile)}.`;
@@ -72,6 +107,7 @@ export function validation(value: ImageConfiguration): string | null {
       if (url.protocol !== 'https:' && !(url.protocol === 'http:' && (profile.allowInsecureHttp || ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname)))) return 'Use HTTPS or explicitly allow insecure HTTP.';
       const segment = rejectedSegment(backend, url);
       if (segment !== undefined) return `The ${backend?.baseUrlLabel ?? 'API URL'} cannot contain the path segment /${segment}.`;
+      if (profile.credential.kind === 'command') { const problem = commandProblem(profile.credential.argv); if (problem) return problem; }
       if (profile.credential.kind === 'environment' && !/^[A-Za-z_][A-Za-z0-9_]{0,127}$/.test(profile.credential.name)) return 'Enter a valid credential environment variable name.';
     }
   }
@@ -86,7 +122,7 @@ export function validConfiguration(value: ImageConfiguration): boolean {
     } else if (typeof profile.transport === 'string' && TRANSPORT_ID.test(profile.transport)) {
       if (typeof profile.baseUrl !== 'string' || typeof profile.defaultModel !== 'string' || typeof profile.allowInsecureHttp !== 'boolean') return false;
       const credential = profile.credential;
-      if (!['none', 'environment', 'secret'].includes(credential.kind) || credential.kind === 'environment' && typeof credential.name !== 'string' || credential.kind === 'secret' && typeof credential.id !== 'string') return false;
+      if (!['none', 'environment', 'secret', 'command'].includes(credential.kind) || credential.kind === 'environment' && typeof credential.name !== 'string' || credential.kind === 'secret' && typeof credential.id !== 'string' || credential.kind === 'command' && (!Array.isArray(credential.argv) || credential.argv.some((arg: unknown) => typeof arg !== 'string'))) return false;
     } else return false;
   }
   return validation(value) === null;

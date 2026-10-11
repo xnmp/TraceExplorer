@@ -2180,14 +2180,39 @@ fn run_worker_inner(
         // This sole start call is justified by the durable claim just committed.
         // Neither timeout, dropped caller future nor any restart can repeat it.
         note_stage(database, operation, "submitted");
+        let admission_cancel_sent = std::sync::atomic::AtomicBool::new(false);
+        // The closure below is polled every ~20 ms while start is outstanding
+        // (which a credential command can stretch to 30 s), so reuse one
+        // connection instead of reopening the database on every poll.
+        let intent = connection_at(database).ok();
         let value = host_image::invoke(
             host,
             "start",
             serde_json::to_value(&link.prepared)
                 .map_err(|_| invalid("Invalid recorded image start"))?,
             &|| {
-                control.check().is_err()
-                    || budget_expired(remaining, monotonic.elapsed(), link.deadline_ms, now_ms())
+                let interrupted = control.check().is_err()
+                    || budget_expired(remaining, monotonic.elapsed(), link.deadline_ms, now_ms());
+                let user_cancel = intent.as_ref().is_some_and(|connection| {
+                    cancelled_at(connection, operation).unwrap_or(false)
+                });
+                if (user_cancel || interrupted)
+                    && !admission_cancel_sent.load(std::sync::atomic::Ordering::Acquire)
+                {
+                    // The connection-wide RPC client polls outside its pending
+                    // lock and reserves a separate lane for cancel. Keep start
+                    // outstanding while forwarding the durable user intent.
+                    // Before a receipt exists cancel can return not_found after
+                    // setting admission flags; retry until admission observes it.
+                    if host_image::invoke(host, "cancel", json!({"operationId":operation}), &|| {
+                        false
+                    })
+                    .is_ok()
+                    {
+                        admission_cancel_sent.store(true, std::sync::atomic::Ordering::Release);
+                    }
+                }
+                interrupted
             },
         );
         if let Ok(value) = value {

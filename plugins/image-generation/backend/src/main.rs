@@ -361,6 +361,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
                 });
             }
             service.shutdown();
+            image_generation_backend::credential_command::shutdown();
             te_plugin_runtime::disconnected();
         }
     });

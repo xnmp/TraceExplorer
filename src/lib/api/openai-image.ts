@@ -10,6 +10,8 @@ export interface ImageServiceAvailability {
   description?: ImageDescription;
 }
 const TRANSPORT_ID = /^[a-z][a-z0-9-]{0,63}$/;
+// Credential kinds are provider-owned and deliberately not validated here:
+// a newer source must not invalidate an otherwise usable description.
 /** An HTTP image connection of any backend: a valid transport id plus the shared API fields. */
 function apiProfileShape(p: Record<string, any>): boolean {
   return typeof p.transport === "string" && TRANSPORT_ID.test(p.transport) && typeof p.baseUrl === "string"

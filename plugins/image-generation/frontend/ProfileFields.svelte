@@ -1,8 +1,8 @@
 <script lang="ts">
   import Select, { type SelectOption } from '../../../integration/ui/Select.svelte';
-  import { backendFor, isCodex, type ImageProfile } from './domain';
-  let { profile, disabled, saved, onchange, oncredential }: { profile: ImageProfile; disabled: boolean; saved: boolean; onchange: (profile: ImageProfile) => void; oncredential: (key: string | null) => Promise<void> } = $props();
-  const CREDENTIAL_SOURCES: SelectOption[] = [{ value: 'none', label: 'No credential' }, { value: 'environment', label: 'Environment variable' }, { value: 'secret', label: 'Saved OS credential', disabled: true }];
+  import { backendFor, formatCommand, isCodex, type ImageProfile } from './domain';
+  let { profile, disabled, saved, commandText, oncommand, onchange, oncredential }: { profile: ImageProfile; disabled: boolean; saved: boolean; commandText?: string; oncommand: (text: string) => void; onchange: (profile: ImageProfile) => void; oncredential: (key: string | null) => Promise<void> } = $props();
+  const CREDENTIAL_SOURCES: SelectOption[] = [{ value: 'none', label: 'No credential' }, { value: 'environment', label: 'Environment variable' }, { value: 'command', label: 'Command' }, { value: 'secret', label: 'Saved OS credential', disabled: true }];
   const backend = $derived(isCodex(profile) ? undefined : backendFor(profile.transport));
   let key = $state('');
   let keyVisible = $state(false);
@@ -20,10 +20,14 @@
     {#if backend?.baseUrlNote}<p class="note">{backend.baseUrlNote}</p>{/if}
     <label>Image model ID<input value={profile.defaultModel} maxlength="256" placeholder={backend?.modelPlaceholder ?? 'Model supported by this API'} oninput={e => onchange({ ...profile, defaultModel: e.currentTarget.value })} /></label>
     <label class="checkbox"><input type="checkbox" checked={profile.allowInsecureHttp} onchange={e => onchange({ ...profile, allowInsecureHttp: e.currentTarget.checked })} />Allow insecure HTTP for this connection</label>
-    <label>Credential source<Select aria-label="Credential source" value={profile.credential.kind} options={CREDENTIAL_SOURCES} onchange={kind => { if (kind === 'none') onchange({ ...profile, credential: { kind: 'none' } }); else if (kind === 'environment') onchange({ ...profile, credential: { kind: 'environment', name: backend?.credentialEnv ?? '' } }); }} /></label>
+    <label>Credential source<Select aria-label="Credential source" value={profile.credential.kind} options={CREDENTIAL_SOURCES} onchange={kind => { if (kind === 'none') onchange({ ...profile, credential: { kind: 'none' } }); else if (kind === 'environment') onchange({ ...profile, credential: { kind: 'environment', name: backend?.credentialEnv ?? '' } }); else if (kind === 'command') onchange({ ...profile, credential: { kind: 'command', argv: [] } }); }} /></label>
     {#if profile.credential.kind === 'environment'}
       <label>Environment variable name<input value={profile.credential.name} maxlength="128" placeholder={backend?.credentialEnv ?? ''} oninput={e => onchange({ ...profile, credential: { kind: 'environment', name: e.currentTarget.value } })} /></label>
       <p class="note">Read by the native provider from the app environment.</p>
+    {/if}
+    {#if profile.credential.kind === 'command'}
+      <label>Credential command<input value={commandText ?? formatCommand(profile.credential.argv)} spellcheck="false" oninput={e => oncommand(e.currentTarget.value)} /></label>
+      <p class="note">Runs without a shell; its output is used as the key. Example: secret-tool lookup service gemini</p>
     {/if}
     <div class="key-section">
       <p>{profile.credential.kind === 'secret' ? 'A key is saved in the OS credential store.' : 'Save a key in the OS credential store, or use the source above.'}</p>

@@ -2,7 +2,7 @@ import type { ImageServiceAvailability } from "$lib/api/openai-image";
 export const imageAvailability = (): ImageServiceAvailability => ({ version: 1, available: true, providerDigest: "d".repeat(64), description: {
   version: 1, configurationRevision: 1, defaultConnectionId: "saved-login", profiles: [
     { id: "saved-login", name: "Saved Codex login", recipeRevision: "cli-revision", transport: "codex-cli", executablePath: "", modelSelection: false, credential: { kind: "cli_saved_login" }, capabilities: capabilities(true) },
-    { id: "custom-http", name: "Custom images", recipeRevision: "http-revision", transport: "openai-images", baseUrl: "https://fixture.test/images", defaultModel: "vendor-image-v9", allowInsecureHttp: false, credential: { kind: "none" }, capabilities: capabilities(false) },
+    { id: "custom-http", name: "Custom images", recipeRevision: "http-revision", transport: "openai-images", baseUrl: "https://fixture.test/images", defaultModel: "vendor-image-v9", allowInsecureHttp: false, credential: { kind: "command", argv: ["secret-tool", "lookup", "service", "fixture"] }, hasCredential: true, capabilities: capabilities(false) },
   ],
 } });
 function capabilities(cli: boolean) { return {

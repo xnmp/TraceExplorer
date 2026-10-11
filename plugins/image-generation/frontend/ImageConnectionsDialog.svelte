@@ -2,21 +2,29 @@
   import { onMount, untrack } from 'svelte';
   import Modal from '$lib/components/Modal.svelte';
   import { ConnectionsController, type Backend, type RevisionEvent, type TestRegistry } from './controller';
-  import { API_BACKENDS, canAddCodex, newProfile, removeProfile, setDefault, transportLabel, validation, type ImageProfile } from './domain';
+  import { API_BACKENDS, commandDraftText, canAddCodex, isApi, newProfile, parseCommand, removeProfile, setDefault, transportLabel, validation, type CommandDraft, type ImageProfile } from './domain';
   import ProfileFields from './ProfileFields.svelte';
   import TestResults from './TestResults.svelte';
   let { open, onClose, backend, registry, subscribeRevision }: { open: boolean; onClose: () => void; backend: Backend; registry: TestRegistry; subscribeRevision: (fn: (event: RevisionEvent) => void) => () => void } = $props();
   const controller = untrack(() => new ConnectionsController(backend, registry));
   let view = $state(controller.snapshot());
   let selectedId = $state('');
+  let commandTexts = $state<Record<string, CommandDraft>>({});
+  let commandSyntaxProblem = $derived(view.draft?.profiles.map(p => p.credential.kind === 'command' ? parseCommand(commandDraftText(p.credential.argv, commandTexts[p.id])).problem : null).find(Boolean) ?? null);
   let confirmingClose = $state(false);
-  let dirty = $derived(!!view.saved && !!view.draft && JSON.stringify(view.saved) !== JSON.stringify(view.draft));
+  let dirty = $derived(!!view.saved && !!view.draft && (JSON.stringify(view.saved) !== JSON.stringify(view.draft) || !!commandSyntaxProblem));
   let profile = $derived(view.draft?.profiles.find(p => p.id === selectedId) ?? view.draft?.profiles[0]);
-  let invalid = $derived(view.draft ? validation(view.draft) : null);
+  let invalid = $derived(commandSyntaxProblem ?? (view.draft ? validation(view.draft) : null));
   let usable = $derived(!dirty && !view.busy && !view.conflict && !!profile && !!view.saved?.profiles.some(p => p.id === profile?.id));
   let full = $derived((view.draft?.profiles.length ?? 0) >= 32);
   onMount(() => { const stop = controller.subscribe(value => view = value); const events = subscribeRevision(event => controller.revision(event)); void controller.initialize(); return () => { events(); stop(); controller.close(); }; });
-  function updateProfile(next: ImageProfile) { if (view.draft) controller.edit({ ...view.draft, profiles: view.draft.profiles.map(p => p.id === next.id ? next : p) }); }
+  function updateProfile(next: ImageProfile) { if (next.credential.kind !== 'command') { const { [next.id]: _, ...rest } = commandTexts; commandTexts = rest; } if (view.draft) controller.edit({ ...view.draft, profiles: view.draft.profiles.map(p => p.id === next.id ? next : p) }); }
+  function updateCommand(text: string) {
+    if (!profile || !isApi(profile)) return;
+    const argv = parseCommand(text).argv ?? [];
+    commandTexts = { ...commandTexts, [profile.id]: { text, argv } };
+    updateProfile({ ...profile, credential: { kind: 'command', argv } });
+  }
   function add(transport: string) {
     if (!view.draft) return;
     const next = newProfile(crypto.randomUUID(), transport);
@@ -27,7 +35,7 @@
   }
   function close() { if (view.busy) return; if (dirty) confirmingClose = true; else finishClose(); }
   function finishClose() { controller.close(); onClose(); }
-  async function reload() { await controller.refresh(true); confirmingClose = false; }
+  async function reload() { commandTexts = {}; await controller.refresh(true); confirmingClose = false; }
 </script>
 
 {#snippet plus()}<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M8 3v10M3 8h10" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" /></svg>{/snippet}
@@ -75,7 +83,7 @@
                 {:else}<button type="button" disabled={view.busy} onclick={() => view.draft && controller.edit(setDefault(view.draft, profile!.id))}>Set as default</button>{/if}
               </div>
               {#if view.draft.defaultConnectionId === null}<p class="banner caution">Choose a default connection, then save, to enable image generation.</p>{/if}
-              {#key profile.id}<ProfileFields {profile} disabled={view.busy} saved={usable} onchange={updateProfile} oncredential={key => controller.credential(profile!.id, key)} />{/key}
+              {#key profile.id}<ProfileFields {profile} commandText={profile.credential.kind === 'command' ? commandDraftText(profile.credential.argv, commandTexts[profile.id]) : undefined} oncommand={updateCommand} disabled={view.busy} saved={usable} onchange={updateProfile} oncredential={key => controller.credential(profile!.id, key)} />{/key}
               <div class="verify">
                 <div class="actions"><button type="button" disabled={!usable} onclick={() => controller.check(profile!.id)}>Check locally</button><button type="button" disabled={!usable} onclick={() => controller.test(profile!.id)}>Test generation (may be billed)</button></div>
                 <p class="note">{dirty ? 'Save or discard your edits before checking, testing, or saving a key.' : 'Check locally confirms the executable or credentials are available. Test generation makes one real image.'}</p>
