@@ -23,9 +23,23 @@ export function folderCells(entries: readonly FileEntry[], index: FolderIndex): 
     emitted.add(summary.id);
     result.push({ id: summary.coverKey, kind: "stack", entry, summary, coverKey: summary.coverKey });
   }
-  // Unsaved-only lineages have no listed cover. Keep them reachable after the listing.
-  for (const summary of index.components) if (!emitted.has(summary.id)) result.push({ id: summary.coverKey, kind: "stack", summary, coverKey: summary.coverKey });
+  // Unsaved-only lineages have no listed cover. Keep them reachable after the listing, in the order
+  // their covers were created: the index lists components newest-activity first, so using its order
+  // would swap two stacks' columns whenever the older one gains a member.
+  const unlisted = index.components.filter((summary) => !emitted.has(summary.id)).sort((a, b) => compareCreation(a.coverKey, b.coverKey));
+  for (const summary of unlisted) result.push({ id: summary.coverKey, kind: "stack", summary, coverKey: summary.coverKey });
   return result;
+}
+
+/** Oldest first by the number in a node key (`a:<artifact>` or `o:<run>:<output>`), ties by the key itself. */
+export function compareCreation(a: string, b: string): number {
+  const parse = (key: string) => { const match = /^[ao]:(\d+)(?::(\d+))?$/.exec(key); return match ? [Number(match[1]), match[2] === undefined ? -1 : Number(match[2])] : null; };
+  const [left, right] = [parse(a), parse(b)];
+  // A key of another shape sorts after every parsed one.
+  if (left && !right) return -1;
+  if (!left && right) return 1;
+  if (left && right) for (let i = 0; i < 2; i++) if (left[i] !== right[i]) return left[i] - right[i];
+  return a < b ? -1 : a > b ? 1 : 0;
 }
 
 /** Roving tabindex: the stop is the last focused cell while it is rendered, otherwise the stack

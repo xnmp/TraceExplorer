@@ -29,6 +29,27 @@ describe("folder grid rules", () => {
     const [cell] = folderCells([entry("/p/photo")], edited);
     expect([cell.id, cell.coverKey, cell.entry?.path]).toEqual(["a:1", "a:1", "/p/photo"]);
   });
+  describe("unlisted (unsaved) stacks", () => {
+    const stacks = (...keys: string[]) => keys.map((key) => summary(`c:${key}`, null, key));
+    const withComponents = (components: ReturnType<typeof stacks>): FolderIndex => ({ ...index, components, members: new Map() });
+    const order = (components: ReturnType<typeof stacks>) => folderCells([], withComponents(components)).map((cell) => cell.id);
+    it("keep creation order, oldest first, whatever order the index lists them in", () => {
+      expect(order(stacks("o:9:0", "o:7:0", "o:8:0"))).toEqual(["o:7:0", "o:8:0", "o:9:0"]);
+      expect(order(stacks("o:7:0", "o:9:0", "o:8:0"))).toEqual(["o:7:0", "o:8:0", "o:9:0"]);
+    });
+    it("never move another stack's cell when any stack gains a member", () => {
+      // Gaining a member makes a stack the most recently active, which reorders the index.
+      const before = ["o:7:0", "o:9:0", "o:12:0"];
+      for (const grown of before) {
+        const reordered = [grown, ...before.filter((key) => key !== grown)];
+        const after = order(stacks(...reordered).map((s) => s.coverKey === grown ? { ...s, nodeCount: s.nodeCount + 1 } : s));
+        expect(after).toEqual(order(stacks(...before)));
+      }
+    });
+    it("order mixed artifact and run keys and tolerate keys of another shape", () => {
+      expect(order(stacks("zzz", "o:3:1", "a:2", "o:3:0"))).toEqual(["a:2", "o:3:0", "o:3:1", "zzz"]);
+    });
+  });
   it("handles empty folders", () => { expect(folderCells([], { ...index, components: [], members: new Map() })).toEqual([]); });
   it("attaches several bands to the same pinned cover without changing any x or losing parentage", () => {
     const layout = layoutGraph({ items: [{ key: "cover", width: 92, height: 97, order: 0, parents: [] }, { key: "child", width: 92, height: 97, order: 1, parents: ["cover"] }], maxWidth: 700, pinned: { key: "cover", x: 650 } });
