@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { click, openView } from "./support";
+import { click, openView, pickOption } from "./support";
 
 test("configuring shared connections retains the caller draft and submits the refreshed HTTP recipe without credentials", async ({ page }) => {
   await openView(page, 1400, "?ai=1");
@@ -13,12 +13,12 @@ test("configuring shared connections retains the caller draft and submits the re
   await expect(caller.getByRole("textbox", { name: "Image model" })).toHaveCount(0);
   await caller.getByRole("button", { name: "Configure connections" }).click();
   await page.getByRole("dialog", { name: "Image connections", exact: true }).getByRole("button", { name: "Use custom connection" }).click();
-  await expect(caller.getByRole("combobox", { name: "Image connection" })).toHaveValue("saved-login");
+  await expect(caller.getByRole("combobox", { name: "Image connection" })).toHaveAttribute("data-value", "saved-login");
   await expect(caller.getByRole("textbox", { name: "Edit prompt" })).toHaveValue("Keep the entire caller draft and all its images");
   await expect(caller.getByRole("spinbutton", { name: "Images" })).toHaveValue("2");
-  await caller.getByRole("combobox", { name: "Image connection" }).selectOption("custom-http");
+  await pickOption(caller.getByRole("combobox", { name: "Image connection" }), "custom-http");
   await caller.getByRole("textbox", { name: "Image model" }).fill("vendor/custom-image-42");
-  await caller.getByRole("combobox", { name: "Quality" }).selectOption("high");
+  await pickOption(caller.getByRole("combobox", { name: "Quality" }), "high");
   await caller.getByRole("button", { name: "Generate", exact: true }).click();
   await expect.poll(() => page.evaluate(() => (window as any).trace.backend.calls("jobs.start").length)).toBe(2);
   const starts = await page.evaluate(() => (window as any).trace.backend.calls("jobs.start"));
@@ -79,7 +79,7 @@ test("a description arriving after caller disposal cannot restore its connection
   await page.evaluate(() => { (window as any).trace.backend.configureImages(); return (window as any).trace.command("plugin.openai-image.edit"); });
   await expect.poll(() => page.evaluate(() => (window as any).trace.backend.calls("image_service_describe").length)).toBe(2);
   await page.evaluate(() => (window as any).trace.backend.releaseImageDescriptions());
-  await expect(caller.getByRole("combobox", { name: "Image connection" })).toHaveValue("custom-http");
+  await expect(caller.getByRole("combobox", { name: "Image connection" })).toHaveAttribute("data-value", "custom-http");
   await expect(caller.getByRole("textbox", { name: "Edit prompt" })).toHaveValue("");
   expect(await page.evaluate(() => (window as any).trace.backend.calls("jobs.start"))).toEqual([]);
   expect(await page.evaluate(() => (window as any).trace.errors)).toEqual([]);
@@ -91,7 +91,7 @@ test("reloading connections preserves a custom model draft and refreshes the rev
   await click(page, "warm");
   await page.evaluate(() => (window as any).trace.command("plugin.openai-image.edit"));
   const caller = page.getByRole("dialog", { name: "Edit with AI" });
-  await caller.getByRole("combobox", { name: "Image connection" }).selectOption("custom-http");
+  await pickOption(caller.getByRole("combobox", { name: "Image connection" }), "custom-http");
   await caller.getByRole("textbox", { name: "Image model" }).fill("my-mobile-custom-model");
   await caller.getByRole("textbox", { name: "Edit prompt" }).fill("Preserve this narrow caller draft");
   await page.evaluate(() => (window as any).trace.backend.configureImages());
@@ -113,7 +113,7 @@ test("removing a pinned connection requires an explicit choice instead of switch
   await click(page, "warm");
   await page.evaluate(() => (window as any).trace.command("plugin.openai-image.edit"));
   const caller = page.getByRole("dialog", { name: "Edit with AI" });
-  await expect(caller.getByRole("combobox", { name: "Image connection" })).toHaveValue("saved-login");
+  await expect(caller.getByRole("combobox", { name: "Image connection" })).toHaveAttribute("data-value", "saved-login");
   await caller.getByRole("textbox", { name: "Edit prompt" }).fill("Keep this draft until I choose");
   await page.evaluate(() => {
     const backend = (window as any).trace.backend;
@@ -127,7 +127,7 @@ test("removing a pinned connection requires an explicit choice instead of switch
   await expect(caller.getByRole("button", { name: "Generate", exact: true })).toBeDisabled();
   await expect(caller.getByRole("textbox", { name: "Edit prompt" })).toHaveValue("Keep this draft until I choose");
   expect(await page.evaluate(() => (window as any).trace.backend.calls("jobs.start"))).toEqual([]);
-  await caller.getByRole("combobox", { name: "Image connection" }).selectOption("custom-http");
+  await pickOption(caller.getByRole("combobox", { name: "Image connection" }), "custom-http");
   await caller.getByRole("button", { name: "Generate", exact: true }).click();
   await expect.poll(() => page.evaluate(() => (window as any).trace.backend.calls("jobs.start").length)).toBe(1);
 });
@@ -137,7 +137,7 @@ test("Ctrl+Enter cannot submit stale capabilities while Reload is pending", asyn
   await click(page, "warm");
   await page.evaluate(() => (window as any).trace.command("plugin.openai-image.edit"));
   const caller = page.getByRole("dialog", { name: "Edit with AI" });
-  await expect(caller.getByRole("combobox", { name: "Image connection" })).toHaveValue("saved-login");
+  await expect(caller.getByRole("combobox", { name: "Image connection" })).toHaveAttribute("data-value", "saved-login");
   await caller.getByRole("textbox", { name: "Edit prompt" }).fill("Wait for the pending capability read");
   await page.evaluate(() => (window as any).trace.backend.holdImageDescriptions());
   await caller.getByRole("button", { name: "Reload connections" }).click();

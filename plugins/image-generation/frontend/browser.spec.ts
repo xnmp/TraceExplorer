@@ -58,3 +58,14 @@ test('removing the default leaves generation disabled until another default is c
   await page.getByRole('button', { name: 'Add Codex' }).click();
   await expect(page.getByRole('button', { name: /^Codex.*Default/ })).toBeVisible();
 });
+test('the credential source is a themed list whose disabled choice cannot be picked', async ({ page }) => {
+  await setup(page); await page.getByRole('button', { name: 'Add Images API' }).click();
+  const source = page.getByRole('combobox', { name: 'Credential source' });
+  await expect(source).toHaveText('No credential'); await expect(page.getByLabel('Environment variable name')).toHaveCount(0);
+  await source.click();
+  await page.getByRole('option', { name: 'Saved OS credential' }).click();
+  await expect(page.getByRole('listbox')).toBeVisible(); await expect(source).toHaveText('No credential');
+  await page.getByRole('option', { name: 'Environment variable' }).click();
+  await expect(page.getByRole('listbox')).toHaveCount(0); await expect(source).toHaveText('Environment variable');
+  await expect(page.getByLabel('Environment variable name')).toHaveValue('OPENAI_API_KEY');
+});
