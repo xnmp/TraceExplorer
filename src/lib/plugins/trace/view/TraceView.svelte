@@ -483,7 +483,9 @@
     let found = findNode(key, componentId);
     if (!found && componentId) {
       // A stack not loaded yet: resolve its image the way activation does, then act as for a loaded one.
+      // Claim the event before any await: the host's folder handlers (empty-space menu, clearing the selection) must never see it.
       event.preventDefault();
+      event.stopPropagation();
       const holder = await reachNode(key, componentId, ++activations);
       found = holder ? findNode(key, holder) : null;
       if (!found) return;

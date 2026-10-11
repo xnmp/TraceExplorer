@@ -479,6 +479,9 @@ export const backend = {
   /** Answers run details, revision status and per-image traces after `ms`. */
   setPreviewLatency(ms: number) { previewLatency = ms; },
   setFolderLatency(ms: number) { folderLatency = ms; },
+  /** The node stops being an input of `child` (a refresh that drops the reference). */
+  dropInput(child: string, parent: string) { const parentKey = state.names.get(parent)!; update(state.names.get(child)!, { parents: state.nodes.find((node) => node.key === state.names.get(child))!.parents.filter((key) => key !== parentKey) }); changed(); },
+  addInput(child: string, parent: string) { const node = state.nodes.find((candidate) => candidate.key === state.names.get(child))!; update(node.key, { parents: [...node.parents, state.names.get(parent)!] }); changed(); },
   failNodeReads(count: number) { nodeReadFailures = count; },
   holdFolderReads() { folderReadsHeld = true; },
   releaseFolderReads() { folderReadsHeld = false; const pending = heldFolderReads; heldFolderReads = []; pending.forEach((release) => release()); },

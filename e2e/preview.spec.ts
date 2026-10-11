@@ -248,6 +248,21 @@ test.describe("Preview info", () => {
     expect(await uncaught(page)).toEqual([]);
   });
 
+  test("choosing a reference hidden behind +n reveals and focuses its badge", async ({ page }) => {
+    await openView(page, 420, "?moreBadges=1");
+    await click(page, "warm");
+    await openDetails(page);
+    const hidden = `[data-reference-key="${await key(page, "reference-4")}"]`;
+    await expect(page.locator(hidden)).toHaveCount(0);
+    await trace(page).getByRole("button", { name: /Preview input .*reference-4/ }).click();
+    await settle(page);
+    const badge = page.locator(hidden).first();
+    await expect(badge).toBeVisible();
+    await expect(badge).toHaveAttribute("aria-pressed", "true");
+    expect(await page.evaluate(() => document.activeElement?.getAttribute("data-reference-key"))).toBe(await key(page, "reference-4"));
+    expect(await uncaught(page)).toEqual([]);
+  });
+
   test("raw data is collapsed until opened", async ({ page }) => {
     await openView(page);
     await click(page, "warm");

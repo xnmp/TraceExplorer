@@ -1,5 +1,5 @@
 import { test, expect, type Page } from "@playwright/test";
-import { openView, key, state, settle, uncaught } from "./support";
+import { openView, key, state, settle, uncaught, rendered } from "./support";
 import { awaitAnimationsCreated, holdScriptedAnimations, releaseScriptedAnimations } from "./animation-control";
 
 const stack = (page: Page, name: string) => page.locator(`section[data-component][aria-label="${name}"]`);
@@ -126,6 +126,51 @@ test("reference overflow expands to selectable references with path and scope to
   await expect(page.getByRole("tooltip")).toContainText(/Outside this folder/i);
   await reference.click(); await settle(page);
   expect((await state(page)).inputs).toEqual(["/elsewhere/reference-4.png"]);
+});
+
+test("clicking the image centre selects the image even when the badges wrap onto two rows", async ({ page }) => {
+  await openView(page, 420, "?moreBadges=1");
+  const warm = page.locator(`[data-node-key="${await key(page, "warm")}"]`);
+  await warm.hover();
+  const box = (await warm.boundingBox())!;
+  const badges = await stack(page, "village").locator(`[data-tile-key="${await key(page, "warm")}"] [data-reference-key], [data-tile-key="${await key(page, "warm")}"] button.more`).evaluateAll((elements) => elements.map((element) => element.getBoundingClientRect().top));
+  expect(new Set(badges.map(Math.round)).size, "badges wrap onto more than one row").toBeGreaterThan(1);
+  await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2); await settle(page);
+  expect((await state(page)).selected).toEqual(["/pictures/warm.png"]);
+});
+
+test("a stack refreshed away under a hovered reference leaves no hover highlight behind", async ({ page }) => {
+  await openView(page, 900);
+  const village = stack(page, "village");
+  const press = (selector: string) => village.locator(selector).first().evaluate((element) => (element as HTMLElement).click());
+  // Close and reopen with the pointer elsewhere (programmatic presses move nothing): what the reopened band dims.
+  const cycle = async () => {
+    await press('[aria-label="Close stack"]'); await settle(page);
+    await press("[data-stack-toggle]"); await settle(page);
+    await expect(village.locator("[data-grid-band]")).toHaveCount(1);
+    return village.locator("[data-tone]").evaluateAll((tiles) => tiles.map((tile) => `${tile.getAttribute("data-tile-key")}:${tile.getAttribute("data-tone")}`).sort());
+  };
+  const baseline = await cycle();
+  await village.locator(`[data-reference-key="${await key(page, "lantern")}"]`).first().hover();
+  expect((await rendered(page, "tone", "unrelated")).length).toBeGreaterThan(0);
+  // The band goes away while the pointer rests on the badge: no mouseleave ever reaches it.
+  await press('[aria-label="Close stack"]'); await settle(page);
+  await page.mouse.move(2, 2);
+  await press("[data-stack-toggle]"); await settle(page);
+  await expect(village.locator("[data-grid-band]")).toHaveCount(1);
+  expect(await village.locator("[data-tone]").evaluateAll((tiles) => tiles.map((tile) => `${tile.getAttribute("data-tile-key")}:${tile.getAttribute("data-tone")}`).sort())).toEqual(baseline);
+});
+
+test("a context click on a cold unsaved stack never reaches the host folder menu", async ({ page }) => {
+  await openView(page, 420, "?grouping=unsaved-and-placeholder", false);
+  await page.locator('[data-entry-path="/pictures/notes.txt"]').click(); await settle(page);
+  expect((await state(page)).selected).toEqual(["/pictures/notes.txt"]);
+  expect((await state(page)).menus).toEqual([]);
+  await stack(page, "out").locator("[data-stack-toggle]").click({ button: "right" });
+  await expect.poll(async () => (await state(page)).target).toMatchObject({ id: "trace:o:11:0" });
+  // The host's empty-space menu never saw the event.
+  expect((await state(page)).menus).toEqual([]);
+  expect(await uncaught(page)).toEqual([]);
 });
 
 test("hovering a reference preserves a deeper selected tile and keyboard focus", async ({ page }) => {
