@@ -33,6 +33,7 @@
   let buffer = emptyTypeahead;
   let trigger = $state<HTMLButtonElement>();
   let popup = $state<HTMLDivElement>();
+  let root = $state<HTMLSpanElement>();
   let placement = $state<{ top: number; left: number; minWidth: number; maxHeight: number }>();
 
   const selected = $derived(indexOfValue(options, value));
@@ -128,30 +129,27 @@
     }
   }
 
-  // Clicking a wrapping <label> makes the browser dispatch a synthetic click on the trigger. Native
-  // selects only focus on that; record label clicks so `toggle` can tell the two apart. The flag lives
-  // for the rest of the task, which is exactly when the browser dispatches the synthetic click.
-  let fromLabel = false;
+  // A click on a label would make the browser re-click the trigger, which would toggle the list. A native
+  // select only focuses on that, so cancel the label's activation and do the same. Labels are static here.
   $effect(() => {
-    const onClick = (event: MouseEvent) => {
-      if (!(event.target instanceof Element) || trigger?.contains(event.target)) return;
-      const label = event.target.closest("label");
-      if (!label || ![...(trigger?.labels ?? [])].includes(label)) return;
-      fromLabel = true;
-      setTimeout(() => { fromLabel = false; });
+    const labels = [...(trigger?.labels ?? [])];
+    const onLabelClick = (event: MouseEvent) => {
+      if (event.target instanceof Node && root?.contains(event.target)) return; // the trigger or its list
+      event.preventDefault();
+      trigger?.focus();
+      close();
     };
-    addEventListener("click", onClick, true);
-    return () => removeEventListener("click", onClick, true);
+    for (const label of labels) label.addEventListener("click", onLabelClick);
+    return () => { for (const label of labels) label.removeEventListener("click", onLabelClick); };
   });
 
   function toggle(): void {
-    if (fromLabel) { fromLabel = false; trigger?.focus(); return; }
     if (disabled) return;
     if (expanded) close(); else show(initialActive(options, value));
   }
 </script>
 
-<span class="select {className}">
+<span bind:this={root} class="select {className}">
   <button
     bind:this={trigger} {id} type="button" role="combobox" class="trigger" class:placeholder={selected < 0}
     {disabled} data-value={value ?? ""} aria-label={ariaLabel} aria-labelledby={ariaLabelledby}
