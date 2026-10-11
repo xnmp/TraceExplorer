@@ -56,7 +56,12 @@
         node.style.visibility = "hidden";
         void Promise.allSettled(moving.map((animation) => animation.finished)).then(position);
       } else position();
-      return () => { live = false; };
+      // The scroll anchor's corrections keep the tooltip open (controller.svelte.ts) but can move its tile.
+      let frame = 0;
+      const follow = () => { if (!frame) frame = requestAnimationFrame(() => { frame = 0; position(); }); };
+      const options = { capture: true, passive: true } as const;
+      document.addEventListener("scroll", follow, options);
+      return () => { live = false; cancelAnimationFrame(frame); document.removeEventListener("scroll", follow, options); };
     };
   }
 </script>
