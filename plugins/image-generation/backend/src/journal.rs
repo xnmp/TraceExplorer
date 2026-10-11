@@ -144,6 +144,13 @@ impl Journal {
                 .execute_batch("ALTER TABLE operations ADD COLUMN connection_id TEXT")
                 .map_err(storage)?;
         }
+        // Billing is durable operation evidence. Keep legacy status JSON intact
+        // so older builds can still read their explicit columns.
+        if !has_column(&connection, "billing")? {
+            connection
+                .execute_batch("ALTER TABLE operations ADD COLUMN billing TEXT")
+                .map_err(storage)?;
+        }
         // Additive and idempotent, so the schema version is unchanged and an
         // older build still opens this journal (it selects explicit columns).
         // Optional diagnostics: a journal that cannot take the column still works.
@@ -363,6 +370,7 @@ impl Journal {
             },
             delivery: Delivery::None {},
             diagnostics: None,
+            billing: None,
         };
         let admitted_at = epoch_millis()?;
         let deadline_at = admitted_at
@@ -373,7 +381,7 @@ impl Journal {
                     "Image operation deadline exceeds storage bounds",
                 )
             })?;
-        transaction.execute("INSERT INTO operations(caller,operation,semantic,context,recipe,status,test,admitted_at_ms,deadline_at_ms,connection_id) VALUES(?,?,?,?,?,?,?,?,?,?)",params![caller.package_id,operation,semantic,serde_json::to_string(caller).map_err(storage)?,serde_json::to_string(recipe).map_err(storage)?,serde_json::to_string(&status).map_err(storage)?,test,admitted_at,deadline_at,recipe.connection_id]).map_err(storage)?;
+        transaction.execute("INSERT INTO operations(caller,operation,semantic,context,recipe,status,test,admitted_at_ms,deadline_at_ms,connection_id) VALUES(?,?,?,?,?,?,?,?,?,?)",params![caller.package_id,operation,semantic,serde_json::to_string(caller).map_err(storage)?,serde_json::to_string(recipe).map_err(storage)?,durable_status(&status)?,test,admitted_at,deadline_at,recipe.connection_id]).map_err(storage)?;
         load_receipt(&transaction, &caller.package_id, operation)?;
         transaction.commit().map_err(storage)?;
         drop(connection);
@@ -416,10 +424,11 @@ impl Journal {
             execution: Execution::Failed { error: failure },
             delivery: Delivery::None {},
             diagnostics: None,
+            billing: None,
         };
         transaction.execute(
             "INSERT INTO operations(caller,operation,semantic,context,recipe,status,test,admitted_at_ms,deadline_at_ms,connection_id) VALUES(?,?,?,?,?,?,?,?,?,?)",
-            params![caller.package_id, operation, semantic, serde_json::to_string(caller).map_err(storage)?, "null", serde_json::to_string(&status).map_err(storage)?, test, 0, 0, connection_id],
+            params![caller.package_id, operation, semantic, serde_json::to_string(caller).map_err(storage)?, "null", durable_status(&status)?, test, 0, 0, connection_id],
         ).map_err(storage)?;
         load_receipt(&transaction, &caller.package_id, operation)?;
         transaction.commit().map_err(storage)?;
@@ -452,17 +461,51 @@ impl Journal {
             transaction
                 .execute(
                     "UPDATE operations SET status=? WHERE caller=? AND operation=?",
-                    params![
-                        serde_json::to_string(&status).map_err(storage)?,
-                        caller,
-                        operation
-                    ],
+                    params![durable_status(&status)?, caller, operation],
                 )
                 .map_err(storage)?;
         }
         load_receipt(&transaction, caller, operation)?;
         transaction.commit().map_err(storage)?;
         Ok((status, changed))
+    }
+    /// Checkpoint a replacement snapshot before delivery IO. Repeated polling
+    /// evidence is idempotent; later settled evidence survives any finish path.
+    pub fn record_billing(
+        &self,
+        caller: &str,
+        operation: &str,
+        billing: te_image_generation_contract::Billing,
+    ) -> Result<()> {
+        if !billing.valid() {
+            return Err(error("invalid_response", "Invalid operation billing"));
+        }
+        let mut connection = self.connection.lock().map_err(storage)?;
+        let transaction = connection.transaction().map_err(storage)?;
+        let stored = load_receipt(&transaction, caller, operation)?
+            .ok_or_else(|| error("not_found", "Unknown image operation"))?;
+        if stored.status.billing.as_ref() == Some(&billing) {
+            return Ok(());
+        }
+        let mut status = stored.status;
+        status.revision = status
+            .revision
+            .checked_add(1)
+            .ok_or_else(|| error("unavailable", "Operation revision exhausted"))?;
+        transaction
+            .execute(
+                "UPDATE operations SET billing=?,status=? WHERE caller=? AND operation=?",
+                params![
+                    serde_json::to_string(&billing).map_err(storage)?,
+                    durable_status(&status)?,
+                    caller,
+                    operation
+                ],
+            )
+            .map_err(storage)?;
+        load_receipt(&transaction, caller, operation)?;
+        transaction.commit().map_err(storage)?;
+        Ok(())
     }
     pub fn claim(&self, caller: &str, operation: &str) -> Result<bool> {
         let mut connection = self.connection.lock().map_err(storage)?;
@@ -494,7 +537,7 @@ impl Journal {
             .execute(
                 "UPDATE operations SET status=?,cancel_requested=? WHERE caller=? AND operation=?",
                 params![
-                    serde_json::to_string(&status).map_err(storage)?,
+                    durable_status(&status)?,
                     cancel || expired,
                     caller,
                     operation
@@ -760,7 +803,7 @@ impl Journal {
                 .execute(
                     "UPDATE operations SET status=?,output_sha256=?,output_descriptor=? WHERE caller=? AND operation=?",
                     params![
-                        serde_json::to_string(&status).map_err(storage)?,
+                        durable_status(&status)?,
                         sha256,
                         match candidate {Some(output)=>Some(serde_json::to_string(output).map_err(storage)?),None=>match &status.delivery {Delivery::Available{output}=>Some(serde_json::to_string(output).map_err(storage)?),_=>None}},
                         caller,
@@ -796,7 +839,7 @@ impl Journal {
                         .revision
                         .checked_add(1)
                         .ok_or_else(|| error("unavailable", "Operation revision exhausted"))?;
-                    transaction.execute("UPDATE operations SET status=?,output_descriptor=? WHERE caller=? AND operation=?",params![serde_json::to_string(&status).map_err(storage)?,serde_json::to_string(candidate).map_err(storage)?,caller,operation]).map_err(storage)?;
+                    transaction.execute("UPDATE operations SET status=?,output_descriptor=? WHERE caller=? AND operation=?",params![durable_status(&status)?,serde_json::to_string(candidate).map_err(storage)?,caller,operation]).map_err(storage)?;
                 }
                 None => {
                     return Err(error(
@@ -922,7 +965,7 @@ impl Journal {
                 .pragma_query_value(None, "user_version", |row| row.get(0))
                 .map_err(storage)?;
             let mut statement = connection
-                .prepare(&receipt_query(version))
+                .prepare(&receipt_query(version, has_column(&connection, "billing")?))
                 .map_err(storage)?;
             let mut cursor = statement.query([]).map_err(storage)?;
             let mut records = Vec::new();
@@ -1172,7 +1215,7 @@ fn has_column(connection: &Connection, column: &str) -> Result<bool> {
 
 // SQL slices limit allocation before decoding; loading a corrupt multi-megabyte
 // value must never allocate it or produce an oversized stdio reply.
-fn receipt_query(version: i64) -> String {
+fn receipt_query(version: i64, billing: bool) -> String {
     let columns = [
         ("caller", 128),
         ("operation", 128),
@@ -1198,6 +1241,14 @@ fn receipt_query(version: i64) -> String {
             "0,0"
         } else {
             "admitted_at_ms,deadline_at_ms"
+        }
+        .into(),
+    );
+    selected.push(
+        if billing {
+            "substr(CAST(billing AS BLOB),1,16385),typeof(billing)"
+        } else {
+            "NULL,'null'"
         }
         .into(),
     );
@@ -1234,13 +1285,18 @@ fn decode_receipt(row: &rusqlite::Row<'_>) -> Result<StoredReceipt> {
     let output = bounded(14, 1024, true)?
         .map(|raw| serde_json::from_str(&raw).map_err(|_| corrupt_receipt()))
         .transpose()?;
+    let mut status: OperationStatus =
+        serde_json::from_str(&status).map_err(|_| corrupt_receipt())?;
+    status.billing = bounded(20, 16384, true)?
+        .map(|raw| serde_json::from_str(&raw).map_err(|_| corrupt_receipt()))
+        .transpose()?;
     let value = StoredReceipt {
         caller: required(0, 128)?,
         operation: required(2, 128)?,
         semantic: required(4, 64)?,
         context: serde_json::from_str(&context).map_err(|_| corrupt_receipt())?,
         recipe: serde_json::from_str(&recipe).map_err(|_| corrupt_receipt())?,
-        status: serde_json::from_str(&status).map_err(|_| corrupt_receipt())?,
+        status,
         output_sha: bounded(12, 64, true)?,
         output,
         cancelled: boolean(16)?,
@@ -1265,7 +1321,10 @@ fn load_receipt(
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .map_err(storage)?;
     let mut statement = connection
-        .prepare(&(receipt_query(version) + " WHERE caller=? AND operation=?"))
+        .prepare(
+            &(receipt_query(version, has_column(&connection, "billing")?)
+                + " WHERE caller=? AND operation=?"),
+        )
         .map_err(storage)?;
     let mut rows = statement
         .query(params![caller, operation])
@@ -1277,7 +1336,7 @@ fn load_receipt(
 }
 fn validate_rows(connection: &Connection, version: i64) -> Result<()> {
     let mut statement = connection
-        .prepare(&receipt_query(version))
+        .prepare(&receipt_query(version, has_column(&connection, "billing")?))
         .map_err(storage)?;
     let mut rows = statement.query([]).map_err(storage)?;
     let mut live = 0;
@@ -1307,4 +1366,9 @@ fn validate_rows(connection: &Connection, version: i64) -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn durable_status(status: &OperationStatus) -> Result<String> {
+    serde_json::to_string(&te_image_generation_contract::receipt_value(status, false))
+        .map_err(storage)
 }

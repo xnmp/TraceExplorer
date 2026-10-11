@@ -2526,6 +2526,7 @@ async fn validated_schema_one_migrates_locally_without_replaying_or_extending_re
         execution: Execution::Accepted {},
         delivery: Delivery::None {},
         diagnostics: None,
+        billing: None,
     };
     connection.execute("INSERT INTO operations(caller,operation,semantic,context,recipe,status) VALUES(?,?,?,?,?,?)",rusqlite::params![caller().package_id,receipt.operation_id,"a".repeat(64),serde_json::to_string(&caller()).unwrap(),serde_json::to_string(&recipe).unwrap(),serde_json::to_string(&receipt).unwrap()]).unwrap();
     drop(connection);

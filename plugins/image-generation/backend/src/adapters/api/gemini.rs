@@ -169,6 +169,7 @@ pub(super) async fn generate(call: ApiCall<'_>) -> Result<Output> {
         key,
         cancel,
         stage,
+        evidence,
     } = call;
     let request = client()?
         .post(format!(
@@ -179,6 +180,24 @@ pub(super) async fn generate(call: ApiCall<'_>) -> Result<Output> {
     let reply = send(&DESCRIPTOR, key.as_deref(), &cancel, &stage, request).await?;
     let value: Value = serde_json::from_slice(&reply.body)
         .map_err(|_| outcome(Failure::Invalid("Image provider returned unreadable JSON")))?;
+    response_output(&value, recipe, profile, &stage, &evidence, reply.request_id)
+}
+fn response_output(
+    value: &Value,
+    recipe: &EffectiveRecipe,
+    _profile: &ApiProfile,
+    stage: &StageSink,
+    evidence: &EvidenceSink,
+    request_id: Option<String>,
+) -> Result<Output> {
+    if let Some(billing) = crate::domain::billing::gemini(
+        &value,
+        value["model"]
+            .as_str()
+            .unwrap_or(recipe.model.as_deref().unwrap_or("")),
+    ) {
+        evidence(Evidence::Billing(billing))?;
+    }
     let Some(block) = last_image_block(&value) else {
         return Err(outcome(no_image_failure(&value)));
     };
@@ -195,9 +214,48 @@ pub(super) async fn generate(call: ApiCall<'_>) -> Result<Output> {
         .map_err(|_| outcome(Failure::Invalid("Image provider returned invalid base64")))?;
     output(
         recipe,
-        &stage,
+        stage,
         &bytes,
-        reply.request_id.or_else(|| safe_id(&value["id"])),
+        request_id.or_else(|| safe_id(&value["id"])),
         value["model"].as_str(),
     )
+}
+
+#[cfg(test)]
+mod billing_tests {
+    use super::*;
+    #[test]
+    fn recorded_usage_is_emitted_before_invalid_image_decode() {
+        let mut recipe: EffectiveRecipe =
+            serde_json::from_str(include_str!("../../../tests/fixtures/recipe-v1.json")).unwrap();
+        recipe.adapter = "gemini".into();
+        recipe.model = Some("gemini-3-pro-image".into());
+        let profile = ApiProfile {
+            id: "api".into(),
+            name: "API".into(),
+            recipe_revision: "r".into(),
+            base_url: DESCRIPTOR.default_base_url.into(),
+            default_model: recipe.model.clone().unwrap(),
+            allow_insecure_http: false,
+            credential: crate::domain::Credential::None,
+        };
+        let captured = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let events = captured.clone();
+        let evidence: EvidenceSink = Arc::new(move |event| {
+            if let Evidence::Billing(billing) = event {
+                events.lock().unwrap().push(billing);
+            }
+            Ok(())
+        });
+        let stage: StageSink = Arc::new(|_| {});
+        let value = json!({"usage":{"total_input_tokens":1000,"total_output_tokens":2000,"total_thought_tokens":100,"output_tokens_by_modality":[{"modality":"image","tokens":2000}]},"steps":[{"type":"model_output","content":[{"type":"image","data":"bad base64"}]}]});
+        let failure = response_output(&value, &recipe, &profile, &stage, &evidence, None)
+            .err()
+            .unwrap();
+        assert_eq!(failure.code, "invalid_response");
+        let captured = captured.lock().unwrap();
+        assert_eq!(captured.len(), 1);
+        assert_eq!(captured[0].cost.as_ref().unwrap().amount, "0.2432");
+        assert!(captured[0].evidence.is_some());
+    }
 }

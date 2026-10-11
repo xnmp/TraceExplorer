@@ -51,3 +51,45 @@ fn operation_identity_is_bounded_ascii_and_does_not_accept_paths_or_empty_ids() 
     assert!(valid_operation_id(&"a".repeat(128)));assert!(!valid_operation_id(&"a".repeat(129)));
     for id in ["","../other","folder/file","C:\\path","雪","with space","line\nfeed"] {assert!(!valid_operation_id(id));}
 }
+
+#[test]
+fn receipt_billing_accepts_only_bounded_money_and_scalar_evidence() {
+    let valid = json!({"cost":{"amount":"0.045","currency":"USD","estimated":false,"source":"bfl.credits"},"evidence":{"schema":"bfl.v1","values":{"credits":4.5,"input_mp":1,"nullable":null,"boolean":true,"string":"x".repeat(128)}}});
+    assert!(serde_json::from_value::<Billing>(valid.clone()).is_ok());
+    for (field, value) in [
+        ("amount", json!("-1")),
+        ("amount", json!(1.5)),
+        ("amount", json!("1e3")),
+        ("amount", json!("0.1234567")),
+        ("source", json!("x".repeat(65))),
+        ("currency", json!("usd")),
+    ] {
+        let mut bad = valid.clone();
+        bad["cost"][field] = value;
+        assert!(serde_json::from_value::<Billing>(bad).is_err());
+    }
+    for value in [json!({}), json!([]), json!("x".repeat(129))] {
+        let mut bad = valid.clone();
+        bad["evidence"]["values"]["bad"] = value;
+        assert!(serde_json::from_value::<Billing>(bad).is_err());
+    }
+    for bad in [
+        json!({"extra":true}),
+        json!({"evidence":{"schema":"x".repeat(65),"values":{}}}),
+        json!({"evidence":{"schema":"s","values":{"x".repeat(65):0}}}),
+    ] {
+        assert!(serde_json::from_value::<Billing>(bad).is_err());
+    }
+    let keys = (0..33)
+        .map(|i| (format!("k{i}"), json!(0)))
+        .collect::<serde_json::Map<_, _>>();
+    assert!(
+        serde_json::from_value::<Billing>(json!({"evidence":{"schema":"s","values":keys}}))
+            .is_err()
+    );
+    for amount in ["0", "0.00", "123", "123.123456"] {
+        let mut good = valid.clone();
+        good["cost"]["amount"] = json!(amount);
+        assert!(serde_json::from_value::<Billing>(good).is_ok());
+    }
+}

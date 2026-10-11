@@ -570,6 +570,7 @@ mod tests {
             search_path: "/fixture".into(),
         };
         let sink = |event| match event {
+            Evidence::Billing(_) => panic!("Codex must not report operation billing"),
             Evidence::Turn(receipt) => {
                 journal.turn_checkpoint("test.consumer", "checkpoint-order", receipt)?;
                 assert!(journal

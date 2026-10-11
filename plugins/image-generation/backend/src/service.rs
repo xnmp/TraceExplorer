@@ -286,12 +286,18 @@ impl Service {
             for (caller, status, test) in recovered {
                 let _ = host.event(
                     "image-generation:operation-changed",
-                    json!({"consumerPackageId":caller,"status":status}),
+                    crate::host::wire_value(
+                        json!({"consumerPackageId":caller,"status":status}),
+                        host.receipt_billing_v1(),
+                    ),
                 );
                 if test {
                     let _ = host.call(
                         "host.services.test.update",
-                        json!({"operationId":status.operation_id,"status":status}),
+                        crate::host::wire_value(
+                            json!({"operationId":status.operation_id,"status":status}),
+                            host.receipt_billing_v1(),
+                        ),
                         &AtomicBool::new(false),
                     );
                 }
@@ -666,7 +672,10 @@ impl Service {
                         let _ = tokio::task::spawn_blocking(move || {
                             let _ = host.call(
                                 "host.services.test.update",
-                                json!({"operationId":update.operation_id,"status":update}),
+                                crate::host::wire_value(
+                                    json!({"operationId":update.operation_id,"status":update}),
+                                    host.receipt_billing_v1(),
+                                ),
                                 &AtomicBool::new(false),
                             );
                         })
@@ -795,14 +804,20 @@ impl Service {
         if let Some(status) = status {
             let _ = self.host.event(
                 "image-generation:operation-changed",
-                json!({"consumerPackageId":caller,"status":status}),
+                crate::host::wire_value(
+                    json!({"consumerPackageId":caller,"status":status}),
+                    self.host.receipt_billing_v1(),
+                ),
             );
             if self.journal.is_test(&caller, &operation).unwrap_or(false) {
                 let host = self.host.clone();
                 let _ = tokio::task::spawn_blocking(move || {
                     host.call(
                         "host.services.test.update",
-                        json!({"operationId":operation,"status":status}),
+                        crate::host::wire_value(
+                            json!({"operationId":operation,"status":status}),
+                            host.receipt_billing_v1(),
+                        ),
                         &AtomicBool::new(false),
                     )
                 })
@@ -854,6 +869,11 @@ impl Service {
         let evidence_caller = work.caller.package_id.clone();
         let evidence_operation = work.request.operation_id.clone();
         let evidence: adapters::EvidenceSink = Arc::new(move |event| match event {
+            adapters::Evidence::Billing(billing) => {
+                service
+                    .journal
+                    .record_billing(&evidence_caller, &evidence_operation, billing)
+            }
             adapters::Evidence::Turn(receipt) => {
                 service
                     .journal
@@ -1231,7 +1251,10 @@ impl Service {
         let status = self.acknowledge(caller, operation, &sha, "discarded", None)?;
         let _ = self.host.event(
             "image-generation:operation-changed",
-            json!({"consumerPackageId":caller,"status":status}),
+            crate::host::wire_value(
+                json!({"consumerPackageId":caller,"status":status}),
+                self.host.receipt_billing_v1(),
+            ),
         );
         Ok(status)
     }
@@ -1434,7 +1457,10 @@ impl Service {
                 if matches!(status.execution, Execution::Succeeded { .. }) {
                     self.host.call(
                         "host.services.test.update",
-                        json!({"operationId":operation,"status":status}),
+                        crate::host::wire_value(
+                            json!({"operationId":operation,"status":status}),
+                            self.host.receipt_billing_v1(),
+                        ),
                         &AtomicBool::new(false),
                     )?;
                 }

@@ -62,6 +62,30 @@ fn execute(
     control_handlers: &tokio::sync::Semaphore,
     request: Request,
 ) -> Result<Value> {
+    let value = execute_ungated(
+        service,
+        initialized,
+        control,
+        validation_only,
+        normal_handlers,
+        control_handlers,
+        request,
+    )?;
+    use image_generation_backend::host::Host;
+    Ok(image_generation_backend::host::wire_value(
+        value,
+        NativeHost.receipt_billing_v1(),
+    ))
+}
+fn execute_ungated(
+    service: &Arc<Service>,
+    initialized: &AtomicBool,
+    control: &OnceLock<String>,
+    validation_only: &OnceLock<bool>,
+    normal_handlers: &tokio::sync::Semaphore,
+    control_handlers: &tokio::sync::Semaphore,
+    request: Request,
+) -> Result<Value> {
     if request.jsonrpc != "2.0" {
         return Err(error("invalid_request", "Unsupported protocol"));
     }
