@@ -8,8 +8,13 @@ use std::{
 };
 pub(crate) const PACKAGE: &str = "xnmp.image-generation";
 pub(crate) const SERVICE: &str = "image-generation";
+static JOB_ESTIMATES: AtomicBool = AtomicBool::new(false);
+pub(crate) fn job_estimates_supported() -> bool {
+    JOB_ESTIMATES.load(Ordering::Acquire)
+}
 static ENABLED: AtomicBool = AtomicBool::new(false);
-pub(crate) fn enable(service: &Value, artifacts: &Value) {
+pub(crate) fn enable(service: &Value, artifacts: &Value, jobs: &Value) {
+    JOB_ESTIMATES.store(jobs["estimateKey"] == true, Ordering::Release);
     ENABLED.store(
         service["version"] == 1 && artifacts["version"] == 1,
         Ordering::Release,

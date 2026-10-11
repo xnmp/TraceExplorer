@@ -567,9 +567,11 @@ fn snapshot_at(database: &Path, operation: &str) -> Result<Option<Value>, AppErr
         )
         .optional()
         .map_err(sql)?;
-    Ok(Some(
+    Ok(Some(super::image_estimate::with_estimate_key(
         json!({"jobId":link.job_id,"runId":link.run_id,"operationId":link.operation_id,"revision":link.revision,"preparationReleasePending":link.preparation_release_pending,"workerActive":worker_active(database,operation),"status":state,"outputPath":output,"error":link.error,"recoveryState":host_recovery_state(&link.phase),"outcomeUnknown":link.phase=="unknown","providerExecution":link.receipt.as_ref().map(|r|&r.execution),"providerDelivery":link.receipt.as_ref().map(|r|&r.delivery)}),
-    ))
+        &link.recipe,
+        crate::host_image::job_estimates_supported(),
+    )))
 }
 pub(crate) fn status(operation: &str) -> Result<Option<Value>, AppError> {
     snapshot_at(&database_path()?, operation)

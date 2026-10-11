@@ -81,7 +81,11 @@ async fn execute(app: EventEmitter, request: &Request) -> Result<Value, AppError
                     .unwrap_or(false),
             );
             crate::host_text::enable(&p["textService"]);
-            crate::host_image::enable(&p["serviceService"],&p["artifactService"]);
+            crate::host_image::enable(
+                &p["serviceService"],
+                &p["artifactService"],
+                &p["jobService"],
+            );
             if trace::owner_ready() {
                 let _ = app.emit("trace:changed", ());
             }
