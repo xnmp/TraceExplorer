@@ -52,7 +52,9 @@
 //!
 //! A non-2xx poll answer is read (bounded) first: FLUX 3 can report a failed task
 //! as a 503 with a normal JSON body, so a terminal `status` in it is classified by
-//! the table above. Otherwise 429, 408 and 5xx, and transport failures, are
+//! the table above, but only when the body names this task's `id` (a gateway's
+//! own error JSON must not turn a live task into a retryable failure). Otherwise
+//! 429, 408 and 5xx, and transport failures, are
 //! transient (three in a row end as Unknown) and any other 4xx is Unknown.
 //!
 //! Submission 4xx (including 402 credits and 429 rate limit) is `provider_rejected`
@@ -400,7 +402,14 @@ async fn run(call: ApiCall<'_>, schedule: Schedule) -> Result<Output> {
         )));
     }
     let sample = interrupted(
-        poll(&client, &DESCRIPTOR, key.as_deref(), &poll_url, schedule),
+        poll(
+            &client,
+            &DESCRIPTOR,
+            key.as_deref(),
+            &poll_url,
+            &task,
+            schedule,
+        ),
         &cancel,
     )
     .await?;
@@ -461,6 +470,7 @@ async fn poll(
     descriptor: &ApiDescriptor,
     key: Option<&str>,
     url: &url::Url,
+    task: &str,
     schedule: Schedule,
 ) -> Result<String> {
     let started = std::time::Instant::now();
@@ -504,8 +514,11 @@ async fn poll(
                 Step::Done(e) => return Err(e),
             }
         }
-        // A failed task can arrive as a non-2xx with a normal JSON body.
-        if let Some(value) = parsed.filter(|v| v["status"].is_string()) {
+        // A failed task can arrive as a non-2xx with a normal JSON body; only a
+        // body about this task is evidence of its outcome.
+        if let Some(value) =
+            parsed.filter(|v| v["status"].is_string() && v["id"].as_str() == Some(task))
+        {
             if let Step::Done(e) = classify(&value) {
                 if e.code != "invalid_response" {
                     return Err(e);
@@ -1249,11 +1262,26 @@ mod tests {
     #[test]
     fn a_non_2xx_poll_with_a_terminal_json_status_is_classified_by_status() {
         let cases = [
-            (r#"{"status":"Error"}"#, "provider_failed"),
-            (r#"{"status":"Failed"}"#, "provider_failed"),
-            (r#"{"status":"Content Moderated"}"#, "provider_refused"),
-            (r#"{"status":"Request Moderated"}"#, "provider_refused"),
-            (r#"{"status":"Task not found"}"#, "remote_outcome_unknown"),
+            (r#"{"id":"task-1","status":"Error"}"#, "provider_failed"),
+            (r#"{"id":"task-1","status":"Failed"}"#, "provider_failed"),
+            (
+                r#"{"id":"task-1","status":"Content Moderated"}"#,
+                "provider_refused",
+            ),
+            (
+                r#"{"id":"task-1","status":"Request Moderated"}"#,
+                "provider_refused",
+            ),
+            (
+                r#"{"id":"task-1","status":"Task not found"}"#,
+                "remote_outcome_unknown",
+            ),
+            // Not about this task: a gateway's own error JSON is no evidence.
+            (r#"{"status":"Error"}"#, "remote_outcome_unknown"),
+            (
+                r#"{"id":"other","status":"Error"}"#,
+                "remote_outcome_unknown",
+            ),
             (r#"{"detail":"overloaded"}"#, "remote_outcome_unknown"),
             ("not json", "remote_outcome_unknown"),
         ];
