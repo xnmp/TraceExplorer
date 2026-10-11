@@ -8,6 +8,7 @@
  * returning to a Trace tab never shows "Loading Trace…" again.
  */
 import type { ComponentSummary, NodeKey, TraceNode } from "$lib/domain/trace-graph/model";
+import type { Orientation } from "$lib/domain/trace-graph/layout";
 import { projectDag, type TraceDag } from "$lib/domain/trace-graph/projection";
 import { traceBackend, type TraceBackend } from "./backend";
 import { createSnapshotCache, type SnapshotCache } from "./folder-snapshots";
@@ -32,9 +33,18 @@ const MAX_RETRIES = 3;
 
 export type SessionStatus = "idle" | "loading" | "ready" | "error";
 
-export interface FolderSnapshot { readonly index: FolderIndex; readonly components: ReadonlyMap<string, ComponentData> }
+/** What a folder last showed: its index, loaded components and which of them predate it, and each component's orientation. */
+export interface FolderSnapshot {
+  readonly index: FolderIndex;
+  readonly components: ReadonlyMap<string, ComponentData>;
+  readonly stale: ReadonlySet<string>;
+  readonly orientations: ReadonlyMap<string, Orientation>;
+}
+/** Members and nodes a snapshot holds, which bound the cache's memory. */
+export const snapshotWeight = (snapshot: FolderSnapshot): number =>
+  snapshot.index.members.size + [...snapshot.components.values()].reduce((sum, data) => sum + data.nodes.length, 0);
 /** Shared by every session, so a remounted view finds what the previous one loaded. */
-const folderSnapshots = createSnapshotCache<FolderSnapshot>(8);
+const folderSnapshots = createSnapshotCache<FolderSnapshot>({ limit: 8, budget: 200_000, weigh: snapshotWeight });
 /** Forgets every folder's data, when the plugin is disabled. */
 export function forgetFolderSnapshots(): void { folderSnapshots.clear(); }
 
@@ -50,10 +60,23 @@ export function createFolderSession(backend: TraceBackend = traceBackend, snapsh
   let wanted = new Set<string>();
   /** Loaded components a refresh did not reload (not wanted then): shown until reloaded, reloaded when wanted again. */
   let stale = $state.raw<ReadonlySet<string>>(new Set());
+  /** Orientation each component of this folder was last laid out with, by id: hysteresis that survives collapse and remount. The layout writes it. */
+  let orientations = $state.raw(new Map<string, Orientation>());
+  /** Writes stop once the cache is cleared (the plugin was disabled) after this session began. */
+  const epoch = snapshots.epoch;
 
   /** Keeps what this folder now shows for the next session that opens it. */
   function remember(): void {
-    if (!disposed && index && index.directory === directory) snapshots.remember(index.directory, { index, components });
+    if (disposed || snapshots.epoch !== epoch || !index || index.directory !== directory) return;
+    const prior = snapshots.recall(index.directory);
+    // Another pane on the same folder state may have loaded components this one has not: keep them.
+    const merge = prior && prior.index.token === index.token;
+    snapshots.remember(index.directory, {
+      index,
+      components: merge ? new Map([...prior.components, ...components]) : components,
+      stale: merge ? new Set([...[...prior.stale].filter((id) => !components.has(id)), ...stale]) : stale,
+      orientations,
+    });
   }
 
   async function loadIndex(dir: string, current: number, attempt = 0): Promise<FolderIndex | null> {
@@ -122,9 +145,9 @@ export function createFolderSession(backend: TraceBackend = traceBackend, snapsh
       // Reload what is shown; keep the old graph visible until it is replaced.
       const keep = new Set(next.components.map((component) => component.id));
       components = new Map([...previous].filter(([id]) => keep.has(id)));
-      remember();
       // Every kept component may be out of date: wanted ones reload now, the others when wanted again.
       stale = new Set([...components.keys()].filter((id) => !wanted.has(id)));
+      remember();
       for (const id of wanted) if (keep.has(id)) void ensure(id, true);
     } catch (cause) {
       if (current !== generation || disposed) return;
@@ -157,14 +180,15 @@ export function createFolderSession(backend: TraceBackend = traceBackend, snapsh
     get status() { return status; },
     get error() { return error; },
     get components() { return components; },
+    get orientations() { return orientations; },
     /** Switch folders. Data for the previous folder is never shown for the new one. */
     setDirectory(dir: string | null) {
       if (dir === directory) return;
       wanted = new Set();
       const known = dir ? snapshots.recall(dir) : undefined;
-      if (!known) { void open(dir, false); return; }
-      // Show what the folder last showed while its index is read again; open() reloads what is wanted.
-      index = known.index; components = known.components; stale = new Set();
+      if (!known) { orientations = new Map(); void open(dir, false); return; }
+      // Show what the folder last showed, as it was laid out, while its index is read again; open() reloads what is wanted.
+      index = known.index; components = known.components; stale = known.stale; orientations = new Map(known.orientations);
       void open(dir, true);
     },
     refresh,

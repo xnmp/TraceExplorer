@@ -10,7 +10,6 @@
   import type { FileEntry } from "$lib/domain/file";
   import { parentDir, samePath } from "$lib/domain/path";
   import type { ComponentSummary, NodeKey, TraceNode } from "$lib/domain/trace-graph/model";
-  import type { Orientation } from "$lib/domain/trace-graph/layout";
   import { tileMetrics } from "$lib/domain/trace-graph/metrics";
   import { traceInvalidation } from "../invalidation.svelte";
   import { promptTitles } from "../prompt-titles.svelte";
@@ -47,8 +46,6 @@
   const sectionMotions = new Map<string, Animation[]>();
   let near = $state.raw<ReadonlySet<string>>(new Set());
   let heights = new Map<string, number>();
-  /** Orientation each component of this folder was last shown with, by component id: kept across collapse and remount for hysteresis. */
-  const orientations = new Map<string, Orientation>();
   /** A save into this folder waiting for the listing to contain its file; see `callbacks.saved`. */
   let pendingSave = $state.raw<{ directory: string; path: string; key: NodeKey; picks: Picks } | null>(null);
   let anchor: { key: NodeKey; mode: "hold" | "reveal"; rect: DOMRect | null; until: number } | null = null;
@@ -65,7 +62,7 @@
   const entriesByPath = $derived(new Map(pane.entries.map((entry) => [entry.path, entry])));
 
   // Session follows the pane's folder and Trace's invalidation signal.
-  $effect(() => { const dir = directory; untrack(() => { overrides = new Map(); orientations.clear(); session.setDirectory(dir); }); });
+  $effect(() => { const dir = directory; untrack(() => { overrides = new Map(); session.setDirectory(dir); }); });
   let seenRevision = untrack(() => traceInvalidation.revision);
   $effect(() => {
     const current = traceInvalidation.revision;
@@ -524,7 +521,7 @@
               <div use:measure={summary.id}>
                 <TraceGraph {data} focus={focus?.key ?? null} selected={selectedKeys} {width} {tile} {revision} {scroller}
                   onactivate={activate} onnavigate={(key) => focusNode(key)} onopen={open} onmenu={menu}
-                  {captureSelection} componentId={summary.id} {orientations} onsaved={(key, path) => callbacks.saved(path, key)} ondiscarded={(key) => callbacks.discarded(key)} oncommit={(settled) => keepAnchor(data, settled)} />
+                  {captureSelection} componentId={summary.id} orientations={session.orientations} onsaved={(key, path) => callbacks.saved(path, key)} ondiscarded={(key) => callbacks.discarded(key)} oncommit={(settled) => keepAnchor(data, settled)} />
               </div>
             {:else}
               <div class="placeholder loading" role="status" style:height="{heights.get(summary.id) ?? 160}px">Loading…</div>

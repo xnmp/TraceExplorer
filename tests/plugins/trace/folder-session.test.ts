@@ -1,6 +1,7 @@
 import "./svelte-host";
 import { beforeEach, describe, it, expect, vi } from "vitest";
 import { createFolderSession, forgetFolderSnapshots } from "$lib/plugins/trace/view/folder-session.svelte";
+import { createSnapshotCache } from "$lib/plugins/trace/view/folder-snapshots";
 import type { TraceBackend } from "$lib/plugins/trace/view/backend";
 import type { ComponentNodesPage, FolderComponentsPage, FolderMembersPage } from "$lib/api/trace";
 import type { TraceNode } from "$lib/domain/trace-graph/model";
@@ -396,5 +397,85 @@ describe("returning to a folder (a Trace tab shown again)", () => {
     const second = createFolderSession(fakeBackend({ components: vi.fn(() => new Promise<FolderComponentsPage>(() => {})) }));
     second.setDirectory("/f");
     expect(second.status).toBe("loading");
+  });
+
+  it("keeps components that predate the folder's index marked stale across a remount", async () => {
+    // Session 1 loads c1 and c2, then a refresh moves the index on while only c1 is wanted: c2 is kept but stale.
+    let token = "t1";
+    const backend = fakeBackend({
+      components: vi.fn(async () => compPage(token, ["c1", "c2"])),
+      members: vi.fn(async () => memPage([["/f/a.png", "c1", "a"], ["/f/b.png", "c2", "b"]])),
+      nodes: vi.fn(async (_d, _t, id) => nodePage([node(id === "c1" ? "a" : "b", 0)])),
+    });
+    const first = createFolderSession(backend);
+    first.setDirectory("/f");
+    await flush();
+    await first.ensure("c1"); await first.ensure("c2");
+    first.release("c2");
+    token = "t2";
+    await first.refresh(); await flush();
+    expect(first.isStale("c2")).toBe(true);
+    first.dispose();
+
+    const second = createFolderSession(fakeBackend({ components: vi.fn(async () => { throw new Error("backend went away"); }) }));
+    second.setDirectory("/f");
+    await flush();
+    // Revalidation failed, yet c2 is still known to predate the index: it is not taken as current.
+    expect(second.isStale("c2")).toBe(true);
+    expect(second.isStale("c1")).toBe(false);
+  });
+
+  it("restores each component's orientation, and never another folder's", async () => {
+    const first = createFolderSession(fakeBackend());
+    first.setDirectory("/f");
+    await flush();
+    await first.ensure("c1");
+    first.orientations.set("c1", "right");
+    first.dispose();
+    const back = createFolderSession(fakeBackend({ components: vi.fn(() => new Promise<FolderComponentsPage>(() => {})) }));
+    back.setDirectory("/f");
+    expect(back.orientations.get("c1")).toBe("right");
+    // The restored memory is this session's own: changing it does not rewrite the other's.
+    back.orientations.set("c1", "down");
+    const other = createFolderSession(fakeBackend({ components: vi.fn(() => new Promise<FolderComponentsPage>(() => {})) }));
+    other.setDirectory("/g");
+    expect(other.orientations.size).toBe(0);
+  });
+
+  it("merges what two panes on the same folder state loaded, so neither hides the other's components", async () => {
+    const backend = () => fakeBackend({
+      components: vi.fn(async () => compPage("t", ["c1", "c2"])),
+      members: vi.fn(async () => memPage([["/f/a.png", "c1", "a"], ["/f/b.png", "c2", "b"]])),
+      nodes: vi.fn(async (_d, _t, id) => nodePage([node(id === "c1" ? "a" : "b", 0)])),
+    });
+    const wide = createFolderSession(backend());
+    const narrow = createFolderSession(backend());
+    wide.setDirectory("/f"); narrow.setDirectory("/f");
+    await flush();
+    await wide.ensure("c1"); await wide.ensure("c2");
+    await narrow.ensure("c1");
+    const next = createFolderSession(fakeBackend({ components: vi.fn(() => new Promise<FolderComponentsPage>(() => {})) }));
+    next.setDirectory("/f");
+    expect([...next.components.keys()].sort()).toEqual(["c1", "c2"]);
+  });
+
+  it("writes nothing once the cache was cleared after the session began (the plugin was disabled)", async () => {
+    const cache = createSnapshotCache<any>({ limit: 4 });
+    const gate = deferred<FolderComponentsPage>();
+    const session = createFolderSession(fakeBackend({ components: vi.fn(() => gate.promise) }), cache);
+    session.setDirectory("/f");
+    cache.clear();
+    gate.resolve(compPage("t", ["c1"]));
+    await flush(); await flush();
+    expect(session.index?.token).toBe("t");
+    expect(cache.recall("/f")).toBeUndefined();
+  });
+
+  it("never keeps a folder heavier than the memory budget", async () => {
+    const cache = createSnapshotCache<any>({ limit: 4, budget: 1, weigh: () => 2 });
+    const session = createFolderSession(fakeBackend(), cache);
+    session.setDirectory("/f");
+    await flush();
+    expect(cache.recall("/f")).toBeUndefined();
   });
 });

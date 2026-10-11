@@ -39,16 +39,3 @@ test("a tab showing a different folder never starts from this folder's graph", a
   await expect(page.getByRole("status").filter({ hasText: "Loading Trace…" })).toBeVisible();
   await expect(page.locator("[data-tile-key]").first()).toBeVisible();
 });
-
-test("a folder returns with the orientation it was last shown with", async ({ page }) => {
-  await openView(page, 900);
-  const [forest, mist, autumn] = await Promise.all(["forest", "forest-mist", "autumn"].map((name) => page.evaluate((n) => (window as any).trace.backend.key(n), name)));
-  const sideways = async () => page.evaluate(([root, children]) => {
-    const box = (key: string) => document.querySelector(`[data-tile-key="${key}"]`)!.getBoundingClientRect();
-    return children.every((key) => box(key).left >= box(root).right);
-  }, [forest, [mist, autumn]] as const);
-  expect(await sideways()).toBe(true);
-  await page.evaluate(() => { (window as any).trace.leaveView(); (window as any).trace.enterView(); });
-  await expect(page.locator(`[data-tile-key="${forest}"]`)).toBeVisible();
-  expect(await sideways()).toBe(true);
-});

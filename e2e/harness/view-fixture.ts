@@ -325,5 +325,5 @@ export const backend = {
   setPreviewLatency(ms: number) { previewLatency = ms; },
   setFolderLatency(ms: number) { folderLatency = ms; },
   releaseSaves() { holdSaves = false; const pending = heldSaves; heldSaves = []; pending.forEach((run) => run()); },
-  reset() { previewLatency = 0; pickerResult = undefined; nextSaveFailure = null; inputFailures = 0; state = scenario(); version += 1; calls.length = 0; },
+  reset() { previewLatency = 0; folderLatency = 0; pickerResult = undefined; nextSaveFailure = null; inputFailures = 0; state = scenario(); version += 1; calls.length = 0; },
 };
