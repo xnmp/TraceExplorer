@@ -13,6 +13,10 @@ pub trait Host: Send + Sync {
     fn process_stdin_bound(&self) -> Option<usize> {
         None
     }
+    /// Frees a finished `host.process.run` result's output files. The host
+    /// never answers `host.process.release`, so it is a notification: a call
+    /// would wait for its deadline. Hosts that run no processes need nothing.
+    fn release_process(&self, _handle: &Value) {}
 }
 /// The connection's `processStdin` bound; zero until a host advertises one.
 static PROCESS_STDIN: AtomicUsize = AtomicUsize::new(0);
@@ -51,6 +55,10 @@ impl Host for NativeHost {
             te_plugin_runtime::Error::Remote { code, message } => error(&code, &message),
             _ => error("host_unavailable", "Host service failed or was cancelled"),
         })
+    }
+    fn release_process(&self, handle: &Value) {
+        let _ =
+            te_plugin_runtime::notify("host.process.release", serde_json::json!({"handle":handle}));
     }
     fn event(&self, name: &str, payload: Value) -> Result<()> {
         te_plugin_runtime::notify("event", serde_json::json!({"name":name,"payload":payload}))
