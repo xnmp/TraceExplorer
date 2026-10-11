@@ -223,7 +223,8 @@ test.describe("Preview info", () => {
     await click(page, "warm");
     await trace(page).getByRole("button", { name: /Preview input .*lantern/ }).click();
     await settle(page);
-    await expect(await tile(page, "lantern")).toHaveAttribute("data-tone", "focus");
+    await expect(await card(page, "lantern")).toHaveAttribute("aria-pressed", "true");
+    await expect(await tile(page, "warm")).toHaveAttribute("data-tone", "related");
     expect((await state(page)).navigations).toEqual([]);
   });
 
@@ -252,7 +253,7 @@ test.describe("saving and deleting unsaved outputs", () => {
     await expect(page.locator(`[data-tile-key="${identity}"]`)).toHaveCount(1);
     await expect(page.locator(`[data-tile-key="${identity}"] .unsaved-dot`)).toHaveCount(0);
     await expect(page.getByTestId("preview-badge")).toHaveCount(0);
-    await expect(page.locator("section.component .heading .unsaved")).toHaveCount(0);
+    await expect(page.locator("section.component .unsaved")).toHaveCount(0);
     expect((await state(page)).navigations).toEqual([]);
     expect(await uncaught(page)).toEqual([]);
   });
@@ -415,14 +416,14 @@ test.describe("Interrupted placeholders", () => {
 
   test("dismissing the only edit of a lone image returns it to the other files, as the backend does", async ({ page }) => {
     await openView(page, undefined, "?lone=1");
-    const others = page.getByRole("list", { name: "Other files and folders" });
+    const others = page.getByRole("grid", { name: "Folder" });
     const identity = await page.evaluate(() => {
       const backend = (window as any).trace.backend;
       const made = backend.startGeneration("lonely", "retry") as string;
       backend.interruptGeneration("retry");
       return made;
     });
-    const section = page.locator("section.component[data-component]", { has: page.locator(".heading .name", { hasText: /^lonely$/ }) });
+    const section = page.locator('section.component[aria-label="lonely"]');
     await expect(section).toHaveCount(1);
     await ensureExpanded(section);
     await page.locator(`[data-tile-key="${identity}"] .card`).click();
@@ -441,7 +442,7 @@ test.describe("Interrupted placeholders", () => {
       backend.interruptGeneration("retry");
       return made;
     });
-    const section = page.locator("section.component[data-component]", { has: page.locator(".heading .name", { hasText: /^lonely$/ }) });
+    const section = page.locator('section.component[aria-label="lonely"]');
     await ensureExpanded(section);
     await page.locator(`[data-tile-key="${identity}"] .card`).click();
     await dismiss(page).click();

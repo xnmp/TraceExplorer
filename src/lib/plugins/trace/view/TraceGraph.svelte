@@ -7,8 +7,8 @@
    */
   import { onDestroy, tick, untrack } from "svelte";
   import type { NodeKey } from "$lib/domain/trace-graph/model";
-  import { planScene, routeStyle, junctionRelated, type ComponentFocus, type RouteStyle, type ScenePlan } from "$lib/domain/trace-graph/scene";
-  import { nearestInDirection, type Direction, type GraphLayout } from "$lib/domain/trace-graph/layout";
+  import { planBandScene, planScene, routeStyle, junctionRelated, type ComponentFocus, type RouteStyle, type BandScenePlan, type ScenePlan } from "$lib/domain/trace-graph/scene";
+  import { nearestInDirection, type Direction, type PinnedCover, type GraphLayout } from "$lib/domain/trace-graph/layout";
   import { rememberOrientation, type OrientationHistory } from "$lib/domain/trace-graph/orientation";
   import { endpointKey } from "$lib/domain/trace-graph/junctions";
   import { ARROW, tileMetrics, type TileMetrics } from "$lib/domain/trace-graph/metrics";
@@ -20,7 +20,19 @@
   import { nodeTitle } from "./node-target";
   import TraceTile from "./TraceTile.svelte";
 
+  import { projectReferenceBadges } from "$lib/domain/trace-graph/projection";
+  import { attachBand } from "./stack-grid";
+
   interface Props {
+    focusedKey?: string | null;
+    onfocuskey?: (key: string) => void;
+    onbadgehover?: (key: string | null) => void;
+    badgeHover?: string | null;
+    pinned?: PinnedCover;
+    bandTop?: number;
+    bandBridge?: { readonly top: number; readonly gutter: number };
+    ongeometry?: (plan: BandScenePlan, layout: GraphLayout) => void;
+    ongridkey?: (key: string, event: KeyboardEvent) => void;
     data: ComponentData;
     focus: ComponentFocus | null;
     selected: ReadonlySet<NodeKey>;
@@ -43,7 +55,7 @@
     onlayout?: (pending: boolean) => void;
     onfailure?: (scene: GraphScene, error: Error) => void;
     reveal?: object | null;
-    /** The host's component id: stable across refreshes, saves and new descendants. */
+    /** The current host component id; merges and splits replace it on refresh. */
     componentId: string;
     /**
      * The pane's memory of each component's displayed orientations by tile
@@ -53,7 +65,7 @@
     orientations?: Map<string, OrientationHistory>;
   }
 
-  let { data, focus, selected, width, tile = tileMetrics(), revision, scroller, onactivate, onnavigate, onopen, onmenu, onsaved, ondiscarded, oncommit, onlayout, captureSelection, componentId, orientations = new Map(), onfailure, reveal = null }: Props = $props();
+  let { data, focus, selected, width, tile = tileMetrics(), revision, scroller, onactivate, onnavigate, onopen, onmenu, onsaved, ondiscarded, oncommit, onlayout, captureSelection, componentId, orientations = new Map(), onfailure, reveal = null, pinned, bandTop = 0, bandBridge, ongeometry, ongridkey, badgeHover = null, focusedKey, onfocuskey, onbadgehover }: Props = $props();
 
   /** Below this many tiles layout runs inline; it takes well under a frame. */
   const SYNC_LIMIT = 60;
@@ -69,20 +81,26 @@
   let running: Animation[] = [];
   /** Only the latest full commit plays; one superseded before rendering never starts. */
   let plays = 0;
+  let layoutStamp = $state(0);
+  let mounted = false;
 
   onDestroy(() => {
     for (const animation of running) animation.cancel();
     running = [];
   });
 
-  const plan = $derived(planScene(data.dag, data.members, focus, width, { componentId, hint: ordering, previous: orientations.get(componentId), tile }));
+  let hoveredBadge = $state<string | null>(null);
+  const projection = $derived(projectReferenceBadges(data.dag));
+  const plan = $derived(pinned ? planBandScene(projection, projection.dag.order, focus?.key ?? null, width, { pinned, hint: ordering, tile, badgeHighlight: hoveredBadge ?? badgeHover }) : planScene(data.dag, data.members, focus, width, { componentId, hint: ordering, previous: orientations.get(componentId), tile }));
 
   /** What later plans build on: the reading order and the orientation shown. */
   function rendered(scene: GraphScene, next: ScenePlan, layout: GraphLayout): void {
     if (!canvas || !scene.isCurrent() || shown?.plan !== next || shown.layout !== layout) return;
+    mounted = true;
     ordering = layout.readingOrder;
     orientations.set(componentId, rememberOrientation(orientations.get(componentId), layout.orientation, next.request.tileWidth));
     onlayout?.(false);
+    if (pinned) ongeometry?.(next as BandScenePlan, layout);
     oncommit?.(scene);
   }
 
@@ -98,7 +116,17 @@
   function commit(next: ScenePlan, layout: GraphLayout, scene: GraphScene): void {
     if (shown && shown.plan === next && shown.layout === layout) {
       // Initial cached/inline geometry is already committed; report it after its tiles mount.
-      void tick().then(() => rendered(scene, next, layout));
+      void tick().then(() => {
+        if (!canvas || !scene.isCurrent()) return;
+        if (!mounted && pinned && !prefersReducedMotion()) {
+          const before = captureGraph(canvas);
+          const cover = attached?.nodes.get(pinned.key);
+          if (cover) {
+            running = playGraph(canvas, { ...before, tiles: new Map(), routeIds: new Map(), routes: new Map(), junctions: new Map() }, "down", { key: pinned.key, box: { ...cover, fading: null } });
+          }
+        }
+        rendered(scene, next, layout);
+      });
       return;
     }
     // Same geometry (only tones or selection changed): nothing moves, so
@@ -110,16 +138,22 @@
       void tick().then(() => rendered(scene, next, layout));
       return;
     }
+    const firstPinned = !shown && !!pinned;
     const element = canvas;
     const before = element && shown && !prefersReducedMotion() ? captureGraph(element) : null;
     for (const animation of running) animation.cancel();
     running = [];
     shown = { plan: next, layout };
+    layoutStamp++;
     failure = "";
     const current = ++plays;
     void tick().then(() => {
       if (current !== plays || !scene.isCurrent()) return;
       if (before && canvas) running = playGraph(canvas, before, layout.orientation);
+      else if (firstPinned && canvas && pinned && !prefersReducedMotion()) {
+        const snapshot = captureGraph(canvas), cover = attached?.nodes.get(pinned.key);
+        if (cover) running = playGraph(canvas, { ...snapshot, tiles: new Map(), routeIds: new Map(), routes: new Map(), junctions: new Map() }, "down", { key: pinned.key, box: { ...cover, fading: null } });
+      }
       rendered(scene, next, layout);
     });
   }
@@ -166,12 +200,14 @@
     return () => { container.removeEventListener("scroll", schedule); observer.disconnect(); cancelAnimationFrame(frame); };
   });
 
+  const attached = $derived(shown && pinned ? attachBand(shown.layout, pinned.key, 0, bandTop, bandBridge) : shown?.layout);
+
   const visibleTiles = $derived.by(() => {
     if (!shown) return [];
     const { plan: current, layout } = shown;
     return [...current.tiles.values()].filter((tile) => {
-      const placed = layout.nodes.get(tile.key);
-      if (!placed) return false;
+      const placed = attached?.nodes.get(tile.key);
+      if (!placed || tile.key === pinned?.key) return false;
       if (!band || tile.key === current.lineage.focus || selected.has(tile.key)) return true;
       return placed.y + placed.height >= band.top && placed.y <= band.bottom;
     });
@@ -184,12 +220,12 @@
   const lineTone = (style: RouteStyle): (typeof MARKER_TONES)[number] =>
     style.highlighted ? "highlight" : branch && style.related ? "branch" : style.kind === "current" ? "" : style.kind;
   // Each connector's vertical extent, so windowing can skip far-away ones too.
-  const extents = $derived(shown ? new Map(shown.layout.routes.map((route) => [route.id, verticalExtent(route.path)])) : new Map<string, [number, number]>());
+  const extents = $derived(shown ? new Map(attached!.routes.map((route) => [route.id, verticalExtent(route.path)])) : new Map<string, [number, number]>());
   const inBand = (top: number, bottom: number) => !band || (bottom >= band.top && top <= band.bottom);
-  const routes = $derived(shown ? shown.layout.routes
+  const routes = $derived(shown ? attached!.routes
     .filter((route) => inBand(...extents.get(route.id)!))
     .map((route) => ({ route, style: routeStyle(route, data.dag, shown!.plan.lineage) })) : []);
-  const junctions = $derived(shown ? [...shown.layout.junctions.values()].filter((junction) => inBand(junction.y, junction.y)) : []);
+  const junctions = $derived(shown ? [...attached!.junctions.values()].filter((junction) => inBand(junction.y, junction.y)) : []);
   const junctionTitle = (parents: readonly NodeKey[]) => `Combined inputs: ${parents.map((key) => {
     const node = data.dag.nodes.get(key);
     return node ? promptTitles.labelFor(node.runId, node.prompt) || nodeTitle(node) : key;
@@ -209,6 +245,7 @@
 
   const DIRECTIONS: Record<string, Direction> = { ArrowLeft: "left", ArrowRight: "right", ArrowUp: "up", ArrowDown: "down" };
   function keydown(key: NodeKey, event: KeyboardEvent): void {
+    if (ongridkey) { ongridkey(key, event); return; }
     if (event.key === "Enter") { event.preventDefault(); onopen(key); return; }
     const direction = DIRECTIONS[event.key];
     if (!direction || !shown || event.altKey || event.ctrlKey || event.metaKey) return;
@@ -226,8 +263,8 @@
   <div class="pending stale" role="alert">Trace layout failed: {failure}</div>
 {/if}
 {#if shown}
-  <div class="graph" bind:this={canvas} style:width="{shown.layout.width}px" style:height="{shown.layout.height}px">
-    <svg class="edges" width={shown.layout.width} height={shown.layout.height} aria-hidden="true">
+  <div class="graph" data-layout-stamp={layoutStamp} bind:this={canvas} style:width="{attached!.width}px" style:height="{attached!.height}px">
+    <svg class="edges" width={attached!.width} height={attached!.height} aria-hidden="true">
       <defs>
         <!--
           One arrowhead per line colour, so every arrowhead matches its line.
@@ -260,7 +297,7 @@
     <!-- Motion's fading copies of departed tiles (motion.ts); Svelte keeps it empty. -->
     <div class="ghosts" data-motion-ghosts aria-hidden="true" inert></div>
     {#each visibleTiles as tile (tile.key)}
-      <TraceTile {tile} placed={shown.layout.nodes.get(tile.key)!} orientation={shown.layout.orientation} selected={selected.has(tile.key)} {revision}
+      <TraceTile {tile} badgeNodes={data.dag.nodes} focused={focusedKey === undefined || focusedKey === tile.key} onfocus={() => onfocuskey?.(tile.key)} badges={(shown.plan as BandScenePlan).badges?.get(tile.key) ?? []} badgeSelection={selected} onbadge={onactivate} onbadgehover={(key) => { hoveredBadge = key; onbadgehover?.(key); }} placed={attached!.nodes.get(tile.key)!} orientation={shown.layout.orientation} selected={selected.has(tile.key)} {revision}
         onactivate={(event) => onactivate(tile.key, event)} onopen={() => onopen(tile.key)}
         onmenu={(event) => onmenu(tile.key, event)} onkey={(event) => keydown(tile.key, event)}
         {captureSelection} onsaved={(path) => onsaved(tile.key, path)} ondiscarded={() => ondiscarded(tile.key)} />
@@ -271,7 +308,7 @@
 {/if}
 
 <style>
-  .graph { position: relative; margin: 0 auto; }
+  .graph { position: relative; margin: 0; }
   .edges { position: absolute; inset: 0; overflow: visible; pointer-events: none; }
   /*
    * Line colours, one per tone. Lines, their arrowheads and junction dots read

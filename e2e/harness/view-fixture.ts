@@ -9,8 +9,9 @@ import groupingFixtures from "../../tests/fixtures/folder-grouping.json";
 import { configureBackend, invoke } from "$lib/api/common";
 import type { TraceNode } from "$lib/domain/trace-graph/model";
 import type { JobCost, JobReveal, TileSizePreset } from "../../integration/plugin-sdk";
-import { TILE_IMAGE_PX } from "./tile-presets";
+import { TILE_IMAGE_PX, TILE_GRID_PX } from "./tile-presets";
 import { basename, joinPath, parentDir } from "$lib/domain/path";
+import StubFileTile from "./StubFileTile.svelte";
 import StubFileTiles from "./StubFileTiles.svelte";
 import { folderComponents, folderPage, isDirectFolderSeed, nativeStringOrder, type FolderNode } from "./folder-snapshot";
 import { isLocalAbsolutePath } from "$lib/domain/target-location";
@@ -78,8 +79,12 @@ function scenario(): { nodes: FolderNode[]; names: Map<string, string> } {
   ] satisfies Seed[]) add(seed);
   // `?deeper=1` continues the forest's mist edit two more generations, so selecting along it reveals new columns.
   if (query.has("deeper")) for (const seed of [{ key: "mist-dawn", parents: ["forest-mist"] }, { key: "mist-dusk", parents: ["mist-dawn"] }]) add(seed);
+  if (query.has("moreBadges")) {
+    add({ key: "reference-3", scope: "subfolder" });
+    add({ key: "reference-4", scope: "external" });
+  }
   for (const seed of [
-    { key: "daylight", parents: ["village"] }, { key: "warm", parents: ["village", "palette", "mist", "lantern"] }, { key: "cool", parents: ["palette"] },
+    { key: "daylight", parents: ["village"] }, { key: "warm", parents: ["village", "palette", "mist", "lantern", ...(query.has("moreBadges") ? ["reference-3", "reference-4"] : [])] }, { key: "cool", parents: ["palette"] },
     { key: "morning", parents: ["daylight"] }, { key: "sunny", parents: ["daylight"] }, { key: "evening", parents: ["warm"] }, { key: "rain", parents: ["warm"] },
     { key: "merge", parents: ["daylight", "warm"], temporary: true }, { key: "quiet", parents: ["rain"] },
     // Daylight's six children make its focus widen the graph (see the motion specs).
@@ -327,6 +332,7 @@ configureBackend(withNativeRequestCapacity({
 }));
 
 // `?fileTiles=1` simulates a host with the `ui/file-tiles` module; without it, an older SDK 2 host.
+const fileTile = new URLSearchParams(globalThis.location?.search ?? "").has("fileTile");
 const fileTiles = new URLSearchParams(globalThis.location?.search ?? "").has("fileTiles");
 // `?tileSize=<preset>` simulates a host with the `tileSize` capability whose pane reports that preset; without it, an older host.
 const tileQuery = new URLSearchParams(globalThis.location?.search ?? "").get("tileSize");
@@ -334,8 +340,14 @@ export const initialTileSize: TileSizePreset | null = tileQuery && tileQuery in 
 const color = (path: string) => `hsl(${[...path].reduce((sum, char) => (sum * 31 + char.charCodeAt(0)) % 360, 7)} 45% 55%)`;
 (globalThis as any).__TAURI_EXPLORER_PLUGIN_SDK__ = {
   sdkVersion: 1, apiVersion: 2, svelteVersion: "5.56.3",
-  capabilities: ["fileViews", "previewInfo", "previewTargets", "blobWorkers", "jobReveal", "jobCost", "fileViewReveal", ...(fileTiles ? ["fileTiles"] : []), ...(initialTileSize ? ["tileSize"] : [])],
-  modules: fileTiles ? { "ui/file-tiles": { default: StubFileTiles } } : {},
+  capabilities: ["fileViews", "previewInfo", "previewTargets", "blobWorkers", "jobReveal", "jobCost", "fileViewReveal", ...(fileTile ? ["fileTile"] : []), ...(fileTiles ? ["fileTiles"] : []), ...(initialTileSize ? ["tileSize"] : [])],
+  modules: {
+    ...(fileTiles ? { "ui/file-tiles": { default: StubFileTiles } } : {}),
+    ...(fileTile ? { "ui/file-tile": { default: StubFileTile, tileGridMetrics: (size: TileSizePreset = "medium") => {
+      const preset = Object.hasOwn(TILE_IMAGE_PX, size) ? size : "medium";
+      return { cellWidth: TILE_GRID_PX[preset], cellHeight: (preset === "small" ? 12 : 22) + TILE_IMAGE_PX[preset] + 4 + 37 + 2, gap: preset === "small" ? 2 : 6, gridPadding: 8 };
+    } } } : {}),
+  },
   pickSaveFile: async () => pickerResult === undefined ? `${DIRECTORY}/picked.png` : pickerResult,
   thumbnailData: async (path: string) => ({ ok: true, data: URL.createObjectURL(new Blob([
     `<svg xmlns="http://www.w3.org/2000/svg" width="160" height="96"><rect width="160" height="96" fill="${color(path)}"/></svg>`,

@@ -11,7 +11,18 @@
   import { tooltipTrigger } from "./tooltip/controller.svelte";
   import { previewData } from "./preview-data.svelte";
 
+  import type { ReferenceBadge } from "$lib/domain/trace-graph/projection";
+  import ReferenceBadges from "./ReferenceBadges.svelte";
+
   interface Props {
+    badgeNodes?: ReadonlyMap<string, import("$lib/domain/trace-graph/model").TraceNode>;
+    badges?: readonly ReferenceBadge[];
+    badgeSelection?: ReadonlySet<string>;
+    onbadge?: (key: string, event: MouseEvent) => void;
+    onbadgehover?: (key: string | null) => void;
+    onclose?: () => void;
+    focused?: boolean;
+    onfocus?: () => void;
     tile: SceneTile;
     placed: PlacedNode;
     /** Which way the tile's component runs; an open chevron points towards the children. */
@@ -27,7 +38,7 @@
     captureSelection?: () => () => boolean;
   }
 
-  let { tile, placed, orientation = "down", selected, revision, onactivate, onopen, onmenu, onkey, onsaved, ondiscarded, captureSelection }: Props = $props();
+  let { tile, placed, orientation = "down", selected, revision, onactivate, onopen, onmenu, onkey, onsaved, ondiscarded, captureSelection, badges = [], badgeNodes, badgeSelection = new Set(), onbadge, onbadgehover, onclose, focused = true, onfocus }: Props = $props();
   const node = $derived(tile.node);
   const title = $derived(promptTitles.labelFor(node.runId, node.prompt) || nodeTitle(node));
   const status = $derived(nodeStatus(node));
@@ -50,10 +61,10 @@
 </script>
 
 <div class="tile" class:unrelated={tile.tone === "unrelated"} class:foreign={node.scope !== "current"}
-  data-tile-key={node.key} data-scope={node.scope} data-tone={tile.tone}
+  role="gridcell" aria-selected={selected} data-tile-key={node.key} data-scope={node.scope} data-tone={tile.tone}
   style:left="{placed.x}px" style:top="{placed.y}px" style:width="{placed.width}px" style:height="{placed.height}px">
   <button type="button" class="card" class:selected class:focus={tile.tone === "focus"} class:discarded={node.discarded}
-    data-node-key={node.key} aria-pressed={selected} {@attach tooltip}
+    tabindex={focused ? 0 : -1} {onfocus} data-node-key={node.key} aria-pressed={selected} {@attach tooltip}
     aria-label="{title}{status ? `, ${status}` : ""}{unsaved ? ", unsaved" : ""}{node.scope === "external" ? ", outside this folder" : node.scope === "subfolder" ? ", in a subfolder" : ""}"
     onclick={onactivate} ondblclick={onopen} oncontextmenu={onmenu} onkeydown={onkey}>
     <span class="image" style:height="{tile.size.imageHeight}px">
@@ -69,7 +80,7 @@
       <span class="text">{title}</span>
       {#if node.runId !== null && promptTitles.pending(node.runId)}<span class="title-spinner" role="status" aria-label="Generating title"></span>{/if}
       {#if unsaved}<span class="unsaved-dot" aria-hidden="true"></span>{/if}
-      {#if tile.expandable}
+      {#if tile.expandable && !onclose}
         <svg class="chevron" viewBox="0 0 24 24" aria-hidden="true"><path d={tile.tone === "focus" && orientation === "down" ? "m5 9 7 7 7-7" : "m9 5 7 7-7 7"} /></svg>
       {/if}
     </span>
@@ -85,6 +96,8 @@
       <span class="status-line">{status}</span>
     {/if}
   </button>
+  {#if onclose}<button type="button" class="close-stack" data-stack-toggle aria-expanded="true" aria-label="Close stack" onclick={onclose}>⌃</button>{/if}
+  {#if badges.length && onbadge}<ReferenceBadges {badges} nodes={badgeNodes} {revision} selected={badgeSelection} onactivate={onbadge} onhover={onbadgehover} />{/if}
   {#if hint}<span class="hint" style:height="{TILE.hint}px">{hint}</span>{/if}
   {#if artifact}
     <div class="actions">
@@ -95,6 +108,8 @@
 </div>
 
 <style>
+  .close-stack { position: absolute; right: 5px; bottom: 16px; padding: 0 3px; border: 0; background: var(--control-fill); color: var(--text-secondary); cursor: pointer; }
+  .close-stack:focus-visible { outline: 2px solid var(--focus-stroke-outer); }
   .tile { position: absolute; box-sizing: border-box; }
   .card { display: flex; flex-direction: column; align-items: stretch; box-sizing: border-box; width: 100%; padding: 5px; overflow: hidden; text-align: left; font: inherit; color: var(--text-primary); background: var(--background-card-secondary, var(--control-fill)); border: 1px solid var(--control-stroke); border-radius: var(--radius-sm); cursor: pointer; }
   .card:hover { background: var(--subtle-fill-secondary); }

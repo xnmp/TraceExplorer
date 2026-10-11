@@ -1,5 +1,5 @@
 import { test, expect, type Page } from "@playwright/test";
-import { key, openView, settle, uncaught } from "./support";
+import { key, openView, settle, uncaught, ensureExpanded } from "./support";
 import { holdScriptedAnimations, releaseScriptedAnimations } from "./animation-control";
 import { clickThroughGym, motionFaults, node, sampleClick } from "./motion-support";
 
@@ -19,9 +19,21 @@ test.describe("tiles stay in place", () => {
   }
 });
 
+/** Put two named covers in consecutive grid rows, with ample rows below for anchoring. */
+async function openAnchorView(page: Page, extra = "") {
+  await openView(page, 120, `?anchorChains=1&many=8${extra}`, false);
+  await page.evaluate(() => {
+    const trace = (window as any).trace;
+    const rank = (path: string) => path === "/pictures/anchor-a.png" ? 0 : path === "/pictures/anchor-b.png" ? 1 : 2;
+    trace.navigate("/pictures", trace.listing().sort((a: { path: string }, b: { path: string }) => rank(a.path) - rank(b.path)));
+  });
+  await settle(page);
+  for (const name of ["anchor-a", "anchor-b"]) await ensureExpanded(page.locator(`section[aria-label="${name}"]`));
+}
+
 test("a clicked tile stays on screen while an earlier section shrinks and its own graph stays still", async ({ page }) => {
   await page.setViewportSize({ width: 800, height: 600 });
-  await openView(page, 240, "?anchorChains=1&many=8");
+  await openAnchorView(page);
   await page.locator(await node(page, "anchor-a-middle")).click();
   await settle(page);
   const last = await key(page, "anchor-a-last");
@@ -41,8 +53,8 @@ test("a clicked tile stays on screen while an earlier section shrinks and its ow
   const result = await page.evaluate(async ({ clicked, last }) => {
     const view = document.querySelector<HTMLElement>("[data-testid=trace-view]")!;
     const tile = () => view.querySelector<HTMLElement>(`[data-tile-key="${CSS.escape(clicked)}"]`)!;
-    const graphB = tile().closest<HTMLElement>(".graph")!;
-    const graphA = view.querySelector<HTMLElement>(`[data-tile-key="${CSS.escape(last)}"]`)!.closest<HTMLElement>(".graph")!;
+    const graphB = tile().closest("section")!.querySelector<HTMLElement>(".graph")!;
+    const graphA = view.querySelector<HTMLElement>(`[data-tile-key="${CSS.escape(last)}"]`)!.closest("section")!.querySelector<HTMLElement>(".graph")!;
     const height = graphA.getBoundingClientRect().height;
     const held = (window as any).__heldAnimations as Animation[];
     const frame = () => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
@@ -89,7 +101,7 @@ test("a clicked tile stays on screen while an earlier section shrinks and its ow
 /** Position B away from both scroll limits, after A's focused neighborhood has expanded. */
 async function prepareCrossSectionAnchor(page: Page, name: string, extra = "") {
   await page.setViewportSize({ width: 800, height: 600 });
-  await openView(page, 240, `?anchorChains=1&many=8${extra}`);
+  await openAnchorView(page, extra);
   await page.locator(await node(page, "anchor-a-middle")).click();
   await settle(page);
   const clicked = await key(page, name), earlier = await key(page, "anchor-a");
@@ -119,7 +131,7 @@ test("a worker-sized clicked neighborhood is anchored while the section above sh
     }, clicked);
     await page.waitForFunction((earlier) => {
       const w = window as any;
-      const graph = document.querySelector(`[data-tile-key="${CSS.escape(earlier)}"]`)!.closest(".graph");
+      const graph = document.querySelector(`[data-tile-key="${CSS.escape(earlier)}"]`)!.closest("section")!.querySelector(".graph");
       return w.__anchorLayouts.length > 0 && w.__heldAnimations.some((animation: Animation) =>
         (animation.effect as KeyframeEffect | null)?.target === graph
         && (animation.effect as KeyframeEffect).getKeyframes().some((frame) => "height" in frame));
@@ -127,7 +139,7 @@ test("a worker-sized clicked neighborhood is anchored while the section above sh
     const pending = await page.evaluate(async ({ clicked, earlier }) => {
       const view = document.querySelector<HTMLElement>("[data-testid=trace-view]")!;
       const tile = () => view.querySelector<HTMLElement>(`[data-tile-key="${CSS.escape(clicked)}"]`)!;
-      const graph = view.querySelector(`[data-tile-key="${CSS.escape(earlier)}"]`)!.closest<HTMLElement>(".graph")!;
+      const graph = view.querySelector(`[data-tile-key="${CSS.escape(earlier)}"]`)!.closest("section")!.querySelector<HTMLElement>(".graph")!;
       const frame = () => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
       const height = graph.getBoundingClientRect().height;
       const animations = ((window as any).__heldAnimations as Animation[]).filter((animation) => animation.playState === "running");
@@ -255,7 +267,7 @@ test("continuous relayouts in another section keep the tile anchored and yield t
   expect(await uncaught(page)).toEqual([]);
 });
 
-test.describe("sections expand and collapse quickly", () => {
+test.describe("bands expand and collapse quickly", () => {
   /** Toggles a section and records the following section's displayed top each frame. */
   const sampleToggle = (page: Page, index: number, ms = 500) => page.evaluate(async ({ index, ms }) => {
     const section = document.querySelectorAll<HTMLElement>("section.component[data-component]")[index];
@@ -263,7 +275,7 @@ test.describe("sections expand and collapse quickly", () => {
     const frames: Array<{ t: number; top: number }> = [];
     const start = performance.now();
     frames.push({ t: 0, top: next.getBoundingClientRect().top });
-    section.querySelector<HTMLElement>("button.heading")!.click();
+    section.querySelector<HTMLElement>("[data-stack-toggle]")!.click();
     await new Promise<void>((resolve) => {
       const step = () => {
         const t = performance.now() - start;
@@ -288,7 +300,7 @@ test.describe("sections expand and collapse quickly", () => {
       const section = document.querySelectorAll<HTMLElement>("section.component[data-component]")[index];
       const next = section.nextElementSibling as HTMLElement;
       const before = next.getBoundingClientRect().top;
-      section.querySelector<HTMLElement>("button.heading")!.click();
+      section.querySelector<HTMLElement>("[data-stack-toggle]")!.click();
       // The slide is the transform animation on what follows.
       const slides = () => held.filter((animation) => (animation.effect as KeyframeEffect | null)?.target === next && (animation.effect as KeyframeEffect).getKeyframes().some((keyframe) => "transform" in keyframe));
       for (let i = 0; i < 2000 && slides().length === 0; i++) await new Promise((resolve) => requestAnimationFrame(resolve));
@@ -313,13 +325,13 @@ test.describe("sections expand and collapse quickly", () => {
   };
 
   test("what follows a section slides straight to its new place within a fifth of a second or so", async ({ page }) => {
-    await openView(page);
+    await openView(page, 120);
     const sections = page.locator("section.component[data-component]");
     const forest = sections.nth(1);
     for (const expanded of ["false", "true", "false", "true"]) {
       const { before, duration, easings, tops } = await seekToggle(page, 1);
       await settle(page);
-      await expect(forest.locator("button.heading")).toHaveAttribute("aria-expanded", expanded);
+      await expect(forest.locator("[data-stack-toggle]")).toHaveAttribute("aria-expanded", expanded);
       // A collapsed section's content is gone once it has been hidden.
       await expect(forest.locator(".content")).toHaveCount(expanded === "true" ? 1 : 0);
       const [from, to] = [tops[0], tops.at(-1)!];
@@ -341,19 +353,19 @@ test.describe("sections expand and collapse quickly", () => {
   });
 
   test("toggling again mid-way reverses from where the section is displayed", async ({ page }) => {
-    await openView(page);
+    await openView(page, 120);
     const forest = page.locator("section.component[data-component]").nth(1);
     const result = await page.evaluate(async () => {
       const section = document.querySelectorAll<HTMLElement>("section.component[data-component]")[1];
       const next = section.nextElementSibling as HTMLElement;
-      const heading = section.querySelector<HTMLElement>("button.heading")!;
+      const heading = () => section.querySelector<HTMLElement>("[data-stack-toggle]")!;
       const frame = () => new Promise((resolve) => requestAnimationFrame(resolve));
       const open = next.getBoundingClientRect().top;
-      heading.click();
+      heading().click();
       let top = open;
       for (let i = 0; i < 30 && !(open - top > 15); i++) { await frame(); top = next.getBoundingClientRect().top; }
       const before = next.getBoundingClientRect().top;
-      heading.click();
+      heading().click();
       const after = next.getBoundingClientRect().top;
       for (let i = 0; i < 40; i++) await frame();
       return { open, before, after, end: next.getBoundingClientRect().top };
@@ -362,28 +374,28 @@ test.describe("sections expand and collapse quickly", () => {
     // No jump when reversing, and it ends fully open again.
     expect(Math.abs(result.after - result.before)).toBeLessThan(2);
     expect(Math.abs(result.end - result.open)).toBeLessThan(1);
-    await expect(forest.locator("button.heading")).toHaveAttribute("aria-expanded", "true");
+    await expect(forest.locator("[data-stack-toggle]")).toHaveAttribute("aria-expanded", "true");
     await expect(forest.locator("[data-tile-key]").first()).toBeVisible();
     expect(await uncaught(page)).toEqual([]);
   });
 
   test("collapsing again mid-way through opening reverses smoothly and ends with the content gone", async ({ page }) => {
-    await openView(page);
+    await openView(page, 120);
     const forest = page.locator("section.component[data-component]").nth(1);
-    await forest.locator("button.heading").click();
+    await forest.locator("[data-stack-toggle]").click();
     await settle(page);
     await expect(forest.locator(".content")).toHaveCount(0);
     const result = await page.evaluate(async () => {
       const section = document.querySelectorAll<HTMLElement>("section.component[data-component]")[1];
       const next = section.nextElementSibling as HTMLElement;
-      const heading = section.querySelector<HTMLElement>("button.heading")!;
+      const heading = () => section.querySelector<HTMLElement>("[data-stack-toggle]")!;
       const frame = () => new Promise((resolve) => requestAnimationFrame(resolve));
       const closed = next.getBoundingClientRect().top;
-      heading.click();
+      heading().click();
       let top = closed;
       for (let i = 0; i < 30 && !(top - closed > 15); i++) { await frame(); top = next.getBoundingClientRect().top; }
       const before = next.getBoundingClientRect().top;
-      heading.click();
+      heading().click();
       const after = next.getBoundingClientRect().top;
       const tops: number[] = [];
       for (let i = 0; i < 40; i++) { await frame(); tops.push(next.getBoundingClientRect().top); }
@@ -399,31 +411,32 @@ test.describe("sections expand and collapse quickly", () => {
       previous = top;
     }
     expect(Math.abs(result.tops.at(-1)! - result.closed)).toBeLessThan(1);
-    await expect(forest.locator("button.heading")).toHaveAttribute("aria-expanded", "false");
+    await expect(forest.locator("[data-stack-toggle]")).toHaveAttribute("aria-expanded", "false");
     await expect(forest.locator(".content")).toHaveCount(0);
     expect(await uncaught(page)).toEqual([]);
   });
 
   test("collapsing a section at the bottom of a scrolled view slides into place without a jump at the end", async ({ page }) => {
     await page.setViewportSize({ width: 1100, height: 600 });
-    await openView(page, undefined, "?many=4");
+    await openView(page, 120, "?many=4");
     // Open the last section and scroll to the very bottom, so collapsing it shortens the view past the scroll position.
-    const sections = page.locator("section.component[data-component]");
-    const last = (await sections.count()) - 1;
-    await sections.nth(last).locator("button.heading").click();
+    await page.evaluate(() => (window as any).trace.selectPath("/pictures/m0.png"));
+    const section = page.locator('section.component[aria-label="m0"]');
+    await expect(section.locator("[data-stack-toggle]")).toHaveAttribute("aria-expanded", "true");
+    await section.locator("[data-node-key]").first().scrollIntoViewIfNeeded();
     await settle(page);
     await page.evaluate(() => { const view = document.querySelector<HTMLElement>("[data-testid=trace-view]")!; view.scrollTop = view.scrollHeight; });
     await settle(page);
-    const frames = await page.evaluate(async (index) => {
+    const frames = await page.evaluate(async () => {
       const view = document.querySelector<HTMLElement>("[data-testid=trace-view]")!;
-      const section = document.querySelectorAll<HTMLElement>("section.component[data-component]")[index];
+      const section = document.querySelector<HTMLElement>('section.component[aria-label="m0"]')!;
       const watched = [section.previousElementSibling as HTMLElement, section, section.nextElementSibling as HTMLElement];
       const sample = () => watched.map((element) => element.getBoundingClientRect().top);
       const frames = [sample()];
-      section.querySelector<HTMLElement>("button.heading")!.click();
+      section.querySelector<HTMLElement>("[data-stack-toggle]")!.click();
       for (let i = 0; i < 40; i++) { await new Promise((resolve) => requestAnimationFrame(resolve)); frames.push(sample()); }
       return { frames, overflow: view.scrollHeight - view.clientHeight - view.scrollTop };
-    }, last);
+    });
     expect(frames.overflow).toBeLessThan(1);
     // Every watched element (the one before, the section, the one after) moves straight to where it ends.
     for (let element = 0; element < 3; element++) {
@@ -431,7 +444,7 @@ test.describe("sections expand and collapse quickly", () => {
       const end = path.at(-1)!;
       for (let i = 1; i < path.length; i++) expect(Math.abs(path[i] - end), `element ${element}: ${path.map(Math.round)}`).toBeLessThanOrEqual(Math.abs(path[i - 1] - end) + 0.5);
     }
-    await expect(sections.nth(last).locator(".content")).toHaveCount(0);
+    await expect(section.locator(".content")).toHaveCount(0);
   });
 
   test("a section opened because it holds the focus stays open when a tile elsewhere is chosen", async ({ page }) => {
@@ -440,18 +453,18 @@ test.describe("sections expand and collapse quickly", () => {
     // The fourth section starts collapsed and opens when its image is selected from outside the graph.
     const sections = page.locator("section.component[data-component]");
     const fan = sections.nth(3);
-    await expect(fan.locator("button.heading")).toHaveAttribute("aria-expanded", "false");
+    await expect(fan.locator("[data-stack-toggle]")).toHaveAttribute("aria-expanded", "false");
     await page.evaluate(() => (window as any).trace.selectPath((window as any).trace.backend.path("fan")));
-    await expect(fan.locator("button.heading")).toHaveAttribute("aria-expanded", "true");
+    await expect(fan.locator("[data-stack-toggle]")).toHaveAttribute("aria-expanded", "true");
     await settle(page);
     const frames = await sampleClick(page, await node(page, "cerulean"));
     expect(motionFaults(frames)).toEqual([]);
-    await expect(fan.locator("button.heading")).toHaveAttribute("aria-expanded", "true");
+    await expect(fan.locator("[data-stack-toggle]")).toHaveAttribute("aria-expanded", "true");
   });
 
   test("with reduced motion a section opens and closes at once", async ({ page }) => {
     await page.emulateMedia({ reducedMotion: "reduce" });
-    await openView(page);
+    await openView(page, 120);
     for (let i = 0; i < 2; i++) {
       const frames = await sampleToggle(page, 1, 120);
       expect(Math.abs(frames[1].top - frames.at(-1)!.top)).toBeLessThan(1);
@@ -494,15 +507,15 @@ test.describe("anchoring under the host's zoom", () => {
 test.describe("new tiles arrive from their parents' side", () => {
   test.use({ viewport: { width: 900, height: 900 } });
 
-  test("in a left-to-right component a revealed tile slides in from the left, level with where it lands", async ({ page }) => {
+  test("inside a downward band a revealed tile emerges above its destination", async ({ page }) => {
     await openView(page, 900, "?deeper=1");
     const dawn = await key(page, "mist-dawn");
     const frames = await sampleClick(page, await node(page, "forest-mist"));
     const seen = frames.filter((frame) => frame.tiles[dawn]).map((frame) => frame.tiles[dawn]);
     expect(seen.length).toBeGreaterThan(2);
     const [first, last] = [seen[0], seen[seen.length - 1]];
-    expect(last[0] - first[0]).toBeGreaterThan(3);
-    for (const sample of seen) expect(Math.abs(sample[1] - last[1])).toBeLessThanOrEqual(1);
+    expect(last[1] - first[1]).toBeGreaterThan(3);
+    for (const sample of seen) expect(Math.abs(sample[0] - last[0])).toBeLessThanOrEqual(1);
     await settle(page);
     expect(await uncaught(page)).toEqual([]);
   });

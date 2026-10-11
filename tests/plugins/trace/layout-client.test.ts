@@ -65,6 +65,18 @@ describe("layout client (main-thread fallback)", () => {
     expect(client.cachedLayout(request(1))).toBeNull();
   });
 
+  it("keeps pinned cover positions and obstacles in the cache contract", async () => {
+    const client = await load();
+    const at = (x: number, obstacles: readonly { x: number; width: number }[] = []): LayoutRequest => ({ ...request(), pinned: { key: "a0", x, obstacles } });
+    const left = client.layoutNow(at(100));
+    expect(client.cachedLayout(at(650))).toBeNull();
+    const right = client.layoutNow(at(650));
+    expect(left.nodes.get("a0")!.x + 50).toBe(100);
+    expect(right.nodes.get("a0")!.x + 50).toBe(650);
+    expect(client.cachedLayout(at(100, [{ x: 200, width: 100 }]))).toBeNull();
+    expect(client.cachedLayout(at(100))).toBe(left);
+  });
+
   it("a different width is a different cache entry", async () => {
     const client = await load();
     const narrow = await client.computeLayout(request(0, 300));

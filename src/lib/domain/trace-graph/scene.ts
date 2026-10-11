@@ -82,6 +82,8 @@ function sceneTiles(dag: TraceDag, members: readonly NodeKey[], focus: NodeKey |
 
 export interface BandSceneOptions extends Pick<SceneOptions, "hint" | "tile"> {
   readonly pinned: PinnedCover;
+  /** Hover adds consumer highlighting without changing focus or the visible neighborhood. */
+  readonly badgeHighlight?: NodeKey | null;
 }
 
 export interface BandScenePlan extends ScenePlan {
@@ -101,7 +103,9 @@ export function planBandScene(graph: BadgeProjection, members: readonly NodeKey[
     ? members.filter((key) => graph.byConsumer.get(key)?.some((badge) => badge.key === focus)) : [];
   const inComponent = focus !== null && (membership.has(focus) || badgeConsumers.length > 0);
   const context = lineageWithBadges(graph, inComponent ? focus : null, membership);
-  const effective: Lineage = focus !== null && !inComponent ? { focus, related: new Set() } : context;
+  const selected: Lineage = focus !== null && !inComponent ? { focus, related: new Set() } : context;
+  const highlight = options.badgeHighlight && graph.badges.has(options.badgeHighlight) ? lineageWithBadges(graph, options.badgeHighlight, membership) : null;
+  const effective: Lineage = highlight ? { focus: selected.focus ?? highlight.focus, related: new Set([...selected.related, ...highlight.related]) } : selected;
   const tile = options.tile ?? tileMetrics();
   const { tiles, items } = sceneTiles(dag, members, inComponent && badgeConsumers.length === 0 ? focus : null, effective, tile, { roots: "in-folder", include: badgeConsumers });
   const badges = new Map([...tiles.keys()].flatMap((key) => {

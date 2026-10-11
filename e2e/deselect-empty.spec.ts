@@ -9,7 +9,7 @@ async function emptyPoint(area: Locator): Promise<{ x: number; y: number }> {
     for (let y = Math.max(0, box.top) + 3; y < Math.min(innerHeight, box.bottom) - 3; y += 4) {
       for (let x = Math.max(0, box.left) + 3; x < Math.min(innerWidth, box.right) - 3; x += 4) {
         const target = document.elementFromPoint(x, y);
-        if (target && element.contains(target) && !target.closest('button, [data-tile-key], [data-entry-path]')) return { x, y };
+        if (target && target.closest("[data-testid=trace-view]") && !target.closest('button, [data-tile-key], [data-entry-path]')) return { x, y };
       }
     }
     throw new Error("No visible empty space in the requested area");
@@ -33,8 +33,8 @@ async function expectEmpty(page: Page) {
   await expect.poll(async () => (await state(page)).inputs).toEqual([]);
 }
 
-for (const host of [{ name: "fallback tiles", query: "" }, { name: "host tiles", query: "?fileTiles=1" }]) {
-  test(`empty graph space and Other files gaps clear host selection and ordered inputs (${host.name})`, async ({ page }) => {
+for (const host of [{ name: "fallback tiles", query: "" }, { name: "host tiles", query: "?fileTile=1" }]) {
+  test(`empty graph space and folder grid gaps clear host selection and ordered inputs (${host.name})`, async ({ page }) => {
     await openView(page, 1400, host.query);
     await selectImages(page);
     const graph = page.locator("section[data-component]").filter({ has: await card(page, "warm") }).locator(".graph");
@@ -49,17 +49,14 @@ for (const host of [{ name: "fallback tiles", query: "" }, { name: "host tiles",
 
     await selectImages(page);
     // The host's Tiles view is a grid of gridcells with aria-selected; the fallback is a list of buttons with aria-pressed.
-    const list = page.getByRole(host.query ? "grid" : "list", { name: "Other files and folders" });
+    const list = page.getByRole("grid", { name: "Folder" });
     const ordinaryImage = list.locator('[data-entry-path="/pictures/plain.png"]');
     await ordinaryImage.click({ modifiers: ["Control"] });
-    await expect(ordinaryImage).toHaveAttribute(host.query ? "aria-selected" : "aria-pressed", "true");
+    await expect(ordinaryImage).toHaveAttribute("aria-selected", "true");
     // Measure the gap only once the tiles have stopped moving.
     await settle(page);
     // Pick the actual horizontal gap between the first two tiles.
-    const buttons = list.locator("[data-entry-path]");
-    const first = (await buttons.nth(0).boundingBox())!;
-    const second = (await buttons.nth(1).boundingBox())!;
-    point = { x: (first.x + first.width + second.x) / 2, y: first.y + first.height / 2 };
+    point = await emptyPoint(list);
     await page.mouse.click(point.x, point.y);
     await expectEmpty(page);
     // Repeated clearing also works when the host selection was already empty.
@@ -93,20 +90,21 @@ test("canvas drag gestures preserve selection, including dragging away and back"
   }
 });
 
-test("section controls preserve selection; background right-click clears like the host list", async ({ page }) => {
+test("closing preserves selection, reopening selects its cover, and background right-click clears like the host list", async ({ page }) => {
   await openView(page, 1400);
   const before = await selectImages(page);
   // Pin the section by its id: collapsing unmounts its cards, so a locator
   // filtered by a card stops matching once the section collapses.
   const component = await page.locator("section[data-component]").filter({ has: await card(page, "warm") }).getAttribute("data-component");
   const section = page.locator(`section[data-component="${component}"]`);
-  const heading = section.locator("button.heading");
-  await heading.locator(".name").click();
+  const heading = section.locator("[data-stack-toggle]");
+  await heading.click();
   await expect(heading).toHaveAttribute("aria-expanded", "false");
   expect((await state(page)).selected).toEqual(before.selected);
   expect((await state(page)).inputs).toEqual(before.inputs);
   await heading.click();
   await settle(page);
+  expect((await state(page)).selected).toEqual(["/pictures/village.png"]);
   const point = await emptyPoint(section.locator(".graph"));
   await page.mouse.click(point.x, point.y, { button: "right" });
   await expectEmpty(page);
@@ -168,7 +166,7 @@ test("wheel during an empty-background press keeps selection and Preview inputs"
   await expect.poll(() => pane.evaluate((element) => element.scrollTop)).not.toBe(scrollTop);
   expect(await graph.evaluate((element, point) => {
     const target = document.elementFromPoint(point.x, point.y);
-    return !!target && element.contains(target) && !target.closest('button, [data-tile-key], [data-entry-path]');
+    return !!target && target.closest("[data-testid=trace-view]") && !target.closest('button, [data-tile-key], [data-entry-path]');
   }, point)).toBe(true);
   await page.mouse.up();
   await settle(page);
@@ -197,7 +195,7 @@ for (const zoom of ["125%", "80%"]) {
       for (let y = box.top + 4; y < Math.min(innerHeight, box.bottom) - 4 && !empty; y += 4) {
         const x = right - 3;
         const target = document.elementFromPoint(x, y);
-        if (target && element.contains(target) && !target.closest('button, [data-tile-key], [data-entry-path], [tabindex]')) empty = { x, y };
+        if (target && target.closest("[data-testid=trace-view]") && !target.closest('button, [data-tile-key], [data-entry-path], [tabindex]')) empty = { x, y };
       }
       if (!empty) throw new Error("No empty space beside the scrollbar");
       return { empty, scrollbar: { x: right + gutter / 2, y: box.top + 40 }, zoom };

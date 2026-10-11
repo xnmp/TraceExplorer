@@ -64,6 +64,29 @@ describe("reference badge projection", () => {
 });
 
 describe("band scene", () => {
+  it("hover preserves the selected deep neighborhood, focus tone and layout geometry", () => {
+    const graph = projectReferenceBadges(projectDag([node("root"), node("ref", [], "external"), node("a", ["root", "ref"]), node("b", ["a"]), node("c", ["b"]), node("d", ["c"])]));
+    const options = { pinned: { key: "root", x: 80 } };
+    const selected = planBandScene(graph, graph.dag.order, "c", 640, options);
+    const hovered = planBandScene(graph, graph.dag.order, "c", 640, { ...options, badgeHighlight: "ref" });
+    expect([...hovered.tiles.keys()]).toEqual([...selected.tiles.keys()]);
+    expect(hovered.tiles.get("c")?.tone).toBe("focus");
+    expect(hovered.tiles.has("d")).toBe(true);
+    expect(hovered.request).toEqual(selected.request);
+    expect(planBandScene(graph, graph.dag.order, "c", 640, { ...options, badgeHighlight: "unknown" })).toEqual(selected);
+  });
+
+  it("hover highlights shared consumers in another band without changing its visible tiles", () => {
+    const graph = projectReferenceBadges(sharedStyle());
+    for (const members of connectedComponents(graph.dag)) {
+      const options = { pinned: { key: members[0], x: 80 } };
+      const idle = planBandScene(graph, members, "a2", 640, options);
+      const hover = planBandScene(graph, members, "a2", 640, { ...options, badgeHighlight: "style" });
+      expect(hover.request).toEqual(idle.request);
+      expect(hover.tiles.get(members.find((key) => key.endsWith("1"))!)?.tone).toBe("related");
+      if (members.includes("a2")) expect(hover.tiles.get("a2")?.tone).toBe("focus");
+    }
+  });
   it("plans 500 bands in a 10,000-image folder without traversing every other badge consumer", () => {
     const nodes = [node("ref", [], "external"), ...Array.from({ length: 500 }, (_, chain) =>
       Array.from({ length: 20 }, (_, step) => node(`c${chain}-${step}`, step ? [`c${chain}-${step - 1}`, "ref"] : []))).flat()];

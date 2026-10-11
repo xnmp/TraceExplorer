@@ -18,6 +18,7 @@
  */
 import { displace, polyline, samplePathString, type Point } from "./path-sampling";
 import type { Orientation } from "$lib/domain/trace-graph/layout";
+import { planBandTravel, remainingTravel, travelFrames } from "./band-motion";
 import { anchorDelta, releasesAnchor } from "$lib/domain/scroll-anchor";
 
 export const MOTION_MS = 160;
@@ -84,7 +85,7 @@ function displayedBox(element: HTMLElement): Box {
 
 function measureTiles(canvas: HTMLElement): Map<string, { element: HTMLElement; box: Box }> {
   const tiles = new Map<string, { element: HTMLElement; box: Box }>();
-  for (const element of canvas.querySelectorAll<HTMLElement>("[data-tile-key]")) tiles.set(element.dataset.tileKey!, { element, box: displayedBox(element) });
+  for (const element of canvas.querySelectorAll<HTMLElement>("[data-tile-key], [data-ghost-tile-key]")) tiles.set((element.dataset.tileKey ?? element.dataset.ghostTileKey)!, { element, box: displayedBox(element) });
   return tiles;
 }
 
@@ -149,7 +150,7 @@ export function captureGraph(canvas: HTMLElement): GraphSnapshot {
 /** How far a new tile or connector slides in from: back along the flow, toward its parents. */
 export const enterOffset = (orientation: Orientation): Point => orientation === "right" ? { x: -10, y: 0 } : { x: 0, y: -10 };
 
-export function playGraph(canvas: HTMLElement, before: GraphSnapshot, orientation: Orientation = "down"): Animation[] {
+export function playGraph(canvas: HTMLElement, before: GraphSnapshot, orientation: Orientation = "down", origin?: { key: string; box: Box }): Animation[] {
   if (prefersReducedMotion()) return [];
   const timing: KeyframeAnimationOptions = { duration: MOTION_MS, easing: EASING };
 
@@ -161,6 +162,7 @@ export function playGraph(canvas: HTMLElement, before: GraphSnapshot, orientatio
     dot, at: { x: Number(dot.getAttribute("cx")), y: Number(dot.getAttribute("cy")) }, opacity: getComputedStyle(dot).opacity,
   }));
   const paths = [...canvas.querySelectorAll<SVGPathElement>("path[data-route]")];
+  const travel = origin ? planBandTravel(paths.map((path) => ({ from: path.dataset.from ?? "", to: path.dataset.to ?? "", path: path.getAttribute("d") ?? "" })), origin.key) : null;
   // Shapes morph only when both graphs could capture them (neither exceeded the limit).
   const morph = supportsPathMorph() && paths.length <= MORPH_LIMIT && before.routeIds.size <= MORPH_LIMIT;
   const connectors = paths.map((path) => ({
@@ -177,6 +179,13 @@ export function playGraph(canvas: HTMLElement, before: GraphSnapshot, orientatio
   // fade); they grow or shrink only when the host's tile size changes.
   for (const [key, { element, box: now }] of tiles) {
     const old = before.tiles.get(key);
+    if (origin && (!old || old.fading !== null)) {
+      const points = travel!(key, origin.box, now);
+      const from = old?.fading ?? 0, to = Number(getComputedStyle(element).opacity);
+      const frames = travelFrames(old ? remainingTravel(points, old) : points, now).map((frame) => ({ ...frame, opacity: from + (to - from) * Number(frame.opacity) }));
+      animations.push(element.animate(frames, timing));
+      continue;
+    }
     if (old) {
       // A tile still fading in when interrupted continues from its opacity.
       const fading = old.fading !== null;
@@ -560,5 +569,111 @@ export function resizeSection(section: HTMLElement, content: HTMLElement | null,
   };
   if (settle > 0) for (let previous: Element | null = section; previous; previous = previous.previousElementSibling) move(previous, 0, settle);
   for (let next = section.nextElementSibling; next; next = next.nextElementSibling) move(next, from.height - layout, to - layout + settle);
+  return animations;
+}
+
+/** Grid FLIP captures the displayed geometry before any animation is cancelled. */
+export interface GridSnapshot {
+  readonly top: number;
+  readonly left: number;
+  readonly cells: ReadonlyMap<string, { y: number; x: number }>;
+  readonly bands: ReadonlyMap<string, { height: number; element: HTMLElement; graph: GraphSnapshot | null; stamp: string | undefined; ghost: boolean; opacity: number }>;
+}
+export function captureGrid(grid: HTMLElement): GridSnapshot {
+  const origin = grid.getBoundingClientRect(), zoom = zoomOf(grid, origin);
+  return {
+    top: origin.top, left: origin.left,
+    cells: new Map([...grid.querySelectorAll<HTMLElement>("[data-grid-motion]")].map((element) => {
+      const rect = element.getBoundingClientRect();
+      return [element.dataset.gridMotion!, { x: (rect.left - origin.left) / zoom, y: (rect.top - origin.top) / zoom }];
+    })),
+    bands: new Map([...grid.querySelectorAll<HTMLElement>("[data-grid-band], [data-grid-ghost]")].map((element) => {
+      const rect = element.getBoundingClientRect(), graph = element.querySelector<HTMLElement>(".graph");
+      const clone = element.cloneNode(true) as HTMLElement;
+      clone.style.top = `${(rect.top - origin.top) / zoom}px`;
+      clone.style.left = `${(rect.left - origin.left) / zoom}px`;
+      clone.style.clipPath = getComputedStyle(element).clipPath;
+      return [element.dataset.gridBand ?? element.dataset.gridGhost!, {
+        height: sectionHeight(element), ghost: !!element.dataset.gridGhost, opacity: Number(getComputedStyle(element).opacity), element: clone, graph: graph ? captureGraph(graph) : null, stamp: graph?.dataset.layoutStamp,
+      }];
+    })),
+  };
+}
+export function playGrid(grid: HTMLElement, before: GridSnapshot): Animation[] {
+  if (prefersReducedMotion()) return [];
+  const origin = grid.getBoundingClientRect(), zoom = zoomOf(grid, origin);
+  const timing = { duration: MOTION_MS, easing: EASING };
+  // Removing a bottom band can clamp scrolling during layout. Include that
+  // displacement so the displayed first frame still matches the snapshot.
+  const scrollShift = { x: (before.left - origin.left) / zoom, y: (before.top - origin.top) / zoom };
+  // Measure the new geometry before installing any animation.
+  const cells = [...grid.querySelectorAll<HTMLElement>("[data-grid-motion]")].map((element) => {
+    const rect = element.getBoundingClientRect();
+    return { element, y: (rect.top - origin.top) / zoom, x: (rect.left - origin.left) / zoom };
+  });
+  const bands = [...grid.querySelectorAll<HTMLElement>("[data-grid-band]")].map((element) => ({ element, height: layoutHeight(element) }));
+  const animations: Animation[] = [];
+  for (const { element, y, x } of cells) {
+    const old = before.cells.get(element.dataset.gridMotion!);
+    if (!old) continue;
+    const dx = old.x - x + scrollShift.x, dy = old.y - y + scrollShift.y;
+    if (Math.abs(dx) < .5 && Math.abs(dy) < .5) continue;
+    // A whole stack moves together, including its routes and descendants.
+    animations.push(element.animate([{ transform: `translate(${dx}px, ${dy}px)` }, { transform: "translate(0, 0)" }], timing));
+  }
+  const current = new Set(bands.map(({ element }) => element.dataset.gridBand!));
+  for (const { element, height } of bands) {
+    const old = before.bands.get(element.dataset.gridBand!);
+    const graph = element.querySelector<HTMLElement>(".graph");
+    if (old?.graph && graph && (old.ghost || old.stamp === graph.dataset.layoutStamp)) {
+      // Attachment-only changes (another band in the same row grew) do not
+      // produce a new layout request, but their tiles AND routes still move.
+      for (const animation of graph.getAnimations({ subtree: true })) if (animation.effect?.getTiming().iterations !== Infinity) animation.cancel();
+      const cover = grid.querySelector<HTMLElement>(`[data-node-key="${CSS.escape(element.dataset.gridBand!)}"]`);
+      const box = cover?.getBoundingClientRect(), graphBox = graph.getBoundingClientRect();
+      const origin = box ? { key: element.dataset.gridBand!, box: { x: (box.left - graphBox.left) / zoom, y: (box.top - graphBox.top) / zoom, width: box.width / zoom, height: box.height / zoom, fading: null } } : undefined;
+      animations.push(...playGraph(graph, old.graph, "down", origin));
+    }
+    if (old && Math.abs(old.opacity - 1) > .01) animations.push(element.animate([{ opacity: old.opacity }, { opacity: 1 }], timing));
+    const from = old?.height ?? 0;
+    if (Math.abs(from - height) >= .5) animations.push(element.animate([
+      { clipPath: `inset(0 0 ${Math.max(0, height - from)}px 0)` }, { clipPath: "inset(0)" },
+    ], timing));
+  }
+  for (const [id, old] of before.bands) if (!current.has(id)) {
+    const ghost = old.element;
+    ghost.style.top = `${parseFloat(ghost.style.top) + scrollShift.y}px`;
+    ghost.style.left = `${parseFloat(ghost.style.left) + scrollShift.x}px`;
+    ghost.inert = true;
+    ghost.setAttribute("aria-hidden", "true");
+    ghost.removeAttribute("data-grid-band");
+    ghost.dataset.gridGhost = id;
+    for (const element of ghost.querySelectorAll("[data-tile-key], [data-node-key], [id]")) {
+      if (element instanceof HTMLElement && element.dataset.tileKey) element.dataset.ghostTileKey = element.dataset.tileKey;
+      element.removeAttribute("data-tile-key"); element.removeAttribute("data-node-key"); element.removeAttribute("id");
+    }
+    ghost.style.pointerEvents = "none";
+    grid.append(ghost);
+    const cover = grid.querySelector<HTMLElement>(`[data-grid-cell="${CSS.escape(id)}"]`);
+    const graph = ghost.querySelector<HTMLElement>(".graph");
+    if (cover && graph && old.graph) {
+      const box = cover.getBoundingClientRect(), origin = graph.getBoundingClientRect();
+      const travel = planBandTravel([...graph.querySelectorAll<SVGPathElement>("path[data-route]")].map((path) => ({
+        from: path.dataset.from ?? "", to: path.dataset.to ?? "", path: old.graph!.routes.has(path.dataset.route!) ? polyline(old.graph!.routes.get(path.dataset.route!)!) : path.getAttribute("d") ?? "",
+      })), id);
+      for (const tile of ghost.querySelectorAll<HTMLElement>("[data-ghost-tile-key]")) {
+        const oldTile = old.graph.tiles.get(tile.dataset.ghostTileKey!);
+        if (!oldTile) continue;
+        const style = getComputedStyle(tile), x = parseFloat(style.left), y = parseFloat(style.top);
+        const coverBox = { x: (box.left - origin.left) / zoom + (box.width / zoom - oldTile.width) / 2, y: (box.top - origin.top) / zoom, width: oldTile.width, height: oldTile.height };
+        const points = travel(tile.dataset.ghostTileKey!, coverBox, { ...oldTile, x, y }, oldTile);
+        const frames = travelFrames(points, { x, y }, true).map((frame) => ({ ...frame, opacity: Number(frame.opacity) * (oldTile.fading ?? 1) }));
+        animations.push(tile.animate(frames, timing));
+      }
+    }
+    const animation = ghost.animate([{ opacity: old.opacity, clipPath: getComputedStyle(ghost).clipPath }, { opacity: 0, clipPath: `inset(0 0 ${old.height}px 0)` }], timing);
+    void animation.finished.then(() => ghost.remove(), () => ghost.remove());
+    animations.push(animation);
+  }
   return animations;
 }
