@@ -10,7 +10,11 @@
     "credentialEnv": "OPENAI_API_KEY",
     "baseUrlLabel": "Images resource URL",
     "baseUrlNote": "Include the Images resource, usually /images. The adapter appends /generations or /edits.",
-    "rejectedUrlSuffixes": ["generations", "edits"]
+    "rejectedPathSegments": [
+      "generations",
+      "edits"
+    ],
+    "modelIdInPath": false
   },
   {
     "transport": "gemini",
@@ -23,7 +27,11 @@
     "credentialEnv": "GEMINI_API_KEY",
     "baseUrlLabel": "Gemini API root URL",
     "baseUrlNote": "Include the API version, usually /v1beta. The adapter appends /interactions.",
-    "rejectedUrlSuffixes": ["interactions", "models"]
+    "rejectedPathSegments": [
+      "models",
+      "interactions"
+    ],
+    "modelIdInPath": false
   },
   {
     "transport": "bfl",
@@ -36,6 +44,9 @@
     "credentialEnv": "BFL_API_KEY",
     "baseUrlLabel": "API root URL",
     "baseUrlNote": "The Black Forest Labs API root, for example https://api.bfl.ai/v1 (or api.eu.bfl.ai / api.us.bfl.ai). The adapter appends the model ID.",
-    "rejectedUrlSuffixes": []
+    "rejectedPathSegments": [
+      "flux*"
+    ],
+    "modelIdInPath": true
   }
 ]

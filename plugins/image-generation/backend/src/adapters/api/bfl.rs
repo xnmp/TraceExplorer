@@ -93,7 +93,6 @@ pub const DESCRIPTOR: ApiDescriptor = ApiDescriptor {
         sizes: false,
     },
     max_inputs: 8,
-    validate_base_url,
 };
 const STATUS_TABLE: &[(&str, Refusal)] = &[
     ("Request Moderated", Refusal::Policy),
@@ -101,19 +100,6 @@ const STATUS_TABLE: &[(&str, Refusal)] = &[
 ];
 const POLL_BODY_LIMIT: usize = 1024 * 1024;
 const MAX_TRANSIENT_POLL_FAILURES: u32 = 3;
-
-/// The root is the API version root, not a model endpoint.
-fn validate_base_url(url: &url::Url) -> Result<()> {
-    if url
-        .path_segments()
-        .is_some_and(|mut s| s.any(|segment| segment.to_ascii_lowercase().starts_with("flux")))
-    {
-        return Err(crate::error::invalid(
-            "Enter the API root, for example https://api.bfl.ai/v1, without a model name",
-        ));
-    }
-    Ok(())
-}
 
 #[derive(Clone, Copy)]
 struct Schedule {
@@ -179,13 +165,7 @@ fn model_name(recipe: &EffectiveRecipe, profile: &ApiProfile) -> Result<String> 
         .clone()
         .filter(|m| !m.trim().is_empty())
         .unwrap_or_else(|| profile.default_model.clone());
-    if model.is_empty()
-        || model.len() > 128
-        || !model.as_bytes()[0].is_ascii_alphanumeric()
-        || !model
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b))
-    {
+    if !crate::domain::backend_rules::path_safe_model_id(&model) {
         return Err(error(
             "invalid_request",
             "Enter a Flux model ID such as flux-2-pro",
@@ -1107,15 +1087,6 @@ mod tests {
             run_ok(&always.url()).err().unwrap().code,
             "remote_outcome_unknown"
         );
-    }
-
-    #[test]
-    fn base_urls_reject_a_model_path() {
-        let ok = |u: &str| validate_base_url(&url::Url::parse(u).unwrap()).is_ok();
-        assert!(ok("https://api.bfl.ai/v1"));
-        assert!(ok("https://api.eu.bfl.ai"));
-        assert!(!ok("https://api.bfl.ai/v1/flux-2-pro"));
-        assert!(!ok("https://api.bfl.ai/v1/FLUX-3-image/"));
     }
 
     #[test]

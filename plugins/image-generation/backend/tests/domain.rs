@@ -386,17 +386,141 @@ fn transport_names_follow_the_host_identifier_rule() {
     }
 }
 #[test]
-fn the_base_url_hook_is_the_backends_own_rule() {
-    assert!(base_url(
-        ApiKind::OpenAiImages,
-        "https://x.test/v1/images/edits",
-        false
-    )
-    .is_err());
+fn generic_url_rules_apply_to_every_backend_and_a_backend_without_rules_adds_none() {
     assert!(base_url(ApiKind::Fixture, "https://x.test/v1/images/edits", false).is_ok());
-    // Generic rules apply to every backend.
     assert!(base_url(ApiKind::Fixture, "https://u:p@x.test/v1", false).is_err());
     assert!(base_url(ApiKind::Fixture, "http://private.test/v1", false).is_err());
+    let err = base_url(ApiKind::Bfl, "https://x.test/v1?k=1", false).unwrap_err();
+    assert!(
+        !err.message.to_lowercase().contains("images"),
+        "{}",
+        err.message
+    );
+}
+fn url_ok(kind: ApiKind, url: &str) -> bool {
+    base_url(kind, url, false).is_ok()
+}
+#[test]
+fn openai_rejects_operation_segments_anywhere_in_the_path() {
+    let k = ApiKind::OpenAiImages;
+    for ok in [
+        "https://g.test/v1/images",
+        "https://g.test/v1/images/",
+        "https://g.test/vendor/generation/v1",
+        "https://g.test/models/v1/images",
+    ] {
+        assert!(url_ok(k, ok), "{ok}");
+    }
+    for bad in [
+        "https://g.test/v1/images/edits",
+        "https://g.test/v1/images/edits/",
+        "https://g.test/v1/images/GENERATIONS",
+        "https://g.test/v1/edits/images",
+    ] {
+        assert!(!url_ok(k, bad), "{bad}");
+    }
+}
+#[test]
+fn gemini_rejects_model_and_interaction_segments_anywhere_in_the_path() {
+    let k = ApiKind::Gemini;
+    assert!(url_ok(k, "https://g.test/v1beta"));
+    assert!(url_ok(k, "https://g.test/v1beta/"));
+    assert!(url_ok(k, "https://g.test/modelsx/v1beta"));
+    for bad in [
+        "https://g.test/v1beta/models",
+        "https://g.test/v1beta/Models/",
+        "https://g.test/v1beta/models/gemini-x:generateContent",
+        "https://g.test/v1beta/interactions",
+        "https://g.test/models/v1beta",
+    ] {
+        assert!(!url_ok(k, bad), "{bad}");
+    }
+    let err = base_url(ApiKind::Gemini, "https://g.test/v1beta/models", false).unwrap_err();
+    assert!(
+        err.message.contains("/models") && err.message.contains("Gemini API root URL"),
+        "{}",
+        err.message
+    );
+}
+#[test]
+fn bfl_rejects_any_flux_prefixed_segment_case_insensitively() {
+    let k = ApiKind::Bfl;
+    for ok in [
+        "https://api.bfl.ai/v1",
+        "https://api.bfl.ai/v1/",
+        "https://api.eu.bfl.ai",
+        "https://api.bfl.ai/proxy/fl/v1",
+    ] {
+        assert!(url_ok(k, ok), "{ok}");
+    }
+    for bad in [
+        "https://api.bfl.ai/v1/flux-2-pro",
+        "https://api.bfl.ai/V1/FLUX-2-PRO",
+        "https://api.bfl.ai/v1/flux-3-image/",
+        "https://api.bfl.ai/fluxproxy/v1",
+        "https://api.bfl.ai/flux/v1/x",
+    ] {
+        assert!(!url_ok(k, bad), "{bad}");
+    }
+}
+fn bfl_profile(model: &str) -> Profile {
+    let mut json = api_json("bfl");
+    json["baseUrl"] = "https://api.bfl.ai/v1".into();
+    json["defaultModel"] = model.into();
+    serde_json::from_value(json).unwrap()
+}
+fn validates(profile: Profile) -> bool {
+    let mut c = Configuration {
+        profiles: vec![profile],
+        ..Configuration::default()
+    };
+    validate_configuration(&mut c).is_ok()
+}
+#[test]
+fn bfl_default_models_must_be_safe_path_segments() {
+    let long = "a".repeat(129);
+    for bad in ["flux 2 pro", ".", "..", "-x", "a/b", "m?x=1", long.as_str()] {
+        assert!(!validates(bfl_profile(bad)), "{bad:?}");
+    }
+    for ok in ["flux-2-pro", "flux.2_pro", "A", &"a".repeat(128)] {
+        assert!(validates(bfl_profile(ok)), "{ok:?}");
+    }
+}
+#[test]
+fn gateway_style_model_ids_stay_valid_for_backends_without_path_models() {
+    for transport in ["openai-images", "gemini"] {
+        for model in ["vendor/model", "gpt image", "..", "-x"] {
+            let mut json = api_json(transport);
+            json["defaultModel"] = model.into();
+            json["baseUrl"] = "https://g.test/v1".into();
+            assert!(
+                validates(serde_json::from_value(json).unwrap()),
+                "{transport} {model}"
+            );
+        }
+    }
+}
+#[test]
+fn prepare_rejects_a_per_job_bfl_model_that_is_not_a_path_segment() {
+    let profile = bfl_profile("flux-2-pro");
+    let mut req = request();
+    req.connection_id = "api".into();
+    req.expected_connection_revision = "r1".into();
+    req.inputs.clear();
+    req.options.size = "auto".into();
+    req.options.quality = "auto".into();
+    req.options.background = "auto".into();
+    req.model = Some("flux-2-pro".into());
+    assert!(recipe(&profile, &req).is_ok());
+    for bad in ["flux 2 pro", "..", "a/b", "-x"] {
+        req.model = Some(bad.into());
+        assert!(recipe(&profile, &req).is_err(), "{bad}");
+    }
+    // A gateway-style id is still fine where the model is not part of the path.
+    let mut open_ai = serde_json::from_value::<Profile>(api_json("openai-images")).unwrap();
+    open_ai.set_revision("r1".into());
+    req.model = Some("vendor/model x".into());
+    assert!(recipe(&open_ai, &req).is_ok());
 }
 #[test]
 fn frontend_registry_matches_the_backend_descriptors() {
@@ -408,6 +532,9 @@ fn frontend_registry_matches_the_backend_descriptors() {
         transport: String,
         default_base_url: String,
         credential_env: String,
+        base_url_label: String,
+        rejected_path_segments: Vec<String>,
+        model_id_in_path: bool,
     }
     let entries: Vec<Entry> = serde_json::from_str(include_str!("../../backends.json")).unwrap();
     let real: Vec<_> = ApiKind::ALL
@@ -430,7 +557,30 @@ fn frontend_registry_matches_the_backend_descriptors() {
         assert!(transport_id(d.transport) && d.transport != "codex-cli");
         // The advertised default URL must be acceptable to the backend itself.
         assert!(base_url(*kind, d.default_base_url, false).is_ok());
+        // Every entry declares its rules, and the backend resolves the same ones.
+        assert!(!entry.base_url_label.is_empty());
+        let rules = backend_rules::for_transport(d.transport)
+            .unwrap_or_else(|| panic!("no rules for {}", d.transport));
+        assert_eq!(rules.rejected_path_segments, entry.rejected_path_segments);
+        assert_eq!(rules.model_id_in_path, entry.model_id_in_path);
+        assert!(entry.rejected_path_segments.iter().all(|p| !p.is_empty()));
     }
+}
+#[test]
+fn every_backend_transport_has_rules_and_a_malformed_rules_file_is_rejected() {
+    for kind in ApiKind::ALL
+        .iter()
+        .filter(|k| k.transport() != "fixture-images")
+    {
+        assert!(
+            backend_rules::for_transport(kind.transport()).is_some(),
+            "{}",
+            kind.transport()
+        );
+    }
+    // A registry entry missing a rules field cannot be parsed as rules.
+    let missing = r#"[{"transport":"x","baseUrlLabel":"X","rejectedPathSegments":[]}]"#;
+    assert!(serde_json::from_str::<Vec<backend_rules::BackendRules>>(missing).is_err());
 }
 fn stored(adapter: &str) -> image_generation_backend::domain::stored_receipt::StoredReceipt {
     let recipe = EffectiveRecipe {
@@ -571,7 +721,6 @@ fn options_problem_rejects_unsupported_resolution_and_aspect_ratio() {
             sizes: false,
         },
         max_inputs: 1,
-        validate_base_url: |_| Ok(()),
     };
     let mut options = request().options;
     options.size = "auto".into();

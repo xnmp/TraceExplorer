@@ -104,3 +104,17 @@ test('Add Flux creates a connection with the Black Forest Labs defaults', async 
   const saved = await page.evaluate(() => (window as any).imageConnectionFixture.snapshot());
   expect(saved.profiles[0]).toMatchObject({ transport: 'bfl', baseUrl: 'https://api.bfl.ai/v1', defaultModel: 'flux-2-pro', credential: { kind: 'environment', name: 'BFL_API_KEY' } });
 });
+test('a bad Flux model ID and a Gemini URL ending in /models show a problem and block saving', async ({ page }) => {
+  await setup(page); await page.getByRole('button', { name: 'Add Flux' }).click();
+  const save = page.getByRole('button', { name: 'Save connections' });
+  await page.getByLabel('Image model ID').fill('flux 2 pro');
+  await expect(page.getByText('model ID can contain only letters, digits')).toBeVisible();
+  await expect(save).toBeDisabled();
+  await page.getByLabel('Image model ID').fill('flux-2-pro');
+  await expect(page.getByText('model ID can contain only letters')).toHaveCount(0);
+  await expect(save).toBeEnabled();
+  await page.getByRole('button', { name: 'Add Nano Banana' }).click();
+  await page.getByLabel('Gemini API root URL').fill('https://generativelanguage.googleapis.com/v1beta/models');
+  await expect(page.getByText('cannot contain the path segment /models')).toBeVisible();
+  await expect(save).toBeDisabled();
+});

@@ -59,7 +59,6 @@ pub const DESCRIPTOR: ApiDescriptor = ApiDescriptor {
         sizes: false,
     },
     max_inputs: 8,
-    validate_base_url,
 };
 /// Documented aspect ratios (`ImageResponseFormat.aspect_ratio`). Our shared
 /// list is a subset, so every non-"keep" ratio we offer is accepted.
@@ -83,20 +82,6 @@ pub const REFUSALS: [(&str, Refusal); 12] = [
     ("no_image", Refusal::Other),
 ];
 
-/// The root is the API version root; the adapter appends `/interactions`.
-fn validate_base_url(url: &url::Url) -> Result<()> {
-    let path = url.path();
-    if path.contains(':')
-        || path
-            .split('/')
-            .any(|segment| ["models", "interactions"].contains(&segment))
-    {
-        return Err(crate::error::invalid(
-            "Enter the API version root, without models, interactions or :generateContent",
-        ));
-    }
-    Ok(())
-}
 fn image_size(resolution: Option<&str>) -> Option<String> {
     resolution.map(str::to_ascii_uppercase)
 }

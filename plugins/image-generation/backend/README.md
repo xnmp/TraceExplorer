@@ -50,13 +50,13 @@ An HTTP backend is one adapter module, one descriptor and one registry entry. Al
 
 Checklist. Rust, backend module plus nine touch points in three files:
 
-1. `adapters/api/<name>.rs`: `pub const DESCRIPTOR: ApiDescriptor` (`transport`, `default_base_url`, `credential_env`, `auth`, honoured `options`, `max_inputs`, `validate_base_url` hook) and `pub(super) async fn generate(call: ApiCall<'_>) -> Result<Output>`.
+1. `adapters/api/<name>.rs`: `pub const DESCRIPTOR: ApiDescriptor` (`transport`, `default_base_url`, `credential_env`, `auth`, honoured `options`, `max_inputs`) and `pub(super) async fn generate(call: ApiCall<'_>) -> Result<Output>`.
 2. `adapters/api/mod.rs`: `pub mod <name>;`, one arm in `descriptor()` and one in `generate()`.
 3. `domain.rs`: a variant in `ApiKind` and in `ApiKind::ALL`; a `Profile::<Name>(ApiProfile)` variant with `#[serde(rename = "<transport>")]`; one arm in each of `Profile::api` and `Profile::api_mut`.
 
 Frontend:
 
-4. `plugins/image-generation/backends.json`: one entry (`transport`, `label`, `addLabel`, `defaultName`, `defaultBaseUrl`, `defaultModel`, `modelPlaceholder`, `credentialEnv`, `baseUrlLabel`, `baseUrlNote`, `rejectedUrlSuffixes`). The Add button, the connection form, validation and labels are generated from it. `frontend_registry_matches_the_backend_descriptors` fails if `transport`, `defaultBaseUrl` or `credentialEnv` differ from the descriptor, or if an entry is missing.
+4. `plugins/image-generation/backends.json`: one entry (`transport`, `label`, `addLabel`, `defaultName`, `defaultBaseUrl`, `defaultModel`, `modelPlaceholder`, `credentialEnv`, `baseUrlLabel`, `baseUrlNote`, `rejectedPathSegments`, `modelIdInPath`). The Add button, the connection form, validation and labels are generated from it. `rejectedPathSegments` lists base-URL path segments the backend refuses (matched case-insensitively against every segment; a trailing `*` is a prefix match). `modelIdInPath` is true when the adapter puts the model id into the URL, which requires `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$` for the profile model and any per-job model. The backend (`domain/backend_rules.rs`) and the frontend (`frontend/domain.ts`) both enforce these fields from the JSON; there is no per-backend hook and no rule to duplicate. `frontend_registry_matches_the_backend_descriptors` fails if `transport`, `defaultBaseUrl` or `credentialEnv` differ from the descriptor, if an entry is missing, or if an entry lacks the rules fields.
 
 Nothing else changes: `id`, `revision`, `credential`, `execution_identity`, configuration validation, `recipe()`, per-connection `capabilities()` and the stored-receipt checks go through the descriptor or `Profile::api()`. Trace accepts any identifier transport (`openai-image.ts`, `image-retry.ts`, `service_images.rs`); optionally give it a friendly name in Trace's `transportLabel` (`src/lib/plugins/openai-image/connections.ts`), otherwise the transport id is shown. With the `test-hooks` feature the extra `fixture-images` kind (`adapters/api/fixture.rs`) exercises a third backend without any real provider.
 

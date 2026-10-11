@@ -1,4 +1,5 @@
 //! Pure profile/recipe policy; never opens files or contacts a provider.
+pub mod backend_rules;
 pub mod codex_evidence;
 pub mod stored_receipt;
 use crate::error::{invalid, Result};
@@ -221,16 +222,16 @@ pub fn id(value: &str) -> bool {
 fn label(value: &str) -> bool {
     !value.trim().is_empty() && value.chars().count() <= 256 && !value.chars().any(char::is_control)
 }
-/// Normalises an API base URL: the generic rules, then the backend's own hook.
+/// Normalises an API base URL: the generic rules, then the backend's data rules
+/// from `backends.json`.
 pub fn root(value: &str, allow_http: bool) -> Result<String> {
     base_url(ApiKind::OpenAiImages, value, allow_http)
 }
 pub fn base_url(kind: ApiKind, value: &str, allow_http: bool) -> Result<String> {
     if value.len() > 2048 {
-        return Err(invalid("Images resource root exceeds 2048 bytes"));
+        return Err(invalid("API URL exceeds 2048 bytes"));
     }
-    let url =
-        url::Url::parse(value).map_err(|_| invalid("Enter an absolute images resource root"))?;
+    let url = url::Url::parse(value).map_err(|_| invalid("Enter an absolute API URL"))?;
     if url.username() != ""
         || url.password().is_some()
         || url.query().is_some()
@@ -238,7 +239,7 @@ pub fn base_url(kind: ApiKind, value: &str, allow_http: bool) -> Result<String> 
         || url.host_str().is_none()
     {
         return Err(invalid(
-            "Images root cannot contain credentials, queries or fragments",
+            "API URL cannot contain credentials, queries or fragments",
         ));
     }
     let local = matches!(
@@ -248,8 +249,16 @@ pub fn base_url(kind: ApiKind, value: &str, allow_http: bool) -> Result<String> 
     if url.scheme() != "https" && !(url.scheme() == "http" && (allow_http || local)) {
         return Err(invalid("Use HTTPS or explicitly allow insecure HTTP"));
     }
-    (crate::adapters::api::descriptor(kind).validate_base_url)(&url)?;
+    if let Some(problem) = backend_rules::for_transport(kind.transport())
+        .and_then(|rules| rules.base_url_problem(&url))
+    {
+        return Err(invalid(&problem));
+    }
     Ok(url.as_str().trim_end_matches('/').to_owned())
+}
+/// Why `model` cannot be used with this backend, from its `backends.json` rules.
+pub fn model_problem(kind: ApiKind, model: &str) -> Option<&'static str> {
+    backend_rules::for_transport(kind.transport()).and_then(|rules| rules.model_problem(model))
 }
 pub fn validate_configuration(configuration: &mut Configuration) -> Result<()> {
     if configuration.schema_version != 1 {
@@ -288,6 +297,9 @@ pub fn validate_configuration(configuration: &mut Configuration) -> Result<()> {
                 };
                 if !label(&api.name) || !label(&api.default_model) {
                     return Err(invalid("Enter bounded profile name and model ID"));
+                }
+                if let Some(problem) = model_problem(kind, &api.default_model) {
+                    return Err(invalid(&problem));
                 }
                 api.base_url = base_url(kind, &api.base_url, api.allow_insecure_http)?;
                 match &api.credential {
@@ -427,13 +439,16 @@ pub fn recipe(profile: &Profile, request: &PrepareRequest) -> Result<EffectiveRe
                 return Err(invalid("Too many input images for this image provider"));
             }
             if let Some(problem) = options_problem(descriptor, &request.options) {
-                return Err(invalid(problem));
+                return Err(invalid(&problem));
             }
             let model = request
                 .model
                 .clone()
                 .filter(|m| label(m))
                 .ok_or_else(|| invalid("Enter a nonempty image model ID"))?;
+            if let Some(problem) = model_problem(kind, &model) {
+                return Err(invalid(&problem));
+            }
             let prompt = if request.inputs.len() <= 1 {
                 request.prompt.clone()
             } else {
