@@ -597,6 +597,24 @@ fn recipe_representable(recipe: &EffectiveRecipe) -> Result<bool, AppError> {
             .is_none_or(|task| !task.trim().is_empty() && task.len() <= MAX_FORMATTED_PROMPT)
         && document(recipe)?.len() <= MAX_RECIPE)
 }
+/// `codex-cli` or an HTTP image backend's transport id, using the host's receipt
+/// identifier rule (`^[a-z][a-z0-9-]{0,63}$`).
+fn valid_adapter(adapter: &str) -> bool {
+    adapter == "codex-cli" || valid_transport(adapter)
+}
+fn valid_transport(adapter: &str) -> bool {
+    adapter != "codex-cli"
+        && (adapter.len() <= 64
+            && adapter.starts_with(|c: char| c.is_ascii_lowercase())
+            && adapter
+                .bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-'))
+}
+/// An HTTP backend's recipe names a model and has no agent task.
+fn api_invariants(recipe: &EffectiveRecipe) -> bool {
+    !valid_transport(&recipe.adapter)
+        || (recipe.agent_task.is_none() && recipe.model.as_deref().is_some_and(|m| !m.trim().is_empty()))
+}
 fn validate_link(l: &Link) -> Result<(), AppError> {
     l.request.validate()?;
     if !recipe_representable(&l.recipe)?
@@ -617,7 +635,8 @@ fn validate_link(l: &Link) -> Result<(), AppError> {
         || l.prepared.prompt != l.request.prompt
         || l.prepared.options != l.request.options()
         || l.recipe.model != l.request.model
-        || !matches!(l.recipe.adapter.as_str(), "openai-images" | "codex-cli")
+        || !valid_adapter(&l.recipe.adapter)
+        || !api_invariants(&l.recipe)
         || l.recipe.endpoint_identity.is_empty()
         || l.recipe.endpoint_identity.len() > 4096
         || l.recipe.connection_id != l.request.connection_id
@@ -1105,7 +1124,8 @@ fn accept_with_deadline(
             || recipe.input_roles.len() != captured.len()
             || recipe.submitted_prompt.is_empty()
             || !recipe_representable(&recipe)?
-            || recipe.adapter.is_empty()
+            || !valid_adapter(&recipe.adapter)
+            || !api_invariants(&recipe)
             || recipe.endpoint_identity.is_empty()
         {
             return Err(invalid("Prepared image recipe does not match this request"));
@@ -5586,5 +5606,37 @@ mod tests {
         let retry_op = "66666666666666666666666666666666";
         let retry = accept_job(&f, retry_op, 10, retry_of(source.run_id)).unwrap();
         assert_ne!(retry.link.run_id, source.run_id);
+    }
+}
+
+#[cfg(test)]
+mod adapter_rules {
+    use super::*;
+
+    fn recipe(adapter: &str, model: Option<&str>, task: Option<&str>) -> EffectiveRecipe {
+        let mut recipe: EffectiveRecipe = serde_json::from_value(serde_json::json!({
+            "schemaVersion":1,"formatterVersion":1,"connectionId":"c","connectionRevision":"r",
+            "adapter":adapter,"endpointIdentity":"https://x.test/v1","model":model,
+            "options":{"size":"1024x1024","resolution":null,"aspectRatio":null,"quality":"auto","background":"auto"},
+            "inputDigests":[],"inputRoles":[],"submittedPrompt":"p","agentTask":task})).unwrap();
+        recipe.adapter = adapter.into();
+        recipe
+    }
+    #[test]
+    fn any_identifier_transport_is_a_valid_adapter() {
+        for ok in ["codex-cli", "openai-images", "gemini-images", "a", "bfl-flux-2"] {
+            assert!(valid_adapter(ok), "{ok}");
+        }
+        for bad in ["", "Gemini", "1x", "-x", "a_b", "a b", "a/b", &"a".repeat(65)] {
+            assert!(!valid_adapter(bad), "{bad}");
+        }
+    }
+    #[test]
+    fn api_adapters_need_a_model_and_no_agent_task() {
+        assert!(api_invariants(&recipe("gemini-images", Some("m"), None)));
+        assert!(!api_invariants(&recipe("gemini-images", None, None)));
+        assert!(!api_invariants(&recipe("gemini-images", Some(" "), None)));
+        assert!(!api_invariants(&recipe("gemini-images", Some("m"), Some("task"))));
+        assert!(api_invariants(&recipe("codex-cli", None, Some("task"))));
     }
 }

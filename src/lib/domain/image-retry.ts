@@ -9,7 +9,7 @@
 import type { OpenAIImageRequest, OpenAIImageRunHistory } from "$lib/api/openai-image";
 import { basename, parentDir } from "./path";
 import { imageOutputFilename } from "./image-output-filename";
-import { capabilityProblem, connectionFields, type ImageConnection } from "$lib/plugins/openai-image/connections";
+import { capabilityProblem, connectionFields, isApiConnection, isCodexConnection, type ImageConnection } from "$lib/plugins/openai-image/connections";
 
 export interface ImageRetry { readonly request: OpenAIImageRequest; readonly label: string; readonly detail: string }
 export type RetryPlan = { ok: true; retry: ImageRetry } | { ok: false; reason: string };
@@ -68,8 +68,8 @@ export function retryConnectionProblem(history: OpenAIImageRunHistory, connectio
   if (recordedId === undefined) {
     // Only histories from the known old adapters may use a current default.
     if (["effective_recipe", "effective_recipe_digest", "provider_package"].some((key) => key in p)) return NEW_REQUEST;
-    if (p.provider === "codex-cli" && connection.transport === "codex-cli" && p.model === null) return null;
-    if (p.provider === "openai" && connection.transport === "openai-images"
+    if (p.provider === "codex-cli" && isCodexConnection(connection) && p.model === null) return null;
+    if (p.provider === "openai" && connection.transport === "openai-images" && isApiConnection(connection)
       && endpoint(connection.baseUrl) === "https://api.openai.com/v1/images"
       && typeof p.model === "string" && p.model.trim()) return null;
     return NEW_REQUEST;
@@ -91,10 +91,11 @@ export function retryConnectionProblem(history: OpenAIImageRunHistory, connectio
     || !recipeText(r.submittedPrompt)
     || typeof r.endpointIdentity !== "string" || !r.endpointIdentity || r.endpointIdentity.length > 4096) return NEW_REQUEST;
   try { if (new TextEncoder().encode(JSON.stringify(r)).length > 256 * 1024) return NEW_REQUEST; } catch { return NEW_REQUEST; }
-  if (connection.transport === "codex-cli") return r.adapter === "codex-cli" && r.model === null
+  if (isCodexConnection(connection)) return r.adapter === "codex-cli" && r.model === null
     && r.endpointIdentity.trim() === (connection.executablePath.trim() || "codex-cli:auto-discovery")
     && recipeText(r.agentTask) ? null : NEW_REQUEST;
-  return r.adapter === "openai-images" && r.agentTask === null && typeof r.model === "string" && !!r.model.trim()
+  // An API transport is its own recipe adapter; Retry never moves a run to another backend.
+  return r.adapter === connection.transport && r.agentTask === null && typeof r.model === "string" && !!r.model.trim()
     && endpoint(r.endpointIdentity) !== null && endpoint(r.endpointIdentity) === endpoint(connection.baseUrl) ? null : NEW_REQUEST;
 }
 
@@ -122,7 +123,7 @@ export function retryPlan(history: OpenAIImageRunHistory, connection: ImageConne
     referencePaths: rest.map((input) => input.path),
     ...(rest.length ? { expectedReferenceDigests: rest.map((input) => input.digest) } : {}),
     prompt, outputDir, outputFilename, ...connectionFields(connection),
-    model: connection.transport === "codex-cli" ? null : text(parameters.model),
+    model: isCodexConnection(connection) ? null : text(parameters.model),
     size,
     ...(resolution && RESOLUTIONS.has(resolution) ? { resolution: resolution as OpenAIImageRequest["resolution"] } : {}),
     ...(aspectRatio ? { aspectRatio } : {}),

@@ -1,7 +1,8 @@
+use image_generation_backend::domain::ApiProfile;
 use image_generation_backend::domain::*;
 use te_image_generation_contract::*;
 fn profile() -> Profile {
-    Profile::Http {
+    Profile::OpenAiImages(ApiProfile {
         id: "custom".into(),
         name: "Custom".into(),
         recipe_revision: "revision-1".into(),
@@ -9,7 +10,7 @@ fn profile() -> Profile {
         default_model: "free-model-id".into(),
         allow_insecure_http: false,
         credential: Credential::None,
-    }
+    })
 }
 fn request() -> PrepareRequest {
     PrepareRequest {
@@ -70,9 +71,9 @@ fn recipes_exclude_transient_handles_secrets_labels_and_caller_epochs() {
     let mut changed = request();
     changed.inputs[0].handle = "different-handle".into();
     let mut renamed = profile();
-    if let Profile::Http {
+    if let Profile::OpenAiImages(ApiProfile {
         name, credential, ..
-    } = &mut renamed
+    }) = &mut renamed
     {
         *name = "Other name".into();
         *credential = Credential::Secret {
@@ -258,4 +259,141 @@ fn turn_facts_bound_usage_and_failures_without_retaining_successful_transcripts(
     };
     assert_eq!(explanation.kind, ExplanationKind::Error);
     assert_eq!(explanation.text, "Reported refusal");
+}
+
+// ---- API connection registry ----
+
+fn api_json(transport: &str) -> serde_json::Value {
+    serde_json::json!({"transport":transport,"id":"api","name":"Api","recipeRevision":"r1","baseUrl":"https://gateway.test/v1/images","defaultModel":"model-x","allowInsecureHttp":false,"credential":{"kind":"environment","name":"SOME_KEY"}})
+}
+#[test]
+fn api_profiles_round_trip_the_exact_serialized_shape_and_reject_unknown_fields() {
+    let value = api_json("openai-images");
+    let parsed: Profile = serde_json::from_value(value.clone()).unwrap();
+    assert!(
+        matches!(parsed.api(), Some((ApiKind::OpenAiImages, p)) if p.default_model == "model-x")
+    );
+    assert_eq!(serde_json::to_value(&parsed).unwrap(), value);
+    let mut extra = value.clone();
+    extra["surprise"] = true.into();
+    assert!(serde_json::from_value::<Profile>(extra).is_err());
+    let mut missing = value;
+    missing.as_object_mut().unwrap().remove("baseUrl");
+    assert!(serde_json::from_value::<Profile>(missing).is_err());
+    assert!(serde_json::from_value::<Profile>(api_json("no-such-backend")).is_err());
+}
+#[test]
+fn a_third_api_transport_loads_validates_and_round_trips() {
+    let configuration = serde_json::json!({"schemaVersion":1,"documentRevision":3,"defaultConnectionId":"api","profiles":[api_json("fixture-images")]});
+    let mut parsed: Configuration = serde_json::from_value(configuration.clone()).unwrap();
+    validate_configuration(&mut parsed).unwrap();
+    assert_eq!(
+        serde_json::to_value(&parsed).unwrap()["profiles"][0]["transport"],
+        "fixture-images"
+    );
+    let (kind, _) = parsed.profiles[0].api().unwrap();
+    assert_eq!(kind.transport(), "fixture-images");
+    assert_eq!(parsed.profiles[0].id(), "api");
+    assert_eq!(parsed.profiles[0].revision(), "r1");
+    // The generic recipe uses the transport as adapter and requires a model.
+    let mut req = request();
+    req.connection_id = "api".into();
+    req.expected_connection_revision = "r1".into();
+    let recipe = recipe(&parsed.profiles[0], &req).unwrap();
+    assert_eq!(recipe.adapter, "fixture-images");
+    assert_eq!(recipe.endpoint_identity, "https://gateway.test/v1/images");
+    req.model = None;
+    assert!(self::recipe(&parsed.profiles[0], &req).is_err());
+    // Descriptor limits apply: the fixture accepts at most two inputs.
+    let mut many = request();
+    many.connection_id = "api".into();
+    many.expected_connection_revision = "r1".into();
+    many.inputs = vec![request().inputs[0].clone(); 3];
+    assert!(self::recipe(&parsed.profiles[0], &many).is_err());
+}
+#[test]
+fn capabilities_are_built_per_connection_kind_from_the_descriptor() {
+    let codex = capabilities(Kind::Codex);
+    assert_eq!(codex["modelSelection"], false);
+    assert_eq!(codex["quality"], serde_json::json!(["auto"]));
+    let openai = capabilities(Kind::Api(ApiKind::OpenAiImages));
+    assert_eq!(openai["modelSelection"], true);
+    assert_eq!(openai["maxInputs"], 8);
+    assert_eq!(
+        openai["quality"],
+        serde_json::json!(["auto", "low", "medium", "high"])
+    );
+    assert_eq!(
+        openai["background"],
+        serde_json::json!(["auto", "opaque", "transparent"])
+    );
+    assert!(openai.get("resolution").is_none());
+    let fixture = capabilities(Kind::Api(ApiKind::Fixture));
+    assert_eq!(fixture["maxInputs"], 2);
+    assert_eq!(fixture["quality"], serde_json::json!(["auto"]));
+    assert_eq!(fixture["resolution"], serde_json::json!(["1k", "2k", "4k"]));
+}
+#[test]
+fn transport_names_follow_the_host_identifier_rule() {
+    for ok in ["openai-images", "a", "gemini-2", &"a".repeat(64)] {
+        assert!(transport_id(ok), "{ok}");
+    }
+    for bad in [
+        "",
+        "1abc",
+        "-a",
+        "A",
+        "has_underscore",
+        "a b",
+        &"a".repeat(65),
+    ] {
+        assert!(!transport_id(bad), "{bad}");
+    }
+}
+#[test]
+fn the_base_url_hook_is_the_backends_own_rule() {
+    assert!(base_url(
+        ApiKind::OpenAiImages,
+        "https://x.test/v1/images/edits",
+        false
+    )
+    .is_err());
+    assert!(base_url(ApiKind::Fixture, "https://x.test/v1/images/edits", false).is_ok());
+    // Generic rules apply to every backend.
+    assert!(base_url(ApiKind::Fixture, "https://u:p@x.test/v1", false).is_err());
+    assert!(base_url(ApiKind::Fixture, "http://private.test/v1", false).is_err());
+}
+#[test]
+fn frontend_registry_matches_the_backend_descriptors() {
+    // `backends.json` is the frontend's registry; the descriptors must agree on
+    // everything both sides know. The test-only fixture backend is not offered to users.
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct Entry {
+        transport: String,
+        default_base_url: String,
+        credential_env: String,
+    }
+    let entries: Vec<Entry> = serde_json::from_str(include_str!("../../backends.json")).unwrap();
+    let real: Vec<_> = ApiKind::ALL
+        .iter()
+        .filter(|k| k.transport() != "fixture-images")
+        .collect();
+    assert_eq!(
+        entries.len(),
+        real.len(),
+        "every backend needs exactly one registry entry"
+    );
+    for kind in real {
+        let d = image_generation_backend::adapters::api::descriptor(*kind);
+        let entry = entries
+            .iter()
+            .find(|e| e.transport == d.transport)
+            .unwrap_or_else(|| panic!("no registry entry for {}", d.transport));
+        assert_eq!(entry.default_base_url, d.default_base_url);
+        assert_eq!(entry.credential_env, d.credential_env);
+        assert!(transport_id(d.transport) && d.transport != "codex-cli");
+        // The advertised default URL must be acceptable to the backend itself.
+        assert!(base_url(*kind, d.default_base_url, false).is_ok());
+    }
 }

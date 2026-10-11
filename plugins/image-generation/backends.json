@@ -1,0 +1,15 @@
+[
+  {
+    "transport": "openai-images",
+    "label": "Images API",
+    "addLabel": "Add Images API",
+    "defaultName": "Images API",
+    "defaultBaseUrl": "https://api.openai.com/v1/images",
+    "defaultModel": "",
+    "modelPlaceholder": "Model supported by this API",
+    "credentialEnv": "OPENAI_API_KEY",
+    "baseUrlLabel": "Images resource URL",
+    "baseUrlNote": "Include the Images resource, usually /images. The adapter appends /generations or /edits.",
+    "rejectedUrlSuffixes": ["generations", "edits"]
+  }
+]

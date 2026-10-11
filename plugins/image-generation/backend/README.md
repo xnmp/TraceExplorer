@@ -8,7 +8,7 @@ Independent SDK 3 stdio provider for `xnmp.image-generation`. It imports only th
 - `profiles.rs`: CAS metadata, immutable execution revisions, retired IDs and trusted migration receipts in one atomic private envelope. Generic settings saves cannot create secret references. A post-replacement directory-sync failure reports `mutation_uncertain`; credential rotation retains the newly referenced secret because the profile may already be committed.
 - `journal.rs`: authoritative idempotent receipts and conditional execution transitions. Receipt lookup precedes current configuration, preparation token or credential checks. Valid admission failures create durable Failed receipts; their stored recipe is JSON `null` because nothing was dispatched.
 - `service.rs`: bounded preparation tokens (128, five minutes), admissions (four workers plus 32 queued), memory-only credential snapshots, profile admission fence, cancellation and host artifact delivery.
-- `adapters/`: bounded HTTP and host-owned Codex CLI; no redirects, automatic retry or URL result download. The HTTP client inherits only the process's `HTTP_PROXY`/`HTTPS_PROXY`/`ALL_PROXY`/`NO_PROXY` environment (curl semantics; loopback roots are not exempt) and the OS trust store via the platform verifier; macOS/Windows system proxy settings are not read. An HTTPS root is tunnelled through a proxy, so the proxy never sees the key; a plain-HTTP root is forwarded to it with the Authorization header, as for any HTTP proxy. CLI image model is adapter-managed and does not reuse the orchestration model label.
+- `adapters/`: host-owned Codex CLI and the HTTP backends in `adapters/api/` (see "Adding an HTTP image backend"); no redirects, automatic retry or URL result download. The HTTP client inherits only the process's `HTTP_PROXY`/`HTTPS_PROXY`/`ALL_PROXY`/`NO_PROXY` environment (curl semantics; loopback roots are not exempt) and the OS trust store via the platform verifier; macOS/Windows system proxy settings are not read. An HTTPS root is tunnelled through a proxy, so the proxy never sees the key; a plain-HTTP root is forwarded to it with the Authorization header, as for any HTTP proxy. CLI image model is adapter-managed and does not reuse the orchestration model label.
 - `main.rs`: one bounded stdio reader, shared reverse-call allocator, reserved receipt/cancellation capacity, local initialize/activation handshake and immutable native migration control token.
 
 No profile/journal transaction spans host or provider IO. Accepted admission is serialized with relevant profile changes after credential capture. Captured credentials remain in the worker's memory; rotation/deletion cannot silently change an admitted request.
@@ -32,6 +32,33 @@ Migration methods are host-only, require the exact per-instance control token an
 The native host also has private `control.operationIdle` and `control.discardOperation`, both accepting `{controlToken,consumerPackage,operationId}` with the immutable initialization token and active lifecycle. Idle includes held pre-admission IO and queued/running workers through final metadata IO and actual lease release; a terminal Unknown receipt alone is insufficient. Discard reads the original successful output digest locally, commits the existing acknowledgement transition, then emits the canonical operation event. It needs no generation, new stage or artifact read, works for Succeeded/Unavailable, is idempotent, and cannot overwrite acquisition. Read-only preflight cannot activate or change initialization mode. Renderer access is blocked by the host broker; these controls are not service exports or frontend commands.
 
 Codex blank executable paths retain PATH/NVM discovery with canonical endpoint identity `codex-cli:auto-discovery`. The adapter durably checkpoints safe UUID thread identity, turn state and bounded token usage before searching the generated-images directory. A completed turn (exit 0) whose `generated_images` root exists but has no directory for the fresh thread is a definite Failed `no_image_generated` ("Codex finished without generating an image", with Codex's reply); every other discovery failure stays Unknown, including a missing, symlinked or unreadable root, an empty thread directory, and IO errors (`codex_output_unreadable`). The adapter passes the resolved `CODEX_HOME` (an empty value counts as unset; a relative one is anchored at the backend's cwd) explicitly to `codex exec` so both sides search one directory. Interrupted or failed discovery therefore retains its turn receipt across restart. Only failed/unknown turns may add a bounded reply/error explanation (4096 UTF8 bytes); successful transcripts are never persisted or returned. Valid turn evidence from a nonzero process exit is retained without claiming proven image success. A host failure of `codex exec` is Unknown (`remote_outcome_unknown`, or `cancelled_after_dispatch` when cancelled) unless it is a proven pre-spawn rejection (`capacity_reached`, `not_found`, `permission_denied`); a failure or cancellation of `codex login status` is a definite Failed or Cancelled, because no image turn has started.
+
+## Adding an HTTP image backend
+
+An HTTP backend is one adapter module, one descriptor and one registry entry. All backends share the serialized `ApiProfile` shape (`id, name, recipeRevision, transport, baseUrl, defaultModel, allowInsecureHttp, credential`); only the `transport` value differs, so existing `profiles.json` files load unchanged. `transport` follows `^[a-z][a-z0-9-]{0,63}$` (the host's receipt rule) and is also the recipe `adapter`.
+
+`adapters/api/mod.rs` owns everything shared: the HTTP client (no retries or redirects, 180 s timeout), `interrupted()` cancellation, the bounded body reader, auth from the descriptor, `image_output()` (PNG/JPEG/WebP in, validated PNG out) and the one outcome rule, `outcome(Failure)`:
+
+| Provider result | Code | State |
+|---|---|---|
+| transport failure, broken response stream, 5xx, 408 | `remote_outcome_unknown` | Unknown |
+| any other non-2xx | `provider_rejected` (bounded, sanitised provider message, credential redacted) | Failed |
+| 200 that explicitly refuses (safety/moderation) | `provider_refused` (bounded reason) | Failed |
+| 200 that is unparseable or lacks the image | `invalid_response` | Unknown |
+
+`service.rs` marks only an explicit list of codes Unknown; `provider_rejected` and `provider_refused` are deliberately absent, so they are Failed. A backend module only builds its request, calls `send()` and parses the body (returning `Failure::Refused` for an explicit refusal), then `output()`.
+
+Checklist. Rust, backend module plus nine touch points in three files:
+
+1. `adapters/api/<name>.rs`: `pub const DESCRIPTOR: ApiDescriptor` (`transport`, `default_base_url`, `credential_env`, `auth`, honoured `options`, `max_inputs`, `validate_base_url` hook) and `pub(super) async fn generate(call: ApiCall<'_>) -> Result<Output>`.
+2. `adapters/api/mod.rs`: `pub mod <name>;`, one arm in `descriptor()` and one in `generate()`.
+3. `domain.rs`: a variant in `ApiKind` and in `ApiKind::ALL`; a `Profile::<Name>(ApiProfile)` variant with `#[serde(rename = "<transport>")]`; one arm in each of `Profile::api` and `Profile::api_mut`.
+
+Frontend:
+
+4. `plugins/image-generation/backends.json`: one entry (`transport`, `label`, `addLabel`, `defaultName`, `defaultBaseUrl`, `defaultModel`, `modelPlaceholder`, `credentialEnv`, `baseUrlLabel`, `baseUrlNote`, `rejectedUrlSuffixes`). The Add button, the connection form, validation and labels are generated from it. `frontend_registry_matches_the_backend_descriptors` fails if `transport`, `defaultBaseUrl` or `credentialEnv` differ from the descriptor, or if an entry is missing.
+
+Nothing else changes: `id`, `revision`, `credential`, `execution_identity`, configuration validation, `recipe()`, per-connection `capabilities()` and the stored-receipt checks go through the descriptor or `Profile::api()`. Trace accepts any identifier transport (`openai-image.ts`, `image-retry.ts`, `service_images.rs`); optionally give it a friendly name in Trace's `transportLabel` (`src/lib/plugins/openai-image/connections.ts`), otherwise the transport id is shown. With the `test-hooks` feature the extra `fixture-images` kind (`adapters/api/fixture.rs`) exercises a third backend without any real provider.
 
 ## Verification
 

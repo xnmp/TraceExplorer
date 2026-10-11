@@ -2,6 +2,7 @@
 //! settings reads occupy every normal reverse-RPC slot. HTTP and host IO here
 //! are local fixtures; no account or remote provider is used.
 use base64::{engine::general_purpose::STANDARD, Engine};
+use image_generation_backend::domain::ApiProfile;
 use image_generation_backend::{
     domain::{Configuration, Credential, Profile},
     error::{error, Result},
@@ -118,7 +119,7 @@ async fn completed_http_image_survives_all_normal_reverse_slots_being_occupied()
     let directory = tempfile::tempdir().unwrap();
     let service = Service::new(directory.path(), Arc::new(NoHost)).unwrap();
     service.activate().unwrap();
-    let profile = |id: &str, credential| Profile::Http {
+    let profile = |id: &str, credential| Profile::OpenAiImages(ApiProfile {
         id: id.into(),
         name: id.into(),
         recipe_revision: String::new(),
@@ -126,7 +127,7 @@ async fn completed_http_image_survives_all_normal_reverse_slots_being_occupied()
         default_model: "fixture-image".into(),
         allow_insecure_http: false,
         credential,
-    };
+    });
     let config = service
         .profiles
         .save(

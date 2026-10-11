@@ -1,4 +1,5 @@
 //! Durable corruption fails closed, including in the actual native subprocess.
+use image_generation_backend::domain::ApiProfile;
 use image_generation_backend::{domain, error::error, journal::Journal};
 use rusqlite::{params, Connection};
 use std::process::{Command, Stdio};
@@ -10,7 +11,7 @@ fn fixture() -> (tempfile::TempDir, Caller, EffectiveRecipe) {
         package_digest: "a".repeat(64),
         incarnation: 1,
     };
-    let profile = domain::Profile::Http {
+    let profile = domain::Profile::OpenAiImages(ApiProfile {
         id: "http".into(),
         name: "Fixture".into(),
         recipe_revision: "revision".into(),
@@ -18,7 +19,7 @@ fn fixture() -> (tempfile::TempDir, Caller, EffectiveRecipe) {
         default_model: "fixture".into(),
         allow_insecure_http: false,
         credential: domain::Credential::None,
-    };
+    });
     let recipe = domain::recipe(
         &profile,
         &PrepareRequest {

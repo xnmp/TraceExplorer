@@ -106,6 +106,17 @@ describe("retrying a failed image run", () => {
       expect(retryPlan(history({ operation: "openai.image.generate", parameters: { ...parameters, effective_recipe: recipe } }, []), http).ok).toBe(false);
     }
   });
+  it("pins a linked retry of any API transport to the same transport, never another backend", () => {
+    const future = { ...http, id: "gen", transport: "future-images", baseUrl: "https://gateway.test/v1" };
+    const parameters = { connection_id: "gen", connection_revision: "old-revision", model: "m", prompt: "x", size: "1024x1024", quality: "auto", background: "auto", save_directory_hint: "/out",
+      effective_recipe_digest: "a".repeat(64), effective_recipe: { schemaVersion: 1, formatterVersion: 1, connectionId: "gen", connectionRevision: "old-revision", adapter: "future-images", endpointIdentity: "https://gateway.test/v1", model: "m", options: { size: "1024x1024", quality: "auto", background: "auto", resolution: null, aspectRatio: null }, inputDigests: [], inputRoles: [], submittedPrompt: "x", agentTask: null } };
+    const linked = history({ operation: "openai.image.generate", parameters }, []);
+    expect(retryPlan(linked, future).ok).toBe(true);
+    expect(retryPlan(linked, { ...future, transport: "other-images" }).ok).toBe(false);
+    expect(retryPlan(linked, { ...future, transport: "openai-images" }).ok).toBe(false);
+    expect(retryPlan(history({ operation: "openai.image.generate", parameters: { ...parameters, effective_recipe: { ...parameters.effective_recipe, adapter: "openai-images" } } }, []), future).ok).toBe(false);
+    expect(retryPlan(history({ operation: "openai.image.generate", parameters: { ...parameters, effective_recipe: { ...parameters.effective_recipe, agentTask: "task" } } }, []), future).ok).toBe(false);
+  });
   it("keeps a linked Codex retry on its exact executable or auto-discovery identity", () => {
     const cli = imageAvailability().description!.profiles.find((p) => p.transport === "codex-cli")!;
     const parameters = { connection_id: cli.id, connection_revision: "old-revision", model: null, prompt: "x", size: "1024x1024", quality: "auto", background: "auto", save_directory_hint: "/out", effective_recipe_digest: "a".repeat(64),

@@ -1,17 +1,42 @@
-import type { ImageConfiguration, ImageProfile, ImageOperationStatus } from '../../../integration/services/image-generation-v1';
-export type { ImageConfiguration, ImageProfile, ImageOperationStatus };
+import type { ApiProfile, CodexProfile, ImageConfiguration, ImageProfile, ImageOperationStatus } from '../../../integration/services/image-generation-v1';
+import backends from '../backends.json';
+export type { ApiProfile, CodexProfile, ImageConfiguration, ImageProfile, ImageOperationStatus };
+
+/**
+ * One HTTP image backend. The data lives in `plugins/image-generation/backends.json`,
+ * which the Rust descriptors are tested against (transport, default URL, credential env).
+ */
+export interface ApiBackend {
+  readonly transport: string;
+  readonly label: string;
+  readonly addLabel: string;
+  readonly defaultName: string;
+  readonly defaultBaseUrl: string;
+  readonly defaultModel: string;
+  readonly modelPlaceholder: string;
+  readonly credentialEnv: string;
+  readonly baseUrlLabel: string;
+  readonly baseUrlNote: string;
+  /** Last URL path segments this backend refuses (it appends its own). */
+  readonly rejectedUrlSuffixes: readonly string[];
+}
+export const API_BACKENDS: readonly ApiBackend[] = backends;
+export const TRANSPORT_ID = /^[a-z][a-z0-9-]{0,63}$/;
+export function isCodex(profile: Pick<ImageProfile, 'transport'>): profile is CodexProfile { return profile.transport === 'codex-cli'; }
+export function isApi(profile: ImageProfile): profile is ApiProfile { return profile.transport !== 'codex-cli'; }
+export function backendFor(transport: string): ApiBackend | undefined { return API_BACKENDS.find(b => b.transport === transport); }
 
 export function configuration(value: ImageConfiguration): ImageConfiguration {
   return { schemaVersion: 1, documentRevision: value.documentRevision, defaultConnectionId: value.defaultConnectionId,
-    profiles: value.profiles.map(profile => profile.transport === 'codex-cli'
+    profiles: value.profiles.map(profile => isCodex(profile)
       ? { id: profile.id, name: profile.name, recipeRevision: profile.recipeRevision, transport: profile.transport, executablePath: profile.executablePath, modelSelection: false, credential: { kind: 'cli_saved_login' } }
       : { id: profile.id, name: profile.name, recipeRevision: profile.recipeRevision, transport: profile.transport, baseUrl: profile.baseUrl, defaultModel: profile.defaultModel, allowInsecureHttp: profile.allowInsecureHttp, credential: { ...profile.credential } }) };
 }
 export function equal(a: ImageConfiguration, b: ImageConfiguration): boolean { return JSON.stringify(configuration(a)) === JSON.stringify(configuration(b)); }
-export function newProfile(id: string, transport: ImageProfile['transport']): ImageProfile {
-  const base = { id, name: transport === 'codex-cli' ? 'Codex' : 'Images API', recipeRevision: 'draft' };
-  return transport === 'codex-cli' ? { ...base, transport, executablePath: '', modelSelection: false, credential: { kind: 'cli_saved_login' } }
-    : { ...base, transport, baseUrl: 'https://api.openai.com/v1/images', defaultModel: '', allowInsecureHttp: false, credential: { kind: 'none' } };
+export function newProfile(id: string, transport: string): ImageProfile {
+  if (transport === 'codex-cli') return { id, name: 'Codex', recipeRevision: 'draft', transport, executablePath: '', modelSelection: false, credential: { kind: 'cli_saved_login' } };
+  const backend = backendFor(transport);
+  return { id, name: backend?.defaultName ?? transport, recipeRevision: 'draft', transport, baseUrl: backend?.defaultBaseUrl ?? '', defaultModel: backend?.defaultModel ?? '', allowInsecureHttp: false, credential: { kind: 'none' } };
 }
 export function removeProfile(value: ImageConfiguration, id: string): ImageConfiguration {
   return { ...value, profiles: value.profiles.filter(p => p.id !== id), defaultConnectionId: value.defaultConnectionId === id ? null : value.defaultConnectionId };
@@ -24,15 +49,16 @@ export function validation(value: ImageConfiguration): string | null {
     if (!/^[\w.-]{1,128}$/.test(profile.id) || ids.has(profile.id)) return 'Connection identifiers must be unique.';
     ids.add(profile.id);
     if (!profile.name.trim() || [...profile.name].length > 256 || /[\u0000-\u001f\u007f]/.test(profile.name)) return 'Enter a connection name of at most 256 characters.';
-    if (profile.transport === 'codex-cli') {
+    if (isCodex(profile)) {
       if (profile.executablePath.length > 8192 || /[\u0000-\u001f\u007f]/.test(profile.executablePath) || profile.executablePath && !/^(\/|[A-Za-z]:[\\/]|\\\\)/.test(profile.executablePath)) return 'Use an absolute Codex executable path, or leave it empty for discovery.';
     } else {
-      if (!profile.defaultModel.trim() || [...profile.defaultModel].length > 256 || /[\u0000-\u001f\u007f]/.test(profile.defaultModel)) return 'Enter the model ID supported by this Images API.';
+      if (!profile.defaultModel.trim() || [...profile.defaultModel].length > 256 || /[\u0000-\u001f\u007f]/.test(profile.defaultModel)) return `Enter the model ID supported by this ${transportLabel(profile)}.`;
       let url: URL;
-      try { url = new URL(profile.baseUrl); } catch { return 'Enter an absolute Images resource URL.'; }
-      if (profile.baseUrl.length > 2048 || !url.hostname || url.username || url.password || url.search || url.hash) return 'The Images URL cannot contain credentials, a query, or a fragment.';
+      try { url = new URL(profile.baseUrl); } catch { return `Enter an absolute ${backendFor(profile.transport)?.baseUrlLabel ?? 'API URL'}.`; }
+      if (profile.baseUrl.length > 2048 || !url.hostname || url.username || url.password || url.search || url.hash) return `The ${transportLabel(profile)} URL cannot contain credentials, a query, or a fragment.`;
       if (url.protocol !== 'https:' && !(url.protocol === 'http:' && (profile.allowInsecureHttp || ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname)))) return 'Use HTTPS or explicitly allow insecure HTTP.';
-      if (/\/(generations|edits)\/?$/.test(url.pathname)) return 'Use the Images resource root, without /generations or /edits.';
+      const rejected = backendFor(profile.transport)?.rejectedUrlSuffixes ?? [];
+      if (rejected.includes(url.pathname.replace(/\/+$/, '').split('/').pop() ?? '')) return `Use the ${transportLabel(profile)} resource root, without /${rejected.join(' or /')}.`;
       if (profile.credential.kind === 'environment' && !/^[A-Za-z_][A-Za-z0-9_]{0,127}$/.test(profile.credential.name)) return 'Enter a valid credential environment variable name.';
     }
   }
@@ -42,9 +68,9 @@ export function validConfiguration(value: ImageConfiguration): boolean {
   if (!value || value.schemaVersion !== 1 || !Number.isSafeInteger(value.documentRevision) || value.documentRevision < 0 || !Array.isArray(value.profiles) || value.profiles.length > 32 || !(value.defaultConnectionId === null || typeof value.defaultConnectionId === 'string')) return false;
   for (const profile of value.profiles) {
     if (!profile || typeof profile.id !== 'string' || typeof profile.name !== 'string' || typeof profile.recipeRevision !== 'string' || !profile.credential) return false;
-    if (profile.transport === 'codex-cli') {
+    if (isCodex(profile)) {
       if (typeof profile.executablePath !== 'string' || profile.modelSelection !== false || profile.credential.kind !== 'cli_saved_login') return false;
-    } else if (profile.transport === 'openai-images') {
+    } else if (typeof profile.transport === 'string' && TRANSPORT_ID.test(profile.transport)) {
       if (typeof profile.baseUrl !== 'string' || typeof profile.defaultModel !== 'string' || typeof profile.allowInsecureHttp !== 'boolean') return false;
       const credential = profile.credential;
       if (!['none', 'environment', 'secret'].includes(credential.kind) || credential.kind === 'environment' && typeof credential.name !== 'string' || credential.kind === 'secret' && typeof credential.id !== 'string') return false;
@@ -84,8 +110,9 @@ export function testSummary(status: ImageOperationStatus): string {
 }
 /** The short, user-facing name of a connection's kind. */
 /** Codex has one saved login and discovers its own executable, so one Codex connection is enough. */
-export function canAddCodex(value: Pick<ImageConfiguration, 'profiles'>): boolean { return !value.profiles.some(p => p.transport === 'codex-cli'); }
-export function transportLabel(profile: Pick<ImageProfile, 'transport'>): string { return profile.transport === 'codex-cli' ? 'Codex' : 'Images API'; }
+export function canAddCodex(value: Pick<ImageConfiguration, 'profiles'>): boolean { return !value.profiles.some(isCodex); }
+/** Codex, a registered backend's label, or (for a backend this build does not know) its transport id. */
+export function transportLabel(profile: Pick<ImageProfile, 'transport'>): string { return isCodex(profile) ? 'Codex' : backendFor(profile.transport)?.label ?? profile.transport; }
 export function setDefault(value: ImageConfiguration, id: string): ImageConfiguration {
   return value.profiles.some(p => p.id === id) ? { ...value, defaultConnectionId: id } : value;
 }

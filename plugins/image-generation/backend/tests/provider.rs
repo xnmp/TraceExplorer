@@ -1,4 +1,5 @@
 use base64::{engine::general_purpose::STANDARD, Engine};
+use image_generation_backend::domain::ApiProfile;
 use image_generation_backend::{
     adapters,
     domain::{Configuration, Credential, Profile},
@@ -252,7 +253,7 @@ fn configuration(root: &str) -> Configuration {
         schema_version: 1,
         document_revision: 0,
         default_connection_id: Some("http".into()),
-        profiles: vec![Profile::Http {
+        profiles: vec![Profile::OpenAiImages(ApiProfile {
             id: "http".into(),
             name: "Custom".into(),
             recipe_revision: "".into(),
@@ -260,7 +261,7 @@ fn configuration(root: &str) -> Configuration {
             default_model: "custom-image-model".into(),
             allow_insecure_http: false,
             credential: Credential::None,
-        }],
+        })],
     }
 }
 fn caller() -> Caller {
@@ -844,7 +845,7 @@ async fn profile_cas_credentials_and_recipe_rotation_are_independent() {
         .unwrap();
     let initial = first.profiles[0].revision().to_owned();
     let mut renamed = first.clone();
-    if let Profile::Http { name, .. } = &mut renamed.profiles[0] {
+    if let Profile::OpenAiImages(ApiProfile { name, .. }) = &mut renamed.profiles[0] {
         *name = "Renamed".into()
     }
     let renamed = service.profiles.save(renamed, 1, None, None).unwrap();
@@ -1727,16 +1728,16 @@ async fn rename_and_unrelated_profile_edits_do_not_invalidate_admission_snapshot
     service.activate().unwrap();
     let mut initial = configuration("https://custom.test/images");
     let mut other = initial.profiles[0].clone();
-    if let Profile::Http { id, .. } = &mut other {
+    if let Profile::OpenAiImages(ApiProfile { id, .. }) = &mut other {
         *id = "other".into();
     }
     initial.profiles.push(other);
     let mut saved = service.profiles.save(initial, 0, None, None).unwrap();
     let snapshot = saved.profiles[0].clone();
-    if let Profile::Http { name, .. } = &mut saved.profiles[0] {
+    if let Profile::OpenAiImages(ApiProfile { name, .. }) = &mut saved.profiles[0] {
         *name = "Renamed only".into();
     }
-    if let Profile::Http { base_url, .. } = &mut saved.profiles[1] {
+    if let Profile::OpenAiImages(ApiProfile { base_url, .. }) = &mut saved.profiles[1] {
         *base_url = "https://other.test/new/images".into();
     }
     service.profiles.save(saved, 1, None, None).unwrap();
@@ -1897,7 +1898,7 @@ async fn valid_admission_rejections_are_durable_and_never_dispatch() {
         }
         if cause == "configuration_changed" {
             let mut edited = config.clone();
-            if let Profile::Http { default_model, .. } = &mut edited.profiles[0] {
+            if let Profile::OpenAiImages(ApiProfile { default_model, .. }) = &mut edited.profiles[0] {
                 *default_model = "new-model".into();
             }
             service.profiles.save(edited, 1, None, None).unwrap();
@@ -2677,7 +2678,7 @@ async fn expired_queue_never_dispatches_and_live_io_retains_worker_leases() {
     let mut config = configuration(&unused_root);
     for (index, (root, _, _, _)) in servers.iter().enumerate() {
         let mut profile = configuration(root).profiles.remove(0);
-        if let Profile::Http { id, .. } = &mut profile {
+        if let Profile::OpenAiImages(ApiProfile { id, .. }) = &mut profile {
             *id = format!("active-{index}");
         }
         config.profiles.push(profile);

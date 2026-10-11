@@ -3,6 +3,7 @@
   import type { PluginContext } from '../../../../integration/plugin-sdk';
   import type { ImageConfiguration, ImageOperationStatus } from '../../../../integration/services/image-generation-v1';
   import { plugins } from '../index';
+  import { isApi } from '../domain';
   let dialog = $state.raw<{ component: Component<any>; props: Record<string, unknown> } | null>(null);
   let configure = $state<(() => void | Promise<void>) | null>(null);
   // Like the host, a dialog opens with the props it was registered with, overridden by any passed when opening.
@@ -26,7 +27,7 @@
     }
     if (method === 'settings.credential.set' || method === 'settings.credential.clear') {
       if (params.expectedRevision !== current.documentRevision) throw Error('Settings changed');
-      current = { ...current, documentRevision: current.documentRevision + 1, profiles: current.profiles.map(p => p.id === params.profileId && p.transport === 'openai-images' ? { ...p, credential: method.endsWith('.clear') ? { kind: 'none' } : { kind: 'secret', id: 'owned-secret-reference' } } : p) }; emit(); return structuredClone(current);
+      current = { ...current, documentRevision: current.documentRevision + 1, profiles: current.profiles.map(p => p.id === params.profileId && isApi(p) ? { ...p, credential: method.endsWith('.clear') ? { kind: 'none' } : { kind: 'secret', id: 'owned-secret-reference' } } : p) }; emit(); return structuredClone(current);
     }
     if (method === 'settings.check') return { available: true };
     const requestId = String(params.requestId);

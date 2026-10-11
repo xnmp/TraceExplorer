@@ -3,7 +3,7 @@
   import "../plugin-dialog.css";
   import type { PluginJobs, PluginToast } from "../api";
   import { describeImageInputs, describeImageService, type ImageServiceAvailability, type OpenAIImageRequest } from "$lib/api/openai-image";
-  import { availabilityProblem, capabilityProblem, connectionFields, connectionFor, connectionNeedsReview, type ImageConnection } from "./connections";
+  import { availabilityProblem, capabilityProblem, connectionFields, connectionFor, connectionNeedsReview, isApiConnection, transportLabel, type ImageConnection } from "./connections";
   import { startImageJob } from "./image-jobs";
   import { describeInputs, inputRequestFields, moveInput, removeInput, withLiveInputs, type ImageInput } from "$lib/domain/image-inputs";
   import TraceThumbnail from "../trace/TraceThumbnail.svelte";
@@ -70,7 +70,7 @@
     selectedConnection = id;
     pinnedConnection = connectionFor(availability?.description, id);
     pinnedProvider = availability?.providerDigest;
-    modelOverride = pinnedConnection?.transport === "openai-images" ? pinnedConnection.defaultModel : "";
+    modelOverride = pinnedConnection && isApiConnection(pinnedConnection) ? pinnedConnection.defaultModel : "";
     quality = "auto";
     background = "auto";
   }
@@ -235,10 +235,10 @@
       {#if removedConnection}<p class="error" role="status">The selected connection was removed. Select another connection.</p>{/if}
       {#if needsReview}
         <p class="error" role="status">This connection changed. Review its updated model and options before generating.</p>
-        <p class="hint">Updated connection: {latestConnection?.name} · {latestConnection?.transport === "codex-cli" ? "Codex, which chooses its own model" : `HTTP, default model ${latestConnection?.defaultModel}`}</p>
+        <p class="hint">Updated connection: {latestConnection?.name} · {latestConnection && isApiConnection(latestConnection) ? `${transportLabel(latestConnection.transport)}, default model ${latestConnection.defaultModel}` : "Codex, which chooses its own model"}</p>
         <button type="button" class="btn btn-secondary" disabled={submitting || configuring || loadingConnections} onclick={reviewConnection}>Use updated connection</button>
       {/if}
-      {#if profile?.transport === "openai-images"}
+      {#if profile && isApiConnection(profile)}
         <label class="prompt-field">Image model
           <input class="prompt-input" aria-label="Image model" bind:value={modelOverride} placeholder={profile.defaultModel} disabled={submitting || configuring} maxlength="256" />
           <span class="hint">Leave blank to use {profile.defaultModel}. Custom model IDs are supported.</span>

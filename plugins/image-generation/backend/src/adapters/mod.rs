@@ -13,11 +13,11 @@ use std::{
     },
 };
 use te_image_generation_contract::{ArtifactDescriptor, EffectiveRecipe, ImageMetadata};
+pub mod api;
 mod codex;
 mod codex_executable;
 mod codex_prompt;
 mod codex_turn;
-mod http;
 pub struct Input {
     pub bytes: Vec<u8>,
     pub mime: String,
@@ -160,26 +160,39 @@ pub async fn generate(
             "Image generation cancelled before dispatch",
         ));
     }
-    match profile {
-        Profile::Http { base_url, .. } => {
-            http::generate(&base_url, &recipe, inputs, key, cancel, stage).await
-        }
-        Profile::Codex {
-            executable_path, ..
-        } => tokio::task::spawn_blocking(move || {
-            codex::generate(
-                &executable_path,
-                &recipe,
-                &inputs,
-                host.as_ref(),
-                &cancel,
-                evidence.as_ref(),
-                stage.as_ref(),
-            )
-        })
-        .await
-        .map_err(|_| error("interrupted", "Image worker was interrupted"))?,
+    if let Some((kind, api)) = profile.api() {
+        return api::generate(
+            kind,
+            api::ApiCall {
+                profile: api,
+                recipe: &recipe,
+                inputs,
+                key,
+                cancel,
+                stage,
+            },
+        )
+        .await;
     }
+    let Profile::Codex {
+        executable_path, ..
+    } = profile
+    else {
+        return Err(error("invalid_request", "Unsupported image connection"));
+    };
+    tokio::task::spawn_blocking(move || {
+        codex::generate(
+            &executable_path,
+            &recipe,
+            &inputs,
+            host.as_ref(),
+            &cancel,
+            evidence.as_ref(),
+            stage.as_ref(),
+        )
+    })
+    .await
+    .map_err(|_| error("interrupted", "Image worker was interrupted"))?
 }
 pub fn check_cli(path: &str) -> Result<()> {
     codex_executable::resolve(path).map(|_| ())

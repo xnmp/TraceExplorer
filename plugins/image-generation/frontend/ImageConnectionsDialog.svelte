@@ -2,7 +2,7 @@
   import { onMount, untrack } from 'svelte';
   import Modal from '$lib/components/Modal.svelte';
   import { ConnectionsController, type Backend, type RevisionEvent, type TestRegistry } from './controller';
-  import { canAddCodex, newProfile, removeProfile, setDefault, transportLabel, validation, type ImageProfile } from './domain';
+  import { API_BACKENDS, canAddCodex, newProfile, removeProfile, setDefault, transportLabel, validation, type ImageProfile } from './domain';
   import ProfileFields from './ProfileFields.svelte';
   import TestResults from './TestResults.svelte';
   let { open, onClose, backend, registry, subscribeRevision }: { open: boolean; onClose: () => void; backend: Backend; registry: TestRegistry; subscribeRevision: (fn: (event: RevisionEvent) => void) => () => void } = $props();
@@ -17,7 +17,7 @@
   let full = $derived((view.draft?.profiles.length ?? 0) >= 32);
   onMount(() => { const stop = controller.subscribe(value => view = value); const events = subscribeRevision(event => controller.revision(event)); void controller.initialize(); return () => { events(); stop(); controller.close(); }; });
   function updateProfile(next: ImageProfile) { if (view.draft) controller.edit({ ...view.draft, profiles: view.draft.profiles.map(p => p.id === next.id ? next : p) }); }
-  function add(transport: ImageProfile['transport']) {
+  function add(transport: string) {
     if (!view.draft) return;
     const next = newProfile(crypto.randomUUID(), transport);
     // The first connection becomes the default, so a new user needs no extra step to generate.
@@ -59,14 +59,14 @@
             {/if}
             <div class="add">
               {#if canAddCodex(view.draft)}<button type="button" class="ghost" disabled={view.busy || full} onclick={() => add('codex-cli')}>{@render plus()}Add Codex</button>{/if}
-              <button type="button" class="ghost" disabled={view.busy || full} onclick={() => add('openai-images')}>{@render plus()}Add Images API</button>
+              {#each API_BACKENDS as backend (backend.transport)}<button type="button" class="ghost" disabled={view.busy || full} onclick={() => add(backend.transport)}>{@render plus()}{backend.addLabel}</button>{/each}
             </div>
           </nav>
           <section class="detail" aria-label="Connection details">
             {#if !view.draft.profiles.length}
               <div class="empty">
                 <p class="empty-title">No image connections configured.</p>
-                <p class="note">Add <strong>Codex</strong> to generate with your ChatGPT sign-in, or an <strong>Images API</strong> endpoint with its own key.</p>
+                <p class="note">Add <strong>Codex</strong> to generate with your ChatGPT sign-in, or an <strong>{API_BACKENDS.map(b => b.label).join(', ')}</strong> endpoint with its own key.</p>
               </div>
             {:else if profile}
               <div class="detail-head">

@@ -1,4 +1,5 @@
 //! Actual stdio authentication/lifecycle checks for private native host controls.
+use image_generation_backend::domain::ApiProfile;
 use image_generation_backend::{domain, journal::Journal};
 use serde_json::{json, Value};
 use std::{
@@ -156,7 +157,7 @@ fn read_only_preflight_cannot_activate_or_mutate_native_controls_and_never_creat
 #[test]
 fn native_unavailable_output_discard_returns_canonical_durable_receipt_without_reverse_io() {
     let dir = tempfile::tempdir().unwrap();
-    let profile = domain::Profile::Http {
+    let profile = domain::Profile::OpenAiImages(ApiProfile {
         id: "http".into(),
         name: "Fixture".into(),
         recipe_revision: "revision".into(),
@@ -164,7 +165,7 @@ fn native_unavailable_output_discard_returns_canonical_durable_receipt_without_r
         default_model: "fixture".into(),
         allow_insecure_http: false,
         credential: domain::Credential::None,
-    };
+    });
     let recipe = domain::recipe(
         &profile,
         &PrepareRequest {

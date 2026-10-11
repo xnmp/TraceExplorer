@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { imageAvailability } from "../fixtures/image-connections";
-import { availabilityProblem, capabilityProblem, connectionFields, connectionFor, connectionNeedsReview } from "$lib/plugins/openai-image/connections";
+import { availabilityProblem, capabilityProblem, connectionFields, connectionFor, connectionNeedsReview, transportLabel } from "$lib/plugins/openai-image/connections";
 import { describeImageService, validImageAvailability } from "$lib/api/openai-image";
 import { configureBackend } from "$lib/api/common";
 
@@ -46,6 +46,24 @@ describe("shared image connection policy", () => {
   it("preserves actionable package/host reasons and distinguishes unconfigured profiles", () => {
     expect(availabilityProblem({ version: 1, available: false, reason: { code: "disabled", message: "Enable the Image Generation package in Plugins." } })).toContain("package");
     expect(availabilityProblem({ ...imageAvailability(), description: { ...imageAvailability().description!, profiles: [], defaultConnectionId: null } })).toContain("No image connections");
+  });
+  it("accepts any API transport with the shared API shape, and labels unknown ones by id", () => {
+    const value = imageAvailability();
+    value.description!.profiles = [...value.description!.profiles, { ...value.description!.profiles[1], id: "future", transport: "future-images" }];
+    expect(validImageAvailability(value)).toBe(true);
+    const future = value.description!.profiles[2];
+    expect(connectionFields(future, "").model).toBe("vendor-image-v9");
+    expect(capabilityProblem(future, { model: "", size: "1024x1024", quality: "auto", background: "auto" }, 0)).toContain("model ID");
+    expect(transportLabel("future-images")).toBe("future-images");
+    expect(transportLabel("openai-images")).toBe("Images API");
+    for (const transport of ["Bad_Name", "", "9x", "a".repeat(65)]) {
+      const bad = imageAvailability(); bad.description!.profiles[1] = { ...bad.description!.profiles[1], transport } as any;
+      expect(validImageAvailability(bad), transport).toBe(false);
+    }
+    const noShape = imageAvailability(); delete (noShape.description!.profiles[1] as any).baseUrl;
+    expect(validImageAvailability(noShape)).toBe(false);
+    const wrongSelection = imageAvailability(); wrongSelection.description!.profiles.push({ ...wrongSelection.description!.profiles[1], id: "f2", transport: "future-images", capabilities: { ...wrongSelection.description!.profiles[1].capabilities, modelSelection: false } });
+    expect(validImageAvailability(wrongSelection)).toBe(false);
   });
   it("rejects malformed descriptions before they enable generation", () => {
     expect(validImageAvailability(imageAvailability())).toBe(true);
