@@ -395,3 +395,16 @@ fn descriptor_values_and_base_url_rule() {
         assert!(base_url(ApiKind::Gemini, good, false).is_ok(), "{good}");
     }
 }
+#[test]
+fn prepare_accepts_only_the_options_the_backend_honours() {
+    let d = descriptor(ApiKind::Gemini);
+    let check = |size: &str, quality: &str, resolution: Option<&str>, aspect: Option<&str>| {
+        let mut r = recipe(resolution, aspect).options;
+        r.size = size.into();
+        r.quality = quality.into();
+        image_generation_backend::domain::options_problem(d, &r)
+    };
+    assert!(check("auto", "auto", Some("4k"), Some("keep")).is_none());
+    assert!(check("1024x1024", "auto", None, None).is_some());
+    assert!(check("auto", "high", None, None).is_some());
+}
