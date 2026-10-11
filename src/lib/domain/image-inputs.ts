@@ -2,7 +2,7 @@
  * The input images of an AI edit. They are numbered Image 1…N in the order
  * shown, which is the order they are sent to the model and recorded as the
  * output's inputs; none is a "main" image. Image 1 only decides what an
- * aspect ratio of "Keep" keeps, and names the output file.
+ * aspect ratio of "Auto" (wire value "keep") keeps, and names the output file.
  */
 import { isVirtualPath } from "./virtual-path";
 

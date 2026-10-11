@@ -138,7 +138,7 @@ describe("runSettings", () => {
   });
 
   it("shows the keep-aspect setting as Keep", () => {
-    expect(runSettings(edit({ aspect_ratio: "keep" }))).toContainEqual({ label: "Aspect ratio", value: "Keep" });
+    expect(runSettings(edit({ aspect_ratio: "keep" }))).toContainEqual({ label: "Aspect ratio", value: "Auto" });
   });
 
   it("leaves out missing, empty, automatic and non-scalar values", () => {

@@ -7,6 +7,7 @@ let activeTrace:{directory:string;inputs():readonly string[]}|null=null;
 vi.mock("$lib/plugins/openai-image/OpenAIImageHistory.svelte",()=>({default:{}}));
 import {openAIImagePlugin} from "$lib/plugins/openai-image";
 import type {PluginContext} from "../../integration/plugin-sdk";
+import type {CombinedSelectionWorkspace} from "$lib/plugins/openai-image/workspace-selection";
 import type {FileEntry} from "$lib/domain/file";
 const image:FileEntry={name:"photo.PNG",path:"/media/photo.PNG",kind:"file",size:20,modified:"2026-10-03T00:00:00Z"};
 const folder:FileEntry={...image,name:"media",path:"/media",kind:"directory"};
@@ -21,7 +22,7 @@ function fixture(initial:Record<string,unknown>={}){
     registerCommand:command=>{commands.push(command);},registerContextMenuItem:item=>{menus.push(item);},
     registerImageEditorTool:tool=>{tools.push(tool);},registerSettingsSection:section=>{settings.push(section);},registerInspector:()=>{},registerDialog:()=>{},
     openDialog:(id,props)=>{opened.push({id,props:props??{}});},closeDialog:()=>{},
-    toast:{show:()=>{},error:()=>{}},jobs:{accept:(_registration,start)=>start()},events:{listen:()=>{}},
+    toast:{show:vi.fn(),error:vi.fn()},jobs:{accept:(_registration,start)=>start()},events:{listen:()=>{}},
     storage:{get:async()=>({...stored}),set:async next=>{stored={...next};}},saveSettings:async patch=>{stored={...stored,...patch};},
     workspace:{getSelection:()=>selection,captureSelection:()=>()=>true,selectFile:async()=>{},onFilesChanged:()=>{}},
   };
@@ -50,7 +51,7 @@ describe("OpenAI plugin SDK contributions",()=>{
     const f=fixture({apiKey:"first-key"});await openAIImagePlugin.activate(f.ctx);
     await f.ctx.storage.set({apiKey:"current-key"});f.setSelection([image]);
     const command=f.commands.find(command=>command.id==="plugin.openai-image.edit")!;
-    expect(command.shortcut).toBe("Ctrl+E");expect(command.when?.()).toBe(true);await command.handler();
+    expect(command.shortcut).toBe("Ctrl+E");expect(command.when).toBeUndefined();await command.handler();
     expect(f.opened.at(-1)).toMatchObject({id:"openai-image.create",props:{inputs:[{path:image.path}],outputDir:"/media",configureConnections:expect.any(Function)}});
     expect(f.opened.at(-1)?.props).not.toHaveProperty("apiKey");
     expect(f.opened.at(-1)?.props).not.toHaveProperty("codexPath");
@@ -64,16 +65,18 @@ describe("OpenAI plugin SDK contributions",()=>{
     for(const invalid of [[image,folder],[{...image,path:"demo://photo.png"}],[{...image,name:"animated.gif"}],Array.from({length:9},(_,i)=>({...image,path:`/media/${i}.png`}))])expect(menu.when(invalid)).toBe(false);
     expect(f.tools.some(tool=>tool.when({path:image.path,name:image.name,digest:"a".repeat(64),format:"PNG",referencePaths:[]}))).toBe(true);
   });
-  it("Ctrl+E opens all highlighted images as ordered inputs and rejects duplicate or excessive selections",async()=>{
+  it("Ctrl+E opens all highlighted images as ordered inputs and reports invalid selections",async()=>{
     const f=fixture();await openAIImagePlugin.activate(f.ctx);
     const selected=Array.from({length:8},(_,i)=>({...image,name:`input-${i}.png`,path:`/media/input-${i}.png`}));
     const command=f.commands.find(command=>command.id==="plugin.openai-image.edit")!;
-    f.setSelection(selected);expect(command.when?.()).toBe(true);await command.handler();
+    f.setSelection(selected);expect(command.when).toBeUndefined();await command.handler();
     expect(f.opened.at(-1)?.props).toMatchObject({inputs:selected.map(item=>({path:item.path}))});
-    for(const invalid of [[image,image],[...selected,image],[],[image,folder]]){
-      f.setSelection(invalid);expect(command.when?.()).toBe(false);await command.handler();
+    for(const invalid of [[...selected,image],[image,folder],[{...image,name:"clip.gif",path:"/media/clip.gif"}],[{...image,path:"demo://photo.png"}]]){
+      f.setSelection(invalid);await command.handler();
     }
     expect(f.opened).toHaveLength(1);
+    expect(f.ctx.toast.show).toHaveBeenCalledTimes(4);
+    expect(f.ctx.toast.show).toHaveBeenLastCalledWith("Select one to eight PNG, JPEG, or WebP images first", "info");
   });
   it("generates in the chosen folder with no invented source and exposes history",async()=>{
     const f=fixture({codexPath:"/opt/custom tools/codex"});await openAIImagePlugin.activate(f.ctx);
@@ -91,7 +94,7 @@ describe("OpenAI plugin SDK contributions",()=>{
     try{
       f.setSelection([{...image,path:"/media/b.png",name:"b.png"}]);
       const command=f.commands.find(command=>command.id==="plugin.openai-image.edit")!;
-      expect(command.when?.()).toBe(true);await command.handler();
+      expect(command.when).toBeUndefined();await command.handler();
       expect(f.opened.at(-1)?.props).toMatchObject({inputs:picked.map(path=>({path})),outputDir:"/media"});
       // A context menu on something outside the picks uses what was clicked.
       const menu=f.menus.find(menu=>menu.id==="openai-image.edit")!;
@@ -100,7 +103,56 @@ describe("OpenAI plugin SDK contributions",()=>{
       // Picks that cannot all be sent are never silently cut down.
       activeTrace={directory:"/media",inputs:()=>[...picked,"/media/clip.gif"]};
       f.setSelection([]);
-      expect(command.when?.()).toBe(false);
+      const opened=f.opened.length;await command.handler();
+      expect(f.opened).toHaveLength(opened);
+      expect(f.ctx.toast.show).toHaveBeenCalledWith("Select one to eight PNG, JPEG, or WebP images first", "info");
+    }finally{activeTrace=null;}
+  });
+  it("Ctrl+E with no selection generates in the current pane folder",async()=>{
+    const f=fixture();f.ctx.workspace.getCurrentDirectory=()=>"/current";
+    await openAIImagePlugin.activate(f.ctx);
+    const command=f.commands.find(c=>c.id==="plugin.openai-image.edit")!;
+    expect(command.when).toBeUndefined();await command.handler();
+    expect(f.opened.at(-1)?.props).toMatchObject({inputs:[],outputDir:"/current"});
+    f.setSelection([image]);await command.handler();
+    expect(f.opened.at(-1)?.props).toMatchObject({inputs:[{path:image.path}],outputDir:"/current"});
+  });
+  it("opens generation on old hosts with no folder API so the form can guide the output location",async()=>{
+    const f=fixture();await openAIImagePlugin.activate(f.ctx);
+    await f.commands.find(c=>c.id==="plugin.openai-image.edit")!.handler();
+    expect(f.opened.at(-1)?.props).toMatchObject({inputs:[],outputDir:""});
+    activeTrace={directory:"/trace",inputs:()=>[]};
+    try{
+      await f.commands.find(c=>c.id==="plugin.openai-image.edit")!.handler();
+      expect(f.opened.at(-1)?.props).toMatchObject({inputs:[],outputDir:"/trace"});
+    }finally{activeTrace=null;}
+  });
+  it("uses the optional combined selection even when the active pane has no inputs",async()=>{
+    const f=fixture();
+    const workspace:CombinedSelectionWorkspace=f.ctx.workspace;
+    let combined:FileEntry[]=[image,image];
+    workspace.getCombinedSelection=()=>combined;
+    await openAIImagePlugin.activate(f.ctx);
+    const command=f.commands.find(c=>c.id==="plugin.openai-image.edit")!;
+    await command.handler();
+    expect(f.opened.at(-1)?.props).toMatchObject({inputs:[{path:image.path}]});
+    combined=[folder];await command.handler();
+    expect(f.opened).toHaveLength(1);
+    expect(f.ctx.toast.show).toHaveBeenCalledWith("Select one to eight PNG, JPEG, or WebP images first","info");
+  });
+  it("combines other panes with ordered Trace picks and rejects their invalid inputs",async()=>{
+    const f=fixture(),second={...image,name:"other.webp",path:"/other/other.webp"};
+    f.setSelection([image]);
+    const workspace:CombinedSelectionWorkspace=f.ctx.workspace;
+    let combined=[image,second];workspace.getCombinedSelection=()=>combined;
+    activeTrace={directory:"/media",inputs:()=>["/managed/new.png",image.path]};
+    try{
+      await openAIImagePlugin.activate(f.ctx);
+      const command=f.commands.find(c=>c.id==="plugin.openai-image.edit")!;
+      await command.handler();
+      expect(f.opened.at(-1)?.props).toMatchObject({inputs:[{path:"/managed/new.png"},{path:image.path},{path:second.path}]});
+      combined=[image,folder];await command.handler();
+      expect(f.opened).toHaveLength(1);
     }finally{activeTrace=null;}
   });
   describe("direct image editor entry",()=>{

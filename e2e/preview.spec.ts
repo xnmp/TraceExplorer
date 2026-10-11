@@ -170,7 +170,7 @@ test.describe("Preview info", () => {
     await openView(page);
     await click(page, "warm");
     await openDetails(page);
-    await expect(trace(page).locator(".row", { hasText: "Aspect ratio" }).locator("dd")).toHaveText("Keep");
+    await expect(trace(page).locator(".row", { hasText: "Aspect ratio" }).locator("dd")).toHaveText("Auto");
   });
 
   test("shows the prompt, parameters and actual size", async ({ page }) => {

@@ -17,12 +17,14 @@
   import { openAIImagePlugin } from "$lib/plugins/openai-image";
   import { DIRECTORY, files, backend, initialTileSize } from "./view-fixture";
   import { TILE_IMAGE_PX } from "./tile-presets";
+  import type { CombinedSelectionWorkspace } from "$lib/plugins/openai-image/workspace-selection";
 
   let views = $state.raw<FileViewContribution[]>([]);
   let sections = $state.raw<PreviewInfoContribution[]>([]);
   const commands = new Map<string, () => void | Promise<void>>();
   /** Each command's `when`: whether the host would offer it (for example on its shortcut). */
   const conditions = new Map<string, () => boolean>();
+  const shortcuts = new Map<string, string>();
   const listeners = new Map<string, Array<(payload: unknown) => void>>();
   const fileListeners: Array<(directories: readonly string[]) => void> = [];
 
@@ -55,6 +57,10 @@
   let tilePreset = $state<TileSizePreset | null>(initialTileSize);
   // `?ai=1` also activates the AI image plugin, with dialogs and a jobs service.
   const ai = new URLSearchParams(location.search).has("ai");
+  // Opt-in simulation of the optional combined-selection extension. The
+  // current host checkout offers only active-pane selection.
+  const combinedSelectionApi = new URLSearchParams(location.search).has("combinedSelection");
+  let otherPaneSelection = $state.raw<FileEntry[]>([]);
   const dialogs = new Map<string, Component<any>>();
   let opened_dialogs = $state.raw<Array<{ id: string; props: Record<string, unknown> }>>([]);
   let accepted = $state.raw<Array<{ label: string; detail: string }>>([]);
@@ -86,18 +92,20 @@
   let closeConfiguration: (() => void) | undefined;
   let configureFailure: string | null = null;
   function activate() {
-    views = []; sections = []; commands.clear(); conditions.clear(); listeners.clear(); fileListeners.length = 0; menuItems.clear(); editorToolId = null; disposed = false;
+    views = []; sections = []; commands.clear(); conditions.clear(); shortcuts.clear(); listeners.clear(); fileListeners.length = 0; menuItems.clear(); editorToolId = null; disposed = false;
     const ctx = {
       registerSettingsSection: () => {},
       registerFileView: (view: FileViewContribution) => { views = [...views, view]; },
       registerPreviewInfo: (section: PreviewInfoContribution) => { sections = [...sections, section]; },
-      registerCommand: (command: { id: string; handler: () => void | Promise<void>; when?: () => boolean }) => { commands.set(command.id, command.handler); conditions.set(command.id, command.when ?? (() => true)); },
+      registerCommand: (command: { id: string; handler: () => void | Promise<void>; when?: () => boolean; shortcut?: string }) => { commands.set(command.id, command.handler); conditions.set(command.id, command.when ?? (() => true)); if (command.shortcut) shortcuts.set(command.shortcut, command.id); },
       events: { listen: (name: string, handler: (payload: unknown) => void) => { listeners.set(name, [...(listeners.get(name) ?? []), handler]); } },
       workspace: {
+        getCurrentDirectory: () => directory,
         onFilesChanged: (handler: (directories: readonly string[]) => void) => { fileListeners.push(handler); },
         toggleFileView: (id: string) => { fileView = fileView === id ? null : id; },
         getFileView: () => fileView,
         getSelection: () => entries.filter((entry) => selected.includes(entry.path)),
+        ...(combinedSelectionApi ? { getCombinedSelection: () => [...entries.filter((entry) => selected.includes(entry.path)), ...otherPaneSelection] } satisfies Pick<CombinedSelectionWorkspace, "getCombinedSelection"> : {}),
         captureSelection: () => () => true,
         selectFile: async () => {},
       },
@@ -134,6 +142,18 @@
     } as unknown as PluginContext);
   }
   activate();
+
+  /** The host executes registered shortcuts only when their command's when
+   * clause allows it. Dialogs own their keyboard input while open.
+   */
+  function shortcut(event: KeyboardEvent): void {
+    if (opened_dialogs.length || editorSource || configureOpen || event.isComposing || event.repeat) return;
+    const key = `${event.ctrlKey ? "Ctrl+" : ""}${event.altKey ? "Alt+" : ""}${event.shiftKey ? "Shift+" : ""}${event.key.length === 1 ? event.key.toUpperCase() : event.key}`;
+    const id = shortcuts.get(key);
+    if (!id || !conditions.get(id)?.()) return;
+    event.preventDefault();
+    void commands.get(id)?.();
+  }
 
   backend.onChange(() => {
     entries = files();
@@ -225,6 +245,7 @@
     selectPath(path: string) { pane.setSelection([path], path); },
     /** The host replaces the selection itself (another pane, a command), as `explorer.selectPaths` does. */
     setSelection(paths: string[]) { pane.setSelection(paths); },
+    setOtherPaneSelection(entries: FileEntry[]) { otherPaneSelection = [...entries]; },
     /** The host's Select all: every listed file (an unchanged selection notifies nothing). */
     selectAll() { replaceSelection(entries.map((entry) => entry.path)); anchor = entries[0]?.path ?? null; },
     /** Re-sorts the listing (reversed), as choosing another sort order does: the selection is unchanged. */
@@ -245,6 +266,8 @@
     accepted: () => [...accepted],
   };
 </script>
+
+<svelte:window onkeydown={shortcut} />
 
 <main style:--view-width="{viewWidth}px">
   <section class="explorer" aria-label="Explorer pane" oncontextmenu={backgroundContextMenu}>

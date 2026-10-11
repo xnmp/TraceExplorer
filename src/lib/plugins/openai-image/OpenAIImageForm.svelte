@@ -11,6 +11,7 @@
   import { basename } from "$lib/domain/path";
   import { imageOutputFilename } from "$lib/domain/image-output-filename";
   import { imageGenerationSize, type ImageResolution, type ImageAspectRatio } from "$lib/domain/image-generation-settings";
+  import { outputLocationProblem } from "$lib/domain/target-location";
 
   interface Props {
     open: boolean;
@@ -35,6 +36,7 @@
    */
   const images = $derived(withLiveInputs(arranged, inputs));
   const editing = untrack(() => inputs.length > 0);
+  const locationProblem = $derived(outputLocationProblem(outputDir));
   let stripRef = $state<HTMLOListElement | null>(null);
   let availability = $state.raw<ImageServiceAvailability | null>(null);
   let connectionError = $state("");
@@ -163,6 +165,7 @@
     let accepted = 0;
     try {
       if (!Number.isInteger(count) || count < 1 || count > 8) throw new Error("Choose between 1 and 8 images");
+      if (locationProblem) throw new Error(locationProblem);
       if (availabilityError) throw new Error(availabilityError);
       if (removedConnection) throw new Error("The selected connection was removed. Select another connection.");
       if (needsReview) throw new Error("Review the updated connection before generating.");
@@ -216,7 +219,7 @@
   const offered = $derived(offeredOptions(profile));
   const resolutionOptions = $derived(profile?.capabilities.resolution ? RESOLUTIONS.filter((o) => profile.capabilities.resolution!.includes(o.value)) : RESOLUTIONS);
   const aspectRatioOptions = $derived([
-    ...(editing ? [{ value: "keep", label: "Keep (Image 1)" }] : []),
+    ...(editing ? [{ value: "keep", label: "Auto" }] : []),
     ...plain(["1:1", "4:3", "3:4", "3:2", "2:3", "16:9", "9:16"]),
   ].filter((o) => !profile?.capabilities.aspectRatio || profile.capabilities.aspectRatio.includes(o.value)));
   const qualityOptions = $derived(plain(profile?.capabilities.quality ?? ["auto"]));
@@ -282,6 +285,7 @@
         <textarea class="prompt-input" rows="4" maxlength="16000" bind:value={prompt} bind:this={promptRef} disabled={submitting} required
           placeholder={images.length > 1 ? "Describe your edit. Refer to images by number, e.g. “the hat in Image 2”…" : editing ? "Describe your edit…" : "Describe your image…"}></textarea>
       </label>
+      {#if locationProblem}<p class="error" role="status">{locationProblem}</p>{/if}
       <div class="options">
         {#if offered.resolution}
         <label class="prompt-field">Resolution
@@ -310,7 +314,7 @@
       {#if error}<p class="error" role="alert">{error}</p>{/if}
     </div>
     <footer>
-      <button class="btn btn-primary" type="submit" disabled={!prompt.trim() || submitting || configuring || loadingConnections || !profile || !!availabilityError || removedConnection || needsReview} title="Ctrl+Enter">{submitting ? "Starting…" : "Generate"}</button>
+      <button class="btn btn-primary" type="submit" disabled={!prompt.trim() || submitting || configuring || loadingConnections || !profile || !!availabilityError || removedConnection || needsReview || !!locationProblem} title="Ctrl+Enter">{submitting ? "Starting…" : "Generate"}</button>
     </footer>
   </form>
 

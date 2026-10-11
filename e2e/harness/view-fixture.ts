@@ -230,6 +230,10 @@ configureBackend({
         if ("apiKey" in params || "backend" in request || "codexPath" in request) return Promise.reject(new Error("Credentials are not accepted by shared image jobs"));
         if (!imageService.available || !profile) return Promise.reject(new Error("Image connection unavailable"));
         if (request.expectedConnectionRevision !== profile.recipeRevision) return Promise.reject(new Error("Image connection changed; prepare again"));
+        const references = (request.referencePaths ?? []) as string[];
+        const inputCount = (request.sourcePath ? 1 : 0) + references.length;
+        if (!(inputCount ? profile.capabilities.edit : profile.capabilities.generation)) return Promise.reject(new Error("Image connection does not support this operation"));
+        if (inputCount > profile.capabilities.maxInputs) return Promise.reject(new Error("Too many image inputs"));
         if (profile.transport === "codex-cli" ? request.model !== null : typeof request.model !== "string" || !request.model.trim()) return Promise.reject(new Error("Invalid image model"));
         return reply(900 + calls.filter((call) => call.method === "jobs.start").length);
       }

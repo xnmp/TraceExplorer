@@ -27,7 +27,7 @@ test("a Trace selection of listed, subfolder and unsaved images arrives whole, i
   await expect(dialog(page).getByText("References:")).toHaveCount(0);
   await expect(dialog(page).getByLabel("Edit target")).toHaveCount(0);
   await expect(dialog(page).getByRole("combobox", { name: "Aspect ratio" })).toHaveAttribute("data-value", "keep");
-  await expect(dialog(page).getByRole("combobox", { name: "Aspect ratio" })).toHaveText("Keep (Image 1)");
+  await expect(dialog(page).getByRole("combobox", { name: "Aspect ratio" })).toHaveText("Auto");
   if (SHOTS) { await settle(page); await dialog(page).locator(".plugin-dialog").screenshot({ path: `${SHOTS}/edit-inputs-4.png` }); }
 
   // Removing Image 3 renumbers the rest.
@@ -410,7 +410,7 @@ test.describe("picks follow saves and deletes", () => {
     expect(await editInputs(page)).toEqual([warm, "/pictures/merge.png"]);
   });
 
-  test("deleting the picked unsaved image leaves nothing to edit", async ({ page }) => {
+  test("deleting the picked unsaved image allows text-to-image generation", async ({ page }) => {
     await openView(page, 1400, "?ai=1");
     await click(page, "warm");
     await click(page, "merge");
@@ -418,7 +418,10 @@ test.describe("picks follow saves and deletes", () => {
     await preview(page).getByRole("button", { name: /^Delete/ }).click();
     // Its node leaves the graph, so its Preview target is cleared.
     await expect.poll(async () => (await state(page)).target).toBeNull();
-    await expect.poll(() => enabled(page)).toBe(false);
+    await expect.poll(() => enabled(page)).toBe(true);
+    await page.keyboard.press("Control+e");
+    await expect(page.getByRole("dialog", { name: "Generate image with AI" })).toBeVisible();
+    await expect(dialog(page).getByRole("list", { name: /Inputs/ })).toHaveCount(0);
   });
 });
 
@@ -447,6 +450,8 @@ test.describe("when the inputs cannot be read", () => {
     await fail(page, 2);
     await page.evaluate((d) => (window as any).trace.openEditor("/pictures/warm.png", d), digest);
     await expect(editor(page).getByRole("alert")).toContainText("Could not read the input images");
+    await expect(editor(page).getByLabel("Temperature", { exact: true })).toHaveCount(0);
+    await expect(editor(page).getByLabel("Seed", { exact: true })).toHaveCount(0);
     await editor(page).getByRole("textbox", { name: "Edit prompt" }).fill("Warmer light");
     // Keep needs Image 1's size: neither the backend nor the editor has it yet.
     await page.keyboard.press("Control+Enter");
