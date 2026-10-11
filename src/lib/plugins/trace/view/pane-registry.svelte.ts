@@ -16,6 +16,8 @@ export interface TracePaneView {
   readonly active: boolean;
   /** The selected images in the order they were picked, including unlisted ones. */
   inputs(): readonly string[];
+  /** A highlighted Preview target that cannot be used as an image input. */
+  hasUnusableTarget(): boolean;
 }
 
 let views = $state.raw<ReadonlyMap<string, TracePaneView>>(new Map());

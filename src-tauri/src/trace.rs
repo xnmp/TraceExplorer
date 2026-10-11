@@ -768,7 +768,7 @@ pub(crate) fn relocate_image(source: &Path, target: &Path) -> Result<(), AppErro
     relocate_at(&database_path()?, source, target)
 }
 
-/// Editing an unsaved output retains its original permanent-folder suggestion.
+/// Historical folder suggestion for callers without a resolved output folder.
 pub(crate) fn inherited_save_directory(input: &OperationInput) -> Result<Option<String>, AppError> {
     let database = database_path()?;
     if !database.exists() {

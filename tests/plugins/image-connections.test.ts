@@ -35,6 +35,8 @@ describe("shared image connection policy", () => {
     const [cli, http] = imageAvailability().description!.profiles;
     const request = { model: "custom-image", size: "1024x1024", quality: "high", background: "transparent" } as const;
     expect(capabilityProblem(http, request, 8)).toBeNull();
+    expect(capabilityProblem(http, request, 0)).toBeNull();
+    expect(capabilityProblem({ ...http, capabilities: { ...http.capabilities, generation: false } }, request, 0)).toContain("generation");
     expect(capabilityProblem(cli, request, 1)).toContain("options");
     expect(capabilityProblem(http, request, 9)).toContain("8");
     expect(capabilityProblem(http, { ...request, size: "99999x16" }, 0)).toContain("size");

@@ -1143,16 +1143,17 @@ fn accept_with_deadline(
             inputs: prepare.inputs,
             options: prepare.options,
         };
-        let save_hint = captured
+        let inherited = captured
             .first()
             .map(|input| inherited_hint(database, input))
             .transpose()?
-            .flatten()
-            .unwrap_or_else(|| request.output_dir.clone());
+            .flatten();
+        let save_hint =
+            crate::temporary_output::save_directory_hint(&request.output_dir, inherited.as_deref());
         let output = crate::temporary_output::prepare(
             generated,
             request.source_path.as_deref().map(Path::new),
-            save_hint,
+            save_hint.to_owned(),
         )?;
         let target = output.directory.join(&output.filename);
         sync_ancestors(&output.directory)?;
@@ -4788,19 +4789,31 @@ mod tests {
         (finished, details.map_or(Value::Null, |d| parse(&d).unwrap()))
     }
     #[test]
-    fn editing_exact_unsaved_revision_inherits_its_permanent_folder_suggestion() {
-        for matching in [true, false] {
+    fn editing_revision_uses_explicit_folder_or_inherits_when_omitted() {
+        for (matching, explicit) in [(true, true), (false, true), (true, false), (false, false)] {
             let f = Fixture::new();
+            let current = f._root.path().join("current");
+            let original = f._root.path().join("original");
+            let current = current.to_str().unwrap();
+            let original = original.to_str().unwrap();
+            let output_dir = if explicit { current } else { "" };
+            let expected = if explicit {
+                current
+            } else if matching {
+                original
+            } else {
+                ""
+            };
             let digest = if matching {
                 f.host.output.sha256.clone()
             } else {
                 "f".repeat(64)
             };
-            record_operation_at(&f.database,OperationRecord{operation:"openai.image.generate".into(),parameters:json!({"output_storage":"temporary","save_directory_hint":"/Pictures/original"}),inputs:vec![],output_path:f.host.path.to_string_lossy().into(),output_digest:digest}).unwrap();
+            record_operation_at(&f.database,OperationRecord{operation:"openai.image.generate".into(),parameters:json!({"output_storage":"temporary","save_directory_hint":original}),inputs:vec![],output_path:f.host.path.to_string_lossy().into(),output_digest:digest}).unwrap();
             let mut request = request();
             request.source_path = Some(f.host.path.to_string_lossy().into());
             request.expected_source_digest = Some(f.host.output.sha256.clone());
-            request.output_dir = "/Pictures/current-fallback".into();
+            request.output_dir = output_dir.into();
             let link = accept_with(
                 f.host.as_ref(),
                 &f.database,
@@ -4822,13 +4835,19 @@ mod tests {
                 )
                 .unwrap();
             let parameters: Value = parse(&raw).unwrap();
+            assert_eq!(parameters["save_directory_hint"], expected);
+            let context: Option<String> = connection_at(&f.database)
+                .unwrap()
+                .query_row(
+                    "SELECT folder FROM image_folder_contexts WHERE run_id=?1",
+                    [link.run_id],
+                    |row| row.get(0),
+                )
+                .optional()
+                .unwrap();
             assert_eq!(
-                parameters["save_directory_hint"],
-                if matching {
-                    "/Pictures/original"
-                } else {
-                    "/Pictures/current-fallback"
-                }
+                context.as_deref(),
+                (!expected.is_empty()).then_some(expected)
             );
             assert_eq!(f.host.count("start"), 0);
         }

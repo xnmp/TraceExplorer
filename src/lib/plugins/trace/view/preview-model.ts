@@ -96,7 +96,7 @@ export function runSettings(run: TraceRun): PreviewSetting[] {
   const rows: Array<[string, string | null]> = [
     ["Operation", text(traceOperationLabel(run.operation))],
     ["Resolution", typeof resolution === "string" ? text(resolution.toLowerCase())?.toUpperCase() ?? null : text(resolution)],
-    ["Aspect ratio", aspect === "keep" ? "Keep" : text(aspect)],
+    ["Aspect ratio", aspect === "keep" ? "Auto" : text(aspect)],
     ["Quality", text(quality)],
     ["Seed", text(seed)],
     ["Actual size", actualSize(run.details)],

@@ -15,6 +15,7 @@ pub(crate) struct ImageRequest {
     #[serde(default)]
     pub expected_reference_digests: Vec<String>,
     pub prompt: String,
+    #[serde(default)]
     pub output_dir: String,
     pub output_filename: String,
     pub size: String,
@@ -112,6 +113,21 @@ mod tests {
     fn request() -> ImageRequest {
         serde_json::from_value(serde_json::json!({"connectionId":"my.profile_1","expectedConnectionRevision":"revision-1","model":"任意のモデル","sourcePath":null,"prompt":"Draw an image","outputDir":"","outputFilename":"image.png","size":"1024x1024","quality":"auto","background":"auto"})).unwrap()
     }
+    #[test]
+    fn older_callers_can_omit_the_output_folder() {
+        let mut value = serde_json::to_value(request()).unwrap();
+        value.as_object_mut().unwrap().remove("outputDir");
+        let request: ImageRequest = serde_json::from_value(value.clone()).unwrap();
+        assert_eq!(request.output_dir, "");
+        request.validate().unwrap();
+        let fields = value.as_object_mut().unwrap();
+        fields.remove("connectionId");
+        fields.remove("expectedConnectionRevision");
+        fields.insert("model".into(), "gpt-image-2".into());
+        let legacy: crate::openai_image::ImageRequest = serde_json::from_value(value).unwrap();
+        assert_eq!(legacy.output_dir, "");
+    }
+
     #[test]
     fn arbitrary_model_and_adapter_managed_model_are_supported() {
         let mut request=request();request.validate().unwrap();request.model=None;request.validate().unwrap();

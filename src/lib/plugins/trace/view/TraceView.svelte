@@ -436,6 +436,11 @@
     },
     get active() { return pane.active; },
     inputs: () => inputs,
+    hasUnusableTarget: () => {
+      if (!targetData) return false;
+      const node = findNode(targetData.key)?.node;
+      return !node || !pickable(node);
+    },
   };
   $effect(() => tracePanes.set(pane.paneId, view));
 

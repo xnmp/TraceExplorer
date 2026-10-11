@@ -1,12 +1,15 @@
 import type { Plugin, PluginContext } from "../api";
 import type { FileEntry } from "$lib/domain/file";
 import { isVirtualPath } from "$lib/domain/virtual-path";
-import { parentDir } from "$lib/domain/path";
+import { basename, parentDir } from "$lib/domain/path";
 import OpenAIImageDialog from "./OpenAIImageDialog.svelte";
 import OpenAIImageEditorTool from "./OpenAIImageEditorTool.svelte";
 import OpenAIImageHistory from "./OpenAIImageHistory.svelte";
 import { tracePanes } from "../trace/view/pane-registry.svelte";
 import { imageInputPaths, singleImagePath } from "$lib/domain/image-inputs";
+import { aiEditIntent, type AIEditIntent } from "$lib/domain/ai-edit-intent";
+import { combinedSelection } from "./workspace-selection";
+import { aiOutputDirectory, outputLocationProblem } from "$lib/domain/target-location";
 
 const EDITOR_TOOL_ID = "openai-image";
 const DIALOG_ID = "openai-image.create";
@@ -26,6 +29,23 @@ function selectedImages(ctx: PluginContext, entries: FileEntry[] = ctx.workspace
   if (trace && picked.length && entries.every((entry) => picked.includes(entry.path))) return { paths: imageInputPaths(picked), outputDir: trace.directory };
   const paths = images(entries);
   return { paths, outputDir: paths.length ? parentDir(paths[0]) : "" };
+}
+
+/** Trace picks preserve click order and unlisted inputs; other panes' selected
+ * files follow them. Keep the raw entries so an invalid selection stays invalid.
+ */
+function commandIntent(ctx: PluginContext): { intent: AIEditIntent; outputDir: string } {
+  const entries = ctx.workspace.getSelection();
+  const trace = tracePanes.active();
+  const picks = trace?.inputs() ?? [];
+  const ordered = picks.length && entries.every((entry) => picks.includes(entry.path))
+    ? picks.map((path) => entries.find((entry) => entry.path === path) ?? { path, name: basename(path), kind: "file" as const })
+    : entries;
+  const intent = aiEditIntent([...ordered, ...combinedSelection(ctx.workspace)], trace?.hasUnusableTarget() ?? false);
+  // An older host can still supply the current Trace pane, or an edit's folder.
+  const outputDir = aiOutputDirectory(ctx.workspace.getCurrentDirectory?.() ?? trace?.directory,
+    intent.kind === "edit" ? intent.inputs : []);
+  return { intent, outputDir };
 }
 
 async function open(ctx: PluginContext, inputs: readonly string[], outputDir: string): Promise<void> {
@@ -82,11 +102,12 @@ export const openAIImagePlugin: Plugin = {
     });
     ctx.registerCommand({
       id: "plugin.openai-image.edit", label: "AI Edit Image…", category: "plugins", shortcut: "Ctrl+E",
-      when: () => selectedImages(ctx).paths.length > 0,
       handler: () => {
-        const selected = selectedImages(ctx);
-        if (selected.paths.length) return open(ctx, selected.paths, selected.outputDir);
-        ctx.toast.show("Select one to eight PNG, JPEG, or WebP images first", "info");
+        const { intent, outputDir } = commandIntent(ctx);
+        if (intent.kind === "invalid") { ctx.toast.show(intent.reason, "info"); return; }
+        const problem = intent.kind === "generate" && outputDir ? outputLocationProblem(outputDir) : null;
+        if (problem) { ctx.toast.show(problem, "info"); return; }
+        return open(ctx, intent.kind === "edit" ? intent.inputs : [], outputDir);
       },
     });
     // Feature-detected: older hosts have no direct editor entry, so neither contribution is offered there.
