@@ -105,8 +105,11 @@ export function folderComponents(input: readonly FolderNode[], dismissedRuns: Re
   }
   /** The cover as a tile is a drawn root (never a reference badge): the title's rule over drawn members. */
   const drawnCover = (members: readonly TraceNode[]) => {
-    const sorted = [...members].sort(byOrder);
-    return sorted.find((node) => node.path && node.scope === "current" && !node.parents.some((key) => byKey.get(key)!.scope === "current"))
+    const sorted = [...members].sort(byOrder), drawn = new Set(members.map((node) => node.key));
+    const roots = sorted.filter((node) => !node.parents.some((key) => drawn.has(key)));
+    return roots.find((node) => node.path && node.scope === "current") ?? roots.find((node) => node.path)
+      // A cycle leaves no root: fall back to the title's rule.
+      ?? sorted.find((node) => node.path && node.scope === "current" && !node.parents.some((key) => byKey.get(key)!.scope === "current"))
       ?? sorted.find((node) => node.path) ?? sorted[0];
   };
   return [...groups].map(([root, members]) => {

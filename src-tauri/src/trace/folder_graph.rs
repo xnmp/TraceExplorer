@@ -837,10 +837,17 @@ fn summarize(
         is_current(*index) && !parents[*index].iter().any(|parent| is_current(*parent))
     }))
     .or_else(|| oldest_with_path(&mut members.iter().copied()));
-    // The cover as a tile is a drawn root: the same rule as the title, over drawn members only.
+    // The cover as a tile is a root of what is drawn: no drawn parent. Reference badges are not
+    // drawn, but an external tile is, so a current image consuming one is not a root.
+    let drawn_root = |index: &usize| !parents[*index].iter().any(|parent| drawn.contains(parent));
     let cover_key = oldest_with_path(&mut drawn.iter().copied().filter(|index| {
-        is_current(*index) && !parents[*index].iter().any(|parent| is_current(*parent))
+        is_current(*index) && drawn_root(index)
     }))
+    .or_else(|| oldest_with_path(&mut drawn.iter().copied().filter(|index| drawn_root(index))))
+    // A cycle leaves no root: fall back to the title's rule.
+    .or_else(|| oldest_with_path(&mut drawn.iter().copied().filter(|index| {
+        is_current(*index) && !parents[*index].iter().any(|parent| is_current(*parent))
+    })))
     .or_else(|| oldest_with_path(&mut drawn.iter().copied()))
     .or_else(|| drawn.iter().copied().min_by_key(|index| nodes[*index].order))
     .map(|index| nodes[index].key.clone())

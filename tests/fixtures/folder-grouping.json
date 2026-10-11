@@ -1024,7 +1024,7 @@
         ],
         "path": "/managed/out.png",
         "scope": "external",
-        "location": "Temporary · not yet saved",
+        "location": "Temporary \u00b7 not yet saved",
         "state": "present",
         "temporary": true,
         "discarded": false,
@@ -1632,9 +1632,9 @@
         "artifactId": 5,
         "runId": null,
         "parents": [],
-        "path": "/pictures/.png",
+        "path": "/pictures/\ue000.png",
         "scope": "current",
-        "location": "./.png",
+        "location": "./\ue000.png",
         "state": "present",
         "temporary": false,
         "discarded": false,
@@ -1650,9 +1650,9 @@
         "parents": [
           "a:5"
         ],
-        "path": "/pictures/😀.png",
+        "path": "/pictures/\ud83d\ude00.png",
         "scope": "current",
-        "location": "./😀.png",
+        "location": "./\ud83d\ude00.png",
         "state": "present",
         "temporary": false,
         "discarded": false,
@@ -1666,9 +1666,9 @@
       {
         "summary": {
           "id": "c:a:5",
-          "title": "",
+          "title": "\ue000",
           "cover": {
-            "path": "/pictures/.png",
+            "path": "/pictures/\ue000.png",
             "present": true
           },
           "imageCount": 2,
@@ -1746,12 +1746,12 @@
         "key": "o:4:0"
       },
       {
-        "path": "/pictures/.png",
+        "path": "/pictures/\ue000.png",
         "componentId": "c:a:5",
         "key": "a:5"
       },
       {
-        "path": "/pictures/😀.png",
+        "path": "/pictures/\ud83d\ude00.png",
         "componentId": "c:a:5",
         "key": "o:6:0"
       }
@@ -2249,6 +2249,105 @@
         "path": "/pictures/source.png",
         "componentId": "c:a:2",
         "key": "a:2"
+      }
+    ]
+  },
+  {
+    "name": "cover-is-a-root-of-what-is-drawn",
+    "nodes": [
+      {
+        "key": "a:1",
+        "artifactId": 1,
+        "runId": null,
+        "parents": [],
+        "path": "/elsewhere/a.png",
+        "scope": "external",
+        "location": "/elsewhere/a.png",
+        "state": "present",
+        "temporary": false,
+        "discarded": false,
+        "earlierRevision": false,
+        "order": 1,
+        "prompt": "",
+        "dismissable": false
+      },
+      {
+        "key": "o:2:0",
+        "artifactId": 2,
+        "runId": 2,
+        "parents": [
+          "a:1"
+        ],
+        "path": "/elsewhere/b.png",
+        "scope": "external",
+        "location": "/elsewhere/b.png",
+        "state": "present",
+        "temporary": false,
+        "discarded": false,
+        "earlierRevision": false,
+        "order": 2,
+        "prompt": "",
+        "dismissable": false
+      },
+      {
+        "key": "o:3:0",
+        "artifactId": 3,
+        "runId": 3,
+        "parents": [
+          "a:1",
+          "o:2:0"
+        ],
+        "path": "/pictures/c.png",
+        "scope": "current",
+        "location": "./c.png",
+        "state": "present",
+        "temporary": false,
+        "discarded": false,
+        "earlierRevision": false,
+        "order": 3,
+        "prompt": "",
+        "dismissable": false
+      }
+    ],
+    "expected": [
+      {
+        "summary": {
+          "id": "c:o:2:0",
+          "title": "c",
+          "cover": {
+            "path": "/pictures/c.png",
+            "present": true
+          },
+          "coverKey": "o:2:0",
+          "imageCount": 1,
+          "nodeCount": 3,
+          "active": false,
+          "unsaved": false
+        },
+        "keys": [
+          "a:1",
+          "o:2:0",
+          "o:3:0"
+        ],
+        "badges": [
+          {
+            "key": "a:1",
+            "path": "/elsewhere/a.png",
+            "scope": "external",
+            "artifactId": 1,
+            "consumers": [
+              "o:2:0",
+              "o:3:0"
+            ]
+          }
+        ]
+      }
+    ],
+    "members": [
+      {
+        "path": "/pictures/c.png",
+        "componentId": "c:o:2:0",
+        "key": "o:3:0"
       }
     ]
   }
