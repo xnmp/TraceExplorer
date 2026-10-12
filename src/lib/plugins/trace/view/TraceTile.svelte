@@ -1,7 +1,7 @@
 <script lang="ts">
   import type { SceneTile } from "$lib/domain/trace-graph/scene";
   import type { Orientation, PlacedNode } from "$lib/domain/trace-graph/layout";
-  import { STACK_CARET_SIZE, TILE } from "$lib/domain/trace-graph/metrics";
+  import { TILE } from "$lib/domain/trace-graph/metrics";
   import TraceThumbnail from "../TraceThumbnail.svelte";
   import TraceImageActions from "../TraceImageActions.svelte";
   import { promptTitles } from "../prompt-titles.svelte";
@@ -16,13 +16,13 @@
 
   interface Props {
     /** Folder covers use the ordinary explorer thumbnail/name treatment, retaining graph actions. */
-    explorer?: { readonly name: string; readonly count: number; readonly unsaved: boolean; readonly active: boolean; readonly imagePx?: number; readonly small: boolean };
+    explorer?: { readonly name: string; readonly count: number; readonly unsaved: boolean; readonly active: boolean; readonly expanded: boolean; readonly imagePx?: number; readonly small: boolean };
     badgeNodes?: ReadonlyMap<string, import("$lib/domain/trace-graph/model").TraceNode>;
     badges?: readonly ReferenceBadge[];
     badgeSelection?: ReadonlySet<string>;
     onbadge?: (key: string, event: MouseEvent) => void;
     onbadgehover?: (key: string | null) => void;
-    onclose?: () => void;
+    onstacktoggle?: (event: MouseEvent) => void;
     focused?: boolean;
     onfocus?: () => void;
     tile: SceneTile;
@@ -40,7 +40,7 @@
     captureSelection?: () => () => boolean;
   }
 
-  let { tile, placed, orientation = "down", selected, revision, onactivate, onopen, onmenu, onkey, onsaved, ondiscarded, captureSelection, badges = [], badgeNodes, badgeSelection = new Set(), onbadge, onbadgehover, onclose, focused = true, onfocus, explorer }: Props = $props();
+  let { tile, placed, orientation = "down", selected, revision, onactivate, onopen, onmenu, onkey, onsaved, ondiscarded, captureSelection, badges = [], badgeNodes, badgeSelection = new Set(), onbadge, onbadgehover, onstacktoggle, focused = true, onfocus, explorer }: Props = $props();
   const node = $derived(tile.node);
   const title = $derived(promptTitles.labelFor(node.runId, node.prompt) || nodeTitle(node));
   const status = $derived(nodeStatus(node));
@@ -65,11 +65,7 @@
 <div class="tile" class:explorer-cover={!!explorer} class:host-cover={explorer?.imagePx !== undefined} class:small-cover={explorer?.small} class:unrelated={tile.tone === "unrelated"} class:foreign={node.scope !== "current"}
   role="gridcell" aria-selected={selected} data-tile-key={node.key} data-scope={node.scope} data-tone={tile.tone}
   style:left="{placed.x}px" style:top="{placed.y}px" style:width="{placed.width}px" style:height="{placed.height}px">
-  <button type="button" class="card" class:selected class:focus={tile.tone === "focus"} class:discarded={node.discarded}
-    tabindex={focused ? 0 : -1} {onfocus} data-node-key={node.key} aria-pressed={selected} {@attach explorer && !onclose ? null : tooltip}
-    data-stack-toggle={explorer && !onclose ? "" : undefined} aria-expanded={explorer && !onclose ? false : undefined}
-    aria-label="{explorer?.name ?? title}{explorer ? `, ${explorer.count} images` : ""}{status ? `, ${status}` : ""}{unsaved || explorer?.unsaved ? ", unsaved" : ""}{node.scope === "external" ? ", outside this folder" : node.scope === "subfolder" ? ", in a subfolder" : ""}"
-    onclick={onactivate} ondblclick={onopen} oncontextmenu={onmenu} onkeydown={onkey}>
+  {#snippet contents()}
     <span class="image" style:height="{explorer?.imagePx ?? tile.size.imageHeight}px" style:width={explorer?.imagePx === undefined ? undefined : `${explorer.imagePx}px`}>
       {#if node.state === "running"}
         <span class="spinner" role="status" aria-label="Generating"></span>
@@ -85,10 +81,21 @@
       {/if}
     </span>
     <span class="label">
-      <span class="text">{explorer?.name ?? title}</span>
+      {#if explorer}
+        <span class="stack-name">
+          <span class="text">{explorer.name}</span>
+          <button type="button" class="stack-disclosure" class:expanded={explorer.expanded} tabindex="-1" {onfocus}
+            data-stack-toggle aria-expanded={explorer.expanded} aria-label={explorer.expanded ? "Collapse stack" : "Expand stack"}
+            onclick={onstacktoggle} onkeydown={(event) => {
+              if (["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End"].includes(event.key)) onkey(event);
+            }}>
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 5 7 7-7 7" /></svg>
+          </button>
+        </span>
+      {:else}<span class="text">{title}</span>{/if}
       {#if node.runId !== null && promptTitles.pending(node.runId)}<span class="title-spinner" role="status" aria-label="Generating title"></span>{/if}
       {#if unsaved && !explorer}<span class="unsaved-dot" aria-hidden="true"></span>{/if}
-      {#if tile.expandable && !onclose && !explorer}
+      {#if tile.expandable && !explorer}
         <svg class="chevron" viewBox="0 0 24 24" aria-hidden="true"><path d={tile.tone === "focus" && orientation === "down" ? "m5 9 7 7 7-7" : "m9 5 7 7-7 7"} /></svg>
       {/if}
     </span>
@@ -103,8 +110,24 @@
     {:else if status && !explorer}
       <span class="status-line">{status}</span>
     {/if}
-  </button>
-  {#if onclose}<button type="button" class="close-stack" style:width="{STACK_CARET_SIZE}px" style:height="{STACK_CARET_SIZE}px" style:bottom="{-STACK_CARET_SIZE}px" data-stack-toggle aria-expanded="true" aria-label="Close stack" onclick={onclose}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 15 6-6 6 6" /></svg></button>{/if}
+  {/snippet}
+  {#if explorer}
+    <!-- Sibling controls: the tile body remains the grid's tab stop; disclosure owns only toggling.
+         A real button also excludes its pointer presses from marquee selection. -->
+    <div class="card" class:selected class:focus={tile.tone === "focus"} class:discarded={node.discarded}>
+      <button type="button" class="cover-press" tabindex={focused ? 0 : -1} {onfocus} data-node-key={node.key}
+        aria-pressed={selected} aria-label="{explorer.name}, {explorer.count} images{status ? `, ${status}` : ''}{unsaved || explorer.unsaved ? ', unsaved' : ''}"
+        {@attach explorer.expanded ? tooltip : null} onclick={onactivate} ondblclick={onopen} oncontextmenu={onmenu} onkeydown={onkey}></button>
+      {@render contents()}
+    </div>
+  {:else}
+    <button type="button" class="card" class:selected class:focus={tile.tone === "focus"} class:discarded={node.discarded}
+      tabindex={focused ? 0 : -1} {onfocus} data-node-key={node.key} aria-pressed={selected} {@attach tooltip}
+      aria-label="{title}{status ? `, ${status}` : ''}{unsaved ? ', unsaved' : ''}{node.scope === 'external' ? ', outside this folder' : node.scope === 'subfolder' ? ', in a subfolder' : ''}"
+      onclick={onactivate} ondblclick={onopen} oncontextmenu={onmenu} onkeydown={onkey}>
+      {@render contents()}
+    </button>
+  {/if}
   {#if badges.length && onbadge}<ReferenceBadges {badges} nodes={badgeNodes} {revision} selected={badgeSelection} onactivate={onbadge} onhover={onbadgehover} />{/if}
   {#if hint && !explorer}<span class="hint" style:height="{TILE.hint}px">{hint}</span>{/if}
   {#if artifact}
@@ -116,26 +139,34 @@
 </div>
 
 <style>
-  .explorer-cover .card { align-items: center; overflow: visible; background: none; border-color: transparent; }
+  .explorer-cover .card { position: relative; align-items: center; overflow: visible; background: none; border-color: transparent; }
   .explorer-cover .card:hover { background: var(--subtle-fill-secondary); }
   .explorer-cover .card.selected { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, transparent); }
   .explorer-cover .image { position: relative; isolation: isolate; overflow: visible; width: 100%; background: none; }
   .explorer-cover .image::before, .explorer-cover .image::after { content: ""; position: absolute; inset: -4px -3px 4px 3px; border: 1px solid var(--control-stroke); border-radius: var(--radius-sm); background: var(--background-card-secondary); z-index: -1; }
   .explorer-cover .image::after { inset: -2px -1px 2px 1px; }
   .explorer-cover .image :global(.thumbnail) { border-radius: var(--radius-sm); }
-  .explorer-cover .label { width: 100%; }
-  .explorer-cover .text { text-align: center; }
+  .cover-press { position: absolute; inset: 0; width: 100%; height: 100%; padding: 0; border: 0; border-radius: inherit; background: none; cursor: pointer; }
+  .cover-press:focus-visible { outline: 2px solid var(--focus-stroke-outer); outline-offset: 2px; }
+  .explorer-cover .image, .explorer-cover .label { pointer-events: none; }
+  .explorer-cover .label { position: relative; width: 100%; height: auto; min-height: 20px; justify-content: center; font-size: 11px; line-height: 14px; }
+  .stack-name { display: flex; align-items: flex-end; gap: 2px; width: max-content; max-width: 100%; min-width: 0; min-height: 20px; }
+  /* Reserve the disclosure's own column before clamping. Ellipsis cannot clip the control. */
+  .explorer-cover .text { white-space: normal; overflow-wrap: anywhere; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; }
+  /* Align the final text line with disclosure, including a short untruncated last line. */
+  .explorer-cover .text { text-align: end; }
   .host-cover .card { padding: 12px 8px 10px; }
   .host-cover.small-cover .card { padding: 6px 4px; }
-  .host-cover .label { height: 37px; align-items: flex-start; }
+  .host-cover .label { height: 37px; align-items: flex-start; font-size: 13px; line-height: 1.4; }
   .host-cover .text { font-size: 13px; line-height: 1.4; white-space: normal; overflow-wrap: anywhere; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; }
   .cover-spinner { position: absolute; top: 3px; right: 3px; }
   .count-badge { position: absolute; bottom: -3px; right: -3px; box-sizing: border-box; min-width: 16px; height: 16px; padding: 0 4px; border-radius: var(--radius-pill); background: var(--accent); color: var(--text-on-accent); font-size: 10px; line-height: 16px; text-align: center; }
   .cover-unsaved-dot { position: absolute; left: -2px; top: -2px; width: 6px; height: 6px; border: 2px solid var(--background-solid); border-radius: 50%; background: var(--system-caution-text, var(--system-caution)); }
-  .close-stack { position: absolute; right: 5px; display: grid; place-items: center; padding: 0; border: 0; border-radius: var(--radius-sm); background: var(--control-fill); color: var(--text-secondary); cursor: pointer; }
-  .close-stack svg { width: 12px; height: 12px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
-  .close-stack:hover, .close-stack:focus-visible { background: color-mix(in srgb, var(--accent) 32%, var(--background-solid)); color: var(--accent); }
-  .close-stack:focus-visible { outline: 2px solid var(--focus-stroke-outer); outline-offset: 2px; }
+  .stack-disclosure { flex: none; display: grid; place-items: center; width: 20px; height: 20px; margin-bottom: calc((1lh - 20px) / 2); padding: 0; border: 0; border-radius: var(--radius-sm); background: none; color: var(--text-secondary); cursor: pointer; pointer-events: auto; font: inherit; }
+  .stack-disclosure svg { width: 12px; height: 12px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+  .stack-disclosure.expanded svg { transform: rotate(90deg); }
+  .stack-disclosure:hover, .stack-disclosure:focus-visible { background: color-mix(in srgb, var(--accent) 32%, var(--background-solid)); color: var(--accent); }
+  .stack-disclosure:focus-visible { outline: 2px solid var(--focus-stroke-outer); outline-offset: 2px; }
   .tile { position: absolute; box-sizing: border-box; }
   .card { display: flex; flex-direction: column; align-items: stretch; box-sizing: border-box; width: 100%; padding: 5px; overflow: hidden; text-align: left; font: inherit; color: var(--text-primary); background: var(--background-card-secondary, var(--control-fill)); border: 1px solid var(--control-stroke); border-radius: var(--radius-sm); cursor: pointer; }
   .card:hover { background: var(--subtle-fill-secondary); }
@@ -171,6 +202,6 @@
   .spinner { width: 14px; height: 14px; border: 2px solid var(--divider); border-top-color: var(--accent); border-radius: 50%; animation: spin 800ms linear infinite; }
   .title-spinner { width: 8px; height: 8px; flex: none; border: 1px solid var(--control-stroke); border-top-color: var(--accent); border-radius: 50%; animation: spin 800ms linear infinite; }
   @keyframes spin { to { transform: rotate(360deg); } }
-  @media (prefers-reduced-motion: no-preference) { .close-stack { transition: background-color var(--transition-fast), color var(--transition-fast); } .card { transition: background-color 120ms, border-color 120ms, box-shadow 120ms, opacity 160ms, filter 160ms; } .image { transition: filter 160ms; } }
+  @media (prefers-reduced-motion: no-preference) { .stack-disclosure { transition: background-color var(--transition-fast), color var(--transition-fast); } .card { transition: background-color 120ms, border-color 120ms, box-shadow 120ms, opacity 160ms, filter 160ms; } .image { transition: filter 160ms; } }
   @media (prefers-reduced-motion: reduce) { .spinner, .title-spinner { animation: none; } }
 </style>

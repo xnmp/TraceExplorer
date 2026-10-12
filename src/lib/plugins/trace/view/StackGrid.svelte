@@ -215,9 +215,9 @@
         <div class="cell stack" role="row" aria-rowindex={rect.row + 1} data-grid-cell={cell.id} data-stack-key={cell.id}
           style:left="{rect.x}px" style:width="{rect.width}px" style:height="{rect.height}px">
           <TraceTile tile={cover} placed={{ key: cell.id, x: (rect.width - tile.width) / 2, y: 0, width: tile.width, height: rect.height, row: 0, band: 0 }}
-            explorer={{ name: cell.entry?.name ?? summary.title, count: summary.imageCount, unsaved: summary.unsaved, active: summary.active, imagePx: host ? (pane.tileSize?.imagePx ?? 64) : undefined, small: pane.tileSize?.preset === "small" }}
+            explorer={{ name: cell.entry?.name ?? summary.title, count: summary.imageCount, expanded: !!band, unsaved: summary.unsaved, active: summary.active, imagePx: host ? (pane.tileSize?.imagePx ?? 64) : undefined, small: pane.tileSize?.preset === "small" }}
             selected={selected.has(cell.id)} {revision} badgeNodes={data?.dag.nodes} badges={band ? known?.plan.badges.get(cell.id) ?? [] : []} badgeSelection={selected}
-            onbadge={(key, event) => onactivate(key, event, summary.id)} onbadgehover={(key) => hoveredBadge = key} focused={stop === cell.id} onfocus={() => tabStop = cell.id} onclose={band ? () => onexpand(summary.id, false) : undefined}
+            onbadge={(key, event) => onactivate(key, event, summary.id)} onbadgehover={(key) => hoveredBadge = key} focused={stop === cell.id} onfocus={() => tabStop = cell.id} onstacktoggle={(event) => activateStack(cell, event, true)}
             onactivate={(event) => band ? onactivate(cell.id, event, summary.id) : activateStack(cell, event, true)}
             onopen={() => { if (!band && cell.entry) void pane.open(cell.entry); else onopen(cell.id); }}
             onmenu={(event) => { if (!band && cell.entry) onordinarymenu(cell.entry, event); else onmenu(cell.id, event, summary.id); }}

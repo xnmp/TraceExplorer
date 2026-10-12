@@ -16,16 +16,22 @@ const sameColumns = (before: Awaited<ReturnType<typeof gridBoxes>>, after: Await
 };
 
 for (const theme of ["light", "dark"]) for (const host of ["", "&fileTile=1&tileSize=small"]) {
-  test(`#59 stack caret has a 24px target, hover/focus feedback and collapses (${theme}, ${host ? "small host" : "fallback"})`, async ({ page }) => {
+  test(`#68 name disclosure has a 20px target, hover/focus feedback and toggles (${theme}, ${host ? "small host" : "fallback"})`, async ({ page }) => {
     await openView(page, 420, `?grouping=two-chains&theme=${theme}${host}`, false);
     const section = stack(page, "photo-a");
     await section.locator("[data-stack-toggle]").click(); await settle(page);
-    const caret = section.getByRole("button", { name: "Close stack" });
+    const caret = section.getByRole("button", { name: "Collapse stack" });
     const box = (await caret.boundingBox())!;
-    expect(box.width).toBeGreaterThanOrEqual(24);
-    expect(box.height).toBeGreaterThanOrEqual(24);
+    expect(box.width).toBeGreaterThanOrEqual(20);
+    expect(box.height).toBeGreaterThanOrEqual(20);
     const caption = (await section.locator(".label").first().boundingBox())!;
-    expect(box.y).toBeGreaterThanOrEqual(caption.y + caption.height);
+    const text = (await section.locator(".text").first().boundingBox())!;
+    const lineHeight = await section.locator(".text").first().evaluate((element) => parseFloat(getComputedStyle(element).lineHeight));
+    expect(box.x).toBeGreaterThanOrEqual(text.x + text.width);
+    expect(box.y + box.height / 2).toBeCloseTo(text.y + text.height - lineHeight / 2, 0);
+    expect(box.y).toBeLessThan(caption.y + caption.height);
+    await expect(caret).toHaveAttribute("tabindex", "-1");
+    await expect(page.locator('[role="grid"] [tabindex="0"]')).toHaveCount(1);
     const child = (await section.locator("[data-grid-band] [data-tile-key]").first().boundingBox())!;
     expect(box.y + box.height).toBeLessThan(child.y);
     const style = () => caret.evaluate((element) => {
@@ -39,7 +45,8 @@ for (const theme of ["light", "dark"]) for (const host of ["", "&fileTile=1&tile
       return { background: style.backgroundColor, rgb: [...context.getImageData(0, 0, 1, 1).data].slice(0, 3),
         color: style.color, cursor: style.cursor, outlineWidth: style.outlineWidth, outlineStyle: style.outlineStyle };
     });
-    await page.mouse.move(1, 1);
+    await section.locator(".cover-press").focus();
+    await page.mouse.move(1, 1); await settle(page);
     const normal = await style();
     expect(normal.cursor).toBe("pointer");
     await caret.hover(); await settle(page);
@@ -62,12 +69,18 @@ for (const theme of ["light", "dark"]) for (const host of ["", "&fileTile=1&tile
     await caret.click(); await settle(page);
     await expect(section.locator("[data-grid-band]")).toHaveCount(0);
     await expect(section.locator("[data-stack-toggle]")).toHaveAttribute("aria-expanded", "false");
+    const after = await state(page);
+    await section.getByRole("button", { name: "Expand stack" }).click(); await settle(page);
+    await expect(section.locator("[data-grid-band] [data-tile-key]").first()).toBeVisible();
+    expect((await state(page)).selected).toEqual(after.selected);
+    await expect(page.locator('[data-entry-path] [data-stack-toggle]')).toHaveCount(0);
+    expect(await uncaught(page)).toEqual([]);
   });
 }
 
 /** Sample in screen space at <= 1px intervals, including curves and SVG transforms. */
 const connectorCaretClearance = (page: Page) => page.evaluate(() => {
-  const carets = [...document.querySelectorAll<HTMLElement>(".close-stack")].map((caret) => caret.getBoundingClientRect());
+  const carets = [...document.querySelectorAll<HTMLElement>('.stack-disclosure[aria-expanded="true"]')].map((caret) => caret.getBoundingClientRect());
   const caretBottom = Math.max(...carets.map((caret) => caret.bottom));
   const crossings: string[] = [], highRuns: string[] = [];
   let horizontalRuns = 0;
@@ -283,12 +296,12 @@ for (const host of ["", "&fileTile=1&tileSize=medium"]) {
     sameColumns(before, await gridBoxes(page));
     expect((await stack(page, "photo-a").locator(`[data-tile-key="${await key(page, "photo-a")}"]`).boundingBox())!.x).toBeCloseTo(coverX, 1);
     await expect(stack(page, "photo-a").locator(`[data-node-key="${await key(page, "photo-a-edit")}"]`)).toBeVisible();
-    await stack(page, "photo-a").getByRole("button", { name: "Close stack" }).click(); await settle(page);
+    await stack(page, "photo-a").getByRole("button", { name: "Collapse stack" }).click(); await settle(page);
     sameColumns(before, await gridBoxes(page));
     expect((await stack(page, "photo-a").locator("[data-tile-key]").boundingBox())!.x).toBeCloseTo(coverX, 1);
     await expect(stack(page, "photo-a").locator("[data-grid-band]")).toHaveCount(0);
     expect((await state(page)).selected).toEqual(["/pictures/photo-a.png"]);
-    await expect(stack(page, "photo-a").locator("[data-stack-toggle]")).toHaveClass(/selected/);
+    await expect(stack(page, "photo-a").locator(".card").first()).toHaveClass(/selected/);
   });
 }
 
@@ -404,7 +417,7 @@ test("a stack refreshed away under a hovered reference leaves no hover highlight
   const press = (selector: string) => village.locator(selector).first().evaluate((element) => (element as HTMLElement).click());
   // Close and reopen with the pointer elsewhere (programmatic presses move nothing): what the reopened band dims.
   const cycle = async () => {
-    await press('[aria-label="Close stack"]'); await settle(page);
+    await press('[aria-label="Collapse stack"]'); await settle(page);
     await press("[data-stack-toggle]"); await settle(page);
     await expect(village.locator("[data-grid-band]")).toHaveCount(1);
     return village.locator("[data-tone]").evaluateAll((tiles) => tiles.map((tile) => `${tile.getAttribute("data-tile-key")}:${tile.getAttribute("data-tone")}`).sort());
@@ -413,7 +426,7 @@ test("a stack refreshed away under a hovered reference leaves no hover highlight
   await village.locator(`[data-reference-key="${await key(page, "lantern")}"]`).first().hover();
   expect((await rendered(page, "tone", "unrelated")).length).toBeGreaterThan(0);
   // The band goes away while the pointer rests on the badge: no mouseleave ever reaches it.
-  await press('[aria-label="Close stack"]'); await settle(page);
+  await press('[aria-label="Collapse stack"]'); await settle(page);
   await page.mouse.move(2, 2);
   await press("[data-stack-toggle]"); await settle(page);
   await expect(village.locator("[data-grid-band]")).toHaveCount(1);
@@ -425,7 +438,7 @@ test("a context click on a cold unsaved stack never reaches the host folder menu
   await page.locator('[data-entry-path="/pictures/notes.txt"]').click(); await settle(page);
   expect((await state(page)).selected).toEqual(["/pictures/notes.txt"]);
   expect((await state(page)).menus).toEqual([]);
-  await stack(page, "out").locator("[data-stack-toggle]").click({ button: "right" });
+  await stack(page, "out").locator(".cover-press").click({ button: "right" });
   await expect.poll(async () => (await state(page)).target).toMatchObject({ id: "trace:o:11:0" });
   // The host's empty-space menu never saw the event.
   expect((await state(page)).menus).toEqual([]);
@@ -461,7 +474,7 @@ test("closing during emergence reclaims rows without overlapping the remaining b
       const w = window as any;
       for (const animation of w.__heldAnimations as Animation[]) if (animation.playState === "running") animation.currentTime = 40;
       await new Promise(requestAnimationFrame);
-      document.querySelector<HTMLElement>('section[aria-label="photo-a"] [aria-label="Close stack"]')!.click();
+      document.querySelector<HTMLElement>('section[aria-label="photo-a"] [aria-label="Collapse stack"]')!.click();
       const samples = [];
       for (let i = 0; i < 12; i++) {
         await new Promise(requestAnimationFrame);
@@ -551,7 +564,7 @@ test("grid Shift selection follows listing ranges and unchanged selection conten
 
 test("End reaches the final virtualized row and arrows can cross the mounted window", async ({ page }) => {
   await openView(page, 220, "?many=80", false);
-  const cover = page.locator("[data-stack-toggle]").first(); await cover.focus();
+  const cover = page.locator(".cover-press").first(); await cover.focus();
   await page.keyboard.press("End"); await settle(page);
   await expect(page.locator('[data-entry-path="/pictures/refs"]')).toBeFocused();
   await expect(page.locator('[data-entry-path="/pictures/refs"]')).toBeInViewport();
@@ -567,10 +580,10 @@ test("End reaches the final virtualized row and arrows can cross the mounted win
 test("keyboard focus remains on the cover across opening and chevron closing", async ({ page }) => {
   await openView(page, 420, "?grouping=two-chains", false);
   const keyA = await key(page, "photo-a"), section = stack(page, "photo-a");
-  await section.locator("[data-stack-toggle]").focus();
+  await section.locator(".cover-press").focus();
   await page.keyboard.press("Space"); await settle(page);
   await expect(section.locator(`[data-node-key="${keyA}"]`)).toBeFocused();
-  await section.getByRole("button", { name: "Close stack" }).focus();
+  await section.getByRole("button", { name: "Collapse stack" }).focus();
   await page.keyboard.press("Enter"); await settle(page);
   await expect(section.locator("[data-stack-toggle]")).toBeFocused();
   await page.keyboard.press("ArrowRight"); await settle(page);
@@ -599,7 +612,7 @@ test("ordinary host tile editing keeps navigation keys in the editor", async ({ 
 
 test("double-clicking a closed stack opens the cover file", async ({ page }) => {
   await openView(page, 420, "?grouping=two-chains", false);
-  await stack(page, "photo-a").locator("[data-stack-toggle]").dblclick(); await settle(page);
+  await stack(page, "photo-a").locator(".cover-press").dblclick(); await settle(page);
   expect((await state(page)).opened).toEqual(["/pictures/photo-a.png"]);
   expect((await state(page)).selected).toEqual(["/pictures/photo-a.png"]);
   await expect(stack(page, "photo-a").locator("[data-grid-band]")).toHaveCount(1);
@@ -611,7 +624,7 @@ test("reduced motion opens and closes bands without animations", async ({ page }
   await stack(page, "photo-a").locator("[data-stack-toggle]").click(); await settle(page);
   await expect(stack(page, "photo-a").locator("[data-grid-band]")).toHaveCount(1);
   expect(await page.evaluate(() => document.getAnimations().length)).toBe(0);
-  await stack(page, "photo-a").getByRole("button", { name: "Close stack" }).click(); await settle(page);
+  await stack(page, "photo-a").getByRole("button", { name: "Collapse stack" }).click(); await settle(page);
   await expect(stack(page, "photo-a").locator("[data-grid-band]")).toHaveCount(0);
   expect(await page.evaluate(() => document.getAnimations().length)).toBe(0);
 });
@@ -625,7 +638,7 @@ test("clicking a closed in-place-edit stack selects its cover revision, as click
 
 test("double-clicking a closed in-place-edit stack opens the file at its path, as double-clicking its open cover does", async ({ page }) => {
   await openView(page, 420, "?grouping=in-place-edit", false);
-  await page.locator("[data-stack-toggle]").dblclick(); await settle(page);
+  await page.locator(".cover-press").dblclick(); await settle(page);
   expect((await state(page)).opened).toEqual(["/pictures/photo.png"]);
   await expect(page.locator("[data-grid-band]")).toHaveCount(1);
   // The open cover behaves the same.
@@ -778,7 +791,7 @@ test("#51 a cold activation follows its revision after merging into an older lin
   await expect(page.locator(`section[data-component="${oldId}"]`)).toHaveCount(0);
   await expect(stack(page, "village")).toBeVisible();
   // The clicked unsaved image is now neither a cover nor a folder member.
-  expect(await stack(page, "village").locator("[data-stack-toggle]").getAttribute("data-node-key")).toBe(await key(page, "village"));
+  expect(await stack(page, "village").locator(".cover-press").getAttribute("data-node-key")).toBe(await key(page, "village"));
   await page.evaluate(() => (window as any).trace.backend.releaseNodeReads());
   await expect.poll(async () => (await state(page)).target).toMatchObject({ id: `trace:${clicked}` });
   await settle(page);
@@ -860,7 +873,7 @@ test("a delayed activation does not undo an explicit close", async ({ page }) =>
 test("a context click on a cold unsaved stack resolves its image", async ({ page }) => {
   await openView(page, 420, "?grouping=unsaved-and-placeholder", false);
   expect((await state(page)).target).toBeNull();
-  await stack(page, "out").locator("[data-stack-toggle]").click({ button: "right" });
+  await stack(page, "out").locator(".cover-press").click({ button: "right" });
   await expect.poll(async () => (await state(page)).target).toMatchObject({ id: "trace:o:11:0" });
   expect(await uncaught(page)).toEqual([]);
 });
@@ -869,7 +882,7 @@ test("a closed stack shows that an edit is generating, and clears when it finish
   await openView(page, 900, "", false);
   const village = stack(page, "village");
   await expect(village.locator("[data-stack-toggle]")).toBeVisible();
-  const generating = village.locator("[data-stack-toggle]").getByRole("status", { name: "Generating" });
+  const generating = village.locator(".image").getByRole("status", { name: "Generating" });
   await expect(generating).toHaveCount(0);
   const thumbnail = village.locator(".image img");
   await expect(thumbnail).toBeVisible();
@@ -908,7 +921,7 @@ test.describe("a save that outlives the control that started it still claims its
     const cover = page.locator('[data-tile-key="o:10:0"]');
     await cover.hover();
     await cover.getByRole("button", { name: "Save image permanently" }).click();
-    await stack(page, "draft").getByRole("button", { name: "Close stack" }).click(); await settle(page);
+    await stack(page, "draft").getByRole("button", { name: "Collapse stack" }).click(); await settle(page);
     await expect(stack(page, "draft").locator("[data-grid-band]")).toHaveCount(0);
     await finishWhileIndexLags(page, await gridCells(page));
   });
@@ -1144,4 +1157,42 @@ test("opening a later row preserves an unchanged band's attachment motion", asyn
   } finally { await releaseScriptedAnimations(page); }
   await settle(page);
   expect(await uncaught(page)).toEqual([]);
+});
+
+for (const host of ['', '&fileTile=1&tileSize=small']) for (const filename of ['long', 'wrapped']) test(`#68 a ${filename} name keeps its disclosure on the last line (${host || 'fallback'})`, async ({ page }) => {
+  await openView(page, 420, `?grouping=two-chains&stackName=${filename}${host}`, false);
+  const section = page.locator('section[data-component]').first();
+  const text = section.locator('.text').first(), caret = section.locator('[data-stack-toggle]');
+  const measure = async () => {
+    const box = (await text.boundingBox())!, button = (await caret.boundingBox())!;
+    const line = await text.evaluate((element) => parseFloat(getComputedStyle(element).lineHeight));
+    expect(box.height).toBeCloseTo(line * 2, 0);
+    expect(button.x).toBeGreaterThanOrEqual(box.x + box.width);
+    if (filename === 'wrapped') {
+      const last = await text.evaluate((element) => {
+        const range = document.createRange(); range.selectNodeContents(element);
+        const lines = [...range.getClientRects()]; return lines.at(-1)!.right;
+      });
+      expect(button.x - last).toBeLessThanOrEqual(3);
+    }
+    expect(button.y + button.height / 2).toBeCloseTo(box.y + box.height - line / 2, 0);
+    const tile = (await section.locator('[data-grid-cell]').boundingBox())!;
+    expect(button.x + button.width).toBeLessThanOrEqual(tile.x + tile.width);
+    expect(button.y + button.height).toBeLessThanOrEqual(tile.y + tile.height);
+  };
+  await measure();
+  await caret.click(); await settle(page);
+  await expect(section.locator('[data-grid-band] [data-tile-key]').first()).toBeVisible();
+  await measure();
+  const selected = (await state(page)).selected;
+  // A press and drag on disclosure must not start marquee or select any other tile.
+  const box = (await caret.boundingBox())!;
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2); await page.mouse.down();
+  await page.mouse.move(box.x + 80, box.y + 80, { steps: 4 });
+  await expect(page.locator('.marquee-rect')).toHaveCount(0);
+  await page.mouse.up(); await settle(page);
+  expect((await state(page)).selected).toEqual(selected);
+  await caret.focus(); await page.keyboard.press('Enter'); await settle(page);
+  await expect(section.locator('[data-grid-band]')).toHaveCount(0);
+  expect((await state(page)).selected).toEqual(selected);
 });

@@ -205,7 +205,7 @@ test.describe("wide layouts", () => {
 
   test("the cover chevron closes the band without changing its selected file", async ({ page }) => {
     await openView(page, 900); await click(page, "forest");
-    await (await tile(page, "forest")).getByRole("button", { name: "Close stack" }).click(); await settle(page);
+    await (await tile(page, "forest")).getByRole("button", { name: "Collapse stack" }).click(); await settle(page);
     await expect(page.locator('section[aria-label="forest"] .graph')).toHaveCount(0);
     expect((await state(page)).selected).toEqual(["/pictures/forest.png"]);
   });

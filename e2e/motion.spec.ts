@@ -496,7 +496,7 @@ test("reopening immediately after collapse reserves space before revealing child
   const child = await key(page, "daylight");
   await holdScriptedAnimations(page);
   try {
-    await village.getByRole("button", { name: "Close stack" }).click();
+    await village.getByRole("button", { name: "Collapse stack" }).click();
     await expect(page.locator(`[data-tile-key="${child}"], [data-ghost-tile-key="${child}"]`)).not.toBeVisible();
     await village.locator("[data-stack-toggle]").click();
     await awaitAnimationsCreated(page);
