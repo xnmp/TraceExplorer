@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { hostCapturePane, hostFileTiles, hostRegisterFileDropTarget, SVELTE_ABI } from "../../src/sdk";
+import { hostCapturePane, hostFileTiles, hostRegisterFileDropTarget, hostSupportsSelectionAnchor, SVELTE_ABI } from "../../src/sdk";
 import type { PluginContext } from "../../integration/plugin-sdk";
 
 const g = globalThis as { __TAURI_EXPLORER_PLUGIN_SDK__?: unknown };
@@ -68,6 +68,19 @@ describe("hostFileTiles", () => {
     for (const value of [undefined, null, {}, { ...sdk(["fileTiles"], { "ui/file-tiles": { default: Tiles } }), apiVersion: 1 }]) {
       g.__TAURI_EXPLORER_PLUGIN_SDK__ = value;
       expect(hostFileTiles()).toBeNull();
+    }
+  });
+});
+
+
+describe("marquee anchor capability", () => {
+  afterEach(() => { g.__TAURI_EXPLORER_PLUGIN_SDK__ = original; });
+  it("requires selectionAnchor on a compatible host runtime", () => {
+    g.__TAURI_EXPLORER_PLUGIN_SDK__ = sdk(["selectionAnchor"]);
+    expect(hostSupportsSelectionAnchor()).toBe(true);
+    for (const runtime of [undefined, null, {}, sdk(undefined), sdk([]), sdk(["fileViews"]), { ...sdk(["selectionAnchor"]), apiVersion: 1 }]) {
+      g.__TAURI_EXPLORER_PLUGIN_SDK__ = runtime;
+      expect(hostSupportsSelectionAnchor()).toBe(false);
     }
   });
 });

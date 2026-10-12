@@ -1,5 +1,5 @@
 import { expect, test, type Locator, type Page } from "@playwright/test";
-import { card, click, key, openView, settle, state } from "./support";
+import { card, click, key, openView, settle, state, uncaught } from "./support";
 
 const marquee = (page: Page) => page.locator(".marquee-rect");
 const notifications = (page: Page) => page.evaluate(() => (window as any).trace.state().selectionNotifications as number);
@@ -366,3 +366,42 @@ for (const modifier of ["Control", "Meta"] as const) {
     expect((await state(page)).selected).toEqual(["/pictures/village.png"]);
   });
 }
+
+
+for (const fileTile of [false, true]) {
+  for (const keepAnchor of [false, true]) {
+    test(`Shift-click after Ctrl-marquee uses ${keepAnchor ? "original" : "legacy"} host anchor (${fileTile ? "host tile" : "fallback tile"})`, async ({ page }) => {
+      await closedGrid(page, `?selectionAnchor=${keepAnchor ? "1" : "0"}${fileTile ? "&fileTile=1" : ""}`);
+      const notes = page.locator('[data-entry-path="/pictures/notes.txt"]');
+      const plain = page.locator('[data-entry-path="/pictures/plain.png"]');
+      const refs = page.locator('[data-entry-path="/pictures/refs"]');
+      await notes.click();
+      await page.keyboard.down("Control");
+      await startDrag(page, await dragBounds(plain));
+      await expect.poll(async () => (await state(page)).selected.sort()).toEqual(["/pictures/notes.txt", "/pictures/plain.png"]);
+      await finishDrag(page);
+      await page.keyboard.up("Control");
+      expect((await state(page)).cursor).toBe(keepAnchor ? "/pictures/notes.txt" : "/pictures/plain.png");
+      await refs.click({ modifiers: ["Shift"] });
+      const expected = keepAnchor ? ["/pictures/notes.txt", "/pictures/plain.png", "/pictures/refs"] : ["/pictures/plain.png", "/pictures/refs"];
+      await expect.poll(async () => (await state(page)).selected.sort()).toEqual(expected);
+      await expect(plain).toHaveAttribute("aria-selected", "true");
+      await expect(refs).toHaveAttribute("aria-selected", "true");
+      await expect(notes).toHaveAttribute("aria-selected", String(keepAnchor));
+      expect(await uncaught(page)).toEqual([]);
+    });
+  }
+}
+
+test("plain marquee leaves an unselected cursor and its Shift-range anchor untouched", async ({ page }) => {
+  await closedGrid(page);
+  const notes = page.locator('[data-entry-path="/pictures/notes.txt"]');
+  const plain = page.locator('[data-entry-path="/pictures/plain.png"]');
+  await notes.click();
+  await startDrag(page, await dragBounds(plain));
+  await finishDrag(page);
+  expect((await state(page)).selected).toEqual(["/pictures/plain.png"]);
+  expect((await state(page)).cursor).toBe("/pictures/notes.txt");
+  await page.locator('[data-entry-path="/pictures/refs"]').click({ modifiers: ["Shift"] });
+  await expect.poll(async () => (await state(page)).selected.sort()).toEqual(["/pictures/notes.txt", "/pictures/plain.png", "/pictures/refs"]);
+});

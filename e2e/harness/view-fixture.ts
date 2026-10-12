@@ -374,6 +374,7 @@ const fileTiles = new URLSearchParams(globalThis.location?.search ?? "").has("fi
 const tileQuery = new URLSearchParams(globalThis.location?.search ?? "").get("tileSize");
 export const initialTileSize: TileSizePreset | null = tileQuery && tileQuery in TILE_IMAGE_PX ? tileQuery as TileSizePreset : null;
 // Independently toggled so every compatibility combination can be exercised.
+export const selectionAnchor = new URLSearchParams(globalThis.location?.search ?? "").get("selectionAnchor") !== "0";
 export const paneDialogs = new URLSearchParams(globalThis.location?.search ?? "").get("paneDialogs") !== "0";
 export const fileDropTargets = new URLSearchParams(globalThis.location?.search ?? "").get("fileDropTargets") !== "0";
 /** `fileDropTargets=refuse`: the host announces the capability but refuses the element, as it does for elements outside plugin-owned content. */
@@ -381,7 +382,7 @@ export const fileDropTargetsRefused = new URLSearchParams(globalThis.location?.s
 const color = (path: string) => `hsl(${[...path].reduce((sum, char) => (sum * 31 + char.charCodeAt(0)) % 360, 7)} 45% 55%)`;
 (globalThis as any).__TAURI_EXPLORER_PLUGIN_SDK__ = {
   sdkVersion: 1, apiVersion: 2, svelteVersion: "5.56.3",
-  capabilities: ["fileViews", "previewInfo", "previewTargets", "blobWorkers", "jobReveal", "jobCost", "fileViewReveal", ...(fileTile ? ["fileTile"] : []), ...(fileTiles ? ["fileTiles"] : []), ...(initialTileSize ? ["tileSize"] : []), ...(paneDialogs ? ["paneDialogs"] : []), ...(fileDropTargets ? ["fileDropTargets"] : [])],
+  capabilities: ["fileViews", "previewInfo", "previewTargets", "blobWorkers", "jobReveal", "jobCost", "fileViewReveal", ...(selectionAnchor ? ["selectionAnchor"] : []), ...(fileTile ? ["fileTile"] : []), ...(fileTiles ? ["fileTiles"] : []), ...(initialTileSize ? ["tileSize"] : []), ...(paneDialogs ? ["paneDialogs"] : []), ...(fileDropTargets ? ["fileDropTargets"] : [])],
   modules: {
     ...(fileTiles ? { "ui/file-tiles": { default: StubFileTiles } } : {}),
     ...(fileTile ? { "ui/file-tile": { default: StubFileTile, tileGridMetrics: (size: TileSizePreset = "medium") => {

@@ -73,7 +73,10 @@ export interface FileViewPane {
   /** Present on hosts with the "tileSize" capability. */
   readonly tileSize?: PaneTileSize;
   select(entry: FileEntry, modifiers?: { ctrlKey?: boolean; shiftKey?: boolean }): void;
-  setSelection(paths: readonly string[], focus?: string | null): void;
+  /** Replace listed selection; `focus` becomes the cursor and range anchor.
+   * Capability "selectionAnchor": `keepAnchor` replaces only the selected set,
+   * preserving the cursor and range anchor even when unselected; ignores `focus`. */
+  setSelection(paths: readonly string[], focus?: string | null, options?: { keepAnchor?: boolean }): void;
   clearSelection(): void;
   open(entry: FileEntry): Promise<void>;
   contextMenu(event: MouseEvent, entry?: FileEntry): void;

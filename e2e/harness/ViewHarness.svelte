@@ -16,7 +16,7 @@
   import { forgetFolderSnapshots } from "$lib/plugins/trace/view/folder-session.svelte";
   import { tracePanes } from "$lib/plugins/trace/view/pane-registry.svelte";
   import { openAIImagePlugin } from "$lib/plugins/openai-image";
-  import { DIRECTORY, files, backend, initialTileSize, paneDialogs, fileDropTargets, fileDropTargetsRefused } from "./view-fixture";
+  import { DIRECTORY, files, backend, initialTileSize, paneDialogs, fileDropTargets, fileDropTargetsRefused, selectionAnchor } from "./view-fixture";
   import { TILE_IMAGE_PX } from "./tile-presets";
   import { createFileDropTargets } from "./file-drop-targets";
   import DialogMount from "./DialogMount.svelte";
@@ -213,14 +213,16 @@
         anchor = entry.path;
       }
     },
-    // As the host's selectPaths: listed paths only; `focus` becomes the anchor and cursor.
-    setSelection(paths, focus = null) {
+    // As the host's selectPaths: listed paths only; keepAnchor preserves anchor/cursor and ignores focus.
+    setSelection(paths, focus = null, options) {
       const listed = new Set(entries.map((entry) => entry.path));
-      const next = paths.filter((path) => listed.has(path));
+      const next = [...new Set(paths)].filter((path) => listed.has(path));
       const primary = focus !== null && next.includes(focus) ? focus : next.at(-1) ?? null;
       replaceSelection(next);
-      anchor = primary;
-      if (primary) cursor = primary;
+      if (!(selectionAnchor && options?.keepAnchor)) {
+        anchor = primary;
+        if (primary) cursor = primary;
+      }
     },
     clearSelection() { replaceSelection([]); anchor = null; },
     async open(entry) { opened = [...opened, entry.path]; },
