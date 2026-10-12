@@ -72,21 +72,20 @@ for (const host of [{ name: "fallback tiles", query: "" }, { name: "host tiles",
   });
 }
 
-test("canvas drag gestures preserve selection, including dragging away and back", async ({ page }) => {
+test("empty canvas marquee replaces selection, including dragging away and back", async ({ page }) => {
   await openView(page, 1400);
-  const before = await selectImages(page);
-  const graph = page.locator("section[data-component]").filter({ has: await card(page, "warm") }).locator(".graph");
-  const point = await emptyPoint(graph);
+  await selectImages(page);
+  const point = { x: 2, y: 2 };
   for (const returns of [false, true]) {
-    await page.mouse.move(point.x, point.y);
+    const pane = (await page.getByTestId("trace-view").boundingBox())!;
+    await page.mouse.move(pane.x + point.x, pane.y + point.y);
     await page.mouse.down();
-    await page.mouse.move(point.x + 40, point.y + 20, { steps: 8 });
-    if (returns) await page.mouse.move(point.x, point.y, { steps: 8 });
+    // Stay in the pane padding, so the rectangle intersects no tile.
+    await page.mouse.move(pane.x + 3, pane.y + 60, { steps: 8 });
+    if (returns) await page.mouse.move(pane.x + point.x, pane.y + point.y, { steps: 8 });
     await page.mouse.up();
     await settle(page);
-    expect((await state(page)).selected).toEqual(before.selected);
-    expect((await state(page)).inputs).toEqual(before.inputs);
-    await expect(await card(page, "warm")).toHaveAttribute("aria-pressed", "true");
+    await expectEmpty(page);
   }
 });
 
