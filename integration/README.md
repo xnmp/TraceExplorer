@@ -69,15 +69,11 @@ this plugin makes later first visits optimistic once preload has completed.
 
 
 Canonical directory identity is a separate integration limitation. The current
-host's `files/directory_identity.rs` explicitly preserves Unix symlink aliases
-and Windows short names; Trace's `folders::key` follows links. The SQL set is a
-superset in Trace's **canonical namespace**, not in the host's alias namespace.
-For `/alias -> /real`, a stored `/real/image.png` yields `/real` only. With the
-requested no-RPC rejection, a first visit under `/alias` can therefore remain
-in the built-in listing; Windows short paths and macOS `/var` versus
-`/private/var` can have the same issue. Enumerating arbitrary filesystem aliases
-requires filesystem IO, so SQL alone cannot solve this. Preserving alias
-support requires either a canonical directory identity from the host, or an
-exact lookup on candidate misses (relaxing the no-RPC requirement). The SDK is
-unchanged. A Rust regression test documents the canonical-key contract and
-this alias boundary explicitly.
+host's `files/directory_identity.rs` preserves Unix symlink aliases and Windows
+short names, while Trace's `folders::key` follows links, and macOS shows `/var`
+for `/private/var`. The SQL set is a superset in Trace's **canonical namespace**
+only: for `/alias -> /real`, a stored `/real/image.png` yields `/real`. So only
+a candidate hit is trusted (an optimistic `true`). A miss answers `false` and is
+still checked with the exact `folder_has_trace` lookup, which canonicalizes, so
+an alias shows Trace once that answer arrives, as before candidates existed. A
+Rust regression test documents the canonical-key contract.

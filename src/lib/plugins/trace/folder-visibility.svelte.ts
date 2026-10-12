@@ -5,9 +5,12 @@
  *
  * `available` is read from reactive contexts (the host resolves views in a
  * derived), so it never mutates state synchronously: unknown folders are
- * queued and optimistically offered only when the SQL candidate superset
- * includes them. Before preload completes they answer `false`. Known folders keep
- * their last answer while being refreshed, so views do not flicker.
+ * queued for an exact lookup and answer meanwhile from the SQL candidate
+ * superset (`true` when it includes them, so a first visit paints the Trace
+ * view first), or `false` before it loads. A miss is not authoritative: the
+ * host may name a folder by an alias (symlink, Windows short name, macOS
+ * `/var`) that the canonical superset cannot match, so it is still looked up.
+ * Known folders keep their last answer while being refreshed, so views do not flicker.
  */
 import { invoke } from "$lib/api/common";
 import { isVirtualPath } from "$lib/domain/virtual-path";
@@ -22,9 +25,8 @@ const RECENT_LIMIT = 16;
 
 export function createFolderVisibility(lookup: Lookup, loadCandidates?: CandidateLoader) {
   let known = $state.raw<ReadonlyMap<string, boolean>>(new Map());
-  // Separate from the bounded exact-answer cache. Absence is authoritative
-  // for canonical paths; the SDK exposes no canonical identity for a host
-  // directory symlink/short-name alias (see integration/README.md).
+  // Separate from the bounded exact-answer cache. Only presence is trusted:
+  // the SDK exposes no canonical identity for a host directory alias (see integration/README.md).
   let candidates = $state.raw<ReadonlySet<string> | null>(null);
   let candidateRevision = 0;
   let scope = 0;
@@ -81,22 +83,17 @@ export function createFolderVisibility(lookup: Lookup, loadCandidates?: Candidat
       remember(directory);
       const value = known.get(directory);
       if (value !== undefined) return value;
-      const candidate = candidates?.has(directoryKey(directory));
-      if (candidate === false) return false;
       const current = scope;
       if (!pending.has(directory)) queueMicrotask(() => {
-        if (current === scope && !known.has(directory) && !pending.has(directory)
-          && candidates?.has(directoryKey(directory)) !== false) refresh(directory);
+        if (current === scope && !known.has(directory) && !pending.has(directory)) refresh(directory);
       });
-      return candidate === true;
+      return candidates?.has(directoryKey(directory)) === true;
     },
     /** Trace data changed somewhere: re-check folders views are showing. */
     preload,
     refreshRecent() {
       void preload();
-      for (const directory of recent) {
-        if (known.has(directory) || candidates?.has(directoryKey(directory)) !== false) refresh(directory);
-      }
+      for (const directory of recent) refresh(directory);
     },
     /** Files changed in these folders. */
     filesChanged(directories: readonly string[]) {

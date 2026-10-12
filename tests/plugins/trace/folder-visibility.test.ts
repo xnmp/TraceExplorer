@@ -186,8 +186,8 @@ describe("folder visibility", () => {
 
 
 describe("preloaded folder candidates", () => {
-  it("rejects a non-candidate without an exact RPC, including on data refresh", async () => {
-    const lookup = vi.fn(async () => true);
+  it("answers false for a non-candidate at once and keeps that answer when the exact lookup agrees", async () => {
+    const lookup = vi.fn(async () => false);
     const loader = vi.fn(async () => ["/pics"]);
     const visibility = createFolderVisibility(lookup, loader);
     await visibility.preload();
@@ -196,7 +196,18 @@ describe("preloaded folder candidates", () => {
     visibility.refreshRecent();
     await flush();
     expect(loader).toHaveBeenCalledTimes(2);
-    expect(lookup).not.toHaveBeenCalled();
+    expect(visibility.available("/ordinary")).toBe(false);
+  });
+
+  it("offers a non-candidate alias once its exact lookup says it has Trace content", async () => {
+    // The host may name a folder by a symlink, short name or /var alias the canonical superset cannot match.
+    const lookup = vi.fn(async (directory: string) => directory === "/alias");
+    const visibility = createFolderVisibility(lookup, async () => ["/real"]);
+    await visibility.preload();
+    expect(visibility.available("/alias")).toBe(false);
+    await flush();
+    expect(lookup).toHaveBeenCalledWith("/alias");
+    expect(visibility.available("/alias")).toBe(true);
   });
 
   it("offers a candidate immediately, then keeps its exact false answer", async () => {
@@ -240,12 +251,10 @@ describe("preloaded folder candidates", () => {
     await visibility.preload();
     expect(visibility.available("/new")).toBe(false);
     await flush();
-    expect(lookup).not.toHaveBeenCalled();
     paths = ["/new"];
     visibility.refreshRecent();
     await flush();
     expect(visibility.available("/new")).toBe(true);
-    await flush();
     expect(lookup).toHaveBeenCalledWith("/new");
   });
 
@@ -261,8 +270,6 @@ describe("preloaded folder candidates", () => {
     await loading;
     expect(visibility.available("/stale")).toBe(false);
     expect(visibility.available("/new")).toBe(true);
-    await flush();
-    expect(lookup.mock.calls).toEqual([["/new"]]);
   });
 
   it("discards an older reload that finishes after a newer one", async () => {
@@ -303,7 +310,7 @@ describe("preloaded folder candidates", () => {
     expect(visibility.available(directory)).toBe(expected);
     expect(lookup).not.toHaveBeenCalled();
     await flush();
-    expect(lookup).toHaveBeenCalledTimes(expected ? 1 : 0);
+    expect(lookup).toHaveBeenCalledOnce(); // a miss is not authoritative: aliases are still looked up
   });
 
   it("keeps candidates outside the bounded exact cache", async () => {
