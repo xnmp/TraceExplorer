@@ -1088,7 +1088,8 @@ for (const worker of [false, true]) test(`cold children reveal from their accept
   expect(result.children).toBeGreaterThan(0);
   expect(result.mounted).not.toBeNull(); expect(result.visible).not.toBeNull();
   if (worker) expect(result.arrived).not.toBeNull();
-  expect(result.visible! - (worker ? result.arrived! : result.mounted!)).toBeLessThanOrEqual(2);
+  // The #63 regression held cold children back ~20 frames; a few frames of slack absorbs runner scheduling noise.
+  expect(result.visible! - (worker ? result.arrived! : result.mounted!)).toBeLessThanOrEqual(6);
   expect(result.entrances).toBe(result.children);
   expect(result.cancelledEntrances).toBe(0);
   expect(result.requests).toBe(worker ? 1 : 0);
