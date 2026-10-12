@@ -15,9 +15,9 @@ const sameColumns = (before: Awaited<ReturnType<typeof gridBoxes>>, after: Await
   for (const id of Object.keys(before)) expect(after[id].x, id).toBeCloseTo(before[id].x, 1);
 };
 
-for (const host of ["", "&fileTile=1&tileSize=small"]) {
-  test(`#59 stack caret has a 24px target, hover/focus feedback and collapses (${host ? "small host" : "fallback"})`, async ({ page }) => {
-    await openView(page, 420, `?grouping=two-chains${host}`, false);
+for (const theme of ["light", "dark"]) for (const host of ["", "&fileTile=1&tileSize=small"]) {
+  test(`#59 stack caret has a 24px target, hover/focus feedback and collapses (${theme}, ${host ? "small host" : "fallback"})`, async ({ page }) => {
+    await openView(page, 420, `?grouping=two-chains&theme=${theme}${host}`, false);
     const section = stack(page, "photo-a");
     await section.locator("[data-stack-toggle]").click(); await settle(page);
     const caret = section.getByRole("button", { name: "Close stack" });
@@ -28,18 +28,37 @@ for (const host of ["", "&fileTile=1&tileSize=small"]) {
     expect(box.y).toBeGreaterThanOrEqual(caption.y + caption.height);
     const child = (await section.locator("[data-grid-band] [data-tile-key]").first().boundingBox())!;
     expect(box.y + box.height).toBeLessThan(child.y);
-    const style = () => caret.evaluate((element) => { const style = getComputedStyle(element); return { background: style.backgroundColor, color: style.color, cursor: style.cursor }; });
+    const style = () => caret.evaluate((element) => {
+      const style = getComputedStyle(element), canvas = document.createElement("canvas");
+      canvas.width = canvas.height = 1;
+      const context = canvas.getContext("2d")!;
+      // Compare visible colours, including alpha, against the theme's surface.
+      context.fillStyle = getComputedStyle(document.documentElement).getPropertyValue("--background-solid");
+      context.fillRect(0, 0, 1, 1);
+      context.fillStyle = style.backgroundColor; context.fillRect(0, 0, 1, 1);
+      return { background: style.backgroundColor, rgb: [...context.getImageData(0, 0, 1, 1).data].slice(0, 3),
+        color: style.color, cursor: style.cursor, outlineWidth: style.outlineWidth, outlineStyle: style.outlineStyle };
+    });
     await page.mouse.move(1, 1);
     const normal = await style();
     expect(normal.cursor).toBe("pointer");
-    await caret.hover();
+    await caret.hover(); await settle(page);
     const hovered = await style();
-    expect(hovered.background).not.toBe(normal.background);
+    expect(Math.hypot(...hovered.rgb.map((channel, i) => channel - normal.rgb[i]))).toBeGreaterThan(50);
     expect(hovered.color).not.toBe(normal.color);
+    expect(await caret.evaluate((element) => {
+      const probe = document.createElement("span"); probe.style.color = "var(--accent)"; element.append(probe);
+      const accent = getComputedStyle(probe).color; probe.remove(); return accent;
+    })).toBe(hovered.color);
     await page.mouse.move(1, 1);
-    await page.keyboard.press("Tab"); await caret.focus();
+    await page.keyboard.press("Tab"); await caret.focus(); await settle(page);
     expect(await caret.evaluate((element) => element.matches(":focus-visible"))).toBe(true);
-    expect((await style()).background).toBe(hovered.background);
+    const focused = await style();
+    expect(focused.background).toBe(hovered.background);
+    expect(focused.outlineStyle).toBe("solid");
+    expect(parseFloat(focused.outlineWidth)).toBeGreaterThanOrEqual(2);
+    await page.emulateMedia({ reducedMotion: "reduce" });
+    expect(await caret.evaluate((element) => getComputedStyle(element).transitionDuration)).toBe("0s");
     await caret.click(); await settle(page);
     await expect(section.locator("[data-grid-band]")).toHaveCount(0);
     await expect(section.locator("[data-stack-toggle]")).toHaveAttribute("aria-expanded", "false");

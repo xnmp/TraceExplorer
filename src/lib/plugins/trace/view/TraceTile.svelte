@@ -134,8 +134,8 @@
   .cover-unsaved-dot { position: absolute; left: -2px; top: -2px; width: 6px; height: 6px; border: 2px solid var(--background-solid); border-radius: 50%; background: var(--system-caution-text, var(--system-caution)); }
   .close-stack { position: absolute; right: 5px; bottom: -24px; display: grid; place-items: center; width: 24px; height: 24px; padding: 0; border: 0; border-radius: var(--radius-sm); background: var(--control-fill); color: var(--text-secondary); cursor: pointer; }
   .close-stack svg { width: 12px; height: 12px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
-  .close-stack:hover, .close-stack:focus-visible { background: var(--subtle-fill-secondary); color: var(--text-primary); }
-  .close-stack:focus-visible { outline: 2px solid var(--focus-stroke-outer); }
+  .close-stack:hover, .close-stack:focus-visible { background: color-mix(in srgb, var(--accent) 32%, var(--background-solid)); color: var(--accent); }
+  .close-stack:focus-visible { outline: 2px solid var(--focus-stroke-outer); outline-offset: 2px; }
   .tile { position: absolute; box-sizing: border-box; }
   .card { display: flex; flex-direction: column; align-items: stretch; box-sizing: border-box; width: 100%; padding: 5px; overflow: hidden; text-align: left; font: inherit; color: var(--text-primary); background: var(--background-card-secondary, var(--control-fill)); border: 1px solid var(--control-stroke); border-radius: var(--radius-sm); cursor: pointer; }
   .card:hover { background: var(--subtle-fill-secondary); }
@@ -169,6 +169,6 @@
   .spinner { width: 14px; height: 14px; border: 2px solid var(--divider); border-top-color: var(--accent); border-radius: 50%; animation: spin 800ms linear infinite; }
   .title-spinner { width: 8px; height: 8px; flex: none; border: 1px solid var(--control-stroke); border-top-color: var(--accent); border-radius: 50%; animation: spin 800ms linear infinite; }
   @keyframes spin { to { transform: rotate(360deg); } }
-  @media (prefers-reduced-motion: no-preference) { .card { transition: background-color 120ms, border-color 120ms, box-shadow 120ms, opacity 160ms, filter 160ms; } .image { transition: filter 160ms; } }
+  @media (prefers-reduced-motion: no-preference) { .close-stack { transition: background-color var(--transition-fast), color var(--transition-fast); } .card { transition: background-color 120ms, border-color 120ms, box-shadow 120ms, opacity 160ms, filter 160ms; } .image { transition: filter 160ms; } }
   @media (prefers-reduced-motion: reduce) { .spinner, .title-spinner { animation: none; } }
 </style>
