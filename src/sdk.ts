@@ -7,6 +7,11 @@ export function host(): RuntimeSDK {
   return sdk;
 }
 
+/** Whether marquee selection can retain the host's cursor and Shift-range anchor. */
+export function hostSupportsSelectionAnchor(): boolean {
+  try { return host().capabilities?.includes("selectionAnchor") ?? false; } catch { return false; }
+}
+
 /** Whether the host allows workers created from plugin-owned blob URLs. */
 export function hostAllowsBlobWorkers(): boolean {
   try { return host().capabilities?.includes("blobWorkers") ?? false; } catch { return false; }

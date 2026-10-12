@@ -6,6 +6,7 @@
    * belongs to this pane; selection and Preview go through the pane handle.
    */
   import { flushSync, onDestroy, tick, untrack } from "svelte";
+  import { hostSupportsSelectionAnchor } from "../../../../sdk";
   import type { FileViewPane, PreviewTarget } from "../../../../../integration/plugin-sdk";
   import type { FileEntry } from "$lib/domain/file";
   import { parentDir, samePath } from "$lib/domain/path";
@@ -569,7 +570,10 @@
     const extras = [...new Map([...livePicks.extras.filter((hit) => additive && selected.has(hit.path)),
       ...hits.filter((hit) => !entriesByPath.has(hit.path))].map((hit) => [hit.path, hit])).values()];
     const listed = paths.filter((path) => entriesByPath.has(path));
-    if (!sameSelection(hostSelected, listed)) pane.setSelection(listed);
+    if (!sameSelection(hostSelected, listed)) {
+      if (hostSupportsSelectionAnchor()) pane.setSelection(listed, null, { keepAnchor: true });
+      else pane.setSelection(listed);
+    }
     if (targetData && (!additive || listed.length)) pane.setPreviewTarget(null);
     commitPicks({ order: paths, extras });
     marqueeAttachment?.selectionApplied();
