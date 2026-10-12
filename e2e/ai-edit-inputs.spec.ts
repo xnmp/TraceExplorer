@@ -455,7 +455,7 @@ test.describe("when the inputs cannot be read", () => {
     await editor(page).getByRole("textbox", { name: "Edit prompt" }).fill("Warmer light");
     // Keep needs Image 1's size: neither the backend nor the editor has it yet.
     await page.keyboard.press("Control+Enter");
-    await expect(editor(page).getByRole("alert")).toHaveText("Could not read the input images: The image service is busy. Try again, or choose an aspect ratio");
+    await expect(editor(page).getByRole("alert")).toHaveText("Could not read the input images: The image service is busy. Try again");
     expect(await starts(page)).toEqual([]);
     // The editor's preview loads: the open form follows its source.
     await page.evaluate(() => (window as any).trace.editorLoaded(1600, 900));

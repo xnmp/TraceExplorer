@@ -15,6 +15,7 @@ import StubFileTile from "./StubFileTile.svelte";
 import StubFileTiles from "./StubFileTiles.svelte";
 import { folderComponents, folderPage, isDirectFolderSeed, nativeStringOrder, type FolderNode } from "./folder-snapshot";
 import { isLocalAbsolutePath } from "$lib/domain/target-location";
+import { canonicalFixtureImagePath, fixtureImageEntries } from "./image-input-files";
 import { withNativeRequestCapacity } from "./request-capacity";
 
 export const DIRECTORY = "/pictures";
@@ -148,6 +149,10 @@ let pickerResult: string | null | undefined;
 let nextSaveFailure: string | null = null;
 /** How many of the next `openai_image_inputs` calls fail. */
 let inputFailures = 0;
+let inputsHeld = false;
+let heldInputs: Array<() => void> = [];
+const inputSymlinks = new Map<string, string>();
+const inputDirectories = new Set<string>();
 // Delay of the Preview-info queries, in ms: a native backend answers them over IPC, not within the same frame.
 let previewLatency = 0;
 // Delay of the folder index and component reads, in ms, like a native backend's IPC round trip.
@@ -283,9 +288,22 @@ configureBackend(withNativeRequestCapacity({
       case "trace_cancel_prompt_title": return reply({cancelled:true});
       // AI edit inputs: every known image is present, 160×96, with a revision derived from its path.
       case "openai_image_inputs": if (inputFailures > 0) { inputFailures -= 1; return Promise.reject(new Error("The image service is busy")); }
-        return reply((params.paths as string[]).map((path) => state.nodes.some((node) => node.path === path) || entryExtras.some((entry) => entry.path === path)
-        ? { path, digest: [...path].reduce((hash, char) => (hash * 33 + char.charCodeAt(0)) % 1e9, 5381).toString(16).padStart(64, "0"), width: 160, height: 96 }
-        : { path, error: "Path not found" }));
+        if (!Array.isArray(params.paths) || params.paths.length > 8) return Promise.reject(new Error("At most eight input images are supported"));
+        const inputEntries = fixtureImageEntries([
+          ...state.nodes.filter((node) => node.path && node.state === "present" && !node.discarded).map((node) => [node.path!, "file"] as const),
+          ...entryExtras.map((entry) => [entry.path, entry.kind] as const),
+          ...[...inputSymlinks.keys()].map((path) => [path, "file"] as const),
+          ...[...inputDirectories].map((path) => [path, "directory"] as const),
+        ]);
+        const descriptions = (params.paths as string[]).map((path) => {
+          try {
+            const canonicalPath = canonicalFixtureImagePath(path, inputSymlinks, inputEntries);
+            return inputEntries.get(canonicalPath) === "file"
+              ? { path, canonicalPath, digest: [...canonicalPath].reduce((hash, char) => (hash * 33 + char.charCodeAt(0)) % 1e9, 5381).toString(16).padStart(64, "0"), width: 160, height: 96 }
+              : { path, error: "Input image must be a regular file" };
+          } catch (cause) { return { path, error: cause instanceof Error ? cause.message : String(cause) }; }
+        });
+        return inputsHeld ? new Promise<T>((resolve) => heldInputs.push(() => resolve(descriptions as T))) : reply(descriptions);
       case "image_service_describe": {
         const snapshot = structuredClone(imageService);
         return imageDescriptionsHeld ? new Promise<T>((resolve) => { imageDescriptionWaiters.push(() => resolve(snapshot as T)); }) : reply(snapshot);
@@ -348,10 +366,15 @@ const fileTiles = new URLSearchParams(globalThis.location?.search ?? "").has("fi
 // `?tileSize=<preset>` simulates a host with the `tileSize` capability whose pane reports that preset; without it, an older host.
 const tileQuery = new URLSearchParams(globalThis.location?.search ?? "").get("tileSize");
 export const initialTileSize: TileSizePreset | null = tileQuery && tileQuery in TILE_IMAGE_PX ? tileQuery as TileSizePreset : null;
+// Independently toggled so every compatibility combination can be exercised.
+export const paneDialogs = new URLSearchParams(globalThis.location?.search ?? "").get("paneDialogs") !== "0";
+export const fileDropTargets = new URLSearchParams(globalThis.location?.search ?? "").get("fileDropTargets") !== "0";
+/** `fileDropTargets=refuse`: the host announces the capability but refuses the element, as it does for elements outside plugin-owned content. */
+export const fileDropTargetsRefused = new URLSearchParams(globalThis.location?.search ?? "").get("fileDropTargets") === "refuse";
 const color = (path: string) => `hsl(${[...path].reduce((sum, char) => (sum * 31 + char.charCodeAt(0)) % 360, 7)} 45% 55%)`;
 (globalThis as any).__TAURI_EXPLORER_PLUGIN_SDK__ = {
   sdkVersion: 1, apiVersion: 2, svelteVersion: "5.56.3",
-  capabilities: ["fileViews", "previewInfo", "previewTargets", "blobWorkers", "jobReveal", "jobCost", "fileViewReveal", ...(fileTile ? ["fileTile"] : []), ...(fileTiles ? ["fileTiles"] : []), ...(initialTileSize ? ["tileSize"] : [])],
+  capabilities: ["fileViews", "previewInfo", "previewTargets", "blobWorkers", "jobReveal", "jobCost", "fileViewReveal", ...(fileTile ? ["fileTile"] : []), ...(fileTiles ? ["fileTiles"] : []), ...(initialTileSize ? ["tileSize"] : []), ...(paneDialogs ? ["paneDialogs"] : []), ...(fileDropTargets ? ["fileDropTargets"] : [])],
   modules: {
     ...(fileTiles ? { "ui/file-tiles": { default: StubFileTiles } } : {}),
     ...(fileTile ? { "ui/file-tile": { default: StubFileTile, tileGridMetrics: (size: TileSizePreset = "medium") => {
@@ -477,6 +500,11 @@ export const backend = {
   failNextSave(message: string) { nextSaveFailure = message; },
   /** The next `count` reads of AI edit inputs fail. */
   failInputs(count: number) { inputFailures = count; },
+  holdInputs() { inputsHeld = true; },
+  releaseInputs() { inputsHeld = false; const pending = heldInputs; heldInputs = []; pending.forEach((release) => release()); },
+  /** Mock filesystem links; inspection traverses them before interpreting parent segments. */
+  symlinkInput(path: string, target: string) { inputSymlinks.set(path, target); },
+  directoryInput(path: string) { inputDirectories.add(path); },
   holdSaves() { holdSaves = true; },
   /** Answers run details, revision status and per-image traces after `ms`. */
   setPreviewLatency(ms: number) { previewLatency = ms; },
@@ -488,5 +516,5 @@ export const backend = {
   holdFolderReads() { folderReadsHeld = true; },
   releaseFolderReads() { folderReadsHeld = false; const pending = heldFolderReads; heldFolderReads = []; pending.forEach((release) => release()); },
   releaseSaves() { holdSaves = false; const pending = heldSaves; heldSaves = []; pending.forEach((run) => run()); },
-  reset() { nodeReadFailures = 0; previewLatency = 0; folderLatency = 0; pickerResult = undefined; nextSaveFailure = null; inputFailures = 0; imageRuns.clear(); imageJobs.clear(); imageOperations.clear(); billing.clear(); state = scenario(); version += 1; calls.length = 0; },
+  reset() { nodeReadFailures = 0; previewLatency = 0; folderLatency = 0; pickerResult = undefined; nextSaveFailure = null; inputFailures = 0; inputsHeld = false; heldInputs = []; inputSymlinks.clear(); inputDirectories.clear(); imageRuns.clear(); imageJobs.clear(); imageOperations.clear(); billing.clear(); state = scenario(); version += 1; calls.length = 0; },
 };

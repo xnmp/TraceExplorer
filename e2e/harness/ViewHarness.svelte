@@ -9,14 +9,23 @@
    * which inherit the host's `--preview-info-inset`.
    */
   import type { Component } from "svelte";
-  import type { FileViewContribution, FileViewPane, ImageEditorSource, PluginContext, PreviewInfoContribution, PreviewSubject, PreviewTarget, TileSizePreset } from "../../integration/plugin-sdk";
+  import { onDestroy } from "svelte";
+  import type { FileViewContribution, FileViewPane, ImageEditorSource, PluginContext, PluginDialogOptions, PluginDialogPane, PluginFileDropSource, PreviewInfoContribution, PreviewSubject, PreviewTarget, TileSizePreset } from "../../integration/plugin-sdk";
   import type { FileEntry } from "$lib/domain/file";
   import { tracePlugin } from "$lib/plugins/trace";
   import { forgetFolderSnapshots } from "$lib/plugins/trace/view/folder-session.svelte";
   import { tracePanes } from "$lib/plugins/trace/view/pane-registry.svelte";
   import { openAIImagePlugin } from "$lib/plugins/openai-image";
-  import { DIRECTORY, files, backend, initialTileSize } from "./view-fixture";
+  import { DIRECTORY, files, backend, initialTileSize, paneDialogs, fileDropTargets, fileDropTargetsRefused } from "./view-fixture";
   import { TILE_IMAGE_PX } from "./tile-presets";
+  import { createFileDropTargets } from "./file-drop-targets";
+  import DialogMount from "./DialogMount.svelte";
+  import { openHarnessDialog, type HarnessDialog } from "./dialogs";
+
+  const dropTargets = createFileDropTargets();
+  let dialogPane: PluginDialogPane = Object.freeze({ paneId: "pane-1" });
+  const dialogCalls: Array<{ id: string; options?: PluginDialogOptions }> = [];
+  onDestroy(() => { dropTargets.clear(); });
 
   let views = $state.raw<FileViewContribution[]>([]);
   let sections = $state.raw<PreviewInfoContribution[]>([]);
@@ -63,7 +72,8 @@
   const combinedSelectionApi = new URLSearchParams(location.search).has("combinedSelection");
   let otherPaneSelection = $state.raw<FileEntry[]>([]);
   const dialogs = new Map<string, Component<any>>();
-  let opened_dialogs = $state.raw<Array<{ id: string; props: Record<string, unknown> }>>([]);
+  let opened_dialogs = $state.raw<readonly HarnessDialog[]>([]);
+  let dialogSequence = 0;
   let accepted = $state.raw<Array<{ label: string; detail: string }>>([]);
   /** The AI edit tool in a stand-in for the host's image editor: it stays mounted while the editor's source fills in. */
   let editorTool = $state.raw<{ component: Component<any>; props?: Record<string, unknown> } | null>(null);
@@ -93,6 +103,8 @@
   let closeConfiguration: (() => void) | undefined;
   let configureFailure: string | null = null;
   function activate() {
+    dropTargets.clear();
+    dialogPane = Object.freeze({ paneId: "pane-1" });
     views = []; sections = []; commands.clear(); conditions.clear(); shortcuts.clear(); listeners.clear(); fileListeners.length = 0; menuItems.clear(); editorToolId = null; disposed = false;
     const ctx = {
       registerSettingsSection: () => {},
@@ -108,6 +120,8 @@
         getSelection: () => entries.filter((entry) => selected.includes(entry.path)),
         ...(combinedSelectionApi ? { getCombinedSelection: () => [...entries.filter((entry) => selected.includes(entry.path)), ...otherPaneSelection] } satisfies Pick<PluginContext["workspace"], "getCombinedSelection"> : {}),
         captureSelection: () => () => true,
+        ...(paneDialogs ? { capturePane: (paneId: string | undefined = undefined) => !disposed && (!paneId || paneId === dialogPane.paneId) ? dialogPane : null } : {}),
+        ...(fileDropTargets ? { registerFileDropTarget: fileDropTargetsRefused ? () => { throw new Error("The drop target must be inside this plugin's mounted contribution or dialog content."); } : dropTargets.register } : {}),
         selectFile: async () => {},
       },
     } as unknown as PluginContext;
@@ -117,7 +131,13 @@
       registerContextMenuItem: (item: { id: string; label: string; group: string; when: (entries: FileEntry[]) => boolean; handler: (entries: FileEntry[]) => void | Promise<void> }) => { menuItems.set(item.id, item); }, registerSettingsSection: () => {},
       registerImageEditorTool: (tool: { id: string; component: Component<any>; props?: Record<string, unknown> }) => { editorTool = tool; editorToolId = tool.id; },
       registerDialog: (dialog: { id: string; component: Component<any> }) => { dialogs.set(dialog.id, dialog.component); },
-      openDialog: (id: string, props: Record<string, unknown> = {}) => { opened_dialogs = [...opened_dialogs, { id, props }]; },
+      openDialog: (id: string, props: Record<string, unknown> = {}, options: PluginDialogOptions | undefined = undefined) => {
+        dialogCalls.push({ id, ...(options ? { options } : {}) });
+        if (disposed) throw new Error("Plugin caller was disposed");
+        if (!dialogs.has(id)) throw new Error("Dialog is not registered by this plugin");
+        if (options?.scope === "pane" && (!paneDialogs || options.pane !== dialogPane)) throw new Error("Dialog pane is unavailable");
+        opened_dialogs = openHarnessDialog(opened_dialogs, id, props, options, ++dialogSequence);
+      },
       closeDialog: (id: string) => { opened_dialogs = opened_dialogs.filter((dialog) => dialog.id !== id); },
       presentation: { ...(editorApi ? { openImageEditor: async (request: { path: string; tool: string }) => {
         // Recorded as asked, so tests see refused requests too.
@@ -259,7 +279,7 @@
     /** Changes the pane's tile-size preset live, as the host's setting would; null removes it (an older host). */
     setTileSize(preset: TileSizePreset | null) { tilePreset = preset; },
     toggle() { return commands.get("plugin.trace.toggle")?.(); },
-    disable() { enabled = false; disposed = true; tracePlugin.deactivate?.(); },
+    disable() { enabled = false; disposed = true; dropTargets.clear(); opened_dialogs = []; tracePlugin.deactivate?.(); },
     enable() { enabled = true; activate(); },
     navigate(path: string, listed: FileEntry[] | undefined = undefined) { directory = path; entries = listed ?? (path === DIRECTORY ? files() : []); selected = []; anchor = null; target = null; },
     /** Hides the Trace view and shows it again, as the host does when switching away from its tab and back: the view unmounts, and a new one mounts. */
@@ -277,6 +297,15 @@
     /** Re-sorts the listing (reversed), as choosing another sort order does: the selection is unchanged. */
     resort() { entries = [...entries].reverse(); },
     command: (id: string) => commands.get(id)?.(),
+    dialogCalls: () => dialogCalls.map((call) => ({ ...call })),
+    registeredDropTargets: () => dropTargets.size,
+    /** Hit-test the chosen DOM point, then use the host stand-in's resolver/dispatcher. No direct plugin-handler calls. */
+    async dropFiles(selector: string, paths: readonly string[], source: PluginFileDropSource = "pane") {
+      const element = document.querySelector(selector);
+      if (!element) throw new Error("Drop surface not found");
+      const bounds = element.getBoundingClientRect();
+      return dropTargets.deliver(document.elementFromPoint(bounds.x + bounds.width / 2, bounds.y + bounds.height / 2), paths, source);
+    },
     /** Opens the image editor's AI edit on `path`, captured at `digest`, before its preview has loaded (no size yet). */
     openEditor(path: string, digest: string) { editorSource = { path, name: path.split("/").at(-1)!, digest, format: "PNG", referencePaths: [] }; },
     /** The editor's preview loaded: its source now has a size, as the host's derived source does. */
@@ -351,9 +380,9 @@
     {/key}
   </div>
 {/if}
-{#each opened_dialogs as dialog (dialog)}
+{#each opened_dialogs as dialog (dialog.instanceId)}
   {@const Dialog = dialogs.get(dialog.id)}
-  {#if Dialog}<Dialog {...dialog.props} open={true} onClose={() => { opened_dialogs = opened_dialogs.filter((other) => other !== dialog); }} />{/if}
+  {#if Dialog}<DialogMount component={Dialog} props={dialog.props} options={dialog.options} width={viewWidth} onClose={() => { opened_dialogs = opened_dialogs.filter((other) => other.instanceId !== dialog.instanceId); }} />{/if}
 {/each}
 
 <style>

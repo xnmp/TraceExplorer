@@ -1,4 +1,4 @@
-import { describe,it,expect,vi } from "vitest";
+import { afterEach,describe,it,expect,vi } from "vitest";
 vi.mock("$lib/plugins/trace/prompt-titles.svelte",()=>({promptTitles:{bind(){},unbind(){}}}));
 vi.mock("$lib/plugins/openai-image/OpenAIImageDialog.svelte",()=>({default:{}}));
 vi.mock("$lib/plugins/openai-image/OpenAIImageEditorTool.svelte",()=>({default:{}}));
@@ -8,6 +8,7 @@ vi.mock("$lib/plugins/openai-image/OpenAIImageHistory.svelte",()=>({default:{}})
 import {openAIImagePlugin} from "$lib/plugins/openai-image";
 import type {PluginContext} from "../../integration/plugin-sdk";
 import type {FileEntry} from "$lib/domain/file";
+import { SVELTE_ABI } from "../../src/sdk";
 const image:FileEntry={name:"photo.PNG",path:"/media/photo.PNG",kind:"file",size:20,modified:"2026-10-03T00:00:00Z"};
 const folder:FileEntry={...image,name:"media",path:"/media",kind:"directory"};
 function fixture(initial:Record<string,unknown>={}){
@@ -28,6 +29,50 @@ function fixture(initial:Record<string,unknown>={}){
   return {ctx,commands,menus,tools,settings,opened,setSelection:(entries:FileEntry[])=>{selection=entries;}};
 }
 describe("OpenAI plugin SDK contributions",()=>{
+  afterEach(() => { vi.unstubAllGlobals(); });
+  it("captures and opens the owner synchronously for every AI dialog entry point", async () => {
+    vi.stubGlobal("__TAURI_EXPLORER_PLUGIN_SDK__", { sdkVersion: 1, apiVersion: 2, svelteVersion: SVELTE_ABI, capabilities: ["paneDialogs", "fileDropTargets"] });
+    const f = fixture(); f.ctx.workspace.getCurrentDirectory = () => "/media";
+    const pane = Object.freeze({ paneId: "owner" });
+    const capture = vi.fn(() => pane), register = vi.fn(() => () => {}), openDialog = vi.fn();
+    f.ctx.workspace.capturePane = capture; f.ctx.workspace.registerFileDropTarget = register;
+    f.ctx.openDialog = openDialog;
+    f.ctx.storage.get = vi.fn(() => new Promise(() => {}));
+    await openAIImagePlugin.activate(f.ctx);
+    const actions = [
+      () => f.commands.find((c) => c.id === "plugin.openai-image.edit")!.handler(),
+      () => { f.setSelection([image]); return f.commands.find((c) => c.id === "plugin.openai-image.generate")!.handler(); },
+      () => f.menus.find((m) => m.id === "openai-image.edit")!.handler([image]),
+      () => f.menus.find((m) => m.id === "openai-image.generate")!.handler([folder]),
+    ];
+    for (const action of actions) {
+      const before = capture.mock.calls.length;
+      const opening = action();
+      expect(capture).toHaveBeenCalledTimes(before + 1);
+      expect(openDialog).toHaveBeenLastCalledWith("openai-image.create", expect.objectContaining({ registerFileDropTarget: expect.any(Function) }), { scope: "pane", pane });
+      await opening;
+    }
+    expect(f.ctx.storage.get).not.toHaveBeenCalled();
+  });
+  it("uses exactly the legacy two-argument open when pane support is absent, while drops remain independent", async () => {
+    vi.stubGlobal("__TAURI_EXPLORER_PLUGIN_SDK__", { sdkVersion: 1, apiVersion: 2, svelteVersion: SVELTE_ABI, capabilities: ["fileDropTargets"] });
+    const f = fixture(); f.setSelection([image]);
+    f.ctx.workspace.capturePane = vi.fn(() => ({ paneId: "unannounced" }));
+    f.ctx.workspace.registerFileDropTarget = vi.fn(() => () => {});
+    const opened = vi.fn(); f.ctx.openDialog = opened;
+    await openAIImagePlugin.activate(f.ctx);
+    await f.commands.find((c) => c.id === "plugin.openai-image.edit")!.handler();
+    expect(opened.mock.calls[0]).toHaveLength(2);
+    expect(opened.mock.calls[0][1]).toMatchObject({ registerFileDropTarget: expect.any(Function) });
+    expect(f.ctx.workspace.capturePane).not.toHaveBeenCalled();
+  });
+  it("fails the action if a capable host cannot capture its owner instead of opening a window modal", async () => {
+    vi.stubGlobal("__TAURI_EXPLORER_PLUGIN_SDK__", { sdkVersion: 1, apiVersion: 2, svelteVersion: SVELTE_ABI, capabilities: ["paneDialogs"] });
+    const f = fixture(); f.setSelection([image]); f.ctx.workspace.capturePane = () => null;
+    await openAIImagePlugin.activate(f.ctx);
+    await expect(f.commands.find((c) => c.id === "plugin.openai-image.edit")!.handler()).rejects.toThrow("pane is unavailable");
+    expect(f.opened).toEqual([]);
+  });
   it("contributes only a shared configuration action and awaits managed dialog closure",async()=>{
     const f=fixture();
     let close:()=>void=()=>{};
