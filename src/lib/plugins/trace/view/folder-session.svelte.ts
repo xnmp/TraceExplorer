@@ -333,6 +333,8 @@ export function createFolderSession(backend: TraceBackend = traceBackend, snapsh
     get index() { return index; },
     get status() { return status; },
     get error() { return error; },
+    /** Why the last folder index read failed; empty once a read succeeds. */
+    get indexError() { return indexError; },
     get components() { return components; },
     get orientations() { return orientations; },
     get openStackKeys() { return openStackKeys; },

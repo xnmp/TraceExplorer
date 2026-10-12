@@ -489,6 +489,49 @@ test("saving an unsaved cover through its Save button moves no cell, even while 
   expect(await uncaught(page)).toEqual([]);
 });
 
+test("#50 a save from another pane moves no column while the listing precedes the index", async ({ page }) => {
+  await openView(page, 420, "?grouping=unsaved-root-joined-with-source", false);
+  const before = await gridBoxes(page);
+  await page.evaluate(() => {
+    const backend = (window as any).trace.backend;
+    backend.holdFolderReads();
+    // Updates the host listing and emits invalidation without invoking this view's saved callback.
+    backend.saveGeneration("draft");
+  });
+  await expect.poll(() => page.evaluate(() => (window as any).trace.listing().some((entry: { path: string }) => entry.path === "/pictures/draft.png"))).toBe(true);
+  await settle(page);
+  await expect(page.locator('[data-entry-path="/pictures/draft.png"]')).toHaveCount(0);
+  sameColumns(before, await gridBoxes(page));
+  await page.evaluate(() => (window as any).trace.backend.releaseFolderReads());
+  await settle(page);
+  await expect(page.locator('[data-entry-path="/pictures/draft.png"]')).toHaveCount(0);
+  sameColumns(before, await gridBoxes(page));
+  expect(await uncaught(page)).toEqual([]);
+});
+
+test("#51 a cold activation follows its revision after merging into an older lineage", async ({ page }) => {
+  await openView(page, 420, "?draftStack=1", false);
+  await page.locator('[data-entry-path="/pictures/notes.txt"]').click();
+  const clicked = await key(page, "draft");
+  const oldId = await stack(page, "draft").getAttribute("data-component");
+  await page.evaluate(() => (window as any).trace.backend.holdNodeReads());
+  await stack(page, "draft").locator("[data-stack-toggle]").click();
+  await expect.poll(() => page.evaluate((id) => (window as any).trace.backend.calls("trace_component_nodes").some((call: { params: { componentId: string } }) => call.params.componentId === id), oldId)).toBe(true);
+  // Only nodes are held: the new index overtakes the clicked stack's node load.
+  await page.evaluate(() => (window as any).trace.backend.joinGeneration(["village", "draft"], "joined"));
+  await expect(page.locator(`section[data-component="${oldId}"]`)).toHaveCount(0);
+  await expect(stack(page, "village")).toBeVisible();
+  // The clicked unsaved image is now neither a cover nor a folder member.
+  expect(await stack(page, "village").locator("[data-stack-toggle]").getAttribute("data-node-key")).toBe(await key(page, "village"));
+  await page.evaluate(() => (window as any).trace.backend.releaseNodeReads());
+  await expect.poll(async () => (await state(page)).target).toMatchObject({ id: `trace:${clicked}` });
+  await settle(page);
+  const after = await state(page);
+  expect(after.selected).toEqual([]);
+  expect(after.inputs).toEqual(["/managed/draft.png"]);
+  expect(await uncaught(page)).toEqual([]);
+});
+
 test("a cover whose band is virtualised renders from fresh node data after the draft is saved elsewhere", async ({ page }) => {
   // Wide enough for one row: the fan's tall band, opened second, pushes the draft's band out of the mounted window while its cover stays.
   await openView(page, 1000, "?draftStack=1&fanChildren=200", false);

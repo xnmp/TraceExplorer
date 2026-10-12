@@ -18,6 +18,16 @@ function index(listed: string[] | null, components: Record<string, string[]>, st
 }
 
 describe("Preview target location", () => {
+  it("resolves a cold unsaved revision after its component merges and it stops being the cover", () => {
+    const clicked = "o:11:0";
+    const pending = index(["c:a:2", "c:a:7"], {});
+    // The clicked key has neither a cover nor a listed-file entry in the new index.
+    expect(locateTarget(clicked, "c:o:11:0", pending)).toBe("unknown");
+    expect(unresolvedTargetComponents(clicked, "c:o:11:0", pending)).toEqual(["c:a:2", "c:a:7"]);
+    const loaded = index(["c:a:2", "c:a:7"], { "c:a:2": ["a:2", clicked] });
+    expect(locateTarget(clicked, "c:o:11:0", loaded)).toMatchObject({ componentId: "c:a:2", node: { key: clicked } });
+    expect(unresolvedTargetComponents(clicked, "c:o:11:0", loaded)).toEqual([]);
+  });
   it("finds the node in its own current component", () => {
     const found = locateTarget("o:2:0", "c:a:1", index(["c:a:1"], { "c:a:1": ["a:1", "o:2:0"] }));
     expect(found).toMatchObject({ componentId: "c:a:1", node: { key: "o:2:0" } });
