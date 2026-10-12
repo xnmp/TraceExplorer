@@ -56,7 +56,10 @@ function scenario(): { nodes: FolderNode[]; names: Map<string, string> } {
       names.set(basename(node.path ?? node.key).replace(/\.png$/, ""), node.key);
       counter = Math.max(counter, node.artifactId ?? 0, node.runId ?? 0);
     }
-    return { nodes: fixtures, names };
+    // Long real filenames exercise wrapping and ellipsis without changing graph identities.
+    const nodes = query.has("stackName") ? fixtures.map((node) => node.path?.endsWith("/photo-a.png")
+      ? { ...node, path: `${DIRECTORY}/${query.get("stackName") === "wrapped" ? "photo-shot.png" : "a-photo-with-a-very-long-name-that-must-wrap-and-ellipsize.png"}` } : node) : fixtures;
+    return { nodes, names };
   }
   // Record source identities in their original order, then outputs oldest
   // section first. Native summaries rank newest-first, while identities keep
