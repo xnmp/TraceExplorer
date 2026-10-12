@@ -149,8 +149,13 @@
   .explorer-cover .image { position: relative; isolation: isolate; overflow: visible; width: 100%; background: none; }
   /* At most two static sheets. Filters or extra composited decoration stall cold
      opens in the host's software renderer; the thumbnail keeps its ordinary bounds. */
-  .stack-sheet { position: absolute; inset: 0; box-sizing: border-box; border: 1px solid var(--control-stroke); border-radius: var(--radius-sm); background: var(--background-card); z-index: -1; transform: translate(-3px, -1px) rotate(-6deg); }
-  .second-sheet { transform: translate(3px, -1px) rotate(4deg); }
+  /* Opaque paper and a structural edge stay legible over pane, hover and selection
+     surfaces in both themes. Percentage insets scale the fan while reserving room
+     inside the tile; the cover and caption retain the ordinary thumbnail bounds. */
+  .stack-sheet { position: absolute; inset: 0 3% 4%; box-sizing: border-box; border: 1px solid color-mix(in srgb, var(--text-secondary) 65%, var(--background-solid)); border-radius: calc(var(--radius-sm) / 2); background: color-mix(in srgb, var(--text-primary) 18%, var(--background-solid)); box-shadow: 0 1px 2px rgb(0 0 0 / .16); z-index: -2; transform-origin: 50% 100%; transform: rotate(-8deg); }
+  .host-cover .stack-sheet { translate: 0 -3%; }
+  .explorer-cover:not(.host-cover) .stack-sheet { inset-inline: 3.5%; }
+  .second-sheet { z-index: -1; transform: rotate(7deg); }
   .explorer-cover .image :global(.thumbnail) { border-radius: var(--radius-sm); }
   .cover-press { position: absolute; inset: 0; width: 100%; height: 100%; padding: 0; border: 0; border-radius: inherit; background: none; cursor: pointer; }
   .cover-press:focus-visible { outline: 2px solid var(--focus-stroke-outer); outline-offset: 2px; }

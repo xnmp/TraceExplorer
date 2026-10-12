@@ -1209,6 +1209,7 @@ for (const theme of ["light", "dark"]) for (const preset of [null, "small", "med
       const tile = (await section.locator("[data-grid-cell] .tile").boundingBox())!;
       const sheets = section.locator("[data-grid-cell] .stack-sheet");
       await expect(sheets).toHaveCount(count);
+      const image = (await section.locator(".image").first().boundingBox())!;
       const angles: number[] = [];
       for (const sheet of await sheets.all()) {
         const box = (await sheet.boundingBox())!;
@@ -1223,11 +1224,36 @@ for (const theme of ["light", "dark"]) for (const preset of [null, "small", "med
         });
         angles.push(style.angle);
         expect(style.border).toBe("1px"); expect(style.filter).toBe("none");
-        expect(style.backdrop).toBe("none"); expect(style.shadow).toBe("none");
+        expect(style.backdrop).toBe("none"); expect(style.shadow).not.toBe("none");
       }
-      expect(angles[0]).toBeCloseTo(-6, 1);
-      if (count === 2) expect(angles[1]).toBeCloseTo(4, 1);
-      const image = (await section.locator(".image").first().boundingBox())!;
+      expect(angles[0]).toBeLessThanOrEqual(-6); expect(angles[0]).toBeGreaterThanOrEqual(-8.1);
+      if (count === 2) {
+        expect(angles[1]).toBeGreaterThanOrEqual(6); expect(angles[1]).toBeLessThanOrEqual(8);
+        expect(Math.abs(angles[0])).toBeGreaterThan(angles[1]);
+      }
+      // Enough exposed paper to read as a pile at normal size, scaling with the cover.
+      const back = (await sheets.first().boundingBox())!;
+      expect(image.x - back.x).toBeGreaterThan(image.height * .05);
+      expect(image.y - back.y).toBeGreaterThan(image.height * .03);
+      if (count === 2) {
+        const front = (await sheets.last().boundingBox())!;
+        expect(front.x + front.width - image.x - image.width).toBeGreaterThan(image.height * .05);
+      }
+      const contrast = await sheets.first().evaluate((element) => {
+        const style = getComputedStyle(element), card = getComputedStyle(element.closest(".card")!);
+        const canvas = document.createElement("canvas"); canvas.width = canvas.height = 1;
+        const context = canvas.getContext("2d")!;
+        const pane = getComputedStyle(document.documentElement).getPropertyValue("--background-solid");
+        const sample = (...layers: string[]) => {
+          context.clearRect(0, 0, 1, 1);
+          for (const color of layers) { context.fillStyle = color; context.fillRect(0, 0, 1, 1); }
+          return [...context.getImageData(0, 0, 1, 1).data].slice(0, 3);
+        };
+        const background = sample(pane, card.backgroundColor);
+        const distance = (color: string) => Math.hypot(...sample(pane, card.backgroundColor, color).map((channel, i) => channel - background[i]));
+        return { surface: distance(style.backgroundColor), edge: distance(style.borderTopColor) };
+      });
+      expect(contrast.surface).toBeGreaterThan(20); expect(contrast.edge).toBeGreaterThan(80);
       const ordinary = page.locator('[data-entry-path="/pictures/plain.png"]');
       const ordinaryImage = (await ordinary.locator(".icon").boundingBox())!;
       expect(image.y).toBeCloseTo(ordinaryImage.y, 1);
@@ -1246,6 +1272,8 @@ for (const theme of ["light", "dark"]) for (const preset of [null, "small", "med
     });
     await settle(page); await verify(second, 2);
     await expect(second.locator(".cover-unsaved-dot")).toBeVisible();
+    await second.locator(".cover-press").hover(); await settle(page); await verify(second, 2);
+    await page.mouse.move(1, 1);
     await first.locator("[data-stack-toggle]").click(); await settle(page);
     await expect(first.locator("[data-grid-band] [data-tile-key]").first()).toBeVisible();
     await verify(first, 1); await verify(second, 2);
