@@ -5,6 +5,17 @@ import { basename, nativeDirectoryKey, parentDir } from "$lib/domain/path";
  * Native only seeds unsaved outputs belonging to the queried folder.
  */
 export interface FolderNode extends TraceNode { readonly contextDirectory?: string }
+/** Mirrors folders::candidates_at: all artifact/locator parents plus contexts
+ * in eligible run statuses, regardless of presence, dismissal or components.
+ * Records are persisted paths; this helper does no filesystem IO.
+ */
+export function folderCandidates(paths: readonly string[], contexts: readonly { folder: string; status: string }[]): string[] {
+  return [...new Set([
+    ...paths.map(parentDir),
+    ...contexts.filter(({ status }) => ["running", "uncertain", "interrupted", "succeeded"].includes(status)).map(({ folder }) => folder),
+  ].map(nativeDirectoryKey))].sort(nativeStringOrder);
+}
+
 const belongsToFolder = (node: FolderNode, directory: string): boolean =>
   node.contextDirectory !== undefined ? node.contextDirectory === directory : node.scope === "current";
 const storedScope = (path: string, directory: string): TraceNode["scope"] => {

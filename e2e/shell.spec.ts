@@ -150,3 +150,41 @@ test("disabling removes the view cleanly and re-enabling restores a working one"
   expect(await rendered(page, "tone", "related")).toContain("quiet");
   expect(await uncaught(page)).toEqual([]);
 });
+
+
+test("a preloaded Trace folder paints Trace on its first visit with no plain listing frame", async ({ page }) => {
+  await page.goto("/view.html?directory=/ordinary");
+  await page.waitForFunction(() => !!(window as any).trace);
+  await expect(builtin(page)).toBeVisible();
+  expect(await page.evaluate(() => (window as any).trace.backend.calls("folder_has_trace").filter((call: any) => call.params.directory === "/pictures"))).toEqual([]);
+  expect(await page.evaluate(() => (window as any).trace.backend.calls("trace_folder_candidates").length)).toBe(1);
+
+  // Start before navigation. Native IPC stays in flight across many frames;
+  // no folder session or exact visibility answer has been cached for /pictures.
+  await page.evaluate(async () => {
+    const w = window as any;
+    w.trace.backend.setFolderLatency(600);
+    w.firstVisitFrames = [];
+    let running = true;
+    w.stopFirstVisitSampling = () => { running = false; };
+    const sample = () => {
+      const pane = document.querySelector('[aria-label="Explorer pane"]')!;
+      w.firstVisitFrames.push({ directory: pane.getAttribute("data-directory"),
+        view: pane.querySelector('[data-file-view="trace.view"]') ? "trace" : pane.querySelector('.builtin') ? "listing" : "empty" });
+      if (running) requestAnimationFrame(sample);
+    };
+    requestAnimationFrame(sample);
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    w.trace.navigate("/pictures");
+  });
+  await expect(view(page)).toBeVisible();
+  await expect(page.locator("[data-tile-key]").first()).toBeVisible({ timeout: 20_000 });
+  await settle(page);
+  const frames = await page.evaluate(() => { (window as any).stopFirstVisitSampling(); return (window as any).firstVisitFrames as Array<{ directory: string; view: string }>; });
+  expect(frames.some((frame) => frame.directory === "/ordinary" && frame.view === "listing")).toBe(true);
+  const visited = frames.filter((frame) => frame.directory === "/pictures");
+  expect(visited.length).toBeGreaterThan(0);
+  expect(visited[0].view).toBe("trace");
+  expect(visited.every((frame) => frame.view === "trace")).toBe(true);
+  expect(await uncaught(page)).toEqual([]);
+});

@@ -45,3 +45,35 @@ Only the listed selected set changes; the range anchor and cursor stay untouched
 including when empty or when the cursor is no longer selected, and `focus` is
 ignored. Trace uses it for marquee frames, then records fresh ordered picks.
 Without the capability, Trace retains the original `setSelection(paths)` behavior.
+
+
+Trace folder visibility preloads `trace_folder_candidates` at frontend activation
+and reloads on `trace:changed`. This SQL superset includes direct parents of all
+artifact/locator paths and contexts for running, uncertain, interrupted and
+succeeded runs. It skips recorded-file stats and folder index builds; exact
+`folder_has_trace` results still govern known folders. Candidate paths are
+persisted canonical paths (dunce-simplified on Windows), compared with the
+frontend's `directoryKey` rules. The first candidate answer offers Trace while
+an exact lookup checks presence and components; a false positive switches back.
+
+This does **not** guarantee the first folder in a new window: the SDK's
+`Plugin.activate` may return a promise, but `FileViewContribution.available` is
+synchronous and exposes no preload/first-paint barrier. In the host,
+`window-session.ts` starts `startup.ready` without awaiting it before
+`windowTabsManager.init`; `window-startup.ts` publishes settings readiness before
+awaiting plugin initialization. `FileList.svelte` derives the resolved view and
+`file-view-registry.svelte::resolve` consults contributions as they register.
+Thus folder navigation/view resolution can precede activation completion (or
+activation itself). A host startup barrier would need a separate host change;
+this plugin makes later first visits optimistic once preload has completed.
+
+
+Canonical directory identity is a separate integration limitation. The current
+host's `files/directory_identity.rs` preserves Unix symlink aliases and Windows
+short names, while Trace's `folders::key` follows links, and macOS shows `/var`
+for `/private/var`. The SQL set is a superset in Trace's **canonical namespace**
+only: for `/alias -> /real`, a stored `/real/image.png` yields `/real`. So only
+a candidate hit is trusted (an optimistic `true`). A miss answers `false` and is
+still checked with the exact `folder_has_trace` lookup, which canonicalizes, so
+an alias shows Trace once that answer arrives, as before candidates existed. A
+Rust regression test documents the canonical-key contract.

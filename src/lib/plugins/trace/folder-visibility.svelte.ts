@@ -5,21 +5,30 @@
  *
  * `available` is read from reactive contexts (the host resolves views in a
  * derived), so it never mutates state synchronously: unknown folders are
- * queued and answer `false` until their result arrives. Known folders keep
- * their last answer while being refreshed, so views do not flicker.
+ * queued for an exact lookup and answer meanwhile from the SQL candidate
+ * superset (`true` when it includes them, so a first visit paints the Trace
+ * view first), or `false` before it loads. A miss is not authoritative: the
+ * host may name a folder by an alias (symlink, Windows short name, macOS
+ * `/var`) that the canonical superset cannot match, so it is still looked up.
+ * Known folders keep their last answer while being refreshed, so views do not flicker.
  */
 import { invoke } from "$lib/api/common";
 import { isVirtualPath } from "$lib/domain/virtual-path";
-import { samePath } from "$lib/domain/path";
+import { directoryKey, samePath } from "$lib/domain/path";
 
 type Lookup = (directory: string) => Promise<boolean>;
+type CandidateLoader = () => Promise<readonly string[]>;
 
 const CACHE_LIMIT = 128;
 /** Folders refreshed when Trace data changes: the ones views asked about most recently. */
 const RECENT_LIMIT = 16;
 
-export function createFolderVisibility(lookup: Lookup) {
+export function createFolderVisibility(lookup: Lookup, loadCandidates?: CandidateLoader) {
   let known = $state.raw<ReadonlyMap<string, boolean>>(new Map());
+  // Separate from the bounded exact-answer cache. Only presence is trusted:
+  // the SDK exposes no canonical identity for a host directory alias (see integration/README.md).
+  let candidates = $state.raw<ReadonlySet<string> | null>(null);
+  let candidateRevision = 0;
   let scope = 0;
   const pending = new Set<string>();
   const dirty = new Set<string>();
@@ -48,6 +57,21 @@ export function createFolderVisibility(lookup: Lookup) {
       });
   }
 
+  async function preload(): Promise<void> {
+    if (!loadCandidates) return;
+    const current = scope;
+    const revision = ++candidateRevision;
+    try {
+      const paths = await loadCandidates();
+      const next = new Set(paths.map(directoryKey));
+      if (current === scope && revision === candidateRevision) candidates = next;
+    } catch {
+      // An unavailable RPC must fall back to exact lookups, never declare all
+      // folders ineligible. A failed reload also invalidates the old superset.
+      if (current === scope && revision === candidateRevision) candidates = null;
+    }
+  }
+
   function remember(directory: string) {
     if (recent[0] === directory) return;
     recent = [directory, ...recent.filter((item) => item !== directory)].slice(0, RECENT_LIMIT);
@@ -58,17 +82,28 @@ export function createFolderVisibility(lookup: Lookup) {
       if (!directory || isVirtualPath(directory)) return false;
       remember(directory);
       const value = known.get(directory);
-      if (value === undefined && !pending.has(directory)) queueMicrotask(() => { if (!known.has(directory) && !pending.has(directory)) refresh(directory); });
-      return value === true;
+      if (value !== undefined) return value;
+      const current = scope;
+      if (!pending.has(directory)) queueMicrotask(() => {
+        if (current === scope && !known.has(directory) && !pending.has(directory)) refresh(directory);
+      });
+      return candidates?.has(directoryKey(directory)) === true;
     },
     /** Trace data changed somewhere: re-check folders views are showing. */
-    refreshRecent() { for (const directory of recent) refresh(directory); },
+    preload,
+    refreshRecent() {
+      void preload();
+      for (const directory of recent) refresh(directory);
+    },
     /** Files changed in these folders. */
     filesChanged(directories: readonly string[]) {
       for (const directory of known.keys()) if (directories.some((path) => samePath(path, directory))) refresh(directory);
     },
-    clear() { scope += 1; known = new Map(); pending.clear(); dirty.clear(); recent = []; },
+    clear() { scope += 1; candidates = null; known = new Map(); pending.clear(); dirty.clear(); recent = []; },
   };
 }
 
-export const traceFolderVisibility = createFolderVisibility((directory) => invoke<boolean>("folder_has_trace", { directory }));
+export const traceFolderVisibility = createFolderVisibility(
+  (directory) => invoke<boolean>("folder_has_trace", { directory }),
+  () => invoke<string[]>("trace_folder_candidates"),
+);

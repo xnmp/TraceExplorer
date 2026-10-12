@@ -183,3 +183,157 @@ describe("folder visibility", () => {
     expect(lookup).toHaveBeenCalledWith("/d0");
   });
 });
+
+
+describe("preloaded folder candidates", () => {
+  it("answers false for a non-candidate at once and keeps that answer when the exact lookup agrees", async () => {
+    const lookup = vi.fn(async () => false);
+    const loader = vi.fn(async () => ["/pics"]);
+    const visibility = createFolderVisibility(lookup, loader);
+    await visibility.preload();
+    expect(visibility.available("/ordinary")).toBe(false);
+    await flush();
+    visibility.refreshRecent();
+    await flush();
+    expect(loader).toHaveBeenCalledTimes(2);
+    expect(visibility.available("/ordinary")).toBe(false);
+  });
+
+  it("offers a non-candidate alias once its exact lookup says it has Trace content", async () => {
+    // The host may name a folder by a symlink, short name or /var alias the canonical superset cannot match.
+    const lookup = vi.fn(async (directory: string) => directory === "/alias");
+    const visibility = createFolderVisibility(lookup, async () => ["/real"]);
+    await visibility.preload();
+    expect(visibility.available("/alias")).toBe(false);
+    await flush();
+    expect(lookup).toHaveBeenCalledWith("/alias");
+    expect(visibility.available("/alias")).toBe(true);
+  });
+
+  it("offers a candidate immediately, then keeps its exact false answer", async () => {
+    const gate = deferred<boolean>();
+    const lookup = vi.fn(() => gate.promise);
+    const visibility = createFolderVisibility(lookup, async () => ["/pics"]);
+    await visibility.preload();
+    expect(visibility.available("/pics")).toBe(true);
+    expect(lookup).not.toHaveBeenCalled();
+    await flush();
+    expect(lookup).toHaveBeenCalledOnce();
+    gate.resolve(false);
+    await flush();
+    expect(visibility.available("/pics")).toBe(false);
+    await flush();
+    expect(lookup).toHaveBeenCalledOnce();
+  });
+
+  it("uses the old answer and queues an exact lookup before preload completes", async () => {
+    const candidates = deferred<readonly string[]>();
+    const exact = deferred<boolean>();
+    const lookup = vi.fn(() => exact.promise);
+    const visibility = createFolderVisibility(lookup, () => candidates.promise);
+    const loading = visibility.preload();
+    expect(visibility.available("/pics")).toBe(false);
+    expect(lookup).not.toHaveBeenCalled();
+    await flush();
+    expect(lookup).toHaveBeenCalledWith("/pics");
+    candidates.resolve(["/pics"]);
+    await loading;
+    expect(visibility.available("/pics")).toBe(true);
+    exact.resolve(true);
+    await flush();
+    expect(visibility.available("/pics")).toBe(true);
+  });
+
+  it("reloads on Trace data changes and offers a previously rejected folder", async () => {
+    let paths: readonly string[] = [];
+    const lookup = vi.fn(() => new Promise<boolean>(() => {}));
+    const visibility = createFolderVisibility(lookup, async () => paths);
+    await visibility.preload();
+    expect(visibility.available("/new")).toBe(false);
+    await flush();
+    paths = ["/new"];
+    visibility.refreshRecent();
+    await flush();
+    expect(visibility.available("/new")).toBe(true);
+    expect(lookup).toHaveBeenCalledWith("/new");
+  });
+
+  it("clear discards an old candidate load even after reactivation", async () => {
+    const old = deferred<readonly string[]>();
+    const loader = vi.fn().mockReturnValueOnce(old.promise).mockResolvedValue(["/new"]);
+    const lookup = vi.fn(() => new Promise<boolean>(() => {}));
+    const visibility = createFolderVisibility(lookup, loader);
+    const loading = visibility.preload();
+    visibility.clear();
+    await visibility.preload();
+    old.resolve(["/stale"]);
+    await loading;
+    expect(visibility.available("/stale")).toBe(false);
+    expect(visibility.available("/new")).toBe(true);
+  });
+
+  it("discards an older reload that finishes after a newer one", async () => {
+    const old = deferred<readonly string[]>();
+    const loader = vi.fn().mockReturnValueOnce(old.promise).mockResolvedValue(["/new"]);
+    const visibility = createFolderVisibility(vi.fn(async () => true), loader);
+    const loading = visibility.preload();
+    await visibility.preload();
+    old.resolve(["/stale"]);
+    await loading;
+    expect(visibility.available("/stale")).toBe(false);
+    expect(visibility.available("/new")).toBe(true);
+    await flush();
+  });
+
+  it("falls back to exact lookups when a candidate load fails", async () => {
+    const lookup = vi.fn(async () => true);
+    const visibility = createFolderVisibility(lookup, async () => { throw new Error("offline"); });
+    await visibility.preload();
+    expect(visibility.available("/pics")).toBe(false);
+    await flush();
+    expect(visibility.available("/pics")).toBe(true);
+    expect(lookup).toHaveBeenCalledWith("/pics");
+  });
+
+  it.each([
+    [["/pics"], "/pics///", true],
+    [["/"], "/", true],
+    [["C:\\Users\\ME\\"], "c:/users/me/", true],
+    [["C:/"], "c:\\", true],
+    [["\\\\Server\\Share\\Pictures"], "//server/share/pictures/", true],
+    [["/Pics"], "/pics", false],
+    [["//WSL.LOCALHOST/Ubuntu/Pics"], "//wsl.localhost/Ubuntu/pics", false],
+  ] as const)("compares candidates %j to %j as %j", async (paths, directory, expected) => {
+    const lookup = vi.fn(() => new Promise<boolean>(() => {}));
+    const visibility = createFolderVisibility(lookup, async () => paths);
+    await visibility.preload();
+    expect(visibility.available(directory)).toBe(expected);
+    expect(lookup).not.toHaveBeenCalled();
+    await flush();
+    expect(lookup).toHaveBeenCalledOnce(); // a miss is not authoritative: aliases are still looked up
+  });
+
+  it("keeps candidates outside the bounded exact cache", async () => {
+    const paths = Array.from({ length: 130 }, (_, i) => `/d${i}`);
+    const lookup = vi.fn(async () => false);
+    const visibility = createFolderVisibility(lookup, async () => paths);
+    await visibility.preload();
+    for (const path of paths) { visibility.available(path); await flush(); }
+    expect(visibility.available("/d129")).toBe(false);
+    expect(visibility.available("/d0")).toBe(true); // exact answer evicted, still a candidate
+    await flush();
+    expect(visibility.available("/d0")).toBe(false);
+  });
+
+  it("clear also drops an exact lookup queued by available", async () => {
+    const lookup = vi.fn(async () => true);
+    const visibility = createFolderVisibility(lookup, async () => ["/pics"]);
+    await visibility.preload();
+    expect(visibility.available("/pics")).toBe(true);
+    visibility.clear();
+    await flush();
+    expect(lookup).not.toHaveBeenCalled();
+    expect(visibility.available("/pics")).toBe(false);
+    await flush();
+  });
+});
