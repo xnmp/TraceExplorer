@@ -1256,7 +1256,7 @@ for (const theme of ["light", "dark"]) for (const preset of [null, "small", "med
         });
         angles.push(style.angle);
         expect(style.border).toBe("1px"); expect(style.filter).toBe("none");
-        expect(style.backdrop).toBe("none"); expect(style.shadow).not.toBe("none");
+        expect(style.backdrop).toBe("none"); expect(style.shadow).toBe("none"); // shadows stall the host's software renderer
       }
       expect(angles[0]).toBeLessThanOrEqual(-6); expect(angles[0]).toBeGreaterThanOrEqual(-8.1);
       if (count === 2) {

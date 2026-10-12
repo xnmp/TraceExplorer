@@ -153,7 +153,8 @@
   /* Opaque paper and a structural edge stay legible over pane, hover and selection
      surfaces in both themes. Percentage insets scale the fan while reserving room
      inside the tile; the cover and caption retain the ordinary thumbnail bounds. */
-  .stack-sheet { position: absolute; inset: 0 3% 4%; box-sizing: border-box; border: 1px solid color-mix(in srgb, var(--text-secondary) 65%, var(--background-solid)); border-radius: calc(var(--radius-sm) / 2); background: color-mix(in srgb, var(--text-primary) 18%, var(--background-solid)); box-shadow: 0 1px 2px rgb(0 0 0 / .16); z-index: -2; transform-origin: 50% 100%; transform: rotate(-8deg); }
+  /* No box-shadow: under the host's software renderer it cost ~350 ms of a cold folder open (native A/B, #69). */
+  .stack-sheet { position: absolute; inset: 0 3% 4%; box-sizing: border-box; border: 1px solid color-mix(in srgb, var(--text-secondary) 65%, var(--background-solid)); border-radius: calc(var(--radius-sm) / 2); background: color-mix(in srgb, var(--text-primary) 18%, var(--background-solid)); z-index: -2; transform-origin: 50% 100%; transform: rotate(-8deg); }
   .host-cover .stack-sheet { translate: 0 -3%; }
   .explorer-cover:not(.host-cover) .stack-sheet { inset-inline: 3.5%; }
   .second-sheet { z-index: -1; transform: rotate(7deg); }
