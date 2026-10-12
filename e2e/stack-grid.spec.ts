@@ -15,6 +15,74 @@ const sameColumns = (before: Awaited<ReturnType<typeof gridBoxes>>, after: Await
   for (const id of Object.keys(before)) expect(after[id].x, id).toBeCloseTo(before[id].x, 1);
 };
 
+test("#58 two same-row stacks share one band and connectors stay in their own group", async ({ page }) => {
+  await openView(page, 620, "?grouping=two-chains", false);
+  const before = await gridBoxes(page);
+  for (const name of ["photo-a", "photo-b"]) { await stack(page, name).locator("[data-stack-toggle]").click(); await settle(page); }
+  sameColumns(before, await gridBoxes(page));
+  await expect(page.locator("[data-grid-row-band]")).toHaveCount(1);
+  const groups = await page.evaluate(() => [...document.querySelectorAll<HTMLElement>("[data-grid-band]")].map((element) => {
+    const graph = element.querySelector<HTMLElement>(".graph")!, origin = graph.getBoundingClientRect();
+    const left = Number(element.dataset.groupLeft), right = left + Number(element.dataset.groupWidth);
+    const children = [...graph.querySelectorAll<HTMLElement>("[data-tile-key]")].map((tile) => tile.getBoundingClientRect());
+    return { left, right, row: element.dataset.gridBandRow, childTop: Math.min(...children.map((child) => child.y)),
+      childCenter: children.reduce((sum, child) => sum + child.x + child.width / 2, 0) / children.length,
+      parentCenter: element.closest("section")!.querySelector("[data-grid-cell]")!.getBoundingClientRect().x + element.closest("section")!.querySelector("[data-grid-cell]")!.getBoundingClientRect().width / 2,
+      routes: [...graph.querySelectorAll<SVGPathElement>("path[data-route]")].map((route) => { const box = route.getBBox(); return { left: box.x, right: box.x + box.width }; }),
+      childLeft: Math.min(...children.map((child) => child.x - origin.x)), childRight: Math.max(...children.map((child) => child.right - origin.x)) };
+  }));
+  expect(groups).toHaveLength(2);
+  expect(groups[0].row).toBe(groups[1].row);
+  expect(groups[0].childTop).toBeCloseTo(groups[1].childTop, 1);
+  for (const group of groups) {
+    expect(Math.abs(group.childCenter - group.parentCenter)).toBeLessThan(10);
+    expect(group.routes.length).toBeGreaterThan(0);
+    for (const route of group.routes) { expect(route.left).toBeGreaterThanOrEqual(group.left - .5); expect(route.right).toBeLessThanOrEqual(group.right + .5); }
+  }
+  expect(groups[0].childRight).toBeLessThan(groups[1].childLeft);
+});
+
+for (const width of [620, 350]) {
+  test(`#58 broad groups ${width === 620 ? "shift within a shared line" : "wrap inside one band"} without crossed tiles`, async ({ page }) => {
+    await openView(page, width, "?grouping=two-chains", false);
+    await page.evaluate(() => {
+      const backend = (window as any).trace.backend;
+      for (const parent of ["photo-a", "photo-b"]) { backend.startGeneration(parent, `${parent}-second`); backend.completeGeneration(`${parent}-second`); }
+    });
+    await settle(page);
+    for (const name of ["photo-a", "photo-b"]) { await stack(page, name).locator("[data-stack-toggle]").click(); await settle(page); }
+    await expect(page.locator("[data-grid-row-band]")).toHaveCount(1);
+    const result = await page.evaluate(() => {
+      const groups = [...document.querySelectorAll<HTMLElement>("[data-grid-band]")].map((element) => {
+        const graph = element.querySelector<HTMLElement>(".graph")!, origin = graph.getBoundingClientRect();
+        return { element, graph, origin, children: [...graph.querySelectorAll<HTMLElement>("[data-tile-key]")].map((tile) => tile.getBoundingClientRect()) };
+      });
+      const crossings: string[] = [], outside: string[] = [];
+      for (const group of groups) for (const route of group.graph.querySelectorAll<SVGPathElement>("path[data-route]")) {
+        const matrix = route.getScreenCTM()!, left = Number(group.element.dataset.groupLeft), right = left + Number(group.element.dataset.groupWidth);
+        const bounds = route.getBBox();
+        if (bounds.x < left - .5 || bounds.x + bounds.width > right + .5) outside.push(route.dataset.route!);
+        for (let i = 0; i <= 300; i++) {
+          const point = route.getPointAtLength(route.getTotalLength() * i / 300), screen = new DOMPoint(point.x, point.y).matrixTransform(matrix);
+          for (const other of groups) if (other !== group) for (const tile of other.children) {
+            if (screen.x > tile.left + 1 && screen.x < tile.right - 1 && screen.y > tile.top + 1 && screen.y < tile.bottom - 1) crossings.push(route.dataset.route!);
+          }
+        }
+      }
+      return { crossings, outside, tops: groups.map((group) => Math.min(...group.children.map((tile) => tile.y))),
+        counts: groups.map((group) => group.children.length), childIntervals: groups.map((group) => [Number(group.element.dataset.childGroupLeft), Number(group.element.dataset.childGroupWidth)]) };
+    });
+    expect(result.counts).toEqual([2, 2]);
+    expect(result.crossings).toEqual([]);
+    expect(result.outside).toEqual([]);
+    if (width === 620) {
+      expect(result.tops[0]).toBeCloseTo(result.tops[1], 1);
+      expect(result.childIntervals[0][0] + result.childIntervals[0][1]).toBeLessThan(result.childIntervals[1][0]);
+    } else expect(result.tops[1]).toBeGreaterThan(result.tops[0] + 80);
+    await page.screenshot({ path: `/tmp/sg56-packed-${width}.png` });
+  });
+}
+
 for (const preset of [null, "small", "medium", "large", "xlarge"]) {
   test(`#57 stack cover matches ordinary thumbnail and name at ${preset ?? "fallback"} size`, async ({ page }) => {
     await openView(page, 420, `${preset ? `?fileTile=1&tileSize=${preset}` : ""}`, false);

@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 import { folderCells, pendingListingPaths, unlistedCovers, attachBand, gridNeighbor, gridPins, rovingStop } from "$lib/plugins/trace/view/stack-grid";
 import { layoutGraph } from "$lib/domain/trace-graph/layout";
 import { gridFlow } from "$lib/domain/trace-graph/grid-flow";
-import { samplePathString } from "$lib/plugins/trace/view/path-sampling";
 import type { FolderIndex } from "$lib/plugins/trace/view/folder-session.svelte";
 import type { FileEntry } from "$lib/domain/file";
 const entry = (path: string, kind: FileEntry["kind"] = "file") => ({ path, name: path, kind } as FileEntry);
@@ -128,20 +127,11 @@ describe("folder grid rules", () => {
     expect(attached.height).toBe(layout.height - cover.y - cover.height + 500);
     expect(layout.nodes.get("cover")).toBe(cover);
   });
-  it("routes a later same-row cover around every earlier band's tiles", () => {
-    const make = (key: string, x: number, count: number) => layoutGraph({ maxWidth: 400, pinned: { key, x }, items: [{ key, width: 92, height: 97, order: 0, parents: [] }, ...Array.from({ length: count }, (_, i) => ({ key: `${key}${i}`, width: 92, height: 97, order: i + 1, parents: [key] }))] });
-    const first = attachBand(make("a", 47, 3), "a", 0, 97);
-    const second = attachBand(make("b", 149, 1), "b", 0, first.height, { top: 99, gutter: 4 });
-    const obstacles = [...first.nodes].filter(([key]) => key !== "a").map(([, node]) => node);
-    for (const route of second.routes) for (const point of samplePathString(route.path, 150) ?? []) {
-      expect(obstacles.some((node) => point.x > node.x && point.x < node.x + node.width && point.y > node.y && point.y < node.y + node.height)).toBe(false);
-    }
-  });
-  it("pins only open stacks and includes just their own row's obstacles", () => {
+  it("pins only open stacks without treating neighboring covers as graph obstacles", () => {
     const flow = gridFlow([{ id: "a", kind: "stack" }, { id: "ordinary", kind: "file" }, { id: "b", kind: "stack" }], new Map(), 2, { cellWidth: 92, cellHeight: 97, columnGap: 8, rowGap: 8 });
     const pins = gridPins(flow, new Set(["a", "unknown"]));
     expect([...pins.keys()]).toEqual(["a"]);
-    expect(pins.get("a")).toEqual({ key: "a", x: 46, obstacles: [{ x: 100, width: 92 }] });
+    expect(pins.get("a")).toEqual({ key: "a", x: 46, obstacles: [] });
   });
   it("navigates between covers, ordinary entries and band tiles by their displayed geometry", () => {
     const rects = new Map([["cover", { x: 100, y: 0, width: 90, height: 90 }], ["ordinary", { x: 200, y: 0, width: 90, height: 90 }], ["child", { x: 100, y: 200, width: 90, height: 90 }]]);

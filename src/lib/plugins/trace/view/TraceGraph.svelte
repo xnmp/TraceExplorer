@@ -23,7 +23,7 @@
   import TraceTile from "./TraceTile.svelte";
 
   import { projectReferenceBadges } from "$lib/domain/trace-graph/projection";
-  import { attachBand } from "./stack-grid";
+  import { attachBand, attachPackedBand, type BandPlacement } from "./stack-grid";
 
   interface Props {
     focusedKey?: string | null;
@@ -32,7 +32,7 @@
     badgeHover?: string | null;
     pinned?: PinnedCover;
     bandTop?: number;
-    bandBridge?: { readonly top: number; readonly gutter: number };
+    bandPlacement?: BandPlacement;
     ongeometry?: (plan: BandScenePlan, layout: GraphLayout) => void;
     ongridkey?: (key: string, event: KeyboardEvent) => void;
     data: ComponentData;
@@ -67,7 +67,7 @@
     orientations?: Map<string, OrientationHistory>;
   }
 
-  let { data, focus, selected, width, tile = tileMetrics(), revision, scroller, onactivate, onnavigate, onopen, onmenu, onsaved, ondiscarded, oncommit, onlayout, captureSelection, componentId, orientations = new Map(), onfailure, reveal = null, pinned, bandTop = 0, bandBridge, ongeometry, ongridkey, badgeHover = null, focusedKey, onfocuskey, onbadgehover }: Props = $props();
+  let { data, focus, selected, width, tile = tileMetrics(), revision, scroller, onactivate, onnavigate, onopen, onmenu, onsaved, ondiscarded, oncommit, onlayout, captureSelection, componentId, orientations = new Map(), onfailure, reveal = null, pinned, bandTop = 0, bandPlacement, ongeometry, ongridkey, badgeHover = null, focusedKey, onfocuskey, onbadgehover }: Props = $props();
 
   /** Below this many tiles layout runs inline; it takes well under a frame. */
   const SYNC_LIMIT = 60;
@@ -203,7 +203,7 @@
     return () => { container.removeEventListener("scroll", schedule); observer.disconnect(); cancelAnimationFrame(frame); };
   });
 
-  const attached = $derived(shown && pinned ? attachBand(shown.layout, pinned.key, 0, bandTop, bandBridge) : shown?.layout);
+  const attached = $derived(shown && pinned ? (bandPlacement ? attachPackedBand(shown.layout, pinned.key, bandTop, bandPlacement) : attachBand(shown.layout, pinned.key, 0, bandTop)) : shown?.layout);
 
   const visibleTiles = $derived.by(() => {
     if (!shown) return [];
