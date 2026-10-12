@@ -958,3 +958,79 @@ test("merging the focused child's stack into another keeps one tab stop and focu
   expect(await focusIsInGrid(page)).toBe(true);
   expect(await uncaught(page)).toEqual([]);
 });
+
+for (const worker of [false, true]) test(`#56 cold open holds the band and following row through ${worker ? "node reads and worker layout" : "node reads"}`, async ({ page }) => {
+  await page.setViewportSize({ width: 800, height: 4000 });
+  await openView(page, 420, worker ? "?fanChildren=45" : "?gym=1&fileTile=1&tileSize=small", false);
+  const samples = await page.evaluate(async ({ name, worker }) => {
+    const w = window as any, backend = w.trace.backend;
+    backend.holdNodeReads();
+    const original = Worker.prototype.postMessage, held: Array<() => void> = [];
+    if (worker) Worker.prototype.postMessage = function (message, options) {
+      held.push(() => original.call(this, message, options as any));
+    };
+    const section = document.querySelector<HTMLElement>(`section[aria-label="${name}"]`)!;
+    const cover = section.querySelector<HTMLElement>("[data-grid-cell]")!;
+    const row = Number(cover.getAttribute("aria-rowindex")) - 1;
+    // A real following cell receives grid motion; measuring grid height alone misses a row reversal.
+    const following = [...document.querySelectorAll<HTMLElement>("[data-grid-motion]")]
+      .find((cell) => cell.getBoundingClientRect().top > cover.getBoundingClientRect().top + 2)!;
+    const view = document.querySelector<HTMLElement>('[data-testid="trace-view"]')!;
+    const baseline = following.getBoundingClientRect().top + view.scrollTop;
+    const samples: Array<{ time: number; top: number; height: number; content: boolean; loading: boolean; statusInBand: boolean; workerHeld: boolean }> = [];
+    const start = performance.now();
+    let readsReleased = false, workerReleased = !worker, workerAt: number | null = null, stable = 0;
+    try {
+      section.querySelector<HTMLElement>("[data-stack-toggle]")!.click();
+      while (stable < 4 && performance.now() - start < 10_000) {
+        await new Promise(requestAnimationFrame);
+        const time = performance.now() - start;
+        const band = section.querySelector<HTMLElement>("[data-grid-band]")!;
+        const background = document.querySelector<HTMLElement>(`[data-grid-row-band="${row}"]`)!;
+        const bounds = background.getBoundingClientRect();
+        const status = band.querySelector<HTMLElement>('[role="status"]');
+        const statusBounds = status?.getBoundingClientRect();
+        const content = band.querySelectorAll("[data-tile-key]").length > 0;
+        samples.push({ time, top: following.getBoundingClientRect().top + view.scrollTop, height: bounds.height, content,
+          loading: !!status?.textContent?.trim(), workerHeld: held.length > 0,
+          statusInBand: !!statusBounds && statusBounds.top >= bounds.top && statusBounds.bottom <= bounds.bottom });
+        if (!readsReleased && time >= 500) { backend.releaseNodeReads(); readsReleased = true; }
+        if (held.length && workerAt === null) workerAt = time;
+        if (workerAt !== null && time - workerAt >= 500 && !workerReleased) {
+          Worker.prototype.postMessage = original;
+          held.splice(0).forEach((release) => release()); workerReleased = true;
+        }
+        const moving = document.getAnimations().some((animation) => animation.playState === "running");
+        stable = content && readsReleased && workerReleased && !moving && !w.trace.layoutsPending() ? stable + 1 : 0;
+      }
+      return { baseline, samples, settled: stable >= 4 };
+    } finally {
+      backend.releaseNodeReads(); Worker.prototype.postMessage = original;
+      held.splice(0).forEach((release) => release());
+    }
+  }, { name: worker ? "fan" : "gym", worker });
+  expect(samples.settled).toBe(true);
+  const loading = samples.samples.filter((sample) => !sample.content);
+  expect(loading.length).toBeGreaterThan(5);
+  expect(loading.at(-1)!.time).toBeGreaterThanOrEqual(500);
+  expect(loading.every((sample) => sample.height > 0 && sample.loading && sample.statusInBand)).toBe(true);
+  if (worker) expect(loading.filter((sample) => sample.workerHeld).at(-1)!.time).toBeGreaterThan(900);
+  // Before content arrives, neither reservation nor following row may reverse upward after opening.
+  let peak = samples.baseline, height = 0;
+  for (const sample of loading) {
+    peak = Math.max(peak, sample.top); height = Math.max(height, sample.height);
+    expect(sample.top, JSON.stringify(sample)).toBeGreaterThanOrEqual(peak - 2);
+    expect(sample.height, JSON.stringify(sample)).toBeGreaterThanOrEqual(height - 2);
+  }
+  expect(peak - samples.baseline).toBeGreaterThan(40);
+  // Content can settle an overestimate upward once, but cannot then push the row down again.
+  peak = samples.baseline;
+  let settlingUp = false, trough = Infinity;
+  for (const sample of samples.samples) {
+    if (sample.top < peak - 2) settlingUp = true;
+    if (settlingUp) { trough = Math.min(trough, sample.top); expect(sample.top).toBeLessThanOrEqual(trough + 2); }
+    else peak = Math.max(peak, sample.top);
+  }
+  await expect(stack(page, worker ? "fan" : "gym").locator("[data-grid-band] [data-tile-key]").first()).toBeVisible();
+  expect(await uncaught(page)).toEqual([]);
+});

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { folderCells, pendingListingPaths, unlistedCovers, attachBand, gridNeighbor, gridPins, rovingStop } from "$lib/plugins/trace/view/stack-grid";
+import { estimatedBandExtent, bandExtent, folderCells, pendingListingPaths, unlistedCovers, attachBand, gridNeighbor, gridPins, rovingStop } from "$lib/plugins/trace/view/stack-grid";
+import { tileMetrics, tileSize } from "$lib/domain/trace-graph/metrics";
 import { layoutGraph } from "$lib/domain/trace-graph/layout";
 import { gridFlow } from "$lib/domain/trace-graph/grid-flow";
 import type { FolderIndex } from "$lib/plugins/trace/view/folder-session.svelte";
@@ -158,4 +159,24 @@ describe("roving tab stop", () => {
     expect(rovingStop("gone", new Set(["a"]), owner, "a")).toBe("a");
   });
   it("names no stop for an empty grid", () => { expect(rovingStop("x", new Set(), () => undefined, null)).toBeNull(); });
+});
+
+
+describe("cold band reservation", () => {
+  it.each([undefined, 48, 64, 96, 128, 512])("reserves a child row and its routing space at thumbnail size %s", (edge) => {
+    const tile = tileMetrics(edge), size = tileSize({ foreign: false, hint: true }, tile);
+    const layout = layoutGraph({ items: [
+      { key: "cover", width: size.width, height: size.height, order: 0, parents: [] },
+      { key: "child", width: size.width, height: size.height, order: 1, parents: ["cover"] },
+    ], maxWidth: tile.width + 100, tileWidth: tile.width, pinned: { key: "cover", x: tile.width / 2 } });
+    expect(estimatedBandExtent(tile).height).toBe(bandExtent(layout, "cover").height);
+    expect(estimatedBandExtent(tile).width).toBeGreaterThanOrEqual(size.width);
+  });
+  it.each([null, NaN, Infinity, -1, 0, Number.MAX_VALUE])("stays finite and positive for a normalized invalid/extreme host size %s", (edge) => {
+    const extent = estimatedBandExtent(tileMetrics(edge));
+    expect(Number.isFinite(extent.height)).toBe(true);
+    expect(Number.isFinite(extent.width)).toBe(true);
+    expect(extent.height).toBeGreaterThan(0);
+    expect(extent.width).toBeGreaterThan(0);
+  });
 });

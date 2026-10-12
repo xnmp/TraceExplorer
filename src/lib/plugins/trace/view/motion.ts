@@ -617,17 +617,22 @@ export function playGrid(grid: HTMLElement, before: GridSnapshot): Animation[] {
   // Measure the new geometry before installing any animation.
   const cells = [...grid.querySelectorAll<HTMLElement>("[data-grid-motion]")].map((element) => {
     const rect = element.getBoundingClientRect();
-    return { element, y: (rect.top - origin.top) / zoom, x: (rect.left - origin.left) / zoom };
+    const style = getComputedStyle(element);
+    return { element, y: (rect.top - origin.top) / zoom, x: (rect.left - origin.left) / zoom,
+      left: parseFloat(style.left), top: parseFloat(style.top) };
   });
   const bands = [...grid.querySelectorAll<HTMLElement>("[data-grid-band]")].map((element) => ({ element, height: layoutHeight(element) }));
   const animations: Animation[] = [];
-  for (const { element, y, x } of cells) {
+  for (const { element, y, x, left, top } of cells) {
     const old = before.cells.get(element.dataset.gridMotion!);
     if (!old) continue;
     const dx = old.x - x + scrollShift.x, dy = old.y - y + scrollShift.y;
     if (Math.abs(dx) < .5 && Math.abs(dy) < .5) continue;
-    // A whole stack moves together, including its routes and descendants.
-    animations.push(element.animate([{ transform: `translate(${dx}px, ${dy}px)` }, { transform: "translate(0, 0)" }], timing));
+    // A whole stack moves together, including its routes and descendants. Animate its
+    // absolute position, so the reservation and following rows share the layout/paint
+    // clock. Native WebKit's composited transform can replay the old position after
+    // the opening finishes while the main thread is busy mounting the cold graph.
+    animations.push(element.animate([{ left: `${left + dx}px`, top: `${top + dy}px` }, { left: `${left}px`, top: `${top}px` }], timing));
   }
   const current = new Set(bands.map(({ element }) => element.dataset.gridBand!));
   for (const { element, height } of bands) {

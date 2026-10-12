@@ -301,8 +301,8 @@ test.describe("bands expand and collapse quickly", () => {
       const next = section.nextElementSibling as HTMLElement;
       const before = next.getBoundingClientRect().top;
       section.querySelector<HTMLElement>("[data-stack-toggle]")!.click();
-      // The slide is the transform animation on what follows.
-      const slides = () => held.filter((animation) => (animation.effect as KeyframeEffect | null)?.target === next && (animation.effect as KeyframeEffect).getKeyframes().some((keyframe) => "transform" in keyframe));
+      // Seek motion on the following section; its displayed position is the contract.
+      const slides = () => held.filter((animation) => (animation.effect as KeyframeEffect | null)?.target === next);
       for (let i = 0; i < 2000 && slides().length === 0; i++) await new Promise((resolve) => requestAnimationFrame(resolve));
       if (slides().length === 0) throw new Error("what follows the section was not animated");
       const duration = Math.max(...held.map((animation) => Number(animation.effect!.getTiming().duration)));

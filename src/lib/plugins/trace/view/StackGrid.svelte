@@ -4,13 +4,13 @@
   import type { ComponentFocus, BandScenePlan, SceneTile } from "$lib/domain/trace-graph/scene";
   import type { GraphLayout } from "$lib/domain/trace-graph/layout";
   import { sameGridGeometry } from "$lib/domain/trace-graph/layout-geometry";
-  import { tileSize, type TileMetrics } from "$lib/domain/trace-graph/metrics";
+  import { tileSize, STACK_BAND_INSET, type TileMetrics } from "$lib/domain/trace-graph/metrics";
   import type { FileViewPane } from "../../../../../integration/plugin-sdk";
   import { hostFileTile } from "../../../../sdk";
   import type { FolderSession } from "./folder-session.svelte";
   import type { GraphScene } from "./graph-commit";
   import { selectableSelector } from "./selectable";
-  import { type FolderCell, folderCells, unlistedCovers, coverNode, gridNeighbor, attachPackedBand, bandExtent, packedGridFlow, bandPlacements, gridPins, rovingStop } from "./stack-grid";
+  import { type FolderCell, folderCells, unlistedCovers, coverNode, gridNeighbor, attachPackedBand, bandExtent, estimatedBandExtent, packedGridFlow, bandPlacements, gridPins, rovingStop } from "./stack-grid";
   import { captureGrid, playGrid, prefersReducedMotion, zoomOf } from "./motion";
   import TraceGraph from "./TraceGraph.svelte";
   import TraceTile from "./TraceTile.svelte";
@@ -76,7 +76,9 @@
   const flow = $derived.by(() => {
     const next = packedGridFlow(cells, new Map(cells.filter((cell) => cell.kind === "stack" && openKeys.has(cell.id)).map((cell) => {
       const known = covers.get(cell.id);
-      return [cell.id, known ? bandExtent(known.layout, cell.id) : { width: tile.width + 16, height: 160 }];
+      // Only geometry published after a DOM commit replaces the reservation. A pending
+      // read/worker (including a superseded request) never clears the last footprint.
+      return [cell.id, known ? bandExtent(known.layout, cell.id) : estimatedBandExtent(tile)];
     })), columns, { cellWidth, cellHeight, columnGap: metrics.gap, rowGap: metrics.gap });
     // Only geometry changes own grid motion. Replacing index/listing objects must not replay it.
     return previousFlow && sameGridGeometry(previousFlow, next) ? previousFlow : (previousFlow = next);
@@ -230,7 +232,7 @@
                 onactivate={(key, event) => onactivate(key, event, summary.id)} onnavigate={(key) => onnavigate(key, summary.id)} {onopen}
                 onmenu={(key, event) => onmenu(key, event, summary.id)} {captureSelection} {onsaved} {ondiscarded} {oncommit}
                 onlayout={(pending) => onlayout(summary.id, pending)} {onfailure} />
-            {:else}<div class="loading" role="status">{data ? "" : "Loading…"}</div>{/if}
+            {:else if !data}<div class="loading" role="status" style:top="{band.y - rect.y + STACK_BAND_INSET}px">Loading…</div>{/if}
           </div>
         {/if}
       </section>
@@ -255,5 +257,5 @@
   .content { position: absolute; top: 0; left: 0; width: 100%; pointer-events: none; }
   .content :global(.tile) { pointer-events: auto; }
   .row-band { position: absolute; left: 0; pointer-events: none; background: color-mix(in srgb, var(--accent) 3%, transparent); }
-  .loading { position: absolute; bottom: 50px; width: 100%; text-align: center; color: var(--text-secondary); }
+  .loading { position: absolute; padding: 20px; box-sizing: border-box; width: 100%; text-align: center; color: var(--text-secondary); }
 </style>

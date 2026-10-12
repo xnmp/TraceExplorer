@@ -11,7 +11,7 @@
   import { nearestInDirection, type Direction, type PinnedCover, type GraphLayout } from "$lib/domain/trace-graph/layout";
   import { rememberOrientation, type OrientationHistory } from "$lib/domain/trace-graph/orientation";
   import { endpointKey } from "$lib/domain/trace-graph/junctions";
-  import { ARROW, tileMetrics, type TileMetrics } from "$lib/domain/trace-graph/metrics";
+  import { ARROW, STACK_BAND_INSET, tileMetrics, type TileMetrics } from "$lib/domain/trace-graph/metrics";
   import { promptTitles } from "../prompt-titles.svelte";
   import type { ComponentData } from "./folder-session.svelte";
   import type { GraphScene } from "./graph-commit";
@@ -307,7 +307,7 @@
     {/each}
   </div>
 {:else}
-  <div class="pending" role="status">{failure ? `Trace layout failed: ${failure}` : "Arranging…"}</div>
+  <div class="pending" class:pinned-pending={!!pinned} style:top={pinned ? `${bandTop + STACK_BAND_INSET}px` : undefined} role="status">{failure ? `Trace layout failed: ${failure}` : "Arranging…"}</div>
 {/if}
 
 <style>
@@ -340,6 +340,7 @@
   .junction.highlight { fill: var(--edge-highlight); }
   .ghosts { pointer-events: none; }
   div.ghosts { position: absolute; inset: 0; }
+  .pinned-pending { position: absolute; left: 0; width: 100%; box-sizing: border-box; }
   .pending { padding: 18px 12px; color: var(--text-secondary); font-size: 12px; }
   .pending.stale { padding: 4px 12px; }
 </style>
