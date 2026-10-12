@@ -85,3 +85,11 @@ export function displace(points: readonly Point[], from: Point, to: Point): Poin
 export function polyline(points: readonly Point[]): string {
   return points.map((point, index) => `${index ? "L" : "M"}${point.x.toFixed(2)} ${point.y.toFixed(2)}`).join(" ");
 }
+
+/** Corresponding sampled points interpolate on the same eased progress as their tiles. */
+export function interpolatePath(from: readonly Point[], to: readonly Point[], progress: number): Point[] {
+  return to.map((point, index) => ({
+    x: from[index].x + (point.x - from[index].x) * progress,
+    y: from[index].y + (point.y - from[index].y) * progress,
+  }));
+}

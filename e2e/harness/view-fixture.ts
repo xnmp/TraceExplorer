@@ -64,6 +64,12 @@ function scenario(): { nodes: FolderNode[]; names: Map<string, string> } {
     for (const parent of ["stack-a", "stack-b"]) for (let i = 1; i <= 2; i++) add({ key: `${parent}-${i}`, parents: [parent] });
     return { nodes, names };
   }
+  // Two sibling groups wider than half a three-column row exercise line changes.
+  if (query.has("bandMotion")) {
+    for (const key of ["stack-a", "spacer", "stack-b", "below-1", "below-2", "below-3"]) add({ key, prompt: key });
+    for (const parent of ["stack-a", "stack-b"]) for (let i = 1; i <= 2; i++) add({ key: `${parent}-${i}`, parents: [parent] });
+    return { nodes, names };
+  }
   // Shared with native and mock golden tests. These focused scenarios expose
   // references repeated across sections without disturbing the motion gym.
   const grouping = groupingFixtures.find((fixture) => fixture.name === query.get("grouping"));
