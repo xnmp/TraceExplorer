@@ -11,6 +11,15 @@ export interface FolderCell extends GridItem {
   readonly coverKey?: string;
 }
 
+/** Newly listed paths cannot be classified against an older index. Hold them until the next
+ * index read, whether the save came from this pane or elsewhere. Existing ordinary entries stay
+ * visible, and paths already mapped by the index can be collapsed immediately. When the index read
+ * failed nothing is held: a file must never stay hidden behind a refresh that may not come. */
+export function pendingListingPaths(entries: readonly FileEntry[], index: FolderIndex | null, indexedPaths: ReadonlySet<string>, indexFailed = false): ReadonlySet<string> {
+  if (indexFailed) return new Set();
+  return new Set(entries.filter((entry) => !indexedPaths.has(entry.path) && !index?.members.has(entry.path)).map((entry) => entry.path));
+}
+
 /**
  * The cells in host listing order: a stack sits at its listed cover's position, and a stack with no
  * listed cover (unsaved) follows the listing. `held` names stacks (by cover key) that have been

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { folderCells, unlistedCovers, attachBand, gridNeighbor, gridPins, rovingStop } from "$lib/plugins/trace/view/stack-grid";
+import { folderCells, pendingListingPaths, unlistedCovers, attachBand, gridNeighbor, gridPins, rovingStop } from "$lib/plugins/trace/view/stack-grid";
 import { layoutGraph } from "$lib/domain/trace-graph/layout";
 import { gridFlow } from "$lib/domain/trace-graph/grid-flow";
 import { samplePathString } from "$lib/plugins/trace/view/path-sampling";
@@ -11,6 +11,29 @@ const index: FolderIndex = { directory: "/p", token: "v1", components: [summary(
   members: new Map([["/p/a", { key: "a:1", componentId: "c:a:1" }], ["/p/a-edit", { key: "o:2:0", componentId: "c:a:1" }], ["/p/b", { key: "a:4", componentId: "c:a:4" }]]) };
 
 describe("folder grid rules", () => {
+  it("holds listing additions from any pane until the index can classify them", () => {
+    const before = [entry("/p/a"), entry("/p/notes"), entry("/p/refs", "directory")];
+    const indexedPaths = new Set(before.map((entry) => entry.path));
+    const listing = [entry("/p/draft"), ...before, entry("/p/new-file")];
+    const pending = pendingListingPaths(listing, index, indexedPaths);
+    expect(pending).toEqual(new Set(["/p/draft", "/p/new-file"]));
+    expect(folderCells(listing, index, new Set(), pending).map((cell) => cell.id))
+      .toEqual(folderCells(before, index).map((cell) => cell.id));
+    // A fresh read maps the save into its lineage, and admits an ordinary new file.
+    const refreshed: FolderIndex = { ...index, members: new Map([...index.members, ["/p/draft", { key: "o:8:0", componentId: "c:o:8:0" }]]) };
+    expect(pendingListingPaths(listing, refreshed, indexedPaths)).toEqual(new Set(["/p/new-file"]));
+    const settled = pendingListingPaths(listing, refreshed, new Set(listing.map((entry) => entry.path)));
+    expect(settled.size).toBe(0);
+    expect(folderCells(listing, refreshed, new Set(), settled).map((cell) => cell.id))
+      .toEqual(["a:1", "/p/notes", "/p/refs", "/p/new-file", "a:4", "o:8:0"]);
+    expect(pendingListingPaths([], null, new Set())).toEqual(new Set());
+  });
+  it("never hides a listed file after the index read failed", () => {
+    const before = [entry("/p/a"), entry("/p/notes")];
+    const listing = [...before, entry("/p/new-file")];
+    expect(pendingListingPaths(listing, index, new Set(before.map((entry) => entry.path)), true)).toEqual(new Set());
+    expect(folderCells(listing, index, new Set(), new Set()).map((cell) => cell.id)).toContain("/p/new-file");
+  });
   it("collapses each lineage at its cover's host-sorted position, preserving folders and ordinary files", () => {
     const cells = folderCells([entry("/p/refs", "directory"), entry("/p/a-edit"), entry("/p/notes"), entry("/p/b"), entry("/p/a")], index);
     expect(cells.map(({ id, kind }) => [id, kind])).toEqual([["/p/refs", "folder"], ["/p/notes", "file"], ["a:4", "stack"], ["a:1", "stack"], ["o:8:0", "stack"]]);

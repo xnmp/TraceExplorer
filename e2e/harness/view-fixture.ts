@@ -26,8 +26,10 @@ let counter = 0;
 function make({ key, parents = [], scope = "current", temporary = false, prompt }: Seed): FolderNode {
   counter += 1;
   const path = temporary ? `${TEMP}/${key}.png` : scope === "current" ? `${DIRECTORY}/${key}.png` : scope === "subfolder" ? `${DIRECTORY}/refs/${key}.png` : `/elsewhere/${key}.png`;
+  // A generation with no inputs is still a run output, as in the native index.
+  const generated = parents.length > 0 || temporary;
   return {
-    key: parents.length ? `o:${counter}:0` : `a:${counter}`, artifactId: counter, runId: parents.length ? counter : null, parents, path, scope,
+    key: generated ? `o:${counter}:0` : `a:${counter}`, artifactId: counter, runId: generated ? counter : null, parents, path, scope,
     location: temporary ? "Unsaved" : scope === "current" ? `./${key}.png` : scope === "subfolder" ? `refs/${key}.png` : `/elsewhere/${key}.png`,
     state: "present", temporary, ...(temporary ? { contextDirectory: DIRECTORY } : {}), discarded: false, earlierRevision: false, order: counter, prompt: prompt ?? `${key} prompt`,
   };
@@ -156,6 +158,9 @@ let folderReadsHeld = false;
 /** How many of the next `trace_component_nodes` reads fail. */
 let nodeReadFailures = 0;
 let heldFolderReads: Array<() => void> = [];
+/** Hold node replies independently, so an index refresh can overtake a cold activation. */
+let nodeReadsHeld = false;
+let heldNodeReads: Array<() => void> = [];
 const titleCalls: number[] = [];
 const titleWaiters = new Map<number, (title: string) => void>();
 
@@ -202,6 +207,8 @@ configureBackend(withNativeRequestCapacity({
     const folderReply = (value: unknown) => folderReadsHeld
       ? new Promise<T>((resolve) => heldFolderReads.push(() => resolve(value as T)))
       : folderLatency ? new Promise<T>((resolve) => setTimeout(() => resolve(value as T), folderLatency)) : reply(value);
+    const nodeReply = (value: unknown) => nodeReadsHeld
+      ? new Promise<T>((resolve) => heldNodeReads.push(() => resolve(value as T))) : folderReply(value);
     const token = String(version);
     switch (method) {
       // MIRROR answers with the same Trace: another folder whose components reuse the same ids.
@@ -225,10 +232,10 @@ configureBackend(withNativeRequestCapacity({
       }
       case "trace_component_nodes": {
         if (nodeReadFailures > 0) { nodeReadFailures -= 1; return Promise.reject(new Error("Trace could not read this stack")); }
-        if (params.token !== token) return folderReply({ stale: true, total: 0, offset: 0, nodes: [] });
+        if (params.token !== token) return nodeReply({ stale: true, total: 0, offset: 0, nodes: [] });
         const nodes = componentsOf().find((component) => component.id === params.componentId)?.nodes;
         if (!nodes) return Promise.reject(new Error("Unknown Trace component"));
-        return folderReply({ stale: false, total: nodes.length, offset: params.offset, nodes: folderPage(nodes, params.offset, 1000) });
+        return nodeReply({ stale: false, total: nodes.length, offset: params.offset, nodes: folderPage(nodes, params.offset, 1000) });
       }
       case "trace_run_details": return later((params.runIds as number[]).map((id) => {
         const node = state.nodes.find((item) => item.runId === id);
@@ -487,6 +494,8 @@ export const backend = {
   failNodeReads(count: number) { nodeReadFailures = count; },
   holdFolderReads() { folderReadsHeld = true; },
   releaseFolderReads() { folderReadsHeld = false; const pending = heldFolderReads; heldFolderReads = []; pending.forEach((release) => release()); },
+  holdNodeReads() { nodeReadsHeld = true; },
+  releaseNodeReads() { nodeReadsHeld = false; const pending = heldNodeReads; heldNodeReads = []; pending.forEach((release) => release()); },
   releaseSaves() { holdSaves = false; const pending = heldSaves; heldSaves = []; pending.forEach((run) => run()); },
   reset() { nodeReadFailures = 0; previewLatency = 0; folderLatency = 0; pickerResult = undefined; nextSaveFailure = null; inputFailures = 0; imageRuns.clear(); imageJobs.clear(); imageOperations.clear(); billing.clear(); state = scenario(); version += 1; calls.length = 0; },
 };

@@ -25,7 +25,7 @@
 
   import StackGrid from "./StackGrid.svelte";
   import { selectableSelector } from "./selectable";
-  import { folderCells } from "./stack-grid";
+  import { folderCells, pendingListingPaths } from "./stack-grid";
 
   interface Props { pane: FileViewPane; session?: FolderSession }
   let { pane, session: provided }: Props = $props();
@@ -46,7 +46,16 @@
    * an ordinary file (which would duplicate the cover and shift every cell).
    */
   let claimed = $state.raw<ReadonlyMap<string, FolderIndex | null>>(new Map());
-  const claimedPaths = $derived(new Set([...claimed].filter(([, since]) => since === session.index).map(([path]) => path)));
+  // Snapshot the listing when an index lands. Listing additions alone must not advance this
+  // baseline: they may be saves from another pane that the current index cannot classify yet.
+  const indexedListing = $derived.by(() => {
+    const index = session.index;
+    return { index, paths: untrack(() => new Set(pane.entries.map((entry) => entry.path))) };
+  });
+  const claimedPaths = $derived(new Set([
+    ...[...claimed].filter(([, since]) => since === session.index).map(([path]) => path),
+    ...pendingListingPaths(pane.entries, indexedListing.index, indexedListing.paths, !!session.indexError),
+  ]));
   let pendingSave = $state.raw<{ directory: string; path: string; key: NodeKey; picks: Picks } | null>(null);
   type ScrollAnchor = { key: NodeKey; componentId: string; ownsSelection: () => boolean };
   let anchor: ScrollAnchor | null = null;
@@ -433,27 +442,34 @@
   /**
    * Loads the component holding `key` and returns the id of the component that has it. A refresh that
    * lands meanwhile (a merge renaming components) cancels the load: wait for it, then look the node up
-   * in the new index by what identifies it (its component if that survives, else the stack it covers).
+   * in the new index by its stable revision key, including when it is no longer a cover or member.
    * Null when the folder changed, the selection moved on, or the node is gone.
    */
   async function reachNode(key: NodeKey, componentId: string, turn: number): Promise<string | null> {
     const dir = directory, owns = captureSelection();
     const current = () => dir === directory && owns() && turn === activations;
+    const targetIndex = () => ({
+      listed: session.index ? new Set(session.index.components.map((summary) => summary.id)) : null,
+      components: session.components, isStale: (id: string) => session.isStale(id),
+    });
     for (let round = 0; round < 4; round++) {
-      const hit = findNode(key, componentId);
-      if (hit) return hit.componentId;
       await session.settled();
       if (!current()) return null;
+      const hit = locateTarget(key, componentId, targetIndex());
+      if (typeof hit !== "string") return hit.componentId;
       const index = session.index;
-      const holder = index?.components.find((summary) => summary.id === componentId)
-        ?? index?.components.find((summary) => summary.coverKey === key)
-        ?? index?.components.find((summary) => summary.id === [...index.members.values()].find((member) => member.key === key)?.componentId);
-      if (!holder) return null;
-      componentId = holder.id;
-      await session.ensure(holder.id);
-      if (!current()) return null;
+      const pending = unresolvedTargetComponents(key, componentId, targetIndex());
+      if (!pending.length) return null;
+      for (const id of pending) {
+        await session.ensure(id);
+        if (!current()) return null;
+        if (session.index !== index) break;
+        const found = locateTarget(key, componentId, targetIndex());
+        if (typeof found !== "string") return found.componentId;
+      }
     }
-    return current() ? findNode(key)?.componentId ?? null : null;
+    const found = locateTarget(key, componentId, targetIndex());
+    return current() && typeof found !== "string" ? found.componentId : null;
   }
 
   /** Bumped by every user activation and every explicit close: an activation still loading when it changes does nothing. */
