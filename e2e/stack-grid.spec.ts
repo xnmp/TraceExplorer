@@ -30,8 +30,7 @@ for (const theme of ["light", "dark"]) for (const host of ["", "&fileTile=1&tile
     expect(box.x).toBeGreaterThanOrEqual(text.x + text.width);
     expect(box.y + box.height / 2).toBeCloseTo(text.y + text.height - lineHeight / 2, 0);
     expect(box.y).toBeLessThan(caption.y + caption.height);
-    await expect(caret).toHaveAttribute("tabindex", "-1");
-    await expect(page.locator('[role="grid"] [tabindex="0"]')).toHaveCount(1);
+    await expect(page.locator('[role="grid"] [tabindex="0"]:not([data-stack-toggle])')).toHaveCount(1);
     const child = (await section.locator("[data-grid-band] [data-tile-key]").first().boundingBox())!;
     expect(box.y + box.height).toBeLessThan(child.y);
     const style = () => caret.evaluate((element) => {
@@ -947,7 +946,28 @@ test.describe("a save that outlives the control that started it still claims its
   });
 });
 
-const tabStops = (page: Page) => page.locator('[role="grid"] [tabindex="0"]');
+/** Grid navigation stops; the stop's own stack disclosure is a secondary control reached by Tab. */
+const tabStops = (page: Page) => page.locator('[role="grid"] [tabindex="0"]:not([data-stack-toggle])');
+
+test("keyboard alone collapses and re-expands an open stack through its disclosure", async ({ page }) => {
+  await openView(page, 900, "", false);
+  const village = stack(page, "village");
+  await village.locator("[data-stack-toggle]").click(); await settle(page);
+  await expect(village.locator("[data-grid-band] [data-tile-key]").first()).toBeVisible();
+  await village.locator(".cover-press").focus();
+  // Only the stop's own disclosure is tabbable; other stacks' disclosures stay out of the tab order.
+  await expect(page.locator('[data-stack-toggle][tabindex="0"]')).toHaveCount(1);
+  await page.keyboard.press("Tab");
+  const toggle = village.locator("[data-stack-toggle]");
+  await expect(toggle).toBeFocused();
+  await page.keyboard.press("Enter"); await settle(page);
+  await expect(village.locator("[data-grid-band]")).toHaveCount(0);
+  await expect(toggle).toHaveAttribute("aria-expanded", "false");
+  await village.locator(".cover-press").focus(); await page.keyboard.press("Tab"); await page.keyboard.press("Space"); await settle(page);
+  await expect(village.locator("[data-grid-band] [data-tile-key]").first()).toBeVisible();
+  await expect(toggle).toHaveAttribute("aria-expanded", "true");
+  expect(await uncaught(page)).toEqual([]);
+});
 const focusIsInGrid = (page: Page) => page.evaluate(() => !!document.activeElement?.closest('[role="grid"]'));
 
 test("deselecting the focused band tile leaves one tab stop and keeps the keyboard working", async ({ page }) => {

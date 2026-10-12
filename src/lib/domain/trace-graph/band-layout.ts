@@ -104,14 +104,18 @@ function sideways(items: readonly LayoutItem[], key: string, budget: number, req
     rights.push(right);
     top = bottom + spacing.approach + Math.max(3, exits.size + 1) * TRACK_HEIGHT;
   }
-  const tracks = new Map<string, number>();
+  // Each source's track index within its shelf; counted per shelf so long lineages stay linear.
+  const tracks = new Map<string, number>(), shelfTracks = new Map<number, number>();
   for (const item of items) {
     if (item.key === key) continue;
     const parent = item.parents[0], source = nodes.get(parent)!, target = nodes.get(item.key)!;
     if (parent !== key && chunkOf.get(parent) === chunkOf.get(item.key)) continue;
     const sourceChunk = chunkOf.get(parent) ?? -1;
-    const peers = tracks.get(`${sourceChunk}:${parent}`) ?? [...tracks.keys()].filter((id) => id.startsWith(`${sourceChunk}:`)).length;
-    tracks.set(`${sourceChunk}:${parent}`, peers);
+    let peers = tracks.get(`${sourceChunk}:${parent}`);
+    if (peers === undefined) {
+      peers = shelfTracks.get(sourceChunk) ?? 0;
+      shelfTracks.set(sourceChunk, peers + 1); tracks.set(`${sourceChunk}:${parent}`, peers);
+    }
     const lane = parent === key ? cover.height + 2 * TRACK_HEIGHT : bottoms[sourceChunk] + TRACK_HEIGHT * (peers + 1);
     const sx = source.x + source.width / 2, sy = source.y + source.height;
     const side = (rights[sourceChunk] ?? 0) + spacing.clearance + (peers + 1) * spacing.lane;

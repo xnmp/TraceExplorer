@@ -88,7 +88,7 @@
       {#if explorer}
         <span class="stack-name">
           <span class="text">{explorer.name}</span>
-          <button type="button" class="stack-disclosure" class:expanded={explorer.expanded} tabindex="-1" {onfocus}
+          <button type="button" class="stack-disclosure" class:expanded={explorer.expanded} tabindex={focused ? 0 : -1} {onfocus}
             data-stack-toggle aria-expanded={explorer.expanded} aria-label={explorer.expanded ? "Collapse stack" : "Expand stack"}
             onclick={onstacktoggle} onkeydown={(event) => {
               if (["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End"].includes(event.key)) onkey(event);
@@ -117,6 +117,7 @@
   {/snippet}
   {#if explorer}
     <!-- Sibling controls: the tile body remains the grid's tab stop; disclosure owns only toggling.
+         While this tile is the stop, Tab reaches its disclosure next (it follows the cover in DOM order), so keyboard users can collapse.
          A real button also excludes its pointer presses from marquee selection. -->
     <div class="card" class:selected class:focus={tile.tone === "focus"} class:discarded={node.discarded}>
       <button type="button" class="cover-press" tabindex={focused ? 0 : -1} {onfocus} data-node-key={node.key}
