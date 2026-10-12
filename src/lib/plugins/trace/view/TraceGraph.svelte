@@ -264,7 +264,7 @@
   <div class="pending stale" role="alert">Trace layout failed: {failure}</div>
 {/if}
 {#if shown}
-  <div class="graph" data-layout-stamp={layoutStamp} data-attachment={pinned ? String(attachment.serial) : undefined} bind:this={canvas} style:width="{attached!.width}px" style:height="{attached!.height}px">
+  <div class="graph" data-layout-stamp={layoutStamp} data-orientation={shown.layout.orientation} data-attachment={pinned ? String(attachment.serial) : undefined} bind:this={canvas} style:width="{attached!.width}px" style:height="{attached!.height}px">
     <svg class="edges" width={attached!.width} height={attached!.height} aria-hidden="true">
       <defs>
         <!--

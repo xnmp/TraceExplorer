@@ -745,7 +745,8 @@ export function playGrid(grid: HTMLElement, before: GridSnapshot, running: reado
     const snapshot = old?.graph ?? captureGraph(graph);
     const from = old?.graph ?? { ...snapshot, tiles: new Map(), routeIds: new Map(), routeSources: new Map(), routes: new Map(), junctions: new Map(),
       elements: { tiles: new Map(), paths: new Map(), dots: new Map() }, ghosts: [] };
-    animations.push(...playGraph(graph, from));
+    // New tiles emerge from their parents' side: above in a downward band, left in a sideways one.
+    animations.push(...playGraph(graph, from, graph.dataset.orientation === "right" ? "right" : "down"));
     if (!old?.graph || old.element.dataset.gridExit) {
       // Reveal only a newly opened group, within the space the rows are making.
       // Retained groups are never clipped, even when their packing line changes.
