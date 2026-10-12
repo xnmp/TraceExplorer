@@ -10,10 +10,10 @@ import { configureBackend, invoke } from "$lib/api/common";
 import type { TraceNode } from "$lib/domain/trace-graph/model";
 import type { JobCost, JobReveal, TileSizePreset } from "../../integration/plugin-sdk";
 import { TILE_IMAGE_PX, TILE_GRID_PX } from "./tile-presets";
-import { basename, joinPath, parentDir } from "$lib/domain/path";
+import { basename, joinPath, parentDir, nativeDirectoryKey } from "$lib/domain/path";
 import StubFileTile from "./StubFileTile.svelte";
 import StubFileTiles from "./StubFileTiles.svelte";
-import { folderComponents, folderPage, isDirectFolderSeed, nativeStringOrder, type FolderNode } from "./folder-snapshot";
+import { folderCandidates, folderComponents, folderPage, isDirectFolderSeed, nativeStringOrder, type FolderNode } from "./folder-snapshot";
 import { isLocalAbsolutePath } from "$lib/domain/target-location";
 import { canonicalFixtureImagePath, fixtureImageEntries } from "./image-input-files";
 import { withNativeRequestCapacity } from "./request-capacity";
@@ -169,7 +169,29 @@ let heldNodeReads: Array<() => void> = [];
 const titleCalls: number[] = [];
 const titleWaiters = new Map<number, (title: string) => void>();
 
+// MIRROR intentionally represents a second copy of the same persisted rows.
+// Include those rows in candidates too; never hardcode eligibility in the RPC.
+const candidateFolders = () => {
+  const paths = state.nodes.filter((node) => node.artifactId !== null && node.path).map((node) => node.path!);
+  const contexts = state.nodes.filter((node) => node.runId !== null).flatMap((node) => {
+    const folder = node.contextDirectory ?? imageRuns.get(node.runId!)?.directory;
+    return folder ? [{ folder, status: node.state === "running" || node.state === "uncertain" ? node.state : "succeeded" }] : [];
+  });
+  const mirrorPath = (path: string) => path === DIRECTORY || path.startsWith(`${DIRECTORY}/`) ? MIRROR + path.slice(DIRECTORY.length) : path;
+  return folderCandidates([...paths, ...paths.map(mirrorPath)], [...contexts, ...contexts.map((context) => ({ ...context, folder: mirrorPath(context.folder) }))]);
+};
 const componentsOf = () => folderComponents(state.nodes, dismissedRuns);
+const folderHasTrace = (directory: string): boolean => {
+  const folder = nativeDirectoryKey(directory);
+  // The mirror shares ids and node paths, as the existing cache-race fixture
+  // does, but otherwise eligibility uses the real seed/component rules.
+  const source = folder === nativeDirectoryKey(MIRROR) ? DIRECTORY : directory;
+  const key = nativeDirectoryKey(source);
+  const nodes = state.nodes.map((node): FolderNode => ({ ...node, scope: !node.path ? node.scope
+    : nativeDirectoryKey(parentDir(node.path)) === key ? "current"
+    : nativeDirectoryKey(node.path).startsWith(`${key}/`) ? "subfolder" : "external" }));
+  return folderComponents(nodes, dismissedRuns, source).length > 0;
+};
 
 export const files = () => [
   ...state.nodes.filter((node) => isDirectFolderSeed(node) && !entryExtras.some((entry) => entry.path === node.path)).map((node) => ({ name: node.path!.split("/").at(-1)!, path: node.path!, kind: "file" as const })),
@@ -223,7 +245,8 @@ configureBackend(withNativeRequestCapacity({
         const jobId = [...imageOperations].find(([, id]) => id === operationId)?.[0];
         return reply(jobId === undefined ? null : jobSnapshot(jobId));
       }
-      case "folder_has_trace": return reply(params.directory === DIRECTORY || params.directory === MIRROR);
+      case "trace_folder_candidates": return reply(candidateFolders());
+      case "folder_has_trace": return folderReply(folderHasTrace(params.directory));
       case "trace_folder_components": {
         const all = componentsOf().map((component) => component.summary);
         return folderReply({ token, total: all.length, offset: params.offset, components: folderPage(all, params.offset, 200) });

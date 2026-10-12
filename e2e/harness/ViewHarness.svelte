@@ -38,8 +38,9 @@
 
   let enabled = $state(true);
   let fileView = $state<string | null>("trace.view");
-  let directory = $state(DIRECTORY);
-  let entries = $state.raw<FileEntry[]>(files());
+  const initialDirectory = new URLSearchParams(location.search).get("directory") ?? DIRECTORY;
+  let directory = $state(initialDirectory);
+  let entries = $state.raw<FileEntry[]>(initialDirectory === DIRECTORY ? files() : []);
   let selected = $state.raw<string[]>([]);
   let cursor = $state<string | null>(null);
   /** The Shift-range anchor, as the host's `selectionAnchorPath`. */
@@ -329,7 +330,7 @@
 <svelte:window onkeydown={shortcut} />
 
 <main style:--view-width="{viewWidth}px">
-  <section class="explorer" aria-label="Explorer pane" oncontextmenu={backgroundContextMenu}>
+  <section class="explorer" data-directory={directory} aria-label="Explorer pane" oncontextmenu={backgroundContextMenu}>
     {#if active}
       {@const View = active.component as Component<any>}
       <div class="file-view" data-file-view={active.id}><View {...active.props} {pane} /></div>

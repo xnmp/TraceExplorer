@@ -45,3 +45,39 @@ Only the listed selected set changes; the range anchor and cursor stay untouched
 including when empty or when the cursor is no longer selected, and `focus` is
 ignored. Trace uses it for marquee frames, then records fresh ordered picks.
 Without the capability, Trace retains the original `setSelection(paths)` behavior.
+
+
+Trace folder visibility preloads `trace_folder_candidates` at frontend activation
+and reloads on `trace:changed`. This SQL superset includes direct parents of all
+artifact/locator paths and contexts for running, uncertain, interrupted and
+succeeded runs. It skips recorded-file stats and folder index builds; exact
+`folder_has_trace` results still govern known folders. Candidate paths are
+persisted canonical paths (dunce-simplified on Windows), compared with the
+frontend's `directoryKey` rules. The first candidate answer offers Trace while
+an exact lookup checks presence and components; a false positive switches back.
+
+This does **not** guarantee the first folder in a new window: the SDK's
+`Plugin.activate` may return a promise, but `FileViewContribution.available` is
+synchronous and exposes no preload/first-paint barrier. In the host,
+`window-session.ts` starts `startup.ready` without awaiting it before
+`windowTabsManager.init`; `window-startup.ts` publishes settings readiness before
+awaiting plugin initialization. `FileList.svelte` derives the resolved view and
+`file-view-registry.svelte::resolve` consults contributions as they register.
+Thus folder navigation/view resolution can precede activation completion (or
+activation itself). A host startup barrier would need a separate host change;
+this plugin makes later first visits optimistic once preload has completed.
+
+
+Canonical directory identity is a separate integration limitation. The current
+host's `files/directory_identity.rs` explicitly preserves Unix symlink aliases
+and Windows short names; Trace's `folders::key` follows links. The SQL set is a
+superset in Trace's **canonical namespace**, not in the host's alias namespace.
+For `/alias -> /real`, a stored `/real/image.png` yields `/real` only. With the
+requested no-RPC rejection, a first visit under `/alias` can therefore remain
+in the built-in listing; Windows short paths and macOS `/var` versus
+`/private/var` can have the same issue. Enumerating arbitrary filesystem aliases
+requires filesystem IO, so SQL alone cannot solve this. Preserving alias
+support requires either a canonical directory identity from the host, or an
+exact lookup on candidate misses (relaxing the no-RPC requirement). The SDK is
+unchanged. A Rust regression test documents the canonical-key contract and
+this alias boundary explicitly.

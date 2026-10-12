@@ -101,6 +101,7 @@ async fn execute(app: EventEmitter, request: &Request) -> Result<Value, AppError
             Ok(json!({"ready":true}))
         }
         "lifecycle.quiesce" => {tokio::task::spawn_blocking(trace::quiesce_owner).await.map_err(|_|AppError::Other("Trace quiesce interrupted".into()))??;Ok(json!({"ready":false,"idle":true,"checkpoint":true}))}
+        "trace_folder_candidates" => Ok(json!(trace::folders::candidates().await?)),
         "folder_has_trace" => Ok(json!(
             trace::folders::has_trace(field(p, "directory")?).await?
         )),
