@@ -27,7 +27,9 @@ describe("image inspection mock filesystem", () => {
     expect(canonicalFixtureImagePath("/photos/relative-link/../source.png", links, entries)).toBe("/other/source.png");
     expect(canonicalFixtureImagePath("/other//./subdir/../source.png", links, entries)).toBe("/other/source.png");
   });
-  it.skipIf(process.platform === "win32")("matches real POSIX filesystem symlink/parent traversal for distinct files and aliases", () => {
+  // The mock models Linux canonicalization (the harness backend's semantics). macOS realpath resolves
+  // "file/.." without ENOTDIR and Windows has no POSIX symlinks, so the native oracle is Linux-only.
+  it.skipIf(process.platform !== "linux")("matches real Linux filesystem symlink/parent traversal for distinct files and aliases", () => {
     const root = realpathSync.native(mkdtempSync(join(tmpdir(), "tdrop-inputs-")));
     try {
       mkdirSync(`${root}/photos`);
