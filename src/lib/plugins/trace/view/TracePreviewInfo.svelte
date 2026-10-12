@@ -140,9 +140,11 @@
   .disclosure, summary { display: flex; align-items: center; justify-content: space-between; gap: 8px; width: 100%; box-sizing: border-box; margin: 0; padding: 8px var(--inset); font: inherit; color: var(--text-secondary); background: none; border: 0; text-align: left; cursor: pointer; list-style: none; }
   .trace-info > .disclosure:not(:first-child) { border-top: 1px solid var(--divider); }
   summary::-webkit-details-marker { display: none; }
-  .disclosure:hover, summary:hover { background: var(--subtle-fill-secondary); color: var(--text-primary); }
+  .disclosure, summary { min-width: 24px; min-height: 24px; }
+  .disclosure:hover, summary:hover, .disclosure:focus-visible, summary:focus-visible { background: var(--subtle-fill-secondary); color: var(--text-primary); }
   .disclosure:focus-visible, summary:focus-visible { outline: 2px solid var(--focus-stroke-outer); outline-offset: -2px; }
   .chevron { flex: none; color: var(--text-tertiary); transition: transform var(--open-ms) cubic-bezier(0.2, 0, 0, 1); }
+  .disclosure:hover .chevron, summary:hover .chevron, .disclosure:focus-visible .chevron, summary:focus-visible .chevron { color: var(--text-primary); }
   .disclosure[aria-expanded="true"] .chevron, details[open] > summary .chevron { transform: rotate(90deg); }
 
   /* Animating the track from 0fr to 1fr opens and closes to the content's own

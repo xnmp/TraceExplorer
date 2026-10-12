@@ -104,7 +104,7 @@
       <span class="status-line">{status}</span>
     {/if}
   </button>
-  {#if onclose}<button type="button" class="close-stack" data-stack-toggle aria-expanded="true" aria-label="Close stack" onclick={onclose}>⌃</button>{/if}
+  {#if onclose}<button type="button" class="close-stack" data-stack-toggle aria-expanded="true" aria-label="Close stack" onclick={onclose}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 15 6-6 6 6" /></svg></button>{/if}
   {#if badges.length && onbadge}<ReferenceBadges {badges} nodes={badgeNodes} {revision} selected={badgeSelection} onactivate={onbadge} onhover={onbadgehover} />{/if}
   {#if hint && !explorer}<span class="hint" style:height="{TILE.hint}px">{hint}</span>{/if}
   {#if artifact}
@@ -132,7 +132,9 @@
   .cover-spinner { position: absolute; top: 3px; right: 3px; }
   .count-badge { position: absolute; bottom: -3px; right: -3px; box-sizing: border-box; min-width: 16px; height: 16px; padding: 0 4px; border-radius: var(--radius-pill); background: var(--accent); color: var(--text-on-accent); font-size: 10px; line-height: 16px; text-align: center; }
   .cover-unsaved-dot { position: absolute; left: -2px; top: -2px; width: 6px; height: 6px; border: 2px solid var(--background-solid); border-radius: 50%; background: var(--system-caution-text, var(--system-caution)); }
-  .close-stack { position: absolute; right: 5px; bottom: 16px; padding: 0 3px; border: 0; background: var(--control-fill); color: var(--text-secondary); cursor: pointer; }
+  .close-stack { position: absolute; right: 5px; bottom: -24px; display: grid; place-items: center; width: 24px; height: 24px; padding: 0; border: 0; border-radius: var(--radius-sm); background: var(--control-fill); color: var(--text-secondary); cursor: pointer; }
+  .close-stack svg { width: 12px; height: 12px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+  .close-stack:hover, .close-stack:focus-visible { background: var(--subtle-fill-secondary); color: var(--text-primary); }
   .close-stack:focus-visible { outline: 2px solid var(--focus-stroke-outer); }
   .tile { position: absolute; box-sizing: border-box; }
   .card { display: flex; flex-direction: column; align-items: stretch; box-sizing: border-box; width: 100%; padding: 5px; overflow: hidden; text-align: left; font: inherit; color: var(--text-primary); background: var(--background-card-secondary, var(--control-fill)); border: 1px solid var(--control-stroke); border-radius: var(--radius-sm); cursor: pointer; }
@@ -149,6 +151,7 @@
   .label { display: flex; align-items: center; gap: 3px; min-width: 0; height: 14px; margin-top: 4px; }
   .text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; line-height: 14px; }
   .chevron { width: 11px; height: 11px; flex: none; fill: none; stroke: var(--text-secondary); stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+  .card:hover .chevron, .card:focus-visible .chevron { stroke: var(--text-primary); }
   .unsaved-dot { flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--system-caution-text, var(--system-caution)); }
   .scope { display: flex; align-items: center; gap: 3px; height: 14px; margin-top: 3px; font-size: 10px; color: var(--accent-text, var(--accent)); white-space: nowrap; overflow: hidden; }
   .scope.external { color: var(--system-caution-text, var(--system-caution)); }

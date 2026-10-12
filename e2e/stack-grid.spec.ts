@@ -15,6 +15,37 @@ const sameColumns = (before: Awaited<ReturnType<typeof gridBoxes>>, after: Await
   for (const id of Object.keys(before)) expect(after[id].x, id).toBeCloseTo(before[id].x, 1);
 };
 
+for (const host of ["", "&fileTile=1&tileSize=small"]) {
+  test(`#59 stack caret has a 24px target, hover/focus feedback and collapses (${host ? "small host" : "fallback"})`, async ({ page }) => {
+    await openView(page, 420, `?grouping=two-chains${host}`, false);
+    const section = stack(page, "photo-a");
+    await section.locator("[data-stack-toggle]").click(); await settle(page);
+    const caret = section.getByRole("button", { name: "Close stack" });
+    const box = (await caret.boundingBox())!;
+    expect(box.width).toBeGreaterThanOrEqual(24);
+    expect(box.height).toBeGreaterThanOrEqual(24);
+    const caption = (await section.locator(".label").first().boundingBox())!;
+    expect(box.y).toBeGreaterThanOrEqual(caption.y + caption.height);
+    const child = (await section.locator("[data-grid-band] [data-tile-key]").first().boundingBox())!;
+    expect(box.y + box.height).toBeLessThan(child.y);
+    const style = () => caret.evaluate((element) => { const style = getComputedStyle(element); return { background: style.backgroundColor, color: style.color, cursor: style.cursor }; });
+    await page.mouse.move(1, 1);
+    const normal = await style();
+    expect(normal.cursor).toBe("pointer");
+    await caret.hover();
+    const hovered = await style();
+    expect(hovered.background).not.toBe(normal.background);
+    expect(hovered.color).not.toBe(normal.color);
+    await page.mouse.move(1, 1);
+    await page.keyboard.press("Tab"); await caret.focus();
+    expect(await caret.evaluate((element) => element.matches(":focus-visible"))).toBe(true);
+    expect((await style()).background).toBe(hovered.background);
+    await caret.click(); await settle(page);
+    await expect(section.locator("[data-grid-band]")).toHaveCount(0);
+    await expect(section.locator("[data-stack-toggle]")).toHaveAttribute("aria-expanded", "false");
+  });
+}
+
 test("#58 two same-row stacks share one band and connectors stay in their own group", async ({ page }) => {
   await openView(page, 620, "?grouping=two-chains", false);
   const before = await gridBoxes(page);
