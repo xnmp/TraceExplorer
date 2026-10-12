@@ -19,6 +19,7 @@
   import { selectableSelector } from "./selectable";
   import { captureGraph, carriesMotion, playGraph, prefersReducedMotion, zoomOf } from "./motion";
   import { nodeTitle } from "./node-target";
+  import { sameGraphGeometry } from "$lib/domain/trace-graph/layout-geometry";
   import TraceTile from "./TraceTile.svelte";
 
   import { projectReferenceBadges } from "$lib/domain/trace-graph/projection";
@@ -132,7 +133,7 @@
     }
     // Same geometry (only tones or selection changed): nothing moves, so
     // motion still running carries on and nothing is measured.
-    if (shown && shown.layout === layout) {
+    if (shown && (shown.layout === layout || sameGraphGeometry(shown.layout, layout))) {
       shown = { plan: next, layout };
       failure = "";
       // Report after any pending full commit has started its motion.

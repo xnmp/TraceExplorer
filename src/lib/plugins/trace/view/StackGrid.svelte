@@ -4,6 +4,7 @@
   import type { ComponentFocus, BandScenePlan, SceneTile } from "$lib/domain/trace-graph/scene";
   import type { GraphLayout } from "$lib/domain/trace-graph/layout";
   import { gridFlow } from "$lib/domain/trace-graph/grid-flow";
+  import { sameGridGeometry } from "$lib/domain/trace-graph/layout-geometry";
   import { tileSize, type TileMetrics } from "$lib/domain/trace-graph/metrics";
   import type { FileViewPane } from "../../../../../integration/plugin-sdk";
   import { hostFileTile } from "../../../../sdk";
@@ -74,8 +75,13 @@
       if (next.size !== held.size || [...next].some((key) => !held.has(key))) held = next;
     });
   });
-  const flow = $derived(gridFlow(cells, new Map(cells.filter((cell) => cell.kind === "stack" && openKeys.has(cell.id)).map((cell) => [cell.id, heights.get(cell.id) ?? 160])), columns,
-    { cellWidth, cellHeight, columnGap: metrics.gap, rowGap: metrics.gap }));
+  let previousFlow: ReturnType<typeof gridFlow> | undefined;
+  const flow = $derived.by(() => {
+    const next = gridFlow(cells, new Map(cells.filter((cell) => cell.kind === "stack" && openKeys.has(cell.id)).map((cell) => [cell.id, heights.get(cell.id) ?? 160])), columns,
+      { cellWidth, cellHeight, columnGap: metrics.gap, rowGap: metrics.gap });
+    // Only geometry changes own grid motion. Replacing index/listing objects must not replay it.
+    return previousFlow && sameGridGeometry(previousFlow, next) ? previousFlow : (previousFlow = next);
+  });
   const pins = $derived(gridPins(flow, openKeys));
   /** A band can need more than the pane (many separate inputs need routing lanes). The grid then widens and the
    * view scrolls sideways as a whole, so a cover and the routes hanging from it always move together. */

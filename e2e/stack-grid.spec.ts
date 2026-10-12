@@ -15,6 +15,77 @@ const sameColumns = (before: Awaited<ReturnType<typeof gridBoxes>>, after: Await
   for (const id of Object.keys(before)) expect(after[id].x, id).toBeCloseTo(before[id].x, 1);
 };
 
+test("#56 opening settles once and unchanged journal refresh preserves children and following rows", async ({ page }) => {
+  await openView(page, 220, "?grouping=two-chains", false);
+  const child = await key(page, "photo-a-edit");
+  const samples = await page.evaluate(async (child) => {
+    const section = document.querySelector<HTMLElement>('section[aria-label="photo-a"]')!;
+    const following = document.querySelector<HTMLElement>('section[aria-label="photo-b"]')!;
+    const removed: string[] = [];
+    const observer = new MutationObserver((records) => {
+      for (const record of records) for (const node of record.removedNodes) {
+        if (node instanceof Element && (node.matches(`[data-tile-key="${child}"]`) || node.querySelector(`[data-tile-key="${child}"]`))) removed.push(node.nodeName);
+      }
+    });
+    observer.observe(section, { childList: true, subtree: true });
+    section.querySelector<HTMLElement>('[data-stack-toggle]')!.click();
+    const start = performance.now(), samples = [];
+    let refreshed = false;
+    while (performance.now() - start < 650) {
+      await new Promise(requestAnimationFrame);
+      const time = performance.now() - start;
+      if (time >= 250 && !refreshed) { (window as any).trace.backend.refresh(); refreshed = true; }
+      const tile = section.querySelector<HTMLElement>(`[data-tile-key="${child}"]`);
+      const rect = tile?.getBoundingClientRect();
+      samples.push({ time, child: rect ? { y: rect.y, height: rect.height, opacity: Number(getComputedStyle(tile!).opacity) } : null, following: following.getBoundingClientRect().y });
+    }
+    observer.disconnect();
+    return { removed, samples };
+  }, child);
+  expect(samples.removed).toEqual([]);
+  const settled = samples.samples.filter((sample) => sample.time >= 200);
+  expect(settled.length).toBeGreaterThan(5);
+  const baseline = settled.at(-1)!;
+  for (const sample of settled) {
+    expect(sample.child, `frame ${sample.time}`).not.toBeNull();
+    expect(sample.child!.height).toBeCloseTo(baseline.child!.height, 0);
+    expect(sample.child!.y).toBeCloseTo(baseline.child!.y, 0);
+    expect(sample.child!.opacity).toBeGreaterThanOrEqual(.99);
+    expect(sample.following).toBeCloseTo(baseline.following, 0);
+  }
+});
+
+test("#56 unchanged refresh does not restart an expansion in progress", async ({ page }) => {
+  await openView(page, 220, "?grouping=two-chains", false);
+  await holdScriptedAnimations(page);
+  try {
+    await stack(page, "photo-a").locator("[data-stack-toggle]").click();
+    await awaitAnimationsCreated(page);
+    const child = await key(page, "photo-a-edit");
+    const result = await page.evaluate(async (child) => {
+      const w = window as any;
+      const original = [...w.__heldAnimations] as Animation[];
+      for (const animation of original) if (animation.playState === "running") animation.currentTime = 80;
+      await new Promise(requestAnimationFrame);
+      w.trace.backend.refresh();
+      for (let i = 0; i < 12; i++) await new Promise(requestAnimationFrame);
+      const box = () => {
+        const element = document.querySelector<HTMLElement>(`[data-tile-key="${child}"]`)!;
+        return { y: element.getBoundingClientRect().y, opacity: Number(getComputedStyle(element).opacity), following: document.querySelector('section[aria-label="photo-b"]')!.getBoundingClientRect().y };
+      };
+      for (const animation of original) if (animation.playState === "running") animation.currentTime = 160;
+      await new Promise(requestAnimationFrame);
+      const atOriginalEnd = box();
+      for (const animation of w.__heldAnimations as Animation[]) if (animation.playState === "running") animation.currentTime = 160;
+      await new Promise(requestAnimationFrame);
+      return { atOriginalEnd, settled: box() };
+    }, child);
+    expect(result.atOriginalEnd.opacity).toBe(1);
+    expect(result.atOriginalEnd.y).toBeCloseTo(result.settled.y, 1);
+    expect(result.atOriginalEnd.following).toBeCloseTo(result.settled.following, 1);
+  } finally { await releaseScriptedAnimations(page); }
+});
+
 for (const host of ["", "&fileTile=1&tileSize=medium"]) {
   test(`opening and closing stacks preserves every column and the cover's position (${host ? "host tile" : "fallback"})`, async ({ page }) => {
     await openView(page, 420, `?grouping=style-many${host}`, false);
