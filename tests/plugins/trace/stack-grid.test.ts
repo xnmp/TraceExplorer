@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { folderCells, pendingListingPaths, unlistedCovers, attachBand, gridNeighbor, gridPins, rovingStop } from "$lib/plugins/trace/view/stack-grid";
+import { estimatedBandExtent, bandExtent, folderCells, pendingListingPaths, unlistedCovers, attachBand, gridNeighbor, gridPins, rovingStop } from "$lib/plugins/trace/view/stack-grid";
+import { tileMetrics, tileSize } from "$lib/domain/trace-graph/metrics";
 import { layoutGraph } from "$lib/domain/trace-graph/layout";
 import { gridFlow } from "$lib/domain/trace-graph/grid-flow";
 import type { FolderIndex } from "$lib/plugins/trace/view/folder-session.svelte";
@@ -133,6 +134,19 @@ describe("folder grid rules", () => {
     expect([...pins.keys()]).toEqual(["a"]);
     expect(pins.get("a")).toEqual({ key: "a", x: 46, obstacles: [] });
   });
+  it("reuses layout pins through vertical packing and replaces them when their column moves", () => {
+    const items = [{ id: "a", kind: "stack" }, { id: "b", kind: "stack" }] as const;
+    const metrics = { cellWidth: 92, cellHeight: 97, columnGap: 8, rowGap: 8 };
+    const open = new Set(["a", "b"]);
+    const before = gridPins(gridFlow(items, new Map(), 1, metrics), open);
+    const taller = gridPins(gridFlow(items, new Map([["a", 500]]), 1, metrics), open, before);
+    expect(taller.get("b")).toBe(before.get("b"));
+    const wider = gridPins(gridFlow(items, new Map([["a", 500]]), 2, metrics), open, taller);
+    expect(wider.get("b")).toEqual({ key: "b", x: 146, obstacles: [] });
+    expect(wider.get("b")).not.toBe(taller.get("b"));
+    expect([...gridPins(gridFlow(items, new Map(), 2, metrics), new Set(["a"]), wider).keys()]).toEqual(["a"]);
+    expect(gridPins(gridFlow([], new Map(), 2, metrics), open, wider).size).toBe(0);
+  });
   it("navigates between covers, ordinary entries and band tiles by their displayed geometry", () => {
     const rects = new Map([["cover", { x: 100, y: 0, width: 90, height: 90 }], ["ordinary", { x: 200, y: 0, width: 90, height: 90 }], ["child", { x: 100, y: 200, width: 90, height: 90 }]]);
     expect(gridNeighbor(rects, "cover", "ArrowRight")).toBe("ordinary");
@@ -158,4 +172,24 @@ describe("roving tab stop", () => {
     expect(rovingStop("gone", new Set(["a"]), owner, "a")).toBe("a");
   });
   it("names no stop for an empty grid", () => { expect(rovingStop("x", new Set(), () => undefined, null)).toBeNull(); });
+});
+
+
+describe("cold band reservation", () => {
+  it.each([undefined, 48, 64, 96, 128, 512])("reserves a child row and its routing space at thumbnail size %s", (edge) => {
+    const tile = tileMetrics(edge), size = tileSize({ foreign: false, hint: true }, tile);
+    const layout = layoutGraph({ items: [
+      { key: "cover", width: size.width, height: size.height, order: 0, parents: [] },
+      { key: "child", width: size.width, height: size.height, order: 1, parents: ["cover"] },
+    ], maxWidth: tile.width + 100, tileWidth: tile.width, pinned: { key: "cover", x: tile.width / 2 } });
+    expect(estimatedBandExtent(tile).height).toBe(bandExtent(layout, "cover").height);
+    expect(estimatedBandExtent(tile).width).toBeGreaterThanOrEqual(size.width);
+  });
+  it.each([null, NaN, Infinity, -1, 0, Number.MAX_VALUE])("stays finite and positive for a normalized invalid/extreme host size %s", (edge) => {
+    const extent = estimatedBandExtent(tileMetrics(edge));
+    expect(Number.isFinite(extent.height)).toBe(true);
+    expect(Number.isFinite(extent.width)).toBe(true);
+    expect(extent.height).toBeGreaterThan(0);
+    expect(extent.width).toBeGreaterThan(0);
+  });
 });

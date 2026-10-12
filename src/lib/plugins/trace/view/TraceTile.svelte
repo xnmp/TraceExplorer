@@ -160,7 +160,9 @@
   .status { color: var(--text-secondary); }
   .hint { display: block; box-sizing: border-box; padding-top: 3px; text-align: center; font-size: 10px; line-height: 13px; color: var(--text-secondary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .unrelated .card { opacity: .78; }
-  .unrelated .image { filter: grayscale(.45); }
+  /* Explorer covers dim through card opacity. Filtering their isolated thumbnail
+   * and stacked sheets makes a cold open stall in the host's software renderer. */
+  .unrelated:not(.explorer-cover) .image { filter: grayscale(.45); }
   /* The action chip sits in the image's top-right corner; status messages hang below it. */
   .actions { position: absolute; top: 9px; right: 9px; display: flex; flex-direction: column; align-items: flex-end; visibility: hidden; }
   .actions :global(p) { position: absolute; right: 0; top: 100%; }

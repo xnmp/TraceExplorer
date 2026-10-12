@@ -325,7 +325,7 @@ test("selection inside a band moves only rows below vertically, including anothe
   await settle(page);
   const after = await gridBoxes(page); sameColumns(before, after);
   // The village band grows under the village cover, so the cover stays put while every row below it,
-  // including the other open stack's cover, only slides vertically by the band's growth.
+  // including the other open stack's cover, is placed vertically by the band's growth.
   const village = await key(page, "village"), forest = await key(page, "forest"), below = await key(page, "fan");
   for (const sample of samples) {
     sameColumns(before, sample);
@@ -334,7 +334,7 @@ test("selection inside a band moves only rows below vertically, including anothe
   const delta = after[below].y - before[below].y;
   expect(Math.abs(delta)).toBeGreaterThan(40);
   expect(after[forest].y - before[forest].y).toBeCloseTo(delta, 1);
-  expect(samples.some((sample) => Math.abs(sample[below].y - before[below].y) > 1 && Math.abs(sample[below].y - after[below].y) > 1)).toBe(true);
+  for (const sample of samples) expect(sample[below].y).toBeCloseTo(after[below].y, 1);
   expect(after["/pictures/notes.txt"].y - before["/pictures/notes.txt"].y).toBeCloseTo(delta, 1);
   const childAfter = await forestChild.evaluate((element) => element.getBoundingClientRect().y + document.querySelector<HTMLElement>('[data-testid="trace-view"]')!.scrollTop);
   expect(childAfter - childBefore).toBeCloseTo(delta, 1);
@@ -448,42 +448,39 @@ test("hovering a reference preserves a deeper selected tile and keyboard focus",
   expect((await state(page)).selected).toEqual(["/pictures/quiet.png"]);
 });
 
-test("closing during emergence reverses from the displayed tile position and opacity", async ({ page }) => {
-  await openView(page, 420, "?grouping=two-chains", false);
+test("closing during emergence reclaims rows without overlapping the remaining band", async ({ page }) => {
+  await page.setViewportSize({ width: 800, height: 1600 });
+  await openView(page, 220, "?grouping=two-chains", false);
+  await stack(page, "photo-b").locator("[data-stack-toggle]").click(); await settle(page);
   await holdScriptedAnimations(page);
   try {
     await stack(page, "photo-a").locator("[data-stack-toggle]").click();
-    const child = await key(page, "photo-a-edit");
-    await expect(page.locator(`[data-node-key="${child}"]`)).toHaveCount(1);
-    // Every animation of the opening exists before any is seeked (grid motion and geometry arrive in later turns).
     await awaitAnimationsCreated(page);
-    const result = await page.evaluate(async (key) => {
-      const w = window as any, frame = () => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    const child = await key(page, "photo-a-edit");
+    const samples = await page.evaluate(async () => {
+      const w = window as any;
       for (const animation of w.__heldAnimations as Animation[]) if (animation.playState === "running") animation.currentTime = 40;
-      await frame();
-      const tile = document.querySelector<HTMLElement>(`[data-tile-key="${key}"]`)!;
-      const before = { y: tile.getBoundingClientRect().y, opacity: Number(getComputedStyle(tile).opacity) };
-      tile.closest("section")!.querySelector<HTMLElement>('[aria-label="Close stack"]')!.click();
-      // The closing copy and its animations are created in turns after the click; wait until none are new.
-      for (let count = -1, stable = 0; stable < 4;) { await frame(); const now = w.__heldAnimations.length + w.trace.layoutsPending(); stable = now === count ? stable + 1 : 0; count = now; }
-      const ghost = document.querySelector<HTMLElement>(`[data-grid-ghost] [data-ghost-tile-key="${key}"]`)!;
-      const closing = (w.__heldAnimations as Animation[]).filter((animation) => animation.playState === "running");
+      await new Promise(requestAnimationFrame);
+      document.querySelector<HTMLElement>('section[aria-label="photo-a"] [aria-label="Close stack"]')!.click();
       const samples = [];
-      for (const time of [0, 40, 80, 120]) {
-        for (const animation of closing) animation.currentTime = time;
-        await frame();
-        samples.push({ y: ghost.getBoundingClientRect().y, opacity: Number(getComputedStyle(ghost).opacity) });
+      for (let i = 0; i < 12; i++) {
+        await new Promise(requestAnimationFrame);
+        const backgrounds = [...document.querySelectorAll<HTMLElement>("[data-grid-row-band]")];
+        samples.push([...document.querySelectorAll<HTMLElement>("[data-grid-cell]")].map((cell) => {
+          const row = Number(cell.getAttribute("aria-rowindex")) - 1, rect = cell.getBoundingClientRect();
+          return { top: rect.top, bottom: rect.bottom,
+            earlierBottom: Math.max(-Infinity, ...backgrounds.filter((band) => Number(band.dataset.gridRowBand) < row).map((band) => band.getBoundingClientRect().bottom)),
+            ownTop: Math.min(Infinity, ...backgrounds.filter((band) => Number(band.dataset.gridRowBand) === row).map((band) => band.getBoundingClientRect().top)) };
+        }));
       }
-      return { before, samples };
-    }, child);
-    expect(result.samples[0].y).toBeCloseTo(result.before.y, 0);
-    expect(result.samples[0].opacity).toBeCloseTo(result.before.opacity, 2);
-    let previous = result.before;
-    for (const sample of result.samples) {
-      expect(sample.y).toBeLessThanOrEqual(previous.y + .5);
-      expect(sample.opacity).toBeLessThanOrEqual(previous.opacity + .02);
-      previous = sample;
+      return samples;
+    });
+    for (const frame of samples) for (const cell of frame) {
+      expect(cell.top).toBeGreaterThanOrEqual(cell.earlierBottom - .5);
+      expect(cell.bottom).toBeLessThanOrEqual(cell.ownTop + .5);
     }
+    await expect(page.locator(`[data-tile-key="${child}"], [data-ghost-tile-key="${child}"]`)).not.toBeVisible();
+    await expect(stack(page, "photo-b").locator("[data-grid-band] [data-tile-key]").first()).toBeVisible();
   } finally { await releaseScriptedAnimations(page); }
   await settle(page);
   await expect(stack(page, "photo-a").locator("[data-grid-band]")).toHaveCount(0);
@@ -956,5 +953,195 @@ test("merging the focused child's stack into another keeps one tab stop and focu
   await settle(page);
   await expect(tabStops(page)).toHaveCount(1);
   expect(await focusIsInGrid(page)).toBe(true);
+  expect(await uncaught(page)).toEqual([]);
+});
+
+for (const worker of [false, true]) test(`#56 cold open holds the band and following row through ${worker ? "node reads and worker layout" : "node reads"}`, async ({ page }) => {
+  await page.setViewportSize({ width: 800, height: 4000 });
+  await openView(page, 420, worker ? "?fanChildren=45" : "?gym=1&fileTile=1&tileSize=small", false);
+  const samples = await page.evaluate(async ({ name, worker }) => {
+    const w = window as any, backend = w.trace.backend;
+    backend.holdNodeReads();
+    const original = Worker.prototype.postMessage, held: Array<() => void> = [];
+    if (worker) Worker.prototype.postMessage = function (message, options) {
+      held.push(() => original.call(this, message, options as any));
+    };
+    const section = document.querySelector<HTMLElement>(`section[aria-label="${name}"]`)!;
+    const cover = section.querySelector<HTMLElement>("[data-grid-cell]")!;
+    const row = Number(cover.getAttribute("aria-rowindex")) - 1;
+    // A real following cell receives grid motion; measuring grid height alone misses a row reversal.
+    const following = [...document.querySelectorAll<HTMLElement>("[data-grid-motion]")]
+      .find((cell) => cell.getBoundingClientRect().top > cover.getBoundingClientRect().top + 2)!;
+    const view = document.querySelector<HTMLElement>('[data-testid="trace-view"]')!;
+    const baseline = following.getBoundingClientRect().top + view.scrollTop;
+    const samples: Array<{ time: number; top: number; computedTop: number; bandBottom: number; height: number; content: boolean; loading: boolean; statusInBand: boolean; workerHeld: boolean }> = [];
+    const start = performance.now();
+    let readsReleased = false, workerReleased = !worker, workerAt: number | null = null, stable = 0;
+    try {
+      section.querySelector<HTMLElement>("[data-stack-toggle]")!.click();
+      while (stable < 4 && performance.now() - start < 10_000) {
+        await new Promise(requestAnimationFrame);
+        const time = performance.now() - start;
+        const band = section.querySelector<HTMLElement>("[data-grid-band]")!;
+        const background = document.querySelector<HTMLElement>(`[data-grid-row-band="${row}"]`)!;
+        const bounds = background.getBoundingClientRect();
+        const status = band.querySelector<HTMLElement>('[role="status"]');
+        const statusBounds = status?.getBoundingClientRect();
+        const content = band.querySelectorAll("[data-tile-key]").length > 0;
+        const grid = following.closest<HTMLElement>('[role="grid"]')!;
+        samples.push({ time, top: following.getBoundingClientRect().top + view.scrollTop,
+          computedTop: parseFloat(getComputedStyle(following).top) + grid.getBoundingClientRect().top + view.scrollTop,
+          bandBottom: bounds.bottom + view.scrollTop, height: bounds.height, content,
+          loading: !!status?.textContent?.trim(), workerHeld: held.length > 0,
+          statusInBand: !!statusBounds && statusBounds.top >= bounds.top && statusBounds.bottom <= bounds.bottom });
+        if (!readsReleased && time >= 500) { backend.releaseNodeReads(); readsReleased = true; }
+        if (held.length && workerAt === null) workerAt = time;
+        if (workerAt !== null && time - workerAt >= 500 && !workerReleased) {
+          Worker.prototype.postMessage = original;
+          held.splice(0).forEach((release) => release()); workerReleased = true;
+        }
+        const moving = document.getAnimations().some((animation) => animation.playState === "running");
+        stable = content && readsReleased && workerReleased && !moving && !w.trace.layoutsPending() ? stable + 1 : 0;
+      }
+      return { baseline, samples, settled: stable >= 4 };
+    } finally {
+      backend.releaseNodeReads(); Worker.prototype.postMessage = original;
+      held.splice(0).forEach((release) => release());
+    }
+  }, { name: worker ? "fan" : "gym", worker });
+  expect(samples.settled).toBe(true);
+  // The first frame showing the reserved background must already place the next row
+  // outside it. A delayed top animation can freeze under a cold native graph mount.
+  for (const sample of samples.samples) {
+    expect(sample.top, JSON.stringify(sample)).toBeGreaterThanOrEqual(sample.bandBottom - .5);
+    expect(sample.computedTop, JSON.stringify(sample)).toBeGreaterThanOrEqual(sample.bandBottom - .5);
+  }
+  const positions = [samples.baseline];
+  for (const sample of samples.samples) if (Math.abs(sample.top - positions.at(-1)!) > .5) positions.push(sample.top);
+  expect(positions.length - 1, JSON.stringify(positions)).toBeLessThanOrEqual(2);
+  const loading = samples.samples.filter((sample) => !sample.content);
+  expect(loading.length).toBeGreaterThan(5);
+  expect(loading.at(-1)!.time).toBeGreaterThanOrEqual(500);
+  expect(loading.every((sample) => sample.height > 0 && sample.loading && sample.statusInBand)).toBe(true);
+  if (worker) expect(loading.filter((sample) => sample.workerHeld).at(-1)!.time).toBeGreaterThan(900);
+  // Before content arrives, neither reservation nor following row may reverse upward after opening.
+  let peak = samples.baseline, height = 0;
+  for (const sample of loading) {
+    peak = Math.max(peak, sample.top); height = Math.max(height, sample.height);
+    expect(sample.top, JSON.stringify(sample)).toBeGreaterThanOrEqual(peak - 2);
+    expect(sample.height, JSON.stringify(sample)).toBeGreaterThanOrEqual(height - 2);
+  }
+  expect(peak - samples.baseline).toBeGreaterThan(40);
+  // Content can settle an overestimate upward once, but cannot then push the row down again.
+  peak = samples.baseline;
+  let settlingUp = false, trough = Infinity;
+  for (const sample of samples.samples) {
+    if (sample.top < peak - 2) settlingUp = true;
+    if (settlingUp) { trough = Math.min(trough, sample.top); expect(sample.top).toBeLessThanOrEqual(trough + 2); }
+    else peak = Math.max(peak, sample.top);
+  }
+  await expect(stack(page, worker ? "fan" : "gym").locator("[data-grid-band] [data-tile-key]").first()).toBeVisible();
+  expect(await uncaught(page)).toEqual([]);
+});
+
+for (const worker of [false, true]) test(`cold children reveal from their accepted layout without a second ${worker ? "worker round trip" : "entrance"}`, async ({ page }) => {
+  await openView(page, 840, worker ? "?fanChildren=45" : "?gym=1&fileTile=1&tileSize=small", false);
+  const result = await page.evaluate(async ({ worker }) => {
+    const section = document.querySelector<HTMLElement>(`section[aria-label="${worker ? "fan" : "gym"}"]`)!;
+    const originalPost = Worker.prototype.postMessage, originalAnimate = Element.prototype.animate;
+    let requests = 0, frame = 0, arrived: number | null = null, mounted: number | null = null, visible: number | null = null;
+    const entrances: Animation[] = [];
+    Worker.prototype.postMessage = function (message, options) {
+      requests++;
+      this.addEventListener("message", () => { arrived ??= frame; }, { once: true });
+      return originalPost.call(this, message, options as any);
+    };
+    Element.prototype.animate = function (frames, options) {
+      const animation = originalAnimate.call(this, frames, options);
+      if (this.matches("[data-grid-band] [data-tile-key]") && Array.isArray(frames) && frames[0]?.opacity === 0) entrances.push(animation);
+      return animation;
+    };
+    try {
+      section.querySelector<HTMLElement>("[data-stack-toggle]")!.click();
+      for (; frame < 120; frame++) {
+        await new Promise(requestAnimationFrame);
+        const children = [...section.querySelectorAll<HTMLElement>("[data-grid-band] [data-tile-key]")];
+        if (children.length) mounted ??= frame;
+        const band = section.querySelector<HTMLElement>("[data-grid-band]");
+        const view = document.querySelector<HTMLElement>('[data-testid="trace-view"]')!.getBoundingClientRect();
+        const background = band && document.querySelector(`[data-grid-row-band="${band.dataset.gridBandRow}"]`)!.getBoundingClientRect();
+        const bounds = band?.getBoundingClientRect();
+        const insets = band ? getComputedStyle(band).clipPath.match(/-?[\d.]+px/g)?.map(parseFloat) ?? [] : [];
+        const bottom = bounds ? bounds.bottom - (insets[2] ?? insets[0] ?? 0) : 0;
+        if (bounds && background && children.some((child) => {
+          const box = child.getBoundingClientRect();
+          return Number(getComputedStyle(child).opacity) > 0 && box.right > view.left && box.left < view.right
+            && box.bottom > Math.max(view.top, background.top, bounds.top + (insets[0] ?? 0))
+            && box.top < Math.min(view.bottom, bottom);
+        })) visible ??= frame;
+        if (visible !== null && frame - visible >= 12 && !(window as any).trace.layoutsPending()) break;
+      }
+      const children = section.querySelectorAll("[data-grid-band] [data-tile-key]").length;
+      return { requests, arrived, mounted, visible, children, entrances: entrances.length, cancelledEntrances: entrances.filter((animation) => animation.playState === "idle").length };
+    } finally { Worker.prototype.postMessage = originalPost; Element.prototype.animate = originalAnimate; }
+  }, { worker });
+  expect(result.children).toBeGreaterThan(0);
+  expect(result.mounted).not.toBeNull(); expect(result.visible).not.toBeNull();
+  if (worker) expect(result.arrived).not.toBeNull();
+  // The #63 regression held cold children back ~20 frames; a few frames of slack absorbs runner scheduling noise.
+  expect(result.visible! - (worker ? result.arrived! : result.mounted!)).toBeLessThanOrEqual(6);
+  expect(result.entrances).toBe(result.children);
+  expect(result.cancelledEntrances).toBe(0);
+  expect(result.requests).toBe(worker ? 1 : 0);
+  await settle(page);
+  await expect(stack(page, worker ? "fan" : "gym").locator("[data-grid-band] [data-tile-key]").first()).toBeVisible();
+  expect(await uncaught(page)).toEqual([]);
+});
+
+for (const host of ["", "&fileTile=1&tileSize=medium"]) test(`closed explorer covers dim without filtering their stacked thumbnail (${host ? "host" : "fallback"})`, async ({ page }) => {
+  await openView(page, 620, `?grouping=two-chains${host}`, false);
+  await stack(page, "photo-a").locator("[data-stack-toggle]").click(); await settle(page);
+  const other = stack(page, "photo-b");
+  await expect(other.locator("[data-grid-band]")).toHaveCount(0);
+  const style = await other.locator(".tile").evaluate((tile) => ({
+    filter: getComputedStyle(tile.querySelector(".image")!).filter,
+    opacity: Number(getComputedStyle(tile.querySelector(".card")!).opacity),
+  }));
+  expect(style.filter).toBe("none");
+  expect(style.opacity).toBeGreaterThan(0); expect(style.opacity).toBeLessThan(1);
+});
+
+test("opening a later row preserves an unchanged band's attachment motion", async ({ page }) => {
+  await page.setViewportSize({ width: 800, height: 1600 });
+  await openView(page, 420, "?deeper=1&fanChildren=2", false);
+  for (const name of ["village", "forest"]) { await stack(page, name).locator("[data-stack-toggle]").click(); await settle(page); }
+  const warm = await key(page, "warm"), mist = await key(page, "forest-mist");
+  await holdScriptedAnimations(page);
+  try {
+    await page.locator(`[data-node-key="${warm}"]`).click(); await awaitAnimationsCreated(page);
+    const result = await page.evaluate(async (mist) => {
+      const w = window as any, originals = [...w.__heldAnimations] as Animation[];
+      const frame = () => new Promise(requestAnimationFrame);
+      for (const animation of originals) if (animation.playState === "running") animation.currentTime = 40;
+      await frame();
+      const child = document.querySelector<HTMLElement>(`[data-tile-key="${mist}"]`)!;
+      const before = child.getBoundingClientRect().y;
+      const attachment = child.closest<HTMLElement>(".graph")!.dataset.attachment;
+      w.trace.setSelection([...w.trace.state().selected, "/pictures/fan.png"], "/pictures/warm.png");
+      for (let i = 0; i < 12; i++) await frame();
+      const after = child.getBoundingClientRect().y;
+      for (const animation of w.__heldAnimations as Animation[]) if (animation.playState === "running") animation.currentTime = 80;
+      await frame();
+      const continued = child.getBoundingClientRect().y;
+      for (const animation of w.__heldAnimations as Animation[]) if (animation.playState === "running") animation.currentTime = 160;
+      await frame();
+      return { attachment, nextAttachment: child.closest<HTMLElement>(".graph")!.dataset.attachment, before, after, continued, end: child.getBoundingClientRect().y };
+    }, mist);
+    expect(result.nextAttachment).toBe(result.attachment);
+    expect(result.after).toBeCloseTo(result.before, 1);
+    expect(Math.abs(result.end - result.before)).toBeGreaterThan(2);
+    expect(Math.abs(result.continued - result.end)).toBeLessThan(Math.abs(result.before - result.end));
+  } finally { await releaseScriptedAnimations(page); }
+  await settle(page);
   expect(await uncaught(page)).toEqual([]);
 });

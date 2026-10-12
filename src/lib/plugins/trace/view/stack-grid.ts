@@ -5,7 +5,16 @@ import { gridFlow, type GridFlow, type GridItem, type GridRect, type GridMetrics
 import type { GraphLayout, PinnedCover } from "$lib/domain/trace-graph/layout";
 import type { FolderIndex } from "./folder-session.svelte";
 import { packStackGroups } from "./stack-packing";
-import { ARROW, STACK_CARET_SIZE, STACK_BAND_INSET } from "$lib/domain/trace-graph/metrics";
+import { ARROW, STACK_CARET_SIZE, STACK_BAND_INSET, tileSize, spacingFor, type TileMetrics } from "$lib/domain/trace-graph/metrics";
+
+/** Reserve one child generation until a committed layout supplies the actual footprint.
+ * Counts include hidden descendants/references, so they cannot predict the number of visible rows.
+ * Use the current tile metrics and routing channel; the final layout may settle either way. */
+export function estimatedBandExtent(tile: TileMetrics): { width: number; height: number } {
+  const spacing = spacingFor(tile.width);
+  return { width: tile.width + 16,
+    height: STACK_BAND_INSET + spacing.bandChannel + tileSize({ foreign: false, hint: true }, tile).height + spacing.bottom };
+}
 
 /** The occupied subtree, excluding the cover's tile but including its connector stem. */
 export function bandExtent(layout: GraphLayout, key: string, padding = 8) {
@@ -263,10 +272,13 @@ export function gridNeighbor(rects: ReadonlyMap<string, GridRect>, key: string, 
 }
 
 /** Closed/virtualized stacks need no pin. Neighboring covers are above the shared child band,
- * so they are not graph obstacles and must not generate outer routing lanes. */
-export function gridPins(flow: GridFlow, open: ReadonlySet<string>): ReadonlyMap<string, PinnedCover> {
+ * so they are not graph obstacles and must not generate outer routing lanes.
+ * Vertical packing changes keep the same pin: they change attachment, not graph layout. */
+export function gridPins(flow: GridFlow, open: ReadonlySet<string>, previous: ReadonlyMap<string, PinnedCover> = new Map()): ReadonlyMap<string, PinnedCover> {
   return new Map([...open].flatMap((id) => {
     const cell = flow.cells.get(id);
-    return cell ? [[id, { key: id, x: cell.x + cell.width / 2, obstacles: [] }] as const] : [];
+    if (!cell) return [];
+    const x = cell.x + cell.width / 2, known = previous.get(id);
+    return [[id, known?.key === id && known.x === x && known.obstacles?.length === 0 ? known : { key: id, x, obstacles: [] }] as const];
   }));
 }

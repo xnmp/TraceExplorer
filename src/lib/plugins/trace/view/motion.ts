@@ -90,9 +90,9 @@ function measureTiles(canvas: HTMLElement): Map<string, { element: HTMLElement; 
 }
 
 /**
- * Whether motion is already carrying this graph's tiles. A band reopened while its closing copy was
- * still fading in is resumed by the grid from that copy's displayed geometry; the graph must not
- * restart them from the cover.
+ * Whether motion is already carrying this graph's tiles. The grid can start motion
+ * for an attachment change before the graph's commit; that commit must not restart
+ * the tiles from the cover.
  */
 export const carriesMotion = (canvas: HTMLElement): boolean => canvas.getAnimations({ subtree: true }).some((animation) =>
   animation.playState === "running" && animation.effect?.getTiming().iterations !== Infinity);
@@ -585,7 +585,7 @@ export interface GridSnapshot {
   readonly top: number;
   readonly left: number;
   readonly cells: ReadonlyMap<string, { y: number; x: number }>;
-  readonly bands: ReadonlyMap<string, { height: number; element: HTMLElement; graph: GraphSnapshot | null; stamp: string | undefined; ghost: boolean; opacity: number }>;
+  readonly bands: ReadonlyMap<string, { height: number; graph: GraphSnapshot | null; stamp: string | undefined; attachment: string | undefined; opacity: number }>;
 }
 export function captureGrid(grid: HTMLElement): GridSnapshot {
   const origin = grid.getBoundingClientRect(), zoom = zoomOf(grid, origin);
@@ -595,20 +595,31 @@ export function captureGrid(grid: HTMLElement): GridSnapshot {
       const rect = element.getBoundingClientRect();
       return [element.dataset.gridMotion!, { x: (rect.left - origin.left) / zoom, y: (rect.top - origin.top) / zoom }];
     })),
-    bands: new Map([...grid.querySelectorAll<HTMLElement>("[data-grid-band], [data-grid-ghost]")].map((element) => {
-      const rect = element.getBoundingClientRect(), graph = element.querySelector<HTMLElement>(".graph");
-      const clone = element.cloneNode(true) as HTMLElement;
-      clone.style.top = `${(rect.top - origin.top) / zoom}px`;
-      clone.style.left = `${(rect.left - origin.left) / zoom}px`;
-      clone.style.clipPath = getComputedStyle(element).clipPath;
-      return [element.dataset.gridBand ?? element.dataset.gridGhost!, {
-        height: sectionHeight(element), ghost: !!element.dataset.gridGhost, opacity: Number(getComputedStyle(element).opacity), element: clone, graph: graph ? captureGraph(graph) : null, stamp: graph?.dataset.layoutStamp,
+    bands: new Map([...grid.querySelectorAll<HTMLElement>("[data-grid-band]")].map((element) => {
+      const graph = element.querySelector<HTMLElement>(".graph");
+      return [element.dataset.gridBand!, {
+        height: sectionHeight(element), opacity: Number(getComputedStyle(element).opacity),
+        graph: graph ? captureGraph(graph) : null, stamp: graph?.dataset.layoutStamp, attachment: graph?.dataset.attachment,
       }];
     })),
   };
 }
-export function playGrid(grid: HTMLElement, before: GridSnapshot): Animation[] {
-  if (prefersReducedMotion()) return [];
+export function playGrid(grid: HTMLElement, before: GridSnapshot, running: readonly Animation[] = []): Animation[] {
+  const reduced = prefersReducedMotion();
+  // A change elsewhere in the grid must not stop an attachment still travelling
+  // to the same destination. Changed attachments capture their displayed state
+  // above, then replace their animations; unchanged ones retain their owner.
+  const unchanged = new Set([...grid.querySelectorAll<HTMLElement>("[data-grid-band] .graph")].filter((graph) => {
+    const band = graph.closest<HTMLElement>("[data-grid-band]")!, old = before.bands.get(band.dataset.gridBand!);
+    return old?.stamp === graph.dataset.layoutStamp && old?.attachment === graph.dataset.attachment;
+  }));
+  const carried: Animation[] = [];
+  for (const animation of running) {
+    const target = (animation.effect as KeyframeEffect | null)?.target;
+    if (!reduced && target instanceof Element && unchanged.has(target.closest<HTMLElement>(".graph")!)) carried.push(animation);
+    else animation.cancel();
+  }
+  if (reduced) return [];
   const origin = grid.getBoundingClientRect(), zoom = zoomOf(grid, origin);
   const timing = { duration: MOTION_MS, easing: EASING };
   // Removing a bottom band can clamp scrolling during layout. Include that
@@ -617,25 +628,33 @@ export function playGrid(grid: HTMLElement, before: GridSnapshot): Animation[] {
   // Measure the new geometry before installing any animation.
   const cells = [...grid.querySelectorAll<HTMLElement>("[data-grid-motion]")].map((element) => {
     const rect = element.getBoundingClientRect();
-    return { element, y: (rect.top - origin.top) / zoom, x: (rect.left - origin.left) / zoom };
+    const style = getComputedStyle(element);
+    return { element, y: (rect.top - origin.top) / zoom, x: (rect.left - origin.left) / zoom,
+      left: parseFloat(style.left), top: parseFloat(style.top) };
   });
   const bands = [...grid.querySelectorAll<HTMLElement>("[data-grid-band]")].map((element) => ({ element, height: layoutHeight(element) }));
-  const animations: Animation[] = [];
-  for (const { element, y, x } of cells) {
+  // Band backgrounds paint at their final positions and sizes. Rows must be
+  // placed in the same paint on open, measured-height settle, and collapse:
+  // replaying their old positions overlaps a band, and a cold graph mount can
+  // freeze a top animation there. Only content inside retained bands animates.
+  const placeRowsImmediately = bands.length > 0 || before.bands.size > 0;
+  const animations: Animation[] = [...carried];
+  for (const { element, y, x, left, top } of cells) {
+    if (placeRowsImmediately) continue;
     const old = before.cells.get(element.dataset.gridMotion!);
     if (!old) continue;
     const dx = old.x - x + scrollShift.x, dy = old.y - y + scrollShift.y;
     if (Math.abs(dx) < .5 && Math.abs(dy) < .5) continue;
-    // A whole stack moves together, including its routes and descendants.
-    animations.push(element.animate([{ transform: `translate(${dx}px, ${dy}px)` }, { transform: "translate(0, 0)" }], timing));
+    // Plain folder geometry can still travel when no bands occupy the grid.
+    animations.push(element.animate([{ left: `${left + dx}px`, top: `${top + dy}px` }, { left: `${left}px`, top: `${top}px` }], timing));
   }
-  const current = new Set(bands.map(({ element }) => element.dataset.gridBand!));
   for (const { element, height } of bands) {
     const old = before.bands.get(element.dataset.gridBand!);
     const graph = element.querySelector<HTMLElement>(".graph");
-    if (old?.graph && graph && (old.ghost || old.stamp === graph.dataset.layoutStamp)) {
+    if (old?.graph && graph && old.stamp === graph.dataset.layoutStamp && old.attachment !== graph.dataset.attachment) {
       // Attachment-only changes (another band in the same row grew) do not
       // produce a new layout request, but their tiles AND routes still move.
+      // An unchanged attachment leaves the graph's own entrance running.
       for (const animation of graph.getAnimations({ subtree: true })) if (animation.effect?.getTiming().iterations !== Infinity) animation.cancel();
       const cover = grid.querySelector<HTMLElement>(`[data-node-key="${CSS.escape(element.dataset.gridBand!)}"]`);
       const box = cover?.getBoundingClientRect(), graphBox = graph.getBoundingClientRect();
@@ -648,40 +667,7 @@ export function playGrid(grid: HTMLElement, before: GridSnapshot): Animation[] {
       { clipPath: `inset(0 0 ${Math.max(0, height - from)}px 0)` }, { clipPath: "inset(0)" },
     ], timing));
   }
-  for (const [id, old] of before.bands) if (!current.has(id)) {
-    const ghost = old.element;
-    ghost.style.top = `${parseFloat(ghost.style.top) + scrollShift.y}px`;
-    ghost.style.left = `${parseFloat(ghost.style.left) + scrollShift.x}px`;
-    ghost.inert = true;
-    ghost.setAttribute("aria-hidden", "true");
-    ghost.removeAttribute("data-grid-band");
-    ghost.dataset.gridGhost = id;
-    for (const element of ghost.querySelectorAll("[data-tile-key], [data-node-key], [id]")) {
-      if (element instanceof HTMLElement && element.dataset.tileKey) element.dataset.ghostTileKey = element.dataset.tileKey;
-      element.removeAttribute("data-tile-key"); element.removeAttribute("data-node-key"); element.removeAttribute("id");
-    }
-    ghost.style.pointerEvents = "none";
-    grid.append(ghost);
-    const cover = grid.querySelector<HTMLElement>(`[data-grid-cell="${CSS.escape(id)}"]`);
-    const graph = ghost.querySelector<HTMLElement>(".graph");
-    if (cover && graph && old.graph) {
-      const box = cover.getBoundingClientRect(), origin = graph.getBoundingClientRect();
-      const travel = planBandTravel([...graph.querySelectorAll<SVGPathElement>("path[data-route]")].map((path) => ({
-        from: path.dataset.from ?? "", to: path.dataset.to ?? "", path: old.graph!.routes.has(path.dataset.route!) ? polyline(old.graph!.routes.get(path.dataset.route!)!) : path.getAttribute("d") ?? "",
-      })), id);
-      for (const tile of ghost.querySelectorAll<HTMLElement>("[data-ghost-tile-key]")) {
-        const oldTile = old.graph.tiles.get(tile.dataset.ghostTileKey!);
-        if (!oldTile) continue;
-        const style = getComputedStyle(tile), x = parseFloat(style.left), y = parseFloat(style.top);
-        const coverBox = { x: (box.left - origin.left) / zoom + (box.width / zoom - oldTile.width) / 2, y: (box.top - origin.top) / zoom, width: oldTile.width, height: oldTile.height };
-        const points = travel(tile.dataset.ghostTileKey!, coverBox, { ...oldTile, x, y }, oldTile);
-        const frames = travelFrames(points, { x, y }, true).map((frame) => ({ ...frame, opacity: Number(frame.opacity) * (oldTile.fading ?? 1) }));
-        animations.push(tile.animate(frames, timing));
-      }
-    }
-    const animation = ghost.animate([{ opacity: old.opacity, clipPath: getComputedStyle(ghost).clipPath }, { opacity: 0, clipPath: `inset(0 0 ${old.height}px 0)` }], timing);
-    void animation.finished.then(() => ghost.remove(), () => ghost.remove());
-    animations.push(animation);
-  }
+  // Collapsed content leaves with its background. A fading copy at the old
+  // position would overlap the rows that have already reclaimed that space.
   return animations;
 }
