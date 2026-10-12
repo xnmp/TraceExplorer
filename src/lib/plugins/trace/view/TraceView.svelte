@@ -26,6 +26,7 @@
   import { selectableSelector } from "./selectable";
   import { attachMarqueeSelection } from "./marquee-attachment";
   import { marqueeSelection, sameSelection, type MarqueeRect } from "./marquee-selection";
+  import { pendingMarqueeComponents } from "./marquee-components";
   import { folderCells, pendingListingPaths } from "./stack-grid";
 
   interface Props { pane: FileViewPane; session?: FolderSession }
@@ -44,6 +45,7 @@
   let marqueeLoading = $state.raw<ReadonlySet<string>>(new Set());
   let marqueeTurn = 0;
   let marqueeFocus: { key: NodeKey; componentId: string } | null = null;
+  let marqueeAttachment: ReturnType<typeof attachMarqueeSelection> | null = null;
   let near = $state.raw<ReadonlySet<string>>(new Set());
   /** A save into this folder waiting for the listing to contain its file; see `callbacks.saved`. */
   /**
@@ -316,6 +318,7 @@
   }
 
   function keepAnchor(scene: GraphScene): void {
+    marqueeAttachment?.layoutChanged();
     updateHeldAnchor();
     if (!scene.isCurrent()) return;
     committedScenes.set(scene.data, scene);
@@ -541,15 +544,11 @@
   /** Apply one marquee frame through the host, then record a fresh ordered-picks object. */
   function selectMarquee(keys: readonly string[], additive: boolean, load = true): void {
     const turn = ++marqueeTurn;
-    const index = session.index;
-    const missing = load ? [...new Set(keys.flatMap((key) => {
-      if (findNode(key)) return [];
-      const summary = gridCellsByKey.get(key)?.summary;
-      return summary && (!summary.cover || !entriesByPath.has(summary.cover.path)) ? [summary.id] : [];
-    }))] : [];
+    const missing = load ? missingMarqueeComponents(keys) : [];
     marqueeLoading = new Set(missing);
     const hits = keys.flatMap((key) => {
-      const found = findNode(key);
+      const location = locateExtra(key);
+      const found = location && typeof location !== "string" ? location : null;
       if (found) {
         // Like clicks: listed files can be selected independently of input eligibility.
         if (!fileEntry(found.node) && !pickable(found.node)) return [];
@@ -573,20 +572,46 @@
     if (!sameSelection(hostSelected, listed)) pane.setSelection(listed);
     if (targetData && (!additive || listed.length)) pane.setPreviewTarget(null);
     commitPicks({ order: paths, extras });
+    marqueeAttachment?.selectionApplied();
     if (missing.length) {
       // Index summaries cannot establish unlisted input eligibility. Resolve the
       // actual revision, retaining its component until the latest frame settles.
       const owns = captureSelection();
-      void Promise.all(missing.map((id) => session.ensure(id))).then(() => {
-        if (turn !== marqueeTurn) return;
-        if (session.index !== index || !owns()) { marqueeLoading = new Set(); return; }
-        selectMarquee(keys, additive, false);
-      });
+      void resolveMarquee(keys, additive, turn, owns);
+    }
+  }
+
+  /** Recompute component IDs from stable revision keys against each latest index. */
+  function missingMarqueeComponents(keys: readonly string[]): string[] {
+    const index = {
+      listed: session.index ? new Set(summaries.map((summary) => summary.id)) : null,
+      components: session.components, isStale: (id: string) => session.isStale(id),
+    };
+    return pendingMarqueeComponents(keys, new Set(entriesByPath.keys()),
+      new Map(summaries.map((summary) => [summary.coverKey, summary])), index);
+  }
+
+  async function resolveMarquee(keys: readonly string[], additive: boolean, turn: number, owns: () => boolean): Promise<void> {
+    for (;;) {
+      await session.settled();
+      if (turn !== marqueeTurn) return;
+      if (!owns()) { marqueeLoading = new Set(); return; }
+      const index = session.index;
+      const missing = missingMarqueeComponents(keys);
+      marqueeLoading = new Set(missing);
+      await Promise.all(missing.map((id) => session.ensure(id)));
+      // A refresh aborts node reads before its replacement index lands.
+      await session.settled();
+      if (turn !== marqueeTurn) return;
+      if (!owns()) { marqueeLoading = new Set(); return; }
+      if (session.index !== index) continue;
+      selectMarquee(keys, additive, false);
+      return;
     }
   }
 
   function backgroundSelection(element: HTMLElement) {
-    return attachMarqueeSelection(element, {
+    const attachment = attachMarqueeSelection(element, {
       background,
       captureSelection,
       start() {
@@ -601,6 +626,8 @@
       select: selectMarquee,
       draw: (rect) => marquee = rect,
     });
+    marqueeAttachment = attachment;
+    return { destroy() { attachment.destroy(); marqueeAttachment = null; } };
   }
 
   // A just-saved image becomes selected once the listing contains it, in its
@@ -769,6 +796,7 @@
       onselect={(entry, event) => { supersedeReveal(); releaseAnchors(); keepFocusedOpen(); selectListed(entry, { ctrlKey: event.ctrlKey || event.metaKey, shiftKey: event.shiftKey }); }}
       onordinarymenu={(entry, event) => { supersedeReveal(); releaseAnchors(); if (!selectedPaths.has(entry.path)) { keepFocusedOpen(); selectListed(entry); } pane.contextMenu(event, entry); }}
       {captureSelection} onsaved={(key, path, select) => callbacks.saved(path, key, select)} ondiscarded={(key) => callbacks.discarded(key)} oncommit={keepAnchor}
+      ongeometry={() => marqueeAttachment?.layoutChanged()}
       onlayout={(id, pending) => { if (pending) pendingLayouts.add(id); else pendingLayouts.delete(id); }} reveal={revealScene}
       onfailure={(scene, error) => { if (pendingReveal && scene.isCurrent() && scene.reveal === pendingReveal.owner && scene.focus === pendingReveal.key && scene.data.dag.nodes.has(pendingReveal.key)) pendingReveal.finish(error); }} />
     {#if session.error && session.index}<p class="notice" role="alert">{session.error}</p>{/if}

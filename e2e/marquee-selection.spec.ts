@@ -219,6 +219,107 @@ for (const loaded of [false, true]) {
   });
 }
 
+test("stationary marquee follows a grid relayout before release", async ({ page }) => {
+  await closedGrid(page);
+  const cover = await card(page, "fan");
+  const bounds = await dragBounds(cover);
+  await startDrag(page, bounds);
+  await expect.poll(async () => (await state(page)).selected).toEqual(["/pictures/fan.png"]);
+  await page.evaluate(() => (window as any).trace.setWidth(300));
+  await settle(page);
+  const box = (await cover.boundingBox())!;
+  expect(box.x + box.width < bounds.start.x || box.x > bounds.end.x || box.y > bounds.end.y || box.y + box.height < bounds.start.y).toBe(true);
+  // No pointer movement: the selection must already reflect the displayed geometry.
+  await expect.poll(async () => (await state(page)).selected).toEqual(["/pictures/forest.png"]);
+  await finishDrag(page);
+  expect((await state(page)).selected).toEqual(["/pictures/forest.png"]);
+});
+
+test("release re-measures geometry before another animation frame", async ({ page }) => {
+  await closedGrid(page);
+  const cover = await card(page, "fan");
+  await startDrag(page, await dragBounds(cover));
+  await expect.poll(async () => (await state(page)).selected).toEqual(["/pictures/fan.png"]);
+  await cover.evaluate((element) => {
+    // An unobserved geometry change and release in one turn, with no pending move.
+    (element as HTMLElement).style.transform = "translateY(300px)";
+    window.dispatchEvent(new PointerEvent("pointerup", { pointerId: 1, button: 0, isPrimary: true }));
+  });
+  await finishDrag(page);
+  expect((await state(page)).selected).toEqual([]);
+});
+
+test("a resolved cold cover keeps marquee ownership through stationary relayout", async ({ page }) => {
+  await closedGrid(page, "?draftStack=1");
+  const cover = await card(page, "draft");
+  const bounds = await dragBounds(cover);
+  await startDrag(page, bounds);
+  await expect.poll(async () => (await state(page)).inputs).toEqual(["/managed/draft.png"]);
+  await page.evaluate(() => (window as any).trace.setWidth(300));
+  await settle(page);
+  const box = (await cover.boundingBox())!;
+  expect(box.y > bounds.end.y).toBe(true);
+  await expect.poll(async () => (await state(page)).inputs.includes("/managed/draft.png")).toBe(false);
+  await finishDrag(page);
+  expect((await state(page)).inputs).not.toContain("/managed/draft.png");
+});
+
+test("stationary relayout and automatic scroll yield to a newer host selection", async ({ page }) => {
+  await closedGrid(page);
+  await startDrag(page, await dragBounds(await card(page, "fan")));
+  await expect.poll(async () => (await state(page)).selected).toEqual(["/pictures/fan.png"]);
+  await page.evaluate(() => {
+    (window as any).trace.selectPath("/pictures/plain.png");
+    (window as any).trace.setWidth(300);
+  });
+  await settle(page);
+  await page.getByTestId("trace-view").evaluate((element) => element.dispatchEvent(new Event("scroll")));
+  await finishDrag(page);
+  expect((await state(page)).selected).toEqual(["/pictures/plain.png"]);
+  expect((await state(page)).inputs).toEqual(["/pictures/plain.png"]);
+});
+
+test("a pointer move queued before a newer host command cannot overwrite it on release", async ({ page }) => {
+  await closedGrid(page);
+  await startDrag(page, await dragBounds(await card(page, "fan")));
+  await expect.poll(async () => (await state(page)).selected).toEqual(["/pictures/fan.png"]);
+  const { end } = await dragBounds(await card(page, "village"));
+  await page.evaluate((end) => {
+    window.dispatchEvent(new PointerEvent("pointermove", { pointerId: 1, clientX: end.x, clientY: end.y, buttons: 1, isPrimary: true }));
+    (window as any).trace.selectPath("/pictures/plain.png");
+    window.dispatchEvent(new PointerEvent("pointerup", { pointerId: 1, button: 0, isPrimary: true }));
+  }, end);
+  await finishDrag(page);
+  expect((await state(page)).selected).toEqual(["/pictures/plain.png"]);
+  expect((await state(page)).inputs).toEqual(["/pictures/plain.png"]);
+});
+
+for (const merge of [false, true]) {
+  test(`pending cold-cover marquee survives ${merge ? "a component merge" : "an index refresh"}`, async ({ page }) => {
+    await closedGrid(page, "?draftStack=1");
+    await page.evaluate(() => (window as any).trace.backend.holdNodeReads());
+    await startDrag(page, await dragBounds(await card(page, "draft")));
+    await expect.poll(() => page.evaluate(() => (window as any).trace.backend.calls("trace_component_nodes").length)).toBeGreaterThan(0);
+    // Exercise both active geometry and committed intent after the rectangle is gone.
+    if (merge) await finishDrag(page);
+    await page.evaluate((merge) => {
+      const backend = (window as any).trace.backend;
+      backend.setFolderLatency(100);
+      if (merge) backend.joinGeneration(["village", "draft"], "marquee-merge");
+      else backend.startGeneration("forest", "marquee-refresh");
+    }, merge);
+    await settle(page);
+    await page.evaluate(() => (window as any).trace.backend.releaseNodeReads());
+    await expect.poll(async () => (await state(page)).inputs).toEqual(["/managed/draft.png"]);
+    expect((await state(page)).selected).toEqual([]);
+    if (!merge) {
+      await expect(await card(page, "draft")).toHaveClass(/selected/);
+      await finishDrag(page);
+      expect((await state(page)).inputs).toEqual(["/managed/draft.png"]);
+    }
+  });
+}
+
 for (const supersede of ["external-choice", "blur", "new-frame", "unmount"] as const) {
   test(`a pending cold-cover read cannot overwrite selection after ${supersede}`, async ({ page }) => {
     await closedGrid(page, "?draftStack=1");

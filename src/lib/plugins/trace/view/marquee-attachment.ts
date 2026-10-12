@@ -1,5 +1,5 @@
 import { deselectGesture, inClientArea, scaledClientArea, type DeselectEvent, type DeselectGesture, type DeselectPointer, type PointerPosition } from "$lib/domain/deselect-click";
-import { zoomOf } from "./motion";
+import { viewMoving, zoomOf } from "./motion";
 import { SELECTABLE_TILES } from "./selectable";
 import { clampPoint, intersectedTiles, normalizeRect, sameSelection, marqueeSelection, type MarqueeRect } from "./marquee-selection";
 
@@ -30,6 +30,7 @@ export function attachMarqueeSelection(element: HTMLElement, options: Options) {
   let drag: { id: number; start: PointerPosition; current: PointerPosition; additive: boolean; moved: boolean; hits: readonly string[] | null; visited: readonly string[]; ownsSelection: () => boolean } | null = null;
   let frame = 0;
   let pending = false;
+  let pendingPointerSelection: (() => boolean) | null = null;
   let suppressClickUntil = 0;
   const handle = (event: DeselectEvent) => {
     const next = deselectGesture(gesture, event);
@@ -40,6 +41,8 @@ export function attachMarqueeSelection(element: HTMLElement, options: Options) {
     frame = 0;
     if (!drag || !pending) return;
     pending = false;
+    const fromPointer = pendingPointerSelection?.() ?? false;
+    pendingPointerSelection = null;
     const box = element.getBoundingClientRect(), scale = zoomOf(element, box);
     const bounds = area();
     // Like the host, the start stays fixed in viewport space when the contents scroll.
@@ -49,6 +52,9 @@ export function attachMarqueeSelection(element: HTMLElement, options: Options) {
       .filter((tile) => !tile.closest("[data-motion-ghosts], [inert]"))
       .map((tile) => ({ key: tile.dataset.nodeKey ?? tile.dataset.referenceKey ?? tile.dataset.entryPath!, rect: tile.getBoundingClientRect() }));
     const hits = intersectedTiles(rect, tiles);
+    // Geometry changes and release must not undo a newer host command.
+    // A subsequent pointer move can start a new selection baseline.
+    if (!drag.moved || (!drag.ownsSelection() && !fromPointer)) return;
     if (drag.hits === null || !sameSelection(hits, drag.hits)) {
       drag.hits = hits;
       // A host command (Escape, another pane) starts a new additive baseline.
@@ -57,16 +63,25 @@ export function attachMarqueeSelection(element: HTMLElement, options: Options) {
       options.select(drag.visited, drag.additive);
       drag.ownsSelection = options.captureSelection();
     }
+    if (viewMoving(element)) schedule(false);
   };
-  const schedule = () => { pending = true; if (!frame) frame = requestAnimationFrame(flush); };
+  const schedule = (fromPointer = true) => {
+    pending = true;
+    // Input queued before a newer command cannot reclaim that command's selection.
+    if (fromPointer) pendingPointerSelection = options.captureSelection();
+    if (!frame) frame = requestAnimationFrame(flush);
+  };
   const finish = (commit: boolean) => {
     if (!drag) return;
     cancelAnimationFrame(frame);
     frame = 0;
-    if (commit) flush();
+    if (commit) { pending = true; flush(); }
+    cancelAnimationFrame(frame);
+    frame = 0;
     if (drag.moved) { suppressClickUntil = performance.now() + 500; gesture = null; }
     drag = null;
     pending = false;
+    pendingPointerSelection = null;
     options.draw(null);
     options.end(commit);
   };
@@ -100,7 +115,7 @@ export function attachMarqueeSelection(element: HTMLElement, options: Options) {
   const contextMenu = (event: MouseEvent) => { if (empty(event.target, at(event))) options.background(); };
   const cancel = () => { gesture = null; finish(false); };
   const wheel = () => handle({ type: "wheel" });
-  const scroll = () => { handle({ type: "scroll" }); if (drag?.moved) schedule(); };
+  const scroll = () => { handle({ type: "scroll" }); if (drag?.moved) schedule(false); };
   element.addEventListener("pointerdown", down, true);
   element.addEventListener("click", click, true);
   element.addEventListener("contextmenu", contextMenu);
@@ -111,7 +126,13 @@ export function attachMarqueeSelection(element: HTMLElement, options: Options) {
   window.addEventListener("pointercancel", cancel, true);
   window.addEventListener("blur", cancel);
   window.addEventListener("dragstart", cancel);
-  return { destroy() {
+  return {
+    // Resolving a cold cover is this drag's own selection, not a newer command.
+    selectionApplied() {
+      if (drag) drag.ownsSelection = options.captureSelection();
+      if (pendingPointerSelection) pendingPointerSelection = options.captureSelection();
+    },
+    layoutChanged() { if (drag?.moved) schedule(false); }, destroy() {
     cancel();
     element.removeEventListener("pointerdown", down, true);
     element.removeEventListener("click", click, true);

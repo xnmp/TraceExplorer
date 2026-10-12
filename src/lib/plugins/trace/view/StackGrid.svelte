@@ -19,7 +19,7 @@
 
   let { pane, session, focus, selected, tile, revision, scroller, width, openKeys, claimedPaths, onexpand, onnear,
     onactivate, onnavigate, onopen, onmenu, onselect, onordinarymenu, captureSelection, onsaved, ondiscarded,
-    oncommit, onlayout, onfailure, reveal }: {
+    oncommit, onlayout, ongeometry, onfailure, reveal }: {
     pane: FileViewPane; session: FolderSession; focus: ComponentFocus | null; selected: ReadonlySet<string>; tile: TileMetrics;
     revision: number; scroller: HTMLElement | null; width: number; openKeys: ReadonlySet<string>; claimedPaths: ReadonlySet<string>;
     onexpand: (id: string, open: boolean) => void; onnear: (ids: ReadonlySet<string>) => void;
@@ -29,6 +29,7 @@
     onselect: (entry: FileEntry, event: MouseEvent) => void; onordinarymenu: (entry: FileEntry, event: MouseEvent) => void;
     captureSelection: () => () => boolean; onsaved: (key: string, path: string, select: boolean) => void; ondiscarded: (key: string) => void;
     oncommit: (scene: GraphScene) => void; onlayout: (id: string, pending: boolean) => void;
+    ongeometry: () => void;
     onfailure: (scene: GraphScene, error: Error) => void; reveal: object | null;
   } = $props();
   const host = hostFileTile();
@@ -125,6 +126,7 @@
       for (const animation of running) animation.cancel();
       running = [];
       if (grid && before) running = playGrid(grid, before);
+      ongeometry();
     });
   });
   // Keyboard focus belongs to the grid until it genuinely leaves (a blur to another element or the page).
