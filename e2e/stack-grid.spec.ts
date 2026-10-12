@@ -200,7 +200,7 @@ for (const preset of [null, "small", "medium", "large", "xlarge"]) {
       await expect(section.locator(".count-badge")).toHaveText(count);
       await expect(section.locator("[data-node-key]").first()).toHaveAccessibleName(new RegExp(`${count} images`));
       expect(await section.innerText()).not.toMatch(/images|Unsaved/);
-      expect(await section.locator(".image").first().evaluate((element) => getComputedStyle(element, "::before").content)).not.toBe("none");
+      await expect(section.locator(".image").first().locator(".stack-sheet")).toHaveCount(2);
     };
     await styles();
     await section.locator("[data-stack-toggle]").click(); await settle(page);
@@ -1196,3 +1196,62 @@ for (const host of ['', '&fileTile=1&tileSize=small']) for (const filename of ['
   await expect(section.locator('[data-grid-band]')).toHaveCount(0);
   expect((await state(page)).selected).toEqual(selected);
 });
+
+for (const theme of ["light", "dark"]) for (const preset of [null, "small", "medium", "large", "xlarge"]) {
+  test(`#69 fanned cards stay inside the tile and keep the cover aligned (${theme}, ${preset ?? "fallback"})`, async ({ page }) => {
+    await page.setViewportSize({ width: 1100, height: 800 });
+    await openView(page, 840, `?grouping=two-chains&theme=${theme}${preset ? `&fileTile=1&tileSize=${preset}` : ""}`, false);
+    const first = stack(page, "photo-a"), second = stack(page, "photo-b");
+    const cover = first.locator(".image").first();
+    const original = (await cover.boundingBox())!;
+    const caption = (await first.locator(".label").first().boundingBox())!;
+    const verify = async (section: ReturnType<typeof stack>, count: number) => {
+      const tile = (await section.locator("[data-grid-cell] .tile").boundingBox())!;
+      const sheets = section.locator("[data-grid-cell] .stack-sheet");
+      await expect(sheets).toHaveCount(count);
+      const angles: number[] = [];
+      for (const sheet of await sheets.all()) {
+        const box = (await sheet.boundingBox())!;
+        expect(box.x).toBeGreaterThanOrEqual(tile.x);
+        expect(box.y).toBeGreaterThanOrEqual(tile.y);
+        expect(box.x + box.width).toBeLessThanOrEqual(tile.x + tile.width);
+        expect(box.y + box.height).toBeLessThanOrEqual(tile.y + tile.height);
+        const style = await sheet.evaluate((element) => {
+          const style = getComputedStyle(element), matrix = new DOMMatrixReadOnly(style.transform);
+          return { angle: Math.atan2(matrix.b, matrix.a) * 180 / Math.PI, border: style.borderTopWidth,
+            filter: style.filter, backdrop: style.backdropFilter, shadow: style.boxShadow };
+        });
+        angles.push(style.angle);
+        expect(style.border).toBe("1px"); expect(style.filter).toBe("none");
+        expect(style.backdrop).toBe("none"); expect(style.shadow).toBe("none");
+      }
+      expect(angles[0]).toBeCloseTo(-6, 1);
+      if (count === 2) expect(angles[1]).toBeCloseTo(4, 1);
+      const image = (await section.locator(".image").first().boundingBox())!;
+      const ordinary = page.locator('[data-entry-path="/pictures/plain.png"]');
+      const ordinaryImage = (await ordinary.locator(".icon").boundingBox())!;
+      expect(image.y).toBeCloseTo(ordinaryImage.y, 1);
+      expect(image.width).toBeCloseTo(ordinaryImage.width, 1);
+      expect(image.height).toBeCloseTo(ordinaryImage.height, 1);
+      const label = (await section.locator(".label").first().boundingBox())!;
+      expect(label.y).toBeCloseTo((await ordinary.locator(".name").boundingBox())!.y, 1);
+      // Paint order keeps the cover and its status marks ahead of the sheets.
+      await expect(section.locator(".image img").first()).toBeVisible();
+      await expect(section.locator(".count-badge").first()).toBeVisible();
+    };
+    await verify(first, 1); await verify(second, 1);
+    await page.evaluate(() => {
+      const backend = (window as any).trace.backend;
+      backend.startGeneration("photo-b", "third-photo"); backend.completeGeneration("third-photo");
+    });
+    await settle(page); await verify(second, 2);
+    await expect(second.locator(".cover-unsaved-dot")).toBeVisible();
+    await first.locator("[data-stack-toggle]").click(); await settle(page);
+    await expect(first.locator("[data-grid-band] [data-tile-key]").first()).toBeVisible();
+    await verify(first, 1); await verify(second, 2);
+    const after = (await cover.boundingBox())!;
+    expect(after.x).toBeCloseTo(original.x, 1); expect(after.y).toBeCloseTo(original.y, 1);
+    expect((await first.locator(".label").first().boundingBox())!.y).toBeCloseTo(caption.y, 1);
+    expect(await uncaught(page)).toEqual([]);
+  });
+}

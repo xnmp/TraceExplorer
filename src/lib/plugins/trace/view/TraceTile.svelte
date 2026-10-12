@@ -67,6 +67,10 @@
   style:left="{placed.x}px" style:top="{placed.y}px" style:width="{placed.width}px" style:height="{placed.height}px">
   {#snippet contents()}
     <span class="image" style:height="{explorer?.imagePx ?? tile.size.imageHeight}px" style:width={explorer?.imagePx === undefined ? undefined : `${explorer.imagePx}px`}>
+      {#if explorer && explorer.count >= 2}
+        <span class="stack-sheet" aria-hidden="true"></span>
+        {#if explorer.count >= 3}<span class="stack-sheet second-sheet" aria-hidden="true"></span>{/if}
+      {/if}
       {#if node.state === "running"}
         <span class="spinner" role="status" aria-label="Generating"></span>
       {:else if present}
@@ -143,8 +147,10 @@
   .explorer-cover .card:hover { background: var(--subtle-fill-secondary); }
   .explorer-cover .card.selected { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, transparent); }
   .explorer-cover .image { position: relative; isolation: isolate; overflow: visible; width: 100%; background: none; }
-  .explorer-cover .image::before, .explorer-cover .image::after { content: ""; position: absolute; inset: -4px -3px 4px 3px; border: 1px solid var(--control-stroke); border-radius: var(--radius-sm); background: var(--background-card-secondary); z-index: -1; }
-  .explorer-cover .image::after { inset: -2px -1px 2px 1px; }
+  /* At most two static sheets. Filters or extra composited decoration stall cold
+     opens in the host's software renderer; the thumbnail keeps its ordinary bounds. */
+  .stack-sheet { position: absolute; inset: 0; box-sizing: border-box; border: 1px solid var(--control-stroke); border-radius: var(--radius-sm); background: var(--background-card); z-index: -1; transform: translate(-3px, -1px) rotate(-6deg); }
+  .second-sheet { transform: translate(3px, -1px) rotate(4deg); }
   .explorer-cover .image :global(.thumbnail) { border-radius: var(--radius-sm); }
   .cover-press { position: absolute; inset: 0; width: 100%; height: 100%; padding: 0; border: 0; border-radius: inherit; background: none; cursor: pointer; }
   .cover-press:focus-visible { outline: 2px solid var(--focus-stroke-outer); outline-offset: 2px; }
