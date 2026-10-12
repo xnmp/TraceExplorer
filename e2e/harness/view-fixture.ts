@@ -47,6 +47,23 @@ function scenario(): { nodes: FolderNode[]; names: Map<string, string> } {
     nodes.push(node);
   };
   const query = new URLSearchParams(globalThis.location?.search ?? "");
+  // Real folder index rules still derive components, covers and members below.
+  // Ordinary sources set the cover's host-listing column; saved descendants collapse into it.
+  if (query.get("layout") === "deep") {
+    for (let i = 1; i <= 5; i++) add({ key: `plain-${i}` });
+    add({ key: "deep" }); add({ key: "plain-7" });
+    for (const seed of [
+      { key: "Cerulean", parents: ["deep"] }, { key: "Saffron", parents: ["deep"] },
+      { key: "Blastoise", parents: ["Saffron"] }, { key: "Ash", parents: ["Saffron"] },
+      { key: "Charizard", parents: ["Ash"] },
+    ]) add(seed);
+    return { nodes, names };
+  }
+  if (query.get("layout") === "wrapped") {
+    add({ key: "stack-a" }); add({ key: "plain-middle" }); add({ key: "stack-b" });
+    for (const parent of ["stack-a", "stack-b"]) for (let i = 1; i <= 2; i++) add({ key: `${parent}-${i}`, parents: [parent] });
+    return { nodes, names };
+  }
   // Shared with native and mock golden tests. These focused scenarios expose
   // references repeated across sections without disturbing the motion gym.
   const grouping = groupingFixtures.find((fixture) => fixture.name === query.get("grouping"));

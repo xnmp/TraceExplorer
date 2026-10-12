@@ -12,15 +12,16 @@ saved** (`held`, kept by `StackGrid`) until the grid is laid out afresh, i.e. th
 count changes, when it takes its listed position. Its eventual file name cannot be known before it is saved.
 
 This column rule covers **grid cells** (covers, ordinary files, folders). Inside an open band the
-layout follows the graph rules below, unchanged from the sections it replaced: a tile that stays visible
-can be repacked when other tiles appear or disappear (selecting warm, rain, then quiet moves the still
-visible rain tile at a 420 px pane on both the section layout of #49 and the grid).
+layout follows the graph rules below. Sideways shelves retain the complete lineage’s
+coordinates and footprint: revealing descendants cannot recenter or shift an existing tile.
+Downward junction layouts may repack when visible inputs or routing change; they do not
+reserve empty rows for hidden branches. Selection styling alone never changes geometry.
 `gridFlow(items, open, columns, metrics)` takes the host-sorted list **already collapsed** to one
 `{id, kind: "stack"}` at each cover's position, plus ordinary files/folders.
 Use an entry path or cover key as `id`, rather than a component id (which can
 change on merges). Cells keep their logical row, column and x on every band
-change. Full-width bands begin at their stack row's bottom; bands sharing a
-row touch in item order, and the normal row gap follows them. Measured heights
+change. Full-width bands begin at their stack row's bottom; groups sharing a row use ordered rectangle packing and routing-aware skyline compaction,
+and the normal folder row gap follows the shared band. Measured heights
 exclude the cover row. Coordinates start at (0, 0), without pane padding.
 `mapGridItemRects(before, after)` joins by identity and returns both rectangles,
 including null for arrivals/departures. The domain does not animate anything.
@@ -42,28 +43,52 @@ ancestors without highlighting unrelated co-consumers.
 the selected neighborhood, keyboard focus, or layout request.
 
 `planBandScene` accepts that projection, drawable members and a `PinnedCover`.
-It seeds visibility from current-folder roots and always requests top-to-bottom
-layout, bypassing `orientation.ts`. The legacy reference-only root fallback and
-automatic orientation remain in `planScene`. `layoutGraph` puts the pinned root
-alone in generation 0's first display row, at its absolute x centre, even when
-routing widens the canvas. Other roots wrap below it; neighbouring grid tiles'
-horizontal spans are obstacles in that first row. The remaining rows centre
-toward the cover, clamped inside routing margins. A non-root pin returns the
-ordinary layout with `pinnedViolation: "not-a-root"`, preserving its real parents.
-Pinning is ignored for legacy left-to-right requests. Unavailable, nonfinite
-or off-pane pins fall back to ordinary layout; pinning requires a finite
-measured pane width of at most 100,000 px. Invalid neighbour spans are ignored.
-Routing retries spend unused band width on wider margins before extending the
-canvas, so aligning a narrow row toward an edge does not discard that spare room.
+It seeds visibility from current-folder roots and supplies the **complete drawable lineage**
+alongside visible items. `layoutBand` compares two candidates using that complete topology:
 
-The layout cache includes the complete pin (key, centre x and neighbor spans).
-`attachBand` maps the engine’s cover origin to the grid cell and inserts earlier
-same-row bands beneath its stem. Later stems use the empty left routing gutter
-to bypass earlier bands’ tiles. Several stacks can remain open; their open state
-is keyed by cover identity, while current component ids are resolved from each
-fresh folder index. Clicking a closed stack selects its cover and opens it;
-the cover’s chevron closes it, and double-click opens its file. External host
-selection or Preview focus opens the owning stack, including after a merge.
+- The existing downward layered layout, including junctions and pixel wrapping.
+- For a single-cover tree, horizontal generation columns. Consecutive columns form
+  width-bounded shelves; a long chain wraps into later shelves. Each shelf reuses the
+  layered engine’s right-oriented routing. Shelf transitions leave through separate
+  right lanes, bend below the shelf, and enter the next column through separate left
+  lanes. The cover reaches its first column from the left, clearing vertically stacked
+  siblings. A candidate whose lanes or columns exceed the budget is rejected.
+
+`chooseBandArrangement` is pure. Its lexicographic cost is occupied **height**, then
+connector length (the deterministic cubic control-polygon upper bound), then horizontal
+cover distance. An exact tie prefers downward flow. Multi-input graphs keep the
+junction-aware downward candidate. This is a bounded heuristic, not an exact global
+minimum-area solver. Width budgets round down to 32 px buckets, with a one-tile minimum;
+invalid/nonpositive widths use one tile, and finite widths are capped at 100,000 px.
+Candidate scoring quantises the cover centre too. Focus does not choose orientation.
+Sideways layouts retain full horizontal bounds and the first-child vertical origin when
+projecting visibility, so packing and attachment cannot recenter surviving tiles.
+
+`packedGridFlow` keeps covers on their folder columns and creates one shared band per
+folder row. It preserves ordered, balanced first-line positions; later groups try skyline
+corners and choose the smallest resulting height, then lowest y, then cover displacement.
+A candidate must leave an independent vertical cover lane **and** a clear horizontal
+corridor into its header. Entire earlier routing rectangles are obstacles, so a shorter
+neighbour’s space can be used only when tiles and stems both fit. The rectangles already
+include their header and footer; wrapped lines add no extra vertical gap. Existing outer
+margins supply bypass lanes first; a small gutter is reserved only when they cannot hold
+all independent stems. Covers and ordinary cells retain their logical row/column and x;
+only folder rows below an expanded band shift vertically.
+
+`STACK_STEM_ROOM` is 34 px: bend tracks and the straight arrow approach, independent
+of tile size. Each cover gets a distinct 6 px bend track. Headers grow only when those
+tracks need room. No geometry reserves `STACK_CARET_SIZE` or a caret row. `bandExtent`
+measures the child/routing footprint without the fixed cover’s horizontal displacement.
+`attachPackedBand` moves the subtree as a unit, keeps the cover on its original cell,
+and replaces **only** the empty beginning of its outgoing stem. Exact M/L/C path slicing
+preserves the engine’s wrapped bypasses, junctions and straight terminal arrow approach.
+Header drops avoid other cover columns and assigned bypass gutters. Attachment motion
+is keyed by actual drawn geometry, so unchanged routes continue when routing constraints
+elsewhere in the row change.
+
+The layout cache includes the complete lineage, visible items, pin and tile metrics;
+workers and the main-thread fallback run the same pure adapter. Open state remains keyed
+by cover identity while fresh component ids are resolved from the folder index.
 
 The original spike (`19601c1`, 12 hard cases and 2,700 fuzz layouts) established
 that the cover can hang from a fixed grid cell without tile/route collisions or
@@ -100,7 +125,8 @@ These requirements come from the [plan](trace-view-plan.md), section 4:
 
 - **Pixel width budget.** Lay out within the measured pane width.
 - **Siblings wrap onto several rows.** A display row is not a generation boundary.
-- **Direction.** Parents always come before their children: above them inside every band (see [Orientation](#orientation)).
+- **Direction.** Parents always come before their children: above them or to their left within a shelf; shelf transitions have explicit directional
+  arrows and may return to the left (see [Orientation](#orientation)).
 - **Junctions.** Multi-parent inputs combine in readable junctions, with one terminal arrow per output.
 - **Clean routes.** Routes never cross a tile and do not make long detours along the border.
 - **Stable sizes.** Every tile has the same width and image size (`metrics.ts`), whatever the selection or focus; only rows a node always carries (its scope marker, its expansion hint) add height. Decoding, title changes and selection therefore never resize a tile; selection shows in styling only. Only the host's tile-size setting does (see [Tile size](#tile-size)).
@@ -111,7 +137,7 @@ Hosts with the SDK's `tileSize` capability report each pane's tile size (`FileVi
 
 Hosts without the capability (up to v1.11.4) report nothing: Trace draws the default 92 px tile, the same as the smallest preset, and the host's tiles keep their global setting.
 
-The view passes the metrics to `planBandScene`, whose layout request carries the tile sizes and `tileWidth`, so the cache key changes with the setting and a layout of one size is never reused for another. Spacing scales with the tile width (`spacingFor`, never below the default): the gap between tiles, the side margins and the bend room grow in proportion, while the arrowhead, its approach, junction levels, clearances and lanes stay the same. Tiles resize in motion, from the size shown to the new one. Bands keep their downward orientation at every tile size. The layout sweeps run at all four presets.
+The view passes the metrics to `planBandScene`, whose layout request carries the tile sizes and `tileWidth`, so the cache key changes with the setting and a layout of one size is never reused for another. Spacing scales with the tile width (`spacingFor`, never below the default): the gap between tiles, the side margins and the bend room grow in proportion, while the arrowhead, its approach, junction levels, clearances and lanes stay the same. Tiles resize in motion, from the size shown to the new one. Band candidates use the current metrics at every tile size. The layout sweeps run at all four presets.
 
 ## Visible nodes
 
@@ -128,11 +154,11 @@ Siblings are context, not lineage: they keep the `unrelated` tone (lightly dimme
 
 ## Orientation
 
-Bands always run top to bottom. `planBandScene` bypasses `orientation.ts` and its
-per-size hysteresis. The legacy `planScene` and orientation functions remain
-unit-tested domain APIs, but the grid view does not invoke their automatic
-left-to-right rule. Long chains can therefore make tall bands; snaking or
-selective horizontal flow remains a follow-up to issue #36.
+Bands compare downward layering and width-bounded horizontal shelves as described above.
+`planBandScene` bypasses the legacy `orientation.ts` profile rule: the new cost measures
+actual candidates. The legacy `planScene` and orientation APIs remain unit-tested.
+The cover always leaves downward from its fixed folder cell, regardless of the band’s
+orientation. Arrowheads enter tile tops or left sides and keep the same size and approach.
 
 ## Spacing
 
@@ -171,7 +197,7 @@ The fan-out and random-DAG fixtures overflow the budget under every strategy.
 
 ## Algorithm
 
-The algorithm is described top to bottom; a left-to-right layout is its transpose (see [Orientation](#orientation)).
+The reusable layered algorithm is described top to bottom; a left-to-right shelf is its transpose (see [Orientation](#orientation)).
 
 1. **Bands.** Each node gets a longest-path band (generation), computed iteratively so that deep edit chains cannot exhaust the stack. Bands run top to bottom.
 2. **Junction plan.** `junctions.ts` combines inputs before each multi-parent child:
@@ -276,3 +302,22 @@ Closing trims travel at the displayed progress; reopening continues along the
 remaining route and retains opacity. Grid snapshots include the viewport origin
 so bottom-band scroll clamping does not jump the first frame. A reveal readiness
 notification never replays a mounted band’s emergence.
+
+## Compact-band regressions (#67, #70)
+
+The browser fixtures use the same folder index projection as the normal harness. At
+1150 px with large host tiles (seven columns), the column-six cover has two children,
+two grandchildren and one great-grandchild. Its band measured 543 px before the change
+and 312 px after. At 625 px with xlarge host tiles (three columns), two two-child stacks
+in columns one and three measured 472 px before and 360 px after. Headless Chromium
+checks tile and connector clearance, exact parent origins, arrow tips, cover-row stability,
+and focus/width stability; screenshots are saved outside the repository.
+
+Research informing the adapter: [pixel-width Coffman–Graham layering](https://www.microsoft.com/en-us/research/wp-content/uploads/2016/02/gd2007-glee.pdf),
+[non-layered tidy-tree contours](https://ir.cwi.nl/pub/21856/21856B.pdf), and
+[disconnected rectangle packing](https://eclipse.dev/elk/reference/algorithms/org-eclipse-elk-rectpacking.html).
+Width-bounded layering alone cannot shorten a precedence chain; transposing and wrapping
+columns can. Tidy-tree research motivates retaining local order and subtree coordinates; the existing
+layered engine supplies ordering, while a separate packing stage fits independent stacks
+into the row. Explicit ports and lane reservations keep
+those compaction steps from falsifying parentage.

@@ -1,4 +1,5 @@
-/** Ordered one-dimensional interval packing. Groups keep their parent's reading order. */
+/** Ordered rectangles and routing-aware skyline compaction. */
+import { nearestFree } from "$lib/domain/trace-graph/layout";
 export interface StackGroup {
   readonly id: string;
   readonly center: number;
@@ -21,8 +22,8 @@ const nonnegative = (value: number) => {
  * Clamping the resulting shared slack keeps both edges in bounds. An indivisible oversized
  * graph owns a line (its graph layout already wraps generations; independent roots may scroll).
  */
-export function packStackGroups(groups: readonly StackGroup[], rowWidth: number, gap = 16): readonly PackedStackGroup[] {
-  nonnegative(rowWidth); nonnegative(gap);
+export function packStackGroups(groups: readonly StackGroup[], rowWidth: number, gap = 16, verticalGap = gap, canPlace: (group: PackedStackGroup, placed: readonly PackedStackGroup[]) => boolean = () => true): readonly PackedStackGroup[] {
+  nonnegative(rowWidth); nonnegative(gap); nonnegative(verticalGap);
   if (groups.length && rowWidth === 0) throw new RangeError("nonempty packing needs a positive row width");
   const seen = new Set<string>();
   for (const group of groups) {
@@ -59,7 +60,45 @@ export function packStackGroups(groups: readonly StackGroup[], rowWidth: number,
     for (const block of blocks) for (let i = block.start; i <= block.end; i++) {
       result.push({ ...groups[i], x: Math.max(0, Math.min(slack, block.mean)) + offsets[i], y, line });
     }
-    y = nonnegative(y + Math.max(...groups.map((group) => group.height)) + gap);
+    y = nonnegative(y + Math.max(...groups.map((group) => group.height)) + verticalGap);
+  }
+  // Compact whole-line reservations into a skyline. Earlier groups keep their
+  // positions; a later group can rise only where its entire routing rectangle fits.
+  // Candidate boundaries are the skyline's corners, not a pixel scan. Choose the
+  // least resulting height, then the lowest placement, then cover displacement.
+  const compacted: PackedStackGroup[] = [];
+  for (const group of result) {
+    const maxX = Math.max(0, rowWidth - group.width);
+    const candidates = [...new Set([group.x, 0, maxX, ...compacted.flatMap((other) => [other.x + other.width + gap, other.x - gap - group.width])])]
+      .filter((x) => x >= 0 && x <= maxX);
+    const currentHeight = Math.max(0, ...compacted.map((other) => other.y + other.height));
+    const positions = candidates.map((x) => {
+      const blockers = compacted.filter((other) => x < other.x + other.width + gap && x + group.width + gap > other.x);
+      const y = Math.max(0, ...blockers.map((other) => nonnegative(other.y + other.height + verticalGap)));
+      return { x, y, height: Math.max(currentHeight, nonnegative(y + group.height)) };
+    }).filter((at) => canPlace({ ...group, x: at.x, y: at.y }, compacted)).sort((a, b) => a.height - b.height || a.y - b.y || Math.abs(a.x - group.x) - Math.abs(b.x - group.x) || a.x - b.x);
+    const best = positions[0];
+    // Preserve the balanced first-line arrangement and never move a group down.
+    compacted.push(group.y === 0 ? group : best ? { ...group, x: best.x, y: best.y } : { ...group, y: currentHeight + verticalGap });
+  }
+  return compacted;
+}
+
+/** Independent cover stems need a vertical bypass and a clear horizontal corridor
+ * into their header. Conservatively treat every earlier group's routing rectangle
+ * as occupied, including connectors. Same-source branches may share a lane. */
+export function coverGutters(groups: readonly PackedStackGroup[], width: number): ReadonlyMap<string, number> | null {
+  const result = new Map<string, number>(), used: number[] = [];
+  for (const group of groups) {
+    const earlier = groups.filter((other) => other.y < group.y);
+    if (!earlier.length) continue;
+    const beside = earlier.filter((other) => other.y + other.height > group.y);
+    const low = Math.max(2, ...beside.filter((other) => other.x + other.width <= group.x).map((other) => other.x + other.width - 4));
+    const high = Math.min(width - 2, ...beside.filter((other) => other.x >= group.x + group.width).map((other) => other.x + 4));
+    const forbidden: [number, number][] = [...earlier.map((other): [number, number] => [other.x + 4, other.x + other.width - 4]), ...used.map((x): [number, number] => [x - 3.5, x + 3.5])];
+    const gutter = low <= high ? nearestFree(group.center, forbidden, low, high) : null;
+    if (gutter === null) return null;
+    used.push(gutter); result.set(group.id, gutter);
   }
   return result;
 }

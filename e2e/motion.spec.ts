@@ -475,15 +475,15 @@ test.describe("anchoring under the host's zoom", () => {
 test.describe("new tiles arrive from their parents' side", () => {
   test.use({ viewport: { width: 900, height: 900 } });
 
-  test("inside a downward band a revealed tile emerges above its destination", async ({ page }) => {
+  test("inside a sideways band a revealed tile emerges left of its destination", async ({ page }) => {
     await openView(page, 900, "?deeper=1");
     const dawn = await key(page, "mist-dawn");
     const frames = await sampleClick(page, await node(page, "forest-mist"));
     const seen = frames.filter((frame) => frame.tiles[dawn]).map((frame) => frame.tiles[dawn]);
     expect(seen.length).toBeGreaterThan(2);
     const [first, last] = [seen[0], seen[seen.length - 1]];
-    expect(last[1] - first[1]).toBeGreaterThan(3);
-    for (const sample of seen) expect(Math.abs(sample[0] - last[0])).toBeLessThanOrEqual(1);
+    expect(last[0] - first[0]).toBeGreaterThan(3);
+    for (const sample of seen) expect(Math.abs(sample[1] - last[1])).toBeLessThanOrEqual(1);
     await settle(page);
     expect(await uncaught(page)).toEqual([]);
   });
