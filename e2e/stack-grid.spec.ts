@@ -65,6 +65,39 @@ for (const theme of ["light", "dark"]) for (const host of ["", "&fileTile=1&tile
   });
 }
 
+/** Sample in screen space at <= 1px intervals, including curves and SVG transforms. */
+const connectorCaretClearance = (page: Page) => page.evaluate(() => {
+  const carets = [...document.querySelectorAll<HTMLElement>(".close-stack")].map((caret) => caret.getBoundingClientRect());
+  const caretBottom = Math.max(...carets.map((caret) => caret.bottom));
+  const crossings: string[] = [], highRuns: string[] = [];
+  let horizontalRuns = 0;
+  for (const route of document.querySelectorAll<SVGPathElement>("path[data-route]")) {
+    const matrix = route.getScreenCTM()!, length = route.getTotalLength(), steps = Math.ceil(length);
+    let previous: DOMPoint | undefined;
+    for (let i = 0; i <= steps; i++) {
+      const point = route.getPointAtLength(length * i / steps), screen = new DOMPoint(point.x, point.y).matrixTransform(matrix);
+      if (carets.some((box) => screen.x >= box.left - 1 && screen.x <= box.right + 1 && screen.y >= box.top - 1 && screen.y <= box.bottom + 1)) crossings.push(route.dataset.route!);
+      if (previous && Math.abs(screen.x - previous.x) > .1 && Math.abs(screen.y - previous.y) < Math.abs(screen.x - previous.x) * .05) {
+        horizontalRuns++;
+        if (Math.min(screen.y, previous.y) < caretBottom + 4) highRuns.push(route.dataset.route!);
+      }
+      previous = screen;
+    }
+  }
+  return { crossings: [...new Set(crossings)], highRuns: [...new Set(highRuns)], horizontalRuns };
+});
+
+for (const preset of [null, "small", "medium", "large", "xlarge"]) test(`#58 offset forest stems clear every caret in the village shared band (${preset ?? "fallback"})`, async ({ page }) => {
+  await page.setViewportSize({ width: 1100, height: 800 });
+  await openView(page, 840, `?draftStack=1${preset ? `&fileTile=1&tileSize=${preset}` : ""}`, false);
+  for (const name of ["village", "forest"]) { await stack(page, name).locator("[data-stack-toggle]").click(); await settle(page); }
+  await expect(page.locator("[data-grid-row-band]")).toHaveCount(1);
+  const geometry = await connectorCaretClearance(page);
+  expect(geometry.crossings).toEqual([]);
+  expect(geometry.highRuns).toEqual([]);
+  expect(geometry.horizontalRuns).toBeGreaterThan(0);
+});
+
 test("#58 two same-row stacks share one band and connectors stay in their own group", async ({ page }) => {
   await openView(page, 620, "?grouping=two-chains", false);
   const before = await gridBoxes(page);
@@ -125,6 +158,9 @@ for (const width of [620, 350]) {
     expect(result.counts).toEqual([2, 2]);
     expect(result.crossings).toEqual([]);
     expect(result.outside).toEqual([]);
+    const clearance = await connectorCaretClearance(page);
+    expect(clearance.crossings).toEqual([]);
+    expect(clearance.highRuns).toEqual([]);
     if (width === 620) {
       expect(result.tops[0]).toBeCloseTo(result.tops[1], 1);
       expect(result.childIntervals[0][0] + result.childIntervals[0][1]).toBeLessThan(result.childIntervals[1][0]);

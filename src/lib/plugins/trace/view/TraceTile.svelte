@@ -1,7 +1,7 @@
 <script lang="ts">
   import type { SceneTile } from "$lib/domain/trace-graph/scene";
   import type { Orientation, PlacedNode } from "$lib/domain/trace-graph/layout";
-  import { TILE } from "$lib/domain/trace-graph/metrics";
+  import { STACK_CARET_SIZE, TILE } from "$lib/domain/trace-graph/metrics";
   import TraceThumbnail from "../TraceThumbnail.svelte";
   import TraceImageActions from "../TraceImageActions.svelte";
   import { promptTitles } from "../prompt-titles.svelte";
@@ -104,7 +104,7 @@
       <span class="status-line">{status}</span>
     {/if}
   </button>
-  {#if onclose}<button type="button" class="close-stack" data-stack-toggle aria-expanded="true" aria-label="Close stack" onclick={onclose}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 15 6-6 6 6" /></svg></button>{/if}
+  {#if onclose}<button type="button" class="close-stack" style:width="{STACK_CARET_SIZE}px" style:height="{STACK_CARET_SIZE}px" style:bottom="{-STACK_CARET_SIZE}px" data-stack-toggle aria-expanded="true" aria-label="Close stack" onclick={onclose}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 15 6-6 6 6" /></svg></button>{/if}
   {#if badges.length && onbadge}<ReferenceBadges {badges} nodes={badgeNodes} {revision} selected={badgeSelection} onactivate={onbadge} onhover={onbadgehover} />{/if}
   {#if hint && !explorer}<span class="hint" style:height="{TILE.hint}px">{hint}</span>{/if}
   {#if artifact}
@@ -132,7 +132,7 @@
   .cover-spinner { position: absolute; top: 3px; right: 3px; }
   .count-badge { position: absolute; bottom: -3px; right: -3px; box-sizing: border-box; min-width: 16px; height: 16px; padding: 0 4px; border-radius: var(--radius-pill); background: var(--accent); color: var(--text-on-accent); font-size: 10px; line-height: 16px; text-align: center; }
   .cover-unsaved-dot { position: absolute; left: -2px; top: -2px; width: 6px; height: 6px; border: 2px solid var(--background-solid); border-radius: 50%; background: var(--system-caution-text, var(--system-caution)); }
-  .close-stack { position: absolute; right: 5px; bottom: -24px; display: grid; place-items: center; width: 24px; height: 24px; padding: 0; border: 0; border-radius: var(--radius-sm); background: var(--control-fill); color: var(--text-secondary); cursor: pointer; }
+  .close-stack { position: absolute; right: 5px; display: grid; place-items: center; padding: 0; border: 0; border-radius: var(--radius-sm); background: var(--control-fill); color: var(--text-secondary); cursor: pointer; }
   .close-stack svg { width: 12px; height: 12px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
   .close-stack:hover, .close-stack:focus-visible { background: color-mix(in srgb, var(--accent) 32%, var(--background-solid)); color: var(--accent); }
   .close-stack:focus-visible { outline: 2px solid var(--focus-stroke-outer); outline-offset: 2px; }

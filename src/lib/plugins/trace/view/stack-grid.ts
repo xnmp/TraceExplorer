@@ -5,7 +5,7 @@ import { gridFlow, type GridFlow, type GridItem, type GridRect, type GridMetrics
 import type { GraphLayout, PinnedCover } from "$lib/domain/trace-graph/layout";
 import type { FolderIndex } from "./folder-session.svelte";
 import { packStackGroups } from "./stack-packing";
-import { ARROW } from "$lib/domain/trace-graph/metrics";
+import { ARROW, STACK_CARET_SIZE, STACK_BAND_INSET } from "$lib/domain/trace-graph/metrics";
 
 /** The occupied subtree, excluding the cover's tile but including its connector stem. */
 export function bandExtent(layout: GraphLayout, key: string, padding = 8) {
@@ -18,7 +18,7 @@ export function bandExtent(layout: GraphLayout, key: string, padding = 8) {
   }
   for (const dot of layout.junctions.values()) xs.push(dot.x);
   const left = xs.length ? Math.min(...xs) - padding : (cover?.x ?? 0);
-  return { left, width: xs.length ? Math.max(...xs) + padding - left : 0, height: cover ? Math.max(0, layout.height - cover.y - cover.height) : 0 };
+  return { left, width: xs.length ? Math.max(...xs) + padding - left : 0, height: cover ? Math.max(0, layout.height - cover.y - cover.height + STACK_BAND_INSET) : 0 };
 }
 
 export interface StackGridFlow extends GridFlow { readonly rowBands: readonly GridBand[] }
@@ -71,12 +71,12 @@ export function bandPlacements(flow: StackGridFlow, coverHeight: number): Readon
       .sort((a, b) => Math.abs(a - coverX) - Math.abs(b - coverX))[0] ?? coverX;
     return [band.id, { x: band.x, coverX, coverHeight, width: flow.width,
       left: Math.min(band.x, coverX, gutter), right: Math.max(band.x + band.width, coverX, gutter),
-      ...(earlier.length ? { bridge: { top: coverHeight + 8, gutter } } : {}) }];
+      ...(earlier.length ? { bridge: { top: coverHeight + STACK_CARET_SIZE + 12, gutter } } : {}) }];
   }));
 }
 /** Translate the subtree as a unit while keeping its parent on its original folder cell. */
 export function attachPackedBand(layout: GraphLayout, key: string, bandTop: number, placement: BandPlacement): GraphLayout {
-  const attached = attachBand(layout, key, 0, bandTop);
+  const attached = attachBand(layout, key, 0, bandTop + STACK_BAND_INSET);
   const cover = attached.nodes.get(key);
   if (!cover) return attached;
   const dx = placement.x - bandExtent(layout, key).left;
@@ -95,15 +95,37 @@ export function attachPackedBand(layout: GraphLayout, key: string, bandTop: numb
       // graph-engine geometry. Its bend is entirely above this group's first child row.
       const endX = coordinates.at(-2)! + dx, endY = coordinates.at(-1)!;
       const approachY = route.terminal ? endY - ARROW.length : endY;
-      const bendTop = bandTop + 2, bend = (bendTop + approachY) / 2;
-      const start = `M${placement.coverX} ${placement.coverHeight}`;
-      const bridge = placement.bridge && bandTop > placement.bridge.top
-        ? ` C${placement.coverX} ${placement.coverHeight + 4} ${placement.bridge.gutter} ${placement.coverHeight + 4} ${placement.bridge.gutter} ${placement.bridge.top} L${placement.bridge.gutter} ${bendTop}`
-        : ` L${placement.coverX} ${bendTop}`;
-      const x = placement.bridge?.gutter ?? placement.coverX;
-      return { ...route, path: `${start}${bridge} C${x} ${bend} ${endX} ${bend} ${endX} ${approachY}${route.terminal ? ` L${endX} ${endY}` : ""}` };
+      // Every sideways turn starts below the complete caret row. Wrapped groups first
+      // cross the header to an empty side gutter, then descend to their own bend zone.
+      const lane = bandTop + STACK_CARET_SIZE + 12;
+      const points = [{ x: placement.coverX, y: placement.coverHeight },
+        ...(placement.bridge ? [{ x: placement.coverX, y: placement.bridge.top },
+          { x: placement.bridge.gutter, y: placement.bridge.top }, { x: placement.bridge.gutter, y: lane }] : [{ x: placement.coverX, y: lane }]),
+        { x: endX, y: lane }, { x: endX, y: approachY }];
+      return { ...route, path: `${roundedStem(points)}${route.terminal ? ` L${endX} ${endY}` : ""}` };
     }),
   };
+}
+
+/** Round orthogonal stem corners, clamping the radius for short runs. */
+function roundedStem(points: readonly { readonly x: number; readonly y: number }[]): string {
+  const distinct = points.filter((point, i) => !i || point.x !== points[i - 1].x || point.y !== points[i - 1].y);
+  const corners = distinct.filter((point, i) => !i || i === distinct.length - 1
+    || !((distinct[i - 1].x === point.x && point.x === distinct[i + 1].x)
+      || (distinct[i - 1].y === point.y && point.y === distinct[i + 1].y)));
+  let path = `M${corners[0].x} ${corners[0].y}`;
+  for (let i = 1; i < corners.length - 1; i++) {
+    const before = corners[i - 1], corner = corners[i], after = corners[i + 1];
+    const incoming = Math.hypot(corner.x - before.x, corner.y - before.y), outgoing = Math.hypot(after.x - corner.x, after.y - corner.y);
+    const radius = Math.min(6, incoming / 2, outgoing / 2), k = .5522847498;
+    const ux = (corner.x - before.x) / incoming, uy = (corner.y - before.y) / incoming;
+    const vx = (after.x - corner.x) / outgoing, vy = (after.y - corner.y) / outgoing;
+    const a = { x: corner.x - ux * radius, y: corner.y - uy * radius };
+    const b = { x: corner.x + vx * radius, y: corner.y + vy * radius };
+    path += ` L${a.x} ${a.y} C${a.x + ux * radius * k} ${a.y + uy * radius * k} ${b.x - vx * radius * k} ${b.y - vy * radius * k} ${b.x} ${b.y}`;
+  }
+  const end = corners.at(-1)!;
+  return `${path} L${end.x} ${end.y}`;
 }
 
 export interface FolderCell extends GridItem {

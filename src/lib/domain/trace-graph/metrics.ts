@@ -72,6 +72,10 @@ export function tileSize(shape: TileShape, metrics: TileMetrics = tileMetrics())
  */
 export const ARROW = { length: 8, width: 7 } as const;
 
+/** The stack disclosure target and space reserved below the cover row for its routing lane. */
+export const STACK_CARET_SIZE = 24;
+export const STACK_BAND_INSET = STACK_CARET_SIZE + 8;
+
 /** Height of one bend track; a bend zone grows when its tracks need more than its default height. */
 export const TRACK_HEIGHT = 6;
 /**
