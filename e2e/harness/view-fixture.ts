@@ -400,6 +400,8 @@ let imageDescriptionsHeld = false;
 let imageDescriptionWaiters: Array<() => void> = [];
 
 export const backend = {
+  /** A journal notification with unchanged visible content still re-reads index, members and nodes. */
+  refresh() { changed(); },
   jobStatus: (jobId: number) => invoke<ReturnType<typeof jobSnapshot>>("jobs.status", { operationId: imageOperations.get(jobId) ?? operationIdFor(jobId) }),
   /** Connect a scenario generation to a durable job, including its publication context. */
   registerJob(name: string, jobId: number, cost?: JobCost) {

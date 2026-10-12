@@ -1,9 +1,132 @@
 /** Folder-order collapse and geometry rules. No component identity survives an index refresh. */
 import type { FileEntry } from "$lib/domain/file";
 import type { ComponentSummary, TraceNode } from "$lib/domain/trace-graph/model";
-import type { GridFlow, GridItem, GridRect } from "$lib/domain/trace-graph/grid-flow";
+import { gridFlow, type GridFlow, type GridItem, type GridRect, type GridMetrics, type GridBand, type GridCell } from "$lib/domain/trace-graph/grid-flow";
 import type { GraphLayout, PinnedCover } from "$lib/domain/trace-graph/layout";
 import type { FolderIndex } from "./folder-session.svelte";
+import { packStackGroups } from "./stack-packing";
+import { ARROW, STACK_CARET_SIZE, STACK_BAND_INSET } from "$lib/domain/trace-graph/metrics";
+
+/** The occupied subtree, excluding the cover's tile but including its connector stem. */
+export function bandExtent(layout: GraphLayout, key: string, padding = 8) {
+  const cover = layout.nodes.get(key);
+  const nodes = [...layout.nodes].filter(([id]) => id !== key).map(([, node]) => node);
+  const xs = nodes.flatMap((node) => [node.x, node.x + node.width]);
+  for (const route of layout.routes) {
+    const coordinates = route.path.match(/-?\d+(?:\.\d+)?/g)?.map(Number) ?? [];
+    xs.push(...coordinates.filter((_, i) => i % 2 === 0));
+  }
+  for (const dot of layout.junctions.values()) xs.push(dot.x);
+  const left = xs.length ? Math.min(...xs) - padding : (cover?.x ?? 0);
+  return { left, width: xs.length ? Math.max(...xs) + padding - left : 0, height: cover ? Math.max(0, layout.height - cover.y - cover.height + STACK_BAND_INSET) : 0 };
+}
+
+export interface StackGridFlow extends GridFlow { readonly rowBands: readonly GridBand[] }
+/** One physical band per folder row; each group's footprint reserves only its own interval. */
+export function packedGridFlow(items: readonly GridItem[], open: ReadonlyMap<string, { width: number; height: number }>, columns: number, metrics: GridMetrics): StackGridFlow {
+  const base = gridFlow(items, new Map(), columns, metrics);
+  const cells = new Map(base.cells), bands: GridBand[] = [], rowBands: GridBand[] = [];
+  const rows = new Map<number, GridCell[]>(), kinds = new Map(items.map((item) => [item.id, item.kind]));
+  for (const cell of base.cells.values()) { const row = rows.get(cell.row) ?? []; row.push(cell); rows.set(cell.row, row); }
+  let extra = 0;
+  for (const [row, members] of rows) {
+    for (const cell of members) cells.set(cell.id, { ...cell, y: cell.y + extra });
+    const groups = members.flatMap((cell) => {
+      const size = open.get(cell.id);
+      return size && kinds.get(cell.id) === "stack" ? [{ id: cell.id, center: cell.x + cell.width / 2, ...size }] : [];
+    });
+    const packed = packStackGroups(groups, base.width);
+    const top = members[0].y + extra + metrics.cellHeight;
+    const height = Math.max(0, ...packed.map((group) => group.y + group.height));
+    for (const group of packed) bands.push({ id: group.id, row, x: group.x, y: top + group.y, width: group.width, height: group.height });
+    if (packed.length) rowBands.push({ id: `row:${row}`, row, x: 0, y: top, width: Math.max(base.width, ...packed.map((group) => group.x + group.width)), height });
+    extra += height;
+    if (!Number.isFinite(base.height + extra)) throw new RangeError("grid height overflow");
+  }
+  return { ...base, width: Math.max(base.width, ...rowBands.map((band) => band.width)), height: base.height + extra, cells, bands, rowBands };
+}
+
+export interface BandPlacement {
+  readonly x: number;
+  readonly coverX: number;
+  readonly coverHeight: number;
+  readonly width: number;
+  /** Connector envelope includes the fixed parent; child packing intervals remain disjoint. */
+  readonly left: number;
+  readonly right: number;
+  /** A wrapped line's stem uses the empty side margin of earlier groups, above its own bend zone. */
+  readonly bridge?: { readonly top: number; readonly gutter: number };
+}
+
+export function bandPlacements(flow: StackGridFlow, coverHeight: number): ReadonlyMap<string, BandPlacement> {
+  const rows = new Map<number, GridBand[]>();
+  for (const band of flow.bands) { const row = rows.get(band.row) ?? []; row.push(band); rows.set(band.row, row); }
+  return new Map(flow.bands.map((band) => {
+    const cell = flow.cells.get(band.id)!, coverX = cell.x + cell.width / 2;
+    const earlier = rows.get(band.row)!.filter((other) => other.y < band.y);
+    // The padding inside each packed interval is empty. Pick the nearest column which stays
+    // outside every earlier line's child footprint; never default to the pane's left edge.
+    const candidates = [coverX, ...earlier.flatMap((other) => [other.x + 4, other.x + other.width - 4])];
+    const gutter = candidates.filter((x) => earlier.every((other) => x <= other.x + 4 || x >= other.x + other.width - 4))
+      .sort((a, b) => Math.abs(a - coverX) - Math.abs(b - coverX))[0] ?? coverX;
+    return [band.id, { x: band.x, coverX, coverHeight, width: flow.width,
+      left: Math.min(band.x, coverX, gutter), right: Math.max(band.x + band.width, coverX, gutter),
+      ...(earlier.length ? { bridge: { top: coverHeight + STACK_CARET_SIZE + 12, gutter } } : {}) }];
+  }));
+}
+/** Translate the subtree as a unit while keeping its parent on its original folder cell. */
+export function attachPackedBand(layout: GraphLayout, key: string, bandTop: number, placement: BandPlacement): GraphLayout {
+  const attached = attachBand(layout, key, 0, bandTop + STACK_BAND_INSET);
+  const cover = attached.nodes.get(key);
+  if (!cover) return attached;
+  const dx = placement.x - bandExtent(layout, key).left;
+  const translate = (path: string) => {
+    let coordinate = 0;
+    return path.replace(/-?\d+(?:\.\d+)?/g, (number) => (++coordinate % 2 ? String(Number(number) + dx) : number));
+  };
+  return { ...attached, width: placement.width,
+    nodes: new Map([...attached.nodes].map(([id, node]) => [id, id === key ? { ...node, x: placement.coverX - node.width / 2, height: placement.coverHeight } : { ...node, x: node.x + dx }])),
+    junctions: new Map([...attached.junctions].map(([id, dot]) => [id, { ...dot, x: dot.x + dx }])),
+    routes: attached.routes.map((route) => {
+      const path = translate(route.path);
+      const coordinates = route.path.match(/-?\d+(?:\.\d+)?/g)?.map(Number) ?? [];
+      if (route.from.kind !== "node" || route.from.id !== key || Math.abs(coordinates[1] - cover.height) > .1) return { ...route, path };
+      // Only the outgoing stem changes. Branches, junctions and descendant routes keep their
+      // graph-engine geometry. Its bend is entirely above this group's first child row.
+      const endX = coordinates.at(-2)! + dx, endY = coordinates.at(-1)!;
+      const approachY = route.terminal ? endY - ARROW.length : endY;
+      // Every sideways turn starts below the complete caret row. Wrapped groups first
+      // cross the header to an empty side gutter, then descend to their own bend zone.
+      const lane = bandTop + STACK_CARET_SIZE + 12;
+      const points = [{ x: placement.coverX, y: placement.coverHeight },
+        ...(placement.bridge ? [{ x: placement.coverX, y: placement.bridge.top },
+          { x: placement.bridge.gutter, y: placement.bridge.top }, { x: placement.bridge.gutter, y: lane }] : [{ x: placement.coverX, y: lane }]),
+        { x: endX, y: lane }, { x: endX, y: approachY }];
+      return { ...route, path: `${roundedStem(points)}${route.terminal ? ` L${endX} ${endY}` : ""}` };
+    }),
+  };
+}
+
+/** Round orthogonal stem corners, clamping the radius for short runs. */
+function roundedStem(points: readonly { readonly x: number; readonly y: number }[]): string {
+  const distinct = points.filter((point, i) => !i || point.x !== points[i - 1].x || point.y !== points[i - 1].y);
+  const corners = distinct.filter((point, i) => !i || i === distinct.length - 1
+    || !((distinct[i - 1].x === point.x && point.x === distinct[i + 1].x)
+      || (distinct[i - 1].y === point.y && point.y === distinct[i + 1].y)));
+  let path = `M${corners[0].x} ${corners[0].y}`;
+  for (let i = 1; i < corners.length - 1; i++) {
+    const before = corners[i - 1], corner = corners[i], after = corners[i + 1];
+    const incoming = Math.hypot(corner.x - before.x, corner.y - before.y), outgoing = Math.hypot(after.x - corner.x, after.y - corner.y);
+    const radius = Math.min(6, incoming / 2, outgoing / 2), k = .5522847498;
+    const ux = (corner.x - before.x) / incoming, uy = (corner.y - before.y) / incoming;
+    const vx = (after.x - corner.x) / outgoing, vy = (after.y - corner.y) / outgoing;
+    const a = { x: corner.x - ux * radius, y: corner.y - uy * radius };
+    const b = { x: corner.x + vx * radius, y: corner.y + vy * radius };
+    path += ` L${a.x} ${a.y} C${a.x + ux * radius * k} ${a.y + uy * radius * k} ${b.x - vx * radius * k} ${b.y - vy * radius * k} ${b.x} ${b.y}`;
+  }
+  const end = corners.at(-1)!;
+  return `${path} L${end.x} ${end.y}`;
+}
 
 export interface FolderCell extends GridItem {
   readonly entry?: FileEntry;
@@ -77,14 +200,14 @@ export function rovingStop(stop: string | null, rendered: ReadonlySet<string>, o
 
 export function coverNode(cell: FolderCell): TraceNode {
   return { key: cell.coverKey!, artifactId: null, runId: null, parents: [], path: cell.summary?.cover?.path ?? null,
-    scope: "current", location: cell.summary?.cover?.path ?? "", state: cell.summary?.active ? "running" : cell.summary?.cover?.present ? "present" : "missing",
+    scope: "current", location: cell.summary?.cover?.path ?? "", state: cell.summary?.cover?.present ? "present" : cell.summary?.active ? "running" : "missing",
     temporary: false, discarded: false, earlierRevision: false, order: 0, prompt: cell.summary?.title ?? "" };
 }
 
 /** Attach a pinned layout to the cover row, inserting earlier same-row bands below its stem.
  * Layout emits absolute M/L/C paths. Mapping their y coordinates stretches only the empty stem.
  */
-export function attachBand(layout: GraphLayout, key: string, coverTop: number, bandTop: number, bridge?: { readonly top: number; readonly gutter: number }): GraphLayout {
+export function attachBand(layout: GraphLayout, key: string, coverTop: number, bandTop: number): GraphLayout {
   const cover = layout.nodes.get(key);
   if (!cover) return layout;
   const bottom = cover.y + cover.height;
@@ -96,16 +219,7 @@ export function attachBand(layout: GraphLayout, key: string, coverTop: number, b
   return { ...layout, height: mapY(layout.height),
     nodes: new Map([...layout.nodes].map(([id, node]) => [id, { ...node, y: mapY(node.y) }])),
     junctions: new Map([...layout.junctions].map(([id, dot]) => [id, { ...dot, y: mapY(dot.y) }])),
-    routes: layout.routes.map((route) => {
-      const mapped = path(route.path);
-      const start = /^M\s*(-?\d+(?:\.\d+)?)\s+(-?\d+(?:\.\d+)?)/.exec(mapped);
-      const exitsCover = route.from.kind === "node" && route.from.id === key && start && Math.abs(Number(start[2]) - (coverTop + cover.height)) < .1;
-      if (!bridge || !exitsCover || bandTop <= bridge.top) return { ...route, path: mapped };
-      // A later band's cover stem bypasses every earlier band's tiles through
-      // the empty outer routing gutter, returning before its own bend zone.
-      const x = Number(start![1]), y = Number(start![2]);
-      return { ...route, path: `M${x} ${y} L${x} ${bridge.top} L${bridge.gutter} ${bridge.top} L${bridge.gutter} ${bandTop} L${x} ${bandTop}${mapped.slice(start![0].length)}` };
-    }),
+    routes: layout.routes.map((route) => ({ ...route, path: path(route.path) })),
     rows: layout.rows.map((row) => ({ ...row, top: mapY(row.top), bottom: mapY(row.bottom) })) };
 }
 
@@ -148,15 +262,11 @@ export function gridNeighbor(rects: ReadonlyMap<string, GridRect>, key: string, 
   return best;
 }
 
-/** Index neighbors once; closed/virtualized stacks do not need layout pins. */
+/** Closed/virtualized stacks need no pin. Neighboring covers are above the shared child band,
+ * so they are not graph obstacles and must not generate outer routing lanes. */
 export function gridPins(flow: GridFlow, open: ReadonlySet<string>): ReadonlyMap<string, PinnedCover> {
-  const rows = new Map<number, { id: string; x: number; width: number }[]>();
-  for (const cell of flow.cells.values()) {
-    const row = rows.get(cell.row) ?? [];
-    row.push(cell); rows.set(cell.row, row);
-  }
   return new Map([...open].flatMap((id) => {
     const cell = flow.cells.get(id);
-    return cell ? [[id, { key: id, x: cell.x + cell.width / 2, obstacles: rows.get(cell.row)!.filter((other) => other.id !== id).map(({ x, width }) => ({ x, width })) }] as const] : [];
+    return cell ? [[id, { key: id, x: cell.x + cell.width / 2, obstacles: [] }] as const] : [];
   }));
 }

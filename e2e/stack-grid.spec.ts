@@ -15,6 +15,265 @@ const sameColumns = (before: Awaited<ReturnType<typeof gridBoxes>>, after: Await
   for (const id of Object.keys(before)) expect(after[id].x, id).toBeCloseTo(before[id].x, 1);
 };
 
+for (const theme of ["light", "dark"]) for (const host of ["", "&fileTile=1&tileSize=small"]) {
+  test(`#59 stack caret has a 24px target, hover/focus feedback and collapses (${theme}, ${host ? "small host" : "fallback"})`, async ({ page }) => {
+    await openView(page, 420, `?grouping=two-chains&theme=${theme}${host}`, false);
+    const section = stack(page, "photo-a");
+    await section.locator("[data-stack-toggle]").click(); await settle(page);
+    const caret = section.getByRole("button", { name: "Close stack" });
+    const box = (await caret.boundingBox())!;
+    expect(box.width).toBeGreaterThanOrEqual(24);
+    expect(box.height).toBeGreaterThanOrEqual(24);
+    const caption = (await section.locator(".label").first().boundingBox())!;
+    expect(box.y).toBeGreaterThanOrEqual(caption.y + caption.height);
+    const child = (await section.locator("[data-grid-band] [data-tile-key]").first().boundingBox())!;
+    expect(box.y + box.height).toBeLessThan(child.y);
+    const style = () => caret.evaluate((element) => {
+      const style = getComputedStyle(element), canvas = document.createElement("canvas");
+      canvas.width = canvas.height = 1;
+      const context = canvas.getContext("2d")!;
+      // Compare visible colours, including alpha, against the theme's surface.
+      context.fillStyle = getComputedStyle(document.documentElement).getPropertyValue("--background-solid");
+      context.fillRect(0, 0, 1, 1);
+      context.fillStyle = style.backgroundColor; context.fillRect(0, 0, 1, 1);
+      return { background: style.backgroundColor, rgb: [...context.getImageData(0, 0, 1, 1).data].slice(0, 3),
+        color: style.color, cursor: style.cursor, outlineWidth: style.outlineWidth, outlineStyle: style.outlineStyle };
+    });
+    await page.mouse.move(1, 1);
+    const normal = await style();
+    expect(normal.cursor).toBe("pointer");
+    await caret.hover(); await settle(page);
+    const hovered = await style();
+    expect(Math.hypot(...hovered.rgb.map((channel, i) => channel - normal.rgb[i]))).toBeGreaterThan(50);
+    expect(hovered.color).not.toBe(normal.color);
+    expect(await caret.evaluate((element) => {
+      const probe = document.createElement("span"); probe.style.color = "var(--accent)"; element.append(probe);
+      const accent = getComputedStyle(probe).color; probe.remove(); return accent;
+    })).toBe(hovered.color);
+    await page.mouse.move(1, 1);
+    await page.keyboard.press("Tab"); await caret.focus(); await settle(page);
+    expect(await caret.evaluate((element) => element.matches(":focus-visible"))).toBe(true);
+    const focused = await style();
+    expect(focused.background).toBe(hovered.background);
+    expect(focused.outlineStyle).toBe("solid");
+    expect(parseFloat(focused.outlineWidth)).toBeGreaterThanOrEqual(2);
+    await page.emulateMedia({ reducedMotion: "reduce" });
+    expect(await caret.evaluate((element) => getComputedStyle(element).transitionDuration)).toBe("0s");
+    await caret.click(); await settle(page);
+    await expect(section.locator("[data-grid-band]")).toHaveCount(0);
+    await expect(section.locator("[data-stack-toggle]")).toHaveAttribute("aria-expanded", "false");
+  });
+}
+
+/** Sample in screen space at <= 1px intervals, including curves and SVG transforms. */
+const connectorCaretClearance = (page: Page) => page.evaluate(() => {
+  const carets = [...document.querySelectorAll<HTMLElement>(".close-stack")].map((caret) => caret.getBoundingClientRect());
+  const caretBottom = Math.max(...carets.map((caret) => caret.bottom));
+  const crossings: string[] = [], highRuns: string[] = [];
+  let horizontalRuns = 0;
+  for (const route of document.querySelectorAll<SVGPathElement>("path[data-route]")) {
+    const matrix = route.getScreenCTM()!, length = route.getTotalLength(), steps = Math.ceil(length);
+    let previous: DOMPoint | undefined;
+    for (let i = 0; i <= steps; i++) {
+      const point = route.getPointAtLength(length * i / steps), screen = new DOMPoint(point.x, point.y).matrixTransform(matrix);
+      if (carets.some((box) => screen.x >= box.left - 1 && screen.x <= box.right + 1 && screen.y >= box.top - 1 && screen.y <= box.bottom + 1)) crossings.push(route.dataset.route!);
+      if (previous && Math.abs(screen.x - previous.x) > .1 && Math.abs(screen.y - previous.y) < Math.abs(screen.x - previous.x) * .05) {
+        horizontalRuns++;
+        if (Math.min(screen.y, previous.y) < caretBottom + 4) highRuns.push(route.dataset.route!);
+      }
+      previous = screen;
+    }
+  }
+  return { crossings: [...new Set(crossings)], highRuns: [...new Set(highRuns)], horizontalRuns };
+});
+
+for (const preset of [null, "small", "medium", "large", "xlarge"]) test(`#58 offset forest stems clear every caret in the village shared band (${preset ?? "fallback"})`, async ({ page }) => {
+  await page.setViewportSize({ width: 1100, height: 800 });
+  await openView(page, 840, `?draftStack=1${preset ? `&fileTile=1&tileSize=${preset}` : ""}`, false);
+  for (const name of ["village", "forest"]) { await stack(page, name).locator("[data-stack-toggle]").click(); await settle(page); }
+  await expect(page.locator("[data-grid-row-band]")).toHaveCount(1);
+  const geometry = await connectorCaretClearance(page);
+  expect(geometry.crossings).toEqual([]);
+  expect(geometry.highRuns).toEqual([]);
+  expect(geometry.horizontalRuns).toBeGreaterThan(0);
+});
+
+test("#58 two same-row stacks share one band and connectors stay in their own group", async ({ page }) => {
+  await openView(page, 620, "?grouping=two-chains", false);
+  const before = await gridBoxes(page);
+  for (const name of ["photo-a", "photo-b"]) { await stack(page, name).locator("[data-stack-toggle]").click(); await settle(page); }
+  sameColumns(before, await gridBoxes(page));
+  await expect(page.locator("[data-grid-row-band]")).toHaveCount(1);
+  const groups = await page.evaluate(() => [...document.querySelectorAll<HTMLElement>("[data-grid-band]")].map((element) => {
+    const graph = element.querySelector<HTMLElement>(".graph")!, origin = graph.getBoundingClientRect();
+    const left = Number(element.dataset.groupLeft), right = left + Number(element.dataset.groupWidth);
+    const children = [...graph.querySelectorAll<HTMLElement>("[data-tile-key]")].map((tile) => tile.getBoundingClientRect());
+    return { left, right, row: element.dataset.gridBandRow, childTop: Math.min(...children.map((child) => child.y)),
+      childCenter: children.reduce((sum, child) => sum + child.x + child.width / 2, 0) / children.length,
+      parentCenter: element.closest("section")!.querySelector("[data-grid-cell]")!.getBoundingClientRect().x + element.closest("section")!.querySelector("[data-grid-cell]")!.getBoundingClientRect().width / 2,
+      routes: [...graph.querySelectorAll<SVGPathElement>("path[data-route]")].map((route) => { const box = route.getBBox(); return { left: box.x, right: box.x + box.width }; }),
+      childLeft: Math.min(...children.map((child) => child.x - origin.x)), childRight: Math.max(...children.map((child) => child.right - origin.x)) };
+  }));
+  expect(groups).toHaveLength(2);
+  expect(groups[0].row).toBe(groups[1].row);
+  expect(groups[0].childTop).toBeCloseTo(groups[1].childTop, 1);
+  for (const group of groups) {
+    expect(Math.abs(group.childCenter - group.parentCenter)).toBeLessThan(10);
+    expect(group.routes.length).toBeGreaterThan(0);
+    for (const route of group.routes) { expect(route.left).toBeGreaterThanOrEqual(group.left - .5); expect(route.right).toBeLessThanOrEqual(group.right + .5); }
+  }
+  expect(groups[0].childRight).toBeLessThan(groups[1].childLeft);
+});
+
+for (const width of [620, 350]) {
+  test(`#58 broad groups ${width === 620 ? "shift within a shared line" : "wrap inside one band"} without crossed tiles`, async ({ page }) => {
+    await openView(page, width, "?grouping=two-chains", false);
+    await page.evaluate(() => {
+      const backend = (window as any).trace.backend;
+      for (const parent of ["photo-a", "photo-b"]) { backend.startGeneration(parent, `${parent}-second`); backend.completeGeneration(`${parent}-second`); }
+    });
+    await settle(page);
+    for (const name of ["photo-a", "photo-b"]) { await stack(page, name).locator("[data-stack-toggle]").click(); await settle(page); }
+    await expect(page.locator("[data-grid-row-band]")).toHaveCount(1);
+    const result = await page.evaluate(() => {
+      const groups = [...document.querySelectorAll<HTMLElement>("[data-grid-band]")].map((element) => {
+        const graph = element.querySelector<HTMLElement>(".graph")!, origin = graph.getBoundingClientRect();
+        return { element, graph, origin, children: [...graph.querySelectorAll<HTMLElement>("[data-tile-key]")].map((tile) => tile.getBoundingClientRect()) };
+      });
+      const crossings: string[] = [], outside: string[] = [];
+      for (const group of groups) for (const route of group.graph.querySelectorAll<SVGPathElement>("path[data-route]")) {
+        const matrix = route.getScreenCTM()!, left = Number(group.element.dataset.groupLeft), right = left + Number(group.element.dataset.groupWidth);
+        const bounds = route.getBBox();
+        if (bounds.x < left - .5 || bounds.x + bounds.width > right + .5) outside.push(route.dataset.route!);
+        for (let i = 0; i <= 300; i++) {
+          const point = route.getPointAtLength(route.getTotalLength() * i / 300), screen = new DOMPoint(point.x, point.y).matrixTransform(matrix);
+          for (const other of groups) if (other !== group) for (const tile of other.children) {
+            if (screen.x > tile.left + 1 && screen.x < tile.right - 1 && screen.y > tile.top + 1 && screen.y < tile.bottom - 1) crossings.push(route.dataset.route!);
+          }
+        }
+      }
+      return { crossings, outside, tops: groups.map((group) => Math.min(...group.children.map((tile) => tile.y))),
+        counts: groups.map((group) => group.children.length), childIntervals: groups.map((group) => [Number(group.element.dataset.childGroupLeft), Number(group.element.dataset.childGroupWidth)]) };
+    });
+    expect(result.counts).toEqual([2, 2]);
+    expect(result.crossings).toEqual([]);
+    expect(result.outside).toEqual([]);
+    const clearance = await connectorCaretClearance(page);
+    expect(clearance.crossings).toEqual([]);
+    expect(clearance.highRuns).toEqual([]);
+    if (width === 620) {
+      expect(result.tops[0]).toBeCloseTo(result.tops[1], 1);
+      expect(result.childIntervals[0][0] + result.childIntervals[0][1]).toBeLessThan(result.childIntervals[1][0]);
+    } else expect(result.tops[1]).toBeGreaterThan(result.tops[0] + 80);
+    await page.screenshot({ path: `/tmp/sg56-packed-${width}.png` });
+  });
+}
+
+for (const preset of [null, "small", "medium", "large", "xlarge"]) {
+  test(`#57 stack cover matches ordinary thumbnail and name at ${preset ?? "fallback"} size`, async ({ page }) => {
+    await openView(page, 420, `${preset ? `?fileTile=1&tileSize=${preset}` : ""}`, false);
+    const section = stack(page, "village");
+    const count = (await section.getAttribute("data-stack-count"))!.split(" ")[0];
+    const plain = page.locator('[data-entry-path="/pictures/plain.png"]');
+    const styles = async () => {
+      const coverImage = await section.locator(".image").first().boundingBox();
+      const plainImage = await plain.locator(".icon").boundingBox();
+      expect(coverImage!.width).toBeCloseTo(plainImage!.width, 1);
+      expect(coverImage!.height).toBeCloseTo(plainImage!.height, 1);
+      expect(await section.locator(".text").first().evaluate((element) => getComputedStyle(element).fontSize))
+        .toBe(await plain.locator(".name").evaluate((element) => getComputedStyle(element).fontSize));
+      const name = await section.locator(".label").first().boundingBox();
+      expect(name!.y).toBeGreaterThanOrEqual(coverImage!.y + coverImage!.height);
+      await expect(section.locator(".count-badge")).toHaveText(count);
+      await expect(section.locator("[data-node-key]").first()).toHaveAccessibleName(new RegExp(`${count} images`));
+      expect(await section.innerText()).not.toMatch(/images|Unsaved/);
+      expect(await section.locator(".image").first().evaluate((element) => getComputedStyle(element, "::before").content)).not.toBe("none");
+    };
+    await styles();
+    await section.locator("[data-stack-toggle]").click(); await settle(page);
+    await styles();
+  });
+}
+
+test("#57 unsaved edits use a dot on the cover thumbnail", async ({ page }) => {
+  await openView(page, 420, "?draftStack=1", false);
+  const section = stack(page, "draft");
+  await expect(section.locator(".cover-unsaved-dot")).toBeVisible();
+  await expect(section.locator("[data-node-key]")).toHaveAccessibleName(/unsaved/);
+  expect(await section.innerText()).not.toContain("Unsaved");
+});
+
+test("#56 opening settles once and unchanged journal refresh preserves children and following rows", async ({ page }) => {
+  await openView(page, 220, "?grouping=two-chains", false);
+  await stack(page, "photo-a").locator("[data-stack-toggle]").click(); await settle(page);
+  const child = await key(page, "photo-a-edit");
+  const samples = await page.evaluate(async (child) => {
+    const section = document.querySelector<HTMLElement>('section[aria-label="photo-a"]')!;
+    const following = document.querySelector<HTMLElement>('section[aria-label="photo-b"]')!;
+    const removed: string[] = [];
+    const observer = new MutationObserver((records) => {
+      for (const record of records) for (const node of record.removedNodes) {
+        if (node instanceof Element && (node.matches(`[data-tile-key="${child}"]`) || node.querySelector(`[data-tile-key="${child}"]`))) removed.push(node.nodeName);
+      }
+    });
+    observer.observe(section, { childList: true, subtree: true });
+    const start = performance.now(), samples = [];
+    let refreshed = false;
+    while (performance.now() - start < 650) {
+      await new Promise(requestAnimationFrame);
+      const time = performance.now() - start;
+      if (time >= 100 && !refreshed) { (window as any).trace.backend.refresh(); refreshed = true; }
+      const tile = section.querySelector<HTMLElement>(`[data-tile-key="${child}"]`);
+      const rect = tile?.getBoundingClientRect();
+      samples.push({ time, child: rect ? { y: rect.y, height: rect.height, opacity: Number(getComputedStyle(tile!).opacity) } : null, following: following.getBoundingClientRect().y });
+    }
+    observer.disconnect();
+    return { removed, samples };
+  }, child);
+  expect(samples.removed).toEqual([]);
+  const settled = samples.samples;
+  expect(settled.length).toBeGreaterThan(5);
+  const baseline = settled.at(-1)!;
+  for (const sample of settled) {
+    expect(sample.child, `frame ${sample.time}`).not.toBeNull();
+    expect(sample.child!.height).toBeCloseTo(baseline.child!.height, 0);
+    expect(sample.child!.y).toBeCloseTo(baseline.child!.y, 0);
+    expect(sample.child!.opacity).toBeGreaterThanOrEqual(.99);
+    expect(sample.following).toBeCloseTo(baseline.following, 0);
+  }
+});
+
+test("#56 unchanged refresh does not restart an expansion in progress", async ({ page }) => {
+  await openView(page, 220, "?grouping=two-chains", false);
+  await holdScriptedAnimations(page);
+  try {
+    await stack(page, "photo-a").locator("[data-stack-toggle]").click();
+    await awaitAnimationsCreated(page);
+    const child = await key(page, "photo-a-edit");
+    const result = await page.evaluate(async (child) => {
+      const w = window as any;
+      const original = [...w.__heldAnimations] as Animation[];
+      for (const animation of original) if (animation.playState === "running") animation.currentTime = 80;
+      await new Promise(requestAnimationFrame);
+      w.trace.backend.refresh();
+      for (let i = 0; i < 12; i++) await new Promise(requestAnimationFrame);
+      const box = () => {
+        const element = document.querySelector<HTMLElement>(`[data-tile-key="${child}"]`)!;
+        return { y: element.getBoundingClientRect().y, opacity: Number(getComputedStyle(element).opacity), following: document.querySelector('section[aria-label="photo-b"]')!.getBoundingClientRect().y };
+      };
+      for (const animation of original) if (animation.playState === "running") animation.currentTime = 160;
+      await new Promise(requestAnimationFrame);
+      const atOriginalEnd = box();
+      for (const animation of w.__heldAnimations as Animation[]) if (animation.playState === "running") animation.currentTime = 160;
+      await new Promise(requestAnimationFrame);
+      return { atOriginalEnd, settled: box() };
+    }, child);
+    expect(result.atOriginalEnd.opacity).toBe(1);
+    expect(result.atOriginalEnd.y).toBeCloseTo(result.settled.y, 1);
+    expect(result.atOriginalEnd.following).toBeCloseTo(result.settled.following, 1);
+  } finally { await releaseScriptedAnimations(page); }
+});
+
 for (const host of ["", "&fileTile=1&tileSize=medium"]) {
   test(`opening and closing stacks preserves every column and the cover's position (${host ? "host tile" : "fallback"})`, async ({ page }) => {
     await openView(page, 420, `?grouping=style-many${host}`, false);
@@ -615,8 +874,11 @@ test("a closed stack shows that an edit is generating, and clears when it finish
   await expect(village.locator("[data-stack-toggle]")).toBeVisible();
   const generating = village.locator("[data-stack-toggle]").getByRole("status", { name: "Generating" });
   await expect(generating).toHaveCount(0);
+  const thumbnail = village.locator(".image img");
+  await expect(thumbnail).toBeVisible();
   await page.evaluate(() => (window as any).trace.backend.startGeneration("village", "pending-edit"));
   await expect(generating).toHaveCount(1);
+  await expect(thumbnail).toBeVisible();
   await page.evaluate(() => (window as any).trace.backend.completeGeneration("pending-edit"));
   await expect(generating).toHaveCount(0);
   expect(await uncaught(page)).toEqual([]);

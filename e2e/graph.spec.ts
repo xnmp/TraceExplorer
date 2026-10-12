@@ -338,7 +338,7 @@ test.describe("tile size", () => {
     const widths = (selector: string) => [...new Set([...document.querySelectorAll<HTMLElement>(selector)].map((element) => element.getBoundingClientRect().width))];
     const heights = (selector: string) => [...new Set([...document.querySelectorAll<HTMLElement>(selector)].map((element) => element.getBoundingClientRect().height))];
     return {
-      trace: widths("[data-tile-key]"), traceImage: heights("[data-tile-key] .image"),
+      trace: widths("[data-tile-key]"), traceImage: heights("[data-grid-band] [data-tile-key] .image"), coverImage: heights("[data-grid-cell] [data-tile-key] .image"),
       ordinary: widths("[data-host-file-tile]"), thumbnail: heights("[data-host-file-tile] .icon"),
       preset: document.querySelector<HTMLElement>("[data-host-file-tile]")?.dataset.size ?? null,
     };
@@ -371,6 +371,7 @@ test.describe("tile size", () => {
       // One width for every Trace tile: the host's thumbnail edge plus its tile chrome, as wide as the host's own tiles.
       expect(shown.preset, preset).toBe(preset);
       expect(shown.thumbnail, preset).toHaveLength(1);
+      expect(shown.coverImage, preset).toEqual(shown.thumbnail);
       expect(shown.trace, preset).toEqual([shown.thumbnail[0] + 44]);
       expect(shown.ordinary[0], preset).toBeGreaterThanOrEqual(shown.trace[0]);
       // The image keeps its aspect inside the same chrome.
@@ -398,6 +399,7 @@ test.describe("tile size", () => {
     const shown = await sizes(page);
     expect(shown.trace).toEqual([92]);
     expect(shown.traceImage).toEqual([51]);
+    expect(shown.coverImage).toEqual(shown.thumbnail);
     // No `size` is passed, so the host's tiles keep their own (global) setting.
     expect(shown.preset).toBe("default");
     // A host that stops reporting it (say, the plugin is moved to an older host) returns to the default too.
@@ -406,7 +408,7 @@ test.describe("tile size", () => {
     expect((await sizes(page)).trace).toEqual([172]);
     await setTileSize(page, null);
     await settle(page);
-    expect(await sizes(page)).toMatchObject({ trace: [92], traceImage: [51], preset: "default" });
+    expect(await sizes(page)).toMatchObject({ trace: [92], traceImage: [51], coverImage: [64], preset: "default" });
   });
 });
 

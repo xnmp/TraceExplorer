@@ -109,6 +109,22 @@ test.describe("Preview info", () => {
     await expect(trace(page).getByText("Resolution", { exact: true })).toBeHidden();
   });
 
+  test("#59 section disclosure has a comfortable target and highlights its caret on hover and focus", async ({ page }) => {
+    await openView(page); await click(page, "warm");
+    const button = detailsToggle(page), box = (await button.boundingBox())!;
+    expect(box.width).toBeGreaterThanOrEqual(24); expect(box.height).toBeGreaterThanOrEqual(24);
+    const style = () => button.evaluate((element) => ({ background: getComputedStyle(element).backgroundColor, icon: getComputedStyle(element.querySelector("svg")!).color }));
+    await page.mouse.move(1, 1); const normal = await style();
+    await button.hover(); const hovered = await style();
+    expect(hovered.background).not.toBe(normal.background); expect(hovered.icon).not.toBe(normal.icon);
+    await page.mouse.move(1, 1); await page.keyboard.press("Tab"); await button.focus();
+    expect((await style()).background).toBe(hovered.background);
+    await button.click(); await settle(page);
+    await expect(trace(page).getByText("Resolution", { exact: true })).toBeVisible();
+    await button.click(); await settle(page);
+    await expect(trace(page).getByText("Resolution", { exact: true })).toBeHidden();
+  });
+
   test("opening and closing Trace details animates over a short time", async ({ page }) => {
     await openView(page);
     await click(page, "warm");

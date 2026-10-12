@@ -3,18 +3,17 @@
   import type { FileEntry } from "$lib/domain/file";
   import type { ComponentFocus, BandScenePlan, SceneTile } from "$lib/domain/trace-graph/scene";
   import type { GraphLayout } from "$lib/domain/trace-graph/layout";
-  import { gridFlow } from "$lib/domain/trace-graph/grid-flow";
+  import { sameGridGeometry } from "$lib/domain/trace-graph/layout-geometry";
   import { tileSize, type TileMetrics } from "$lib/domain/trace-graph/metrics";
   import type { FileViewPane } from "../../../../../integration/plugin-sdk";
   import { hostFileTile } from "../../../../sdk";
   import type { FolderSession } from "./folder-session.svelte";
   import type { GraphScene } from "./graph-commit";
   import { selectableSelector } from "./selectable";
-  import { type FolderCell, folderCells, unlistedCovers, coverNode, gridNeighbor, attachBand, gridPins, rovingStop } from "./stack-grid";
+  import { type FolderCell, folderCells, unlistedCovers, coverNode, gridNeighbor, attachPackedBand, bandExtent, packedGridFlow, bandPlacements, gridPins, rovingStop } from "./stack-grid";
   import { captureGrid, playGrid, prefersReducedMotion, zoomOf } from "./motion";
   import TraceGraph from "./TraceGraph.svelte";
   import TraceTile from "./TraceTile.svelte";
-  import TraceThumbnail from "../TraceThumbnail.svelte";
   import OrdinaryTile from "./OrdinaryTile.svelte";
 
   let { pane, session, focus, selected, tile, revision, scroller, width, openKeys, claimedPaths, onexpand, onnear,
@@ -36,7 +35,6 @@
   const HostTile = host?.default;
   let grid = $state<HTMLElement | null>(null);
   let viewport = $state.raw({ top: 0, bottom: 2000 });
-  let heights = $state.raw<ReadonlyMap<string, number>>(new Map());
   let covers = $state.raw<ReadonlyMap<string, { plan: BandScenePlan; layout: GraphLayout }>>(new Map());
   let hoveredBadge = $state<string | null>(null);
   let failedVideoPaths = $state.raw<ReadonlySet<string>>(new Set());
@@ -74,13 +72,17 @@
       if (next.size !== held.size || [...next].some((key) => !held.has(key))) held = next;
     });
   });
-  const flow = $derived(gridFlow(cells, new Map(cells.filter((cell) => cell.kind === "stack" && openKeys.has(cell.id)).map((cell) => [cell.id, heights.get(cell.id) ?? 160])), columns,
-    { cellWidth, cellHeight, columnGap: metrics.gap, rowGap: metrics.gap }));
+  let previousFlow: ReturnType<typeof packedGridFlow> | undefined;
+  const flow = $derived.by(() => {
+    const next = packedGridFlow(cells, new Map(cells.filter((cell) => cell.kind === "stack" && openKeys.has(cell.id)).map((cell) => {
+      const known = covers.get(cell.id);
+      return [cell.id, known ? bandExtent(known.layout, cell.id) : { width: tile.width + 16, height: 160 }];
+    })), columns, { cellWidth, cellHeight, columnGap: metrics.gap, rowGap: metrics.gap });
+    // Only geometry changes own grid motion. Replacing index/listing objects must not replay it.
+    return previousFlow && sameGridGeometry(previousFlow, next) ? previousFlow : (previousFlow = next);
+  });
   const pins = $derived(gridPins(flow, openKeys));
-  /** A band can need more than the pane (many separate inputs need routing lanes). The grid then widens and the
-   * view scrolls sideways as a whole, so a cover and the routes hanging from it always move together. */
-  const spread = $derived(Math.max(0, ...flow.bands.map((band) => covers.get(band.id)?.layout.width ?? 0)));
-  const bridges = $derived(new Map(flow.bands.filter((band) => band.y > flow.cells.get(band.id)!.y + cellHeight).map((band) => [band.id, { top: cellHeight + 2, gutter: 4 }])));
+  const placements = $derived(bandPlacements(flow, cellHeight));
   const bandById = $derived(new Map(flow.bands.map((band) => [band.id, band])));
   // Roving tabindex: the stop always names a rendered cell. It follows the last focused cell while
   // that is drawn; once it leaves (a deselected band tile, a merged stack) it falls to the stack that held it.
@@ -152,8 +154,6 @@
   function geometry(id: string, plan: BandScenePlan, layout: GraphLayout): void {
     const cover = layout.nodes.get(id);
     if (!cover) return;
-    const height = Math.max(0, layout.height - cover.y - cover.height);
-    if (heights.get(id) !== height) heights = new Map(heights).set(id, height);
     const previous = covers.get(id);
     if (previous?.plan !== plan || previous.layout !== layout) covers = new Map(covers).set(id, { plan, layout });
   }
@@ -171,7 +171,7 @@
     for (const band of flow.bands) {
       const known = covers.get(band.id), cell = flow.cells.get(band.id)!;
       if (!known) continue;
-      const layout = attachBand(known.layout, band.id, 0, band.y - cell.y);
+      const layout = attachPackedBand(known.layout, band.id, band.y - cell.y, placements.get(band.id)!);
       for (const [id, rect] of layout.nodes) if (id !== band.id) rects.set(id, { ...rect, y: cell.y + rect.y });
     }
     const next = gridNeighbor(rects, key, event.key);
@@ -193,7 +193,10 @@
 </script>
 
 <div class="grid" role="grid" aria-label="Folder" aria-multiselectable="true" aria-colcount={columns} aria-rowcount={flow.rowCount}
-  bind:this={grid} onfocusin={() => focusInside = true} onfocusout={focusout} style:margin="{metrics.gridPadding}px" style:width="{Math.max(flow.width, spread)}px" style:height="{flow.height}px">
+  bind:this={grid} onfocusin={() => focusInside = true} onfocusout={focusout} style:margin="{metrics.gridPadding}px" style:width="{flow.width}px" style:height="{flow.height}px">
+  {#each flow.rowBands as row (row.id)}
+    <div class="row-band" data-grid-row-band={row.row} style:top="{row.y}px" style:width="{row.width}px" style:height="{row.height}px"></div>
+  {/each}
   {#each visible as cell (cell.id)}
     {@const rect = flow.cells.get(cell.id)!}
     {@const band = bandById.get(cell.id)}
@@ -208,31 +211,22 @@
       <section class="component" class:dimmed={focus !== null && focus.componentId !== summary.id} data-stack-count={`${summary.imageCount} images`} data-component={summary.id} data-grid-motion={cell.id} aria-label={summary.title}
         style:top="{rect.y}px" style:height="{band ? band.y + band.height - rect.y : rect.height}px">
         <div class="cell stack" role="row" aria-rowindex={rect.row + 1} data-grid-cell={cell.id} data-stack-key={cell.id}
-          style:left="{rect.x}px" style:width="{rect.width}px" style:height="{rect.height}px" class:closed={!band} style:--stack-width="{tile.width}px" style:--stack-image="{tile.image}px">
-          {#if band && data}
-            <TraceTile tile={cover} placed={{ key: cell.id, x: (rect.width - tile.width) / 2, y: 0, width: tile.width, height: cover.size.height, row: 0, band: 0 }}
-              selected={selected.has(cell.id)} {revision} badgeNodes={data.dag.nodes} badges={known?.plan.badges.get(cell.id) ?? []} badgeSelection={selected}
-              onbadge={(key, event) => onactivate(key, event, summary.id)} onbadgehover={(key) => hoveredBadge = key} focused={stop === cell.id} onfocus={() => tabStop = cell.id} onclose={() => onexpand(summary.id, false)}
-              onactivate={(event) => onactivate(cell.id, event, summary.id)} onopen={() => onopen(cell.id)} onmenu={(event) => onmenu(cell.id, event, summary.id)}
-              onkey={(event) => keydown(cell.id, event)} {captureSelection} onsaved={(path, select) => onsaved(cell.id, path, select)} ondiscarded={() => ondiscarded(cell.id)} />
-          {:else}
-            <button type="button" class="heading" class:selected={selected.has(cell.id)} style:width="{tile.width}px" style:height="{cover.size.height}px" tabindex={stop === cell.id ? 0 : -1} onfocus={() => tabStop = cell.id} data-stack-toggle aria-expanded={!!band} data-tile-key={cell.id} data-node-key={cell.id} aria-pressed={selected.has(cell.id)}
-              onclick={(event) => activateStack(cell, event, true)}
-              ondblclick={() => { if (cell.entry) void pane.open(cell.entry); else onopen(cell.id); }} onkeydown={(event) => keydown(cell.id, event)}
-              oncontextmenu={(event) => { if (cell.entry) onordinarymenu(cell.entry, event); else onmenu(cell.id, event, summary.id); }}>
-              <span class="cover-image" style:height="{tile.image}px">{#if node.path}<TraceThumbnail path={node.path} present={summary.cover?.present ?? false} {revision} label="" />{:else}▧{/if}</span>
-              <span class="name">{summary.title}</span><span class="count">{summary.imageCount} images</span>
-              {#if summary.active}<span class="spinner" role="status" aria-label="Generating"></span>{/if}
-              {#if summary.unsaved}<span class="unsaved">Unsaved</span>{/if}
-            </button>
-          {/if}
+          style:left="{rect.x}px" style:width="{rect.width}px" style:height="{rect.height}px">
+          <TraceTile tile={cover} placed={{ key: cell.id, x: (rect.width - tile.width) / 2, y: 0, width: tile.width, height: rect.height, row: 0, band: 0 }}
+            explorer={{ name: cell.entry?.name ?? summary.title, count: summary.imageCount, unsaved: summary.unsaved, active: summary.active, imagePx: host ? (pane.tileSize?.imagePx ?? 64) : undefined, small: pane.tileSize?.preset === "small" }}
+            selected={selected.has(cell.id)} {revision} badgeNodes={data?.dag.nodes} badges={band ? known?.plan.badges.get(cell.id) ?? [] : []} badgeSelection={selected}
+            onbadge={(key, event) => onactivate(key, event, summary.id)} onbadgehover={(key) => hoveredBadge = key} focused={stop === cell.id} onfocus={() => tabStop = cell.id} onclose={band ? () => onexpand(summary.id, false) : undefined}
+            onactivate={(event) => band ? onactivate(cell.id, event, summary.id) : activateStack(cell, event, true)}
+            onopen={() => { if (!band && cell.entry) void pane.open(cell.entry); else onopen(cell.id); }}
+            onmenu={(event) => { if (!band && cell.entry) onordinarymenu(cell.entry, event); else onmenu(cell.id, event, summary.id); }}
+            onkey={(event) => keydown(cell.id, event)} {captureSelection} onsaved={(path, select) => onsaved(cell.id, path, select)} ondiscarded={() => ondiscarded(cell.id)} />
         </div>
         {#if band}
-          <div class="content" data-grid-band={cell.id} data-horizontal-scroll style:height="{band.y + band.height - rect.y}px">
+          <div class="content" data-grid-band={cell.id} data-grid-band-row={band.row} data-group-left={placements.get(cell.id)!.left} data-group-width={placements.get(cell.id)!.right - placements.get(cell.id)!.left} data-child-group-left={band.x} data-child-group-width={band.width} data-horizontal-scroll style:height="{band.y + band.height - rect.y}px">
             {#if data && (nearRect(band.y, band.height) || focus?.componentId === summary.id || (stop !== null && data.dag.nodes.has(stop)))}
-              <TraceGraph {data} {focus} focusedKey={stop ?? undefined} onfocuskey={(key) => tabStop = key} badgeHover={hoveredBadge} onbadgehover={(key) => hoveredBadge = key} {selected} width={flow.width} {tile} {revision} {scroller} componentId={summary.id} {reveal}
+              <TraceGraph {data} {focus} focusedKey={stop ?? undefined} onfocuskey={(key) => tabStop = key} badgeHover={hoveredBadge} onbadgehover={(key) => hoveredBadge = key} {selected} width={innerWidth} {tile} {revision} {scroller} componentId={summary.id} {reveal}
                 pinned={pins.get(cell.id)!}
-                bandTop={band.y - rect.y} bandBridge={bridges.get(cell.id)} ongeometry={(plan, layout) => geometry(cell.id, plan, layout)} ongridkey={keydown}
+                bandTop={band.y - rect.y} bandPlacement={placements.get(cell.id)} ongeometry={(plan, layout) => geometry(cell.id, plan, layout)} ongridkey={keydown}
                 onactivate={(key, event) => onactivate(key, event, summary.id)} onnavigate={(key) => onnavigate(key, summary.id)} {onopen}
                 onmenu={(key, event) => onmenu(key, event, summary.id)} {captureSelection} {onsaved} {ondiscarded} {oncommit}
                 onlayout={(pending) => onlayout(summary.id, pending)} {onfailure} />
@@ -260,23 +254,6 @@
   .cell { position: absolute; top: 0; pointer-events: auto; z-index: 2; }
   .content { position: absolute; top: 0; left: 0; width: 100%; pointer-events: none; }
   .content :global(.tile) { pointer-events: auto; }
-  .content::before { content: ""; position: absolute; inset: 100px 0 0; background: color-mix(in srgb, var(--accent) 3%, transparent); box-shadow: 0 0 18px color-mix(in srgb, var(--accent) 5%, transparent); }
-  .heading { position: relative; display: flex; flex-direction: column; align-items: center; width: 100%; height: 100%; margin: 0 auto; box-sizing: border-box; padding: 5px; border: 0; background: none; color: var(--text-primary); font: inherit; cursor: pointer; }
-  .stack::before, .stack::after { content: ""; position: absolute; left: calc((100% - var(--stack-width, 92px)) / 2 + 6px); width: calc(var(--stack-width, 92px) - 12px); height: var(--stack-image, 51px); top: 8px; border: 1px solid var(--control-stroke); border-radius: var(--radius-sm); background: var(--background-card-secondary); transform: rotate(0); opacity: 0; z-index: -1; }
-  .closed.stack::before { transform: rotate(-5deg); opacity: 1; }
-  .closed.stack::after { transform: rotate(5deg); opacity: 1; }
-  @media (prefers-reduced-motion: no-preference) { .stack::before, .stack::after { transition: transform 160ms cubic-bezier(.2,.8,.2,1), opacity 160ms; } }
-  .heading.selected { border: 1px solid var(--accent); border-radius: var(--radius-sm); background: color-mix(in srgb, var(--accent) 14%, var(--background-card-secondary)); }
-  .heading:focus-visible { outline: 2px solid var(--focus-stroke-outer); }
-  .cover-image { display: block; width: 100%; overflow: hidden; border: 1px solid var(--control-stroke); border-radius: var(--radius-sm); background: var(--background-card-secondary); pointer-events: none; }
-  .cover-image :global(.thumbnail) { height: 100% !important; }
-  .cover-image :global(.entry) { border: 1px solid var(--control-stroke); background: var(--background-card-secondary); }
-  .cover-image :global(.name) { display: none; }
-  .name { max-width: 100%; font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .count { font-size: 10px; color: var(--text-secondary); }
-  .unsaved { font-size: 10px; color: var(--system-caution-text, var(--system-caution)); }
-  .spinner { position: absolute; top: 9px; right: 9px; width: 14px; height: 14px; border: 2px solid var(--divider); border-top-color: var(--accent); border-radius: 50%; animation: spin 800ms linear infinite; }
-  @keyframes spin { to { transform: rotate(360deg); } }
-  @media (prefers-reduced-motion: reduce) { .spinner { animation: none; } }
+  .row-band { position: absolute; left: 0; pointer-events: none; background: color-mix(in srgb, var(--accent) 3%, transparent); }
   .loading { position: absolute; bottom: 50px; width: 100%; text-align: center; color: var(--text-secondary); }
 </style>
