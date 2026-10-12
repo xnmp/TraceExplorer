@@ -25,6 +25,12 @@ describe("scroll anchor invalidation", () => {
     { type: "adjustment", actual: 0, requested: NaN },
   ])("releases for %j", (event) => { expect(releasesAnchor(event)).toBe(true); });
 
+  it.each([.49, .5, .99, 1, 2])("distinguishes quantized adjustments from blocked travel (%s px)", (residual) => {
+    expect(releasesAnchor({ type: "adjustment", actual: 100, requested: 100 + residual })).toBe(residual >= 1);
+    // User scroll detection retains its tighter tolerance.
+    expect(releasesAnchor({ type: "scroll", actual: 100 + residual, expected: 100 })).toBe(residual >= .5);
+  });
+
   it.each<AnchorEvent>([
     { type: "motion" }, { type: "settled" }, { type: "pointerdown", scrollbar: false },
     { type: "scroll", actual: 100, expected: 100 }, { type: "scroll", actual: 100.1, expected: 100 },

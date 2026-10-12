@@ -11,7 +11,7 @@
   import type { GraphScene } from "./graph-commit";
   import { selectableSelector } from "./selectable";
   import { type FolderCell, folderCells, unlistedCovers, coverNode, gridNeighbor, attachPackedBand, bandExtent, estimatedBandExtent, packedGridFlow, bandPlacements, gridPins, rovingStop } from "./stack-grid";
-  import { captureGrid, playGrid, prefersReducedMotion, zoomOf } from "./motion";
+  import { captureGrid, playGrid, prefersReducedMotion, zoomOf, type GridSnapshot } from "./motion";
   import TraceGraph from "./TraceGraph.svelte";
   import TraceTile from "./TraceTile.svelte";
   import OrdinaryTile from "./OrdinaryTile.svelte";
@@ -51,7 +51,8 @@
     onexpand(summary.id, true);
   }
   let running: Animation[] = [];
-  let motion = 0;
+  let pendingMotion: { before: GridSnapshot | null } | null = null;
+  let destroyed = false;
   /** Stacks that have been unsaved since the grid was last laid out afresh: they keep their cell when saved. */
   let held = $state.raw<ReadonlySet<string>>(new Set());
   const cells = $derived(session.index ? folderCells(pane.entries, session.index, held, claimedPaths) : []);
@@ -118,21 +119,20 @@
     const observer = new ResizeObserver(schedule); observer.observe(container);
     return () => { container.removeEventListener("scroll", schedule); observer.disconnect(); cancelAnimationFrame(frame); };
   });
-  $effect.pre(() => {
-    void flow;
-    const element = untrack(() => grid);
-    if (!element) return;
-    const before = prefersReducedMotion() ? null : captureGrid(element);
-    const current = ++motion;
-    // The running animations are cancelled only as their replacements start, in the same turn. Cancelled earlier, a graph
-    // that commits in between (and captures what is displayed) would capture the settled geometry and snap there.
+  /** One displayed snapshot per DOM commit; pinned graphs and flow share a motion owner. */
+  function prepareMotion(): void {
+    if (!grid || pendingMotion) return;
+    const commit = { before: prefersReducedMotion() ? null : captureGrid(grid) };
+    pendingMotion = commit;
     void tick().then(() => {
-      if (current !== motion) return;
-      if (grid && before) running = playGrid(grid, before, running);
+      if (destroyed) return;
+      pendingMotion = null;
+      if (grid && commit.before) running = playGrid(grid, commit.before, running);
       else { for (const animation of running) animation.cancel(); running = []; }
       ongeometry();
     });
-  });
+  }
+  $effect.pre(() => { void flow; untrack(prepareMotion); });
   // Keyboard focus belongs to the grid until it genuinely leaves (a blur to another element or the page).
   // Removing the focused element fires no blur, so a cover replaced by a toggle, a band tile that leaves
   // the neighbourhood, or a stack that merges away leaves focus on <body>: move it to the surviving stop.
@@ -152,7 +152,7 @@
       grid?.querySelector<HTMLElement>(`${selectableSelector(stop)}, [data-entry-path="${CSS.escape(stop)}"]`)?.focus({ preventScroll: true });
     });
   });
-  onDestroy(() => { motion++; for (const animation of running) animation.cancel(); });
+  onDestroy(() => { destroyed = true; for (const animation of running) animation.cancel(); });
   function geometry(id: string, plan: BandScenePlan, layout: GraphLayout): void {
     const cover = layout.nodes.get(id);
     if (!cover) return;
@@ -227,7 +227,7 @@
           <div class="content" data-grid-band={cell.id} data-grid-band-row={band.row} data-group-left={placements.get(cell.id)!.left} data-group-width={placements.get(cell.id)!.right - placements.get(cell.id)!.left} data-child-group-left={band.x} data-child-group-width={band.width} data-horizontal-scroll style:height="{band.y + band.height - rect.y}px">
             {#if data && (nearRect(band.y, band.height) || focus?.componentId === summary.id || (stop !== null && data.dag.nodes.has(stop)))}
               <TraceGraph {data} {focus} focusedKey={stop ?? undefined} onfocuskey={(key) => tabStop = key} badgeHover={hoveredBadge} onbadgehover={(key) => hoveredBadge = key} {selected} width={innerWidth} {tile} {revision} {scroller} componentId={summary.id} {reveal}
-                pinned={pins.get(cell.id)!}
+                onbeforecommit={prepareMotion} pinned={pins.get(cell.id)!}
                 bandTop={band.y - rect.y} bandPlacement={placements.get(cell.id)} ongeometry={(plan, layout) => geometry(cell.id, plan, layout)} ongridkey={keydown}
                 onactivate={(key, event) => onactivate(key, event, summary.id)} onnavigate={(key) => onnavigate(key, summary.id)} {onopen}
                 onmenu={(key, event) => onmenu(key, event, summary.id)} {captureSelection} {onsaved} {ondiscarded} {oncommit}

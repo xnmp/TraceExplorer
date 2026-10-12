@@ -17,7 +17,7 @@
   import type { GraphScene } from "./graph-commit";
   import { cachedLayout, computeLayout, layoutNow } from "./layout-client";
   import { selectableSelector } from "./selectable";
-  import { captureGraph, carriesMotion, playGraph, prefersReducedMotion, zoomOf } from "./motion";
+  import { captureGraph, playGraph, prefersReducedMotion, zoomOf } from "./motion";
   import { nodeTitle } from "./node-target";
   import { sameGraphGeometry } from "$lib/domain/trace-graph/layout-geometry";
   import TraceTile from "./TraceTile.svelte";
@@ -53,6 +53,8 @@
     ondiscarded: (key: NodeKey) => void;
     /** Called after a new layout is in the DOM and its motion has started. */
     oncommit?: (scene: GraphScene) => void;
+    /** Capture the whole grid before a pinned graph changes its DOM. */
+    onbeforecommit?: () => void;
     /** Current layout readiness, used only by keyboard/programmatic reveals. */
     onlayout?: (pending: boolean) => void;
     onfailure?: (scene: GraphScene, error: Error) => void;
@@ -67,7 +69,7 @@
     orientations?: Map<string, OrientationHistory>;
   }
 
-  let { data, focus, selected, width, tile = tileMetrics(), revision, scroller, onactivate, onnavigate, onopen, onmenu, onsaved, ondiscarded, oncommit, onlayout, captureSelection, componentId, orientations = new Map(), onfailure, reveal = null, pinned, bandTop = 0, bandPlacement, ongeometry, ongridkey, badgeHover = null, focusedKey, onfocuskey, onbadgehover }: Props = $props();
+  let { data, focus, selected, width, tile = tileMetrics(), revision, scroller, onactivate, onnavigate, onopen, onmenu, onsaved, ondiscarded, oncommit, onbeforecommit, onlayout, captureSelection, componentId, orientations = new Map(), onfailure, reveal = null, pinned, bandTop = 0, bandPlacement, ongeometry, ongridkey, badgeHover = null, focusedKey, onfocuskey, onbadgehover }: Props = $props();
 
   /** Below this many tiles layout runs inline; it takes well under a frame. */
   const SYNC_LIMIT = 60;
@@ -109,9 +111,6 @@
   let shown = $state.raw<{ plan: ScenePlan; layout: GraphLayout } | null>(null);
 
   function commit(next: ScenePlan, layout: GraphLayout, scene: GraphScene): void {
-    // The first graph has no displayed geometry to preserve. Existing graphs
-    // publish after rendering so attachment motion captures their old scene.
-    if (pinned && !shown) ongeometry?.(next as BandScenePlan, layout);
     if (shown && shown.plan === next && shown.layout === layout) {
       void tick().then(() => rendered(scene, next, layout));
       return;
@@ -125,7 +124,15 @@
       void tick().then(() => rendered(scene, next, layout));
       return;
     }
-    const firstPinned = !shown && !!pinned;
+    if (pinned) {
+      onbeforecommit?.();
+      ongeometry?.(next as BandScenePlan, layout);
+      shown = { plan: next, layout };
+      layoutStamp++;
+      failure = "";
+      void tick().then(() => rendered(scene, next, layout));
+      return;
+    }
     const element = canvas;
     const before = element && shown && !prefersReducedMotion() ? captureGraph(element) : null;
     shown = { plan: next, layout };
@@ -138,10 +145,6 @@
       for (const animation of running) animation.cancel();
       running = [];
       if (before && canvas) running = playGraph(canvas, before, layout.orientation);
-      else if (firstPinned && canvas && pinned && !prefersReducedMotion() && !carriesMotion(canvas)) {
-        const snapshot = captureGraph(canvas), cover = attached?.nodes.get(pinned.key);
-        if (cover) running = playGraph(canvas, { ...snapshot, tiles: new Map(), routeIds: new Map(), routes: new Map(), junctions: new Map() }, "down", { key: pinned.key, box: { ...cover, fading: null } });
-      }
       rendered(scene, next, layout);
     });
   }

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { displace, flattenPath, polyline, resample, samplePathString } from "$lib/plugins/trace/view/path-sampling";
+import { displace, interpolatePath, flattenPath, polyline, resample, samplePathString } from "$lib/plugins/trace/view/path-sampling";
 
 const close = (actual: { x: number; y: number }, expected: { x: number; y: number }) => {
   expect(actual.x).toBeCloseTo(expected.x, 6);
@@ -49,6 +49,17 @@ describe("path sampling for connector motion", () => {
   it("displaces the start and end by their own offsets and blends between them", () => {
     const moved = displace([{ x: 0, y: 0 }, { x: 0, y: 5 }, { x: 0, y: 10 }], { x: 10, y: 0 }, { x: 0, y: -4 });
     expect(moved).toEqual([{ x: 10, y: 0 }, { x: 5, y: 3 }, { x: 0, y: 6 }]);
+  });
+
+  it("keeps connector endpoints attached at intermediate travel progress", () => {
+    const from = samplePathString("M10 20 L10 80", 24)!;
+    const to = samplePathString("M10 20 L10 160 L90 160 L90 240", 24)!;
+    const halfway = interpolatePath(from, to, .5);
+    expect(halfway[0]).toEqual({ x: 10, y: 20 });
+    expect(halfway.at(-1)).toEqual({ x: 50, y: 160 });
+    expect(interpolatePath(from, to, 0)).toEqual(from);
+    expect(interpolatePath(from, to, 1)).toEqual(to);
+    expect(interpolatePath([], [], .5)).toEqual([]);
   });
 
   it("formats a polyline that parses back to the same points", () => {

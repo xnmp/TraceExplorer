@@ -15,7 +15,7 @@ export type AnchorEvent =
   | { type: "motion" | "settled" };
 
 const SCROLL_KEYS = new Set(["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "PageUp", "PageDown", "Home", "End", " ", "Spacebar"]);
-const differs = (a: number, b: number) => !Number.isFinite(a) || !Number.isFinite(b) || Math.abs(a - b) >= 0.5;
+const differs = (a: number, b: number, tolerance = 0.5) => !Number.isFinite(a) || !Number.isFinite(b) || Math.abs(a - b) >= tolerance;
 
 /** Own scroll events and idle motion preserve the anchor; clamped adjustments cannot. */
 export function releasesAnchor(event: AnchorEvent): boolean {
@@ -23,7 +23,9 @@ export function releasesAnchor(event: AnchorEvent): boolean {
     case "keydown": return SCROLL_KEYS.has(event.key);
     case "pointerdown": return event.scrollbar;
     case "scroll": return differs(event.actual, event.expected);
-    case "adjustment": return differs(event.actual, event.requested);
+    // WebKit can floor scrollTop to whole CSS pixels. A subpixel residual
+    // is quantization, while a full pixel still identifies a blocked hold.
+    case "adjustment": return differs(event.actual, event.requested, 1);
     case "motion": case "settled": return false;
     default: return true;
   }
