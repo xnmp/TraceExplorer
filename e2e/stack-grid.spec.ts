@@ -325,7 +325,7 @@ test("selection inside a band moves only rows below vertically, including anothe
   await settle(page);
   const after = await gridBoxes(page); sameColumns(before, after);
   // The village band grows under the village cover, so the cover stays put while every row below it,
-  // including the other open stack's cover, only slides vertically by the band's growth.
+  // including the other open stack's cover, is placed vertically by the band's growth.
   const village = await key(page, "village"), forest = await key(page, "forest"), below = await key(page, "fan");
   for (const sample of samples) {
     sameColumns(before, sample);
@@ -334,7 +334,7 @@ test("selection inside a band moves only rows below vertically, including anothe
   const delta = after[below].y - before[below].y;
   expect(Math.abs(delta)).toBeGreaterThan(40);
   expect(after[forest].y - before[forest].y).toBeCloseTo(delta, 1);
-  expect(samples.some((sample) => Math.abs(sample[below].y - before[below].y) > 1 && Math.abs(sample[below].y - after[below].y) > 1)).toBe(true);
+  for (const sample of samples) expect(sample[below].y).toBeCloseTo(after[below].y, 1);
   expect(after["/pictures/notes.txt"].y - before["/pictures/notes.txt"].y).toBeCloseTo(delta, 1);
   const childAfter = await forestChild.evaluate((element) => element.getBoundingClientRect().y + document.querySelector<HTMLElement>('[data-testid="trace-view"]')!.scrollTop);
   expect(childAfter - childBefore).toBeCloseTo(delta, 1);
@@ -448,42 +448,39 @@ test("hovering a reference preserves a deeper selected tile and keyboard focus",
   expect((await state(page)).selected).toEqual(["/pictures/quiet.png"]);
 });
 
-test("closing during emergence reverses from the displayed tile position and opacity", async ({ page }) => {
-  await openView(page, 420, "?grouping=two-chains", false);
+test("closing during emergence reclaims rows without overlapping the remaining band", async ({ page }) => {
+  await page.setViewportSize({ width: 800, height: 1600 });
+  await openView(page, 220, "?grouping=two-chains", false);
+  await stack(page, "photo-b").locator("[data-stack-toggle]").click(); await settle(page);
   await holdScriptedAnimations(page);
   try {
     await stack(page, "photo-a").locator("[data-stack-toggle]").click();
-    const child = await key(page, "photo-a-edit");
-    await expect(page.locator(`[data-node-key="${child}"]`)).toHaveCount(1);
-    // Every animation of the opening exists before any is seeked (grid motion and geometry arrive in later turns).
     await awaitAnimationsCreated(page);
-    const result = await page.evaluate(async (key) => {
-      const w = window as any, frame = () => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    const child = await key(page, "photo-a-edit");
+    const samples = await page.evaluate(async () => {
+      const w = window as any;
       for (const animation of w.__heldAnimations as Animation[]) if (animation.playState === "running") animation.currentTime = 40;
-      await frame();
-      const tile = document.querySelector<HTMLElement>(`[data-tile-key="${key}"]`)!;
-      const before = { y: tile.getBoundingClientRect().y, opacity: Number(getComputedStyle(tile).opacity) };
-      tile.closest("section")!.querySelector<HTMLElement>('[aria-label="Close stack"]')!.click();
-      // The closing copy and its animations are created in turns after the click; wait until none are new.
-      for (let count = -1, stable = 0; stable < 4;) { await frame(); const now = w.__heldAnimations.length + w.trace.layoutsPending(); stable = now === count ? stable + 1 : 0; count = now; }
-      const ghost = document.querySelector<HTMLElement>(`[data-grid-ghost] [data-ghost-tile-key="${key}"]`)!;
-      const closing = (w.__heldAnimations as Animation[]).filter((animation) => animation.playState === "running");
+      await new Promise(requestAnimationFrame);
+      document.querySelector<HTMLElement>('section[aria-label="photo-a"] [aria-label="Close stack"]')!.click();
       const samples = [];
-      for (const time of [0, 40, 80, 120]) {
-        for (const animation of closing) animation.currentTime = time;
-        await frame();
-        samples.push({ y: ghost.getBoundingClientRect().y, opacity: Number(getComputedStyle(ghost).opacity) });
+      for (let i = 0; i < 12; i++) {
+        await new Promise(requestAnimationFrame);
+        const backgrounds = [...document.querySelectorAll<HTMLElement>("[data-grid-row-band]")];
+        samples.push([...document.querySelectorAll<HTMLElement>("[data-grid-cell]")].map((cell) => {
+          const row = Number(cell.getAttribute("aria-rowindex")) - 1, rect = cell.getBoundingClientRect();
+          return { top: rect.top, bottom: rect.bottom,
+            earlierBottom: Math.max(-Infinity, ...backgrounds.filter((band) => Number(band.dataset.gridRowBand) < row).map((band) => band.getBoundingClientRect().bottom)),
+            ownTop: Math.min(Infinity, ...backgrounds.filter((band) => Number(band.dataset.gridRowBand) === row).map((band) => band.getBoundingClientRect().top)) };
+        }));
       }
-      return { before, samples };
-    }, child);
-    expect(result.samples[0].y).toBeCloseTo(result.before.y, 0);
-    expect(result.samples[0].opacity).toBeCloseTo(result.before.opacity, 2);
-    let previous = result.before;
-    for (const sample of result.samples) {
-      expect(sample.y).toBeLessThanOrEqual(previous.y + .5);
-      expect(sample.opacity).toBeLessThanOrEqual(previous.opacity + .02);
-      previous = sample;
+      return samples;
+    });
+    for (const frame of samples) for (const cell of frame) {
+      expect(cell.top).toBeGreaterThanOrEqual(cell.earlierBottom - .5);
+      expect(cell.bottom).toBeLessThanOrEqual(cell.ownTop + .5);
     }
+    await expect(page.locator(`[data-tile-key="${child}"], [data-ghost-tile-key="${child}"]`)).not.toBeVisible();
+    await expect(stack(page, "photo-b").locator("[data-grid-band] [data-tile-key]").first()).toBeVisible();
   } finally { await releaseScriptedAnimations(page); }
   await settle(page);
   await expect(stack(page, "photo-a").locator("[data-grid-band]")).toHaveCount(0);
@@ -977,7 +974,7 @@ for (const worker of [false, true]) test(`#56 cold open holds the band and follo
       .find((cell) => cell.getBoundingClientRect().top > cover.getBoundingClientRect().top + 2)!;
     const view = document.querySelector<HTMLElement>('[data-testid="trace-view"]')!;
     const baseline = following.getBoundingClientRect().top + view.scrollTop;
-    const samples: Array<{ time: number; top: number; height: number; content: boolean; loading: boolean; statusInBand: boolean; workerHeld: boolean }> = [];
+    const samples: Array<{ time: number; top: number; computedTop: number; bandBottom: number; height: number; content: boolean; loading: boolean; statusInBand: boolean; workerHeld: boolean }> = [];
     const start = performance.now();
     let readsReleased = false, workerReleased = !worker, workerAt: number | null = null, stable = 0;
     try {
@@ -991,7 +988,10 @@ for (const worker of [false, true]) test(`#56 cold open holds the band and follo
         const status = band.querySelector<HTMLElement>('[role="status"]');
         const statusBounds = status?.getBoundingClientRect();
         const content = band.querySelectorAll("[data-tile-key]").length > 0;
-        samples.push({ time, top: following.getBoundingClientRect().top + view.scrollTop, height: bounds.height, content,
+        const grid = following.closest<HTMLElement>('[role="grid"]')!;
+        samples.push({ time, top: following.getBoundingClientRect().top + view.scrollTop,
+          computedTop: parseFloat(getComputedStyle(following).top) + grid.getBoundingClientRect().top + view.scrollTop,
+          bandBottom: bounds.bottom + view.scrollTop, height: bounds.height, content,
           loading: !!status?.textContent?.trim(), workerHeld: held.length > 0,
           statusInBand: !!statusBounds && statusBounds.top >= bounds.top && statusBounds.bottom <= bounds.bottom });
         if (!readsReleased && time >= 500) { backend.releaseNodeReads(); readsReleased = true; }
@@ -1010,6 +1010,15 @@ for (const worker of [false, true]) test(`#56 cold open holds the band and follo
     }
   }, { name: worker ? "fan" : "gym", worker });
   expect(samples.settled).toBe(true);
+  // The first frame showing the reserved background must already place the next row
+  // outside it. A delayed top animation can freeze under a cold native graph mount.
+  for (const sample of samples.samples) {
+    expect(sample.top, JSON.stringify(sample)).toBeGreaterThanOrEqual(sample.bandBottom - .5);
+    expect(sample.computedTop, JSON.stringify(sample)).toBeGreaterThanOrEqual(sample.bandBottom - .5);
+  }
+  const positions = [samples.baseline];
+  for (const sample of samples.samples) if (Math.abs(sample.top - positions.at(-1)!) > .5) positions.push(sample.top);
+  expect(positions.length - 1, JSON.stringify(positions)).toBeLessThanOrEqual(2);
   const loading = samples.samples.filter((sample) => !sample.content);
   expect(loading.length).toBeGreaterThan(5);
   expect(loading.at(-1)!.time).toBeGreaterThanOrEqual(500);

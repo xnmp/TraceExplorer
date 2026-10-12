@@ -1,6 +1,6 @@
 import { test, expect, type Page } from "@playwright/test";
 import { key, openView, settle, uncaught, ensureExpanded } from "./support";
-import { holdScriptedAnimations, releaseScriptedAnimations } from "./animation-control";
+import { awaitAnimationsCreated, holdScriptedAnimations, releaseScriptedAnimations } from "./animation-control";
 import { clickThroughGym, motionFaults, node, sampleClick } from "./motion-support";
 
 /**
@@ -287,66 +287,34 @@ test.describe("bands expand and collapse quickly", () => {
     return frames;
   }, { index, ms });
 
-  /**
-   * Toggles a section with its animations held, then seeks them together
-   * through `steps + 1` evenly spaced times, recording the following
-   * section's displayed top at each, with the longest declared duration.
-   * Seeking replaces sampling elapsed time, so machine load cannot change it.
-   */
-  const seekToggle = async (page: Page, index: number, steps = 10) => {
-    await holdScriptedAnimations(page);
-    const result = await page.evaluate(async ({ index, steps }) => {
-      const held = (window as any).__heldAnimations as Animation[];
-      const section = document.querySelectorAll<HTMLElement>("section.component[data-component]")[index];
-      const next = section.nextElementSibling as HTMLElement;
-      const before = next.getBoundingClientRect().top;
-      section.querySelector<HTMLElement>("[data-stack-toggle]")!.click();
-      // Seek motion on the following section; its displayed position is the contract.
-      const slides = () => held.filter((animation) => (animation.effect as KeyframeEffect | null)?.target === next);
-      for (let i = 0; i < 2000 && slides().length === 0; i++) await new Promise((resolve) => requestAnimationFrame(resolve));
-      if (slides().length === 0) throw new Error("what follows the section was not animated");
-      const duration = Math.max(...held.map((animation) => Number(animation.effect!.getTiming().duration)));
-      const easings = slides().map((animation) => animation.effect!.getTiming().easing);
-      const tops: number[] = [];
-      for (let i = 0; i <= steps; i++) {
-        for (const animation of held) animation.currentTime = (duration * i) / steps;
-        tops.push(next.getBoundingClientRect().top);
-      }
-      return { before, duration, easings, tops };
-    }, { index, steps });
-    await releaseScriptedAnimations(page);
-    return result;
-  };
-
-  const monotonic = (tops: number[]) => {
-    const from = tops[0], to = tops.at(-1)!;
-    return tops.every((top, i) => top >= Math.min(from, to) - 0.5 && top <= Math.max(from, to) + 0.5
-      && (i === 0 || Math.abs(top - to) <= Math.abs(tops[i - 1] - to) + 0.5));
-  };
-
-  test("what follows a section slides straight to its new place within a fifth of a second or so", async ({ page }) => {
+  test("following rows share each band's final position from its first frame", async ({ page }) => {
     await openView(page, 120);
-    const sections = page.locator("section.component[data-component]");
-    const forest = sections.nth(1);
+    const forest = page.locator("section.component[data-component]").nth(1);
     for (const expanded of ["false", "true", "false", "true"]) {
-      const { before, duration, easings, tops } = await seekToggle(page, 1);
-      await settle(page);
+      await holdScriptedAnimations(page);
+      const result = await page.evaluate(async () => {
+        const section = document.querySelectorAll<HTMLElement>("section.component[data-component]")[1];
+        const next = section.nextElementSibling as HTMLElement;
+        const row = Number(next.querySelector('[data-grid-cell]')!.getAttribute("aria-rowindex")) - 1;
+        const before = next.getBoundingClientRect().top, samples = [];
+        section.querySelector<HTMLElement>("[data-stack-toggle]")!.click();
+        for (let i = 0; i < 12; i++) {
+          await new Promise(requestAnimationFrame);
+          const top = next.getBoundingClientRect().top;
+          const bottoms = [...document.querySelectorAll<HTMLElement>("[data-grid-row-band]")]
+            .filter((band) => Number(band.dataset.gridRowBand) < row).map((band) => band.getBoundingClientRect().bottom);
+          samples.push({ top, bottom: Math.max(-Infinity, ...bottoms) });
+        }
+        return { before, samples };
+      });
+      await releaseScriptedAnimations(page); await settle(page);
       await expect(forest.locator("[data-stack-toggle]")).toHaveAttribute("aria-expanded", expanded);
-      // A collapsed section's content is gone once it has been hidden.
       await expect(forest.locator(".content")).toHaveCount(expanded === "true" ? 1 : 0);
-      const [from, to] = [tops[0], tops.at(-1)!];
-      // It starts from where it was displayed, and ends at its new place.
-      expect(from).toBeCloseTo(before, 0);
-      expect(Math.abs(to - from), "the section's content height").toBeGreaterThan(40);
-      expect(monotonic(tops), JSON.stringify(tops.map(Math.round))).toBe(true);
-      // The declared duration is about 160 ms, and arrival is at the end of it.
-      expect(duration).toBeGreaterThan(0);
-      expect(duration).toBeLessThanOrEqual(200);
-      // It slides rather than jumping: some time on the way shows it in between.
-      expect(tops.some((top) => Math.min(Math.abs(top - from), Math.abs(top - to)) > 1)).toBe(true);
-      // Eased out (fast start): it is past the midpoint well before half-time.
-      expect(easings.every((easing) => easing !== "linear" && easing !== "ease-in")).toBe(true);
-      expect(Math.abs(tops[Math.floor(tops.length / 2)] - to)).toBeLessThan(Math.abs(to - from) / 2);
+      expect(Math.abs(result.samples.at(-1)!.top - result.before)).toBeGreaterThan(40);
+      for (const sample of result.samples) {
+        expect(sample.top).toBeGreaterThanOrEqual(sample.bottom - .5);
+        expect(sample.top).toBeCloseTo(result.samples.at(-1)!.top, 0);
+      }
     }
     await expect(forest.locator("[data-tile-key]").first()).toBeVisible();
     expect(await uncaught(page)).toEqual([]);
@@ -521,7 +489,7 @@ test.describe("new tiles arrive from their parents' side", () => {
   });
 });
 
-test("reopening a stack mid-close continues each tile from where its closing copy is displayed", async ({ page }) => {
+test("reopening immediately after collapse reserves space before revealing children", async ({ page }) => {
   await openView(page, 900, "", false);
   const village = page.locator('section[aria-label="village"]');
   await village.locator("[data-stack-toggle]").click(); await settle(page);
@@ -529,25 +497,26 @@ test("reopening a stack mid-close continues each tile from where its closing cop
   await holdScriptedAnimations(page);
   try {
     await village.getByRole("button", { name: "Close stack" }).click();
-    await page.waitForFunction(() => !!document.querySelector("[data-grid-ghost]"));
-    // Both the closing copy and the reopened tile report what is displayed: position and opacity down the ancestor chain.
-    const displayed = (selector: string) => page.evaluate((selector) => {
-      const element = document.querySelector<HTMLElement>(selector)!;
-      let opacity = 1;
-      for (let at: Element | null = element; at && at !== document.body; at = at.parentElement) opacity *= Number(getComputedStyle(at).opacity);
-      const rect = element.getBoundingClientRect();
-      return { x: rect.left, y: rect.top, opacity };
-    }, selector);
-    // Seek the closing motion 40ms in; every held animation is then at a known time.
-    await page.evaluate(() => { for (const animation of (window as any).__heldAnimations as Animation[]) if (animation.playState !== "idle") animation.currentTime = 40; });
-    const closing = await displayed(`[data-ghost-tile-key="${child}"]`);
+    await expect(page.locator(`[data-tile-key="${child}"], [data-ghost-tile-key="${child}"]`)).not.toBeVisible();
     await village.locator("[data-stack-toggle]").click();
-    await page.waitForFunction((child) => !!document.querySelector(`[data-grid-band] [data-tile-key="${child}"]`), child);
-    // Held at the start of the reopening motion: nothing has advanced yet.
-    const reopened = await displayed(`[data-grid-band] [data-tile-key="${child}"]`);
-    expect(Math.abs(reopened.x - closing.x), "x").toBeLessThan(1.5);
-    expect(Math.abs(reopened.y - closing.y), "y").toBeLessThan(1.5);
-    expect(Math.abs(reopened.opacity - closing.opacity), "opacity").toBeLessThan(0.05);
+    await awaitAnimationsCreated(page);
+    const result = await page.evaluate(async (child) => {
+      const tile = document.querySelector<HTMLElement>(`[data-grid-band] [data-tile-key="${child}"]`)!;
+      const initialOpacity = Number(getComputedStyle(tile).opacity), samples = [];
+      for (const time of [0, 40, 80, 120, 160]) {
+        for (const animation of (window as any).__heldAnimations as Animation[]) if (animation.playState === "running") animation.currentTime = time;
+        await new Promise(requestAnimationFrame);
+        const band = document.querySelector<HTMLElement>('[data-grid-row-band="0"]')!.getBoundingClientRect();
+        samples.push([...document.querySelectorAll<HTMLElement>('[data-grid-cell][aria-rowindex]')]
+          .filter((cell) => Number(cell.getAttribute('aria-rowindex')) > 1).map((cell) => cell.getBoundingClientRect().top - band.bottom));
+      }
+      return { initialOpacity, finalOpacity: Number(getComputedStyle(tile).opacity), samples };
+    }, child);
+    expect(result.initialOpacity).toBeLessThan(.01);
+    expect(result.finalOpacity).toBe(1);
+    for (const sample of result.samples) for (const clearance of sample) expect(clearance).toBeGreaterThanOrEqual(-.5);
     expect(await uncaught(page)).toEqual([]);
   } finally { await releaseScriptedAnimations(page); }
+  await settle(page);
+  await expect(page.locator(`[data-tile-key="${child}"]`)).toBeVisible();
 });
