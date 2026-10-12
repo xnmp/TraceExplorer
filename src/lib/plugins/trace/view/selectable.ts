@@ -4,3 +4,6 @@
  * focusing never treat one kind as absent.
  */
 export const selectableSelector = (key: string): string => `[data-node-key="${CSS.escape(key)}"], [data-reference-key="${CSS.escape(key)}"]`;
+
+/** Shared hit targets for graph cards, reference badges, covers and host/fallback file tiles. */
+export const SELECTABLE_TILES = "[data-node-key], [data-reference-key], [data-entry-path]";

@@ -8,7 +8,6 @@
   import { flushSync, onDestroy, tick, untrack } from "svelte";
   import type { FileViewPane, PreviewTarget } from "../../../../../integration/plugin-sdk";
   import type { FileEntry } from "$lib/domain/file";
-  import { deselectGesture, inClientArea, scaledClientArea, type PointerPosition, type DeselectEvent, type DeselectGesture, type DeselectPointer } from "$lib/domain/deselect-click";
   import { parentDir, samePath } from "$lib/domain/path";
   import type { ComponentSummary, NodeKey, TraceNode } from "$lib/domain/trace-graph/model";
   import { tileMetrics } from "$lib/domain/trace-graph/metrics";
@@ -25,6 +24,9 @@
 
   import StackGrid from "./StackGrid.svelte";
   import { selectableSelector } from "./selectable";
+  import { attachMarqueeSelection } from "./marquee-attachment";
+  import { marqueeSelection, sameSelection, type MarqueeRect } from "./marquee-selection";
+  import { pendingMarqueeComponents } from "./marquee-components";
   import { folderCells, pendingListingPaths } from "./stack-grid";
 
   interface Props { pane: FileViewPane; session?: FolderSession }
@@ -38,6 +40,12 @@
 
   let scroller = $state<HTMLElement | null>(null);
   let clientWidth = $state(0);
+  let marquee = $state.raw<MarqueeRect | null>(null);
+  let marqueeActive = $state(false);
+  let marqueeLoading = $state.raw<ReadonlySet<string>>(new Set());
+  let marqueeTurn = 0;
+  let marqueeFocus: { key: NodeKey; componentId: string } | null = null;
+  let marqueeAttachment: ReturnType<typeof attachMarqueeSelection> | null = null;
   let near = $state.raw<ReadonlySet<string>>(new Set());
   /** A save into this folder waiting for the listing to contain its file; see `callbacks.saved`. */
   /**
@@ -146,13 +154,15 @@
 
   const summaries = $derived<readonly ComponentSummary[]>(session.index?.components ?? []);
   const gridCells = $derived(session.index ? folderCells(pane.entries, session.index) : []);
+  const gridCellsByKey = $derived(new Map(gridCells.map((cell) => [cell.id, cell])));
   const stackKey = (id: string) => gridCells.find((cell) => cell.summary?.id === id)?.id ?? id;
   const openKeys = $derived(session.openStackKeys);
   $effect(() => {
     const choice = JSON.stringify([hostChoice, target?.id, pane.focusedPath]);
     const index = session.index;
+    const dragging = marqueeActive;
     untrack(() => {
-      if (!index) return;
+      if (!index || dragging) return;
       const ids = new Set(pane.selection.flatMap((entry) => { const member = session.componentOf(entry.path); return member ? [member.componentId] : []; }));
       if (focus) ids.add(focus.componentId);
       session.followSelection(choice, ids);
@@ -163,6 +173,7 @@
   const target = $derived(pane.previewTarget);
   const targetData = $derived(target && isTraceTargetData(target.data) && samePath(target.data.directory, directory) ? target.data : null);
   const focus = $derived.by<{ key: NodeKey; componentId: string } | null>(() => {
+    if (marqueeActive) return marqueeFocus;
     if (targetData) return { key: targetData.key, componentId: targetData.componentId };
     const path = pane.focusedPath;
     const member = path ? session.componentOf(path) : null;
@@ -264,7 +275,8 @@
   // data); release the rest.
   $effect(() => {
     const picked = pickComponents;
-    const wanted = summaries.filter((summary, index) => (isExpanded(summary, index) && near.has(summary.id)) || picked.has(summary.id) || session.openStackSearch.has(summary.id)).map((summary) => summary.id);
+    const selecting = marqueeLoading;
+    const wanted = summaries.filter((summary, index) => (isExpanded(summary, index) && near.has(summary.id)) || picked.has(summary.id) || selecting.has(summary.id) || session.openStackSearch.has(summary.id)).map((summary) => summary.id);
     untrack(() => {
       for (const summary of summaries) if (!wanted.includes(summary.id)) session.release(summary.id);
       for (const id of wanted) void session.ensure(id);
@@ -306,6 +318,7 @@
   }
 
   function keepAnchor(scene: GraphScene): void {
+    marqueeAttachment?.layoutChanged();
     updateHeldAnchor();
     if (!scene.isCurrent()) return;
     committedScenes.set(scene.data, scene);
@@ -528,56 +541,93 @@
     commitPicks(NO_PICKS);
   }
 
-  /** Observe gestures without capturing the pointer or changing the host's pan/control handlers. */
+  /** Apply one marquee frame through the host, then record a fresh ordered-picks object. */
+  function selectMarquee(keys: readonly string[], additive: boolean, load = true): void {
+    const turn = ++marqueeTurn;
+    const missing = load ? missingMarqueeComponents(keys) : [];
+    marqueeLoading = new Set(missing);
+    const hits = keys.flatMap((key) => {
+      const location = locateExtra(key);
+      const found = location && typeof location !== "string" ? location : null;
+      if (found) {
+        // Like clicks: listed files can be selected independently of input eligibility.
+        if (!fileEntry(found.node) && !pickable(found.node)) return [];
+        return [{ path: found.node.path!, key, componentId: found.componentId }];
+      }
+      const cell = gridCellsByKey.get(key);
+      if (cell?.summary) {
+        const path = cell.summary.cover?.path;
+        // An unloaded cover's path may now hold a newer revision. Only the index
+        // can establish that this drawn cover is the listed file itself.
+        return path && entriesByPath.has(path) && session.componentOf(path)?.key === key
+          ? [{ path, key, componentId: cell.summary.id }] : [];
+      }
+      return entriesByPath.has(key) ? [{ path: key, key }] : [];
+    });
+    const paths = marqueeSelection(inputs, hits.map((hit) => hit.path), { ctrlKey: additive });
+    const selected = new Set(paths);
+    const extras = [...new Map([...livePicks.extras.filter((hit) => additive && selected.has(hit.path)),
+      ...hits.filter((hit) => !entriesByPath.has(hit.path))].map((hit) => [hit.path, hit])).values()];
+    const listed = paths.filter((path) => entriesByPath.has(path));
+    if (!sameSelection(hostSelected, listed)) pane.setSelection(listed);
+    if (targetData && (!additive || listed.length)) pane.setPreviewTarget(null);
+    commitPicks({ order: paths, extras });
+    marqueeAttachment?.selectionApplied();
+    if (missing.length) {
+      // Index summaries cannot establish unlisted input eligibility. Resolve the
+      // actual revision, retaining its component until the latest frame settles.
+      const owns = captureSelection();
+      void resolveMarquee(keys, additive, turn, owns);
+    }
+  }
+
+  /** Recompute component IDs from stable revision keys against each latest index. */
+  function missingMarqueeComponents(keys: readonly string[]): string[] {
+    const index = {
+      listed: session.index ? new Set(summaries.map((summary) => summary.id)) : null,
+      components: session.components, isStale: (id: string) => session.isStale(id),
+    };
+    return pendingMarqueeComponents(keys, new Set(entriesByPath.keys()),
+      new Map(summaries.map((summary) => [summary.coverKey, summary])), index);
+  }
+
+  async function resolveMarquee(keys: readonly string[], additive: boolean, turn: number, owns: () => boolean): Promise<void> {
+    for (;;) {
+      await session.settled();
+      if (turn !== marqueeTurn) return;
+      if (!owns()) { marqueeLoading = new Set(); return; }
+      const index = session.index;
+      const missing = missingMarqueeComponents(keys);
+      marqueeLoading = new Set(missing);
+      await Promise.all(missing.map((id) => session.ensure(id)));
+      // A refresh aborts node reads before its replacement index lands.
+      await session.settled();
+      if (turn !== marqueeTurn) return;
+      if (!owns()) { marqueeLoading = new Set(); return; }
+      if (session.index !== index) continue;
+      selectMarquee(keys, additive, false);
+      return;
+    }
+  }
+
   function backgroundSelection(element: HTMLElement) {
-    const controls = 'button, a, input, select, textarea, summary, [role="button"], [role="link"], [role="checkbox"], [role="menuitem"], [tabindex], [contenteditable]:not([contenteditable="false"]), [data-tile-key], [data-entry-path]';
-    const at = (event: MouseEvent): PointerPosition => ({ x: event.clientX, y: event.clientY });
-    const empty = (target: EventTarget | null, position: PointerPosition) => {
-      if (!(target instanceof Element) || !element.contains(target)) return false;
-      const box = element.getBoundingClientRect();
-      const content = scaledClientArea({ x: box.left, y: box.top }, { left: element.clientLeft, top: element.clientTop, width: element.clientWidth, height: element.clientHeight }, zoomOf(element, box));
-      if (!inClientArea(position, content)) return false;
-      const control = target.closest(controls);
-      return !control || !element.contains(control);
-    };
-    const pointer = (event: PointerEvent): DeselectPointer => ({ x: event.clientX, y: event.clientY, id: event.pointerId, button: event.button, primary: event.isPrimary });
-    let gesture: DeselectGesture | null = null;
-    const handle = (event: DeselectEvent) => {
-      const next = deselectGesture(gesture, event);
-      gesture = next.gesture;
-      if (next.deselect) background();
-    };
-    const down = (event: PointerEvent) => handle({ type: "down", pointer: pointer(event), emptyTarget: empty(event.target, at(event)) });
-    const move = (event: PointerEvent) => handle({ type: "move", pointer: pointer(event) });
-    const up = (event: PointerEvent) => handle({ type: "up", pointer: pointer(event), emptyTarget: empty(event.target, at(event)) });
-    const click = (event: MouseEvent) => handle({ type: "click", position: { x: event.clientX, y: event.clientY }, button: event.button, emptyTarget: empty(event.target, at(event)) });
-    // Match the host's empty-space menu selection change, including Trace-only
-    // picks. Let the event bubble so FileList still opens the directory menu.
-    const contextMenu = (event: MouseEvent) => { if (empty(event.target, at(event))) background(); };
-    const cancel = () => handle({ type: "cancel" });
-    const wheel = () => handle({ type: "wheel" });
-    const scroll = () => handle({ type: "scroll" });
-    const blur = () => handle({ type: "blur" });
-    element.addEventListener("pointerdown", down, true);
-    element.addEventListener("click", click, true);
-    element.addEventListener("contextmenu", contextMenu);
-    element.addEventListener("wheel", wheel, { capture: true, passive: true });
-    element.addEventListener("scroll", scroll, true);
-    window.addEventListener("pointermove", move, true);
-    window.addEventListener("pointerup", up, true);
-    window.addEventListener("pointercancel", cancel, true);
-    window.addEventListener("blur", blur);
-    return { destroy() {
-      element.removeEventListener("pointerdown", down, true);
-      element.removeEventListener("click", click, true);
-      element.removeEventListener("contextmenu", contextMenu);
-      element.removeEventListener("wheel", wheel, true);
-      element.removeEventListener("scroll", scroll, true);
-      window.removeEventListener("pointermove", move, true);
-      window.removeEventListener("pointerup", up, true);
-      window.removeEventListener("pointercancel", cancel, true);
-      window.removeEventListener("blur", blur);
-    } };
+    const attachment = attachMarqueeSelection(element, {
+      background,
+      captureSelection,
+      start() {
+        supersedeReveal(); releaseAnchors(); keepFocusedOpen(); activations++;
+        marqueeTurn++; marqueeLoading = new Set();
+        marqueeFocus = focus; marqueeActive = true;
+      },
+      end(commit) {
+        marqueeActive = false;
+        if (!commit) { marqueeTurn++; marqueeLoading = new Set(); }
+      },
+      select: selectMarquee,
+      draw: (rect) => marquee = rect,
+    });
+    marqueeAttachment = attachment;
+    return { destroy() { attachment.destroy(); marqueeAttachment = null; } };
   }
 
   // A just-saved image becomes selected once the listing contains it, in its
@@ -717,6 +767,7 @@
   }
 
   onDestroy(() => {
+    marqueeTurn++;
     supersedeReveal();
     releaseAnchors();
     session.dispose();
@@ -745,15 +796,20 @@
       onselect={(entry, event) => { supersedeReveal(); releaseAnchors(); keepFocusedOpen(); selectListed(entry, { ctrlKey: event.ctrlKey || event.metaKey, shiftKey: event.shiftKey }); }}
       onordinarymenu={(entry, event) => { supersedeReveal(); releaseAnchors(); if (!selectedPaths.has(entry.path)) { keepFocusedOpen(); selectListed(entry); } pane.contextMenu(event, entry); }}
       {captureSelection} onsaved={(key, path, select) => callbacks.saved(path, key, select)} ondiscarded={(key) => callbacks.discarded(key)} oncommit={keepAnchor}
+      ongeometry={() => marqueeAttachment?.layoutChanged()}
       onlayout={(id, pending) => { if (pending) pendingLayouts.add(id); else pendingLayouts.delete(id); }} reveal={revealScene}
       onfailure={(scene, error) => { if (pendingReveal && scene.isCurrent() && scene.reveal === pendingReveal.owner && scene.focus === pendingReveal.key && scene.data.dag.nodes.has(pendingReveal.key)) pendingReveal.finish(error); }} />
     {#if session.error && session.index}<p class="notice" role="alert">{session.error}</p>{/if}
     {#if !gridCells.length && session.index}<div class="message">This folder is empty.</div>{/if}
   {/if}
+  {#if marquee}
+    <div class="marquee-rect" aria-hidden="true" style:left="{marquee.left}px" style:top="{marquee.top}px" style:width="{marquee.width}px" style:height="{marquee.height}px"></div>
+  {/if}
 </div>
 
 <style>
-  .trace-view { flex: 1; min-height: 0; overflow: auto; padding: 10px 10px 24px; box-sizing: border-box; overflow-anchor: none; scrollbar-gutter: stable; }
+  .trace-view { position: relative; flex: 1; min-height: 0; overflow: auto; padding: 10px 10px 24px; box-sizing: border-box; overflow-anchor: none; scrollbar-gutter: stable; }
+  .marquee-rect { position: absolute; pointer-events: none; z-index: 10; box-sizing: border-box; border: 1px solid var(--accent); background: color-mix(in srgb, var(--accent) 20%, transparent); }
   .message { display: flex; flex-direction: column; align-items: center; gap: 10px; padding: 40px 12px; color: var(--text-secondary); }
   .message button { padding: 4px 12px; font: inherit; color: var(--text-primary); background: var(--control-fill); border: 1px solid var(--control-stroke); border-radius: var(--radius-sm); cursor: pointer; }
   .notice { margin: 0 0 10px; font-size: 12px; color: var(--system-critical-text, var(--system-critical)); }

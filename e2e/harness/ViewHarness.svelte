@@ -169,6 +169,8 @@
    */
   function shortcut(event: KeyboardEvent): void {
     if (opened_dialogs.length || editorSource || configureOpen || event.isComposing || event.repeat) return;
+    // The host's selection.clearSelection command is bound to Escape (it does not roll back a marquee).
+    if (event.key === "Escape" && !event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey && selected.length) { event.preventDefault(); pane.clearSelection(); return; }
     const key = `${event.ctrlKey ? "Ctrl+" : ""}${event.altKey ? "Alt+" : ""}${event.shiftKey ? "Shift+" : ""}${event.key.length === 1 ? event.key.toUpperCase() : event.key}`;
     const id = shortcuts.get(key);
     if (!id || !conditions.get(id)?.()) return;
