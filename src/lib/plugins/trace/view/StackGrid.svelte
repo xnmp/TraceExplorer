@@ -2,7 +2,7 @@
   import { tick, untrack, onDestroy } from "svelte";
   import type { FileEntry } from "$lib/domain/file";
   import type { ComponentFocus, BandScenePlan, SceneTile } from "$lib/domain/trace-graph/scene";
-  import type { GraphLayout } from "$lib/domain/trace-graph/layout";
+  import type { GraphLayout, PinnedCover } from "$lib/domain/trace-graph/layout";
   import { sameGridGeometry } from "$lib/domain/trace-graph/layout-geometry";
   import { tileSize, STACK_BAND_INSET, type TileMetrics } from "$lib/domain/trace-graph/metrics";
   import type { FileViewPane } from "../../../../../integration/plugin-sdk";
@@ -76,14 +76,15 @@
   const flow = $derived.by(() => {
     const next = packedGridFlow(cells, new Map(cells.filter((cell) => cell.kind === "stack" && openKeys.has(cell.id)).map((cell) => {
       const known = covers.get(cell.id);
-      // Only geometry published after a DOM commit replaces the reservation. A pending
+      // Only geometry accepted for the current scene replaces the reservation. A pending
       // read/worker (including a superseded request) never clears the last footprint.
       return [cell.id, known ? bandExtent(known.layout, cell.id) : estimatedBandExtent(tile)];
     })), columns, { cellWidth, cellHeight, columnGap: metrics.gap, rowGap: metrics.gap });
     // Only geometry changes own grid motion. Replacing index/listing objects must not replay it.
     return previousFlow && sameGridGeometry(previousFlow, next) ? previousFlow : (previousFlow = next);
   });
-  const pins = $derived(gridPins(flow, openKeys));
+  let previousPins: ReadonlyMap<string, PinnedCover> = new Map();
+  const pins = $derived.by(() => previousPins = gridPins(flow, openKeys, previousPins));
   const placements = $derived(bandPlacements(flow, cellHeight));
   const bandById = $derived(new Map(flow.bands.map((band) => [band.id, band])));
   // Roving tabindex: the stop always names a rendered cell. It follows the last focused cell while
@@ -127,9 +128,8 @@
     // that commits in between (and captures what is displayed) would capture the settled geometry and snap there.
     void tick().then(() => {
       if (current !== motion) return;
-      for (const animation of running) animation.cancel();
-      running = [];
-      if (grid && before) running = playGrid(grid, before);
+      if (grid && before) running = playGrid(grid, before, running);
+      else { for (const animation of running) animation.cancel(); running = []; }
       ongeometry();
     });
   });

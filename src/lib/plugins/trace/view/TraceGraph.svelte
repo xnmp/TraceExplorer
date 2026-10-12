@@ -84,7 +84,6 @@
   /** Only the latest full commit plays; one superseded before rendering never starts. */
   let plays = 0;
   let layoutStamp = $state(0);
-  let mounted = false;
 
   onDestroy(() => {
     for (const animation of running) animation.cancel();
@@ -98,7 +97,6 @@
   /** What later plans build on: the reading order and the orientation shown. */
   function rendered(scene: GraphScene, next: ScenePlan, layout: GraphLayout): void {
     if (!canvas || !scene.isCurrent() || shown?.plan !== next || shown.layout !== layout) return;
-    mounted = true;
     ordering = layout.readingOrder;
     orientations.set(componentId, rememberOrientation(orientations.get(componentId), layout.orientation, next.request.tileWidth));
     onlayout?.(false);
@@ -106,29 +104,16 @@
     oncommit?.(scene);
   }
 
-  // The first render uses the very plan the effect below sees, so mounting
-  // commits once instead of re-planning with the new reading order as a hint.
-  function initial(): { plan: ScenePlan; layout: GraphLayout } | null {
-    const first = plan;
-    const layout = cachedLayout(first.request) ?? (first.request.items.length <= SYNC_LIMIT ? layoutNow(first.request) : null);
-    return layout ? { plan: first, layout } : null;
-  }
-  let shown = $state.raw(initial());
+  // Publish the footprint before mounting the first graph, so the grid attaches
+  // children at their final packed position and never replays their entrance.
+  let shown = $state.raw<{ plan: ScenePlan; layout: GraphLayout } | null>(null);
 
   function commit(next: ScenePlan, layout: GraphLayout, scene: GraphScene): void {
+    // The first graph has no displayed geometry to preserve. Existing graphs
+    // publish after rendering so attachment motion captures their old scene.
+    if (pinned && !shown) ongeometry?.(next as BandScenePlan, layout);
     if (shown && shown.plan === next && shown.layout === layout) {
-      // Initial cached/inline geometry is already committed; report it after its tiles mount.
-      void tick().then(() => {
-        if (!canvas || !scene.isCurrent()) return;
-        if (!mounted && pinned && !prefersReducedMotion() && !carriesMotion(canvas)) {
-          const before = captureGraph(canvas);
-          const cover = attached?.nodes.get(pinned.key);
-          if (cover) {
-            running = playGraph(canvas, { ...before, tiles: new Map(), routeIds: new Map(), routes: new Map(), junctions: new Map() }, "down", { key: pinned.key, box: { ...cover, fading: null } });
-          }
-        }
-        rendered(scene, next, layout);
-      });
+      void tick().then(() => rendered(scene, next, layout));
       return;
     }
     // Same geometry (only tones or selection changed): nothing moves, so
@@ -266,7 +251,7 @@
   <div class="pending stale" role="alert">Trace layout failed: {failure}</div>
 {/if}
 {#if shown}
-  <div class="graph" data-layout-stamp={layoutStamp} bind:this={canvas} style:width="{attached!.width}px" style:height="{attached!.height}px">
+  <div class="graph" data-layout-stamp={layoutStamp} data-attachment={pinned ? JSON.stringify([bandTop, bandPlacement ?? null]) : undefined} bind:this={canvas} style:width="{attached!.width}px" style:height="{attached!.height}px">
     <svg class="edges" width={attached!.width} height={attached!.height} aria-hidden="true">
       <defs>
         <!--

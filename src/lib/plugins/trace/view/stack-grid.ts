@@ -272,10 +272,13 @@ export function gridNeighbor(rects: ReadonlyMap<string, GridRect>, key: string, 
 }
 
 /** Closed/virtualized stacks need no pin. Neighboring covers are above the shared child band,
- * so they are not graph obstacles and must not generate outer routing lanes. */
-export function gridPins(flow: GridFlow, open: ReadonlySet<string>): ReadonlyMap<string, PinnedCover> {
+ * so they are not graph obstacles and must not generate outer routing lanes.
+ * Vertical packing changes keep the same pin: they change attachment, not graph layout. */
+export function gridPins(flow: GridFlow, open: ReadonlySet<string>, previous: ReadonlyMap<string, PinnedCover> = new Map()): ReadonlyMap<string, PinnedCover> {
   return new Map([...open].flatMap((id) => {
     const cell = flow.cells.get(id);
-    return cell ? [[id, { key: id, x: cell.x + cell.width / 2, obstacles: [] }] as const] : [];
+    if (!cell) return [];
+    const x = cell.x + cell.width / 2, known = previous.get(id);
+    return [[id, known?.key === id && known.x === x && known.obstacles?.length === 0 ? known : { key: id, x, obstacles: [] }] as const];
   }));
 }

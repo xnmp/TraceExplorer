@@ -1043,3 +1043,104 @@ for (const worker of [false, true]) test(`#56 cold open holds the band and follo
   await expect(stack(page, worker ? "fan" : "gym").locator("[data-grid-band] [data-tile-key]").first()).toBeVisible();
   expect(await uncaught(page)).toEqual([]);
 });
+
+for (const worker of [false, true]) test(`cold children reveal from their accepted layout without a second ${worker ? "worker round trip" : "entrance"}`, async ({ page }) => {
+  await openView(page, 840, worker ? "?fanChildren=45" : "?gym=1&fileTile=1&tileSize=small", false);
+  const result = await page.evaluate(async ({ worker }) => {
+    const section = document.querySelector<HTMLElement>(`section[aria-label="${worker ? "fan" : "gym"}"]`)!;
+    const originalPost = Worker.prototype.postMessage, originalAnimate = Element.prototype.animate;
+    let requests = 0, frame = 0, arrived: number | null = null, mounted: number | null = null, visible: number | null = null;
+    const entrances: Animation[] = [];
+    Worker.prototype.postMessage = function (message, options) {
+      requests++;
+      this.addEventListener("message", () => { arrived ??= frame; }, { once: true });
+      return originalPost.call(this, message, options as any);
+    };
+    Element.prototype.animate = function (frames, options) {
+      const animation = originalAnimate.call(this, frames, options);
+      if (this.matches("[data-grid-band] [data-tile-key]") && Array.isArray(frames) && frames[0]?.opacity === 0) entrances.push(animation);
+      return animation;
+    };
+    try {
+      section.querySelector<HTMLElement>("[data-stack-toggle]")!.click();
+      for (; frame < 120; frame++) {
+        await new Promise(requestAnimationFrame);
+        const children = [...section.querySelectorAll<HTMLElement>("[data-grid-band] [data-tile-key]")];
+        if (children.length) mounted ??= frame;
+        const band = section.querySelector<HTMLElement>("[data-grid-band]");
+        const view = document.querySelector<HTMLElement>('[data-testid="trace-view"]')!.getBoundingClientRect();
+        const background = band && document.querySelector(`[data-grid-row-band="${band.dataset.gridBandRow}"]`)!.getBoundingClientRect();
+        const bounds = band?.getBoundingClientRect();
+        const insets = band ? getComputedStyle(band).clipPath.match(/-?[\d.]+px/g)?.map(parseFloat) ?? [] : [];
+        const bottom = bounds ? bounds.bottom - (insets[2] ?? insets[0] ?? 0) : 0;
+        if (bounds && background && children.some((child) => {
+          const box = child.getBoundingClientRect();
+          return Number(getComputedStyle(child).opacity) > 0 && box.right > view.left && box.left < view.right
+            && box.bottom > Math.max(view.top, background.top, bounds.top + (insets[0] ?? 0))
+            && box.top < Math.min(view.bottom, bottom);
+        })) visible ??= frame;
+        if (visible !== null && frame - visible >= 12 && !(window as any).trace.layoutsPending()) break;
+      }
+      const children = section.querySelectorAll("[data-grid-band] [data-tile-key]").length;
+      return { requests, arrived, mounted, visible, children, entrances: entrances.length, cancelledEntrances: entrances.filter((animation) => animation.playState === "idle").length };
+    } finally { Worker.prototype.postMessage = originalPost; Element.prototype.animate = originalAnimate; }
+  }, { worker });
+  expect(result.children).toBeGreaterThan(0);
+  expect(result.mounted).not.toBeNull(); expect(result.visible).not.toBeNull();
+  if (worker) expect(result.arrived).not.toBeNull();
+  expect(result.visible! - (worker ? result.arrived! : result.mounted!)).toBeLessThanOrEqual(2);
+  expect(result.entrances).toBe(result.children);
+  expect(result.cancelledEntrances).toBe(0);
+  expect(result.requests).toBe(worker ? 1 : 0);
+  await settle(page);
+  await expect(stack(page, worker ? "fan" : "gym").locator("[data-grid-band] [data-tile-key]").first()).toBeVisible();
+  expect(await uncaught(page)).toEqual([]);
+});
+
+for (const host of ["", "&fileTile=1&tileSize=medium"]) test(`closed explorer covers dim without filtering their stacked thumbnail (${host ? "host" : "fallback"})`, async ({ page }) => {
+  await openView(page, 620, `?grouping=two-chains${host}`, false);
+  await stack(page, "photo-a").locator("[data-stack-toggle]").click(); await settle(page);
+  const other = stack(page, "photo-b");
+  await expect(other.locator("[data-grid-band]")).toHaveCount(0);
+  const style = await other.locator(".tile").evaluate((tile) => ({
+    filter: getComputedStyle(tile.querySelector(".image")!).filter,
+    opacity: Number(getComputedStyle(tile.querySelector(".card")!).opacity),
+  }));
+  expect(style.filter).toBe("none");
+  expect(style.opacity).toBeGreaterThan(0); expect(style.opacity).toBeLessThan(1);
+});
+
+test("opening a later row preserves an unchanged band's attachment motion", async ({ page }) => {
+  await page.setViewportSize({ width: 800, height: 1600 });
+  await openView(page, 420, "?deeper=1&fanChildren=2", false);
+  for (const name of ["village", "forest"]) { await stack(page, name).locator("[data-stack-toggle]").click(); await settle(page); }
+  const warm = await key(page, "warm"), mist = await key(page, "forest-mist");
+  await holdScriptedAnimations(page);
+  try {
+    await page.locator(`[data-node-key="${warm}"]`).click(); await awaitAnimationsCreated(page);
+    const result = await page.evaluate(async (mist) => {
+      const w = window as any, originals = [...w.__heldAnimations] as Animation[];
+      const frame = () => new Promise(requestAnimationFrame);
+      for (const animation of originals) if (animation.playState === "running") animation.currentTime = 40;
+      await frame();
+      const child = document.querySelector<HTMLElement>(`[data-tile-key="${mist}"]`)!;
+      const before = child.getBoundingClientRect().y;
+      const attachment = child.closest<HTMLElement>(".graph")!.dataset.attachment;
+      w.trace.setSelection([...w.trace.state().selected, "/pictures/fan.png"], "/pictures/warm.png");
+      for (let i = 0; i < 12; i++) await frame();
+      const after = child.getBoundingClientRect().y;
+      for (const animation of w.__heldAnimations as Animation[]) if (animation.playState === "running") animation.currentTime = 80;
+      await frame();
+      const continued = child.getBoundingClientRect().y;
+      for (const animation of w.__heldAnimations as Animation[]) if (animation.playState === "running") animation.currentTime = 160;
+      await frame();
+      return { attachment, nextAttachment: child.closest<HTMLElement>(".graph")!.dataset.attachment, before, after, continued, end: child.getBoundingClientRect().y };
+    }, mist);
+    expect(result.nextAttachment).toBe(result.attachment);
+    expect(result.after).toBeCloseTo(result.before, 1);
+    expect(Math.abs(result.end - result.before)).toBeGreaterThan(2);
+    expect(Math.abs(result.continued - result.end)).toBeLessThan(Math.abs(result.before - result.end));
+  } finally { await releaseScriptedAnimations(page); }
+  await settle(page);
+  expect(await uncaught(page)).toEqual([]);
+});

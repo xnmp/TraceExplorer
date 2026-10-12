@@ -585,7 +585,7 @@ export interface GridSnapshot {
   readonly top: number;
   readonly left: number;
   readonly cells: ReadonlyMap<string, { y: number; x: number }>;
-  readonly bands: ReadonlyMap<string, { height: number; graph: GraphSnapshot | null; stamp: string | undefined; opacity: number }>;
+  readonly bands: ReadonlyMap<string, { height: number; graph: GraphSnapshot | null; stamp: string | undefined; attachment: string | undefined; opacity: number }>;
 }
 export function captureGrid(grid: HTMLElement): GridSnapshot {
   const origin = grid.getBoundingClientRect(), zoom = zoomOf(grid, origin);
@@ -599,13 +599,27 @@ export function captureGrid(grid: HTMLElement): GridSnapshot {
       const graph = element.querySelector<HTMLElement>(".graph");
       return [element.dataset.gridBand!, {
         height: sectionHeight(element), opacity: Number(getComputedStyle(element).opacity),
-        graph: graph ? captureGraph(graph) : null, stamp: graph?.dataset.layoutStamp,
+        graph: graph ? captureGraph(graph) : null, stamp: graph?.dataset.layoutStamp, attachment: graph?.dataset.attachment,
       }];
     })),
   };
 }
-export function playGrid(grid: HTMLElement, before: GridSnapshot): Animation[] {
-  if (prefersReducedMotion()) return [];
+export function playGrid(grid: HTMLElement, before: GridSnapshot, running: readonly Animation[] = []): Animation[] {
+  const reduced = prefersReducedMotion();
+  // A change elsewhere in the grid must not stop an attachment still travelling
+  // to the same destination. Changed attachments capture their displayed state
+  // above, then replace their animations; unchanged ones retain their owner.
+  const unchanged = new Set([...grid.querySelectorAll<HTMLElement>("[data-grid-band] .graph")].filter((graph) => {
+    const band = graph.closest<HTMLElement>("[data-grid-band]")!, old = before.bands.get(band.dataset.gridBand!);
+    return old?.stamp === graph.dataset.layoutStamp && old?.attachment === graph.dataset.attachment;
+  }));
+  const carried: Animation[] = [];
+  for (const animation of running) {
+    const target = (animation.effect as KeyframeEffect | null)?.target;
+    if (!reduced && target instanceof Element && unchanged.has(target.closest<HTMLElement>(".graph")!)) carried.push(animation);
+    else animation.cancel();
+  }
+  if (reduced) return [];
   const origin = grid.getBoundingClientRect(), zoom = zoomOf(grid, origin);
   const timing = { duration: MOTION_MS, easing: EASING };
   // Removing a bottom band can clamp scrolling during layout. Include that
@@ -624,7 +638,7 @@ export function playGrid(grid: HTMLElement, before: GridSnapshot): Animation[] {
   // replaying their old positions overlaps a band, and a cold graph mount can
   // freeze a top animation there. Only content inside retained bands animates.
   const placeRowsImmediately = bands.length > 0 || before.bands.size > 0;
-  const animations: Animation[] = [];
+  const animations: Animation[] = [...carried];
   for (const { element, y, x, left, top } of cells) {
     if (placeRowsImmediately) continue;
     const old = before.cells.get(element.dataset.gridMotion!);
@@ -637,9 +651,10 @@ export function playGrid(grid: HTMLElement, before: GridSnapshot): Animation[] {
   for (const { element, height } of bands) {
     const old = before.bands.get(element.dataset.gridBand!);
     const graph = element.querySelector<HTMLElement>(".graph");
-    if (old?.graph && graph && old.stamp === graph.dataset.layoutStamp) {
+    if (old?.graph && graph && old.stamp === graph.dataset.layoutStamp && old.attachment !== graph.dataset.attachment) {
       // Attachment-only changes (another band in the same row grew) do not
       // produce a new layout request, but their tiles AND routes still move.
+      // An unchanged attachment leaves the graph's own entrance running.
       for (const animation of graph.getAnimations({ subtree: true })) if (animation.effect?.getTiming().iterations !== Infinity) animation.cancel();
       const cover = grid.querySelector<HTMLElement>(`[data-node-key="${CSS.escape(element.dataset.gridBand!)}"]`);
       const box = cover?.getBoundingClientRect(), graphBox = graph.getBoundingClientRect();
