@@ -149,7 +149,7 @@ test.describe("wide layouts", () => {
     for (const [parent, child] of edges) if (boxes[parent] && boxes[child]) expect(boxes[child].y, `${child} below ${parent}`).toBeGreaterThanOrEqual(boxes[parent].y + boxes[parent].height);
   };
 
-  test("a deep band runs down at every width and keeps its grid cover pinned while revealing generations", async ({ page }) => {
+  test("a deep band uses sideways space and keeps its grid cover pinned while revealing generations", async ({ page }) => {
     await openView(page, 900, "?deeper=1");
     const names = ["forest", "forest-mist", "autumn", "mist-dawn", "mist-dusk"];
     const [forest, mist, autumn, dawn, dusk] = await Promise.all(names.map((name) => key(page, name)));
@@ -157,7 +157,9 @@ test.describe("wide layouts", () => {
     for (const name of ["forest", "forest-mist", "mist-dawn", "mist-dusk", "autumn"]) {
       await click(page, name);
       const boxes = await tileBoxes(page, "forest");
-      runsDown(boxes, [[forest, mist], [forest, autumn], [mist, dawn], [dawn, dusk]]);
+      for (const [parent, child] of [[forest, mist], [forest, autumn], [mist, dawn], [dawn, dusk]]) if (boxes[parent] && boxes[child]) {
+        expect(boxes[child].y >= boxes[parent].y + boxes[parent].height || boxes[child].x >= boxes[parent].x + boxes[parent].width).toBe(true);
+      }
       expect(overlaps(boxes)).toEqual([]);
       expect((await (await tile(page, "forest")).boundingBox())!.x).toBeCloseTo(coverX, 1);
     }
@@ -300,9 +302,9 @@ async function arrowheads(page: Page, index = 0): Promise<Head[]> {
 }
 
 test.describe("arrowheads", () => {
-  for (const { orientation, width } of [{ orientation: "top to bottom", width: 360 }, { orientation: "top to bottom", width: 700 }]) {
+  for (const width of [360, 700]) {
     for (const zoom of [1, 1.3]) {
-      test(`running ${orientation} at width ${width} and ${zoom * 100}% zoom, every arrowhead ends on its tile's edge, points along its line and has one size`, async ({ page }) => {
+      test(`a compact band at width ${width} and ${zoom * 100}% zoom, every arrowhead ends on its tile's edge, points along its line and has one size`, async ({ page }) => {
         // A root with two edits and two further edits under the second, selected (the selected branch is highlighted).
         await openView(page, width, `?gym=1&zoom=${zoom}`);
         await click(page, "saffron");
@@ -311,7 +313,7 @@ test.describe("arrowheads", () => {
         expect(heads.filter((head) => head.tone === "normal").length).toBeGreaterThanOrEqual(1);
         for (const head of heads) {
           const label = `${head.tone} ${head.route}`;
-          expect(head.sideways, label).toBe(false);
+          // Compact bands may enter from the top or left; the same tip/axis contract holds.
           // The tip touches the tile's edge, within a pixel, on the edge itself.
           expect(Math.abs(head.edgeGap), label).toBeLessThanOrEqual(1);
           expect(head.withinEdge, label).toBe(true);

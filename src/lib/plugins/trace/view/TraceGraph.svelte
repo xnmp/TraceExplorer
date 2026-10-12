@@ -11,7 +11,7 @@
   import { nearestInDirection, type Direction, type PinnedCover, type GraphLayout } from "$lib/domain/trace-graph/layout";
   import { rememberOrientation, type OrientationHistory } from "$lib/domain/trace-graph/orientation";
   import { endpointKey } from "$lib/domain/trace-graph/junctions";
-  import { ARROW, STACK_BAND_INSET, tileMetrics, type TileMetrics } from "$lib/domain/trace-graph/metrics";
+  import { ARROW, STACK_STEM_ROOM, tileMetrics, type TileMetrics } from "$lib/domain/trace-graph/metrics";
   import { promptTitles } from "../prompt-titles.svelte";
   import type { ComponentData } from "./folder-session.svelte";
   import type { GraphScene } from "./graph-commit";
@@ -155,7 +155,7 @@
       isCurrent: () => !superseded.signal.aborted && plan === next && reveal === requestedReveal,
     };
     onlayout?.(true);
-    const ready = cachedLayout(next.request) ?? (next.request.items.length <= SYNC_LIMIT ? layoutNow(next.request) : null);
+    const ready = cachedLayout(next.request) ?? ((next.request.band?.items.length ?? next.request.items.length) <= SYNC_LIMIT ? layoutNow(next.request) : null);
     // Commit reads displayed geometry, not planning inputs. Tracking those
     // reads would supersede this scene when its own render updates `shown`.
     if (ready) untrack(() => commit(next, ready, scene));
@@ -188,7 +188,17 @@
     return () => { container.removeEventListener("scroll", schedule); observer.disconnect(); cancelAnimationFrame(frame); };
   });
 
-  const attached = $derived(shown && pinned ? (bandPlacement ? attachPackedBand(shown.layout, pinned.key, bandTop, bandPlacement) : attachBand(shown.layout, pinned.key, 0, bandTop)) : shown?.layout);
+  let previousAttachment: GraphLayout | undefined;
+  let attachmentSerial = 0;
+  const attachment = $derived.by(() => {
+    const layout = shown && pinned ? (bandPlacement ? attachPackedBand(shown.layout, pinned.key, bandTop, bandPlacement) : attachBand(shown.layout, pinned.key, 0, bandTop)) : shown?.layout;
+    // Routing obstacles can change without changing any path. Only displayed
+    // geometry owns attachment motion, so an unrelated opening carries it on.
+    if (layout && (!previousAttachment || !sameGraphGeometry(previousAttachment, layout))) attachmentSerial++;
+    previousAttachment = layout;
+    return { layout, serial: attachmentSerial };
+  });
+  const attached = $derived(attachment.layout);
 
   const visibleTiles = $derived.by(() => {
     if (!shown) return [];
@@ -251,7 +261,7 @@
   <div class="pending stale" role="alert">Trace layout failed: {failure}</div>
 {/if}
 {#if shown}
-  <div class="graph" data-layout-stamp={layoutStamp} data-attachment={pinned ? JSON.stringify([bandTop, bandPlacement ?? null]) : undefined} bind:this={canvas} style:width="{attached!.width}px" style:height="{attached!.height}px">
+  <div class="graph" data-layout-stamp={layoutStamp} data-attachment={pinned ? String(attachment.serial) : undefined} bind:this={canvas} style:width="{attached!.width}px" style:height="{attached!.height}px">
     <svg class="edges" width={attached!.width} height={attached!.height} aria-hidden="true">
       <defs>
         <!--
@@ -292,7 +302,7 @@
     {/each}
   </div>
 {:else}
-  <div class="pending" class:pinned-pending={!!pinned} style:top={pinned ? `${bandTop + STACK_BAND_INSET}px` : undefined} role="status">{failure ? `Trace layout failed: ${failure}` : "Arranging…"}</div>
+  <div class="pending" class:pinned-pending={!!pinned} style:top={pinned ? `${bandTop + STACK_STEM_ROOM}px` : undefined} role="status">{failure ? `Trace layout failed: ${failure}` : "Arranging…"}</div>
 {/if}
 
 <style>

@@ -4,7 +4,7 @@
   import type { ComponentFocus, BandScenePlan, SceneTile } from "$lib/domain/trace-graph/scene";
   import type { GraphLayout, PinnedCover } from "$lib/domain/trace-graph/layout";
   import { sameGridGeometry } from "$lib/domain/trace-graph/layout-geometry";
-  import { tileSize, STACK_BAND_INSET, type TileMetrics } from "$lib/domain/trace-graph/metrics";
+  import { tileSize, STACK_STEM_ROOM, type TileMetrics } from "$lib/domain/trace-graph/metrics";
   import type { FileViewPane } from "../../../../../integration/plugin-sdk";
   import { hostFileTile } from "../../../../sdk";
   import type { FolderSession } from "./folder-session.svelte";
@@ -232,7 +232,7 @@
                 onactivate={(key, event) => onactivate(key, event, summary.id)} onnavigate={(key) => onnavigate(key, summary.id)} {onopen}
                 onmenu={(key, event) => onmenu(key, event, summary.id)} {captureSelection} {onsaved} {ondiscarded} {oncommit}
                 onlayout={(pending) => onlayout(summary.id, pending)} {onfailure} />
-            {:else if !data}<div class="loading" role="status" style:top="{band.y - rect.y + STACK_BAND_INSET}px">Loading…</div>{/if}
+            {:else if !data}<div class="loading" role="status" style:top="{band.y - rect.y + STACK_STEM_ROOM}px">Loading…</div>{/if}
           </div>
         {/if}
       </section>

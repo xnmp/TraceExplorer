@@ -14,6 +14,7 @@
  * this engine sits behind the `layoutGraph(LayoutRequest) → GraphLayout`
  * boundary instead; callers never depend on how it works.
  */
+import { layoutBand } from "./band-layout";
 import type { NodeKey } from "./model";
 import { buildInputJunctions, endpointKey, type Consumer, type Endpoint, type Junction } from "./junctions";
 import { ARROW, bendZones, JUNCTION_BERTH, spacingFor, TRACK_HEIGHT } from "./metrics";
@@ -44,6 +45,8 @@ export interface PinnedCover {
 }
 
 export interface LayoutRequest {
+  /** Complete band lineage, used to choose and retain placement independently of focus. */
+  readonly band?: { readonly key: NodeKey; readonly items: readonly LayoutItem[] };
   /**
    * Root alone in row 0; remaining rows align toward its column. Ignored
    * running right, for an unavailable key, or if the tile would lie outside
@@ -112,6 +115,8 @@ export interface PlacedRoute {
 export interface RowBox { readonly index: number; readonly band: number; readonly top: number; readonly bottom: number; readonly keys: readonly NodeKey[] }
 
 export interface GraphLayout {
+  /** A sideways band retains its complete footprint so visibility cannot recenter its tiles. */
+  readonly bandBounds?: { readonly left: number; readonly width: number; readonly top: number };
   /** A non-root cannot be pinned without hiding parentage; the ordinary layout is returned. */
   readonly pinnedViolation?: "not-a-root";
   readonly orientation: Orientation;
@@ -232,6 +237,11 @@ function hashOf(text: string): string {
 }
 
 export function layoutGraph(request: LayoutRequest): GraphLayout {
+  return request.band ? layoutBand(request) : layoutLayered(request);
+}
+
+/** The reusable layered engine; band candidates call it without recursively planning bands. */
+export function layoutLayered(request: LayoutRequest): GraphLayout {
   if (request.orientation !== "right") return layoutDown(request, spacingFor(request.tileWidth).minWidth);
   // Left to right: the same engine on transposed tiles, transposed back.
   // Generations then form columns that never wrap (no height budget), and
