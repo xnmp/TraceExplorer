@@ -77,7 +77,7 @@ export function rovingStop(stop: string | null, rendered: ReadonlySet<string>, o
 
 export function coverNode(cell: FolderCell): TraceNode {
   return { key: cell.coverKey!, artifactId: null, runId: null, parents: [], path: cell.summary?.cover?.path ?? null,
-    scope: "current", location: cell.summary?.cover?.path ?? "", state: cell.summary?.active ? "running" : cell.summary?.cover?.present ? "present" : "missing",
+    scope: "current", location: cell.summary?.cover?.path ?? "", state: cell.summary?.cover?.present ? "present" : cell.summary?.active ? "running" : "missing",
     temporary: false, discarded: false, earlierRevision: false, order: 0, prompt: cell.summary?.title ?? "" };
 }
 

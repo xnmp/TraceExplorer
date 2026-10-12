@@ -15,8 +15,43 @@ const sameColumns = (before: Awaited<ReturnType<typeof gridBoxes>>, after: Await
   for (const id of Object.keys(before)) expect(after[id].x, id).toBeCloseTo(before[id].x, 1);
 };
 
+for (const preset of [null, "small", "medium", "large", "xlarge"]) {
+  test(`#57 stack cover matches ordinary thumbnail and name at ${preset ?? "fallback"} size`, async ({ page }) => {
+    await openView(page, 420, `${preset ? `?fileTile=1&tileSize=${preset}` : ""}`, false);
+    const section = stack(page, "village");
+    const count = (await section.getAttribute("data-stack-count"))!.split(" ")[0];
+    const plain = page.locator('[data-entry-path="/pictures/plain.png"]');
+    const styles = async () => {
+      const coverImage = await section.locator(".image").first().boundingBox();
+      const plainImage = await plain.locator(".icon").boundingBox();
+      expect(coverImage!.width).toBeCloseTo(plainImage!.width, 1);
+      expect(coverImage!.height).toBeCloseTo(plainImage!.height, 1);
+      expect(await section.locator(".text").first().evaluate((element) => getComputedStyle(element).fontSize))
+        .toBe(await plain.locator(".name").evaluate((element) => getComputedStyle(element).fontSize));
+      const name = await section.locator(".label").first().boundingBox();
+      expect(name!.y).toBeGreaterThanOrEqual(coverImage!.y + coverImage!.height);
+      await expect(section.locator(".count-badge")).toHaveText(count);
+      await expect(section.locator("[data-node-key]").first()).toHaveAccessibleName(new RegExp(`${count} images`));
+      expect(await section.innerText()).not.toMatch(/images|Unsaved/);
+      expect(await section.locator(".image").first().evaluate((element) => getComputedStyle(element, "::before").content)).not.toBe("none");
+    };
+    await styles();
+    await section.locator("[data-stack-toggle]").click(); await settle(page);
+    await styles();
+  });
+}
+
+test("#57 unsaved edits use a dot on the cover thumbnail", async ({ page }) => {
+  await openView(page, 420, "?draftStack=1", false);
+  const section = stack(page, "draft");
+  await expect(section.locator(".cover-unsaved-dot")).toBeVisible();
+  await expect(section.locator("[data-node-key]")).toHaveAccessibleName(/unsaved/);
+  expect(await section.innerText()).not.toContain("Unsaved");
+});
+
 test("#56 opening settles once and unchanged journal refresh preserves children and following rows", async ({ page }) => {
   await openView(page, 220, "?grouping=two-chains", false);
+  await stack(page, "photo-a").locator("[data-stack-toggle]").click(); await settle(page);
   const child = await key(page, "photo-a-edit");
   const samples = await page.evaluate(async (child) => {
     const section = document.querySelector<HTMLElement>('section[aria-label="photo-a"]')!;
@@ -28,13 +63,12 @@ test("#56 opening settles once and unchanged journal refresh preserves children 
       }
     });
     observer.observe(section, { childList: true, subtree: true });
-    section.querySelector<HTMLElement>('[data-stack-toggle]')!.click();
     const start = performance.now(), samples = [];
     let refreshed = false;
     while (performance.now() - start < 650) {
       await new Promise(requestAnimationFrame);
       const time = performance.now() - start;
-      if (time >= 250 && !refreshed) { (window as any).trace.backend.refresh(); refreshed = true; }
+      if (time >= 100 && !refreshed) { (window as any).trace.backend.refresh(); refreshed = true; }
       const tile = section.querySelector<HTMLElement>(`[data-tile-key="${child}"]`);
       const rect = tile?.getBoundingClientRect();
       samples.push({ time, child: rect ? { y: rect.y, height: rect.height, opacity: Number(getComputedStyle(tile!).opacity) } : null, following: following.getBoundingClientRect().y });
@@ -43,7 +77,7 @@ test("#56 opening settles once and unchanged journal refresh preserves children 
     return { removed, samples };
   }, child);
   expect(samples.removed).toEqual([]);
-  const settled = samples.samples.filter((sample) => sample.time >= 200);
+  const settled = samples.samples;
   expect(settled.length).toBeGreaterThan(5);
   const baseline = settled.at(-1)!;
   for (const sample of settled) {
@@ -686,8 +720,11 @@ test("a closed stack shows that an edit is generating, and clears when it finish
   await expect(village.locator("[data-stack-toggle]")).toBeVisible();
   const generating = village.locator("[data-stack-toggle]").getByRole("status", { name: "Generating" });
   await expect(generating).toHaveCount(0);
+  const thumbnail = village.locator(".image img");
+  await expect(thumbnail).toBeVisible();
   await page.evaluate(() => (window as any).trace.backend.startGeneration("village", "pending-edit"));
   await expect(generating).toHaveCount(1);
+  await expect(thumbnail).toBeVisible();
   await page.evaluate(() => (window as any).trace.backend.completeGeneration("pending-edit"));
   await expect(generating).toHaveCount(0);
   expect(await uncaught(page)).toEqual([]);
