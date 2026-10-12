@@ -151,9 +151,17 @@
       dropResult += 1;
     },
   });
+  /** False when the host refused the Inputs element as a drop target; the form then works without drops. */
+  let dropsAccepted = $state(true);
   function registerInputs(element: HTMLElement): { destroy: () => void } {
-    const dispose = registerFileDropTarget?.(element, (paths) => intake.enqueue(paths),
-      { enabled: () => open && alive && !submitting && !configuring });
+    let dispose: (() => void) | undefined;
+    try {
+      dispose = registerFileDropTarget?.(element, (paths) => intake.enqueue(paths),
+        { enabled: () => open && alive && !submitting && !configuring });
+    } catch (error) {
+      console.warn("Image inputs cannot accept drops here:", error);
+      dropsAccepted = false;
+    }
     return { destroy: () => dispose?.() };
   }
   $effect(() => { onBusyChange(submitting || configuring); });
@@ -302,9 +310,9 @@
           <span class="hint">Leave blank to use {profile.defaultModel}. Custom model IDs are supported.</span>
         </label>
       {/if}
-        <section class="prompt-field inputs" class:drop-enabled={!!registerFileDropTarget} aria-labelledby="openai-image-inputs-label" aria-busy={inspectingDrops} use:registerInputs>
+        <section class="prompt-field inputs" class:drop-enabled={!!registerFileDropTarget && dropsAccepted} aria-labelledby="openai-image-inputs-label" aria-busy={inspectingDrops} use:registerInputs>
           <span id="openai-image-inputs-label">Inputs <span class="hint">{images.length} / 8{images.length ? " — Image 1, Image 2, … in the order sent" : ""}</span></span>
-          {#if registerFileDropTarget}
+          {#if registerFileDropTarget && dropsAccepted}
             <div class="drop-hint" class:empty={!images.length}>Drop PNG, JPEG or WebP images here <span class="hint">Up to 8 inputs</span></div>
           {:else if !images.length}
             <span class="hint">No input images</span>

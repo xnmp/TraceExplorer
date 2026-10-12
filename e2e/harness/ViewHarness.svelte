@@ -16,7 +16,7 @@
   import { forgetFolderSnapshots } from "$lib/plugins/trace/view/folder-session.svelte";
   import { tracePanes } from "$lib/plugins/trace/view/pane-registry.svelte";
   import { openAIImagePlugin } from "$lib/plugins/openai-image";
-  import { DIRECTORY, files, backend, initialTileSize, paneDialogs, fileDropTargets } from "./view-fixture";
+  import { DIRECTORY, files, backend, initialTileSize, paneDialogs, fileDropTargets, fileDropTargetsRefused } from "./view-fixture";
   import { TILE_IMAGE_PX } from "./tile-presets";
   import { createFileDropTargets } from "./file-drop-targets";
   import DialogMount from "./DialogMount.svelte";
@@ -121,7 +121,7 @@
         ...(combinedSelectionApi ? { getCombinedSelection: () => [...entries.filter((entry) => selected.includes(entry.path)), ...otherPaneSelection] } satisfies Pick<PluginContext["workspace"], "getCombinedSelection"> : {}),
         captureSelection: () => () => true,
         ...(paneDialogs ? { capturePane: (paneId: string | undefined = undefined) => !disposed && (!paneId || paneId === dialogPane.paneId) ? dialogPane : null } : {}),
-        ...(fileDropTargets ? { registerFileDropTarget: dropTargets.register } : {}),
+        ...(fileDropTargets ? { registerFileDropTarget: fileDropTargetsRefused ? () => { throw new Error("The drop target must be inside this plugin's mounted contribution or dialog content."); } : dropTargets.register } : {}),
         selectFile: async () => {},
       },
     } as unknown as PluginContext;

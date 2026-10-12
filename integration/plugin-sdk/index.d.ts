@@ -160,7 +160,9 @@ export interface PluginContext {
     toggleFileView?(viewId: string): void;
     /** Capability "paneDialogs": capture a pane of the active tab (the active pane when omitted); valid for the pane's lifetime. */
     capturePane?(paneId?: string): PluginDialogPane | null;
-    /** Capability "fileDropTargets": deliver paths dropped on `element`; returns an idempotent disposer. */
+    /** Capability "fileDropTargets": deliver paths dropped on `element`; returns an idempotent disposer.
+     *  `element` must be inside this plugin's mounted contribution or dialog content; host chrome and
+     *  other plugins' elements throw before registration. */
     registerFileDropTarget?(element: HTMLElement, handler: PluginFileDropHandler, options?: PluginFileDropTargetOptions): () => void;
   };
 }

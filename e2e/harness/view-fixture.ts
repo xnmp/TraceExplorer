@@ -369,6 +369,8 @@ export const initialTileSize: TileSizePreset | null = tileQuery && tileQuery in 
 // Independently toggled so every compatibility combination can be exercised.
 export const paneDialogs = new URLSearchParams(globalThis.location?.search ?? "").get("paneDialogs") !== "0";
 export const fileDropTargets = new URLSearchParams(globalThis.location?.search ?? "").get("fileDropTargets") !== "0";
+/** `fileDropTargets=refuse`: the host announces the capability but refuses the element, as it does for elements outside plugin-owned content. */
+export const fileDropTargetsRefused = new URLSearchParams(globalThis.location?.search ?? "").get("fileDropTargets") === "refuse";
 const color = (path: string) => `hsl(${[...path].reduce((sum, char) => (sum * 31 + char.charCodeAt(0)) % 360, 7)} 45% 55%)`;
 (globalThis as any).__TAURI_EXPLORER_PLUGIN_SDK__ = {
   sdkVersion: 1, apiVersion: 2, svelteVersion: "5.56.3",

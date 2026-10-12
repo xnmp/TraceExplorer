@@ -277,3 +277,12 @@ for (const paneDialogs of [true, false]) for (const fileDropTargets of [true, fa
     await expect.poll(() => page.evaluate(() => (window as any).trace.registeredDropTargets())).toBe(0);
   });
 }
+
+test("a host that refuses the Inputs element leaves the form usable without drops", async ({ page }) => {
+  await openEmpty(page, "&fileDropTargets=refuse");
+  await expect(dialog(page).getByText("Drop PNG, JPEG or WebP images here", { exact: false })).toHaveCount(0);
+  await expect(dialog(page).locator(".inputs.drop-enabled")).toHaveCount(0);
+  const prompt = dialog(page).getByRole("textbox", { name: "Image prompt", exact: true });
+  await prompt.fill("A lighthouse at dusk");
+  await expect(prompt).toHaveValue("A lighthouse at dusk");
+});
