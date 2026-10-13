@@ -1,3 +1,5 @@
+import { hostSupportsFileViewEligibilityPending } from "../../../sdk";
+import { compatibleFolderEligibility } from "$lib/domain/folder-eligibility";
 import type { Plugin } from "../api";
 import { traceInvalidation } from "./invalidation.svelte";
 import { traceFolderVisibility } from "./folder-visibility.svelte";
@@ -41,8 +43,9 @@ export const tracePlugin: Plugin = {
     });
     traceFolderVisibility.clear();
     // Backend is configured by src/index.ts before activation. Start before
-    // registering views; the SDK has no barrier for the host's first paint.
+    // registering views; capable hosts hold neutral first paint while eligibility is pending.
     const preload = traceFolderVisibility.preload();
+    const supportsPending = hostSupportsFileViewEligibilityPending();
     ctx.registerFileView?.({
       id: TRACE_VIEW_ID,
       title: "Trace",
@@ -52,7 +55,7 @@ export const tracePlugin: Plugin = {
         signal.throwIfAborted();
         await view.reveal(targetId, signal);
       },
-      available: (directory) => traceFolderVisibility.available(directory),
+      available: (directory) => compatibleFolderEligibility(traceFolderVisibility.available(directory), supportsPending),
     });
     ctx.registerPreviewInfo?.({
       id: "trace.info",

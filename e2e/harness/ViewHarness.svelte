@@ -16,7 +16,7 @@
   import { forgetFolderSnapshots } from "$lib/plugins/trace/view/folder-session.svelte";
   import { tracePanes } from "$lib/plugins/trace/view/pane-registry.svelte";
   import { openAIImagePlugin } from "$lib/plugins/openai-image";
-  import { DIRECTORY, files, backend, initialTileSize, paneDialogs, fileDropTargets, fileDropTargetsRefused, selectionAnchor } from "./view-fixture";
+  import { DIRECTORY, files, backend, initialTileSize, eligibilityPending, paneDialogs, fileDropTargets, fileDropTargetsRefused, selectionAnchor } from "./view-fixture";
   import { TILE_IMAGE_PX } from "./tile-presets";
   import { createFileDropTargets } from "./file-drop-targets";
   import DialogMount from "./DialogMount.svelte";
@@ -242,7 +242,23 @@
     menus = [...menus, null];
   }
 
-  const active = $derived(enabled ? views.find((view) => view.id === fileView && (view.available?.(directory) ?? true)) ?? null : null);
+  const preferred = $derived(enabled ? views.find((view) => view.id === fileView) ?? null : null);
+  const eligibility = $derived(preferred?.available?.(directory) ?? (preferred ? true : false));
+  const active = $derived(eligibility === true ? preferred : null);
+  // One first-paint deadline per directory/preference, never extended by cache updates.
+  const paintScope = $derived({ directory, fileView, enabled });
+  let paintedScope = $state.raw<typeof paintScope | null>(null);
+  let expiredScope = $state.raw<typeof paintScope | null>(null);
+  $effect(() => {
+    const scope = paintScope;
+    const timer = setTimeout(() => { expiredScope = scope; }, 400);
+    return () => clearTimeout(timer);
+  });
+  $effect(() => {
+    if (eligibility !== "pending") paintedScope = paintScope;
+  });
+  const holding = $derived(eligibilityPending && eligibility === "pending"
+    && paintedScope !== paintScope && expiredScope !== paintScope);
   const subject = $derived<PreviewSubject | null>(target ? { kind: "target", target, pluginId: "trace", paneId: "pane-1" }
     : selection.length === 1 ? { kind: "file", entry: selection[0], paneId: "pane-1" } : null);
   const shownSections = $derived(enabled && subject ? sections.filter((section) => section.when(subject)) : []);
@@ -334,7 +350,7 @@
     {#if active}
       {@const View = active.component as Component<any>}
       <div class="file-view" data-file-view={active.id}><View {...active.props} {pane} /></div>
-    {:else}
+    {:else if !holding}
       <ul class="builtin" aria-label="Built-in listing">
         {#each entries as entry (entry.path)}<li><button type="button" class:selected={selected.includes(entry.path)} onclick={(event) => pane.select(entry, { ctrlKey: event.ctrlKey || event.metaKey, shiftKey: event.shiftKey })}>{entry.name}</button></li>{/each}
       </ul>

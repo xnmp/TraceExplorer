@@ -18,6 +18,8 @@ import { isLocalAbsolutePath } from "$lib/domain/target-location";
 import { canonicalFixtureImagePath, fixtureImageEntries } from "./image-input-files";
 import { withNativeRequestCapacity } from "./request-capacity";
 
+export const eligibilityPending = new URLSearchParams(location.search).get("eligibilityPending") !== "0";
+
 export const DIRECTORY = "/pictures";
 const TEMP = "/managed";
 export const MIRROR = "/pictures-mirror";
@@ -283,7 +285,8 @@ configureBackend(withNativeRequestCapacity({
         const jobId = [...imageOperations].find(([, id]) => id === operationId)?.[0];
         return reply(jobId === undefined ? null : jobSnapshot(jobId));
       }
-      case "trace_folder_candidates": return reply(candidateFolders());
+      case "trace_folder_candidates": return new URLSearchParams(location.search).has("candidateFailure")
+        ? Promise.reject(new Error("Candidate preload unavailable")) : reply(candidateFolders());
       case "folder_has_trace": return folderReply(folderHasTrace(params.directory));
       case "trace_folder_components": {
         const all = componentsOf().map((component) => component.summary);
@@ -443,7 +446,7 @@ export const fileDropTargetsRefused = new URLSearchParams(globalThis.location?.s
 const color = (path: string) => `hsl(${[...path].reduce((sum, char) => (sum * 31 + char.charCodeAt(0)) % 360, 7)} 45% 55%)`;
 (globalThis as any).__TAURI_EXPLORER_PLUGIN_SDK__ = {
   sdkVersion: 1, apiVersion: 2, svelteVersion: "5.56.3",
-  capabilities: ["fileViews", "previewInfo", "previewTargets", "blobWorkers", "jobReveal", "jobCost", "fileViewReveal", ...(selectionAnchor ? ["selectionAnchor"] : []), ...(fileTile ? ["fileTile"] : []), ...(fileTiles ? ["fileTiles"] : []), ...(initialTileSize ? ["tileSize"] : []), ...(paneDialogs ? ["paneDialogs"] : []), ...(fileDropTargets ? ["fileDropTargets"] : [])],
+  capabilities: [...(eligibilityPending ? ["fileViewEligibilityPending"] : []), "fileViews", "previewInfo", "previewTargets", "blobWorkers", "jobReveal", "jobCost", "fileViewReveal", ...(selectionAnchor ? ["selectionAnchor"] : []), ...(fileTile ? ["fileTile"] : []), ...(fileTiles ? ["fileTiles"] : []), ...(initialTileSize ? ["tileSize"] : []), ...(paneDialogs ? ["paneDialogs"] : []), ...(fileDropTargets ? ["fileDropTargets"] : [])],
   modules: {
     ...(fileTiles ? { "ui/file-tiles": { default: StubFileTiles } } : {}),
     ...(fileTile ? { "ui/file-tile": { default: StubFileTile, tileGridMetrics: (size: TileSizePreset = "medium") => {

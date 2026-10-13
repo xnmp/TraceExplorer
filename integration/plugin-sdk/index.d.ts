@@ -94,7 +94,8 @@ export interface PreviewTarget {
 export type PreviewSubject =
   | { readonly kind: "file"; readonly entry: FileEntry; readonly paneId: string | null }
   | { readonly kind: "target"; readonly target: PreviewTarget; readonly pluginId: string; readonly paneId: string | null };
-export interface FileViewContribution { id: string; title: string; component: Component<any>; props?: Record<string, unknown>; available?(directory: string): boolean; reveal?(targetId: string, pane: FileViewPane, signal: AbortSignal): Promise<void> }
+export type FileViewEligibility = boolean | "pending";
+export interface FileViewContribution { id: string; title: string; component: Component<any>; props?: Record<string, unknown>; available?(directory: string): FileViewEligibility; reveal?(targetId: string, pane: FileViewPane, signal: AbortSignal): Promise<void> }
 /**
  * A Preview-info section. It spans the pane's width below the host's own info
  * rows. Hosts that set `--preview-info-inset` (the inset of their rows in the

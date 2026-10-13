@@ -10,10 +10,10 @@ function deferred<T>() {
 }
 
 describe("folder visibility", () => {
-  it("answers false for an unknown folder, then true once the lookup resolves", async () => {
+  it("answers pending for an unknown folder, then true once the lookup resolves", async () => {
     const lookup = vi.fn(async () => true);
     const visibility = createFolderVisibility(lookup);
-    expect(visibility.available("/pics")).toBe(false);
+    expect(visibility.available("/pics")).toBe("pending");
     expect(lookup).not.toHaveBeenCalled(); // no synchronous side effects while reading
     await flush();
     expect(lookup).toHaveBeenCalledWith("/pics");
@@ -121,7 +121,7 @@ describe("folder visibility", () => {
     gates[0].resolve(false); // stale: the folder changed while it was in flight
     await flush();
     expect(lookup).toHaveBeenCalledTimes(2);
-    expect(visibility.available("/a")).toBe(false); // stale answer was not stored
+    expect(visibility.available("/a")).toBe("pending"); // stale answer was not stored
     gates[1].resolve(true);
     await flush();
     expect(lookup).toHaveBeenCalledTimes(2);
@@ -153,7 +153,7 @@ describe("folder visibility", () => {
     visibility.clear();
     gate.resolve(true);
     await flush();
-    expect(visibility.available("/a")).toBe(false);
+    expect(visibility.available("/a")).toBe("pending");
   });
 
   it("clear forgets previously known answers and recents", async () => {
@@ -167,7 +167,7 @@ describe("folder visibility", () => {
     visibility.refreshRecent();
     await flush();
     expect(lookup).not.toHaveBeenCalled();
-    expect(visibility.available("/a")).toBe(false);
+    expect(visibility.available("/a")).toBe("pending");
   });
 
   it("bounds the cache at 128 folders, evicting the oldest", async () => {
@@ -178,7 +178,7 @@ describe("folder visibility", () => {
     expect(visibility.available("/d129")).toBe(true);
     expect(visibility.available("/d2")).toBe(true);
     expect(lookup).not.toHaveBeenCalled();
-    expect(visibility.available("/d0")).toBe(false); // evicted: unknown again
+    expect(visibility.available("/d0")).toBe("pending"); // evicted: unknown again
     await flush();
     expect(lookup).toHaveBeenCalledWith("/d0");
   });
@@ -186,12 +186,12 @@ describe("folder visibility", () => {
 
 
 describe("preloaded folder candidates", () => {
-  it("answers false for a non-candidate at once and keeps that answer when the exact lookup agrees", async () => {
+  it("answers pending for a non-candidate, then false when the exact lookup resolves", async () => {
     const lookup = vi.fn(async () => false);
     const loader = vi.fn(async () => ["/pics"]);
     const visibility = createFolderVisibility(lookup, loader);
     await visibility.preload();
-    expect(visibility.available("/ordinary")).toBe(false);
+    expect(visibility.available("/ordinary")).toBe("pending");
     await flush();
     visibility.refreshRecent();
     await flush();
@@ -204,7 +204,7 @@ describe("preloaded folder candidates", () => {
     const lookup = vi.fn(async (directory: string) => directory === "/alias");
     const visibility = createFolderVisibility(lookup, async () => ["/real"]);
     await visibility.preload();
-    expect(visibility.available("/alias")).toBe(false);
+    expect(visibility.available("/alias")).toBe("pending");
     await flush();
     expect(lookup).toHaveBeenCalledWith("/alias");
     expect(visibility.available("/alias")).toBe(true);
@@ -226,13 +226,13 @@ describe("preloaded folder candidates", () => {
     expect(lookup).toHaveBeenCalledOnce();
   });
 
-  it("uses the old answer and queues an exact lookup before preload completes", async () => {
+  it("answers pending and queues an exact lookup before preload completes", async () => {
     const candidates = deferred<readonly string[]>();
     const exact = deferred<boolean>();
     const lookup = vi.fn(() => exact.promise);
     const visibility = createFolderVisibility(lookup, () => candidates.promise);
     const loading = visibility.preload();
-    expect(visibility.available("/pics")).toBe(false);
+    expect(visibility.available("/pics")).toBe("pending");
     expect(lookup).not.toHaveBeenCalled();
     await flush();
     expect(lookup).toHaveBeenCalledWith("/pics");
@@ -244,12 +244,12 @@ describe("preloaded folder candidates", () => {
     expect(visibility.available("/pics")).toBe(true);
   });
 
-  it("reloads on Trace data changes and offers a previously rejected folder", async () => {
+  it("reloads on Trace data changes and offers a previously unknown folder", async () => {
     let paths: readonly string[] = [];
     const lookup = vi.fn(() => new Promise<boolean>(() => {}));
     const visibility = createFolderVisibility(lookup, async () => paths);
     await visibility.preload();
-    expect(visibility.available("/new")).toBe(false);
+    expect(visibility.available("/new")).toBe("pending");
     await flush();
     paths = ["/new"];
     visibility.refreshRecent();
@@ -268,7 +268,7 @@ describe("preloaded folder candidates", () => {
     await visibility.preload();
     old.resolve(["/stale"]);
     await loading;
-    expect(visibility.available("/stale")).toBe(false);
+    expect(visibility.available("/stale")).toBe("pending");
     expect(visibility.available("/new")).toBe(true);
   });
 
@@ -280,7 +280,7 @@ describe("preloaded folder candidates", () => {
     await visibility.preload();
     old.resolve(["/stale"]);
     await loading;
-    expect(visibility.available("/stale")).toBe(false);
+    expect(visibility.available("/stale")).toBe("pending");
     expect(visibility.available("/new")).toBe(true);
     await flush();
   });
@@ -289,7 +289,7 @@ describe("preloaded folder candidates", () => {
     const lookup = vi.fn(async () => true);
     const visibility = createFolderVisibility(lookup, async () => { throw new Error("offline"); });
     await visibility.preload();
-    expect(visibility.available("/pics")).toBe(false);
+    expect(visibility.available("/pics")).toBe("pending");
     await flush();
     expect(visibility.available("/pics")).toBe(true);
     expect(lookup).toHaveBeenCalledWith("/pics");
@@ -307,7 +307,7 @@ describe("preloaded folder candidates", () => {
     const lookup = vi.fn(() => new Promise<boolean>(() => {}));
     const visibility = createFolderVisibility(lookup, async () => paths);
     await visibility.preload();
-    expect(visibility.available(directory)).toBe(expected);
+    expect(visibility.available(directory)).toBe(expected ? true : "pending");
     expect(lookup).not.toHaveBeenCalled();
     await flush();
     expect(lookup).toHaveBeenCalledOnce(); // a miss is not authoritative: aliases are still looked up
@@ -333,7 +333,7 @@ describe("preloaded folder candidates", () => {
     visibility.clear();
     await flush();
     expect(lookup).not.toHaveBeenCalled();
-    expect(visibility.available("/pics")).toBe(false);
+    expect(visibility.available("/pics")).toBe("pending");
     await flush();
   });
 });

@@ -59,3 +59,8 @@ export function hostRegisterFileDropTarget(workspace: PluginContext["workspace"]
       ? workspace.registerFileDropTarget.bind(workspace) : null;
   } catch { return null; }
 }
+
+/** Whether an unknown file-view eligibility can hold neutral first paint. */
+export function hostSupportsFileViewEligibilityPending(): boolean {
+  try { return host().capabilities?.includes("fileViewEligibilityPending") ?? false; } catch { return false; }
+}
