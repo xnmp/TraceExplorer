@@ -13,7 +13,8 @@
     "test:backend": "cargo test --locked --manifest-path src-tauri/Cargo.toml",
     "check": "svelte-check --tsconfig ./tsconfig.json",
     "test": "vitest run",
-    "test:browser": "playwright test"
+    "test:browser": "playwright test",
+    "layout:eval": "env -u OPENAI_API_KEY bun layout-eval/run.ts"
   },
   "devDependencies": {
     "@sveltejs/vite-plugin-svelte": "7.2.0",

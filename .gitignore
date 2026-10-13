@@ -17,3 +17,5 @@ target/
 /playwright-report/
 
 /plugins/image-generation/dist/
+
+/layout-eval/out/
