@@ -12,10 +12,10 @@ saved** (`held`, kept by `StackGrid`) until the grid is laid out afresh, i.e. th
 count changes, when it takes its listed position. Its eventual file name cannot be known before it is saved.
 
 This column rule covers **grid cells** (covers, ordinary files, folders). Inside an open band the
-layout follows the graph rules below. Sideways shelves retain the complete lineage’s
-coordinates and footprint: revealing descendants cannot recenter or shift an existing tile.
-Downward junction layouts may repack when visible inputs or routing change; they do not
-reserve empty rows for hidden branches. Selection styling alone never changes geometry.
+layout follows the visible-first optimisation rules below. Hidden descendants supply
+caption/hint sizes and complete parentage, but never placement slots. The last committed
+visible embedding supplies explicit, priced history. Selection styling with an unchanged
+visible set reuses the committed geometry.
 `gridFlow(items, open, columns, metrics)` takes the host-sorted list **already collapsed** to one
 `{id, kind: "stack"}` at each cover's position, plus ordinary files/folders.
 Use an entry path or cover key as `id`, rather than a component id (which can
@@ -42,27 +42,76 @@ ancestors without highlighting unrelated co-consumers.
 `badgeHighlight` adds hover lineage to the selected lineage without changing
 the selected neighborhood, keyboard focus, or layout request.
 
-`planBandScene` accepts that projection, drawable members and a `PinnedCover`.
-It seeds visibility from current-folder roots and supplies the **complete drawable lineage**
-alongside visible items. `layoutBand` compares two candidates using that complete topology:
+`planBandScene` accepts the projection, drawable members and a `PinnedCover`.
+It seeds visibility from current-folder roots and retains the complete drawable lineage
+for stable captions and history compatibility. `layoutBand` places **only `request.items`**.
+The engine, objective, routing geometry and packing helpers are pure TypeScript in
+`src/lib/domain/trace-graph/`; the view and worker are adapters.
 
-- The existing downward layered layout, including junctions and pixel wrapping.
-- For a single-cover tree, horizontal generation columns. Consecutive columns form
-  width-bounded shelves; a long chain wraps into later shelves. Each shelf reuses the
-  layered engine’s right-oriented routing. Shelf transitions leave through separate
-  right lanes, bend below the shelf, and enter the next column through separate left
-  lanes. The cover reaches its first column from the left, clearing vertically stacked
-  siblings. A candidate whose lanes or columns exceed the budget is rejected.
+Candidates include the downward junction router and top-aligned tree generation shelves.
+A bounded dynamic program scans at most 32 columns at each partition state, alongside
+fixed greedy partitions. Serial chains use the best shelf partition directly where it
+fits. Shelves reserve only their visible entry/exit ports and independent wrap tracks.
+The first generation starts at the cover header; short columns are never centred against
+taller later generations. Width budgets use 32 px buckets, a one-tile minimum and a
+100,000 px cap. Invalid widths use one tile; malformed nodes, cycles, duplicate identities
+and invalid dimensions/metrics are rejected. The upstream DAG projection still cuts
+malformed backend history deterministically before planning.
 
-`chooseBandArrangement` is pure. Its lexicographic cost is occupied **height**, then
-connector length (the deterministic cubic control-polygon upper bound), then horizontal
-cover distance. An exact tie prefers downward flow. Multi-input graphs keep the
-junction-aware downward candidate. This is a bounded heuristic, not an exact global
-minimum-area solver. Width budgets round down to 32 px buckets, with a one-tile minimum;
-invalid/nonpositive widths use one tile, and finite widths are capped at 100,000 px.
-Candidate scoring quantises the cover centre too. Focus does not choose orientation.
-Sideways layouts retain full horizontal bounds and the first-child vertical origin when
-projecting visibility, so packing and attachment cannot recenter surviving tiles.
+`layout-quality.ts` scores candidates after the same exact attachment used by the grid:
+
+```
+C = 16 H/t + 2 A/t² + .08 L/t + .12 B + .1 X + 4 Q/t
+    + .5 mixedDirections + 3 siblingInversions + .25 unaligned
+    + 100 widthOverflow/t
+    + 1.5 (meanDisplacement/t + .25 maxDisplacement/t + 2 clickedDisplacement/t)
+```
+
+Here H/A are the visible child/routing height and area, t is tile width, L is sampled
+connector length, B is turning in quarter-turn equivalents, X is unrelated-source
+crossings and Q is coincident lane length. Empty area is already priced through H/A;
+whitespace is reported separately. Hard gates reject missing/extra nodes, wrong sizes,
+nonfinite/off-canvas geometry, overlaps, connectors through tiles, incorrect directed
+parentage, invalid paths, broken source-to-output connectivity and arrow approaches.
+Spatial indexes, parsed route plans and cached geometric joins keep repeated checks
+bounded. Cubic diagnostics use the production twelve-step flattener; this is a geometry
+approximation, not a proof about arbitrarily thick strokes.
+An immutable candidate's envelope is captured once and translated with its attachment.
+The search is branch and bound over the candidate family. Every candidate first gets an
+admissible lower bound from its attached rectangles and allocation alone (`rectangleCost`:
+height, area, overflow and node penalties, connector terms taken as zero); a second bound
+adds exact connector length and turning (`optimisticCost`). Connectors are attached,
+translated or evaluated only for candidates whose bound can still change the choice,
+given the incumbent's score and the orientation hysteresis rule. The downward layered
+layout and anchored translations are not even built while their bounds (a downward
+height floor from the longest visible chain; translated rectangles) exclude them, except
+where their exact height decides the cold height budget or a re-embedding. Pruning never
+changes the chosen layout or its decision record. A sole cold embedding runs the same
+hard gates without computing soft diagnostics that cannot affect a choice.
+
+A reveal offers the retained subset, translated anchor embeddings and an incremental
+embedding with retained tiles/routes as obstacles. New edits try deterministic free
+positions in rank order, stopping at the first safe embedding. Ancestor-relative checks
+reject translations that cannot preserve the required anchors before routing them.
+Other retained tiles are re-embedded when the fixed warm embedding exceeds the compact
+height budget; a compact warm embedding keeps its zero displacement.
+Multi-input arrivals get explicit junctions.
+Blocked source ports use a bounded rectilinear visibility grid (at most 250,000 points).
+Only previous visible geometry is retained; no candidate reserves future descendants.
+The clicked tile and its visible ancestors have a hard preference among geometry-safe
+candidates. Other surviving tiles pay displacement. A direction change must improve
+quality by at least 15%, preventing near-tie oscillation. Anchored history may exceed the
+compact candidate's height; the decision records that stability exception.
+
+`BandHistory` contains the last accepted raw layout, its exact attached geometry and
+attachment context. History is incompatible after membership/relationships, pane width,
+pin or metrics change. Packing-only updates refresh the accepted geometry without
+replanning. History from a superseded scene is never consumed. Normalisation removes
+preceding packed-band offsets and reconciles host cover chrome before local scoring.
+`decision.fallback` reports `anchor-infeasible` when the bounded candidate family has no
+safe anchor-preserving embedding, and `packing-infeasible` when actual packing cannot
+keep its allocation. These diagnostics describe the constructive search; they do not
+prove global infeasibility. Unresolved feasible failures must remain acceptance failures.
 
 `packedGridFlow` keeps covers on their folder columns and creates one shared band per
 folder row. It preserves ordered, balanced first-line positions; later groups try skyline
@@ -73,7 +122,12 @@ neighbour’s space can be used only when tiles and stems both fit. The rectangl
 include their header and footer; wrapped lines add no extra vertical gap. Existing outer
 margins supply bypass lanes first; a small gutter is reserved only when they cannot hold
 all independent stems. Covers and ordinary cells retain their logical row/column and x;
-only folder rows below an expanded band shift vertically.
+only folder rows below an expanded band shift vertically. Active click allocations have
+hard x/y reservations when the ordered rectangles and cover corridors can fit. Other
+retained groups keep a preferred x; neighbors may move around an active reservation.
+An unmeasured newly opened stack reserves its whole row until its first layout arrives.
+Its estimated child height cannot certify a safe shared allocation; this prevents a
+temporary sideways squeeze of an already committed band.
 
 `STACK_STEM_ROOM` is 34 px: bend tracks and the straight arrow approach, independent
 of tile size. Each cover gets a distinct 6 px bend track. Headers grow only when those
@@ -86,8 +140,9 @@ Header drops avoid other cover columns and assigned bypass gutters. Attachment m
 is keyed by actual drawn geometry, so unchanged routes continue when routing constraints
 elsewhere in the row change.
 
-The layout cache includes the complete lineage, visible items, pin and tile metrics;
-workers and the main-thread fallback run the same pure adapter. Open state remains keyed
+The layout cache includes complete membership, visible items, the exact band width,
+pin, metrics, anchor, both history embeddings and attachment context. Workers carry the
+same request (including Maps) and run the same pure entry point as the main thread. Open state remains keyed
 by cover identity while fresh component ids are resolved from the folder index.
 
 The original spike (`19601c1`, 12 hard cases and 2,700 fuzz layouts) established
@@ -265,7 +320,7 @@ The reusable layered algorithm is described top to bottom; a left-to-right shelf
   A layout that widens runs the pass again (at most three passes in all). Placing margin lanes costs about S² log S for S sources sharing a margin, within the sources × rows bound above.
 
 - **Benchmarks.** `tests/domain/trace-graph/scale.test.ts` covers a 20,000-step edit chain focused at its end, a 3,000-output fan-out, the same two laid out left to right (transposing adds a linear pass), and a 10,000-image folder made of 500 components. Choosing the orientation is linear in the component's size, apart from the junction estimate, which is computed only for components that pass the cheap checks and exactly only for up to 200 multi-input outputs (800 inputs). It is cached per component, so focus changes reuse it. A benchmark covers 200 outputs of 20 inputs each (the estimate is skipped) and a 96-image component whose estimate runs exactly. A 1,000-child fan-out test bounds the path data (under 250 KB; it was 10.7 MB before trunks).
-- **Off-thread.** Layouts above 60 tiles run in a blob worker when the host announces `blobWorkers` (its CSP permits `worker-src blob:`), and otherwise on the main thread after yielding a frame. Results are cached by their exact request, except that a left-to-right request ignores the pane width (the engine does not use it running right), so resizing reuses its layout. The worker gets one job at a time, so a request superseded while it waits is dropped rather than computed; one already running finishes and is cached.
+- **Off-thread.** A synchronous request has a budget of 30 current plus committed-history tiles and 40 current input edges plus committed-history routes. Requests above either budget run in a blob worker when the host announces `blobWorkers` (its CSP permits `worker-src blob:`), and otherwise on the main thread after yielding a frame. Hidden lineage does not consume placement slots or this geometry budget. Results are cached by their exact request including both committed embeddings and attachment, except that a non-band left-to-right request ignores pane width. The worker gets one job at a time, so a request superseded while it waits is dropped rather than computed; one already running finishes and is cached.
 - **Rendering.** Tiles outside the viewport (±800 px) are not mounted once a component shows more than 120 tiles; connectors and junctions are windowed the same way by their vertical extent. Grid rows and bands beyond a 1,200 px viewport margin are windowed; their logical geometry remains allocated. Closed stacks need only summaries. Open nearby bands load through the existing complete per-component paging and request scheduler. Focused bands stay mounted so keyboard and job reveals can finish even from offscreen.
 
 ## Motion
@@ -321,3 +376,15 @@ columns can. Tidy-tree research motivates retaining local order and subtree coor
 layered engine supplies ordering, while a separate packing stage fits independent stacks
 into the row. Explicit ports and lane reservations keep
 those compaction steps from falsifying parentage.
+
+## Reproducible optimisation acceptance
+
+`bun run layout:eval` compares against a frozen copy of the graph, attachment and
+packing engine at `34ed9a2de1d8ab3c4190b590e0054be3ac32c394`. It runs 65 hand/seeded cases
+at five pane widths and all four tile presets, legal visible-tile click tours, static
+multi-stack packing and real committed packing reveals. Dedicated timing runs follow
+geometry evaluation, alternating engine order after warmup. Cold requests and prepared
+committed reveals are both timed through `layoutGraph`. JSON, CSV, SVGs, a gallery
+and an acceptance/timing table go to git-ignored `layout-eval/out/`. Any failed acceptance
+target makes the command exit nonzero. See `layout-eval/README.md` for metric definitions
+and the limits of the anchor feasibility checks.
