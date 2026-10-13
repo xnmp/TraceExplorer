@@ -95,7 +95,7 @@ for (const interrupt of [false, true]) test(`reflow entrances keep tile and conn
       const opacity = (el: Element) => { let value = 1; for (let at: Element | null = el; at; at = at.parentElement) value *= Number(getComputedStyle(at).opacity); return value; };
       const held = (window as any).__heldAnimations as Animation[];
       await Promise.all(held.filter(a => a.playState === 'running').map(a => a.ready));
-      // Effects from this pass resolve together without explicit startTime.
+      // All effects in this pass, including tile and HTML connector entrances, share the native start.
       const clocks = held.filter(a => a.playState === 'running').map(a => a.startTime);
       for (const time of [0, 40, 80, 100, 120, 159]) {
         for (const a of held) if (a.playState === 'running') a.currentTime = time;
@@ -107,9 +107,53 @@ for (const interrupt of [false, true]) test(`reflow entrances keep tile and conn
       return { frames, clocks };
     }, { parent, child });
     expect(samples.clocks.length).toBeGreaterThan(0);
+    expect(samples.clocks).not.toContain(null);
     expect(new Set(samples.clocks).size).toBe(1);
     for (const frame of samples.frames) expect(frame.connector).toBeCloseTo(frame.tile, 2);
     expect(samples.frames.at(-1)!.tile).toBeGreaterThan(.9);
+  } finally { await releaseScriptedAnimations(page); }
+  await settle(page);
+});
+
+for (const resize of [false, true]) test(`reflow clocks and source restoration at native playback rate (${resize ? 'tile size' : 'entrance'})`, async ({ page }) => {
+  await openView(page, 454, '?selectionBlink=1&fileTile=1&tileSize=small', resize);
+  const parent = await key(page, 'stack'), child = await key(page, 'Cerulean');
+  await page.evaluate(() => {
+    const w = window as any, original = Element.prototype.animate;
+    w.__heldAnimations = [] as Animation[];
+    w.__originalAnimate = original;
+    // Extend the active interval under CPU load, retaining native playback and
+    // compositor start-time resolution. No test clock is assigned or held.
+    Element.prototype.animate = function (frames, options) {
+      const timing = typeof options === 'number' ? options * 20
+        : { ...options, duration: Number(options?.duration ?? 0) * 20 };
+      const animation = original.call(this, frames, timing);
+      w.__heldAnimations.push(animation);
+      return animation;
+    };
+  });
+  try {
+    if (resize) await page.evaluate(() => (window as any).trace.setTileSize('large'));
+    else await page.locator('[data-stack-toggle]').click();
+    await awaitAnimationsCreated(page);
+    const clocks = await page.evaluate(async () => {
+      const running = ((window as any).__heldAnimations as Animation[]).filter(a => a.playState === 'running');
+      await Promise.all(running.map(a => a.ready));
+      return running.map(a => a.startTime);
+    });
+    expect(clocks.length).toBeGreaterThan(0);
+    expect(clocks).not.toContain(null);
+    expect(new Set(clocks).size).toBe(1);
+    const source = page.locator(`path[data-from="node:${parent}"][data-to="node:${child}"]`);
+    await expect(source).toHaveCount(1);
+    expect(await source.evaluate(el => Number(getComputedStyle(el).opacity))).toBe(0);
+    await page.evaluate(async () => {
+      for (const a of (window as any).__heldAnimations as Animation[]) if (a.playState === 'running') a.finish();
+      await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    });
+    // Native completion hands the visible connector back to the live SVG.
+    expect(await source.evaluate(el => Number(getComputedStyle(el).opacity))).toBe(1);
+    await expect(page.locator('[data-motion-route-layer], [data-motion-ghost]')).toHaveCount(0);
   } finally { await releaseScriptedAnimations(page); }
   await settle(page);
 });

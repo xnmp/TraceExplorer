@@ -76,6 +76,30 @@ function animateInverted(element: Element & ElementCSSInlineStyle, frames: Keyfr
   return animation;
 }
 
+/**
+ * The HTML copy owns the source's visibility for its whole lifetime. A constant
+ * zero-opacity SVG effect creates an unnecessary main-thread animation clock:
+ * Chromium can resolve it with different precision from the compositor clocks
+ * used by tiles and HTML edge layers, even when created in the same task.
+ * Restore synchronously on cancellation, before the next pass measures styles;
+ * an old finished promise must never unhide a replacement's source.
+ */
+const hiddenSources = new WeakMap<SVGElement, Animation>();
+function hideSource(source: SVGElement, animation: Animation): Animation {
+  const previous = source.style.opacity;
+  hiddenSources.set(source, animation);
+  source.style.opacity = "0";
+  const clear = () => {
+    if (hiddenSources.get(source) !== animation) return;
+    hiddenSources.delete(source);
+    if (source.style.opacity === "0") source.style.opacity = previous;
+  };
+  const cancel = animation.cancel.bind(animation);
+  animation.cancel = () => { clear(); cancel(); };
+  animation.finished.then(clear, clear);
+  return animation;
+}
+
 /** Hide rerouting edges while endpoints are more than half a CSS pixel away.
  * Offsets are eased progress, shared with the native tile transforms.
  */
@@ -112,6 +136,9 @@ export const prefersReducedMotion = () => typeof matchMedia === "function" && ma
  * Opacity set by a class (lineage dimming) is not a fade and is not carried over.
  */
 function fadingOpacity(element: Element): number | null {
+  // Hidden live SVGs still represent an interrupted fade, including before
+  // their HTML copy has become visible. Snapshots can then resume from zero.
+  if (element instanceof SVGElement && hiddenSources.get(element)?.playState === "running") return 0;
   const fading = element.getAnimations().some((animation) => ownedEffects.has(animation) && animation.playState === "running"
     && (animation.effect as KeyframeEffect | null)?.getKeyframes().some((frame) => "opacity" in frame));
   return fading ? Number(getComputedStyle(element).opacity) : null;
@@ -329,7 +356,7 @@ export function playGraph(canvas: HTMLElement, before: GraphSnapshot, orientatio
           { transform: `translate(${old.x - at.x}px, ${old.y - at.y}px)`, opacity: old.fading ?? Number(opacity) },
           { transform: "translate(0, 0)", opacity },
         ];
-        animations.push(animateSvgGhost(canvas, ghost, frames, timing), animate(dot, [{ opacity: 0 }, { opacity: 0 }]));
+        animations.push(hideSource(dot, animateSvgGhost(canvas, ghost, frames, timing)));
       }
       continue;
     }
@@ -388,7 +415,7 @@ export function playGraph(canvas: HTMLElement, before: GraphSnapshot, orientatio
           ];
           // A returning route hidden by its exit clip waits for arrival rather
           // than exposing a partial stem before its endpoint is revealed.
-          animations.push(animateSvgGhost(canvas, copy(), frames, timing), animate(path, [{ opacity: 0 }, { opacity: 0 }]));
+          animations.push(hideSource(path, animateSvgGhost(canvas, copy(), frames, timing)));
         }
       } else {
         // All band edge effects act on HTML layers: SVG transforms/opacity
@@ -401,8 +428,7 @@ export function playGraph(canvas: HTMLElement, before: GraphSnapshot, orientatio
             { opacity: 0, offset: fadeWindow }, { opacity: 0, offset: 1 },
           ], timing));
         }
-        animations.push(animateSvgGhost(canvas, copy(), arriveFrames(opacity, fadeWindow), timing),
-          animate(path, [{ opacity: 0 }, { opacity: 0 }]));
+        animations.push(hideSource(path, animateSvgGhost(canvas, copy(), arriveFrames(opacity, fadeWindow), timing)));
       }
       continue;
     }

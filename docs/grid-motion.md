@@ -16,9 +16,19 @@ carries unchanged destinations without restarting them. A graph tracks its own
 effects for snap cleanup. Neither owner cancels retained cards' CSS selection
 transitions. Reduced motion uses the same owned cancellation and snaps.
 
-Native effects created in one commit task resolve their pending start times
-together. We never assign or back-date `Animation.startTime`: WebKitGTK can
-re-resolve a stale timeline value and rewind every effect in a pass. Carried
+Tiles and their incident HTML connector layers are created in one commit task
+and share the native start. Same-task creation alone does not make
+all effects' clocks identical: Chromium can resolve a main-thread SVG effect
+with a rounded frame timestamp while HTML effects receive the compositor's
+higher-precision timestamp. Constant-zero SVG opacity effects therefore do not
+mask live originals. Instead each HTML layer owns its source's inline hiding,
+restoring it synchronously on cancellation and on completion. Hidden sources
+still record zero-opacity entrances in interruption snapshots; old completion
+callbacks cannot unhide replacement owners.
+
+We never assign or back-date `Animation.startTime`: WebKitGTK can re-resolve a
+stale timeline value and rewind every effect in a pass. Source hiding does not
+change any clock, including an engine value already presented. Carried
 animations retain their current clocks and readiness.
 
 The grid captures displayed geometry before a commit, including pending inline
@@ -91,7 +101,10 @@ ghosts, unchanged retained positions and no subsequent opacity decreases. It
 also verifies effective child-card opacity and that the newly selected retained
 card still has a running CSS transition. Initial and interrupted reflow tests
 seek native clocks to check tile/connector opacity parity and common pending
-start times. Carry tests use data changes to exercise real spatial motion.
+start times. Normal-playback entrance and tile-size regressions check exact
+native clock equality and verify live source visibility and copy cleanup after
+completion.
+Carry tests use data changes to exercise real spatial motion.
 The classifier's domain tests cover focus/visibility, unchanged
 geometry, changed inputs, first/empty scenes and malformed inputs.
 
