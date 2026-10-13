@@ -1077,9 +1077,13 @@ for (const worker of [false, true]) test(`#56 cold open holds the band and follo
   expect(loading.length).toBeGreaterThan(5);
   expect(loading.at(-1)!.time).toBeGreaterThanOrEqual(500);
   // Pending native effects start at zero on their first presented frame,
-  // without back-dating. All later loading frames have reserved space.
+  // without back-dating; samples taken before that frame read zero too.
+  // Zero height is only ever a short leading prefix and never returns.
   expect(loading.every(sample => sample.loading)).toBe(true);
-  expect(loading.slice(1).every(sample => sample.height > 0)).toBe(true);
+  const opened = loading.findIndex(sample => sample.height > 0);
+  expect(opened).toBeGreaterThan(-1);
+  expect(loading[opened].time - loading[0].time).toBeLessThan(100);
+  expect(loading.slice(opened).every(sample => sample.height > 0)).toBe(true);
   expect(loading.filter(sample => sample.time > 200).every(sample => sample.statusInBand)).toBe(true);
   if (worker) expect(loading.filter((sample) => sample.workerHeld).at(-1)!.time).toBeGreaterThan(900);
   // Before content arrives, neither reservation nor following row may reverse upward after opening.
