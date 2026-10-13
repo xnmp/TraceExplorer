@@ -232,7 +232,7 @@
                 onactivate={(key, event) => onactivate(key, event, summary.id)} onnavigate={(key) => onnavigate(key, summary.id)} {onopen}
                 onmenu={(key, event) => onmenu(key, event, summary.id)} {captureSelection} {onsaved} {ondiscarded} {oncommit}
                 onlayout={(pending) => onlayout(summary.id, pending)} {onfailure} />
-            {:else if !data}<div class="loading" role="status" style:top="{band.y - rect.y + STACK_STEM_ROOM}px">Loading…</div>{/if}
+            {:else if !data}<div class="loading delayed" role="status" style:top="{band.y - rect.y + STACK_STEM_ROOM}px">Loading…</div>{/if}
           </div>
         {/if}
       </section>
@@ -257,5 +257,9 @@
   .content { position: absolute; top: 0; left: 0; width: 100%; pointer-events: none; }
   .content :global(.tile) { pointer-events: auto; }
   .row-band { position: absolute; left: 0; pointer-events: none; background: color-mix(in srgb, var(--accent) 3%, transparent); }
+  /* Progress text appears only when loading is slow, so a fast load never flashes it. A transition, not an
+     animation: grid motion cancels band animations, and a cancelled transition shows the text at once. */
+  .delayed { transition: opacity 150ms ease-out 400ms; }
+  @starting-style { .delayed { opacity: 0; } }
   .loading { position: absolute; padding: 20px; box-sizing: border-box; width: 100%; text-align: center; color: var(--text-secondary); }
 </style>

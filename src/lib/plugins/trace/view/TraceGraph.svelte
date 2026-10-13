@@ -305,7 +305,7 @@
     {/each}
   </div>
 {:else}
-  <div class="pending" class:pinned-pending={!!pinned} style:top={pinned ? `${bandTop + STACK_STEM_ROOM}px` : undefined} role="status">{failure ? `Trace layout failed: ${failure}` : "Arranging…"}</div>
+  <div class="pending" class:delayed={!failure} class:pinned-pending={!!pinned} style:top={pinned ? `${bandTop + STACK_STEM_ROOM}px` : undefined} role="status">{failure ? `Trace layout failed: ${failure}` : "Arranging…"}</div>
 {/if}
 
 <style>
@@ -338,6 +338,10 @@
   .junction.highlight { fill: var(--edge-highlight); }
   .ghosts { pointer-events: none; }
   div.ghosts { position: absolute; inset: 0; }
+  /* Progress text appears only when loading is slow, so a fast load never flashes it. A transition, not an
+     animation: grid motion cancels band animations, and a cancelled transition shows the text at once. */
+  .delayed { transition: opacity 150ms ease-out 400ms; }
+  @starting-style { .delayed { opacity: 0; } }
   .pinned-pending { position: absolute; left: 0; width: 100%; box-sizing: border-box; }
   .pending { padding: 18px 12px; color: var(--text-secondary); font-size: 12px; }
   .pending.stale { padding: 4px 12px; }

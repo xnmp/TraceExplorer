@@ -786,7 +786,7 @@
   oncontextmenu={(event) => { if (event.target === event.currentTarget) pane.contextMenu(event); }}
   data-testid="trace-view">
   {#if session.status === "loading" && !session.index}
-    <div class="message" role="status">Loading Trace…</div>
+    <div class="message delayed" role="status">Loading Trace…</div>
   {:else if session.status === "error" && !session.index}
     <div class="message" role="alert">
       <span>Trace could not be loaded: {session.error}</span>
@@ -814,6 +814,10 @@
 <style>
   .trace-view { position: relative; flex: 1; min-height: 0; overflow: auto; padding: 10px 10px 24px; box-sizing: border-box; overflow-anchor: none; scrollbar-gutter: stable; }
   .marquee-rect { position: absolute; pointer-events: none; z-index: 10; box-sizing: border-box; border: 1px solid var(--accent); background: color-mix(in srgb, var(--accent) 20%, transparent); }
+  /* Progress text appears only when loading is slow, so a fast load never flashes it. A transition, not an
+     animation: grid motion cancels band animations, and a cancelled transition shows the text at once. */
+  .delayed { transition: opacity 150ms ease-out 400ms; }
+  @starting-style { .delayed { opacity: 0; } }
   .message { display: flex; flex-direction: column; align-items: center; gap: 10px; padding: 40px 12px; color: var(--text-secondary); }
   .message button { padding: 4px 12px; font: inherit; color: var(--text-primary); background: var(--control-fill); border: 1px solid var(--control-stroke); border-radius: var(--radius-sm); cursor: pointer; }
   .notice { margin: 0 0 10px; font-size: 12px; color: var(--system-critical-text, var(--system-critical)); }
