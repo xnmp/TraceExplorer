@@ -126,13 +126,33 @@ but moved tiles more per click (73 px vs 42 px) and was not faster.
 
 ### 3. Scene transactions
 
-1. **Pure folder scene.** Extract grid packing and band attachment from
-   `StackGrid`/`TraceGraph` into a pure `composeFolderScene` (nodes, edges,
-   tiles, cells, bands, bounds) in `scene.ts`; the renderer reads it through
-   an adapter.
+1. **One swappable layout function.** The whole layout is one pure function,
+   the only place layout policy lives:
+
+   ```ts
+   type FolderLayoutEngine = (input: FolderLayoutInput) => FolderLayout;
+   // input:  the folder (entries in host order, lineages, covers), what is
+   //         open (open stacks and the nodes revealed in each), the viewport
+   //         (width, tile and host grid metrics) and the previous committed
+   //         layout as an optional stability hint;
+   // output: every cell, band, tile rect, connector path, junction and the
+   //         bounds, in folder coordinates.
+   ```
+
+   Grid flow, band layout, skyline packing and attachment become the default
+   engine's internals (`src/lib/domain/trace-graph/folder-layout/`). Nothing
+   outside the engine computes geometry: the controller calls the engine
+   (inline or in the worker; input and output are plain data), the renderer
+   draws its output, and motion diffs two outputs. Changing the layout means
+   writing another function of the same type; `layout-eval` benchmarks any
+   engine through the same signature, and a contract test suite (no
+   overlaps, connectors attached, every visible node placed once, covers
+   pinned, determinism, immutability) runs against every registered engine.
+   Caching is a wrapper (`memoizeEngine`) and per-band reuse an internal
+   detail, never part of the seam.
 2. **Scene controller.** A pane-owned controller takes inputs (data version,
-   listing, focus, open stacks, metrics, width), prepares the affected rows'
-   layouts (cache, inline or worker), keeps the previous scene displayed while
+   listing, focus, open stacks, metrics, width), runs the layout engine
+   (inline or worker), keeps the previous scene displayed while
    preparing, and commits one complete scene. Leaf layout effects, the
    `ongeometry → covers` publication and estimated-footprint animation go.
    A newer action supersedes a preparing one; only the latest commits.
