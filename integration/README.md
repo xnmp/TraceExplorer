@@ -2,7 +2,7 @@
 
 TraceExplorer is built and packaged independently. `plugin.json` declares package identity, contributions, exact Svelte ABI, and mutable state files. The release builder adds platform and payload size/SHA256 declarations to `manifest.json` in a `.teplugin` ZIP.
 
-The host loads frontend assets through its restricted `plugin:` protocol. It exposes the SDK runtime with Svelte 5.56.3 public/internal bindings, modal and image-editor components, thumbnails, and a native save picker. The runtime keeps `sdkVersion: 1` for existing plugins and adds `apiVersion: 2` with a `capabilities` list (`fileViews`, `previewInfo`, `previewTargets`, `blobWorkers`, `selectionAnchor` for marquee selection that preserves the host cursor and Shift-range anchor, `fileTile` for individual host tiles and grid metrics through `ui/file-tile`, `fileTiles` for whole lists through `ui/file-tiles`, `jobRetry` on hosts that show a Retry action for a failed job whose registration passed `retry`, and `presentation.openImageEditor` (an optional context member, detected by its presence) on hosts that can open the image editor directly in one of the plugin's editor tools and settle when it closes); `plugin.json` declares `sdkVersion: 2`, which only SDK-2 hosts accept.
+The host loads frontend assets through its restricted `plugin:` protocol. It exposes the SDK runtime with Svelte 5.56.3 public/internal bindings, modal and image-editor components, thumbnails, and a native save picker. The runtime keeps `sdkVersion: 1` for existing plugins and adds `apiVersion: 2` with a `capabilities` list (`fileViews`, `fileViewEligibilityPending` for synchronous reactive eligibility that can hold neutral first paint for up to 400 ms, `previewInfo`, `previewTargets`, `blobWorkers`, `selectionAnchor` for marquee selection that preserves the host cursor and Shift-range anchor, `fileTile` for individual host tiles and grid metrics through `ui/file-tile`, `fileTiles` for whole lists through `ui/file-tiles`, `jobRetry` on hosts that show a Retry action for a failed job whose registration passed `retry`, and `presentation.openImageEditor` (an optional context member, detected by its presence) on hosts that can open the image editor directly in one of the plugin's editor tools and settle when it closes); `plugin.json` declares `sdkVersion: 2`, which only SDK-2 hosts accept.
 
 Two independent capabilities extend AI image dialogs. `paneDialogs` plus a callable `workspace.capturePane` enables synchronous owner capture and `openDialog(id, props, { scope: "pane", pane })`; the host-issued handle is valid only for that pane's lifetime. Failed capture is an action error. Without support, Trace uses the existing two-argument window-modal call. `fileDropTargets` plus a callable `workspace.registerFileDropTarget` enables the Inputs section as a host-routed target. Registration takes `(element, handler, { enabled })` and returns an idempotent disposer; `enabled` is a live predicate, and false consumes the drop without delivery or filesystem transfer. The handler receives ordered local paths and source `"pane"` or `"external"`. Trace never installs a Tauri drag listener or infers paths from DOM files. Either capability works without the other; older hosts retain selected-image inputs and show no drop affordance. Inputs are inspected in chunks of at most eight before being appended, with exact-string duplicate identity; canonical aliases remain subject to backend validation.
 
@@ -56,16 +56,12 @@ persisted canonical paths (dunce-simplified on Windows), compared with the
 frontend's `directoryKey` rules. The first candidate answer offers Trace while
 an exact lookup checks presence and components; a false positive switches back.
 
-This does **not** guarantee the first folder in a new window: the SDK's
-`Plugin.activate` may return a promise, but `FileViewContribution.available` is
-synchronous and exposes no preload/first-paint barrier. In the host,
-`window-session.ts` starts `startup.ready` without awaiting it before
-`windowTabsManager.init`; `window-startup.ts` publishes settings readiness before
-awaiting plugin initialization. `FileList.svelte` derives the resolved view and
-`file-view-registry.svelte::resolve` consults contributions as they register.
-Thus folder navigation/view resolution can precede activation completion (or
-activation itself). A host startup barrier would need a separate host change;
-this plugin makes later first visits optimistic once preload has completed.
+On hosts advertising `fileViewEligibilityPending`, unknown ordinary directories
+answer `"pending"` while the queued exact lookup runs. The host holds its neutral
+background for up to 400 ms, then falls back to the listing if still unresolved;
+a late true answer still switches to Trace. Known answers stay visible during
+refresh, and lookup failures settle false. Older hosts receive false instead of
+pending. Candidate preload remains an optimistic first-visit optimization.
 
 
 Canonical directory identity is a separate integration limitation. The current
@@ -73,7 +69,7 @@ host's `files/directory_identity.rs` preserves Unix symlink aliases and Windows
 short names, while Trace's `folders::key` follows links, and macOS shows `/var`
 for `/private/var`. The SQL set is a superset in Trace's **canonical namespace**
 only: for `/alias -> /real`, a stored `/real/image.png` yields `/real`. So only
-a candidate hit is trusted (an optimistic `true`). A miss answers `false` and is
+a candidate hit is trusted (an optimistic `true`). A miss answers `"pending"` (false on older hosts) and is
 still checked with the exact `folder_has_trace` lookup, which canonicalizes, so
 an alias shows Trace once that answer arrives, as before candidates existed. A
 Rust regression test documents the canonical-key contract.

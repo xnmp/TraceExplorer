@@ -7,7 +7,7 @@
  * derived), so it never mutates state synchronously: unknown folders are
  * queued for an exact lookup and answer meanwhile from the SQL candidate
  * superset (`true` when it includes them, so a first visit paints the Trace
- * view first), or `false` before it loads. A miss is not authoritative: the
+ * view first), or `"pending"` until the exact answer arrives. A miss is not authoritative: the
  * host may name a folder by an alias (symlink, Windows short name, macOS
  * `/var`) that the canonical superset cannot match, so it is still looked up.
  * Known folders keep their last answer while being refreshed, so views do not flicker.
@@ -15,6 +15,9 @@
 import { invoke } from "$lib/api/common";
 import { isVirtualPath } from "$lib/domain/virtual-path";
 import { directoryKey, samePath } from "$lib/domain/path";
+
+import type { FileViewEligibility } from "../../../../integration/plugin-sdk";
+import { folderEligibility } from "$lib/domain/folder-eligibility";
 
 type Lookup = (directory: string) => Promise<boolean>;
 type CandidateLoader = () => Promise<readonly string[]>;
@@ -78,7 +81,7 @@ export function createFolderVisibility(lookup: Lookup, loadCandidates?: Candidat
   }
 
   return {
-    available(directory: string): boolean {
+    available(directory: string): FileViewEligibility {
       if (!directory || isVirtualPath(directory)) return false;
       remember(directory);
       const value = known.get(directory);
@@ -87,7 +90,7 @@ export function createFolderVisibility(lookup: Lookup, loadCandidates?: Candidat
       if (!pending.has(directory)) queueMicrotask(() => {
         if (current === scope && !known.has(directory) && !pending.has(directory)) refresh(directory);
       });
-      return candidates?.has(directoryKey(directory)) === true;
+      return folderEligibility(directory, value, candidates?.has(directoryKey(directory)) === true);
     },
     /** Trace data changed somewhere: re-check folders views are showing. */
     preload,
