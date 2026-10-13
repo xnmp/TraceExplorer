@@ -180,6 +180,12 @@ the built-in listing.
 
 ## Delivery
 
+Also in scope: host issue xnmp/tauri-explorer#1061 — leaving the fullscreen
+image preview paints the Files pane once with a stale item set before the
+correct grid (plain Tiles view, so Trace inherits it inside the pane). Fixed
+at its root on the host with a per-frame native check, before the release.
+
+
 Phases 1 and 2 touch different files and run in parallel; 3 builds on 1;
 4 is independent. Each PR runs the full suite (`check`, vitest, cargo, browser
 in Chromium and WebKit, packaging) and the native harness for its scenario,
