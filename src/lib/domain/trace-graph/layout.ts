@@ -45,8 +45,10 @@ export interface PinnedCover {
 }
 
 export interface LayoutRequest {
-  /** Complete band lineage, used to choose and retain placement independently of focus. */
+  /** Complete lineage for captions and history compatibility; only items allocate geometry. */
   readonly band?: { readonly key: NodeKey; readonly items: readonly LayoutItem[] };
+  readonly history?: BandHistory;
+  readonly anchorKey?: NodeKey;
   /**
    * Root alone in row 0; remaining rows align toward its column. Ignored
    * running right, for an unavailable key, or if the tile would lie outside
@@ -114,8 +116,30 @@ export interface PlacedRoute {
  */
 export interface RowBox { readonly index: number; readonly band: number; readonly top: number; readonly bottom: number; readonly keys: readonly NodeKey[] }
 
+export interface BandHistory {
+  readonly signature: string;
+  readonly layout: GraphLayout;
+  /** Last committed geometry after real grid attachment, in cover-relative coordinates. */
+  readonly placed: GraphLayout;
+  readonly attachment?: { readonly bandTop: number; readonly placement: import("./band-geometry").BandPlacement };
+}
+
+export interface BandDecision {
+  readonly candidate: string;
+  readonly partition?: readonly number[];
+  readonly stability: boolean;
+  /** `gate-infeasible`: no candidate passed the hard gates (e.g. a cover that is not a root); the downward layout is shown as is. */
+  readonly fallback?: "anchor-infeasible" | "packing-infeasible" | "gate-infeasible";
+}
+
 export interface GraphLayout {
-  /** A sideways band retains its complete footprint so visibility cannot recenter its tiles. */
+  readonly decision?: BandDecision;
+  /** Preferred child allocation x from committed history; packing may reject it. */
+  readonly preferredX?: number;
+  /** Active click group: packing preserves this x whenever ordered rectangles fit. */
+  readonly anchorX?: number;
+  readonly anchorY?: number;
+  /** Explicit priced allocation for a retained visible embedding. */
   readonly bandBounds?: { readonly left: number; readonly width: number; readonly top: number };
   /** A non-root cannot be pinned without hiding parentage; the ordinary layout is returned. */
   readonly pinnedViolation?: "not-a-root";
@@ -237,6 +261,7 @@ function hashOf(text: string): string {
 }
 
 export function layoutGraph(request: LayoutRequest): GraphLayout {
+  if (!request || !Array.isArray(request.items)) throw new RangeError("malformed layout request");
   return request.band ? layoutBand(request) : layoutLayered(request);
 }
 
@@ -289,8 +314,9 @@ function layoutPass(request: LayoutRequest, extra: { readonly left: number; read
   const size = (value: number) => Number.isFinite(value) && value > 0 ? Math.min(value, MAX_TILE) : 0;
   const space = spacingFor(request.tileWidth);
   const items = new Map(request.items.map((item) => [item.key, { ...item, width: size(item.width), height: size(item.height), order: Number.isFinite(item.order) ? item.order : 0 }]));
-  const parentsOf = (key: NodeKey) => [...new Set(items.get(key)!.parents)].filter((parent) => parent !== key && items.has(parent));
   const keys = [...items.keys()];
+  const parentsByKey = new Map(keys.map(key => [key, [...new Set(items.get(key)!.parents)].filter(parent => parent !== key && items.has(parent))]));
+  const parentsOf = (key: NodeKey) => parentsByKey.get(key)!;
 
   // Longest-path bands, computed iteratively so deep edit chains cannot
   // exhaust the stack. Cycles (already rejected upstream) are cut at the back edge.
