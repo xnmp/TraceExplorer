@@ -78,26 +78,44 @@ alternating-click scenario and must show no dips.
 
 ### 2. Layout as an optimisation problem
 
-From the layout research (`layout-eval/REPORT.md` in the research worktree):
+Research (benchmark of 6,060 paired layouts, five widths, four tile presets)
+found the wasted space is policy, not a counting bug: sideways candidates are
+computed on the **complete lineage** and then filtered, keeping the full
+layout's origin and envelope (`band-layout.ts` arrangement and filtering,
+`scene.ts` passing the lineage); short generation columns are centred against
+the tallest (`layout.ts`); generations are indivisible shelf columns. In the
+reported band, Cerulean's hidden edit alone puts 60 px above Cerulean
+(448 → 328 px when only that node is removed). A visible-first prototype cut
+that band to 347 px and mean whitespace from 59% to 50% with zero overlaps,
+but moved tiles more per click (73 px vs 42 px) and was not faster.
 
-1. **Objective** in `src/lib/domain/trace-graph/layout-quality.ts`: area and
-   whitespace for a width, connector length, bends, crossings,
-   connector-over-tile hits, relationship readability, and stability (moves of
-   nodes visible before and after one reveal step). Hard constraints: no
-   overlaps, no connector through a tile, unambiguous relationships.
-2. **Benchmark** under `layout-eval/` run by `bun run layout:eval`: hand cases
-   (the reported Cerulean/Saffron band, fans, chains, merges, siblings with
-   hidden descendants, click-through reveal sequences) plus seeded random trees
-   and DAGs, at widths 360–1400, rendering SVGs for inspection; it prints
-   baseline vs current.
-3. **Engine**: visible-only placement, top-aligned shelves, candidate
-   enumeration with local search under the objective and a time budget, with
-   the previous layout as a stability term. Adopted behind the existing
-   `band-layout.ts` entry point.
-4. Tests: behavioural contracts (no empty rows above the first child, no
-   overlaps, stability bound for a single reveal, determinism, budget) and
-   edge cases (empty, single, huge fan-out, very deep chain, cycles,
-   duplicate parents).
+1. **Objective** (`src/lib/domain/trace-graph/layout-quality.ts`): height and
+   area for the width, connector length, bends, crossings, shared lanes,
+   direction, sibling order, alignment and displacement of tiles visible
+   before and after. Hard gates: every visible node once at its size, no
+   overlaps, no connector through a tile, exact parentage, arrow approaches.
+2. **Benchmark** (`layout-eval/`, `bun run layout:eval`): hand cases (the
+   reported band, fans, chains, merges, hidden descendants), legal click
+   tours, seeded random trees and DAGs, widths 360–1400, multi-stack packing
+   through the real grid pipeline; prints baseline vs candidate and writes
+   SVGs to a git-ignored `layout-eval/out/`.
+3. **Engine**: visible-only placement (hidden nodes contribute captions, never
+   slots); top-aligned shelves; bounded shelf-partition search scored by the
+   objective after the real attachment; history candidates from the last
+   committed layout; the clicked tile and its visible ancestors are anchored.
+   History is part of the layout request, cache signature and worker payload.
+4. **Acceptance** (measured by the benchmark, enforced by tests):
+   - the reported band ≤ 350 px at 454 px, 34 px from cover to first child;
+   - clicked tile displacement 0 on every legal click step where feasible;
+     mean displacement over legal tours no worse than today;
+   - mean band height over legal tours ≥ 15% lower than today; no case more
+     than 10% taller than today unless the stability rule chose it;
+   - zero hard-gate violations across the corpus;
+   - p95 layout time per case no worse than today; ≤ 5 ms for ≤ 30 visible.
+5. Tests: behavioural contracts (no hidden-topology influence on geometry,
+   no empty rows above the first child, anchoring, determinism, immutability)
+   and edge cases (empty, single, 200-child fan, 2,000-node chain, cycles,
+   unknown or duplicate parents, huge dimensions).
 
 ### 3. Scene transactions
 
