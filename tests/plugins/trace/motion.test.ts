@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { holdAnchor, insetBottom } from "$lib/plugins/trace/view/motion";
+import { holdAnchor, insetBottom, visibleClipHeight } from "$lib/plugins/trace/view/motion";
 
 afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 
@@ -263,6 +263,21 @@ describe("reading a section's displayed clip", () => {
   it("treats no clip, other shapes and malformed values as unclipped", () => {
     for (const value of ["none", "", "circle(50%)", "inset()", "inset(a b c)", "inset(0px 0px 4px", "polygon(0 0, 1px 1px)"]) {
       expect(insetBottom(value), value).toBe(0);
+    }
+  });
+});
+
+
+describe("visible motion clip", () => {
+  it("preserves the displayed bottom for inset and rectangular polygon clips", () => {
+    expect(visibleClipHeight("inset(0 0 40px 0)", 200)).toBe(160);
+    expect(visibleClipHeight("polygon(0px 0px, 300px 0px, 300px 160px, 0px 160px)", 200)).toBe(160);
+    expect(visibleClipHeight("none", 200)).toBe(200);
+    expect(visibleClipHeight("polygon(0px 0px, 300px 0px, 300px 240px, 0px 240px)", 200)).toBe(200);
+  });
+  it("falls back for malformed or unsupported polygon coordinates", () => {
+    for (const clip of ["polygon()", "polygon(0px 0px, NaNpx 0px)", "polygon(0% 0%, 100% 0%, 100% 50%, 0% 50%)"]) {
+      expect(visibleClipHeight(clip, 200)).toBe(200);
     }
   });
 });

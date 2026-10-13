@@ -94,67 +94,28 @@ export function interpolatePath(from: readonly Point[], to: readonly Point[], pr
   }));
 }
 
-/**
- * Move the two sides of an orthogonal route without morphing its topology.
- * Each axis changes displacement on a straight run of that same axis, so
- * horizontal/vertical segments stay horizontal/vertical and cubic corners
- * retain their exact shape. Fixed-cover channels are bounded above the first
- * child row: extend the longest vertical run and the last horizontal run in
- * that corridor. Equal offsets are pure translation.
- */
-export function prepareOrthogonalRoute(path: string, channelBottom = Infinity): ((from: Point, to: Point) => string | null) | null {
+/** Absolute layout commands, with exact control points (no resampling). */
+function pathCommands(path: string): { kind: string; values: number[] }[] | null {
   const commands = [...path.matchAll(/([MLC])\s*((?:[-+\d.eE,\s])+)/g)].map(match => ({
     kind: match[1], values: match[2].match(/-?(?:\d+\.?\d*|\.\d+)(?:e[-+]?\d+)?/gi)?.map(Number) ?? [],
   }));
-  if (!commands.length || commands[0].kind !== 'M' || commands.some(c => c.values.length !== (c.kind === 'C' ? 6 : 2) || c.values.some(n => !Number.isFinite(n)))
-    || path.replace(/([MLC])\s*((?:[-+\d.eE,\s])+)/g, '').trim()) return null;
-  const split = (axis: number): number => {
-    let best = 0, length = -1;
-    for (let i = 1; i < commands.length; i++) {
-      const before = commands[i - 1].values.slice(-2), c = commands[i];
-      if (c.kind !== 'L' || Math.max(c.values[1], before[1]) >= channelBottom || Math.abs(c.values[1 - axis] - before[1 - axis]) > .001) continue;
-      const span = Math.abs(c.values[axis] - before[axis]);
-      if (span > .001 && (axis === 0 || span > length)) { best = i; length = span; }
-    }
-    return best;
-  };
-  const x = split(0), y = split(1);
-  return (from, to) => {
-    // A route without an appropriate straight channel cannot deform safely.
-    if ((!x && Math.abs(from.x - to.x) > .001) || (!y && Math.abs(from.y - to.y) > .001)) return null;
-    return commands.map((command, i) => `${command.kind}${command.values.map((n, coordinate) => {
-      const axis = coordinate % 2;
-      const shift = i < (axis ? y : x) ? from : to;
-      return n + (axis ? shift.y : shift.x);
-    }).join(' ')}`).join(' ');
-  };
+  return !commands.length || commands[0].kind !== "M"
+    || commands.some(c => c.values.length !== (c.kind === "C" ? 6 : 2) || c.values.some(n => !Number.isFinite(n)))
+    || path.replace(/([MLC])\s*((?:[-+\d.eE,\s])+)/g, "").trim() ? null : commands;
 }
 
-export function moveOrthogonalRoute(path: string, from: Point, to: Point): string | null {
-  return prepareOrthogonalRoute(path)?.(from, to) ?? null;
+/** Exact pure translation, including every cubic control point; null for rerouting. */
+export function pathTranslation(before: string, after: string): Point | null {
+  const a = pathCommands(before), b = pathCommands(after);
+  if (!a || !b || a.length !== b.length) return null;
+  const shift = { x: b[0].values[0] - a[0].values[0], y: b[0].values[1] - a[0].values[1] };
+  return a.every((c, i) => c.kind === b[i].kind && c.values.every((n, j) =>
+    Math.abs(b[i].values[j] - n - (j % 2 ? shift.y : shift.x)) < .001)) ? shift : null;
 }
 
-/**
- * Retain the route with the deeper child-side channel while a band moves,
- * then let the caller restore the settled route. SVG endpoints are used:
- * a shared trunk's logical `to` is its source, and junctions are not tiles.
- * Commands and stretch channels are parsed once, outside the frame loop.
- */
-export function orthogonalRouteTravel(before: string, after: string, childTop?: { before: number; after: number }): ((progress: number) => string | null) | null {
-  const old = flattenPath(before), target = flattenPath(after);
-  if (!old?.length || !target?.length) return null;
-  const useOld = old.at(-1)!.y >= target.at(-1)!.y;
-  const reference = useOld ? old : target;
-  const move = prepareOrthogonalRoute(useOld ? before : after, childTop ? useOld ? childTop.before : childTop.after : Infinity);
-  if (!move) return null;
-  const shift = (from: Point, to: Point, base: Point, progress: number): Point => ({
-    x: from.x + (to.x - from.x) * progress - base.x,
-    y: from.y + (to.y - from.y) * progress - base.y,
-  });
-  // Unsupported deformations have an explicit failure contract: callers
-  // hide that route for the move and restore the settled layout at completion.
-  if (move(shift(old[0], target[0], reference[0], 0), shift(old.at(-1)!, target.at(-1)!, reference.at(-1)!, 0)) === null
-    || move(shift(old[0], target[0], reference[0], 1), shift(old.at(-1)!, target.at(-1)!, reference.at(-1)!, 1)) === null) return null;
-  return progress => move(shift(old[0], target[0], reference[0], progress),
-    shift(old.at(-1)!, target.at(-1)!, reference.at(-1)!, progress));
+export function translatePath(path: string, shift: Point): string | null {
+  if (![shift.x, shift.y].every(Number.isFinite)) return null;
+  const commands = pathCommands(path)?.map(c => ({ ...c, values: c.values.map((n, i) => n + (i % 2 ? shift.y : shift.x)) }));
+  return commands && commands.every(c => c.values.every(Number.isFinite))
+    ? commands.map(c => `${c.kind}${c.values.join(" ")}`).join(" ") : null;
 }

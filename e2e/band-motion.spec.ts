@@ -1,5 +1,5 @@
 import { test, expect, type Page } from '@playwright/test';
-import { holdScriptedAnimations, releaseScriptedAnimations, awaitAnimationsCreated } from './animation-control';
+import { holdScriptedAnimations, releaseScriptedAnimations, awaitAnimationsCreated, applyHeldAnimationEffects } from './animation-control';
 import { openView, settle, key, uncaught } from './support';
 
 /** Screen-space rectangles, including every ancestor clip, sampled after the frame callbacks. */
@@ -44,6 +44,10 @@ async function sampleBand(page: Page, selector: string, ms = 700, actions: Array
               const values = [lengths[0], lengths[1] ?? lengths[0], lengths[2] ?? lengths[0], lengths[3] ?? lengths[1] ?? lengths[0]];
               const [top, right, bottom, left] = values.map((v, i) => parseFloat(v) * (v.endsWith('%') ? (i % 2 ? box.width : box.height) / 100 : 1));
               intersect({ x: box.x + left, y: box.y + top, width: box.width - left - right, height: box.height - top - bottom });
+            } else if (style.clipPath.startsWith('polygon(')) {
+              const points = /^polygon\(([^)]*)\)/.exec(style.clipPath)![1].split(',').map(p => p.trim().split(/\s+/).map(parseFloat));
+              const x = Math.min(...points.map(p => p[0])), y = Math.min(...points.map(p => p[1]));
+              intersect({ x: box.x + x, y: box.y + y, width: Math.max(...points.map(p => p[0])) - x, height: Math.max(...points.map(p => p[1])) - y });
             } else if (style.clipPath.startsWith('url(')) {
               const id = style.clipPath.match(/#([^"')]+)/)?.[1];
               const clip = id ? document.getElementById(id) : null;
@@ -59,7 +63,7 @@ async function sampleBand(page: Page, selector: string, ms = 700, actions: Array
         routes: [...document.querySelectorAll<SVGPathElement>('[data-grid-band] path[data-route]')].map(e => {
           const point = e.getPointAtLength(e.getTotalLength()), matrix = e.getScreenCTM()!;
           const end = new DOMPoint(point.x, point.y).matrixTransform(matrix);
-          return { id: e.dataset.route, to: e.dataset.to?.slice(5), end: { x: end.x, y: end.y }, rect: rect(e), path: getComputedStyle(e).getPropertyValue('d').replace(/^none$/, '') || e.getAttribute('d') };
+          return { opacity: Number(getComputedStyle(e).opacity), id: e.dataset.route, to: e.dataset.to?.slice(5), end: { x: end.x, y: end.y }, rect: rect(e), path: getComputedStyle(e).getPropertyValue('d').replace(/^none$/, '') || e.getAttribute('d') };
         }),
         ghosts: document.querySelectorAll('[data-motion-ghost]').length,
         moving: document.getAnimations().some(a => (a.pending || a.playState === 'running') && a.effect?.getTiming().iterations !== Infinity) };
@@ -80,7 +84,7 @@ async function sampleBand(page: Page, selector: string, ms = 700, actions: Array
         };
         channel.port1.onmessage = () => {
           // The slow QA pass seeks a held clock before the next frame, so
-          // native tiles and JS SVG attributes are frozen during measurement.
+          // native tiles and connector effects are frozen during measurement.
           // Normal speed continues to sample uninterrupted native animation.
           const now = Number(document.timeline.currentTime);
           for (const entry of held) {
@@ -131,8 +135,8 @@ for (const mode of ['motion', 'reduced', 'slow']) test(`wrapped persistent group
         expect(tile.visible.width, JSON.stringify({ t: frame.t, tile })).toBeGreaterThanOrEqual(tile.full.width - 1);
         expect(tile.visible.height, JSON.stringify({ t: frame.t, tile })).toBeGreaterThanOrEqual(tile.full.height - 1);
         expect((tile.full.y - previous) * sign, `reversal at ${frame.t}`).toBeGreaterThanOrEqual(-1);
-        const incoming = frame.routes.filter(r => r.to === id);
-        expect(incoming.length, `missing stem at ${frame.t}`).toBeGreaterThan(0);
+        const incoming = frame.routes.filter(r => r.to === id && r.opacity > .2);
+        if (!frame.moving) expect(incoming.length, `missing settled stem at ${frame.t}`).toBeGreaterThan(0);
         for (const route of incoming) {
           const finalRoute = last.routes.find(r => r.id === route.id)!;
           const gap = final.full.y - finalRoute.end.y;
@@ -193,14 +197,19 @@ for (const reopen of [false, true]) test(`initial entrance can close${reopen ? "
 });
 
 /** Frozen tiles and SVG geometry are read on the same held animation frame. */
-async function routeFrame(page: Page) {
-  return page.evaluate(() => {
+async function routeFrame(page: Page, stallMs = 0) {
+  return page.evaluate((stallMs) => {
+    // Measure before yielding this task: an rAF SVG writer cannot catch up
+    // after the compositor advances during the deliberate main-thread stall.
+    const until = performance.now() + stallMs;
+    while (performance.now() < until) { /* simulate blocked application work */ }
     const opacity = (element: Element) => {
       let value = 1;
       for (let at: Element | null = element; at; at = at.parentElement) value *= Number(getComputedStyle(at).opacity);
       return value;
     };
-    const tiles = [...document.querySelectorAll<HTMLElement>('[data-tile-key], [data-ghost-tile-key], [data-grid-cell] [data-entry-path], [data-grid-band] [data-motion-ghost].tile')].map(element => {
+    const tileElements = [...document.querySelectorAll<HTMLElement>('[data-tile-key], [data-ghost-tile-key], [data-grid-cell] [data-entry-path], [data-grid-band] [data-motion-ghost].tile')];
+    const tiles = tileElements.map(element => {
       const b = element.getBoundingClientRect();
       // Exit tiles are clipped together with their connectors. Test the visible rectangle.
       let bottom = b.bottom;
@@ -210,23 +219,62 @@ async function routeFrame(page: Page) {
           const v = clip[1].split(/\s+/).map(parseFloat);
           bottom = Math.min(bottom, at.getBoundingClientRect().bottom - v[2 % v.length]);
         }
+        const polygon = /^polygon\(([^)]*)\)/.exec(getComputedStyle(at).clipPath);
+        if (polygon) {
+          const points = polygon[1].split(',').map(p => p.trim().split(/\s+/).map(parseFloat));
+          bottom = Math.min(bottom, at.getBoundingClientRect().top + Math.max(...points.map(p => p[1])));
+        }
         if (/hidden|clip|auto|scroll/.test(getComputedStyle(at).overflowY)) bottom = Math.min(bottom, at.getBoundingClientRect().bottom);
       }
       return { key: element.dataset.tileKey ?? element.dataset.ghostTileKey ?? element.dataset.entryPath ?? 'departed tile', x: b.x, y: b.y, right: b.right, bottom, opacity: opacity(element), exit: element.closest<HTMLElement>('[data-grid-exit]')?.dataset.gridExit };
     });
-    const routes = [...document.querySelectorAll<SVGPathElement>('[data-grid-band] path[data-route], [data-grid-exit] path[data-route], [data-grid-band] path[data-motion-ghost]')].map(path => {
-      const matrix = path.getScreenCTM()!, scale = Math.hypot(matrix.a, matrix.b), length = path.getTotalLength() * scale;
+    const routes = [...document.querySelectorAll<SVGPathElement>('[data-grid-band] path[data-route], [data-grid-exit] path[data-route], [data-grid-band] path[data-motion-ghost], [data-grid-exit] path[data-motion-ghost]')].map(path => {
+      // Accelerated WebKit geometry advances even within one JS task. Read
+      // opacity, CTM and each actual endpoint box adjacently, before probing
+      // the SVG path; a scene-wide early tile snapshot is not atomic.
+      const source = path.dataset.from ?? path.dataset.motionFrom, target = path.dataset.to ?? path.dataset.motionTo;
+      const shown = opacity(path);
+      const matrix = path.getScreenCTM()!, scale = Math.hypot(matrix.a, matrix.b);
+      const endpointTiles = [source, target].flatMap(endpoint => {
+        const i = tileElements.findIndex(e => (e.dataset.tileKey ?? e.dataset.ghostTileKey ?? e.dataset.entryPath) === endpoint?.slice(5));
+        if (i < 0) return [];
+        const b = tileElements[i].getBoundingClientRect();
+        return [{ ...tiles[i], x: b.x, y: b.y, right: b.right, bottom: Math.min(b.bottom, tiles[i].bottom + b.y - tiles[i].y) }];
+      });
+      const endpointDots = [source, target].flatMap(endpoint => {
+        if (!endpoint?.startsWith('junction:')) return [];
+        const id = endpoint.slice(9), owner = path.closest('[data-grid-band], [data-grid-exit]')!;
+        const dot = owner.querySelector<SVGCircleElement>(`[data-motion-junction="${CSS.escape(id)}"]`)
+          ?? owner.querySelector<SVGCircleElement>(`[data-junction="${CSS.escape(id)}"]`);
+        if (!dot) return [];
+        const b = dot.getBoundingClientRect();
+        return [{ id, x: b.x + b.width / 2, y: b.y + b.height / 2, opacity: 1 }];
+      });
+      const obstacles = tileElements.map((element, i) => {
+        const b = element.getBoundingClientRect(), old = tiles[i];
+        return { ...old, x: b.x, y: b.y, right: b.right, bottom: Math.min(b.bottom, old.bottom + b.y - old.y) };
+      });
+      const length = path.getTotalLength() * scale;
       const point = (distance: number) => {
         const p = path.getPointAtLength(distance / scale), s = new DOMPoint(p.x, p.y).matrixTransform(matrix);
         return { x: s.x, y: s.y };
       };
       const clips: Array<{ x: number; y: number; right: number; bottom: number }> = [];
+      const motionClips: typeof clips = [];
       for (let at: Element | null = path.parentElement; at; at = at.parentElement) {
         const style = getComputedStyle(at), box = at.getBoundingClientRect();
         const inset = /^inset\(([^)]*)\)/.exec(style.clipPath);
         if (inset) {
           const v = inset[1].split(/\s+/).map(parseFloat);
-          clips.push({ x: box.x + v[3 % v.length], y: box.y + v[0], right: box.right - v[1 % v.length], bottom: box.bottom - v[2 % v.length] });
+          const bounds = { x: box.x + v[3 % v.length], y: box.y + v[0], right: box.right - v[1 % v.length], bottom: box.bottom - v[2 % v.length] };
+          clips.push(bounds); motionClips.push(bounds);
+        }
+        const polygon = /^polygon\(([^)]*)\)/.exec(style.clipPath);
+        if (polygon) {
+          const points = polygon[1].split(',').map(p => p.trim().split(/\s+/).map(parseFloat));
+          const bounds = { x: box.x + Math.min(...points.map(p => p[0])), y: box.y + Math.min(...points.map(p => p[1])),
+            right: box.x + Math.max(...points.map(p => p[0])), bottom: box.y + Math.max(...points.map(p => p[1])) };
+          clips.push(bounds); motionClips.push(bounds);
         }
         const id = style.clipPath.match(/#([^"')]+)/)?.[1];
         if (id) {
@@ -265,14 +313,25 @@ async function routeFrame(page: Page) {
         const a = samples[i];
         return visible(p) && Math.abs(p.x - a.x) > 1 && Math.abs(p.y - a.y) > 1 ? [{ at: i * 2, dx: p.x - a.x, dy: p.y - a.y, curves: curves.filter(c => i * 2 <= c.to && i * 2 + 4 >= c.from).map(c => c.shape), bend: bends.some(b => i * 2 <= b && i * 2 + 4 >= b) }] : [];
       });
-      const hits = samples.filter(visible).flatMap(p => tiles.filter(t => t.opacity > 0 && p.x > t.x + 1 && p.x < t.right - 1 && p.y > t.y + 1 && p.y < t.bottom - 1).map(t => t.key));
+      const hits = samples.filter(visible).flatMap(p => obstacles.filter(t => t.opacity > 0 && p.x > t.x + 1 && p.x < t.right - 1 && p.y > t.y + 1 && p.y < t.bottom - 1).map(t => t.key));
       const exit = path.closest('[data-grid-exit]');
       const exitTiles = exit ? tiles.filter(t => t.exit === (exit as HTMLElement).dataset.gridExit) : [];
-      return { id: path.dataset.route ?? path.dataset.motionRoute ?? 'ghost', d, curves, opacity: opacity(path), hits, diagonals,
+      const from = point(0), end = point(length), near = point(Math.max(0, length - 1));
+      const arrow = path.hasAttribute('marker-end') ? 8 * scale : 0;
+      const tangent = Math.hypot(end.x - near.x, end.y - near.y) || 1;
+      const tip = { x: end.x + arrow * (end.x - near.x) / tangent, y: end.y + arrow * (end.y - near.y) / tangent };
+      return { id: path.dataset.route ?? path.dataset.motionRoute ?? 'ghost', d, curves, opacity: shown, hits, diagonals, endpointTiles, endpointDots,
+        from, tip, source, target, painted: samples.some(visible),
+        portsVisible: [from, tip].every(p => motionClips.every(c => p.x >= c.x && p.x <= c.right && p.y >= c.y && p.y <= c.bottom)),
+        keyframes: [...path.getAnimations(), ...(path.closest("[data-motion-route-layer]")?.getAnimations() ?? [])].flatMap(a => (a.effect as KeyframeEffect).getKeyframes()),
         orphan: !!exit && samples.some(visible) && exitTiles.every(t => t.opacity === 0 || t.bottom <= t.y) && opacity(path) > 0 };
     });
-    return { tiles, routes };
-  });
+    const dots = [...document.querySelectorAll<SVGCircleElement>('[data-grid-band] [data-junction], [data-grid-exit] [data-junction], [data-grid-band] [data-motion-junction]')].map(dot => {
+      const b = dot.getBoundingClientRect();
+      return { id: dot.dataset.junction ?? dot.dataset.motionJunction!, x: b.x + b.width / 2, y: b.y + b.height / 2, opacity: opacity(dot) };
+    });
+    return { tiles, routes, dots };
+  }, stallMs);
 }
 
 for (const fixture of ['1', 'bridge', 'native-large', 'junction', 'junction-collapse', 'trunks']) for (const scenario of ['close A', 'open A', 'B alone', 'close B alone', 'interrupt close A']) test(`connectors stay outside tiles and preserve orthogonal routes (${fixture}, ${scenario})`, async ({ page }, testInfo) => {
@@ -353,15 +412,249 @@ test('a retiring group keeps its connector fade when another group closes', asyn
       for (const animation of (window as any).__heldAnimations as Animation[]) if (animation.playState === 'running') animation.currentTime = 5;
       await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
     });
-    const before = (await routeFrame(page)).routes.filter(r => r.id.startsWith(`node:${a}>`));
+    const before = (await routeFrame(page)).routes.filter(r => r.id.startsWith(`node:${a}>`) && r.opacity > 0);
     expect(before.length).toBeGreaterThan(0);
     expect(before.every(r => r.opacity > 0 && r.opacity < 1)).toBe(true);
     await toggle('b').evaluate((element: HTMLElement) => element.click());
     await awaitAnimationsCreated(page);
-    const after = (await routeFrame(page)).routes.filter(r => r.id.startsWith(`node:${a}>`));
+    const after = (await routeFrame(page)).routes.filter(r => r.id.startsWith(`node:${a}>`) && r.opacity > 0);
     expect(after.map(r => ({ id: r.id, opacity: r.opacity, d: r.d }))).toEqual(before.map(r => ({ id: r.id, opacity: r.opacity, d: r.d })));
   } finally { await releaseScriptedAnimations(page); }
   await settle(page);
   expect(await page.locator('[data-grid-exit], [data-motion-ghost]').count()).toBe(0);
+  expect(await uncaught(page)).toEqual([]);
+});
+
+const travelPositions = (page: Page, keys: string[]) => page.evaluate(keys => {
+  const band = keys.map(key => document.querySelector<HTMLElement>(`[data-grid-band] [data-tile-key="${CSS.escape(key)}"]`)!);
+  const rows = [...document.querySelectorAll<HTMLElement>('[data-grid-cell]')].filter(e => Number(e.getAttribute('aria-rowindex')) > 1);
+  return [...band, ...rows].map(e => ({ id: e.dataset.tileKey ?? e.dataset.gridCell!, y: e.getBoundingClientRect().y }));
+}, keys);
+
+for (const interrupt of [false, true]) test(`inline FLIP holds the painted start until native effects apply${interrupt ? ' across interruption' : ''}`, async ({ page }, testInfo) => {
+  await page.setViewportSize({ width: 1000, height: 1300 });
+  await openView(page, 420, '?bandMotion=1', false);
+  const toggle = (name: string) => page.locator(`section[aria-label="stack-${name}"] [data-stack-toggle]`);
+  for (const name of ['b', 'a']) { await toggle(name).click(); await settle(page); }
+  const keys = await Promise.all([key(page, 'stack-b-1'), key(page, 'stack-b-2')]);
+  const start = await travelPositions(page, keys);
+  expect(start.length).toBeGreaterThan(2);
+  await holdScriptedAnimations(page, true);
+  const samples: Awaited<ReturnType<typeof travelPositions>>[] = [start];
+  try {
+    await toggle('a').evaluate((e: HTMLElement) => e.click());
+    await awaitAnimationsCreated(page);
+    // Several actual render opportunities with no native effect at all.
+    // Screenshots force presentation too, rather than testing only inline CSS.
+    for (let i = 0; i < 3; i++) {
+      samples.push(await travelPositions(page, keys));
+      await testInfo.attach(`awaiting-effect-${i}`, { body: await page.screenshot(), contentType: 'image/png' });
+      expect(samples.at(-1)).toEqual(start);
+    }
+    if (interrupt) {
+      await toggle('a').evaluate((e: HTMLElement) => e.click());
+      await awaitAnimationsCreated(page);
+      expect(await travelPositions(page, keys)).toEqual(start);
+      await toggle('a').evaluate((e: HTMLElement) => e.click());
+      await awaitAnimationsCreated(page);
+      expect(await travelPositions(page, keys)).toEqual(start);
+    }
+    await applyHeldAnimationEffects(page);
+    for (const time of [0, 8, 16, 32, 64, 100, 140, 160]) {
+      await page.evaluate(async time => {
+        for (const a of (window as any).__heldAnimations as Animation[]) if (a.playState === 'running') a.currentTime = time;
+        await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      }, time);
+      samples.push(await travelPositions(page, keys));
+    }
+  } finally { await releaseScriptedAnimations(page); }
+  await settle(page);
+  const end = await travelPositions(page, keys);
+  await testInfo.attach('travel', { body: JSON.stringify({ samples, end }), contentType: 'application/json' });
+  for (const first of start) {
+    const final = end.find(p => p.id === first.id)!;
+    expect(first.y - final.y).toBeGreaterThan(100);
+    let previous = first.y;
+    for (const frame of samples) {
+      const y = frame.find(p => p.id === first.id)!.y;
+      expect(y, `reversal for ${first.id}`).toBeLessThanOrEqual(previous + .5);
+      expect(y).toBeGreaterThanOrEqual(final.y - .5);
+      previous = y;
+    }
+  }
+  expect(await page.locator('[data-grid-motion], [data-grid-row-band], [data-grid-band] [data-tile-key]').evaluateAll(elements => elements.every(e => !(e as HTMLElement).style.transform))).toBe(true);
+  expect(await page.locator('[data-motion-route-layer]').count()).toBe(0);
+  expect(await page.locator('[data-grid-band] .graph').evaluateAll(graphs => graphs.every(graph => {
+    const svg = graph.querySelector('svg.edges')!;
+    return parseFloat((graph as HTMLElement).style.height) === Number(svg.getAttribute('height'))
+      && parseFloat((graph as HTMLElement).style.width) === Number(svg.getAttribute('width'));
+  }))).toBe(true);
+  expect(await uncaught(page)).toEqual([]);
+});
+
+/** Match the settled attachment port, including arrow tips and junction endpoints. */
+function expectAttached(scene: Awaited<ReturnType<typeof routeFrame>>, references: Awaited<ReturnType<typeof routeFrame>>[]) {
+  let attached = 0;
+  for (const route of scene.routes.filter(r => r.opacity > .2 && r.painted)) {
+    expect(route.hits, `visible connector crosses a tile: ${route.id}`).toEqual([]);
+    expect(route.orphan).toBe(false);
+    expect(route.portsVisible, `${route.id} has a clipped endpoint`).toBe(true);
+    expect(route.keyframes.every(f => !('d' in f)), `native route ${route.id}`).toBe(true);
+    for (const [side, endpoint] of [['from', route.source], ['tip', route.target]] as const) {
+      if (!endpoint) continue;
+      if (endpoint.startsWith('junction:')) {
+        const dot = route.endpointDots.filter(d => d.id === endpoint.slice(9)).sort((a, b) => b.opacity - a.opacity)[0];
+        if (dot) {
+          expect(Math.hypot(route[side].x - dot.x, route[side].y - dot.y), `${route.id} ${side} junction attachment`).toBeLessThanOrEqual(2);
+          attached++;
+        }
+        continue;
+      }
+      const tile = route.endpointTiles.find(t => t.key === endpoint.slice(5) && t.opacity > .2);
+      if (!tile) continue;
+      // A trunk's logical target is its source; its end is a branch joint,
+      // not a tile port. Check its tile-side endpoint and all terminal tips.
+      if (side === 'tip' && route.source === route.target) continue;
+      const ports = references.flatMap(reference => {
+        const r = reference.routes.find(r => r.id === route.id), t = reference.tiles.find(t => t.key === tile.key);
+        return r && t ? [{ x: r[side].x - t.x, y: r[side].y - t.y }] : [];
+      });
+      expect(ports.length).toBeGreaterThan(0);
+      const error = Math.min(...ports.map(p => Math.hypot(route[side].x - tile.x - p.x, route[side].y - tile.y - p.y)));
+      expect(error, `${route.id} ${side} tile attachment`).toBeLessThanOrEqual(2);
+      attached++;
+    }
+  }
+  return attached;
+}
+
+for (const fixture of ['bridge', 'junction']) test(`native connector clock survives main-thread stalls (${fixture})`, async ({ page }, testInfo) => {
+  await page.setViewportSize({ width: 1000, height: 1300 });
+  await openView(page, 390, `?bandMotion=${fixture}`, false);
+  const toggle = (name: string) => page.locator(`section[aria-label="stack-${name}"] [data-stack-toggle]`);
+  for (const name of ['b', 'a']) { await toggle(name).click(); await settle(page); }
+  const b = await key(page, 'stack-b-1');
+  const start = await routeFrame(page);
+  // First hold and seek native effects so every sample exercises an active
+  // route/transform, including the opacity > .2 boundaries of the crossfade.
+  const clockScale = 10;
+  await holdScriptedAnimations(page, false, clockScale);
+  const frames: Awaited<ReturnType<typeof routeFrame>>[] = [];
+  try {
+    await toggle('a').evaluate((e: HTMLElement) => e.click());
+    await awaitAnimationsCreated(page);
+    for (const time of [0, .01, .1, 16]) {
+      await page.evaluate(async time => {
+        for (const a of (window as any).__heldAnimations as Animation[]) if (a.playState === 'running') a.currentTime = time;
+        await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      }, time * clockScale);
+      frames.push(await routeFrame(page));
+    }
+    // Resume the already presented early state without rewinding any clock.
+    // Longer native durations keep all stalls inside active motion at normal
+    // playback rate, so the compositor advances while the rAF writer cannot.
+    await page.evaluate(async () => {
+      for (const a of (window as any).__heldAnimations as Animation[]) if (a.playState === 'running') a.playbackRate = 1;
+      await new Promise(resolve => requestAnimationFrame(resolve));
+    });
+    for (const stall of [25, 45, 85]) frames.push(await routeFrame(page, stall));
+    await page.evaluate(() => {
+      for (const a of (window as any).__heldAnimations as Animation[]) if (a.playState === 'running') a.playbackRate = 0;
+    });
+    for (const time of [32, 64, 100, 140, 159.9]) {
+      await page.evaluate(async time => {
+        for (const a of (window as any).__heldAnimations as Animation[]) if (a.playState === 'running') a.currentTime = time;
+        await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      }, time * clockScale);
+      frames.push(await routeFrame(page));
+    }
+  } finally { await releaseScriptedAnimations(page); }
+  await settle(page);
+  const end = await routeFrame(page);
+  await testInfo.attach('stalled-frames', { body: JSON.stringify({ start, frames, end }), contentType: 'application/json' });
+  const by = start.tiles.find(t => t.key === b)!.y, finalY = end.tiles.find(t => t.key === b)!.y;
+  expect(by - finalY).toBeGreaterThan(100);
+  expect(frames.some(f => { const y = f.tiles.find(t => t.key === b)!.y; return y > finalY + 2 && y < by - 2; })).toBe(true);
+  expect(frames.some(f => f.routes.some(r => r.keyframes.length > 0))).toBe(true);
+  const earlyY = frames[3].tiles.find(t => t.key === b)!.y;
+  expect(frames.slice(4, 7).some(f => {
+    const y = f.tiles.find(t => t.key === b)!.y;
+    return y < earlyY - 1 && y > finalY + 2;
+  }), 'compositor advances during the stalls while still inside motion').toBe(true);
+  expect(frames.reduce((n, f) => n + expectAttached(f, [start, end]), 0)).toBeGreaterThan(0);
+  expect(await page.locator('[data-motion-route-layer]').count()).toBe(0);
+  expect(await uncaught(page)).toEqual([]);
+});
+
+for (const returnAt of [0, 32]) test(`closing a travelling group preserves its displayed tiles and ports before native readiness (return at ${returnAt}ms)`, async ({ page }, testInfo) => {
+  await page.setViewportSize({ width: 1000, height: 1300 });
+  await openView(page, 390, '?bandMotion=junction', false);
+  const toggle = (name: string) => page.locator(`section[aria-label="stack-${name}"] [data-stack-toggle]`);
+  for (const name of ['b', 'a']) { await toggle(name).click(); await settle(page); }
+  const b = await key(page, 'stack-b'), child = await key(page, 'stack-b-merge');
+  const start = await routeFrame(page);
+  await holdScriptedAnimations(page, true);
+  try {
+    await toggle('a').evaluate((e: HTMLElement) => e.click());
+    await awaitAnimationsCreated(page);
+    await toggle('b').evaluate((e: HTMLElement) => e.click());
+    await awaitAnimationsCreated(page);
+    const scene = await routeFrame(page);
+    await testInfo.attach('delayed-exit', { body: JSON.stringify({ start, scene }), contentType: 'application/json' });
+    const old = start.tiles.find(t => t.key === child)!;
+    const copies = scene.tiles.filter(t => t.key === child && t.opacity > .2);
+    expect(copies.length).toBe(1);
+    expect(copies[0].y).toBeCloseTo(old.y, 1);
+    expect(copies[0].bottom).toBeCloseTo(old.bottom, 1);
+    expect(expectAttached(scene, [start])).toBeGreaterThan(0);
+    if (returnAt) {
+      await applyHeldAnimationEffects(page);
+      await page.evaluate(async time => {
+        for (const animation of (window as any).__heldAnimations as Animation[]) if (animation.playState === 'running') animation.currentTime = time;
+        await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+        (window as any).__delayApplication = true;
+      }, returnAt);
+    }
+    const beforeReturn = await routeFrame(page);
+    await toggle('b').evaluate((e: HTMLElement) => e.click());
+    await awaitAnimationsCreated(page);
+    const reopened = await routeFrame(page);
+    const returned = reopened.tiles.find(t => t.key === child && t.opacity > .2)!;
+    const captured = beforeReturn.tiles.find(t => t.key === child)!;
+    expect(returned.y).toBeCloseTo(captured.y, 1);
+    expect(returned.bottom).toBeCloseTo(captured.bottom, 1);
+    const visible = expectAttached(reopened, [start]);
+    if (!returnAt) expect(visible).toBeGreaterThan(0);
+    expect(await page.locator(`[data-grid-exit="${b}"]`).count()).toBe(0);
+    await applyHeldAnimationEffects(page);
+    if (returnAt) {
+      await page.evaluate(async () => {
+        for (const animation of (window as any).__heldAnimations as Animation[]) if (animation.playState === 'running') animation.currentTime = 16;
+        await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+        (window as any).__delayApplication = true;
+      });
+      const partialReturn = await routeFrame(page);
+      await toggle('b').evaluate((e: HTMLElement) => e.click());
+      await awaitAnimationsCreated(page);
+      await toggle('b').evaluate((e: HTMLElement) => e.click());
+      await awaitAnimationsCreated(page);
+      const secondReturn = await routeFrame(page);
+      const prior = partialReturn.tiles.find(t => t.key === child)!;
+      const current = secondReturn.tiles.find(t => t.key === child)!;
+      expect(current.y).toBeCloseTo(prior.y, 1);
+      expect(current.bottom).toBeCloseTo(prior.bottom, 1);
+      expectAttached(secondReturn, [start]);
+      await applyHeldAnimationEffects(page);
+    }
+    for (const time of [0, .01, 16, 64, 140, 159.9]) {
+      await page.evaluate(async time => {
+        for (const animation of (window as any).__heldAnimations as Animation[]) if (animation.playState === 'running') animation.currentTime = time;
+        await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      }, time);
+      expectAttached(await routeFrame(page), [start]);
+    }
+  } finally { await releaseScriptedAnimations(page); }
+  await settle(page);
+  expect(await page.locator('[data-grid-exit], [data-motion-ghost], [data-motion-route-layer]').count()).toBe(0);
   expect(await uncaught(page)).toEqual([]);
 });
