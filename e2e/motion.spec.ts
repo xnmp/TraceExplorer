@@ -287,7 +287,7 @@ test.describe("bands expand and collapse quickly", () => {
     return frames;
   }, { index, ms });
 
-  test("following rows share each band's final position from its first frame", async ({ page }) => {
+  test("following rows travel with each band from their displayed position", async ({ page }) => {
     await openView(page, 120);
     const forest = page.locator("section.component[data-component]").nth(1);
     for (const expanded of ["false", "true", "false", "true"]) {
@@ -298,8 +298,10 @@ test.describe("bands expand and collapse quickly", () => {
         const row = Number(next.querySelector('[data-grid-cell]')!.getAttribute("aria-rowindex")) - 1;
         const before = next.getBoundingClientRect().top, samples = [];
         section.querySelector<HTMLElement>("[data-stack-toggle]")!.click();
-        for (let i = 0; i < 12; i++) {
-          await new Promise(requestAnimationFrame);
+        for (let i = 0; i < 12; i++) await new Promise(requestAnimationFrame);
+        for (const time of [0, 40, 80, 120, 160]) {
+          for (const animation of (window as any).__heldAnimations as Animation[]) if (animation.playState === "running") animation.currentTime = time;
+          await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
           const top = next.getBoundingClientRect().top;
           const bottoms = [...document.querySelectorAll<HTMLElement>("[data-grid-row-band]")]
             .filter((band) => Number(band.dataset.gridRowBand) < row).map((band) => band.getBoundingClientRect().bottom);
@@ -311,37 +313,55 @@ test.describe("bands expand and collapse quickly", () => {
       await expect(forest.locator("[data-stack-toggle]")).toHaveAttribute("aria-expanded", expanded);
       await expect(forest.locator(".content")).toHaveCount(expanded === "true" ? 1 : 0);
       expect(Math.abs(result.samples.at(-1)!.top - result.before)).toBeGreaterThan(40);
+      expect(result.samples[0].top).toBeCloseTo(result.before, 0);
+      let previous = result.before;
+      const direction = Math.sign(result.samples.at(-1)!.top - result.before);
       for (const sample of result.samples) {
+        expect((sample.top - previous) * direction).toBeGreaterThanOrEqual(-.5);
+        previous = sample.top;
         expect(sample.top).toBeGreaterThanOrEqual(sample.bottom - .5);
-        expect(sample.top).toBeCloseTo(result.samples.at(-1)!.top, 0);
       }
     }
     await expect(forest.locator("[data-tile-key]").first()).toBeVisible();
     expect(await uncaught(page)).toEqual([]);
   });
 
+  /** Seeks both halves of a reversal and samples after the replacement DOM commit. */
+  async function reverseMidway(page: Page) {
+    const top = () => page.evaluate(() => document.querySelectorAll<HTMLElement>("section.component[data-component]")[1].nextElementSibling!.getBoundingClientRect().top);
+    const toggle = () => page.evaluate(() => document.querySelectorAll<HTMLElement>("section.component[data-component]")[1].querySelector<HTMLElement>("[data-stack-toggle]")!.click());
+    const start = await top();
+    await holdScriptedAnimations(page);
+    try {
+      await toggle(); await awaitAnimationsCreated(page);
+      await page.evaluate(async () => {
+        for (const animation of (window as any).__heldAnimations as Animation[]) if (animation.playState === "running") animation.currentTime = 40;
+        await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      });
+      const before = await top();
+      await toggle(); await awaitAnimationsCreated(page);
+      const resumed = await top();
+      const tops = await page.evaluate(async () => {
+        const next = document.querySelectorAll<HTMLElement>("section.component[data-component]")[1].nextElementSibling!;
+        const tops = [];
+        for (const time of [0, 20, 40, 80, 120, 160]) {
+          for (const animation of (window as any).__heldAnimations as Animation[]) if (animation.playState === "running") animation.currentTime = time;
+          await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+          tops.push(next.getBoundingClientRect().top);
+        }
+        return tops;
+      });
+      return { start, before, resumed, tops };
+    } finally { await releaseScriptedAnimations(page); await settle(page); }
+  }
+
   test("toggling again mid-way reverses from where the section is displayed", async ({ page }) => {
     await openView(page, 120);
     const forest = page.locator("section.component[data-component]").nth(1);
-    const result = await page.evaluate(async () => {
-      const section = document.querySelectorAll<HTMLElement>("section.component[data-component]")[1];
-      const next = section.nextElementSibling as HTMLElement;
-      const heading = () => section.querySelector<HTMLElement>("[data-stack-toggle]")!;
-      const frame = () => new Promise((resolve) => requestAnimationFrame(resolve));
-      const open = next.getBoundingClientRect().top;
-      heading().click();
-      let top = open;
-      for (let i = 0; i < 30 && !(open - top > 15); i++) { await frame(); top = next.getBoundingClientRect().top; }
-      const before = next.getBoundingClientRect().top;
-      heading().click();
-      const after = next.getBoundingClientRect().top;
-      for (let i = 0; i < 40; i++) await frame();
-      return { open, before, after, end: next.getBoundingClientRect().top };
-    });
-    expect(result.open - result.before).toBeGreaterThan(15);
-    // No jump when reversing, and it ends fully open again.
-    expect(Math.abs(result.after - result.before)).toBeLessThan(2);
-    expect(Math.abs(result.end - result.open)).toBeLessThan(1);
+    const result = await reverseMidway(page);
+    expect(result.start - result.before).toBeGreaterThan(15);
+    expect(Math.abs(result.resumed - result.before)).toBeLessThanOrEqual(1);
+    expect(Math.abs(result.tops.at(-1)! - result.start)).toBeLessThanOrEqual(1);
     await expect(forest.locator("[data-stack-toggle]")).toHaveAttribute("aria-expanded", "true");
     await expect(forest.locator("[data-tile-key]").first()).toBeVisible();
     expect(await uncaught(page)).toEqual([]);
@@ -350,35 +370,17 @@ test.describe("bands expand and collapse quickly", () => {
   test("collapsing again mid-way through opening reverses smoothly and ends with the content gone", async ({ page }) => {
     await openView(page, 120);
     const forest = page.locator("section.component[data-component]").nth(1);
-    await forest.locator("[data-stack-toggle]").click();
-    await settle(page);
-    await expect(forest.locator(".content")).toHaveCount(0);
-    const result = await page.evaluate(async () => {
-      const section = document.querySelectorAll<HTMLElement>("section.component[data-component]")[1];
-      const next = section.nextElementSibling as HTMLElement;
-      const heading = () => section.querySelector<HTMLElement>("[data-stack-toggle]")!;
-      const frame = () => new Promise((resolve) => requestAnimationFrame(resolve));
-      const closed = next.getBoundingClientRect().top;
-      heading().click();
-      let top = closed;
-      for (let i = 0; i < 30 && !(top - closed > 15); i++) { await frame(); top = next.getBoundingClientRect().top; }
-      const before = next.getBoundingClientRect().top;
-      heading().click();
-      const after = next.getBoundingClientRect().top;
-      const tops: number[] = [];
-      for (let i = 0; i < 40; i++) { await frame(); tops.push(next.getBoundingClientRect().top); }
-      return { closed, before, after, tops };
-    });
-    expect(result.before - result.closed).toBeGreaterThan(15);
-    expect(Math.abs(result.after - result.before)).toBeLessThan(2);
-    // Straight back up, without going past the closed position or bouncing.
-    let previous = result.after;
+    await forest.locator("[data-stack-toggle]").click(); await settle(page);
+    const result = await reverseMidway(page);
+    expect(result.before - result.start).toBeGreaterThan(15);
+    expect(Math.abs(result.resumed - result.before)).toBeLessThanOrEqual(1);
+    let previous = result.resumed;
     for (const top of result.tops) {
-      expect(top).toBeLessThanOrEqual(previous + 0.5);
-      expect(top).toBeGreaterThanOrEqual(result.closed - 0.5);
+      expect(top).toBeLessThanOrEqual(previous + 1);
+      expect(top).toBeGreaterThanOrEqual(result.start - 1);
       previous = top;
     }
-    expect(Math.abs(result.tops.at(-1)! - result.closed)).toBeLessThan(1);
+    expect(Math.abs(result.tops.at(-1)! - result.start)).toBeLessThanOrEqual(1);
     await expect(forest.locator("[data-stack-toggle]")).toHaveAttribute("aria-expanded", "false");
     await expect(forest.locator(".content")).toHaveCount(0);
     expect(await uncaught(page)).toEqual([]);
@@ -475,15 +477,33 @@ test.describe("anchoring under the host's zoom", () => {
 test.describe("new tiles arrive from their parents' side", () => {
   test.use({ viewport: { width: 900, height: 900 } });
 
-  test("inside a downward band a revealed tile emerges above its destination", async ({ page }) => {
+  test("inside a sideways band a revealed tile emerges left of its destination", async ({ page }) => {
     await openView(page, 900, "?deeper=1");
     const dawn = await key(page, "mist-dawn");
-    const frames = await sampleClick(page, await node(page, "forest-mist"));
-    const seen = frames.filter((frame) => frame.tiles[dawn]).map((frame) => frame.tiles[dawn]);
-    expect(seen.length).toBeGreaterThan(2);
-    const [first, last] = [seen[0], seen[seen.length - 1]];
-    expect(last[1] - first[1]).toBeGreaterThan(3);
-    for (const sample of seen) expect(Math.abs(sample[0] - last[0])).toBeLessThanOrEqual(1);
+    await holdScriptedAnimations(page);
+    try {
+      await page.evaluate(selector => document.querySelector<HTMLElement>(selector)!.click(), await node(page, "forest-mist"));
+      await awaitAnimationsCreated(page);
+      const seen = await page.evaluate(async (dawn) => {
+        const view = document.querySelector<HTMLElement>("[data-testid=trace-view]")!;
+        const positions = [];
+        for (const time of [0, 40, 80, 120, 160]) {
+          for (const animation of (window as any).__heldAnimations as Animation[]) if (animation.playState === "running") animation.currentTime = time;
+          await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+          const box = document.querySelector<HTMLElement>(`[data-tile-key="${CSS.escape(dawn)}"]`)!.getBoundingClientRect();
+          positions.push([box.x, box.y + view.scrollTop]);
+        }
+        return positions;
+      }, dawn);
+      const [first, last] = [seen[0], seen.at(-1)!];
+      expect(last[0] - first[0]).toBeGreaterThan(3);
+      let previous = first[0];
+      for (const sample of seen) {
+        expect(Math.abs(sample[1] - last[1])).toBeLessThanOrEqual(1);
+        expect(sample[0]).toBeGreaterThanOrEqual(previous - .5);
+        previous = sample[0];
+      }
+    } finally { await releaseScriptedAnimations(page); }
     await settle(page);
     expect(await uncaught(page)).toEqual([]);
   });
@@ -496,8 +516,15 @@ test("reopening immediately after collapse reserves space before revealing child
   const child = await key(page, "daylight");
   await holdScriptedAnimations(page);
   try {
-    await village.getByRole("button", { name: "Close stack" }).click();
-    await expect(page.locator(`[data-tile-key="${child}"], [data-ghost-tile-key="${child}"]`)).not.toBeVisible();
+    await village.getByRole("button", { name: "Collapse stack" }).click();
+    await awaitAnimationsCreated(page);
+    const exitOpacity = await page.evaluate(async child => {
+      for (const animation of (window as any).__heldAnimations as Animation[]) if (animation.playState === "running") animation.currentTime = 40;
+      await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      const tile = document.querySelector<HTMLElement>(`[data-grid-exit] [data-ghost-tile-key="${child}"]`)!;
+      return Number(getComputedStyle(tile).opacity) * Number(getComputedStyle(tile.closest('[data-grid-exit]')!).opacity);
+    }, child);
+    expect(exitOpacity).toBeGreaterThan(0); expect(exitOpacity).toBeLessThan(1);
     await village.locator("[data-stack-toggle]").click();
     await awaitAnimationsCreated(page);
     const result = await page.evaluate(async (child) => {
@@ -512,7 +539,7 @@ test("reopening immediately after collapse reserves space before revealing child
       }
       return { initialOpacity, finalOpacity: Number(getComputedStyle(tile).opacity), samples };
     }, child);
-    expect(result.initialOpacity).toBeLessThan(.01);
+    expect(result.initialOpacity).toBeCloseTo(exitOpacity, 2);
     expect(result.finalOpacity).toBe(1);
     for (const sample of result.samples) for (const clearance of sample) expect(clearance).toBeGreaterThanOrEqual(-.5);
     expect(await uncaught(page)).toEqual([]);

@@ -1,10 +1,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { holdAnchor, insetBottom } from "$lib/plugins/trace/view/motion";
+import { holdAnchor, insetBottom, visibleClipHeight } from "$lib/plugins/trace/view/motion";
 
 afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 
 /** Scroll offsets affect screen rects as in a browser, including zoom and clamping. */
-function anchorFixture(zoom = 1) {
+function anchorFixture(zoom = 1, quantize: (value: number) => number = (value) => value) {
   let sequence = 0, mutation!: (records: { type: string }[]) => void, resizeChanged!: () => void, present = true, top = 200, left = 20, limit = 1000;
   const frames = new Map<number, FrameRequestCallback>();
   vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => { frames.set(++sequence, callback); return sequence; });
@@ -31,7 +31,7 @@ function anchorFixture(zoom = 1) {
     getAnimations: () => animations,
     contains: () => present,
   });
-  Object.defineProperty(surface, "scrollTop", { get: () => top, set: (value) => { top = Math.max(0, Math.min(limit, value)); } });
+  Object.defineProperty(surface, "scrollTop", { get: () => top, set: (value) => { top = Math.max(0, Math.min(limit, quantize(value))); } });
   Object.defineProperty(surface, "scrollHeight", { get: () => limit + surface.clientHeight });
   const position = { top: 300, left: 80 };
   const element = {
@@ -52,6 +52,23 @@ function anchorFixture(zoom = 1) {
 }
 
 describe("holding a scroll anchor", () => {
+  it("keeps the clicked tile anchored through floor-quantized scrolling", () => {
+    const fixture = anchorFixture(1, Math.floor), released = vi.fn();
+    const captured = fixture.element.getBoundingClientRect().top;
+    const hold = holdAnchor(fixture.scroller, fixture.element, released);
+    fixture.startMotion();
+    for (const shift of [14.59, 21.83, 70.16, 115]) {
+      fixture.position.top = 300 - shift;
+      hold.update();
+      expect(Math.abs(fixture.element.getBoundingClientRect().top - captured)).toBeLessThan(1);
+      expect(released).not.toHaveBeenCalled();
+    }
+    // Actual bounds still release the hold.
+    fixture.position.top = -1000;
+    hold.update();
+    expect(released).toHaveBeenCalledOnce();
+  });
+
   it.each([1, 1.3, 1.5])("compensates before a worker commit and through every motion frame at zoom %s", (zoom) => {
     const fixture = anchorFixture(zoom);
     const before = fixture.element.getBoundingClientRect();
@@ -246,6 +263,21 @@ describe("reading a section's displayed clip", () => {
   it("treats no clip, other shapes and malformed values as unclipped", () => {
     for (const value of ["none", "", "circle(50%)", "inset()", "inset(a b c)", "inset(0px 0px 4px", "polygon(0 0, 1px 1px)"]) {
       expect(insetBottom(value), value).toBe(0);
+    }
+  });
+});
+
+
+describe("visible motion clip", () => {
+  it("preserves the displayed bottom for inset and rectangular polygon clips", () => {
+    expect(visibleClipHeight("inset(0 0 40px 0)", 200)).toBe(160);
+    expect(visibleClipHeight("polygon(0px 0px, 300px 0px, 300px 160px, 0px 160px)", 200)).toBe(160);
+    expect(visibleClipHeight("none", 200)).toBe(200);
+    expect(visibleClipHeight("polygon(0px 0px, 300px 0px, 300px 240px, 0px 240px)", 200)).toBe(200);
+  });
+  it("falls back for malformed or unsupported polygon coordinates", () => {
+    for (const clip of ["polygon()", "polygon(0px 0px, NaNpx 0px)", "polygon(0% 0%, 100% 0%, 100% 50%, 0% 50%)"]) {
+      expect(visibleClipHeight(clip, 200)).toBe(200);
     }
   });
 });

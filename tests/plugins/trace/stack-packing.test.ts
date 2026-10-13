@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { packStackGroups } from "$lib/plugins/trace/view/stack-packing";
 import { packedGridFlow, bandPlacements, attachPackedBand, bandExtent } from "$lib/plugins/trace/view/stack-grid";
 import { layoutGraph } from "$lib/domain/trace-graph/layout";
-import { STACK_CARET_SIZE, STACK_BAND_INSET } from "$lib/domain/trace-graph/metrics";
+import { STACK_STEM_ROOM } from "$lib/domain/trace-graph/metrics";
 import { samplePathString } from "$lib/plugins/trace/view/path-sampling";
 
 const group = (id: string, center: number, width = 100, height = 80) => ({ id, center, width, height });
@@ -50,13 +50,13 @@ describe("shared grid row band", () => {
   });
   it("adds wrapped lines within that band without moving any cover horizontally", () => {
     const flow = packedGridFlow(items, new Map([["a", { width: 140, height: 80 }], ["b", { width: 140, height: 120 }]]), 2, metrics);
-    expect(flow.bands.map(({ y }) => y)).toEqual([100, 196]);
+    expect(flow.bands.map(({ y }) => y)).toEqual([100, 180]);
     expect(flow.cells.get("b")?.x).toBe(110);
-    expect(flow.rowBands[0].height).toBe(216);
-    expect(flow.cells.get("file")?.y).toBe(326);
+    expect(flow.rowBands[0].height).toBe(200);
+    expect(flow.cells.get("file")?.y).toBe(310);
   });
   for (const childX of [20, 155, 160, 260]) {
-    it(`drops vertically past the caret row before routing to a child at ${childX}`, () => {
+    it(`leaves only bend room before routing to a child at ${childX}`, () => {
       const graph = layoutGraph({ maxWidth: 400, pinned: { key: "cover", x: 160 }, items: [
         { key: "cover", parents: [], width: 92, height: 97, order: 0 },
         { key: "child", parents: ["cover"], width: 92, height: 81, order: 1 },
@@ -67,14 +67,14 @@ describe("shared grid row band", () => {
       const route = attached.routes.find((route) => route.from.kind === "node" && route.from.id === "cover")!;
       const samples = samplePathString(route.path, 600)!;
       expect(samples[0]).toEqual({ x: 160, y: 100 });
-      for (const point of samples.filter((point) => point.y < 100 + STACK_CARET_SIZE + 6)) expect(point.x).toBeCloseTo(160, 5);
+      for (const point of samples.filter((point) => point.y < 100 + 6)) expect(point.x).toBeCloseTo(160, 5);
       expect(samples.every((point) => Number.isFinite(point.x) && Number.isFinite(point.y))).toBe(true);
       expect(samples.at(-1)!.x).toBeCloseTo(childX, 5);
       expect(samples.at(-1)!.y).toBeLessThan(attached.nodes.get("child")!.y);
-      expect(attached.nodes.get("child")!.y).toBe(originalChild.y - cover.y - cover.height + 100 + STACK_BAND_INSET);
-      expect(attached.height).toBe(graph.height - cover.y - cover.height + 100 + STACK_BAND_INSET);
+      expect(attached.nodes.get("child")!.y).toBe(100 + STACK_STEM_ROOM);
+      expect(attached.height).toBe(graph.height - originalChild.y + 100 + STACK_STEM_ROOM);
       // The header is reserved in packing as well as attachment, so later rows cannot overlap it.
-      expect(bandExtent(graph, "cover").height).toBe(graph.height - cover.y - cover.height + STACK_BAND_INSET);
+      expect(bandExtent(graph, "cover").height).toBe(graph.height - originalChild.y + STACK_STEM_ROOM);
     });
   }
   it("keeps a displaced parent's stem in its connector envelope and finds a nearby empty wrapped lane", () => {
@@ -92,7 +92,7 @@ describe("shared grid row band", () => {
     for (const route of attached.routes) for (const point of samplePathString(route.path, 100) ?? []) {
       expect(point.x).toBeGreaterThanOrEqual(placement.left);
       expect(point.x).toBeLessThanOrEqual(placement.right);
-      if (point.y < 100 + STACK_CARET_SIZE + 6) expect(point.x).toBeCloseTo(placement.coverX, 5);
+      if (point.y < 100 + 6) expect(point.x).toBeCloseTo(placement.coverX, 5);
     }
     const terminal = attached.routes.find((route) => route.terminal)!;
     const coordinates = terminal.path.match(/-?\d+(?:\.\d+)?/g)!.map(Number);
@@ -102,4 +102,68 @@ describe("shared grid row band", () => {
     expect(approach[0]).toBe(end[0]);
     expect(end[1] - approach[1]).toBe(8);
   });
+});
+
+describe("skyline compaction", () => {
+  it("raises a wrapped group into the space beside a shorter group", () => {
+    const packed = packStackGroups([group("tall", 50, 100, 300), group("short", 200, 100, 80), group("later", 300, 180, 80)], 350);
+    const later = packed.find((group) => group.id === "later")!;
+    expect(later.y).toBe(96);
+    expect(later.x).toBeGreaterThanOrEqual(116);
+    expect(Math.max(...packed.map((group) => group.y + group.height))).toBe(300);
+  });
+  it("keeps earlier placements stable as a later group opens, and leaves every rectangle disjoint", () => {
+    const initial = [group("a", 50, 100, 300), group("b", 200, 100, 80)];
+    const before = packStackGroups(initial, 350), after = packStackGroups([...initial, group("c", 300, 180, 80)], 350);
+    expect(after.slice(0, 2)).toEqual(before);
+    for (const a of after) for (const b of after) if (a.id < b.id) expect(a.x + a.width <= b.x || b.x + b.width <= a.x || a.y + a.height <= b.y || b.y + b.height <= a.y).toBe(true);
+  });
+});
+
+describe("independent cover stems", () => {
+  it("allocates distinct bend tracks and bypass lanes for seven wrapped groups", () => {
+    const items = Array.from({ length: 7 }, (_, i) => ({ id: `r${i}`, kind: "stack" as const }));
+    const flow = packedGridFlow(items, new Map(items.map(({ id }) => [id, { width: 648, height: 130 }])), 7, { cellWidth: 100, cellHeight: 100, columnGap: 0, rowGap: 0 });
+    const placements = [...bandPlacements(flow, 100).values()];
+    expect(new Set(placements.map((placement) => placement.track)).size).toBe(7);
+    const gutters = placements.flatMap((placement) => placement.bridge ? [placement.bridge.gutter] : []);
+    for (const a of gutters) for (const b of gutters) if (a < b) expect(b - a).toBeGreaterThanOrEqual(3.5);
+    expect(new Set(gutters).size).toBe(gutters.length);
+  });
+  it("packs a single child footprint, thirty fan-out groups, a fifteen-deep footprint and a sub-tile pane without overlaps", () => {
+    for (const groups of [[group("one", 46, 108, 115)], Array.from({ length: 30 }, (_, i) => group(`${i}`, i * 100, 108, 115)), [group("chain", 46, 108, 1500)]]) {
+      for (const width of [50, 140, 1150]) {
+        const packed = packStackGroups(groups, width);
+        expect(packed.length).toBe(groups.length);
+        for (const a of packed) for (const b of packed) if (a.id < b.id) expect(a.x + a.width <= b.x || b.x + b.width <= a.x || a.y + a.height <= b.y || b.y + b.height <= a.y).toBe(true);
+      }
+    }
+  });
+});
+
+it("keeps skyline bridge bends outside a taller neighbour's routing rectangle", async () => {
+  const { coverGutters } = await import("$lib/plugins/trace/view/stack-packing");
+  const groups = [
+    { ...group("wide", 250, 650, 130), x: 0, y: 0, line: 0 },
+    { ...group("tall-right", 600, 502, 300), x: 286, y: 130, line: 1 },
+    { ...group("later-left", 740, 216, 157), x: 54, y: 250, line: 2 },
+  ];
+  const gutters = coverGutters(groups, 842)!;
+  expect(gutters).not.toBeNull();
+  expect(gutters.get("later-left")).toBeLessThanOrEqual(290);
+});
+
+it("keeps a displaced child's approach off another cover's initial stem", async () => {
+  const { sharedLanes } = await import("../../domain/trace-graph/fixtures");
+  const items = Array.from({ length: 6 }, (_, i) => ({ id: `g${i}root`, kind: "stack" as const }));
+  const graphs = items.map(({ id }, i) => {
+    const nodes = [{ key: id, parents: [], width: 92, height: 81, order: 0 }, ...Array.from({ length: i ? 1 : 3 }, (_, j) => ({ key: `g${i}c${j}`, parents: [j ? `g${i}c${j - 1}` : id], width: 92, height: 81, order: j + 1 }))];
+    return layoutGraph({ items: nodes, maxWidth: 602, tileWidth: 92, pinned: { key: id, x: (i + .5) * 602 / 6 }, band: { key: id, items: nodes } });
+  });
+  const flow = packedGridFlow(items, new Map(graphs.map((graph, i) => [items[i].id, bandExtent(graph, items[i].id)])), 6, { cellWidth: 602 / 6 - 10, cellHeight: 100, columnGap: 10, rowGap: 10 });
+  const placements = bandPlacements(flow, 100);
+  const attached = graphs.map((graph, i) => attachPackedBand(graph, items[i].id, flow.bands.find((band) => band.id === items[i].id)!.y, placements.get(items[i].id)!));
+  const merged = { ...attached[0], nodes: new Map(attached.flatMap((graph) => [...graph.nodes])), routes: attached.flatMap((graph) => graph.routes) };
+  expect(sharedLanes({ ...merged, orientation: "down" })).toEqual([]);
+  expect(sharedLanes({ ...merged, orientation: "right" })).toEqual([]);
 });

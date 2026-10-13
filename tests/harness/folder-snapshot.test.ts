@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { displayedNodes, isDirectFolderSeed, type FolderNode } from "../../e2e/harness/folder-snapshot";
+import { folderCandidates, displayedNodes, isDirectFolderSeed, type FolderNode } from "../../e2e/harness/folder-snapshot";
 import type { TraceNode } from "$lib/domain/trace-graph/model";
 
 const node = (key: string, patch: Partial<FolderNode> = {}): FolderNode => ({
@@ -42,5 +42,18 @@ describe("native folder seed filtering in the browser harness", () => {
     expect(keys([foreign, node("child", { parents: [foreign.key] })])).toEqual(["draft", "child"]);
     expect(keys([{ ...foreign, artifactId: null, path: null, state: "running" }])).toEqual([]);
     expect(displayedNodes([{ ...foreign, contextDirectory: "/pictures" }], new Set())).toHaveLength(1);
+  });
+});
+
+
+describe("native SQL candidate rule in the browser harness", () => {
+  it("includes direct artifact and locator parents without requiring present files", () => {
+    expect(folderCandidates(["/pictures/nested/gone.png", "/locators/moved.png", "/locators/moved.png", "/root.png"], []))
+      .toEqual(["/", "/locators", "/pictures/nested"]);
+    expect(folderCandidates([], [])).toEqual([]);
+  });
+  it("includes eligible contexts even when dismissed or without an output", () => {
+    expect(folderCandidates([], ["running", "uncertain", "interrupted", "succeeded", "failed", "cancelled"]
+      .map((status) => ({ folder: `/${status}/`, status })))).toEqual(["/interrupted", "/running", "/succeeded", "/uncertain"]);
   });
 });

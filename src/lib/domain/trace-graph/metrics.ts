@@ -72,9 +72,10 @@ export function tileSize(shape: TileShape, metrics: TileMetrics = tileMetrics())
  */
 export const ARROW = { length: 8, width: 7 } as const;
 
-/** The stack disclosure target and space reserved below the cover row for its routing lane. */
+/** The stack disclosure hit target; its rendering does not own band geometry. */
 export const STACK_CARET_SIZE = 24;
-export const STACK_BAND_INSET = STACK_CARET_SIZE + 8;
+/** Cover stems need three bend tracks and a straight arrow approach, at every tile size. */
+export const STACK_STEM_ROOM = 34;
 
 /** Height of one bend track; a bend zone grows when its tracks need more than its default height. */
 export const TRACK_HEIGHT = 6;

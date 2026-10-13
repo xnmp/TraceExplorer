@@ -94,7 +94,7 @@ export interface BandScenePlan extends ScenePlan {
 /**
  * Opt-in band scene; legacy planScene is unchanged. Project reference badges
  * before computing drawable components. Members contain drawable keys only.
- * A band always runs down, bypassing orientation.ts and its hysteresis.
+ * Band candidates use the complete lineage so focus cannot change their arrangement.
  */
 export function planBandScene(graph: BadgeProjection, members: readonly NodeKey[], focus: NodeKey | null, maxWidth: number, options: BandSceneOptions): BandScenePlan {
   const { dag } = graph;
@@ -112,7 +112,11 @@ export function planBandScene(graph: BadgeProjection, members: readonly NodeKey[
     const references = graph.byConsumer.get(key);
     return references ? [[key, references] as const] : [];
   }));
-  return { lineage: effective, tiles, badges, request: { items, maxWidth, hint: options.hint, tileWidth: tile.width, orientation: "down", pinned: options.pinned } };
+  return { lineage: effective, tiles, badges, request: { items, maxWidth, hint: options.hint, tileWidth: tile.width, orientation: "down", pinned: options.pinned, band: { key: options.pinned.key, items: members.map((key) => {
+    const node = dag.nodes.get(key)!;
+    const size = tileSize({ foreign: node.scope !== "current", hint: (dag.children.get(key)?.length ?? 0) > 0 && node.scope === "current" }, tile);
+    return { key, ...size, order: node.order, parents: (dag.parents.get(key) ?? []).filter((parent) => membership.has(parent)) };
+  }) } } };
 }
 
 export type RouteKind = "current" | "subfolder" | "external";

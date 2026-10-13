@@ -40,6 +40,9 @@ export const tracePlugin: Plugin = {
       handler: () => ctx.text?.openSettings(),
     });
     traceFolderVisibility.clear();
+    // Backend is configured by src/index.ts before activation. Start before
+    // registering views; the SDK has no barrier for the host's first paint.
+    const preload = traceFolderVisibility.preload();
     ctx.registerFileView?.({
       id: TRACE_VIEW_ID,
       title: "Trace",
@@ -64,5 +67,6 @@ export const tracePlugin: Plugin = {
     });
     ctx.events.listen<string>("trace:changed", () => { traceInvalidation.bump(); traceFolderVisibility.refreshRecent(); });
     ctx.workspace.onFilesChanged((directories) => { traceInvalidation.bump(); traceFolderVisibility.filesChanged(directories); });
+    return preload;
   },
 };

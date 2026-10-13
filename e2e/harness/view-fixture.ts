@@ -10,10 +10,10 @@ import { configureBackend, invoke } from "$lib/api/common";
 import type { TraceNode } from "$lib/domain/trace-graph/model";
 import type { JobCost, JobReveal, TileSizePreset } from "../../integration/plugin-sdk";
 import { TILE_IMAGE_PX, TILE_GRID_PX } from "./tile-presets";
-import { basename, joinPath, parentDir } from "$lib/domain/path";
+import { basename, joinPath, parentDir, nativeDirectoryKey } from "$lib/domain/path";
 import StubFileTile from "./StubFileTile.svelte";
 import StubFileTiles from "./StubFileTiles.svelte";
-import { folderComponents, folderPage, isDirectFolderSeed, nativeStringOrder, type FolderNode } from "./folder-snapshot";
+import { folderCandidates, folderComponents, folderPage, isDirectFolderSeed, nativeStringOrder, type FolderNode } from "./folder-snapshot";
 import { isLocalAbsolutePath } from "$lib/domain/target-location";
 import { canonicalFixtureImagePath, fixtureImageEntries } from "./image-input-files";
 import { withNativeRequestCapacity } from "./request-capacity";
@@ -47,6 +47,41 @@ function scenario(): { nodes: FolderNode[]; names: Map<string, string> } {
     nodes.push(node);
   };
   const query = new URLSearchParams(globalThis.location?.search ?? "");
+  // Real folder index rules still derive components, covers and members below.
+  // Ordinary sources set the cover's host-listing column; saved descendants collapse into it.
+  if (query.get("layout") === "deep") {
+    for (let i = 1; i <= 5; i++) add({ key: `plain-${i}` });
+    add({ key: "deep" }); add({ key: "plain-7" });
+    for (const seed of [
+      { key: "Cerulean", parents: ["deep"] }, { key: "Saffron", parents: ["deep"] },
+      { key: "Blastoise", parents: ["Saffron"] }, { key: "Ash", parents: ["Saffron"] },
+      { key: "Charizard", parents: ["Ash"] },
+    ]) add(seed);
+    return { nodes, names };
+  }
+  if (query.get("layout") === "wrapped") {
+    add({ key: "stack-a" }); add({ key: "plain-middle" }); add({ key: "stack-b" });
+    for (const parent of ["stack-a", "stack-b"]) for (let i = 1; i <= 2; i++) add({ key: `${parent}-${i}`, parents: [parent] });
+    return { nodes, names };
+  }
+  // Two sibling groups wider than half a three-column row exercise line changes.
+  if (query.has("bandMotion")) {
+    for (const key of ["stack-a", "spacer", "stack-b", "below-1", "below-2", "below-3"]) add({ key, prompt: key });
+    for (const parent of ["stack-a", "stack-b"]) for (let i = 1; i <= 2; i++) add({ key: `${parent}-${i}`, parents: [parent] });
+    // Seven-image A: the wider first generation crosses B's cover column,
+    // requiring an actual gutter bridge on the wrapped line.
+    if (query.get("bandMotion") === "bridge") {
+      add({ key: "stack-a-3", parents: ["stack-a"] });
+      // A DAG keeps both engines on the downward candidate, including at
+      // native xlarge sizes; a forest can legitimately choose sideways shelves.
+      add({ key: "stack-a-4", parents: ["stack-a-1", "stack-a-3"] });
+      for (let i = 5; i <= 6; i++) add({ key: `stack-a-${i}`, parents: ["stack-a-4"] });
+    }
+    if (query.get("bandMotion") === "junction-collapse") add({ key: "stack-b-merge", parents: ["stack-b-1", "stack-b-2"] });
+    if (query.get("bandMotion") === "junction") add({ key: "stack-b-merge", parents: ["stack-b", "stack-b-1"] });
+    if (query.get("bandMotion") === "trunks") for (let i = 3; i <= 8; i++) add({ key: `stack-b-${i}`, parents: ["stack-b"] });
+    return { nodes, names };
+  }
   // Shared with native and mock golden tests. These focused scenarios expose
   // references repeated across sections without disturbing the motion gym.
   const grouping = groupingFixtures.find((fixture) => fixture.name === query.get("grouping"));
@@ -56,7 +91,10 @@ function scenario(): { nodes: FolderNode[]; names: Map<string, string> } {
       names.set(basename(node.path ?? node.key).replace(/\.png$/, ""), node.key);
       counter = Math.max(counter, node.artifactId ?? 0, node.runId ?? 0);
     }
-    return { nodes: fixtures, names };
+    // Long real filenames exercise wrapping and ellipsis without changing graph identities.
+    const nodes = query.has("stackName") ? fixtures.map((node) => node.path?.endsWith("/photo-a.png")
+      ? { ...node, path: `${DIRECTORY}/${query.get("stackName") === "wrapped" ? "photo-shot.png" : "a-photo-with-a-very-long-name-that-must-wrap-and-ellipsize.png"}` } : node) : fixtures;
+    return { nodes, names };
   }
   // Record source identities in their original order, then outputs oldest
   // section first. Native summaries rank newest-first, while identities keep
@@ -169,7 +207,29 @@ let heldNodeReads: Array<() => void> = [];
 const titleCalls: number[] = [];
 const titleWaiters = new Map<number, (title: string) => void>();
 
+// MIRROR intentionally represents a second copy of the same persisted rows.
+// Include those rows in candidates too; never hardcode eligibility in the RPC.
+const candidateFolders = () => {
+  const paths = state.nodes.filter((node) => node.artifactId !== null && node.path).map((node) => node.path!);
+  const contexts = state.nodes.filter((node) => node.runId !== null).flatMap((node) => {
+    const folder = node.contextDirectory ?? imageRuns.get(node.runId!)?.directory;
+    return folder ? [{ folder, status: node.state === "running" || node.state === "uncertain" ? node.state : "succeeded" }] : [];
+  });
+  const mirrorPath = (path: string) => path === DIRECTORY || path.startsWith(`${DIRECTORY}/`) ? MIRROR + path.slice(DIRECTORY.length) : path;
+  return folderCandidates([...paths, ...paths.map(mirrorPath)], [...contexts, ...contexts.map((context) => ({ ...context, folder: mirrorPath(context.folder) }))]);
+};
 const componentsOf = () => folderComponents(state.nodes, dismissedRuns);
+const folderHasTrace = (directory: string): boolean => {
+  const folder = nativeDirectoryKey(directory);
+  // The mirror shares ids and node paths, as the existing cache-race fixture
+  // does, but otherwise eligibility uses the real seed/component rules.
+  const source = folder === nativeDirectoryKey(MIRROR) ? DIRECTORY : directory;
+  const key = nativeDirectoryKey(source);
+  const nodes = state.nodes.map((node): FolderNode => ({ ...node, scope: !node.path ? node.scope
+    : nativeDirectoryKey(parentDir(node.path)) === key ? "current"
+    : nativeDirectoryKey(node.path).startsWith(`${key}/`) ? "subfolder" : "external" }));
+  return folderComponents(nodes, dismissedRuns, source).length > 0;
+};
 
 export const files = () => [
   ...state.nodes.filter((node) => isDirectFolderSeed(node) && !entryExtras.some((entry) => entry.path === node.path)).map((node) => ({ name: node.path!.split("/").at(-1)!, path: node.path!, kind: "file" as const })),
@@ -223,7 +283,8 @@ configureBackend(withNativeRequestCapacity({
         const jobId = [...imageOperations].find(([, id]) => id === operationId)?.[0];
         return reply(jobId === undefined ? null : jobSnapshot(jobId));
       }
-      case "folder_has_trace": return reply(params.directory === DIRECTORY || params.directory === MIRROR);
+      case "trace_folder_candidates": return reply(candidateFolders());
+      case "folder_has_trace": return folderReply(folderHasTrace(params.directory));
       case "trace_folder_components": {
         const all = componentsOf().map((component) => component.summary);
         return folderReply({ token, total: all.length, offset: params.offset, components: folderPage(all, params.offset, 200) });

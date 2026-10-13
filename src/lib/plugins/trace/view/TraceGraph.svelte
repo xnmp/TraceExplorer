@@ -11,13 +11,13 @@
   import { nearestInDirection, type Direction, type PinnedCover, type GraphLayout } from "$lib/domain/trace-graph/layout";
   import { rememberOrientation, type OrientationHistory } from "$lib/domain/trace-graph/orientation";
   import { endpointKey } from "$lib/domain/trace-graph/junctions";
-  import { ARROW, STACK_BAND_INSET, tileMetrics, type TileMetrics } from "$lib/domain/trace-graph/metrics";
+  import { ARROW, STACK_STEM_ROOM, tileMetrics, type TileMetrics } from "$lib/domain/trace-graph/metrics";
   import { promptTitles } from "../prompt-titles.svelte";
   import type { ComponentData } from "./folder-session.svelte";
   import type { GraphScene } from "./graph-commit";
   import { cachedLayout, computeLayout, layoutNow } from "./layout-client";
   import { selectableSelector } from "./selectable";
-  import { captureGraph, carriesMotion, playGraph, prefersReducedMotion, zoomOf } from "./motion";
+  import { captureGraph, playGraph, prefersReducedMotion, zoomOf } from "./motion";
   import { nodeTitle } from "./node-target";
   import { sameGraphGeometry } from "$lib/domain/trace-graph/layout-geometry";
   import TraceTile from "./TraceTile.svelte";
@@ -53,6 +53,8 @@
     ondiscarded: (key: NodeKey) => void;
     /** Called after a new layout is in the DOM and its motion has started. */
     oncommit?: (scene: GraphScene) => void;
+    /** Capture the whole grid before a pinned graph changes its DOM. */
+    onbeforecommit?: () => void;
     /** Current layout readiness, used only by keyboard/programmatic reveals. */
     onlayout?: (pending: boolean) => void;
     onfailure?: (scene: GraphScene, error: Error) => void;
@@ -67,7 +69,7 @@
     orientations?: Map<string, OrientationHistory>;
   }
 
-  let { data, focus, selected, width, tile = tileMetrics(), revision, scroller, onactivate, onnavigate, onopen, onmenu, onsaved, ondiscarded, oncommit, onlayout, captureSelection, componentId, orientations = new Map(), onfailure, reveal = null, pinned, bandTop = 0, bandPlacement, ongeometry, ongridkey, badgeHover = null, focusedKey, onfocuskey, onbadgehover }: Props = $props();
+  let { data, focus, selected, width, tile = tileMetrics(), revision, scroller, onactivate, onnavigate, onopen, onmenu, onsaved, ondiscarded, oncommit, onbeforecommit, onlayout, captureSelection, componentId, orientations = new Map(), onfailure, reveal = null, pinned, bandTop = 0, bandPlacement, ongeometry, ongridkey, badgeHover = null, focusedKey, onfocuskey, onbadgehover }: Props = $props();
 
   /** Below this many tiles layout runs inline; it takes well under a frame. */
   const SYNC_LIMIT = 60;
@@ -109,9 +111,6 @@
   let shown = $state.raw<{ plan: ScenePlan; layout: GraphLayout } | null>(null);
 
   function commit(next: ScenePlan, layout: GraphLayout, scene: GraphScene): void {
-    // The first graph has no displayed geometry to preserve. Existing graphs
-    // publish after rendering so attachment motion captures their old scene.
-    if (pinned && !shown) ongeometry?.(next as BandScenePlan, layout);
     if (shown && shown.plan === next && shown.layout === layout) {
       void tick().then(() => rendered(scene, next, layout));
       return;
@@ -125,7 +124,15 @@
       void tick().then(() => rendered(scene, next, layout));
       return;
     }
-    const firstPinned = !shown && !!pinned;
+    if (pinned) {
+      onbeforecommit?.();
+      ongeometry?.(next as BandScenePlan, layout);
+      shown = { plan: next, layout };
+      layoutStamp++;
+      failure = "";
+      void tick().then(() => rendered(scene, next, layout));
+      return;
+    }
     const element = canvas;
     const before = element && shown && !prefersReducedMotion() ? captureGraph(element) : null;
     shown = { plan: next, layout };
@@ -138,10 +145,6 @@
       for (const animation of running) animation.cancel();
       running = [];
       if (before && canvas) running = playGraph(canvas, before, layout.orientation);
-      else if (firstPinned && canvas && pinned && !prefersReducedMotion() && !carriesMotion(canvas)) {
-        const snapshot = captureGraph(canvas), cover = attached?.nodes.get(pinned.key);
-        if (cover) running = playGraph(canvas, { ...snapshot, tiles: new Map(), routeIds: new Map(), routes: new Map(), junctions: new Map() }, "down", { key: pinned.key, box: { ...cover, fading: null } });
-      }
       rendered(scene, next, layout);
     });
   }
@@ -155,7 +158,7 @@
       isCurrent: () => !superseded.signal.aborted && plan === next && reveal === requestedReveal,
     };
     onlayout?.(true);
-    const ready = cachedLayout(next.request) ?? (next.request.items.length <= SYNC_LIMIT ? layoutNow(next.request) : null);
+    const ready = cachedLayout(next.request) ?? ((next.request.band?.items.length ?? next.request.items.length) <= SYNC_LIMIT ? layoutNow(next.request) : null);
     // Commit reads displayed geometry, not planning inputs. Tracking those
     // reads would supersede this scene when its own render updates `shown`.
     if (ready) untrack(() => commit(next, ready, scene));
@@ -188,7 +191,17 @@
     return () => { container.removeEventListener("scroll", schedule); observer.disconnect(); cancelAnimationFrame(frame); };
   });
 
-  const attached = $derived(shown && pinned ? (bandPlacement ? attachPackedBand(shown.layout, pinned.key, bandTop, bandPlacement) : attachBand(shown.layout, pinned.key, 0, bandTop)) : shown?.layout);
+  let previousAttachment: GraphLayout | undefined;
+  let attachmentSerial = 0;
+  const attachment = $derived.by(() => {
+    const layout = shown && pinned ? (bandPlacement ? attachPackedBand(shown.layout, pinned.key, bandTop, bandPlacement) : attachBand(shown.layout, pinned.key, 0, bandTop)) : shown?.layout;
+    // Routing obstacles can change without changing any path. Only displayed
+    // geometry owns attachment motion, so an unrelated opening carries it on.
+    if (layout && (!previousAttachment || !sameGraphGeometry(previousAttachment, layout))) attachmentSerial++;
+    previousAttachment = layout;
+    return { layout, serial: attachmentSerial };
+  });
+  const attached = $derived(attachment.layout);
 
   const visibleTiles = $derived.by(() => {
     if (!shown) return [];
@@ -251,7 +264,7 @@
   <div class="pending stale" role="alert">Trace layout failed: {failure}</div>
 {/if}
 {#if shown}
-  <div class="graph" data-layout-stamp={layoutStamp} data-attachment={pinned ? JSON.stringify([bandTop, bandPlacement ?? null]) : undefined} bind:this={canvas} style:width="{attached!.width}px" style:height="{attached!.height}px">
+  <div class="graph" data-layout-stamp={layoutStamp} data-orientation={shown.layout.orientation} data-attachment={pinned ? String(attachment.serial) : undefined} bind:this={canvas} style:width="{attached!.width}px" style:height="{attached!.height}px">
     <svg class="edges" width={attached!.width} height={attached!.height} aria-hidden="true">
       <defs>
         <!--
@@ -292,7 +305,7 @@
     {/each}
   </div>
 {:else}
-  <div class="pending" class:pinned-pending={!!pinned} style:top={pinned ? `${bandTop + STACK_BAND_INSET}px` : undefined} role="status">{failure ? `Trace layout failed: ${failure}` : "Arranging…"}</div>
+  <div class="pending" class:delayed={!failure} class:pinned-pending={!!pinned} style:top={pinned ? `${bandTop + STACK_STEM_ROOM}px` : undefined} role="status">{failure ? `Trace layout failed: ${failure}` : "Arranging…"}</div>
 {/if}
 
 <style>
@@ -325,6 +338,10 @@
   .junction.highlight { fill: var(--edge-highlight); }
   .ghosts { pointer-events: none; }
   div.ghosts { position: absolute; inset: 0; }
+  /* Progress text appears only when loading is slow, so a fast load never flashes it. A transition, not an
+     animation: grid motion cancels band animations, and a cancelled transition shows the text at once. */
+  .delayed { transition: opacity 150ms ease-out 400ms; }
+  @starting-style { .delayed { opacity: 0; } }
   .pinned-pending { position: absolute; left: 0; width: 100%; box-sizing: border-box; }
   .pending { padding: 18px 12px; color: var(--text-secondary); font-size: 12px; }
   .pending.stale { padding: 4px 12px; }

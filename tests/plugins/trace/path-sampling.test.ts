@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { displace, flattenPath, polyline, resample, samplePathString } from "$lib/plugins/trace/view/path-sampling";
+import { pathTranslation, translatePath, displace, interpolatePath, flattenPath, polyline, resample, samplePathString } from "$lib/plugins/trace/view/path-sampling";
 
 const close = (actual: { x: number; y: number }, expected: { x: number; y: number }) => {
   expect(actual.x).toBeCloseTo(expected.x, 6);
@@ -51,8 +51,43 @@ describe("path sampling for connector motion", () => {
     expect(moved).toEqual([{ x: 10, y: 0 }, { x: 5, y: 3 }, { x: 0, y: 6 }]);
   });
 
+  it("keeps connector endpoints attached at intermediate travel progress", () => {
+    const from = samplePathString("M10 20 L10 80", 24)!;
+    const to = samplePathString("M10 20 L10 160 L90 160 L90 240", 24)!;
+    const halfway = interpolatePath(from, to, .5);
+    expect(halfway[0]).toEqual({ x: 10, y: 20 });
+    expect(halfway.at(-1)).toEqual({ x: 50, y: 160 });
+    expect(interpolatePath(from, to, 0)).toEqual(from);
+    expect(interpolatePath(from, to, 1)).toEqual(to);
+    expect(interpolatePath([], [], .5)).toEqual([]);
+  });
+
   it("formats a polyline that parses back to the same points", () => {
     const points = [{ x: 1.5, y: 2 }, { x: 3, y: 4.25 }];
     expect(flattenPath(polyline(points))).toEqual(points);
+  });
+});
+
+describe("native route translation", () => {
+  const path = "M0 100 C0 110 50 110 50 120 L50 130";
+  it("recognizes a rigid route including its cubic control points", () => {
+    const moved = "M13 20 C13 30 63 30 63 40 L63 50";
+    expect(pathTranslation(path, moved)).toEqual({ x: 13, y: -80 });
+    expect(translatePath(path, { x: 13, y: -80 })).toBe(moved);
+    expect(pathTranslation(path, path)).toEqual({ x: 0, y: 0 });
+  });
+  it("rejects rerouting, including a changed control point with unchanged endpoints", () => {
+    expect(pathTranslation(path, "M0 100 C1 110 50 110 50 120 L50 130")).toBeNull();
+    expect(pathTranslation(path, "M0 100 L50 130")).toBeNull();
+  });
+  it("rejects non-finite translations and arithmetic overflow", () => {
+    expect(translatePath(path, { x: NaN, y: 0 })).toBeNull();
+    expect(translatePath("M1e308 0", { x: 1e308, y: 0 })).toBeNull();
+  });
+  it("rejects malformed and unsupported geometry instead of guessing", () => {
+    for (const bad of ["", "M0", "M0 0 Q1 1 2 2", "M0 0 LNaN 1", "M0 0 L1e999 2"]) {
+      expect(pathTranslation(bad, bad)).toBeNull();
+      expect(translatePath(bad, { x: 0, y: 1 })).toBeNull();
+    }
   });
 });

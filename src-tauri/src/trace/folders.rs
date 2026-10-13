@@ -71,6 +71,69 @@ fn lexical_path(path: &Path) -> PathBuf {
     resolved
 }
 
+// Keep candidate contexts and the exact eligibility gate on the same statuses.
+const CONTEXT_STATUSES: &str = "('running','uncertain','interrupted','succeeded')";
+
+/// SQL-only superset of `may_have_trace_at`, without traced-file stats, hashes,
+/// or folder index builds. Stored artifact/locator paths were canonicalized by
+/// `normalize_path` (and contexts by `context_key`), so their direct parents
+/// use the same canonical namespace as `key`. Do not canonicalize each path
+/// again: offline volumes and removed files must remain candidates. Simplify
+/// legacy Windows verbatim prefixes with dunce, just as `key` does. Frontend
+/// membership uses directoryKey for separators, trailing slashes and Windows
+/// case; POSIX case remains significant.
+///
+/// Every exact positive, after `key` canonicalization, has a direct
+/// artifact/locator or eligible context in this set. This cannot enumerate
+/// arbitrary filesystem aliases of those directories; a host retaining alias
+/// spellings needs a canonical identity before treating absence as definitive.
+/// Missing/discarded outputs, dismissed runs and empty components deliberately
+/// remain false positives. Only immediate parents are emitted.
+/// Complexity: one SQL scan, O(total path bytes) expected hash deduplication,
+/// O(D log D) sorting and O(D) retained directories. No per-directory queries.
+fn candidates_at(database: &Path) -> Result<Vec<String>, AppError> {
+    // Only the DB's existence is checked, never any recorded path. Opening
+    // read-only avoids creating a journal or running schema/index setup.
+    if !database.exists() {
+        return Ok(Vec::new());
+    }
+    let connection =
+        Connection::open_with_flags(database, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .map_err(sql)?;
+    connection
+        .busy_timeout(Duration::from_secs(5))
+        .map_err(sql)?;
+    let query = format!("SELECT path,0 FROM artifacts UNION ALL SELECT path,0 FROM artifact_locators UNION ALL SELECT c.folder,1 FROM image_folder_contexts c JOIN runs r ON r.id=c.run_id WHERE r.status IN {CONTEXT_STATUSES}");
+    let mut statement = connection.prepare(&query).map_err(sql)?;
+    let rows = statement
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, bool>(1)?))
+        })
+        .map_err(sql)?;
+    let mut directories = HashSet::new();
+    for row in rows {
+        let (value, context) = row.map_err(sql)?;
+        let path = Path::new(&value);
+        let directory = if context { Some(path) } else { path.parent() };
+        if let Some(directory) = directory.filter(|directory| directory.is_absolute()) {
+            directories.insert(
+                dunce::simplified(&lexical_path(directory))
+                    .to_string_lossy()
+                    .into_owned(),
+            );
+        }
+    }
+    let mut directories: Vec<_> = directories.into_iter().collect();
+    directories.sort_unstable();
+    Ok(directories)
+}
+
+pub(crate) async fn candidates() -> Result<Vec<String>, AppError> {
+    tokio::task::spawn_blocking(|| candidates_at(&database_path()?))
+        .await
+        .map_err(|error| AppError::WorkerFailed(error.to_string()))?
+}
+
 /// Whether the folder has a Trace section. Eligibility is read from the same
 /// cached folder index the view shows, so a folder is never offered the Trace
 /// view with nothing to show (for example one whose only history is failed
@@ -124,10 +187,14 @@ fn may_have_trace_at(database: &Path, directory: &Path) -> Result<(bool, bool), 
     // an active run is shown, and a finished or interrupted run is shown
     // through any newest revision of its outputs that is present and not
     // discarded.
-    let mut contexts = connection.prepare("SELECT r.id,r.status,r.dismissed_at IS NOT NULL FROM image_folder_contexts c JOIN runs r ON r.id=c.run_id WHERE c.folder=?1 AND r.status IN ('running','uncertain','interrupted','succeeded')").map_err(sql)?;
+    let mut contexts = connection.prepare(&format!("SELECT r.id,r.status,r.dismissed_at IS NOT NULL FROM image_folder_contexts c JOIN runs r ON r.id=c.run_id WHERE c.folder=?1 AND r.status IN {CONTEXT_STATUSES}")).map_err(sql)?;
     let rows = contexts
         .query_map([directory], |row| {
-            Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?, row.get::<_, bool>(2)?))
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, bool>(2)?,
+            ))
         })
         .map_err(sql)?;
     let mut has_context = false;
@@ -198,6 +265,176 @@ pub(crate) async fn has_trace(directory: String) -> Result<bool, AppError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn insert_artifact(connection: &Connection, path: &Path) -> i64 {
+        connection
+            .execute(
+                "INSERT INTO artifacts(path,digest) VALUES(?1,'test')",
+                [path.to_string_lossy()],
+            )
+            .unwrap();
+        connection.last_insert_rowid()
+    }
+
+    #[test]
+    fn candidate_empty_and_missing_databases_do_not_create_history() {
+        let root = crate::test_support::tempdir().unwrap();
+        let db = root.path().join("trace.sqlite");
+        assert!(candidates_at(&db).unwrap().is_empty());
+        assert!(!db.exists());
+        connection_at(&db).unwrap();
+        assert!(candidates_at(&db).unwrap().is_empty());
+    }
+
+    #[test]
+    fn candidates_include_only_direct_parents_and_ignore_file_presence() {
+        let root = crate::test_support::tempdir().unwrap();
+        let db = root.path().join("trace.sqlite");
+        let child = root.path().join("pictures").join("nested");
+        fs::create_dir_all(&child).unwrap();
+        let child = PathBuf::from(key(&child).unwrap());
+        let connection = connection_at(&db).unwrap();
+        let artifact = insert_artifact(&connection, &child.join("gone.png"));
+        let locator_folder = root.path().join("locator-only");
+        connection
+            .execute(
+                "INSERT INTO artifact_locators(artifact_id,path,digest) VALUES(?1,?2,'test')",
+                params![artifact, locator_folder.join("gone.png").to_string_lossy()],
+            )
+            .unwrap();
+        let actual: HashSet<_> = candidates_at(&db).unwrap().into_iter().collect();
+        let expected: HashSet<_> = [
+            child.to_string_lossy().into_owned(),
+            locator_folder.to_string_lossy().into_owned(),
+        ]
+        .into_iter()
+        .collect();
+        assert_eq!(actual, expected);
+        assert!(!actual.contains(&child.parent().unwrap().to_string_lossy().into_owned()));
+        assert!(!has_trace_at(&db, &child).unwrap()); // SQL superset includes missing files
+    }
+
+    #[test]
+    fn candidate_contexts_share_eligibility_statuses_and_normalize_roots() {
+        let root = crate::test_support::tempdir().unwrap();
+        let db = root.path().join("trace.sqlite");
+        let connection = connection_at(&db).unwrap();
+        let folder = PathBuf::from(key(root.path()).unwrap());
+        let filesystem_root = folder.ancestors().last().unwrap();
+        insert_artifact(
+            &connection,
+            &filesystem_root.join("trace-candidate-test.png"),
+        );
+        let statuses = [
+            "running",
+            "uncertain",
+            "interrupted",
+            "succeeded",
+            "failed",
+            "cancelled",
+        ];
+        for status in statuses {
+            connection.execute("INSERT INTO runs(operation,parameters,status,dismissed_at) VALUES('test','{}',?1,'dismissed')", [status]).unwrap();
+            let id = connection.last_insert_rowid();
+            // No folder needs to exist; trailing separators must key identically.
+            connection
+                .execute(
+                    "INSERT INTO image_folder_contexts(folder,run_id) VALUES(?1,?2)",
+                    params![
+                        format!(
+                            "{}{}",
+                            folder.join(status).display(),
+                            std::path::MAIN_SEPARATOR
+                        ),
+                        id
+                    ],
+                )
+                .unwrap();
+        }
+        connection
+            .execute(
+                "INSERT INTO runs(operation,parameters,status) VALUES('test','{}','running')",
+                [],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO image_folder_contexts(folder,run_id) VALUES(?1,?2)",
+                params![
+                    format!("{}{}", filesystem_root.display(), std::path::MAIN_SEPARATOR),
+                    connection.last_insert_rowid()
+                ],
+            )
+            .unwrap();
+        let actual: HashSet<_> = candidates_at(&db).unwrap().into_iter().collect();
+        let expected: HashSet<_> = ["running", "uncertain", "interrupted", "succeeded"]
+            .into_iter()
+            .map(|status| folder.join(status).to_string_lossy().into_owned())
+            .chain([filesystem_root.to_string_lossy().into_owned()])
+            .collect();
+        assert_eq!(actual, expected);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn candidate_namespace_matches_exact_canonical_keys_not_symlink_aliases() {
+        let root = crate::test_support::tempdir().unwrap();
+        let db = root.path().join("trace.sqlite");
+        let real = root.path().join("real");
+        let alias = root.path().join("alias");
+        fs::create_dir(&real).unwrap();
+        std::os::unix::fs::symlink(&real, &alias).unwrap();
+        let image = real.join("recorded.png");
+        fs::write(&image, b"test").unwrap();
+        record_operation_at(
+            &db,
+            OperationRecord {
+                operation: "image.test".into(),
+                parameters: serde_json::Value::Null,
+                inputs: vec![],
+                output_path: image.to_string_lossy().into_owned(),
+                output_digest: digest(&image).unwrap(),
+            },
+        )
+        .unwrap();
+        assert!(has_trace_at(&db, &alias).unwrap());
+        let candidates = candidates_at(&db).unwrap();
+        assert!(candidates.contains(&key(&alias).unwrap()));
+        assert!(!candidates.contains(&alias.to_string_lossy().into_owned()));
+    }
+
+    #[test]
+    fn large_candidate_scan_deduplicates_revisions_and_locators() {
+        // 30k artifacts + 30k locators but only 100 folders. One streaming SQL
+        // scan and a directory set, not 60k canonicalizations/index builds.
+        let root = crate::test_support::tempdir().unwrap();
+        let db = root.path().join("trace.sqlite");
+        let mut connection = connection_at(&db).unwrap();
+        let tx = connection.transaction().unwrap();
+        for index in 0..30_000 {
+            let folder = root.path().join(format!("folder-{}", index % 100));
+            let path = folder.join(format!("image-{index}.png"));
+            let id = insert_artifact(&tx, &path);
+            tx.execute(
+                "INSERT INTO artifact_locators(artifact_id,path,digest) VALUES(?1,?2,'test')",
+                params![id, path.to_string_lossy()],
+            )
+            .unwrap();
+        }
+        tx.commit().unwrap();
+        assert_eq!(candidates_at(&db).unwrap().len(), 100);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn candidates_simplify_legacy_windows_paths_without_stats() {
+        let root = crate::test_support::tempdir().unwrap();
+        let db = root.path().join("trace.sqlite");
+        let connection = connection_at(&db).unwrap();
+        insert_artifact(&connection, Path::new(r"\\?\C:\Pictures\missing.png"));
+        insert_artifact(&connection, Path::new(r"C:\root.png"));
+        assert_eq!(candidates_at(&db).unwrap(), vec![r"C:\", r"C:\Pictures"]);
+    }
+
     #[test]
     fn only_direct_present_files_qualify_and_modified_bytes_need_no_hash() {
         let root = crate::test_support::tempdir().unwrap();
@@ -220,6 +457,7 @@ mod tests {
         .unwrap();
         assert!(!has_trace_at(&db, &folder).unwrap());
         assert!(has_trace_at(&db, &child).unwrap());
+        assert!(candidates_at(&db).unwrap().contains(&key(&child).unwrap()));
         fs::write(&image, b"modified current revision").unwrap();
         assert!(has_trace_at(&db, &child).unwrap());
         fs::remove_file(&image).unwrap();

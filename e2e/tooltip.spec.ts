@@ -145,7 +145,7 @@ test.describe("Trace tile tooltip", () => {
       await settle(page);
       // Scroll the right-most graph tile (a closed stack has no tooltip) of the grid (a graph is narrower than the grid now) down to the window's bottom edge.
       const corner = await page.evaluate(() => {
-        const cards = [...document.querySelectorAll<HTMLElement>("section.component [data-node-key]:not([data-stack-toggle])")];
+        const cards = [...document.querySelectorAll<HTMLElement>("section.component [data-grid-band] [data-node-key]")];
         const card = cards.sort((a, b) => b.getBoundingClientRect().right - a.getBoundingClientRect().right)[0];
         const view = document.querySelector<HTMLElement>("[data-testid=trace-view]")!;
         view.scrollTop += card.getBoundingClientRect().bottom - Math.min(innerHeight, view.getBoundingClientRect().bottom) + 2;
@@ -208,7 +208,7 @@ test("removing the focused tile under its shown tooltip writes no state mid-rend
   await page.keyboard.press("Tab"); await target.focus(); await page.keyboard.press("Shift+Tab"); await page.keyboard.press("Tab");
   await target.focus();
   await expect(bubble(page)).toBeVisible();
-  await page.locator('section[aria-label="village"]').getByRole("button", { name: "Close stack" }).evaluate((button: HTMLElement) => button.click());
+  await page.locator('section[aria-label="village"]').getByRole("button", { name: "Collapse stack" }).evaluate((button: HTMLElement) => button.click());
   await settle(page);
   await expect(page.locator('section[aria-label="village"] [data-grid-band]')).toHaveCount(0);
   await expect(bubble(page)).toHaveCount(0);

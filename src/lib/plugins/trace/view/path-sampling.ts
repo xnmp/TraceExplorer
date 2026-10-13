@@ -85,3 +85,37 @@ export function displace(points: readonly Point[], from: Point, to: Point): Poin
 export function polyline(points: readonly Point[]): string {
   return points.map((point, index) => `${index ? "L" : "M"}${point.x.toFixed(2)} ${point.y.toFixed(2)}`).join(" ");
 }
+
+/** Corresponding sampled points interpolate on the same eased progress as their tiles. */
+export function interpolatePath(from: readonly Point[], to: readonly Point[], progress: number): Point[] {
+  return to.map((point, index) => ({
+    x: from[index].x + (point.x - from[index].x) * progress,
+    y: from[index].y + (point.y - from[index].y) * progress,
+  }));
+}
+
+/** Absolute layout commands, with exact control points (no resampling). */
+function pathCommands(path: string): { kind: string; values: number[] }[] | null {
+  const commands = [...path.matchAll(/([MLC])\s*((?:[-+\d.eE,\s])+)/g)].map(match => ({
+    kind: match[1], values: match[2].match(/-?(?:\d+\.?\d*|\.\d+)(?:e[-+]?\d+)?/gi)?.map(Number) ?? [],
+  }));
+  return !commands.length || commands[0].kind !== "M"
+    || commands.some(c => c.values.length !== (c.kind === "C" ? 6 : 2) || c.values.some(n => !Number.isFinite(n)))
+    || path.replace(/([MLC])\s*((?:[-+\d.eE,\s])+)/g, "").trim() ? null : commands;
+}
+
+/** Exact pure translation, including every cubic control point; null for rerouting. */
+export function pathTranslation(before: string, after: string): Point | null {
+  const a = pathCommands(before), b = pathCommands(after);
+  if (!a || !b || a.length !== b.length) return null;
+  const shift = { x: b[0].values[0] - a[0].values[0], y: b[0].values[1] - a[0].values[1] };
+  return a.every((c, i) => c.kind === b[i].kind && c.values.every((n, j) =>
+    Math.abs(b[i].values[j] - n - (j % 2 ? shift.y : shift.x)) < .001)) ? shift : null;
+}
+
+export function translatePath(path: string, shift: Point): string | null {
+  if (![shift.x, shift.y].every(Number.isFinite)) return null;
+  const commands = pathCommands(path)?.map(c => ({ ...c, values: c.values.map((n, i) => n + (i % 2 ? shift.y : shift.x)) }));
+  return commands && commands.every(c => c.values.every(Number.isFinite))
+    ? commands.map(c => `${c.kind}${c.values.join(" ")}`).join(" ") : null;
+}

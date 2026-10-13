@@ -7,7 +7,7 @@ const notifications = (page: Page) => page.evaluate(() => (window as any).trace.
 async function closedGrid(page: Page, query = "") {
   await page.setViewportSize({ width: 1800, height: 1400 });
   await openView(page, 1400, query, false);
-  for (const button of await page.getByRole("button", { name: "Close stack", exact: true }).all()) await button.click();
+  for (const button of await page.getByRole("button", { name: "Collapse stack", exact: true }).all()) await button.click();
   await settle(page);
 }
 
@@ -47,7 +47,7 @@ for (const query of ["", "?fileTile=1&tileSize=medium"]) {
     await expect.poll(async () => (await state(page)).selected.sort()).toEqual(expected);
     await expect.poll(async () => (await state(page)).inputs.sort()).toEqual(expected);
     await expect(page.getByTestId("trace-view").locator(".selected")).toHaveCount(3);
-    for (const cover of await covers.all()) await expect(cover).toHaveClass(/selected/);
+    for (const cover of await covers.all()) await expect(cover).toHaveAttribute("aria-pressed", "true");
     const before = await notifications(page);
     const end = (await dragBounds(covers)).end;
     await page.mouse.move(end.x + 1, end.y + 1);
@@ -145,7 +145,7 @@ for (const loaded of [false, true]) {
     await closedGrid(page);
     if (loaded) {
       await click(page, "village");
-      await page.getByRole("button", { name: "Close stack", exact: true }).click();
+      await page.getByRole("button", { name: "Collapse stack", exact: true }).click();
     }
     await page.evaluate(() => (window as any).trace.backend.startGeneration("village", "pending-marquee"));
     const section = page.locator('section[data-component][aria-label="village"]');
@@ -162,7 +162,7 @@ for (const loaded of [false, true]) {
     if (loaded) {
       await page.locator("[data-stack-toggle]").click();
       await settle(page);
-      await page.getByRole("button", { name: "Close stack", exact: true }).click();
+      await page.getByRole("button", { name: "Collapse stack", exact: true }).click();
       await settle(page);
     }
     const cover = page.locator('[data-node-key="a:1"]');
@@ -171,7 +171,7 @@ for (const loaded of [false, true]) {
     await expect.poll(async () => (await state(page)).inputs).toEqual([]);
     await finishDrag(page);
     expect((await state(page)).selected).toEqual([]);
-    await expect(cover).not.toHaveClass(/selected/);
+    await expect(cover).toHaveAttribute("aria-pressed", "false");
   });
 }
 
@@ -206,14 +206,14 @@ for (const loaded of [false, true]) {
     await closedGrid(page, "?draftStack=1");
     if (loaded) {
       await click(page, "draft");
-      await page.getByRole("button", { name: "Close stack", exact: true }).click();
+      await page.getByRole("button", { name: "Collapse stack", exact: true }).click();
       await settle(page);
     }
     const cover = await card(page, "draft");
     await startDrag(page, await dragBounds(cover));
     await expect.poll(async () => (await state(page)).inputs).toEqual(["/managed/draft.png"]);
     expect((await state(page)).selected).toEqual([]);
-    await expect(cover).toHaveClass(/selected/);
+    await expect(cover).toHaveAttribute("aria-pressed", "true");
     await finishDrag(page);
     expect((await state(page)).inputs).toEqual(["/managed/draft.png"]);
   });
@@ -313,7 +313,7 @@ for (const merge of [false, true]) {
     await expect.poll(async () => (await state(page)).inputs).toEqual(["/managed/draft.png"]);
     expect((await state(page)).selected).toEqual([]);
     if (!merge) {
-      await expect(await card(page, "draft")).toHaveClass(/selected/);
+      await expect(await card(page, "draft")).toHaveAttribute("aria-pressed", "true");
       await finishDrag(page);
       expect((await state(page)).inputs).toEqual(["/managed/draft.png"]);
     }

@@ -1,6 +1,6 @@
 import { test, expect, type Page } from "@playwright/test";
 import { openView, click, key, tile, card, state, uncaught, settle, tileBoxes, overlaps, rendered, type Box } from "./support";
-import { holdScriptedAnimations, releaseScriptedAnimations } from "./animation-control";
+import { awaitAnimationsCreated, holdScriptedAnimations, releaseScriptedAnimations } from "./animation-control";
 
 /** Rendered width and image height of every tile, keyed by node key. */
 const tileSizes = (page: Page) => page.evaluate(() => Object.fromEntries([...document.querySelectorAll<HTMLElement>("[data-tile-key]")].map((element) => {
@@ -149,7 +149,7 @@ test.describe("wide layouts", () => {
     for (const [parent, child] of edges) if (boxes[parent] && boxes[child]) expect(boxes[child].y, `${child} below ${parent}`).toBeGreaterThanOrEqual(boxes[parent].y + boxes[parent].height);
   };
 
-  test("a deep band runs down at every width and keeps its grid cover pinned while revealing generations", async ({ page }) => {
+  test("a deep band uses sideways space and keeps its grid cover pinned while revealing generations", async ({ page }) => {
     await openView(page, 900, "?deeper=1");
     const names = ["forest", "forest-mist", "autumn", "mist-dawn", "mist-dusk"];
     const [forest, mist, autumn, dawn, dusk] = await Promise.all(names.map((name) => key(page, name)));
@@ -157,7 +157,9 @@ test.describe("wide layouts", () => {
     for (const name of ["forest", "forest-mist", "mist-dawn", "mist-dusk", "autumn"]) {
       await click(page, name);
       const boxes = await tileBoxes(page, "forest");
-      runsDown(boxes, [[forest, mist], [forest, autumn], [mist, dawn], [dawn, dusk]]);
+      for (const [parent, child] of [[forest, mist], [forest, autumn], [mist, dawn], [dawn, dusk]]) if (boxes[parent] && boxes[child]) {
+        expect(boxes[child].y >= boxes[parent].y + boxes[parent].height || boxes[child].x >= boxes[parent].x + boxes[parent].width).toBe(true);
+      }
       expect(overlaps(boxes)).toEqual([]);
       expect((await (await tile(page, "forest")).boundingBox())!.x).toBeCloseTo(coverX, 1);
     }
@@ -205,7 +207,7 @@ test.describe("wide layouts", () => {
 
   test("the cover chevron closes the band without changing its selected file", async ({ page }) => {
     await openView(page, 900); await click(page, "forest");
-    await (await tile(page, "forest")).getByRole("button", { name: "Close stack" }).click(); await settle(page);
+    await (await tile(page, "forest")).getByRole("button", { name: "Collapse stack" }).click(); await settle(page);
     await expect(page.locator('section[aria-label="forest"] .graph')).toHaveCount(0);
     expect((await state(page)).selected).toEqual(["/pictures/forest.png"]);
   });
@@ -300,9 +302,9 @@ async function arrowheads(page: Page, index = 0): Promise<Head[]> {
 }
 
 test.describe("arrowheads", () => {
-  for (const { orientation, width } of [{ orientation: "top to bottom", width: 360 }, { orientation: "top to bottom", width: 700 }]) {
+  for (const width of [360, 700]) {
     for (const zoom of [1, 1.3]) {
-      test(`running ${orientation} at width ${width} and ${zoom * 100}% zoom, every arrowhead ends on its tile's edge, points along its line and has one size`, async ({ page }) => {
+      test(`a compact band at width ${width} and ${zoom * 100}% zoom, every arrowhead ends on its tile's edge, points along its line and has one size`, async ({ page }) => {
         // A root with two edits and two further edits under the second, selected (the selected branch is highlighted).
         await openView(page, width, `?gym=1&zoom=${zoom}`);
         await click(page, "saffron");
@@ -311,7 +313,7 @@ test.describe("arrowheads", () => {
         expect(heads.filter((head) => head.tone === "normal").length).toBeGreaterThanOrEqual(1);
         for (const head of heads) {
           const label = `${head.tone} ${head.route}`;
-          expect(head.sideways, label).toBe(false);
+          // Compact bands may enter from the top or left; the same tip/axis contract holds.
           // The tip touches the tile's edge, within a pixel, on the edge itself.
           expect(Math.abs(head.edgeGap), label).toBeLessThanOrEqual(1);
           expect(head.withinEdge, label).toBe(true);
@@ -618,29 +620,35 @@ test.describe("motion", () => {
   test("a tile that returns while fading out continues from its fading copy instead of appearing twice", async ({ page }) => {
     await openView(page);
     await click(page, "warm");
-    const result = await page.evaluate(async ({ daylight, warm, evening }) => {
-      const frame = () => new Promise((resolve) => requestAnimationFrame(resolve));
-      const select = (k: string) => document.querySelector<HTMLElement>(`[data-node-key="${CSS.escape(k)}"]`)!.click();
-      const copies = () => [...document.querySelectorAll<HTMLElement>("[data-motion-ghost].tile")].filter((ghost) => ghost.textContent?.includes("evening prompt"));
-      select(daylight);
-      // Wait until evening's copy is part-way through fading out.
-      let copy = copies()[0];
-      for (let i = 0; i < 30 && !(copy && Number(getComputedStyle(copy).opacity) < 0.9); i++) { await frame(); copy = copies()[0]; }
-      const left = copy ? Number(getComputedStyle(copy).opacity) : null;
-      select(warm);
-      await frame();
-      for (const animation of document.getAnimations()) animation.pause();
-      const tile = document.querySelector<HTMLElement>(`[data-tile-key="${CSS.escape(evening)}"]`);
-      const sample = { left, copies: copies().length, returned: tile ? Number(getComputedStyle(tile).opacity) : null };
-      for (const animation of document.getAnimations()) animation.play();
-      return sample;
-    }, { daylight: await key(page, "daylight"), warm: await key(page, "warm"), evening: await key(page, "evening") });
-    expect(result.left).not.toBeNull();
-    expect(result.copies).toBe(0);
-    expect(result.returned).not.toBeNull();
-    // It fades back in from where its copy had faded to, rather than from nothing or at full opacity.
-    expect(result.returned!).toBeGreaterThan(0.05);
-    expect(result.returned!).toBeLessThanOrEqual(result.left! + 0.05);
+    const daylight = await key(page, "daylight"), warm = await key(page, "warm"), evening = await key(page, "evening");
+    const select = (key: string) => page.evaluate((key) => document.querySelector<HTMLElement>(`[data-node-key="${CSS.escape(key)}"]`)!.click(), key);
+    const finalOpacity = await (await tile(page, "evening")).evaluate(element => Number(getComputedStyle(element).opacity));
+    await holdScriptedAnimations(page);
+    try {
+      await select(daylight); await awaitAnimationsCreated(page);
+      const left = await page.evaluate(async () => {
+        for (const animation of (window as any).__heldAnimations as Animation[]) if (animation.playState === "running") animation.currentTime = 40;
+        await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+        const copy = [...document.querySelectorAll<HTMLElement>("[data-motion-ghost].tile")].find(ghost => ghost.textContent?.includes("evening prompt"));
+        return copy ? Number(getComputedStyle(copy).opacity) : null;
+      });
+      expect(left).not.toBeNull();
+      expect(left!).toBeGreaterThan(.05);
+      expect(left!).toBeLessThan(.9);
+      await select(warm); await awaitAnimationsCreated(page);
+      const result = await page.evaluate(async (evening) => {
+        const tile = document.querySelector<HTMLElement>(`[data-tile-key="${CSS.escape(evening)}"]`)!;
+        const returned = Number(getComputedStyle(tile).opacity);
+        const copies = [...document.querySelectorAll<HTMLElement>("[data-motion-ghost].tile")].filter(ghost => ghost.textContent?.includes("evening prompt")).length;
+        for (const animation of (window as any).__heldAnimations as Animation[]) if (animation.playState === "running") animation.currentTime = 160;
+        await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+        return { returned, copies, final: Number(getComputedStyle(tile).opacity) };
+      }, evening);
+      expect(result.copies).toBe(0);
+      // The replacement starts at the displayed fade and reaches its normal opacity.
+      expect(result.returned).toBeCloseTo(left!, 2);
+      expect(result.final).toBeCloseTo(finalOpacity, 2);
+    } finally { await releaseScriptedAnimations(page); }
     await settle(page);
     expect(await page.locator("[data-motion-ghost]").count()).toBe(0);
   });
