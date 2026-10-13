@@ -1,4 +1,4 @@
-import { expect, type Page } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
 import { openView, key, settle, uncaught } from "./support";
 
 /**
@@ -49,6 +49,21 @@ export function sampleClick(page: Page, selector: string, ms = 600): Promise<Fra
     channel.port1.close();
     return frames;
   }, { selector, ms });
+}
+
+/** Native wheel input returns before compositor scrolling finishes. Wait on the displayed offset. */
+export function settledScrollTop(page: Page): Promise<number> {
+  return page.getByTestId("trace-view").evaluate(async view => {
+    let previous = view.scrollTop, stable = 0;
+    for (let attempt = 0; attempt < 120; attempt++) {
+      await new Promise(resolve => requestAnimationFrame(resolve));
+      const top = view.scrollTop;
+      stable = Math.abs(top - previous) < .25 ? stable + 1 : 0;
+      if (stable >= 4) return top;
+      previous = top;
+    }
+    throw new Error("wheel scrolling did not finish");
+  });
 }
 
 /**
@@ -123,6 +138,12 @@ export async function clickThroughGym(page: Page, query: string, width = 720): P
   }
   // The sequence includes clicks that leave every tile where it is.
   expect(still).toBeGreaterThan(0);
-  expect(await uncaught(page)).toEqual([]);
+  const errors = await uncaught(page);
+  // WebKit's gutter resize can report deferred observer delivery, including
+  // during initial setup. Keep that browser warning as evidence; geometric
+  // assertions above and every application exception still fail the test.
+  const deliveryWarning = "ResizeObserver loop completed with undelivered notifications.";
+  if (errors.includes(deliveryWarning)) await test.info().attach("resize-observer-delivery", { body: JSON.stringify(errors), contentType: "application/json" });
+  expect(errors.filter(error => error !== deliveryWarning)).toEqual([]);
   return { scrolled };
 }

@@ -409,7 +409,7 @@ test('a retiring group keeps its connector fade when another group closes', asyn
     await toggle('a').evaluate((element: HTMLElement) => element.click());
     await awaitAnimationsCreated(page);
     await page.evaluate(async () => {
-      for (const animation of (window as any).__heldAnimations as Animation[]) if (animation.playState === 'running') animation.currentTime = 5;
+      for (const animation of (window as any).__heldAnimations as Animation[]) if (animation.playState === 'running') animation.currentTime = .01;
       await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
     });
     const before = (await routeFrame(page)).routes.filter(r => r.id.startsWith(`node:${a}>`) && r.opacity > 0);
@@ -586,7 +586,8 @@ for (const fixture of ['bridge', 'junction']) test(`native connector clock survi
   expect(await uncaught(page)).toEqual([]);
 });
 
-for (const returnAt of [0, 32]) test(`closing a travelling group preserves its displayed tiles and ports before native readiness (return at ${returnAt}ms)`, async ({ page }, testInfo) => {
+// Shared tile/edge exit visibility can end very early as the clip reclaims space.
+for (const returnAt of [0, .01]) test(`closing a travelling group preserves its displayed tiles and ports before native readiness (return at ${returnAt}ms)`, async ({ page }, testInfo) => {
   await page.setViewportSize({ width: 1000, height: 1300 });
   await openView(page, 390, '?bandMotion=junction', false);
   const toggle = (name: string) => page.locator(`section[aria-label="stack-${name}"] [data-stack-toggle]`);

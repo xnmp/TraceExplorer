@@ -3,7 +3,9 @@ import { card, click, openView, settle, state } from "./support";
 
 /** Find real unused space, rather than dispatching a synthetic click through a tile. */
 async function emptyPoint(area: Locator): Promise<{ x: number; y: number }> {
-  await area.scrollIntoViewIfNeeded();
+  // Search the visible viewport. Scrolling an oversized grid here can queue
+  // a native scroll event between press and release; that correctly cancels
+  // a deselection gesture, and is unrelated to the blank space being tested.
   return area.evaluate((element) => {
     const box = element.getBoundingClientRect();
     for (let y = Math.max(0, box.top) + 3; y < Math.min(innerHeight, box.bottom) - 3; y += 4) {
@@ -124,7 +126,7 @@ test("closing preserves selection, reopening selects its cover, and background r
 
 test("native scrollbar press keeps selection and Preview inputs", async ({ page }) => {
   await page.setViewportSize({ width: 1200, height: 400 });
-  await openView(page, 900);
+  await openView(page, 900, "?scrollbars=host");
   await click(page, "warm");
   const before = await state(page);
   const pane = page.getByTestId("trace-view");
@@ -177,7 +179,7 @@ test("wheel during an empty-background press keeps selection and Preview inputs"
 for (const zoom of ["125%", "80%"]) {
   test(`with the host's document zoom at ${zoom}, edge background clears and a scrollbar press does not`, async ({ page }) => {
     await page.setViewportSize({ width: 1200, height: 400 });
-    await openView(page, 900);
+    await openView(page, 900, "?scrollbars=host");
     await page.evaluate((value) => { document.documentElement.style.zoom = value; }, zoom);
     await settle(page);
     await click(page, "warm");

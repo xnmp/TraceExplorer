@@ -1,7 +1,7 @@
 import { test, expect, type Page } from "@playwright/test";
 import { key, openView, settle, uncaught, ensureExpanded } from "./support";
 import { awaitAnimationsCreated, holdScriptedAnimations, releaseScriptedAnimations } from "./animation-control";
-import { clickThroughGym, motionFaults, node, sampleClick } from "./motion-support";
+import { clickThroughGym, motionFaults, node, sampleClick, settledScrollTop } from "./motion-support";
 
 /**
  * Per-frame contracts for motion, sampled on every animation frame after an
@@ -64,15 +64,15 @@ test("a clicked tile stays on screen while an earlier section shrinks and its ow
     await frame();
     // The two small inline layouts have now committed. Machine speed cannot
     // advance their held animation timelines while we sample the anchor.
-    const resize = held.find((animation) => (animation.effect as KeyframeEffect | null)?.target === graphA
-      && (animation.effect as KeyframeEffect).getKeyframes().some((keyframe) => "height" in keyframe));
-    if (!resize) throw new Error("the earlier graph did not animate its height");
+    // The earlier focus-only shrink snaps, including rows displaced by it.
+    const aMotions = held.filter(animation => (animation.effect as KeyframeEffect | null)?.target === graphA).length;
+    if (aMotions) throw new Error("the reveal animated its height");
     const bMotions = held.filter((animation) => {
       const target = (animation.effect as KeyframeEffect | null)?.target;
       return target instanceof Element && (target === graphB || graphB.contains(target));
     }).length;
     const animations = held.filter((animation) => animation.playState !== "idle");
-    const duration = Math.max(...animations.map((animation) => Number(animation.effect!.getTiming().duration)));
+    const duration = Math.max(0, ...animations.map((animation) => Number(animation.effect!.getTiming().duration)));
     for (let step = 0; step <= 10; step++) {
       for (const animation of animations) animation.currentTime = duration * step / 10;
       await frame();
@@ -109,7 +109,7 @@ async function prepareCrossSectionAnchor(page: Page, name: string, extra = "") {
     const view = document.querySelector<HTMLElement>("[data-testid=trace-view]")!;
     const tile = view.querySelector<HTMLElement>(`[data-tile-key="${CSS.escape(clicked)}"]`)!;
     view.scrollTop += tile.getBoundingClientRect().top - view.getBoundingClientRect().top - 160;
-    return { y: tile.getBoundingClientRect().top, scrollTop: view.scrollTop };
+    return { y: tile.getBoundingClientRect().top, scrollTop: view.scrollTop, earlierHeight: view.querySelector(`[data-tile-key="${CSS.escape((window as any).trace.backend.key("anchor-a-last"))}"]`)!.closest("section")!.querySelector(".graph")!.getBoundingClientRect().height };
   }, clicked);
   await settle(page);
   expect(before.scrollTop).toBeGreaterThan(115);
@@ -132,16 +132,14 @@ test("a worker-sized clicked neighborhood is anchored while the section above sh
     await page.waitForFunction((earlier) => {
       const w = window as any;
       const graph = document.querySelector(`[data-tile-key="${CSS.escape(earlier)}"]`)!.closest("section")!.querySelector(".graph");
-      return w.__anchorLayouts.length > 0 && w.__heldAnimations.some((animation: Animation) =>
-        (animation.effect as KeyframeEffect | null)?.target === graph
-        && (animation.effect as KeyframeEffect).getKeyframes().some((frame) => "height" in frame));
+      return w.__anchorLayouts.length > 0 && !graph!.querySelector(`[data-tile-key="${CSS.escape(w.trace.backend.key("anchor-a-last"))}"]`);
     }, earlier);
-    const pending = await page.evaluate(async ({ clicked, earlier }) => {
+    const pending = await page.evaluate(async ({ clicked, earlier, earlierHeight }) => {
       const view = document.querySelector<HTMLElement>("[data-testid=trace-view]")!;
       const tile = () => view.querySelector<HTMLElement>(`[data-tile-key="${CSS.escape(clicked)}"]`)!;
       const graph = view.querySelector(`[data-tile-key="${CSS.escape(earlier)}"]`)!.closest("section")!.querySelector<HTMLElement>(".graph")!;
       const frame = () => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
-      const height = graph.getBoundingClientRect().height;
+      const height = earlierHeight;
       const animations = ((window as any).__heldAnimations as Animation[]).filter((animation) => animation.playState === "running");
       const positions = [tile().getBoundingClientRect().top];
       for (let step = 0; step <= 10; step++) {
@@ -153,7 +151,7 @@ test("a worker-sized clicked neighborhood is anchored while the section above sh
       await frame();
       positions.push(tile().getBoundingClientRect().top);
       return { positions, shrink: height - graph.getBoundingClientRect().height, pending: (window as any).trace.layoutsPending() };
-    }, { clicked, earlier });
+    }, { clicked, earlier, earlierHeight: before.earlierHeight });
     expect(pending.pending, "B's real worker request is still held").toBeGreaterThan(0);
     expect(pending.shrink).toBe(115);
     for (const y of pending.positions) expect(Math.abs(y - before.y), "held before B commits").toBeLessThan(1);
@@ -231,18 +229,7 @@ test("continuous relayouts in another section keep the tile anchored and yield t
     await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
     await page.mouse.wheel(0, 150);
     await expect.poll(() => scroller.evaluate((view) => view.scrollTop)).toBeGreaterThan(beforeScroll + 100);
-    const scrolled = await scroller.evaluate(async (view) => {
-      // mouse.wheel dispatches input before compositor scrolling is complete.
-      let previous = view.scrollTop, stable = 0;
-      for (let attempt = 0; attempt < 120; attempt++) {
-        await new Promise((resolve) => requestAnimationFrame(resolve));
-        const top = view.scrollTop;
-        stable = Math.abs(top - previous) < 0.25 ? stable + 1 : 0;
-        if (stable >= 4) return top;
-        previous = top;
-      }
-      throw new Error("wheel scrolling did not finish");
-    });
+    const scrolled = await settledScrollTop(page);
     const after = await page.evaluate(async () => {
       const w = window as any, view = document.querySelector<HTMLElement>("[data-testid=trace-view]")!;
       const added = w.trace.backend.startGeneration("anchor-a", "after-user-scroll");
@@ -474,10 +461,10 @@ test.describe("anchoring under the host's zoom", () => {
   });
 });
 
-test.describe("new tiles arrive from their parents' side", () => {
+test.describe("focus reveals snap", () => {
   test.use({ viewport: { width: 900, height: 900 } });
 
-  test("inside a sideways band a revealed tile emerges left of its destination", async ({ page }) => {
+  test("inside a sideways band a revealed tile is immediately at its destination", async ({ page }) => {
     await openView(page, 900, "?deeper=1");
     const dawn = await key(page, "mist-dawn");
     await holdScriptedAnimations(page);
@@ -496,7 +483,7 @@ test.describe("new tiles arrive from their parents' side", () => {
         return positions;
       }, dawn);
       const [first, last] = [seen[0], seen.at(-1)!];
-      expect(last[0] - first[0]).toBeGreaterThan(3);
+      expect(last[0]).toBeCloseTo(first[0], 1);
       let previous = first[0];
       for (const sample of seen) {
         expect(Math.abs(sample[1] - last[1])).toBeLessThanOrEqual(1);
@@ -509,7 +496,7 @@ test.describe("new tiles arrive from their parents' side", () => {
   });
 });
 
-test("reopening immediately after collapse reserves space before revealing children", async ({ page }) => {
+for (const exitAt of [.01, 40]) test(`reopening after collapse reserves space before revealing children (${exitAt}ms)`, async ({ page }) => {
   await openView(page, 900, "", false);
   const village = page.locator('section[aria-label="village"]');
   await village.locator("[data-stack-toggle]").click(); await settle(page);
@@ -518,13 +505,14 @@ test("reopening immediately after collapse reserves space before revealing child
   try {
     await village.getByRole("button", { name: "Collapse stack" }).click();
     await awaitAnimationsCreated(page);
-    const exitOpacity = await page.evaluate(async child => {
-      for (const animation of (window as any).__heldAnimations as Animation[]) if (animation.playState === "running") animation.currentTime = 40;
+    const exitOpacity = await page.evaluate(async ({ child, exitAt }) => {
+      for (const animation of (window as any).__heldAnimations as Animation[]) if (animation.playState === "running") animation.currentTime = exitAt;
       await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
       const tile = document.querySelector<HTMLElement>(`[data-grid-exit] [data-ghost-tile-key="${child}"]`)!;
       return Number(getComputedStyle(tile).opacity) * Number(getComputedStyle(tile.closest('[data-grid-exit]')!).opacity);
-    }, child);
-    expect(exitOpacity).toBeGreaterThan(0); expect(exitOpacity).toBeLessThan(1);
+    }, { child, exitAt });
+    if (exitAt < 1) { expect(exitOpacity).toBeGreaterThan(0); expect(exitOpacity).toBeLessThan(1); }
+    else expect(exitOpacity, 'tile and connectors have finished the shared exit fade').toBe(0);
     await village.locator("[data-stack-toggle]").click();
     await awaitAnimationsCreated(page);
     const result = await page.evaluate(async (child) => {

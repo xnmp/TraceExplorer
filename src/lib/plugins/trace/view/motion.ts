@@ -17,6 +17,7 @@
  * the few rect reads left are divided by the measured zoom (`zoomOf`).
  */
 import { displace, polyline, samplePathString, interpolatePath, pathTranslation, translatePath, type Point } from "./path-sampling";
+import type { SceneChange } from "$lib/domain/trace-graph/scene-change";
 import type { Orientation } from "$lib/domain/trace-graph/layout";
 import { departureVisibility, planBandTravel, remainingTravel, travelFrames } from "./band-motion";
 import { anchorDelta, releasesAnchor } from "$lib/domain/scroll-anchor";
@@ -35,6 +36,9 @@ const MORPH_LIMIT = 300;
  * so an interrupted commit measures the final layout after capturing the display.
  * Ownership prevents an old ready/finished promise clearing a replacement.
  */
+const ownedEffects = new WeakSet<Animation>();
+const graphEffects = new WeakMap<HTMLElement, Set<Animation>>();
+
 const inversions = new WeakMap<Element, Map<string, object>>();
 function animateInverted(element: Element & ElementCSSInlineStyle, frames: Keyframe[], timing: KeyframeAnimationOptions): Animation {
   const owned = inversions.get(element) ?? new Map<string, object>();
@@ -64,9 +68,34 @@ function animateInverted(element: Element & ElementCSSInlineStyle, frames: Keyfr
   let animation: Animation;
   try { animation = element.animate(frames, timing); }
   catch (error) { clear(); throw error; }
+  ownedEffects.add(animation);
   const cancel = animation.cancel.bind(animation);
   animation.cancel = () => { clear(); cancel(); };
   animation.ready.then(clear, clear);
+  animation.finished.then(clear, clear);
+  return animation;
+}
+
+/**
+ * The HTML copy owns the source's visibility for its whole lifetime. A constant
+ * zero-opacity SVG effect creates an unnecessary main-thread animation clock:
+ * Chromium can resolve it with different precision from the compositor clocks
+ * used by tiles and HTML edge layers, even when created in the same task.
+ * Restore synchronously on cancellation, before the next pass measures styles;
+ * an old finished promise must never unhide a replacement's source.
+ */
+const hiddenSources = new WeakMap<SVGElement, Animation>();
+function hideSource(source: SVGElement, animation: Animation): Animation {
+  const previous = source.style.opacity;
+  hiddenSources.set(source, animation);
+  source.style.opacity = "0";
+  const clear = () => {
+    if (hiddenSources.get(source) !== animation) return;
+    hiddenSources.delete(source);
+    if (source.style.opacity === "0") source.style.opacity = previous;
+  };
+  const cancel = animation.cancel.bind(animation);
+  animation.cancel = () => { clear(); cancel(); };
   animation.finished.then(clear, clear);
   return animation;
 }
@@ -107,7 +136,10 @@ export const prefersReducedMotion = () => typeof matchMedia === "function" && ma
  * Opacity set by a class (lineage dimming) is not a fade and is not carried over.
  */
 function fadingOpacity(element: Element): number | null {
-  const fading = element.getAnimations().some((animation) => animation.playState === "running"
+  // Hidden live SVGs still represent an interrupted fade, including before
+  // their HTML copy has become visible. Snapshots can then resume from zero.
+  if (element instanceof SVGElement && hiddenSources.get(element)?.playState === "running") return 0;
+  const fading = element.getAnimations().some((animation) => ownedEffects.has(animation) && animation.playState === "running"
     && (animation.effect as KeyframeEffect | null)?.getKeyframes().some((frame) => "opacity" in frame));
   return fading ? Number(getComputedStyle(element).opacity) : null;
 }
@@ -217,7 +249,6 @@ export function playGraph(canvas: HTMLElement, before: GraphSnapshot, orientatio
   if (prefersReducedMotion()) return [];
   const timing: KeyframeAnimationOptions = { duration: MOTION_MS, easing: EASING };
 
-  const started = document.timeline.currentTime;
   const nativeMorph = supportsPathMorph();
   // 1. Measure everything in the new layout, from computed styles in canvas pixels.
   const size = canvasSize(canvas);
@@ -291,13 +322,24 @@ export function playGraph(canvas: HTMLElement, before: GraphSnapshot, orientatio
       if (!fading && !resized && Math.abs(dx) < 0.5 && Math.abs(dy) < 0.5) continue;
       const fade: Keyframe[] = fading ? [{ opacity: old.fading! }, { opacity: getComputedStyle(element).opacity }] : [{}, {}];
       const size: Keyframe[] = resized ? [{ width: `${old.width}px`, height: `${old.height}px` }, { width: `${now.width}px`, height: `${now.height}px` }] : [{}, {}];
-      animations.push(animate(element, [
-        { transform: `translate(${dx}px, ${dy}px)`, ...size[0], ...fade[0] },
-        { transform: "translate(0, 0)", ...size[1], ...fade[1] },
-      ]));
+      const frames: Keyframe[] = bandRoutes && old.fading === 0
+        ? arriveFrames(getComputedStyle(element).opacity, fadeWindow).map(frame => {
+          const progress = Number(frame.offset);
+          return { ...frame, transform: `translate(${dx * (1 - progress)}px, ${dy * (1 - progress)}px)`,
+            ...(resized ? { width: `${old.width + (now.width - old.width) * progress}px`, height: `${old.height + (now.height - old.height) * progress}px` } : {}),
+          };
+        }) : [
+          { transform: `translate(${dx}px, ${dy}px)`, ...size[0], ...fade[0] },
+          { transform: "translate(0, 0)", ...size[1], ...fade[1] },
+        ];
+      animations.push(animate(element, frames));
     } else {
       const enter = enterOffset(orientation);
-      animations.push(animate(element, [{ opacity: 0, transform: `translate(${enter.x}px, ${enter.y}px)` }, { opacity: 1, transform: "translate(0, 0)" }]));
+      animations.push(animate(element, bandRoutes ? [
+        { opacity: 0, transform: `translate(${enter.x}px, ${enter.y}px)`, offset: 0 },
+        { opacity: 0, transform: `translate(${enter.x * fadeWindow}px, ${enter.y * fadeWindow}px)`, offset: 1 - fadeWindow },
+        { opacity: 1, transform: "translate(0, 0)", offset: 1 },
+      ] : [{ opacity: 0, transform: `translate(${enter.x}px, ${enter.y}px)` }, { opacity: 1, transform: "translate(0, 0)" }]));
     }
   }
   // Band junctions use native transforms, shared with their rigid branches.
@@ -314,7 +356,7 @@ export function playGraph(canvas: HTMLElement, before: GraphSnapshot, orientatio
           { transform: `translate(${old.x - at.x}px, ${old.y - at.y}px)`, opacity: old.fading ?? Number(opacity) },
           { transform: "translate(0, 0)", opacity },
         ];
-        animations.push(animateSvgGhost(canvas, ghost, frames, timing), animate(dot, [{ opacity: 0 }, { opacity: 0 }]));
+        animations.push(hideSource(dot, animateSvgGhost(canvas, ghost, frames, timing)));
       }
       continue;
     }
@@ -373,7 +415,7 @@ export function playGraph(canvas: HTMLElement, before: GraphSnapshot, orientatio
           ];
           // A returning route hidden by its exit clip waits for arrival rather
           // than exposing a partial stem before its endpoint is revealed.
-          animations.push(animateSvgGhost(canvas, copy(), frames, timing), animate(path, [{ opacity: 0 }, { opacity: 0 }]));
+          animations.push(hideSource(path, animateSvgGhost(canvas, copy(), frames, timing)));
         }
       } else {
         // All band edge effects act on HTML layers: SVG transforms/opacity
@@ -386,8 +428,7 @@ export function playGraph(canvas: HTMLElement, before: GraphSnapshot, orientatio
             { opacity: 0, offset: fadeWindow }, { opacity: 0, offset: 1 },
           ], timing));
         }
-        animations.push(animateSvgGhost(canvas, copy(), arriveFrames(opacity, fadeWindow), timing),
-          animate(path, [{ opacity: 0 }, { opacity: 0 }]));
+        animations.push(hideSource(path, animateSvgGhost(canvas, copy(), arriveFrames(opacity, fadeWindow), timing)));
       }
       continue;
     }
@@ -429,8 +470,22 @@ export function playGraph(canvas: HTMLElement, before: GraphSnapshot, orientatio
     paths: morph || bandRoutes ? [...before.elements.paths].filter(([id]) => !present.has(id) && !inherited.has(id)) : [],
     dots: morph || bandRoutes ? [...before.elements.dots].filter(([id]) => !presentDots.has(id)) : [],
   }, timing, departureTravel));
-  for (const animation of animations) animation.startTime = started;
+  const owned = graphEffects.get(canvas) ?? new Set<Animation>();
+  graphEffects.set(canvas, owned);
+  for (const animation of animations) {
+    ownedEffects.add(animation);
+    owned.add(animation);
+    const release = () => owned.delete(animation);
+    animation.finished.then(release, release);
+  }
   return animations;
+}
+
+/** Snap just this graph's presentation to the committed DOM, including interrupted exits. */
+export function snapGraph(canvas: HTMLElement): void {
+  for (const animation of graphEffects.get(canvas) ?? []) animation.cancel();
+  graphEffects.delete(canvas);
+  for (const element of canvas.querySelectorAll("[data-motion-route-layer], [data-motion-ghost]")) element.remove();
 }
 
 /** SVG attribute fallback shares WAAPI's easing, interruption and lifetime. */
@@ -531,10 +586,11 @@ function fadeOut(element: Element & ElementCSSInlineStyle, layer: Element, opaci
   ], timing);
   layer.append(element);
   element.style.opacity = "0";
-  const animation = animateInverted(element, shift ? [
-    { opacity, transform: "translate(0, 0)" }, { opacity: 0, transform: `translate(${shift.x}px, ${shift.y}px)` },
-  ] : until <= 0 ? [{ opacity: 0 }, { opacity: 0 }]
-    : [{ opacity, offset: 0 }, { opacity: 0, offset: until }, { opacity: 0, offset: 1 }], timing);
+  const fade: Keyframe[] = until <= 0 ? [{ opacity: 0 }, { opacity: 0 }]
+    : [{ opacity, offset: 0 }, { opacity: 0, offset: until }, { opacity: 0, offset: 1 }];
+  const animation = animateInverted(element, shift ? fade.map((frame, i) => ({ ...frame,
+    transform: `translate(${shift.x * Number(frame.offset ?? i)}px, ${shift.y * Number(frame.offset ?? i)}px)`,
+  })) : fade, timing);
   // Once the fade ends the copy stays transparent until it is removed.
   fades.set(element, animation);
   const remove = () => { if (fades.get(element) === animation) { fades.delete(element); element.remove(); } };
@@ -557,8 +613,11 @@ function departures(canvas: HTMLElement, before: GraphSnapshot, present: { tiles
   const firstDeparting = Math.min(...gone.tiles.flatMap(([key]) => {
     const box = before.tiles.get(key)!; return box.fading === null || box.fading > .01 ? [box.y] : [];
   }), ...before.ghosts.flatMap(({ identity, opacity }) => identity?.kind === "tile" && opacity > .01 && !present.tiles.has(identity.id) ? [before.tiles.get(identity.id)!.y] : []));
-  const until = travel && Number.isFinite(firstDeparting)
+  const clipUntil = travel && Number.isFinite(firstDeparting)
     ? departureVisibility(travel.beforeSize.height, travel.afterSize.height, firstDeparting, travel.shift.y) : 1;
+  // The retiring tiles and their incident edges have one visibility lifetime.
+  // A non-rigid route cannot follow its endpoints, so the whole departure snaps.
+  const until = travel ? (travel.rigid ? Math.min(clipUntil, routeFadeWindow(Math.hypot(travel.shift.x, travel.shift.y))) : 0) : 1;
   if (travel && gone.tiles.length + gone.paths.length + gone.dots.length + before.ghosts.length) {
     // Native clipping, shared with the canvas size animation. Only retiring
     // layers are clipped; retained groups remain whole and unclipped.
@@ -570,10 +629,6 @@ function departures(canvas: HTMLElement, before: GraphSnapshot, present: { tiles
       { clipPath: `inset(0 0 ${height - travel.afterSize.height}px 0)` },
     ], timing));
   }
-  const routeUntil = (identity: Identity | undefined): number => {
-    if (!travel || identity?.kind !== "route") return until;
-    return Math.min(until, routeFadeWindow(Math.hypot(travel.shift.x, travel.shift.y)));
-  };
   const followDot = (dot: SVGCircleElement, identity: Identity | undefined, animation: Animation) => {
     if (!travel || identity?.kind !== "junction") return;
     const frames = (animation.effect as KeyframeEffect).getKeyframes();
@@ -595,7 +650,7 @@ function departures(canvas: HTMLElement, before: GraphSnapshot, present: { tiles
       element.setAttribute("cx", String(at.x)); element.setAttribute("cy", String(at.y));
       (element as SVGCircleElement).style.transform = "none";
     }
-    const animation = fadeOut(element as Element & ElementCSSInlineStyle, element instanceof SVGElement ? edgeLayer : tileLayer, travel && !travel.rigid && element instanceof SVGPathElement ? 0 : opacity, timing, identity?.kind === "tile" ? travel?.shift : undefined, element instanceof SVGPathElement ? routeUntil(identity) : element instanceof SVGElement ? until : 1, travel ? canvas : undefined);
+    const animation = fadeOut(element as Element & ElementCSSInlineStyle, element instanceof SVGElement ? edgeLayer : tileLayer, travel && !travel.rigid && element instanceof SVGPathElement ? 0 : opacity, timing, identity?.kind === "tile" ? travel?.shift : undefined, until, travel ? canvas : undefined);
     if (element instanceof SVGCircleElement) followDot(element, identity, animation);
     animations.push(animation);
   }
@@ -604,7 +659,7 @@ function departures(canvas: HTMLElement, before: GraphSnapshot, present: { tiles
     const box = before.tiles.get(key)!;
     const ghost = ghostOf(element, { kind: "tile", id: key });
     Object.assign(ghost.style, { left: `${box.x}px`, top: `${box.y}px`, transform: "none" });
-    animations.push(fadeOut(ghost, tileLayer, box.fading ?? 1, timing, travel?.shift));
+    animations.push(fadeOut(ghost, tileLayer, box.fading ?? 1, timing, travel?.shift, until));
   }
   for (const [id, path] of gone.paths) {
     const ghost = ghostOf(path, { kind: "route", id, from: path.dataset.from ?? "", to: path.dataset.to ?? "" });
@@ -614,7 +669,7 @@ function departures(canvas: HTMLElement, before: GraphSnapshot, present: { tiles
     ghost.setAttribute("data-motion-route", id);
     ghost.setAttribute("data-motion-from", path.dataset.from ?? "");
     ghost.setAttribute("data-motion-to", path.dataset.to ?? "");
-    const animation = fadeOut(ghost, edgeLayer, travel && !travel.rigid ? 0 : before.routeSources.get(id)?.opacity ?? 1, timing, undefined, routeUntil(identities.get(ghost)), travel ? canvas : undefined);
+    const animation = fadeOut(ghost, edgeLayer, travel && !travel.rigid ? 0 : before.routeSources.get(id)?.opacity ?? 1, timing, undefined, until, travel ? canvas : undefined);
     animations.push(animation);
   }
   for (const [id, dot] of gone.dots) {
@@ -948,9 +1003,8 @@ export function captureGrid(grid: HTMLElement): GridSnapshot {
     })),
   };
 }
-export function playGrid(grid: HTMLElement, before: GridSnapshot, running: readonly Animation[] = []): Animation[] {
+export function playGrid(grid: HTMLElement, before: GridSnapshot, running: readonly Animation[] = [], changes: ReadonlyMap<string, SceneChange> = new Map()): Animation[] {
   const reduced = prefersReducedMotion();
-  const started = document.timeline.currentTime;
   const origin = grid.getBoundingClientRect(), zoom = zoomOf(grid, origin);
   const scrollShift = { x: (before.left - origin.left) / zoom, y: (before.top - origin.top) / zoom };
   const unchangedRows = new Set([...grid.querySelectorAll<HTMLElement>("[data-grid-motion], [data-grid-row-band]")].filter(element => {
@@ -964,6 +1018,12 @@ export function playGrid(grid: HTMLElement, before: GridSnapshot, running: reado
     const band = graph.closest<HTMLElement>("[data-grid-band]")!, old = before.bands.get(band.dataset.gridBand!);
     return !!old && !old.element.dataset.gridExit && old.stamp === graph.dataset.layoutStamp && old.attachment === graph.dataset.attachment;
   }));
+  // A reveal-only footprint change displaces rows instantly. Opening/closing
+  // groups and coalesced reflows still own spatial motion.
+  const bandIds = [...grid.querySelectorAll<HTMLElement>("[data-grid-band]")].map(e => e.dataset.gridBand!);
+  const snapRows = [...changes.values()].includes("reveal") && ![...changes.values()].includes("reflow")
+    && bandIds.every(id => before.bands.has(id))
+    && [...before.bands].every(([id, old]) => !!old.element.dataset.gridExit || bandIds.includes(id));
   const carried: Animation[] = [];
   for (const animation of running) {
     const target = (animation.effect as KeyframeEffect | null)?.target;
@@ -987,7 +1047,7 @@ export function playGrid(grid: HTMLElement, before: GridSnapshot, running: reado
   const bands = [...grid.querySelectorAll<HTMLElement>("[data-grid-band]")];
   const animations: Animation[] = [...carried];
   for (const { element, y, x } of cells) {
-    if (unchangedRows.has(element)) continue;
+    if (snapRows || unchangedRows.has(element)) continue;
     const old = before.cells.get(element.dataset.gridMotion!);
     if (!old) continue;
     const dx = old.x - x + scrollShift.x, dy = old.y - y + scrollShift.y;
@@ -996,7 +1056,7 @@ export function playGrid(grid: HTMLElement, before: GridSnapshot, running: reado
     animations.push(animateInverted(element, [{ transform: `translate(${dx}px, ${dy}px)` }, { transform: "translate(0, 0)" }], timing));
   }
   for (const element of grid.querySelectorAll<HTMLElement>("[data-grid-row-band]")) {
-    if (unchangedRows.has(element)) continue;
+    if (snapRows || unchangedRows.has(element)) continue;
     const old = before.rowBands.get(element.dataset.gridRowBand!);
     const height = layoutHeight(element), top = parseFloat(element.style.top);
     const from = old?.height ?? 0, y = old?.y ?? top;
@@ -1012,9 +1072,12 @@ export function playGrid(grid: HTMLElement, before: GridSnapshot, running: reado
     const old = before.bands.get(element.dataset.gridBand!);
     const graph = element.querySelector<HTMLElement>(".graph");
     if (!graph || unchanged.has(graph)) continue;
-    // The grid owns both layout and attachment changes of pinned graphs. Cancel
-    // only after capturing the displayed scene, before measuring final targets.
-    for (const animation of graph.getAnimations({ subtree: true })) if (animation.effect?.getTiming().iterations !== Infinity) animation.cancel();
+    if (changes.get(element.dataset.gridBand!) === "reveal" || (snapRows && old?.stamp === graph.dataset.layoutStamp)) {
+      snapGraph(graph);
+      continue;
+    }
+    // Prior grid effects were cancelled above after capturing their display.
+    // CSS transitions on retained cards belong to the cards, never this owner.
     const snapshot = old?.graph ?? captureGraph(graph);
     const from = old?.graph ?? { ...snapshot, tiles: new Map(), routeIds: new Map(), routeSources: new Map(), routes: new Map(), routePaths: new Map(), junctions: new Map(),
       elements: { tiles: new Map(), paths: new Map(), dots: new Map() }, ghosts: [] };
@@ -1087,17 +1150,22 @@ export function playGrid(grid: HTMLElement, before: GridSnapshot, running: reado
     Object.assign(exit.style, { top: `${old.y + scrollShift.y}px`, height: `${old.height}px`, pointerEvents: "none" });
     grid.append(exit);
     exit.style.opacity = "0";
-    const animation = animateInverted(exit, [{ opacity: old.opacity, clipPath: "inset(0)" }, { opacity: 0, clipPath: `inset(0 0 ${old.height}px 0)` }], timing);
-    // Children are clipped before their stems. Keep the parent fade for
-    // interruption/reopening, but end edge visibility with the last child.
-    const firstChild = old.graph ? Math.min(...[...old.graph.elements.tiles.keys()].flatMap(key => {
-      const box = old.graph!.tiles.get(key)!; return box.fading === null || box.fading > .01 ? [box.y] : [];
-    })) : 0;
-    const gone = departureVisibility(old.height, 0, firstChild);
+    // One fade for the whole retiring scene, ending before the shrinking
+    // clip truncates any visible tile port or connector (including markers).
+    const lastPort = old.graph ? Math.max(0, ...[...old.graph.tiles.values()].flatMap(box =>
+      box.fading === null || box.fading > .01 ? [box.y + box.height] : []),
+      ...[...exit.querySelectorAll<SVGGraphicsElement>("svg.edges path, svg.edges circle")].map(edge => {
+        const bounds = edge.getBBox(); return bounds.y + bounds.height + 12;
+      })) : 0;
+    const gone = departureVisibility(old.height, 0, lastPort);
+    const exitFrames: Keyframe[] = gone <= 0 ? [{ opacity: 0 }, { opacity: 0 }] : [
+      { opacity: old.opacity, clipPath: "inset(0)", offset: 0 },
+      { opacity: 0, clipPath: `inset(0 0 ${old.height * gone}px 0)`, offset: gone },
+      { opacity: 0, clipPath: `inset(0 0 ${old.height}px 0)`, offset: 1 },
+    ];
+    const animation = animateInverted(exit, exitFrames, timing);
     for (const edge of exit.querySelectorAll<SVGElement>("svg.edges path, svg.edges circle")) {
       const opacity = Number(edge.style.opacity || 1);
-      const bounds = (edge as SVGGraphicsElement).getBBox();
-      const visible = Math.min(gone, departureVisibility(old.height, 0, bounds.y + bounds.height + 12));
       const graph = edge.closest<HTMLElement>(".graph")!;
       const identity: Identity = edge instanceof SVGPathElement
         ? { kind: "route", id: edge.dataset.route!, from: edge.dataset.from ?? "", to: edge.dataset.to ?? "" }
@@ -1108,8 +1176,8 @@ export function playGrid(grid: HTMLElement, before: GridSnapshot, running: reado
         ghost.setAttribute("data-motion-from", identity.from);
         ghost.setAttribute("data-motion-to", identity.to);
       } else ghost.setAttribute("data-motion-junction", identity.id);
-      animations.push(animateSvgGhost(graph, ghost, visible <= 0 ? [{ opacity: 0 }, { opacity: 0 }]
-        : [{ opacity, offset: 0 }, { opacity: 0, offset: visible }, { opacity: 0, offset: 1 }], timing));
+      // The exit parent's fade and clip apply equally to tile and edge copies.
+      animations.push(animateSvgGhost(graph, ghost, [{ opacity }, { opacity }], timing));
       // These are inert originals inside an exit copy; only the native HTML
       // layers paint their edges. No main-thread SVG opacity effect is needed.
       edge.style.opacity = "0";
@@ -1117,6 +1185,5 @@ export function playGrid(grid: HTMLElement, before: GridSnapshot, running: reado
     animation.finished.then(() => exit.remove(), () => exit.remove());
     animations.push(animation);
   }
-  for (const animation of animations) if (!carried.includes(animation)) animation.startTime = started;
   return animations;
 }

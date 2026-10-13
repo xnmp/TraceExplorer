@@ -1,5 +1,36 @@
 # Grid motion
 
+Each committed graph change has a pure motion classification. Identical graph
+geometry is a `restyle`: existing motion continues. A `reveal` keeps the complete
+component DAG identity/revision, width, pin (including obstacles), tile metrics
+and orientation, changing only focus or visible membership. It swaps instantly:
+its tiles and connectors appear at committed geometry in the same frame, its
+owned effects are cancelled and its ghosts are removed synchronously. Grid rows
+displaced solely by the reveal's band footprint snap too. First layouts,
+expansion/collapse, data changes and other geometry changes are `reflow` and
+retain spatial motion. The classification travels through `TraceGraph.commit`
+and `onbeforecommit` to `StackGrid.prepareMotion`; the grid owns pinned bands.
+
+Cancellation follows ownership: grid motion tracks the effects it creates and
+carries unchanged destinations without restarting them. A graph tracks its own
+effects for snap cleanup. Neither owner cancels retained cards' CSS selection
+transitions. Reduced motion uses the same owned cancellation and snaps.
+
+Tiles and their incident HTML connector layers are created in one commit task
+and share the native start. Same-task creation alone does not make
+all effects' clocks identical: Chromium can resolve a main-thread SVG effect
+with a rounded frame timestamp while HTML effects receive the compositor's
+higher-precision timestamp. Constant-zero SVG opacity effects therefore do not
+mask live originals. Instead each HTML layer owns its source's inline hiding,
+restoring it synchronously on cancellation and on completion. Hidden sources
+still record zero-opacity entrances in interruption snapshots; old completion
+callbacks cannot unhide replacement owners.
+
+We never assign or back-date `Animation.startTime`: WebKitGTK can re-resolve a
+stale timeline value and rewind every effect in a pass. Source hiding does not
+change any clock, including an engine value already presented. Carried
+animations retain their current clocks and readiness.
+
 The grid captures displayed geometry before a commit, including pending inline
 inversion and interrupted native effects. `StackGrid` starts `playGrid` in the
 commit's `tick()` microtask checkpoint, before the browser can present the new
@@ -22,20 +53,22 @@ Rerouted edges crossfade between exact old and new geometry. The old edge fades
 within the first half-pixel of endpoint travel; the new edge fades within the
 last half-pixel. They stay hidden in between, avoiding detached endpoints and
 intermediate routes through tiles. These intervals are eased-progress keyframe
-offsets, not separate timers. New tiles retain their entrance from the parent's
-side. Exiting edge copies fade natively inside their group's common clip, before
-their geometry is truncated, and are removed with the retiring scene. Retained
-groups remain unclipped.
+offsets, not separate timers. New band tiles retain their entrance from the
+parent's side, but share their incident connectors' arrival-opacity keyframes: both stay
+hidden until the routes are attached, then fade in together. Departing tiles and
+connectors share a departure fade window and the group's common clip. A closing
+group applies one parent fade to both tile copies and native edge layers. That
+shared fade ends before the shrinking clip truncates any visible tile port or
+marker-padded connector bound; edges have no additional independent fade. Copies are removed with the retiring
+scene. Retained groups remain unclipped.
 
 Snapshots bake a moving copy's displayed transform into its geometry before
 restarting. Exits retain the displayed graph height while its committed footprint
 is shrinking, so closing a moving group starts from its visible extent. Returning
 groups resume the captured visible clip with absolute polygon coordinates on the
 native clock; they do not replay a fresh entrance. Exit reconstruction discards
-temporary layers, and transfer removes
-an old layer even when a newer animation owns its ghost. Reduced motion cancels
-native effects and snaps to committed geometry. Standalone, unpinned graphs
-retain their existing path morphing; its WebKit rAF fallback is still used there.
+temporary layers, and transfer removes an old layer even when a newer animation
+owns its ghost. Standalone, unpinned graphs retain their existing path morphing; its WebKit rAF fallback is still used there.
 The obsolete band topology-stretch morph has been removed.
 
 ## Sources and adaptation
@@ -60,6 +93,20 @@ TraceExplorer's SVG renderer and WebKit compositor constraints; these sources
 are not claims that those graph libraries use this specific crossfade policy.
 
 ## Regression coverage
+
+`e2e/selection-blink.spec.ts` alternates Cerulean/Saffron four times in the
+seven-image sideways band at a 454 px pane width. From the click's first
+presented frame it requires fully opaque revealed tiles and connectors, no
+ghosts, unchanged retained positions and no subsequent opacity decreases. It
+also verifies effective child-card opacity and that the newly selected retained
+card still has a running CSS transition. Initial and interrupted reflow tests
+seek native clocks to check tile/connector opacity parity and common pending
+start times. Normal-playback entrance and tile-size regressions check exact
+native clock equality and verify live source visibility and copy cleanup after
+completion.
+Carry tests use data changes to exercise real spatial motion.
+The classifier's domain tests cover focus/visibility, unchanged
+geometry, changed inputs, first/empty scenes and malformed inputs.
 
 `e2e/animation-control.ts` can suppress native keyframe application while keeping
 animation metadata and readiness pending. First-frame tests force several render

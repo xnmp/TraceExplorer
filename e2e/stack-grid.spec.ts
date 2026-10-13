@@ -120,7 +120,12 @@ test("#58 two same-row stacks share one band and connectors stay in their own gr
     const graph = element.querySelector<HTMLElement>(".graph")!, origin = graph.getBoundingClientRect();
     const left = Number(element.dataset.groupLeft), right = left + Number(element.dataset.groupWidth);
     const children = [...graph.querySelectorAll<HTMLElement>("[data-tile-key]")].map((tile) => tile.getBoundingClientRect());
-    return { left, right, row: element.dataset.gridBandRow, childTop: Math.min(...children.map((child) => child.y)),
+    const parent = element.closest("section")!.querySelector<HTMLElement>("[data-grid-cell] [data-tile-key]")!;
+    const parentBox = parent.getBoundingClientRect();
+    const source = graph.querySelector<SVGPathElement>(`path[data-from="node:${parent.dataset.tileKey}"]`)!;
+    const point = source.getPointAtLength(0), matrix = source.getScreenCTM()!;
+    const port = new DOMPoint(point.x, point.y).matrixTransform(matrix);
+    return { left, right, sourceX: port.x, parentX: parentBox.x + parentBox.width / 2, row: element.dataset.gridBandRow, childTop: Math.min(...children.map((child) => child.y)),
       childCenter: children.reduce((sum, child) => sum + child.x + child.width / 2, 0) / children.length,
       parentCenter: element.closest("section")!.querySelector("[data-grid-cell]")!.getBoundingClientRect().x + element.closest("section")!.querySelector("[data-grid-cell]")!.getBoundingClientRect().width / 2,
       routes: [...graph.querySelectorAll<SVGPathElement>("path[data-route]")].map((route) => { const box = route.getBBox(); return { left: box.x, right: box.x + box.width }; }),
@@ -130,7 +135,11 @@ test("#58 two same-row stacks share one band and connectors stay in their own gr
   expect(groups[0].row).toBe(groups[1].row);
   expect(groups[0].childTop).toBeCloseTo(groups[1].childTop, 1);
   for (const group of groups) {
-    expect(Math.abs(group.childCenter - group.parentCenter)).toBeLessThan(10);
+    // Tight cover columns may displace groups; their contents stay bounded
+    // and each cover's connector still begins at its actual port.
+    expect(group.childLeft).toBeGreaterThanOrEqual(group.left - .5);
+    expect(group.childRight).toBeLessThanOrEqual(group.right + .5);
+    expect(group.sourceX).toBeCloseTo(group.parentX, 1);
     expect(group.routes.length).toBeGreaterThan(0);
     for (const route of group.routes) { expect(route.left).toBeGreaterThanOrEqual(group.left - .5); expect(route.right).toBeLessThanOrEqual(group.right + .5); }
   }
@@ -304,9 +313,10 @@ for (const host of ["", "&fileTile=1&tileSize=medium"]) {
   });
 }
 
-test("selection inside a band moves only rows below vertically, including another open band", async ({ page }) => {
+test("selection inside a band snaps only rows below vertically, including another open band", async ({ page }) => {
   await page.setViewportSize({ width: 800, height: 1400 });
-  await openView(page, 220, "?deeper=1", false);
+  await openView(page, 180, "?deeper=1", false);
+  await expect(page.getByRole("grid", { name: "Folder", exact: true })).toHaveAttribute("aria-colcount", "1");
   for (const name of ["village", "forest"]) { await stack(page, name).locator("[data-stack-toggle]").click(); await settle(page); }
   await stack(page, "village").locator(`[data-node-key="${await key(page, "warm")}"]`).click(); await settle(page);
   const before = await gridBoxes(page);
@@ -346,7 +356,7 @@ test("selection inside a band moves only rows below vertically, including anothe
   const delta = after[below].y - before[below].y;
   expect(Math.abs(delta)).toBeGreaterThan(40);
   expect(after[forest].y - before[forest].y).toBeCloseTo(delta, 1);
-  expect(samples[0][below].y).toBeCloseTo(before[below].y, 1);
+  expect(samples[0][below].y).toBeCloseTo(after[below].y, 1);
   expect(samples.at(-1)![below].y).toBeCloseTo(after[below].y, 1);
   let previous = before[below].y;
   for (const sample of samples) {
@@ -507,8 +517,8 @@ test("closing during emergence reclaims rows without overlapping the remaining b
   expect(await uncaught(page)).toEqual([]);
 });
 
-test("selecting in another band mid-transition continues every tile from where it is displayed", async ({ page }) => {
-  // The forest's reading reveals new tiles (?deeper), so its graph re-lays out in the middle of the grid's own correction.
+test("selecting in another band after a reveal snaps each neighborhood without subsequent motion", async ({ page }) => {
+  // Both focus changes reveal new neighborhoods and snap their footprints.
   await openView(page, 420, "?deeper=1", false);
   for (const name of ["village", "forest"]) { await stack(page, name).locator("[data-stack-toggle]").click(); await settle(page); }
   await holdScriptedAnimations(page);
@@ -534,15 +544,13 @@ test("selecting in another band mid-transition continues every tile from where i
     await awaitAnimationsCreated(page);
     await seek(0, created);
     const resumed = await positions();
-    for (const [tileKey, at] of Object.entries(displayed)) if (resumed[tileKey]) for (const axis of [0, 1]) {
-      expect(Math.abs(resumed[tileKey][axis] - at[axis]), `${tileKey} continues from where it was displayed`).toBeLessThanOrEqual(1);
-    }
-    // ...and arrives without going back.
+    expect(await page.evaluate(() => ((window as any).__heldAnimations as Animation[]).filter(a => a.playState === 'running').length)).toBe(0);
+    // The newly committed positions remain fixed, even when test clocks seek.
     let previous = resumed[mist][1];
     for (const time of [20, 40, 80, 120, 160]) {
       await seek(time, created);
       const now = (await positions())[mist][1];
-      expect(now, `forest-mist at ${time}ms`).toBeLessThanOrEqual(previous + 1);
+      expect(now, `forest-mist at ${time}ms`).toBeCloseTo(previous, 1);
       previous = now;
     }
   } finally { await releaseScriptedAnimations(page); }
@@ -572,7 +580,8 @@ test("grid Shift selection follows listing ranges and unchanged selection conten
 });
 
 test("End reaches the final virtualized row and arrows can cross the mounted window", async ({ page }) => {
-  await openView(page, 220, "?many=80", false);
+  await openView(page, 180, "?many=80", false);
+  await expect(page.getByRole("grid", { name: "Folder", exact: true })).toHaveAttribute("aria-colcount", "1");
   const cover = page.locator(".cover-press").first(); await cover.focus();
   await page.keyboard.press("End"); await settle(page);
   await expect(page.locator('[data-entry-path="/pictures/refs"]')).toBeFocused();
@@ -1052,6 +1061,7 @@ for (const worker of [false, true]) test(`#56 cold open holds the band and follo
       held.splice(0).forEach((release) => release());
     }
   }, { name: worker ? "fan" : "gym", worker });
+  await test.info().attach('cold-opening-frames', { body: JSON.stringify(samples), contentType: 'application/json' });
   expect(samples.settled).toBe(true);
   // The first frame showing the reserved background must already place the next row
   // outside it. A delayed top animation can freeze under a cold native graph mount.
@@ -1066,7 +1076,14 @@ for (const worker of [false, true]) test(`#56 cold open holds the band and follo
   const loading = samples.samples.filter((sample) => !sample.content);
   expect(loading.length).toBeGreaterThan(5);
   expect(loading.at(-1)!.time).toBeGreaterThanOrEqual(500);
-  expect(loading.every((sample) => sample.height > 0 && sample.loading)).toBe(true);
+  // Pending native effects start at zero on their first presented frame,
+  // without back-dating; samples taken before that frame read zero too.
+  // Zero height is only ever a short leading prefix and never returns.
+  expect(loading.every(sample => sample.loading)).toBe(true);
+  const opened = loading.findIndex(sample => sample.height > 0);
+  expect(opened).toBeGreaterThan(-1);
+  expect(loading[opened].time - loading[0].time).toBeLessThan(100);
+  expect(loading.slice(opened).every(sample => sample.height > 0)).toBe(true);
   expect(loading.filter(sample => sample.time > 200).every(sample => sample.statusInBand)).toBe(true);
   if (worker) expect(loading.filter((sample) => sample.workerHeld).at(-1)!.time).toBeGreaterThan(900);
   // Before content arrives, neither reservation nor following row may reverse upward after opening.
@@ -1133,8 +1150,9 @@ for (const worker of [false, true]) test(`cold children reveal from their accept
   expect(result.children).toBeGreaterThan(0);
   expect(result.mounted).not.toBeNull(); expect(result.visible).not.toBeNull();
   if (worker) expect(result.arrived).not.toBeNull();
-  // The #63 regression held cold children back ~20 frames; a few frames of slack absorbs runner scheduling noise.
-  expect(result.visible! - (worker ? result.arrived! : result.mounted!)).toBeLessThanOrEqual(6);
+  // Presence now waits for tile/connector attachment within the 160 ms reflow.
+  // Twelve frames allow that arrival and scheduling slack; the #63 regression replayed ~20 frames.
+  expect(result.visible! - (worker ? result.arrived! : result.mounted!)).toBeLessThanOrEqual(12);
   expect(result.entrances).toBe(result.children);
   expect(result.cancelledEntrances).toBe(0);
   expect(result.requests).toBe(worker ? 1 : 0);
@@ -1161,9 +1179,11 @@ test("opening a later row preserves an unchanged band's attachment motion", asyn
   await openView(page, 420, "?deeper=1&fanChildren=2", false);
   for (const name of ["village", "forest"]) { await stack(page, name).locator("[data-stack-toggle]").click(); await settle(page); }
   const warm = await key(page, "warm"), mist = await key(page, "forest-mist");
+  await page.locator(`[data-node-key="${warm}"]`).click(); await settle(page);
   await holdScriptedAnimations(page);
   try {
-    await page.locator(`[data-node-key="${warm}"]`).click(); await awaitAnimationsCreated(page);
+    // A data change is a reflow; focus-only selection would now snap.
+    await page.evaluate(() => (window as any).trace.backend.startGeneration("warm", "carry-new")); await awaitAnimationsCreated(page);
     const result = await page.evaluate(async (mist) => {
       const w = window as any, originals = [...w.__heldAnimations] as Animation[];
       const frame = () => new Promise(requestAnimationFrame);

@@ -1,3 +1,4 @@
+import { settledScrollTop } from "./motion-support";
 import { test, expect, type Page } from "@playwright/test";
 import { openView, click, key, tile, card, state, uncaught, settle, tileBoxes, overlaps, rendered, type Box } from "./support";
 import { awaitAnimationsCreated, holdScriptedAnimations, releaseScriptedAnimations } from "./animation-control";
@@ -475,47 +476,27 @@ test.describe("motion", () => {
     }
   });
 
-  test("a tile interrupted while fading in continues from its displayed opacity", async ({ page }) => {
-    await openView(page);
-    // Animations are held and seeked by hand, so the interruption lands part-way through the fade however slow the machine is.
+  test("a reveal finishes an owned entrance and displays the new neighborhood immediately", async ({ page }) => {
+    await openView(page, undefined, "", false);
     await holdScriptedAnimations(page);
-    const target = await key(page, "merge");
-    const result = await page.evaluate(async (target) => {
-      const held = (window as any).__heldAnimations as Animation[];
-      const frame = () => new Promise((resolve) => requestAnimationFrame(resolve));
-      const select = (name: string) => document.querySelector<HTMLElement>(`[data-node-key="${CSS.escape((window as any).trace.backend.key(name))}"]`)!.click();
-      const element = () => document.querySelector<HTMLElement>(`[data-tile-key="${CSS.escape(target)}"]`);
-      const fades = () => held.filter((animation) => (animation.effect as KeyframeEffect | null)?.target === element() && animation.playState !== "idle"
-        && (animation.effect as KeyframeEffect).getKeyframes().some((keyframe) => "opacity" in keyframe));
-      const waitFor = async <T,>(find: () => T | undefined): Promise<T> => {
-        for (let i = 0; i < 2000; i++) { const found = find(); if (found !== undefined) return found; await frame(); }
-        throw new Error("timed out waiting for the tile's fade");
-      };
-      select("daylight");
-      const entering = await waitFor(() => fades().find((animation) => (animation.effect as KeyframeEffect).getKeyframes()[0].opacity === "0"));
-      const duration = Number(entering.effect!.getTiming().duration);
-      entering.currentTime = duration * 0.1; // eased out, so a tenth of the time is already well into the fade
-      const before = Number(getComputedStyle(element()!).opacity);
-      select("warm");
-      const continuing = await waitFor(() => fades().find((animation) => animation !== entering && animation.playState === "running"));
-      const keyframes = (continuing.effect as KeyframeEffect).getKeyframes();
-      const after: number[] = [];
-      for (const at of [0, 0.1, 0.5, 1]) {
-        continuing.currentTime = Number(continuing.effect!.getTiming().duration) * at;
-        after.push(Number(getComputedStyle(element()!).opacity));
-      }
-      return { before, startsAt: Number(keyframes[0].opacity), endsAt: Number(keyframes.at(-1)!.opacity), after };
-    }, target);
-    expect(result.before).toBeGreaterThan(0.15);
-    expect(result.before).toBeLessThan(0.85);
-    // The new animation starts from what was displayed (not 0, and not full opacity)...
-    expect(result.startsAt).toBeCloseTo(result.before, 2);
-    expect(result.after[0]).toBeCloseTo(result.before, 2);
-    // ...and goes on to the tile's full opacity without dipping below where it was.
-    expect(result.endsAt).toBeCloseTo(1, 2);
-    for (const value of result.after) expect(value).toBeGreaterThanOrEqual(result.before - 0.01);
-    expect(result.after.at(-1)!).toBeCloseTo(1, 2);
-    await releaseScriptedAnimations(page);
+    try {
+      await page.locator('section[data-component]').first().locator('[data-stack-toggle]').click();
+      await awaitAnimationsCreated(page);
+      const before = await page.evaluate(() => (window as any).__heldAnimations.length);
+      expect(before).toBeGreaterThan(0);
+      await (await card(page, "daylight")).evaluate((el: HTMLElement) => el.click());
+      await awaitAnimationsCreated(page);
+      const target = await key(page, "merge");
+      const result = await page.evaluate(target => {
+        const graph = document.querySelector(`[data-tile-key="${target}"]`)!.closest('.graph')!;
+        return { opacity: Number(getComputedStyle(graph.querySelector(`[data-tile-key="${target}"]`)!).opacity),
+          active: ((window as any).__heldAnimations as Animation[]).filter(a => {
+            const el = (a.effect as KeyframeEffect)?.target;
+            return el && graph.contains(el) && a.playState === 'running';
+          }).length, ghosts: graph.querySelectorAll('[data-motion-ghost]').length };
+      }, target);
+      expect(result).toEqual({ opacity: 1, active: 0, ghosts: 0 });
+    } finally { await releaseScriptedAnimations(page); }
     await settle(page);
   });
 
@@ -579,78 +560,37 @@ test.describe("motion", () => {
     expect(result.undimmed).toBe(0);
   });
 
-  test("tiles and connectors that leave fade out where they were, then are gone", async ({ page }) => {
+  test("a reveal removes departing tiles and connectors in its first frame", async ({ page }) => {
     await openView(page);
     await click(page, "warm");
     const evening = await key(page, "evening");
-    const before = await page.evaluate((k) => {
-      const box = document.querySelector(`[data-tile-key="${CSS.escape(k)}"]`)!.getBoundingClientRect();
-      return { x: box.x, y: box.y, routes: document.querySelectorAll(`path[data-route][data-to="node:${CSS.escape(k)}"]`).length };
-    }, evening);
-    expect(before.routes).toBeGreaterThan(0);
-    // Select and sample in one evaluation, so a slow runner cannot miss the 180 ms fade.
-    const during = await page.evaluate(async ({ target, label }) => {
-      document.querySelector<HTMLElement>(`[data-node-key="${CSS.escape(target)}"]`)!.click();
-      await new Promise((resolve) => requestAnimationFrame(resolve));
-      for (const animation of document.getAnimations()) animation.pause();
-      const ghosts = [...document.querySelectorAll<HTMLElement>("[data-motion-ghost]")];
-      const tile = ghosts.find((ghost) => ghost.classList.contains("tile") && ghost.textContent?.includes(label));
-      const box = tile?.getBoundingClientRect();
-      const result = {
-        tile: tile ? { x: box!.x, y: box!.y, opacity: Number(getComputedStyle(tile).opacity),
-          fading: tile.getAnimations().some((animation) => Number((animation.effect as KeyframeEffect).getKeyframes().at(-1)?.opacity ?? 1) === 0),
-          interactive: !!tile.querySelector("[data-node-key]") || !tile.closest("[inert]") } : null,
-        paths: ghosts.filter((ghost) => ghost instanceof SVGPathElement).length,
-      };
-      for (const animation of document.getAnimations()) animation.play();
-      return result;
-    }, { target: await key(page, "daylight"), label: "evening prompt" });
-    expect(during.tile).not.toBeNull();
-    expect(Math.abs(during.tile!.x - before.x)).toBeLessThanOrEqual(2);
-    expect(Math.abs(during.tile!.y - before.y)).toBeLessThanOrEqual(2);
-    expect(during.tile!.opacity).toBeGreaterThan(0);
-    expect(during.tile!.fading).toBe(true);
-    expect(during.tile!.interactive).toBe(false);
-    expect(during.paths).toBeGreaterThan(0);
+    await expect(await tile(page, "evening")).toHaveCount(1);
+    const result = await page.evaluate(async ({ target, evening }) => {
+      document.querySelector<HTMLElement>(`[data-node-key="${target}"]`)!.click();
+      await new Promise(resolve => requestAnimationFrame(resolve));
+      return { tiles: document.querySelectorAll(`[data-tile-key="${evening}"]`).length,
+        paths: document.querySelectorAll(`path[data-to="node:${evening}"]`).length,
+        ghosts: document.querySelectorAll('[data-motion-ghost]').length };
+    }, { target: await key(page, "daylight"), evening });
+    expect(result).toEqual({ tiles: 0, paths: 0, ghosts: 0 });
     await settle(page);
-    expect(await page.locator("[data-motion-ghost]").count()).toBe(0);
-    await expect(await tile(page, "evening")).toHaveCount(0);
   });
 
-  test("a tile that returns while fading out continues from its fading copy instead of appearing twice", async ({ page }) => {
+  test("rapid branch swaps return one fully opaque tile without a fading copy", async ({ page }) => {
     await openView(page);
     await click(page, "warm");
-    const daylight = await key(page, "daylight"), warm = await key(page, "warm"), evening = await key(page, "evening");
-    const select = (key: string) => page.evaluate((key) => document.querySelector<HTMLElement>(`[data-node-key="${CSS.escape(key)}"]`)!.click(), key);
-    const finalOpacity = await (await tile(page, "evening")).evaluate(element => Number(getComputedStyle(element).opacity));
     await holdScriptedAnimations(page);
     try {
-      await select(daylight); await awaitAnimationsCreated(page);
-      const left = await page.evaluate(async () => {
-        for (const animation of (window as any).__heldAnimations as Animation[]) if (animation.playState === "running") animation.currentTime = 40;
-        await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
-        const copy = [...document.querySelectorAll<HTMLElement>("[data-motion-ghost].tile")].find(ghost => ghost.textContent?.includes("evening prompt"));
-        return copy ? Number(getComputedStyle(copy).opacity) : null;
-      });
-      expect(left).not.toBeNull();
-      expect(left!).toBeGreaterThan(.05);
-      expect(left!).toBeLessThan(.9);
-      await select(warm); await awaitAnimationsCreated(page);
-      const result = await page.evaluate(async (evening) => {
-        const tile = document.querySelector<HTMLElement>(`[data-tile-key="${CSS.escape(evening)}"]`)!;
-        const returned = Number(getComputedStyle(tile).opacity);
-        const copies = [...document.querySelectorAll<HTMLElement>("[data-motion-ghost].tile")].filter(ghost => ghost.textContent?.includes("evening prompt")).length;
-        for (const animation of (window as any).__heldAnimations as Animation[]) if (animation.playState === "running") animation.currentTime = 160;
-        await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
-        return { returned, copies, final: Number(getComputedStyle(tile).opacity) };
-      }, evening);
-      expect(result.copies).toBe(0);
-      // The replacement starts at the displayed fade and reaches its normal opacity.
-      expect(result.returned).toBeCloseTo(left!, 2);
-      expect(result.final).toBeCloseTo(finalOpacity, 2);
+      for (const name of ["daylight", "warm"]) {
+        await (await card(page, name)).click();
+        await awaitAnimationsCreated(page);
+      }
+      const evening = await key(page, "evening");
+      await expect(await tile(page, "evening")).toHaveCount(1);
+      expect(await (await tile(page, "evening")).evaluate(el => Number(getComputedStyle(el).opacity))).toBe(1);
+      expect(await page.locator('[data-motion-ghost]').count()).toBe(0);
     } finally { await releaseScriptedAnimations(page); }
     await settle(page);
-    expect(await page.locator("[data-motion-ghost]").count()).toBe(0);
   });
 
   test("reduced motion starts no animations when selection changes", async ({ page }) => {
@@ -718,9 +658,8 @@ test.describe("scroll anchoring", () => {
     await page.waitForTimeout(60);
     await page.mouse.move(400, 400);
     await page.mouse.wheel(0, 500);
-    await page.waitForTimeout(250);
-    const scrolled = await scrollTop(page);
-    expect(scrolled).toBeGreaterThan(100);
+    await expect.poll(() => scrollTop(page)).toBeGreaterThan(100);
+    const scrolled = await settledScrollTop(page);
     // Another component commits within the anchor window.
     await page.evaluate(() => (window as any).trace.backend.startGeneration("forest", "gen-anchor"));
     await page.waitForTimeout(400);

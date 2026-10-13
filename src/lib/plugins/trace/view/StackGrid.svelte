@@ -12,6 +12,7 @@
   import { selectableSelector } from "./selectable";
   import { type FolderCell, folderCells, unlistedCovers, coverNode, gridNeighbor, attachPackedBand, bandExtent, estimatedBandExtent, packedGridFlow, bandPlacements, gridPins, rovingStop } from "./stack-grid";
   import { captureGrid, playGrid, prefersReducedMotion, zoomOf, type GridSnapshot } from "./motion";
+  import type { SceneChange } from "$lib/domain/trace-graph/scene-change";
   import TraceGraph from "./TraceGraph.svelte";
   import TraceTile from "./TraceTile.svelte";
   import OrdinaryTile from "./OrdinaryTile.svelte";
@@ -51,7 +52,7 @@
     onexpand(summary.id, true);
   }
   let running: Animation[] = [];
-  let pendingMotion: { before: GridSnapshot | null } | null = null;
+  let pendingMotion: { before: GridSnapshot | null; changes: Map<string, SceneChange> } | null = null;
   let destroyed = false;
   /** Stacks that have been unsaved since the grid was last laid out afresh: they keep their cell when saved. */
   let held = $state.raw<ReadonlySet<string>>(new Set());
@@ -120,19 +121,24 @@
     return () => { container.removeEventListener("scroll", schedule); observer.disconnect(); cancelAnimationFrame(frame); };
   });
   /** One displayed snapshot per DOM commit; pinned graphs and flow share a motion owner. */
-  function prepareMotion(): void {
-    if (!grid || pendingMotion) return;
-    const commit = { before: prefersReducedMotion() ? null : captureGrid(grid) };
+  function prepareMotion(id: string | undefined = undefined, change: SceneChange | undefined = undefined): void {
+    if (!grid) return;
+    if (pendingMotion) {
+      if (id && change) pendingMotion.changes.set(id, change);
+      return;
+    }
+    const commit = { before: prefersReducedMotion() ? null : captureGrid(grid), changes: new Map<string, SceneChange>() };
+    if (id && change) commit.changes.set(id, change);
     pendingMotion = commit;
     void tick().then(() => {
       if (destroyed) return;
       pendingMotion = null;
-      if (grid && commit.before) running = playGrid(grid, commit.before, running);
+      if (grid && commit.before) running = playGrid(grid, commit.before, running, commit.changes);
       else { for (const animation of running) animation.cancel(); running = []; }
       ongeometry();
     });
   }
-  $effect.pre(() => { void flow; untrack(prepareMotion); });
+  $effect.pre(() => { void flow; untrack(() => prepareMotion()); });
   // Keyboard focus belongs to the grid until it genuinely leaves (a blur to another element or the page).
   // Removing the focused element fires no blur, so a cover replaced by a toggle, a band tile that leaves
   // the neighbourhood, or a stack that merges away leaves focus on <body>: move it to the surviving stop.
@@ -227,7 +233,7 @@
           <div class="content" data-grid-band={cell.id} data-grid-band-row={band.row} data-group-left={placements.get(cell.id)!.left} data-group-width={placements.get(cell.id)!.right - placements.get(cell.id)!.left} data-child-group-left={band.x} data-child-group-width={band.width} data-horizontal-scroll style:height="{band.y + band.height - rect.y}px">
             {#if data && (nearRect(band.y, band.height) || focus?.componentId === summary.id || (stop !== null && data.dag.nodes.has(stop)))}
               <TraceGraph {data} {focus} focusedKey={stop ?? undefined} onfocuskey={(key) => tabStop = key} badgeHover={hoveredBadge} onbadgehover={(key) => hoveredBadge = key} {selected} width={innerWidth} {tile} {revision} {scroller} componentId={summary.id} {reveal}
-                onbeforecommit={prepareMotion} pinned={pins.get(cell.id)!}
+                onbeforecommit={(change) => prepareMotion(cell.id, change)} pinned={pins.get(cell.id)!}
                 bandTop={band.y - rect.y} bandPlacement={placements.get(cell.id)} ongeometry={(plan, layout) => geometry(cell.id, plan, layout)} ongridkey={keydown}
                 onactivate={(key, event) => onactivate(key, event, summary.id)} onnavigate={(key) => onnavigate(key, summary.id)} {onopen}
                 onmenu={(key, event) => onmenu(key, event, summary.id)} {captureSelection} {onsaved} {ondiscarded} {oncommit}
