@@ -191,6 +191,10 @@ test.describe("Trace tile tooltip", () => {
     await openView(page);
     await click(page, "village");
     await page.mouse.move(2, 2);
+    // WebKit enables keyboard focus visibility through Tab navigation.
+    // Start from the selected cover in that modality before exercising arrows.
+    await page.keyboard.press("Tab");
+    await (await card(page, "village")).focus();
     await page.keyboard.press("ArrowRight");
     const focused = await page.evaluate(() => (document.activeElement as HTMLElement | null)?.dataset.nodeKey ?? null);
     expect(focused).not.toBeNull();

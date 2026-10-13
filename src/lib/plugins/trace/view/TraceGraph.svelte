@@ -17,9 +17,10 @@
   import type { GraphScene } from "./graph-commit";
   import { cachedLayout, computeLayout, layoutNow } from "./layout-client";
   import { selectableSelector } from "./selectable";
-  import { captureGraph, playGraph, prefersReducedMotion, zoomOf } from "./motion";
+  import { captureGraph, playGraph, snapGraph, prefersReducedMotion, zoomOf } from "./motion";
   import { nodeTitle } from "./node-target";
   import { sameGraphGeometry } from "$lib/domain/trace-graph/layout-geometry";
+  import { classifySceneChange, type CommittedGraph, type SceneChange } from "$lib/domain/trace-graph/scene-change";
   import TraceTile from "./TraceTile.svelte";
 
   import { projectReferenceBadges } from "$lib/domain/trace-graph/projection";
@@ -54,7 +55,7 @@
     /** Called after a new layout is in the DOM and its motion has started. */
     oncommit?: (scene: GraphScene) => void;
     /** Capture the whole grid before a pinned graph changes its DOM. */
-    onbeforecommit?: () => void;
+    onbeforecommit?: (change: SceneChange) => void;
     /** Current layout readiness, used only by keyboard/programmatic reveals. */
     onlayout?: (pending: boolean) => void;
     onfailure?: (scene: GraphScene, error: Error) => void;
@@ -108,26 +109,28 @@
 
   // Publish the footprint before mounting the first graph, so the grid attaches
   // children at their final packed position and never replays their entrance.
-  let shown = $state.raw<{ plan: ScenePlan; layout: GraphLayout } | null>(null);
+  let shown = $state.raw<CommittedGraph | null>(null);
 
   function commit(next: ScenePlan, layout: GraphLayout, scene: GraphScene): void {
     if (shown && shown.plan === next && shown.layout === layout) {
       void tick().then(() => rendered(scene, next, layout));
       return;
     }
+    const committed: CommittedGraph = { plan: next, layout, data: data.dag, componentId, revision, tile };
+    const change = classifySceneChange(shown, committed);
     // Same geometry (only tones or selection changed): nothing moves, so
     // motion still running carries on and nothing is measured.
-    if (shown && (shown.layout === layout || sameGraphGeometry(shown.layout, layout))) {
-      shown = { plan: next, layout };
+    if (change === "restyle") {
+      shown = committed;
       failure = "";
       // Report after any pending full commit has started its motion.
       void tick().then(() => rendered(scene, next, layout));
       return;
     }
     if (pinned) {
-      onbeforecommit?.();
+      onbeforecommit?.(change);
       ongeometry?.(next as BandScenePlan, layout);
-      shown = { plan: next, layout };
+      shown = committed;
       layoutStamp++;
       failure = "";
       void tick().then(() => rendered(scene, next, layout));
@@ -135,7 +138,7 @@
     }
     const element = canvas;
     const before = element && shown && !prefersReducedMotion() ? captureGraph(element) : null;
-    shown = { plan: next, layout };
+    shown = committed;
     layoutStamp++;
     failure = "";
     const current = ++plays;
@@ -144,7 +147,8 @@
       // Cancelled as the replacements start, not at commit: a later commit before this turn then still captures this motion as displayed.
       for (const animation of running) animation.cancel();
       running = [];
-      if (before && canvas) running = playGraph(canvas, before, layout.orientation);
+      if (change !== "reveal" && before && canvas) running = playGraph(canvas, before, layout.orientation);
+      else if (canvas) snapGraph(canvas);
       rendered(scene, next, layout);
     });
   }

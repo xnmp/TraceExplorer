@@ -49,6 +49,15 @@ function scenario(): { nodes: FolderNode[]; names: Map<string, string> } {
   const query = new URLSearchParams(globalThis.location?.search ?? "");
   // Real folder index rules still derive components, covers and members below.
   // Ordinary sources set the cover's host-listing column; saved descendants collapse into it.
+  if (query.has("selectionBlink")) {
+    for (let i = 0; i < Number(query.get("blinkLeading") ?? 0); i++) add({ key: `plain-before-${i}` });
+    for (const seed of [
+      { key: "stack" }, { key: "Cerulean", parents: ["stack"] }, { key: "Saffron", parents: ["stack"] },
+      { key: "Pikachu's Ball", parents: ["Cerulean"] }, { key: "Blastoise", parents: ["Saffron"] },
+      { key: "Ash", parents: ["Saffron"] }, { key: "Charizard", parents: ["Ash"] },
+    ]) add(seed);
+    return { nodes, names };
+  }
   if (query.get("layout") === "deep") {
     for (let i = 1; i <= 5; i++) add({ key: `plain-${i}` });
     add({ key: "deep" }); add({ key: "plain-7" });
