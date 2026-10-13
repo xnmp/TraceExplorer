@@ -8,14 +8,15 @@
   import { onDestroy, tick, untrack } from "svelte";
   import type { NodeKey } from "$lib/domain/trace-graph/model";
   import { planBandScene, planScene, routeStyle, junctionRelated, type ComponentFocus, type RouteStyle, type BandScenePlan, type ScenePlan } from "$lib/domain/trace-graph/scene";
-  import { nearestInDirection, type Direction, type PinnedCover, type GraphLayout } from "$lib/domain/trace-graph/layout";
+  import { nearestInDirection, type BandHistory, type Direction, type PinnedCover, type GraphLayout } from "$lib/domain/trace-graph/layout";
+  import { bandHistorySignature } from "$lib/domain/trace-graph/band-layout";
   import { rememberOrientation, type OrientationHistory } from "$lib/domain/trace-graph/orientation";
   import { endpointKey } from "$lib/domain/trace-graph/junctions";
   import { ARROW, STACK_STEM_ROOM, tileMetrics, type TileMetrics } from "$lib/domain/trace-graph/metrics";
   import { promptTitles } from "../prompt-titles.svelte";
   import type { ComponentData } from "./folder-session.svelte";
   import type { GraphScene } from "./graph-commit";
-  import { cachedLayout, computeLayout, layoutNow } from "./layout-client";
+  import { cachedLayout, computeLayout, layoutNow, canLayoutInline } from "./layout-client";
   import { selectableSelector } from "./selectable";
   import { captureGraph, playGraph, snapGraph, prefersReducedMotion, zoomOf } from "./motion";
   import { nodeTitle } from "./node-target";
@@ -72,8 +73,6 @@
 
   let { data, focus, selected, width, tile = tileMetrics(), revision, scroller, onactivate, onnavigate, onopen, onmenu, onsaved, ondiscarded, oncommit, onbeforecommit, onlayout, captureSelection, componentId, orientations = new Map(), onfailure, reveal = null, pinned, bandTop = 0, bandPlacement, ongeometry, ongridkey, badgeHover = null, focusedKey, onfocuskey, onbadgehover }: Props = $props();
 
-  /** Below this many tiles layout runs inline; it takes well under a frame. */
-  const SYNC_LIMIT = 60;
   /** Tile windowing only pays off for very large neighborhoods. */
   const WINDOW_MIN = 120;
   const WINDOW_MARGIN = 800;
@@ -83,6 +82,9 @@
   let failure = $state("");
   // Reading order of the last committed layout keeps siblings in place across focus changes.
   let ordering: ReadonlyMap<NodeKey, number> | undefined;
+  let history: BandHistory | undefined;
+  let previousAttachment: GraphLayout | undefined;
+  let previousAttachmentOwner: GraphLayout | undefined;
   let running: Animation[] = [];
   /** Only the latest full commit plays; one superseded before rendering never starts. */
   let plays = 0;
@@ -95,12 +97,20 @@
 
   let hoveredBadge = $state<string | null>(null);
   const projection = $derived(projectReferenceBadges(data.dag));
-  const plan = $derived(pinned ? planBandScene(projection, projection.dag.order, focus?.key ?? null, width, { pinned, hint: ordering, tile, badgeHighlight: hoveredBadge ?? badgeHover }) : planScene(data.dag, data.members, focus, width, { componentId, hint: ordering, previous: orientations.get(componentId), tile }));
+  function committedHistory(): BandHistory | undefined {
+    if (!history) return undefined;
+    const ownsAttachment = previousAttachmentOwner === history.layout;
+    return { ...history,
+      placed: ownsAttachment ? previousAttachment ?? history.placed : history.placed,
+      attachment: ownsAttachment && bandPlacement ? { bandTop, placement: bandPlacement } : history.attachment };
+  }
+  const plan = $derived(pinned ? planBandScene(projection, projection.dag.order, focus?.key ?? null, width, { pinned, history: untrack(committedHistory), hint: ordering, tile, badgeHighlight: hoveredBadge ?? badgeHover }) : planScene(data.dag, data.members, focus, width, { componentId, hint: ordering, previous: orientations.get(componentId), tile }));
 
   /** What later plans build on: the reading order and the orientation shown. */
   function rendered(scene: GraphScene, next: ScenePlan, layout: GraphLayout): void {
     if (!canvas || !scene.isCurrent() || shown?.plan !== next || shown.layout !== layout) return;
     ordering = layout.readingOrder;
+    if (pinned && attachment.layout) history = { signature: bandHistorySignature(next.request), layout, placed: attachment.layout, attachment: bandPlacement ? { bandTop, placement: bandPlacement } : undefined };
     orientations.set(componentId, rememberOrientation(orientations.get(componentId), layout.orientation, next.request.tileWidth));
     onlayout?.(false);
     if (pinned) ongeometry?.(next as BandScenePlan, layout);
@@ -162,13 +172,18 @@
       isCurrent: () => !superseded.signal.aborted && plan === next && reveal === requestedReveal,
     };
     onlayout?.(true);
-    const ready = cachedLayout(next.request) ?? ((next.request.band?.items.length ?? next.request.items.length) <= SYNC_LIMIT ? layoutNow(next.request) : null);
+    const fail = (error: Error) => { failure = error.message; onlayout?.(false); onfailure?.(scene, error); };
+    let ready: GraphLayout | null;
+    // Inline layout fails like the worker does: reported, never thrown out of this effect.
+    try { ready = cachedLayout(next.request) ?? (canLayoutInline(next.request) ? layoutNow(next.request) : null); }
+    catch (error) { untrack(() => fail(error instanceof Error ? error : new Error(String(error)))); return () => { superseded.abort(); onlayout?.(false); }; }
     // Commit reads displayed geometry, not planning inputs. Tracking those
     // reads would supersede this scene when its own render updates `shown`.
-    if (ready) untrack(() => commit(next, ready, scene));
+    const inline = ready;
+    if (inline) untrack(() => commit(next, inline, scene));
     else computeLayout(next.request, superseded.signal).then(
       (layout) => { if (scene.isCurrent()) commit(next, layout, scene); },
-      (error: Error) => { if (scene.isCurrent()) { failure = error.message; onlayout?.(false); onfailure?.(scene, error); } },
+      (error: Error) => { if (scene.isCurrent()) fail(error); },
     );
     return () => { superseded.abort(); onlayout?.(false); };
   });
@@ -195,7 +210,6 @@
     return () => { container.removeEventListener("scroll", schedule); observer.disconnect(); cancelAnimationFrame(frame); };
   });
 
-  let previousAttachment: GraphLayout | undefined;
   let attachmentSerial = 0;
   const attachment = $derived.by(() => {
     const layout = shown && pinned ? (bandPlacement ? attachPackedBand(shown.layout, pinned.key, bandTop, bandPlacement) : attachBand(shown.layout, pinned.key, 0, bandTop)) : shown?.layout;
@@ -203,6 +217,7 @@
     // geometry owns attachment motion, so an unrelated opening carries it on.
     if (layout && (!previousAttachment || !sameGraphGeometry(previousAttachment, layout))) attachmentSerial++;
     previousAttachment = layout;
+    previousAttachmentOwner = shown?.layout;
     return { layout, serial: attachmentSerial };
   });
   const attached = $derived(attachment.layout);

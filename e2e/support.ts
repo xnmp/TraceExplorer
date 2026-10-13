@@ -4,9 +4,10 @@ import { expect, test, type Locator, type Page } from "@playwright/test";
 export type Name = string;
 
 export async function openView(page: Page, width?: number, query = "", expand = true): Promise<void> {
-  await page.goto(`/view.html${query}`);
+  const parameters = new URLSearchParams(query);
+  if (width) parameters.set("width", String(width));
+  await page.goto(`/view.html${parameters.size ? `?${parameters}` : ""}`);
   await page.waitForFunction(() => !!(window as any).trace);
-  if (width) await page.evaluate((w) => (window as any).trace.setWidth(w), width);
   // The first tiles wait on the layout worker (an inline blob worker) and the
   // folder session, on top of the module graph that the Vite dev server
   // transforms on the first request. On a starved machine (load far above the

@@ -10,7 +10,9 @@ test('selection reveals tiles and connectors instantly without disturbing retain
   await settle(page);
   await (await card(page, 'Saffron')).click();
   await settle(page);
-  expect(await page.locator('.graph').getAttribute('data-orientation')).toBe('right');
+  // A reveal keeps the band's orientation; the swaps below must stay reveals.
+  const orientation = await page.locator('.graph').getAttribute('data-orientation');
+  expect(orientation).toMatch(/^(right|down)$/);
   const names = ['Cerulean', 'Saffron', "Pikachu's Ball", 'Blastoise', 'Ash'];
   const keys = Object.fromEntries(await Promise.all(names.map(async name => [name, await key(page, name)])));
   for (const name of ['Cerulean', 'Saffron', 'Cerulean', 'Saffron']) {
@@ -71,6 +73,7 @@ test('selection reveals tiles and connectors instantly without disturbing retain
       for (const child of children) expect(Math.max(...frames[i].connectors[child])).toBeGreaterThanOrEqual(Math.max(...frames[i - 1].connectors[child]));
     }
     await settle(page);
+    expect(await page.locator('.graph').getAttribute('data-orientation'), `${name}: orientation kept`).toBe(orientation);
   }
   expect((await uncaught(page)).filter(e => e !== 'ResizeObserver loop completed with undelivered notifications.')).toEqual([]);
 });

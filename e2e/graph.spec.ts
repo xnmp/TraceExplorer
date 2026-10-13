@@ -390,10 +390,19 @@ test.describe("tile size", () => {
         expect(head.misalignment, `${preset} ${head.route}`).toBeLessThan(1);
       }
     }
-    // Back at the first size, every tile is exactly where it was: no layout of another size was reused.
-    const last = await boxes(page);
-    expect(Object.keys(last).sort()).toEqual(Object.keys(first).sort());
-    for (const [k, box] of Object.entries(first)) for (const side of ["x", "y", "width", "height"] as const) expect(Math.abs(last[k][side] - box[side]), `${k} ${side}`).toBeLessThanOrEqual(0.5);
+    // Back at the first size, the same tiles show at that size. Placement history expires when the
+    // tile size changes, so the click's history-preserving placement is not expected back; instead,
+    // arriving from another size must give the same layout: no layout of another size was reused.
+    const viaXlarge = await boxes(page);
+    expect(Object.keys(viaXlarge).sort()).toEqual(Object.keys(first).sort());
+    for (const [k, box] of Object.entries(first)) for (const side of ["width", "height"] as const) expect(Math.abs(viaXlarge[k][side] - box[side]), `${k} ${side}`).toBeLessThanOrEqual(0.5);
+    await setTileSize(page, "medium");
+    await settle(page);
+    await setTileSize(page, "small");
+    await settle(page);
+    const viaMedium = await boxes(page);
+    expect(Object.keys(viaMedium).sort()).toEqual(Object.keys(viaXlarge).sort());
+    for (const [k, box] of Object.entries(viaXlarge)) for (const side of ["x", "y", "width", "height"] as const) expect(Math.abs(viaMedium[k][side] - box[side]), `${k} ${side}`).toBeLessThanOrEqual(0.5);
     expect(await uncaught(page)).toEqual([]);
   });
 
@@ -622,7 +631,7 @@ test.describe("scroll anchoring", () => {
     const before = await offset();
     await click(page, "quiet");
     const after = await offset();
-    expect(Math.abs(after.inGraph - before.inGraph)).toBeGreaterThan(10);
+    expect(Math.abs(after.inGraph - before.inGraph), "feasible click keeps its attached position").toBeLessThanOrEqual(1);
     expect(Math.abs(after.screen - before.screen)).toBeLessThanOrEqual(2);
   });
 

@@ -245,3 +245,44 @@ describe("layout client (requests)", () => {
     expect(layoutSignature(request(0, 811.6))).not.toBe(layoutSignature(request(0, 812.4)));
   });
 });
+
+
+describe("band history scheduling and caching", () => {
+  it("keys exact band widths and both committed embeddings, independently of selection styles", async () => {
+    const { layoutSignature, layoutNow, cachedLayout, canLayoutInline } = await load();
+    const { bandHistorySignature } = await import("$lib/domain/trace-graph/band-layout");
+    const { attachSingleBand } = await import("$lib/domain/trace-graph/band-geometry");
+    const base = { ...request(), maxWidth: 454.1, pinned: { key: "a0", x: 300 }, band: { key: "a0", items: request().items } };
+    const layout = layoutNow(base), placed = attachSingleBand(layout, base);
+    const next = { ...base, anchorKey: "b0", history: { signature: bandHistorySignature(base), layout, placed } };
+    expect(layoutSignature(next)).not.toBe(layoutSignature({ ...next, maxWidth: 454.9 }));
+    expect(layoutSignature({ ...next, maxWidth: 100001 })).not.toBe(layoutSignature({ ...next, maxWidth: 100002 }));
+    expect(layoutSignature({ ...next, maxWidth: 0 })).not.toBe(layoutSignature({ ...next, maxWidth: -1 }));
+    const translated = { ...placed, nodes: new Map([...placed.nodes].map(([id, n]) => [id, { ...n, x: n.x + 1 }])) };
+    expect(layoutSignature(next)).not.toBe(layoutSignature({ ...next, history: { ...next.history, placed: translated } }));
+    layoutNow(next);
+    expect(cachedLayout({ ...next, history: { ...next.history, placed: translated } })).toBeNull();
+    expect(canLayoutInline({ ...base, band: { key: "a0", items: Array.from({ length: 200 }, (_, i) => ({ ...base.items[0], key: `hidden${i}` })) } })).toBe(true);
+    expect(canLayoutInline({ ...base, items: Array.from({ length: 31 }, (_, i) => ({ ...base.items[0], key: `visible${i}` })) })).toBe(false);
+    expect(canLayoutInline({ ...base, items: base.items.map(n => ({ ...n, parents: Array(30).fill("a0") })) })).toBe(false);
+    const largeHistory = { ...layout, nodes: new Map(Array.from({ length: 29 }, (_, i) => [`old${i}`, { ...layout.nodes.get("a0")!, key: `old${i}` }])) };
+    expect(canLayoutInline({ ...next, history: { ...next.history, layout: largeHistory } })).toBe(false);
+    const denseHistory = { ...layout, routes: Array(40).fill(layout.routes[0]) };
+    expect(canLayoutInline({ ...next, history: { ...next.history, layout: denseHistory } })).toBe(false);
+  });
+  it("sends committed history through the worker with Maps intact and returns the same domain outcome", async () => {
+    sdk.allow = true; vi.stubGlobal("Worker", class {});
+    const { computeLayout } = await load();
+    const { layoutGraph } = await import("$lib/domain/trace-graph/layout");
+    const { bandHistorySignature } = await import("$lib/domain/trace-graph/band-layout");
+    const { attachSingleBand } = await import("$lib/domain/trace-graph/band-geometry");
+    const base = { ...request(), pinned: { key: "a0", x: 300 }, band: { key: "a0", items: request().items } };
+    const layout = layoutGraph(base), placed = attachSingleBand(layout, base);
+    const next = { ...base, anchorKey: "b0", history: { signature: bandHistorySignature(base), layout, placed } };
+    const pending = computeLayout(next), worker = created.last!, job = structuredClone(worker.posted[0]);
+    expect(job.request.history!.placed.nodes).toBeInstanceOf(Map);
+    const result = layoutGraph(job.request);
+    worker.onmessage!({ data: { id: job.id, layout: result } });
+    expect(await pending).toEqual(layoutGraph(next));
+  });
+});

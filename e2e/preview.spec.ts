@@ -247,7 +247,7 @@ test.describe("Preview info", () => {
   });
 
   test("choosing an outside input scrolls its reference badge into view and focuses it", async ({ page }) => {
-    await openView(page, undefined, "?many=8");
+    await openView(page, undefined, "?many=16");
     await click(page, "warm");
     await openDetails(page);
     const view = page.getByTestId("trace-view");

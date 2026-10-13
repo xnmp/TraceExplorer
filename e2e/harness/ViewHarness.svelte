@@ -59,7 +59,10 @@
     if (unique.length && target) target = null;
   }
   let target = $state.raw<PreviewTarget | null>(null);
-  let viewWidth = $state(900);
+  // Mount at the requested host width. A setup-only resize after mounting creates
+  // a transient horizontal scrollbar while clientWidth's observer updates the grid.
+  const requestedWidth = Number(new URLSearchParams(location.search).get("width"));
+  let viewWidth = $state(Number.isFinite(requestedWidth) && requestedWidth > 0 ? requestedWidth : 900);
   let opened = $state.raw<string[]>([]);
   let menus = $state.raw<Array<string | null>>([]);
   let navigations = $state.raw<string[]>([]);

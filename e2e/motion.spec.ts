@@ -436,7 +436,8 @@ test.describe("anchoring under the host's zoom", () => {
   test("at 130% zoom the clicked tile stays where it was on screen while its graph relayouts", async ({ page }) => {
     // Narrow enough that the village runs top to bottom (the view only scrolls, and anchors, vertically).
     await openView(page, 480, "?many=8&zoom=1.3");
-    // Selecting merge after warm changes which of its relatives are shown, so merge moves within its graph.
+    // Selecting merge after warm reveals relatives while retaining its attachment,
+    // including both current-folder roots in this merged lineage.
     await page.locator(await node(page, "warm")).click();
     await settle(page);
     await page.evaluate(() => { document.querySelector<HTMLElement>("[data-testid=trace-view]")!.scrollTop += 200; });
@@ -451,7 +452,7 @@ test.describe("anchoring under the host's zoom", () => {
     const frames = await sampleClick(page, target);
     await settle(page);
     const after = await offset();
-    expect(Math.abs(after.inGraph - before.inGraph)).toBeGreaterThan(10);
+    expect(Math.abs(after.inGraph - before.inGraph)).toBeLessThanOrEqual(1);
     // Held at the same height on screen on every frame, not only once motion ends. (It may move
     // sideways within its graph: the view only scrolls vertically.)
     const shown = frames.filter((frame) => frame.tiles[key]);
@@ -461,10 +462,41 @@ test.describe("anchoring under the host's zoom", () => {
   });
 });
 
+test.describe("anchoring under the host's zoom, content above changing", () => {
+  // A legal click keeps the clicked tile in place within its own graph, so the
+  // scroll compensation under zoom is exercised by a section above it shrinking.
+  test("at 130% zoom the clicked tile stays where it was on screen while an earlier section shrinks", async ({ page }) => {
+    await page.setViewportSize({ width: 800, height: 600 });
+    await openAnchorView(page, "&zoom=1.3");
+    await page.locator(await node(page, "anchor-a-middle")).click();
+    await settle(page);
+    const clicked = await key(page, "anchor-b");
+    const before = await page.evaluate((clicked) => {
+      const view = document.querySelector<HTMLElement>("[data-testid=trace-view]")!;
+      const tile = view.querySelector<HTMLElement>(`[data-tile-key="${CSS.escape(clicked)}"]`)!;
+      view.scrollTop += (tile.getBoundingClientRect().top - view.getBoundingClientRect().top - 160) / 1.3;
+      return { scrollTop: view.scrollTop };
+    }, clicked);
+    expect(before.scrollTop).toBeGreaterThan(115);
+    const frames = await sampleClick(page, await node(page, "anchor-b"));
+    await settle(page);
+    const scrollTop = await page.evaluate(() => document.querySelector<HTMLElement>("[data-testid=trace-view]")!.scrollTop);
+    // The earlier section's shrink moved the clicked tile up in the document; the view compensated.
+    expect(before.scrollTop - scrollTop, "the view scrolled to compensate").toBeGreaterThan(50);
+    const shown = frames.filter((frame) => frame.tiles[clicked]);
+    expect(shown.length).toBeGreaterThan(3);
+    for (const frame of shown) {
+      expect(Math.abs(frame.tiles[clicked][3] - shown[0].tiles[clicked][3]), "clicked tile's screen y on every frame").toBeLessThanOrEqual(2);
+      expect(Math.abs(frame.tiles[clicked][0] - shown[0].tiles[clicked][0]), "clicked tile's screen x on every frame").toBeLessThanOrEqual(2);
+    }
+    expect(await uncaught(page)).toEqual([]);
+  });
+});
+
 test.describe("focus reveals snap", () => {
   test.use({ viewport: { width: 900, height: 900 } });
 
-  test("inside a sideways band a revealed tile is immediately at its destination", async ({ page }) => {
+  test("a revealed tile is immediately at its accepted destination", async ({ page }) => {
     await openView(page, 900, "?deeper=1");
     const dawn = await key(page, "mist-dawn");
     await holdScriptedAnimations(page);
@@ -482,13 +514,10 @@ test.describe("focus reveals snap", () => {
         }
         return positions;
       }, dawn);
-      const [first, last] = [seen[0], seen.at(-1)!];
-      expect(last[0]).toBeCloseTo(first[0], 1);
-      let previous = first[0];
+      const last = seen.at(-1)!;
       for (const sample of seen) {
+        expect(Math.abs(sample[0] - last[0])).toBeLessThanOrEqual(1);
         expect(Math.abs(sample[1] - last[1])).toBeLessThanOrEqual(1);
-        expect(sample[0]).toBeGreaterThanOrEqual(previous - .5);
-        previous = sample[0];
       }
     } finally { await releaseScriptedAnimations(page); }
     await settle(page);

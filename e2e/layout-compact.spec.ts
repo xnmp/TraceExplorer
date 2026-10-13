@@ -17,7 +17,7 @@ for (const scene of ["deep", "wrapped"] as const) test(`compact ${scene} band`, 
   const band = page.locator("[data-grid-row-band]").first();
   const height = (await band.boundingBox())!.height;
   console.log(`LAYOUT ${scene} band height: ${height}px`);
-  await page.screenshot({ path: `/var/tmp/te-wt2/evidence-0813/layout-${scene}-${process.env.LAYOUT_BASELINE ? "before" : "after"}.png` });
+  await page.screenshot({ path: test.info().outputPath(`layout-${scene}-${process.env.LAYOUT_BASELINE ? "before" : "after"}.png`) });
   if (process.env.LAYOUT_BASELINE) return;
   expect(height).toBeLessThanOrEqual(scene === "deep" ? 340 : 390);
   const relationships = scene === "deep" ? [["deep", "Cerulean"], ["deep", "Saffron"], ["Saffron", "Blastoise"], ["Saffron", "Ash"], ["Ash", "Charizard"]]
