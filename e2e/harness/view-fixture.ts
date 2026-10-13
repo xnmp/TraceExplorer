@@ -68,6 +68,18 @@ function scenario(): { nodes: FolderNode[]; names: Map<string, string> } {
   if (query.has("bandMotion")) {
     for (const key of ["stack-a", "spacer", "stack-b", "below-1", "below-2", "below-3"]) add({ key, prompt: key });
     for (const parent of ["stack-a", "stack-b"]) for (let i = 1; i <= 2; i++) add({ key: `${parent}-${i}`, parents: [parent] });
+    // Seven-image A: the wider first generation crosses B's cover column,
+    // requiring an actual gutter bridge on the wrapped line.
+    if (query.get("bandMotion") === "bridge") {
+      add({ key: "stack-a-3", parents: ["stack-a"] });
+      // A DAG keeps both engines on the downward candidate, including at
+      // native xlarge sizes; a forest can legitimately choose sideways shelves.
+      add({ key: "stack-a-4", parents: ["stack-a-1", "stack-a-3"] });
+      for (let i = 5; i <= 6; i++) add({ key: `stack-a-${i}`, parents: ["stack-a-4"] });
+    }
+    if (query.get("bandMotion") === "junction-collapse") add({ key: "stack-b-merge", parents: ["stack-b-1", "stack-b-2"] });
+    if (query.get("bandMotion") === "junction") add({ key: "stack-b-merge", parents: ["stack-b", "stack-b-1"] });
+    if (query.get("bandMotion") === "trunks") for (let i = 3; i <= 8; i++) add({ key: `stack-b-${i}`, parents: ["stack-b"] });
     return { nodes, names };
   }
   // Shared with native and mock golden tests. These focused scenarios expose

@@ -1,4 +1,5 @@
 import { test, expect, type Page } from '@playwright/test';
+import { holdScriptedAnimations, releaseScriptedAnimations, awaitAnimationsCreated } from './animation-control';
 import { openView, settle, key, uncaught } from './support';
 
 /** Screen-space rectangles, including every ancestor clip, sampled after the frame callbacks. */
@@ -188,5 +189,179 @@ for (const reopen of [false, true]) test(`initial entrance can close${reopen ? "
   expect(result.frames.at(-1)!.tiles.length).toBe(reopen ? 2 : 0);
   expect(result.frames.at(-1)!.moving).toBe(false);
   expect(await page.locator('[data-grid-exit]').count()).toBe(0);
+  expect(await uncaught(page)).toEqual([]);
+});
+
+/** Frozen tiles and SVG geometry are read on the same held animation frame. */
+async function routeFrame(page: Page) {
+  return page.evaluate(() => {
+    const opacity = (element: Element) => {
+      let value = 1;
+      for (let at: Element | null = element; at; at = at.parentElement) value *= Number(getComputedStyle(at).opacity);
+      return value;
+    };
+    const tiles = [...document.querySelectorAll<HTMLElement>('[data-tile-key], [data-ghost-tile-key], [data-grid-cell] [data-entry-path], [data-grid-band] [data-motion-ghost].tile')].map(element => {
+      const b = element.getBoundingClientRect();
+      // Exit tiles are clipped together with their connectors. Test the visible rectangle.
+      let bottom = b.bottom;
+      for (let at: Element | null = element; at; at = at.parentElement) {
+        const clip = /^inset\(([^)]*)\)/.exec(getComputedStyle(at).clipPath);
+        if (clip) {
+          const v = clip[1].split(/\s+/).map(parseFloat);
+          bottom = Math.min(bottom, at.getBoundingClientRect().bottom - v[2 % v.length]);
+        }
+        if (/hidden|clip|auto|scroll/.test(getComputedStyle(at).overflowY)) bottom = Math.min(bottom, at.getBoundingClientRect().bottom);
+      }
+      return { key: element.dataset.tileKey ?? element.dataset.ghostTileKey ?? element.dataset.entryPath ?? 'departed tile', x: b.x, y: b.y, right: b.right, bottom, opacity: opacity(element), exit: element.closest<HTMLElement>('[data-grid-exit]')?.dataset.gridExit };
+    });
+    const routes = [...document.querySelectorAll<SVGPathElement>('[data-grid-band] path[data-route], [data-grid-exit] path[data-route], [data-grid-band] path[data-motion-ghost]')].map(path => {
+      const matrix = path.getScreenCTM()!, scale = Math.hypot(matrix.a, matrix.b), length = path.getTotalLength() * scale;
+      const point = (distance: number) => {
+        const p = path.getPointAtLength(distance / scale), s = new DOMPoint(p.x, p.y).matrixTransform(matrix);
+        return { x: s.x, y: s.y };
+      };
+      const clips: Array<{ x: number; y: number; right: number; bottom: number }> = [];
+      for (let at: Element | null = path.parentElement; at; at = at.parentElement) {
+        const style = getComputedStyle(at), box = at.getBoundingClientRect();
+        const inset = /^inset\(([^)]*)\)/.exec(style.clipPath);
+        if (inset) {
+          const v = inset[1].split(/\s+/).map(parseFloat);
+          clips.push({ x: box.x + v[3 % v.length], y: box.y + v[0], right: box.right - v[1 % v.length], bottom: box.bottom - v[2 % v.length] });
+        }
+        const id = style.clipPath.match(/#([^"')]+)/)?.[1];
+        if (id) {
+          const rect = document.getElementById(id)?.querySelector('rect');
+          if (!rect) throw new Error(`Unsupported SVG clip: ${style.clipPath}`);
+          const matrix = (at as SVGGraphicsElement).getScreenCTM()!;
+          const a = new DOMPoint(Number(rect.getAttribute('x')), Number(rect.getAttribute('y'))).matrixTransform(matrix);
+          const b = new DOMPoint(Number(rect.getAttribute('x')) + Number(rect.getAttribute('width')), Number(rect.getAttribute('y')) + Number(rect.getAttribute('height'))).matrixTransform(matrix);
+          clips.push({ x: a.x, y: a.y, right: b.x, bottom: b.y });
+        }
+        if (/hidden|clip|auto|scroll/.test(style.overflowX + style.overflowY)) clips.push({ x: box.x, y: box.y, right: box.right, bottom: box.bottom });
+      }
+      const visible = (p: { x: number; y: number }) => clips.every(c => p.x >= c.x && p.x <= c.right && p.y >= c.y && p.y <= c.bottom);
+      const samples = Array.from({ length: Math.ceil(length / 2) + 1 }, (_, i) => point(Math.min(i * 2, length)));
+      const d = (getComputedStyle(path).getPropertyValue('d') || path.getAttribute('d') || '').replace(/^path\(["']|["']\)$/g, '');
+      // Mark exact cubic intervals, including a 4px window straddling their
+      // boundaries. Numeric shape signatures exclude translation, so only
+      // the settled layout's own corners may contain diagonal samples.
+      const probe = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+      let prefix = '', before = 0, at = [0, 0], previousAxis: number | undefined;
+      const bends: number[] = [];
+      const curves = [...d.matchAll(/([MLC])\s*([^MLC]+)/g)].flatMap(match => {
+        const values = match[2].match(/-?(?:\d+\.?\d*|\.\d+)(?:e[-+]?\d+)?/gi)!.map(Number);
+        const dx = values[0] - at[0], dy = values[1] - at[1];
+        const axis = match[1] === 'L' ? Math.abs(dy) < .001 && Math.abs(dx) > .001 ? 0 : Math.abs(dx) < .001 && Math.abs(dy) > .001 ? 1 : undefined : undefined;
+        if (axis !== undefined && previousAxis !== undefined && axis !== previousAxis) bends.push(before);
+        previousAxis = axis;
+        prefix += match[0]; probe.setAttribute('d', prefix);
+        const after = probe.getTotalLength() * scale;
+        const curve = match[1] === 'C' ? [{ from: before, to: after,
+          shape: values.map((v, i) => Math.round((v - at[i % 2]) * 10) / 10).join(',') }] : [];
+        at = values.slice(-2); before = after;
+        return curve;
+      });
+      const diagonals = samples.slice(2).flatMap((p, i) => {
+        const a = samples[i];
+        return visible(p) && Math.abs(p.x - a.x) > 1 && Math.abs(p.y - a.y) > 1 ? [{ at: i * 2, dx: p.x - a.x, dy: p.y - a.y, curves: curves.filter(c => i * 2 <= c.to && i * 2 + 4 >= c.from).map(c => c.shape), bend: bends.some(b => i * 2 <= b && i * 2 + 4 >= b) }] : [];
+      });
+      const hits = samples.filter(visible).flatMap(p => tiles.filter(t => t.opacity > 0 && p.x > t.x + 1 && p.x < t.right - 1 && p.y > t.y + 1 && p.y < t.bottom - 1).map(t => t.key));
+      const exit = path.closest('[data-grid-exit]');
+      const exitTiles = exit ? tiles.filter(t => t.exit === (exit as HTMLElement).dataset.gridExit) : [];
+      return { id: path.dataset.route ?? path.dataset.motionRoute ?? 'ghost', d, curves, opacity: opacity(path), hits, diagonals,
+        orphan: !!exit && samples.some(visible) && exitTiles.every(t => t.opacity === 0 || t.bottom <= t.y) && opacity(path) > 0 };
+    });
+    return { tiles, routes };
+  });
+}
+
+for (const fixture of ['1', 'bridge', 'native-large', 'junction', 'junction-collapse', 'trunks']) for (const scenario of ['close A', 'open A', 'B alone', 'close B alone', 'interrupt close A']) test(`connectors stay outside tiles and preserve orthogonal routes (${fixture}, ${scenario})`, async ({ page }, testInfo) => {
+  await page.setViewportSize({ width: 1000, height: 1300 });
+  await openView(page, fixture === 'native-large' ? 640 : 390, `?bandMotion=${fixture === 'native-large' ? 'bridge&fileTiles=1&tileSize=xlarge' : fixture}`, false);
+  await expect(page.getByRole('grid', { name: 'Folder', exact: true })).toHaveAttribute('aria-colcount', '3');
+  const toggle = (name: string) => `section[aria-label="stack-${name}"] [data-stack-toggle]`;
+  if (scenario.includes('close A') || scenario === 'open A' || scenario === 'close B alone') { await page.locator(toggle('b')).click(); await settle(page); }
+  if (fixture === 'junction-collapse' && scenario === 'open A') { await page.locator(`[data-node-key="${await key(page, 'stack-b-1')}"]`).click(); await settle(page); }
+  if (fixture === 'junction' && scenario !== 'B alone') {
+    await expect(page.locator('[data-grid-band] [data-junction]').first()).toBeVisible();
+  }
+  if (fixture === 'trunks' && scenario !== 'B alone') expect(await page.locator('[data-grid-band] path[data-route]').evaluateAll(paths => paths.some(p => p.getAttribute('data-from') === p.getAttribute('data-to')))).toBe(true);
+  if (scenario.includes('close A')) { await page.locator(toggle('a')).click(); await settle(page); }
+  const start = await routeFrame(page);
+  if (scenario.includes('close A')) {
+    const a = await key(page, 'stack-a-1'), b = await key(page, 'stack-b-1');
+    expect(start.tiles.find(t => t.key === b)!.y).toBeGreaterThan(start.tiles.find(t => t.key === a)!.bottom);
+    if (fixture.startsWith('bridge')) { const cover = await key(page, 'stack-b'); expect(start.routes.filter(r => r.id.startsWith(`node:${cover}`)).some(r => r.curves.filter(c => c.to - c.from > 1).length >= 3), JSON.stringify(start.routes)).toBe(true); }
+  }
+  await holdScriptedAnimations(page);
+  const frames: Array<{ time: number; scene: Awaited<ReturnType<typeof routeFrame>> }> = [];
+  try {
+    await page.locator(toggle(scenario.includes('B alone') ? 'b' : 'a')).evaluate((element: HTMLElement) => element.dispatchEvent(new MouseEvent('click', { bubbles: true, ctrlKey: true })));
+    await awaitAnimationsCreated(page);
+    let interrupted = false;
+    for (const time of [...Array.from({ length: 10 }, (_, i) => i * 1000 / 60), 159, 160]) {
+      await page.evaluate(async time => {
+        for (const a of (window as any).__heldAnimations as Animation[]) if (a.playState === 'running') a.currentTime = time;
+        await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      }, time);
+      frames.push({ time, scene: await routeFrame(page) });
+      if (scenario === 'interrupt close A' && time >= 33 && !interrupted) {
+        interrupted = true;
+        await page.locator(toggle('a')).evaluate((element: HTMLElement) => element.dispatchEvent(new MouseEvent('click', { bubbles: true, ctrlKey: true })));
+        await awaitAnimationsCreated(page);
+        for (const resumed of [0, ...Array.from({ length: 10 }, (_, i) => i * 1000 / 60), 159, 160]) {
+          await page.evaluate(async time => {
+            for (const a of (window as any).__heldAnimations as Animation[]) if (a.playState === 'running') a.currentTime = time;
+            await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+          }, resumed);
+          frames.push({ time: time + resumed, scene: await routeFrame(page) });
+        }
+        break;
+      }
+    }
+  } finally { await releaseScriptedAnimations(page); }
+  await settle(page);
+  const end = await routeFrame(page);
+  await testInfo.attach('route-frames', { body: JSON.stringify({ start, frames, end }), contentType: 'application/json' });
+  const violations = frames.flatMap(({ time, scene }) => scene.routes.filter(r => r.opacity > 0).flatMap(route => {
+    const allowedCurves = new Set([start, end].flatMap(f => f.routes.filter(r => r.id === route.id).flatMap(r => r.curves.map(c => c.shape))));
+    // A 4px window across a sharp orthogonal join is diagonal even though
+    // neither segment is. Exempt that join, and exact settled cubic shapes;
+    // never exempt a straight diagonal just because it matches a curve tangent.
+    const newDiagonals = route.diagonals.filter(d => !d.bend && !d.curves.some(c => allowedCurves.has(c)));
+    return [route.hits.length ? `${time}ms ${route.id} cuts tiles ${[...new Set(route.hits)]}` : '',
+      newDiagonals.length ? `${time}ms ${route.id} has ${newDiagonals.length} diagonal samples outside layout curves` : '',
+      route.orphan ? `${time}ms orphan ${route.id}` : ''].filter(Boolean);
+  }));
+  expect(violations).toEqual([]);
+  expect(end.routes.every(r => !r.orphan)).toBe(true);
+  expect(await page.locator('[data-grid-exit], [data-motion-ghost]').count()).toBe(0);
+  expect(await uncaught(page)).toEqual([]);
+});
+
+test('a retiring group keeps its connector fade when another group closes', async ({ page }) => {
+  await page.setViewportSize({ width: 1000, height: 1300 });
+  await openView(page, 390, '?bandMotion=1', false);
+  const toggle = (name: string) => page.locator(`section[aria-label="stack-${name}"] [data-stack-toggle]`);
+  for (const name of ['a', 'b']) { await toggle(name).click(); await settle(page); }
+  const a = await key(page, 'stack-a');
+  await holdScriptedAnimations(page);
+  try {
+    await toggle('a').evaluate((element: HTMLElement) => element.click());
+    await awaitAnimationsCreated(page);
+    await page.evaluate(async () => {
+      for (const animation of (window as any).__heldAnimations as Animation[]) if (animation.playState === 'running') animation.currentTime = 5;
+      await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    });
+    const before = (await routeFrame(page)).routes.filter(r => r.id.startsWith(`node:${a}>`));
+    expect(before.length).toBeGreaterThan(0);
+    expect(before.every(r => r.opacity > 0 && r.opacity < 1)).toBe(true);
+    await toggle('b').evaluate((element: HTMLElement) => element.click());
+    await awaitAnimationsCreated(page);
+    const after = (await routeFrame(page)).routes.filter(r => r.id.startsWith(`node:${a}>`));
+    expect(after.map(r => ({ id: r.id, opacity: r.opacity, d: r.d }))).toEqual(before.map(r => ({ id: r.id, opacity: r.opacity, d: r.d })));
+  } finally { await releaseScriptedAnimations(page); }
+  await settle(page);
+  expect(await page.locator('[data-grid-exit], [data-motion-ghost]').count()).toBe(0);
   expect(await uncaught(page)).toEqual([]);
 });
