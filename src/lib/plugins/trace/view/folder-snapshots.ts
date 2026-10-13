@@ -65,6 +65,8 @@ export const SCENE_SNAPSHOT_BYTES = 16 * 1024 * 1024;
  * stored values readonly. A value is kept only if `estimate` returns a finite,
  * non-negative size within the budget: malformed, oversized or unmeasurable
  * scenes are dropped (and replace, hence evict, any older scene for that key).
+ * Whoever owns the store instance must clear it wherever `forgetFolderSnapshots`
+ * runs (the plugin being disabled); that wiring arrives with the scene controller.
  */
 export interface SceneStore<T> {
   /** The scene committed for this pane and folder, which becomes the most recently used. Never another folder's or pane's. */

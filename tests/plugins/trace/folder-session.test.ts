@@ -1,5 +1,5 @@
 import "./svelte-host";
-import { beforeEach, describe, it, expect, vi } from "vitest";
+import { afterEach, beforeEach, describe, it, expect, vi } from "vitest";
 import { createFolderSession, forgetFolderSnapshots, StaleComponentsError } from "$lib/plugins/trace/view/folder-session.svelte";
 import { createSnapshotCache } from "$lib/plugins/trace/view/folder-snapshots";
 import type { TraceBackend } from "$lib/plugins/trace/view/backend";
@@ -1220,7 +1220,8 @@ describe("acquireComponents", () => {
     gate.resolve(nodePage([node("old", 0)]));
     expect((await result).error).toBeInstanceOf(StaleComponentsError);
     // The old-token page never became the component's data.
-    expect(session.components.get("c1")?.token ?? "t2").toBe("t2");
+    await flush();
+    expect(session.components.get("c1")?.token).toBe("t2");
     session.dispose();
   });
 
@@ -1272,10 +1273,17 @@ describe("acquireComponents", () => {
   });
 
   describe("cancellation", () => {
+    // The request limiter is shared by the whole module: never leave a test's reads occupying its slots.
+    const gates: Array<{ resolve: (page: ComponentNodesPage) => void }> = [];
+    afterEach(async () => {
+      for (const gate of gates.splice(0)) gate.resolve(nodePage([node("done", 0)]));
+      await flush();
+    });
     // Four reads occupy the shared request slots, so a fifth component queues.
     const queued = async () => {
       const ids = ["c1", "c2", "c3", "c4", "c5"];
       const gate = deferred<ComponentNodesPage>();
+      gates.push(gate);
       const backend = fakeBackend({ components: vi.fn(async () => compPage("t1", ids)), nodes: vi.fn(() => gate.promise) });
       const session = await ready(backend);
       const occupying = ids.slice(0, 4).map((id) => session.ensure(id));
@@ -1356,6 +1364,89 @@ describe("acquireComponents", () => {
         session.dispose();
       }
     });
+  });
+
+  it("survives refreshes that keep the same token, reissuing its read", async () => {
+    const gate = deferred<ComponentNodesPage>();
+    const backend = fakeBackend({ nodes: vi.fn(() => gate.promise) });
+    const session = await ready(backend);
+    const lease = session.acquireComponents(["c1"], "t1");
+    const result = outcome(lease.results);
+    for (let i = 0; i < 6; i++) { await session.refresh(); await flush(); }
+    gate.resolve(nodePage([node("a", 0)]));
+    const settledResult = await result;
+    expect(settledResult.error).toBeUndefined();
+    expect(settledResult.value?.get("c1")?.token).toBe("t1");
+    expect(session.isStale("c1")).toBe(false);
+    session.dispose();
+  });
+
+  it("re-acquires an earlier component a same-token refresh outdated while a later one was loading", async () => {
+    const gate = deferred<ComponentNodesPage>();
+    const reload = deferred<ComponentNodesPage>();
+    let aReads = 0;
+    const backend = fakeBackend({
+      components: vi.fn(async () => compPage("t1", ["a", "b"])),
+      nodes: vi.fn((_d, _t, id) => id === "b" ? gate.promise : ++aReads === 1 ? Promise.resolve(nodePage([node("a", 0)])) : reload.promise),
+    });
+    const session = await ready(backend);
+    const result = outcome(session.acquireComponents(["a", "b"], "t1").results);
+    await flush();
+    await session.refresh();
+    await flush();
+    gate.resolve(nodePage([node("b", 1)]));
+    await flush();
+    reload.resolve(nodePage([node("a", 2)]));
+    const settledResult = await result;
+    expect(settledResult.error).toBeUndefined();
+    expect([...settledResult.value!.keys()]).toEqual(["a", "b"]);
+    expect(session.isStale("a")).toBe(false);
+    session.dispose();
+  });
+
+  it("does not raise an unhandled rejection when a released lease is dropped unawaited", async () => {
+    const unhandled: unknown[] = [];
+    const record = (reason: unknown) => { unhandled.push(reason); };
+    process.on("unhandledRejection", record);
+    try {
+      const gate = deferred<ComponentNodesPage>();
+      const session = await ready(fakeBackend({ nodes: vi.fn(() => gate.promise) }));
+      session.acquireComponents(["c1"], "t1").release();
+      await flush(); await flush();
+      gate.resolve(nodePage([node("a", 0)]));
+      await flush();
+      expect(unhandled).toEqual([]);
+      session.dispose();
+    } finally { process.off("unhandledRejection", record); }
+  });
+
+  it("never lets a read under a replaced index's token commit after a snapshot restore", async () => {
+    await (async () => {
+      const first = createFolderSession(fakeBackend({ components: vi.fn(async () => compPage("t1", ["c1", "c2"])) }));
+      first.setDirectory("/f"); await flush(); await first.ensure("c1"); first.dispose();
+    })();
+    const indexGate = deferred<FolderComponentsPage>();
+    const oldRead = deferred<ComponentNodesPage>();
+    const newRead = deferred<ComponentNodesPage>();
+    const backend = fakeBackend({
+      components: vi.fn(() => indexGate.promise),
+      nodes: vi.fn((_d, token) => token === "t1" ? oldRead.promise : newRead.promise),
+    });
+    const session = createFolderSession(backend);
+    session.setDirectory("/f");              // restores the t1 snapshot, revalidating in the background
+    expect(session.index?.token).toBe("t1");
+    const reading = session.ensure("c2");    // reads c2 under t1 ...
+    indexGate.resolve(compPage("t2", ["c1", "c2"]));
+    await flush();                            // ... while the t2 index replaces it
+    expect(session.index?.token).toBe("t2");
+    oldRead.resolve(nodePage([node("old", 0)]));
+    await flush();
+    expect(session.components.has("c2")).toBe(false);
+    newRead.resolve(nodePage([node("new", 1)]));
+    await reading; await flush();
+    expect(session.components.get("c2")).toMatchObject({ token: "t2" });
+    expect(session.components.get("c2")!.nodes.map((n) => n.key)).toEqual(["new"]);
+    session.dispose();
   });
 
   it("keeps a held lease's components reloading across refreshes until it is released", async () => {

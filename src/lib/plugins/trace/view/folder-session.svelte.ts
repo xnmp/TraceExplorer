@@ -316,15 +316,21 @@ export function createFolderSession(backend: TraceBackend = traceBackend, snapsh
     return settledTask;
   }
 
-  /** One id's fresh data under `token`, retrying reads abandoned by a refresh. */
+  /**
+   * One id's fresh data under `token`. A read abandoned because a refresh replaced the index object
+   * (same token) is simply reissued; only reads that fail to settle for other reasons use up attempts.
+   */
   async function acquireOne(id: string, token: string, signal: AbortSignal): Promise<ComponentData> {
-    for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    for (let attempt = 0; attempt <= MAX_RETRIES;) {
       signal.throwIfAborted();
       const folder = index;
       if (!folder || folder.token !== token) throw new StaleComponentsError();
       const have = components.get(id);
       if (have && !stale.has(id) && matchesIndex(have, folder)) return have;
-      if (await abortable(read(id, false), signal) === null) await abortable(settled(), signal);
+      const seen = generation;
+      if (await abortable(read(id, false), signal) !== null) continue;
+      await abortable(settled(), signal);
+      if (generation === seen || index?.token !== token) attempt++;
     }
     throw new Error("Trace kept changing while its components were loading");
   }
@@ -353,17 +359,20 @@ export function createFolderSession(backend: TraceBackend = traceBackend, snapsh
       const missing = [...wanted].find((id) => index?.token === token && !known.has(id));
       if (missing !== undefined) throw new Error(`Unknown Trace component ${missing}`);
       leaseInterests.add(wanted);
-      await Promise.all([...wanted].map((id) => acquireOne(id, token, joined)));
-      // Every id must still be fresh together: a refresh during a later read could have outdated an earlier one.
-      const folder = index;
-      if (!folder || folder.token !== token) throw new StaleComponentsError();
-      return new Map([...wanted].map((id) => {
-        const data = components.get(id);
-        if (!data || stale.has(id) || !matchesIndex(data, folder)) throw new StaleComponentsError();
-        return [id, data];
-      }));
+      // Every id must be fresh together: a refresh during a later read can outdate an earlier one (same
+      // token, new index object), so re-acquire until one pass finds them all current.
+      for (let pass = 0; pass <= MAX_RETRIES; pass++) {
+        await Promise.all([...wanted].map((id) => acquireOne(id, token, joined)));
+        const folder = index;
+        if (!folder || folder.token !== token) throw new StaleComponentsError();
+        const current = [...wanted].map((id) => [id, components.get(id)] as const);
+        if (current.every(([id, data]) => data && !stale.has(id) && matchesIndex(data, folder))) return new Map(current as [string, ComponentData][]);
+      }
+      throw new Error("Trace kept changing while its components were loading");
     };
     const results = gather().catch((cause) => { release(); throw cause; });
+    // A caller that drops a released lease never sees its rejection; that must not be unhandled.
+    results.catch(() => undefined);
     return { results, release };
   }
 
