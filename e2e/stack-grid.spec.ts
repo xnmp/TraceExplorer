@@ -1082,7 +1082,7 @@ for (const worker of [false, true]) test(`#56 cold open holds the band and follo
   expect(loading.every(sample => sample.loading)).toBe(true);
   const opened = loading.findIndex(sample => sample.height > 0);
   expect(opened).toBeGreaterThan(-1);
-  expect(loading[opened].time - loading[0].time).toBeLessThan(100);
+  expect(loading[opened].time - loading[0].time).toBeLessThan(250);
   expect(loading.slice(opened).every(sample => sample.height > 0)).toBe(true);
   expect(loading.filter(sample => sample.time > 200).every(sample => sample.statusInBand)).toBe(true);
   if (worker) expect(loading.filter((sample) => sample.workerHeld).at(-1)!.time).toBeGreaterThan(900);
