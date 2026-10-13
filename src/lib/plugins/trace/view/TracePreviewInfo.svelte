@@ -18,6 +18,7 @@
   import { parentDir } from "$lib/domain/path";
   import { traceInvalidation } from "../invalidation.svelte";
   import { promptTitles } from "../prompt-titles.svelte";
+  import ClampedPrompt from "./ClampedPrompt.svelte";
   import TraceThumbnail from "../TraceThumbnail.svelte";
   import { subjectNode } from "./preview-subject";
   import { tracePanes } from "./pane-registry.svelte";
@@ -74,7 +75,7 @@
   bind:offsetHeight={height}>
   {#if model}
     <section class="trace-info" aria-label="Trace">
-      {#if prompt}<p class="prompt" data-testid="trace-prompt">{prompt}</p>{/if}
+      {#if prompt}<div class="prompt-block">{#key `${model.artifactId ?? ""}|${model.runId ?? ""}`}<ClampedPrompt text={prompt} />{/key}</div>{/if}
       {#each notices as notice (notice)}<p class="note">{notice}</p>{/each}
       {#if details?.error}<p class="note error" role="status">{details.error}</p>{/if}
       {#if failure}<p class="note error" role="status">{failure}</p>{/if}
@@ -132,9 +133,8 @@
   .trace-preview { --inset: var(--preview-info-inset, 16px); --open-ms: 180ms; color: var(--text-primary); font-size: var(--font-size-caption); }
   .trace-info { display: flex; flex-direction: column; }
   .trace-info > * + * { border-top: 1px solid var(--divider); }
-  .prompt { margin: 0; padding: 10px var(--inset); font-size: 12px; line-height: var(--line-height-normal); white-space: pre-wrap; overflow-wrap: anywhere; }
   .note { margin: 0; padding: 8px var(--inset); color: var(--text-secondary); overflow-wrap: anywhere; }
-  .trace-info > .note + .note, .prompt + .note { border-top: none; padding-top: 0; }
+  .trace-info > .note + .note, .prompt-block + .note { border-top: none; padding-top: 0; }
   .error { color: var(--system-critical-text, var(--system-critical)); }
 
   .disclosure, summary { display: flex; align-items: center; justify-content: space-between; gap: 8px; width: 100%; box-sizing: border-box; margin: 0; padding: 8px var(--inset); font: inherit; color: var(--text-secondary); background: none; border: 0; text-align: left; cursor: pointer; list-style: none; }

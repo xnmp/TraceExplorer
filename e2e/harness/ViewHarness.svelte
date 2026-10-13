@@ -422,7 +422,7 @@
   .info-row:last-child { border-bottom: none; }
   .info-label { color: var(--text-tertiary); }
   .info-value { color: var(--text-secondary); }
-  .sections { flex: 0 1 auto; max-height: 55%; overflow: auto; border-top: 1px solid var(--divider); }
+  .sections { flex: 0 1 min(40%, 24rem); min-height: 0; overflow: auto; border-top: 1px solid var(--divider); }
   .builtin { margin: 0; padding: 12px; list-style: none; }
   .builtin .selected { outline: 2px solid var(--accent); }
   .badge { padding: 0 6px; border: 1px solid #a76d24; border-radius: 8px; color: #865413; font-size: 11px; }
