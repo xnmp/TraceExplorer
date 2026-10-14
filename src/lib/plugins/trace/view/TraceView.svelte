@@ -86,9 +86,11 @@
   let anchorReveal: AbortController | null = null;
   let heldAnchor: AnchorHold | null = null;
 
-  /** Compensates a held anchor once the publication in flight has started its motion (one notification per publication). */
-  const anchorLayoutChanged = () => controller.afterPresentation(() => heldAnchor?.update());
+  // Layout changes only by publication: after each one's motion starts, marquee hits and a held anchor follow it once,
+  // then (anchor and marquee alike) every frame while the controller reports presentation activity.
   controller.onPresented(() => { marqueeAttachment?.layoutChanged(); heldAnchor?.update(); });
+  /** Holds `element` on screen through the relayout an action causes (captured before any host write). */
+  const hold = (element: HTMLElement) => holdAnchor(scroller!, element, { moving: () => controller.moving, onRelease: () => { heldAnchor = null; } });
 
   function releaseAnchors(): void {
     anchorReveal?.abort(new DOMException("Trace reveal was superseded", "AbortError"));
@@ -349,7 +351,7 @@
     if (!found) return;
     if (keep === "hold") {
       const element = anchorTile(key, found.componentId);
-      if (scroller && element) heldAnchor = holdAnchor(scroller, element, () => { heldAnchor = null; }, anchorLayoutChanged);
+      if (scroller && element) heldAnchor = hold(element);
       applyFocusNode(key, modifiers, found.componentId);
       return;
     }
@@ -621,6 +623,7 @@
       },
       select: selectMarquee,
       draw: (rect) => marquee = rect,
+      moving: () => controller.moving,
     });
     marqueeAttachment = attachment;
     return { destroy() { attachment.destroy(); marqueeAttachment = null; } };
@@ -758,10 +761,9 @@
   /** Requests a stack open or closed (within an action). Its data is the scene controller's to load. */
   function setExpanded(id: string, opening: boolean): void {
     const element = scroller?.querySelector<HTMLElement>(`[data-grid-cell="${CSS.escape(coverOf(id))}"]`) ?? null;
-    if (scroller && element && !heldAnchor) heldAnchor = holdAnchor(scroller, element, () => { heldAnchor = null; }, anchorLayoutChanged);
+    if (scroller && element && !heldAnchor) heldAnchor = hold(element);
     if (!opening) { activations++; anchorReveal?.abort(new DOMException("Trace reveal was superseded", "AbortError")); }
     session.setStackOpen(id, opening);
-    anchorLayoutChanged();
   }
 
   function keepFocusedOpen(): void {

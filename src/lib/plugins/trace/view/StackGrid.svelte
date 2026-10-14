@@ -16,7 +16,7 @@
   import type { Publication, PreparationNotice, SceneController } from "./scene-controller.svelte";
   import { selectableSelector } from "./selectable";
   import { gridNeighbor, rovingStop } from "./stack-grid";
-  import { zoomOf } from "./motion";
+  import { presentationActivity, zoomOf } from "./motion";
   import { componentNodes, graphOwning, recordsByGraph } from "./scene-view";
   import { NO_GRAPH, presentationView } from "./presentation-view";
   import { createRenderHandles, GRID, sectionKey } from "./render-handles";
@@ -154,7 +154,7 @@
 </script>
 
 <div class="grid" role="grid" aria-label="Folder" aria-multiselectable="true" aria-colcount={layout.columns} aria-rowcount={rowCount}
-  bind:this={grid} {@attach handles.attach(GRID)} onfocusin={() => focusInside = true} onfocusout={focusout} style:margin="{gridPadding}px" style:width="{layout.size.width}px" style:height="{layout.size.height}px">
+  bind:this={grid} {@attach handles.attach(GRID)} {@attach presentationActivity(controller)} onfocusin={() => focusInside = true} onfocusout={focusout} style:margin="{gridPadding}px" style:width="{layout.size.width}px" style:height="{layout.size.height}px">
   {#each layout.rowBands as row (row.id)}
     <div class="row-band" data-grid-row-band={row.row} {@attach handles.attach(entityId("row", null, String(row.row)))} style:top="{row.y}px" style:width="{row.width}px" style:height="{row.height}px"></div>
   {/each}

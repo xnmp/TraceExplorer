@@ -3,34 +3,27 @@ import { holdAnchor } from "$lib/plugins/trace/view/motion";
 
 afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 
-/** Scroll offsets affect screen rects as in a browser, including zoom and clamping. */
+/**
+ * Scroll offsets affect screen rects as in a browser, including zoom and clamping. `moving` is the
+ * presentation activity the scene controller reports; nothing is read from DOM animations.
+ */
 function anchorFixture(zoom = 1, quantize: (value: number) => number = (value) => value) {
-  let sequence = 0, mutation!: (records: { type: string }[]) => void, resizeChanged!: () => void, present = true, top = 200, left = 20, limit = 1000;
+  let sequence = 0, present = true, top = 200, left = 20, limit = 1000, moving = false;
   const frames = new Map<number, FrameRequestCallback>();
   vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => { frames.set(++sequence, callback); return sequence; });
   vi.stubGlobal("cancelAnimationFrame", (id: number) => { frames.delete(id); });
-  const disconnect = vi.fn();
-  vi.stubGlobal("MutationObserver", class {
-    constructor(callback: (records: { type: string }[]) => void) { mutation = callback; }
-    observe() {}
-    disconnect = disconnect;
-  });
-  const resizeDisconnect = vi.fn();
-  vi.stubGlobal("ResizeObserver", class {
-    constructor(callback: () => void) { resizeChanged = callback; }
-    observe() {}
-    disconnect = resizeDisconnect;
-  });
   vi.stubGlobal("getComputedStyle", () => ({ width: "200px", boxSizing: "border-box" }));
-  const animations: Animation[] = [];
+  const listeners = new Map<string, number>();
   const horizontal = Object.assign(new EventTarget(), { scrollLeft: left });
   Object.defineProperty(horizontal, "scrollLeft", { get: () => left, set: (value) => { left = Math.max(0, Math.min(1000, value)); } });
   const surface = Object.assign(new EventTarget(), {
     children: [], scrollTop: top, clientLeft: 0, clientTop: 0, clientWidth: 192, clientHeight: 400,
     getBoundingClientRect: () => ({ width: 200 * zoom, left: 0, top: 0 }) as DOMRect,
-    getAnimations: () => animations,
     contains: () => present,
   });
+  const add = surface.addEventListener.bind(surface), remove = surface.removeEventListener.bind(surface);
+  surface.addEventListener = (type: string, ...rest: unknown[]) => { listeners.set(type, (listeners.get(type) ?? 0) + 1); add(type, ...(rest as [EventListener])); };
+  surface.removeEventListener = (type: string, ...rest: unknown[]) => { listeners.set(type, (listeners.get(type) ?? 0) - 1); remove(type, ...(rest as [EventListener])); };
   Object.defineProperty(surface, "scrollTop", { get: () => top, set: (value) => { top = Math.max(0, Math.min(limit, quantize(value))); } });
   Object.defineProperty(surface, "scrollHeight", { get: () => limit + surface.clientHeight });
   const position = { top: 300, left: 80 };
@@ -39,14 +32,15 @@ function anchorFixture(zoom = 1, quantize: (value: number) => number = (value) =
     closest: () => horizontal,
   } as unknown as HTMLElement;
   return {
-    scroller: surface as unknown as HTMLElement, horizontal, element, position, animations, disconnect,
+    scroller: surface as unknown as HTMLElement, horizontal, element, position,
+    options: (onRelease?: () => void) => ({ moving: () => moving, onRelease }),
     pending: () => frames.size,
+    /** Listeners the hold still has on the scroller. */
+    listening: () => [...listeners.values()].reduce((sum, count) => sum + count, 0),
     shrinkLimit(value: number) { limit = value; top = Math.min(top, limit); },
-    remove() { present = false; mutation([]); },
-    mutate() { mutation([{ type: "childList" }]); },
-    resize() { resizeChanged(); },
-    startMotion(iterations = 1) { animations.push({ playState: "running", effect: { getTiming: () => ({ iterations }) } } as unknown as Animation); },
-    finishMotion() { animations.length = 0; },
+    remove() { present = false; },
+    startMotion() { moving = true; },
+    finishMotion() { moving = false; },
     frame() { const pending = [...frames.values()]; frames.clear(); for (const callback of pending) callback(0); },
   };
 }
@@ -55,7 +49,7 @@ describe("holding a scroll anchor", () => {
   it("keeps the clicked tile anchored through floor-quantized scrolling", () => {
     const fixture = anchorFixture(1, Math.floor), released = vi.fn();
     const captured = fixture.element.getBoundingClientRect().top;
-    const hold = holdAnchor(fixture.scroller, fixture.element, released);
+    const hold = holdAnchor(fixture.scroller, fixture.element, fixture.options(released));
     fixture.startMotion();
     for (const shift of [14.59, 21.83, 70.16, 115]) {
       fixture.position.top = 300 - shift;
@@ -72,7 +66,7 @@ describe("holding a scroll anchor", () => {
   it.each([1, 1.3, 1.5])("compensates before a worker commit and through every motion frame at zoom %s", (zoom) => {
     const fixture = anchorFixture(zoom);
     const before = fixture.element.getBoundingClientRect();
-    const hold = holdAnchor(fixture.scroller, fixture.element);
+    const hold = holdAnchor(fixture.scroller, fixture.element, fixture.options());
     expect(fixture.pending()).toBe(0);
     // The earlier section commits while the clicked graph is still pending.
     fixture.startMotion();
@@ -106,7 +100,7 @@ describe("holding a scroll anchor", () => {
   it("does not let continuous interrupted relayouts grow frames or fight subsequent scrolling", () => {
     const fixture = anchorFixture();
     const before = fixture.element.getBoundingClientRect();
-    const hold = holdAnchor(fixture.scroller, fixture.element);
+    const hold = holdAnchor(fixture.scroller, fixture.element, fixture.options());
     for (let i = 0; i < 100; i++) {
       fixture.finishMotion();
       fixture.startMotion();
@@ -127,19 +121,19 @@ describe("holding a scroll anchor", () => {
     fixture.frame();
     expect(fixture.scroller.scrollTop).toBe(scrolled);
     expect(fixture.pending()).toBe(0);
-    expect(fixture.disconnect).toHaveBeenCalledOnce();
+    expect(fixture.listening()).toBe(0);
   });
 
   it.each(["scroll", "touchstart", "keydown", "scrollbar", "removed", "released"])("releases on %s and tears down motion monitoring", (reason) => {
     const fixture = anchorFixture();
     const released = vi.fn();
     fixture.startMotion();
-    const hold = holdAnchor(fixture.scroller, fixture.element, released);
+    const hold = holdAnchor(fixture.scroller, fixture.element, fixture.options(released));
     if (reason === "scroll") { fixture.scroller.scrollTop += 40; fixture.scroller.dispatchEvent(new Event("scroll")); }
     else if (reason === "touchstart") fixture.scroller.dispatchEvent(new Event("touchstart"));
     else if (reason === "keydown") fixture.scroller.dispatchEvent(Object.assign(new Event("keydown"), { key: "PageDown" }));
     else if (reason === "scrollbar") fixture.scroller.dispatchEvent(Object.assign(new Event("pointerdown"), { clientX: 196, clientY: 20 }));
-    else if (reason === "removed") fixture.remove();
+    else if (reason === "removed") { fixture.remove(); hold.update(); }
     else hold.release();
     const scrolled = fixture.scroller.scrollTop;
     fixture.position.top += 20;
@@ -148,13 +142,13 @@ describe("holding a scroll anchor", () => {
     expect(fixture.scroller.scrollTop).toBe(scrolled);
     expect(fixture.pending()).toBe(0);
     expect(released).toHaveBeenCalledOnce();
-    expect(fixture.disconnect).toHaveBeenCalledOnce();
+    expect(fixture.listening()).toBe(0);
   });
 
   it("detects scrolling before its scroll event is delivered", () => {
     const fixture = anchorFixture();
     fixture.startMotion();
-    holdAnchor(fixture.scroller, fixture.element);
+    holdAnchor(fixture.scroller, fixture.element, fixture.options());
     fixture.scroller.scrollTop += 40;
     fixture.frame();
     expect(fixture.scroller.scrollTop).toBe(240);
@@ -164,7 +158,7 @@ describe("holding a scroll anchor", () => {
   it("retains the hold on modifier keys and section content presses", () => {
     const fixture = anchorFixture();
     const before = fixture.element.getBoundingClientRect();
-    const hold = holdAnchor(fixture.scroller, fixture.element);
+    const hold = holdAnchor(fixture.scroller, fixture.element, fixture.options());
     for (const key of ["Shift", "Control", "Meta", "a"]) fixture.scroller.dispatchEvent(Object.assign(new Event("keydown"), { key }));
     fixture.scroller.dispatchEvent(Object.assign(new Event("pointerdown"), { clientX: 40, clientY: 20 }));
     fixture.position.top += 20;
@@ -178,7 +172,7 @@ describe("holding a scroll anchor", () => {
     const fixture = anchorFixture();
     const released = vi.fn();
     fixture.startMotion();
-    const hold = holdAnchor(fixture.scroller, fixture.element, released);
+    const hold = holdAnchor(fixture.scroller, fixture.element, fixture.options(released));
     fixture.position.top += delta;
     fixture.frame();
     expect(fixture.scroller.scrollTop).toBe(delta < 0 ? 0 : 1000);
@@ -195,7 +189,7 @@ describe("holding a scroll anchor", () => {
     fixture.position.top = 1100;
     const before = fixture.element.getBoundingClientRect();
     const released = vi.fn();
-    const hold = holdAnchor(fixture.scroller, fixture.element, released);
+    const hold = holdAnchor(fixture.scroller, fixture.element, fixture.options(released));
     fixture.position.top -= 100;
     fixture.shrinkLimit(900);
     fixture.scroller.dispatchEvent(new Event("scroll"));
@@ -209,20 +203,21 @@ describe("holding a scroll anchor", () => {
     hold.release();
   });
 
-  it("compensates structural changes and resized sections while motion is idle", () => {
+  it("compensates an idle presentation's publications once each, without frames", () => {
     const fixture = anchorFixture();
     const before = fixture.element.getBoundingClientRect();
-    const hold = holdAnchor(fixture.scroller, fixture.element);
+    const hold = holdAnchor(fixture.scroller, fixture.element, fixture.options());
+    // A publication that moves nothing (a snap) changes layout; its presentation notice updates the hold once.
     fixture.position.top -= 40;
-    fixture.mutate();
+    hold.update();
     expect(fixture.element.getBoundingClientRect().top).toBeCloseTo(before.top, 8);
     fixture.position.top += 30;
-    fixture.resize();
+    hold.update();
     expect(fixture.element.getBoundingClientRect().top).toBeCloseTo(before.top, 8);
     expect(fixture.pending()).toBe(0);
     hold.release();
     fixture.position.top += 10;
-    fixture.mutate(); fixture.resize();
+    hold.update();
     expect(fixture.element.getBoundingClientRect().top).toBeCloseTo(before.top + 10, 8);
   });
 
@@ -230,7 +225,7 @@ describe("holding a scroll anchor", () => {
     const fixture = anchorFixture();
     const before = fixture.element.getBoundingClientRect();
     fixture.startMotion();
-    const hold = holdAnchor(fixture.scroller, fixture.element);
+    const hold = holdAnchor(fixture.scroller, fixture.element, fixture.options());
     fixture.position.left -= 100;
     fixture.position.top += 20;
     fixture.frame();
@@ -242,10 +237,17 @@ describe("holding a scroll anchor", () => {
     hold.release();
   });
 
-  it("ignores infinite spinners when deciding whether to schedule a frame", () => {
+  it("follows the presentation's activity: frames only while it moves", () => {
     const fixture = anchorFixture();
-    fixture.startMotion(Infinity);
-    const hold = holdAnchor(fixture.scroller, fixture.element);
+    const hold = holdAnchor(fixture.scroller, fixture.element, fixture.options());
+    expect(fixture.pending()).toBe(0);
+    fixture.startMotion();
+    hold.update();
+    expect(fixture.pending()).toBe(1);
+    fixture.frame();
+    expect(fixture.pending()).toBe(1);
+    fixture.finishMotion();
+    fixture.frame();
     expect(fixture.pending()).toBe(0);
     hold.release();
   });

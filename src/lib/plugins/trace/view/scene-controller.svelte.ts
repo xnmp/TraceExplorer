@@ -204,7 +204,6 @@ export function createSceneController(options: SceneControllerOptions) {
   let motion: SceneMotion | null = null;
   /** A publication rendered but whose motion has not started yet. */
   let presenting: TransactionId | null = null;
-  let afterPresentation: (() => void)[] = [];
   let motionSettled: Promise<void> = Promise.resolve();
   let motionIdle = true;
   /** Presentation epochs: one per geometry publication. */
@@ -595,9 +594,6 @@ export function createSceneController(options: SceneControllerOptions) {
         }, () => undefined);
       }
       presenting = null;
-      const queued = afterPresentation;
-      afterPresentation = [];
-      for (const run of queued) run();
       for (const listener of [...presentedListeners]) listener();
       notify();
     });
@@ -610,7 +606,6 @@ export function createSceneController(options: SceneControllerOptions) {
     published = null;
     committed = null;
     presenting = null;
-    afterPresentation = [];
     failure = null;
     failed.clear();
     for (const cancel of deadlines.values()) cancel();
@@ -767,9 +762,19 @@ export function createSceneController(options: SceneControllerOptions) {
       });
     },
 
-    /** Runs `fn` after the rendered publication's motion has started (now, when none is pending). */
-    afterPresentation(fn: () => void): void {
-      if (presenting === null) fn(); else afterPresentation.push(fn);
+    /**
+     * Presentation activity: whether the published presentation's motion is running (from its
+     * start until its owned effects settle). Anchoring, marquee hit-testing and tooltips follow
+     * motion by this, never by reading animations from the DOM.
+     */
+    get moving(): boolean { return !motionIdle; },
+    /** Resolves once no presentation motion runs (at once when idle; also when the pane's lifetime ends). */
+    whenIdle(): Promise<void> {
+      return new Promise<void>((resolve) => {
+        const check = () => { if (disposed || motionIdle) { changeListeners.delete(check); resolve(); } };
+        changeListeners.add(check);
+        check();
+      });
     },
     /** Called after every publication's motion setup (once per publication). */
     onPresented(listener: () => void): () => void {

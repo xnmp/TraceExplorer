@@ -1,5 +1,5 @@
 import { deselectGesture, inClientArea, scaledClientArea, type DeselectEvent, type DeselectGesture, type DeselectPointer, type PointerPosition } from "$lib/domain/deselect-click";
-import { viewMoving, zoomOf } from "./motion";
+import { zoomOf } from "./motion";
 import { SELECTABLE_TILES } from "./selectable";
 import { clampPoint, intersectedTiles, normalizeRect, sameSelection, marqueeSelection, type MarqueeRect } from "./marquee-selection";
 
@@ -10,6 +10,8 @@ interface Options {
   end(commit: boolean): void;
   select(keys: readonly string[], additive: boolean): void;
   draw(rect: MarqueeRect | null): void;
+  /** Whether the presentation is moving: hits are re-read every frame while it does. */
+  moving(): boolean;
 }
 
 /** Host semantics: immediate start, window listeners (no capture), no edge auto-scroll, rAF moves. */
@@ -63,7 +65,7 @@ export function attachMarqueeSelection(element: HTMLElement, options: Options) {
       options.select(drag.visited, drag.additive);
       drag.ownsSelection = options.captureSelection();
     }
-    if (viewMoving(element)) schedule(false);
+    if (options.moving()) schedule(false);
   };
   const schedule = (fromPointer = true) => {
     pending = true;

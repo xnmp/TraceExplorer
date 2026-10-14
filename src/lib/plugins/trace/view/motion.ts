@@ -1,7 +1,8 @@
 /**
  * View motion helpers shared by the Trace view: zoom measurement, the reduced-motion preference,
- * and scroll anchoring (`holdAnchor`) while finite motion runs. Presentation motion itself is
- * modelled in `presentation.ts` and driven natively by `scene-motion.ts`.
+ * and scroll anchoring (`holdAnchor`) through a presentation's motion. Presentation motion itself
+ * is modelled in `presentation.ts` and driven natively by `scene-motion.ts`; whether it is active
+ * is the scene controller's to say (`SceneController.moving`), never read from the DOM.
  *
  * Positions are measured in the view's own CSS pixels, the space that keyframes, inline
  * positions and scroll offsets use. Hosts may zoom the whole document (CSS `zoom` on the root),
@@ -24,9 +25,25 @@ export function zoomOf(element: Element, rect: DOMRect = element.getBoundingClie
   return width > 0 && rect.width > 0 ? rect.width / width : 1;
 }
 
-/** Infinite spinners never keep geometry sampling or navigation waiting. */
-export const viewMoving = (scroller: HTMLElement): boolean => scroller.getAnimations({ subtree: true }).some((animation) =>
-  (animation.pending || animation.playState === "running") && animation.effect?.getTiming().iterations !== Infinity);
+/** A Trace grid's presentation activity (its scene controller's), for code that only holds an element (the tooltip). */
+export interface PresentationActivity {
+  readonly moving: boolean;
+  whenIdle(): Promise<void>;
+}
+const activities = new WeakMap<Element, PresentationActivity>();
+/** Attachment: registers `activity` for the element it is attached to (a grid) and its descendants. */
+export const presentationActivity = (activity: PresentationActivity) => (element: Element) => {
+  activities.set(element, activity);
+  return () => { if (activities.get(element) === activity) activities.delete(element); };
+};
+/** The presentation activity of the grid holding `element`, if any. */
+export function activityOf(element: Element | null): PresentationActivity | null {
+  for (let at = element; at; at = at.parentElement) {
+    const activity = activities.get(at);
+    if (activity) return activity;
+  }
+  return null;
+}
 
 const anchorOffsets = new WeakMap<Element, { top: number; left: number }>();
 
@@ -40,14 +57,26 @@ export function isAnchorScroll(target: EventTarget | null): boolean {
     && !releasesAnchor({ type: "scroll", actual: (target as Element).scrollLeft, expected: set.left });
 }
 
-export interface AnchorHold { update(): void; release(): void }
+export interface AnchorHold {
+  /** Compensates now, then once per frame while the presentation moves. Called once after each publication's motion starts. */
+  update(): void;
+  release(): void;
+}
+
+export interface AnchorOptions {
+  /** Whether the presentation is moving (the scene controller's presentation activity). */
+  readonly moving?: () => boolean;
+  readonly onRelease?: () => void;
+}
 
 /**
- * Capture before changing selection. One frame loop samples all finite view
- * motion (WAAPI drives the animations); commits/toggles wake it via update.
- * Idle motion leaves the anchor valid without a frame or a pending promise.
+ * Holds `element` where it is on screen: capture before changing selection. The owner calls
+ * `update` once after each publication's motion starts (layout only changes by publication);
+ * while the presentation moves, one frame loop follows it. An idle presentation leaves the
+ * anchor valid without a frame or a pending promise. User scrolling, scrollbar presses and
+ * navigation keys release it, and so does an adjustment the scroll range cannot take.
  */
-export function holdAnchor(scroller: HTMLElement, element: HTMLElement, onRelease: () => void = () => {}, onLayoutChange?: () => void): AnchorHold {
+export function holdAnchor(scroller: HTMLElement, element: HTMLElement, { moving = () => false, onRelease = () => {} }: AnchorOptions = {}): AnchorHold {
   const before = element.getBoundingClientRect();
   const horizontal = element.closest<HTMLElement>("[data-horizontal-scroll]");
   let expectedTop = scroller.scrollTop, expectedLeft = horizontal?.scrollLeft ?? 0;
@@ -61,8 +90,6 @@ export function holdAnchor(scroller: HTMLElement, element: HTMLElement, onReleas
     cancelAnimationFrame(frame);
     for (const type of USER_SCROLL) scroller.removeEventListener(type, onInput, true);
     scroller.removeEventListener("scroll", onScroll, true);
-    observer.disconnect();
-    resize.disconnect();
     onRelease();
   };
   const onInput = (event: Event) => {
@@ -93,27 +120,6 @@ export function holdAnchor(scroller: HTMLElement, element: HTMLElement, onReleas
       || (!!horizontal && releasesAnchor({ type: "scroll", actual: horizontal.scrollLeft, expected: expectedLeft }));
   };
   const onScroll = (event: Event) => { if ((event.target === scroller || event.target === horizontal) && movedByOther()) release(); };
-  const changed = () => {
-    if (!held) return;
-    if (!scroller.contains(element)) { release(); return; }
-    if (onLayoutChange) onLayoutChange(); else update();
-  };
-  // An idle anchor must also survive index/placeholder/header changes, without
-  // waiting for the next worker commit. Observe only current section roots;
-  // rebuilding on structural changes drops removed section references.
-  const resize = new ResizeObserver(changed);
-  const observeSizes = () => {
-    resize.disconnect();
-    resize.observe(scroller);
-    for (const child of scroller.children) resize.observe(child);
-  };
-  const observer = new MutationObserver((records) => {
-    if (!held) return;
-    if (records.some((record) => record.type === "childList" && record.target === scroller)) observeSizes();
-    changed();
-  });
-  observer.observe(scroller, { childList: true, subtree: true, attributes: true, characterData: true });
-  observeSizes();
   for (const type of USER_SCROLL) scroller.addEventListener(type, onInput, { passive: true, capture: true });
   scroller.addEventListener("scroll", onScroll, { passive: true, capture: true });
   const adjust = () => {
@@ -136,7 +142,7 @@ export function holdAnchor(scroller: HTMLElement, element: HTMLElement, onReleas
     // on the view's vertical scroll axis.
     if (releasesAnchor({ type: "adjustment", actual: expectedTop, requested: requestedTop })) release();
   };
-  const schedule = () => { if (held && !frame && viewMoving(scroller)) frame = requestAnimationFrame(step); };
+  const schedule = () => { if (held && !frame && moving()) frame = requestAnimationFrame(step); };
   const step = () => {
     frame = 0;
     adjust();
