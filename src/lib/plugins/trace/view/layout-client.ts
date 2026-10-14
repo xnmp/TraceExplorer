@@ -3,18 +3,33 @@
  * (SDK 2 hosts announce "blobWorkers"; older CSPs reject blob workers), and otherwise run on the
  * main thread after yielding a frame. The worker gets one job at a time, so a request aborted
  * while it waits (its view moved on) is dropped instead of computed.
+ *
+ * A computation cannot be stopped inside the worker, so a watchdog bounds each one: a worker
+ * still computing after `WORKER_WATCHDOG_MS` (its caller aborted or not) is terminated and
+ * replaced, and the queue continues on the replacement. A live job is retried once there, then
+ * fails. Callbacks of a retired worker are ignored.
  */
 import type { FolderLayout, FolderLayoutEngine, FolderLayoutInput } from "$lib/domain/trace-graph/folder-layout";
 import { hostAllowsBlobWorkers } from "../../../../sdk";
 import { createLayoutWorker } from "./layout-worker-factory";
 
+/** How long the worker may compute one job before it is considered wedged (docs/scene-transactions.md §9). */
+export const WORKER_WATCHDOG_MS = 5000;
+
 let worker: Worker | null | undefined;
 let sequence = 0;
 /** A whole-folder engine run: rejected as soon as it is aborted, even while the worker computes it (the reply is then dropped). */
-interface FolderJob { readonly id: number; readonly input: FolderLayoutInput; readonly fallback: FolderLayoutEngine; readonly signal?: AbortSignal; resolve(layout: FolderLayout): void; reject(error: Error): void }
+interface FolderJob {
+  readonly id: number; readonly input: FolderLayoutInput; readonly fallback: FolderLayoutEngine; readonly signal?: AbortSignal;
+  /** Already requeued once after a wedged worker. */
+  retried: boolean;
+  resolve(layout: FolderLayout): void; reject(error: Error): void;
+}
 /** Jobs waiting for the worker, oldest first, and the one it is computing. */
 let queue: FolderJob[] = [];
 let running: FolderJob | null = null;
+/** Cancels the running job's watchdog. */
+let stopWatchdog = () => {};
 /** Layouts requested and not yet delivered (queued, computing or yielding); lets tests wait for the view to be quiescent. */
 let outstanding = 0;
 export const layoutsPending = (): number => outstanding;
@@ -39,6 +54,8 @@ function pump(): void {
     running = next;
     try {
       worker.postMessage({ id: next.id, folder: next.input });
+      const computing = worker, handle = setTimeout(() => wedged(computing), WORKER_WATCHDOG_MS);
+      stopWatchdog = () => clearTimeout(handle);
     } catch (error) {
       running = null;
       next.reject(asError(error));
@@ -50,6 +67,7 @@ function pump(): void {
 function finish(outcome: { folder: FolderLayout } | { error: Error }): void {
   const job = running;
   running = null;
+  stopWatchdog();
   if ("folder" in outcome) job?.resolve(outcome.folder); else job?.reject(outcome.error);
   pump();
 }
@@ -57,6 +75,7 @@ function finish(outcome: { folder: FolderLayout } | { error: Error }): void {
 function fallBack(): void {
   // A worker that fails to load (for example under an older host CSP) is
   // retired; queued requests complete on the main thread instead, one per frame.
+  stopWatchdog();
   worker?.terminate();
   worker = null;
   const jobs = [...(running ? [running] : []), ...queue];
@@ -65,17 +84,32 @@ function fallBack(): void {
   for (const job of jobs) runOnMainThread(job);
 }
 
+/** The watchdog: `stuck` is still computing its job. Replace it, requeue the job once if its caller still wants it, and continue. */
+function wedged(stuck: Worker): void {
+  if (worker !== stuck) return;
+  const job = running;
+  running = null;
+  stuck.terminate();
+  worker = undefined;
+  if (job && !job.signal?.aborted) {
+    if (job.retried) job.reject(new Error("Trace layout took too long"));
+    else { job.retried = true; queue.unshift(job); }
+  }
+  if (workerInstance()) pump(); else fallBack();
+}
+
 function workerInstance(): Worker | null {
   if (worker !== undefined) return worker;
   if (typeof Worker === "undefined" || !hostAllowsBlobWorkers()) return (worker = null);
   try {
     const created: Worker = createLayoutWorker();
+    // Only the current worker's callbacks count: a retired (wedged) worker's late replies are ignored.
     created.onmessage = (event: MessageEvent<{ id: number; folder?: FolderLayout; error?: string }>) => {
-      if (running?.id !== event.data.id) return;
+      if (worker !== created || running?.id !== event.data.id) return;
       finish(event.data.folder ? { folder: event.data.folder } : { error: new Error(event.data.error ?? "Layout failed") });
     };
-    created.onmessageerror = () => finish({ error: new Error("Trace layout reply could not be read") });
-    created.onerror = (event) => { event.preventDefault(); fallBack(); };
+    created.onmessageerror = () => { if (worker === created) finish({ error: new Error("Trace layout reply could not be read") }); };
+    created.onerror = (event) => { event.preventDefault(); if (worker === created) fallBack(); };
     worker = created;
   } catch {
     worker = null;
@@ -93,7 +127,7 @@ export function computeFolderLayout(input: FolderLayoutInput, fallback: FolderLa
   if (signal?.aborted) return Promise.reject(aborted());
   outstanding++;
   const pending = new Promise<FolderLayout>((resolve, reject) => {
-    const job: FolderJob = { id: ++sequence, input, fallback, signal, resolve, reject };
+    const job: FolderJob = { id: ++sequence, input, fallback, signal, retried: false, resolve, reject };
     if (!workerInstance()) { runOnMainThread(job); return; }
     signal?.addEventListener("abort", () => {
       queue = queue.filter((other) => other !== job);
@@ -119,6 +153,7 @@ export function holdLayoutWork(): () => void {
 
 /** Releases the worker (plugin disable/removal). */
 export function disposeLayouts(): void {
+  stopWatchdog();
   worker?.terminate();
   worker = undefined;
   for (const job of [...(running ? [running] : []), ...queue]) job.reject(new Error("Trace layout was disposed"));

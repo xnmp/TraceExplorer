@@ -2,14 +2,15 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 const sdk = vi.hoisted(() => ({ allow: false }));
 vi.mock("../../../src/sdk", () => ({ hostAllowsBlobWorkers: () => sdk.allow }));
-const created = vi.hoisted(() => ({ count: 0, last: null as null | { posted: Array<{ id: number; folder: unknown }>; onmessage: ((event: { data: unknown }) => void) | null; terminated: boolean } }));
+type FakeWorker = { posted: Array<{ id: number; folder: unknown }>; onmessage: ((event: { data: unknown }) => void) | null; terminated: boolean };
+const created = vi.hoisted(() => ({ count: 0, last: null as null | FakeWorker, all: [] as FakeWorker[] }));
 vi.mock("$lib/plugins/trace/view/layout.worker.ts?worker&inline", () => ({
   default: class {
     posted: Array<{ id: number; folder: unknown }> = [];
     onmessage: ((event: { data: unknown }) => void) | null = null;
     onerror: unknown = null;
     terminated = false;
-    constructor() { created.count++; created.last = this; }
+    constructor() { created.count++; created.last = this; created.all.push(this); }
     terminate() { this.terminated = true; }
     postMessage(message: { id: number; folder: { width: number } }) {
       if (message.folder.width === 13) throw new DOMException("could not clone", "DataCloneError");
@@ -25,6 +26,7 @@ async function load() {
 
 beforeEach(() => {
   created.count = 0;
+  created.all = [];
   sdk.allow = false;
   vi.stubGlobal("requestAnimationFrame", (cb: () => void) => { queueMicrotask(cb); return 0; });
 });
@@ -137,6 +139,66 @@ describe("layout client (whole folder runs)", () => {
       worker.onmessage!({ data: { id: next.id, folder: folderLayout(600) } });
       await expect(second).resolves.toEqual({ width: 600 });
       expect(layoutsPending()).toBe(0);
+    });
+
+    describe("watchdog", () => {
+      beforeEach(() => { vi.useFakeTimers(); });
+      afterEach(() => { vi.useRealTimers(); });
+      const widths = (worker: FakeWorker) => worker.posted.map((job) => (job as unknown as Posted).folder!.width);
+
+      it("terminates a worker still computing an aborted run after the bound, and serves the queue from a replacement", async () => {
+        const { computeFolderLayout, layoutsPending, WORKER_WATCHDOG_MS } = await load();
+        const stale = new AbortController();
+        const wedged = computeFolderLayout(folderInput(100), vi.fn() as never, stale.signal);
+        const next = computeFolderLayout(folderInput(200), vi.fn() as never);
+        const first = created.last!;
+        stale.abort();
+        await expect(wedged).rejects.toMatchObject({ name: "AbortError" });
+        vi.advanceTimersByTime(WORKER_WATCHDOG_MS - 1);
+        expect(first.terminated).toBe(false);
+        expect(created.count).toBe(1);
+        vi.advanceTimersByTime(1);
+        expect(first.terminated).toBe(true);
+        expect(created.count).toBe(2);
+        const replacement = created.last!;
+        // The queued run is posted at once; the aborted one is not retried.
+        expect(widths(replacement)).toEqual([200]);
+        // A late reply from the terminated worker is ignored.
+        first.onmessage!({ data: { id: first.posted[0].id, folder: folderLayout(100) } });
+        replacement.onmessage!({ data: { id: replacement.posted[0].id, folder: folderLayout(200) } });
+        await expect(next).resolves.toEqual({ width: 200 });
+        expect(layoutsPending()).toBe(0);
+      });
+
+      it("retries a live run once on a replacement worker, then fails it", async () => {
+        const { computeFolderLayout, layoutsPending, WORKER_WATCHDOG_MS } = await load();
+        const run = computeFolderLayout(folderInput(300), vi.fn() as never);
+        const outcome = run.then(() => "resolved", (error: Error) => error.message);
+        vi.advanceTimersByTime(WORKER_WATCHDOG_MS);
+        expect(created.count).toBe(2);
+        expect(widths(created.last!)).toEqual([300]);
+        vi.advanceTimersByTime(WORKER_WATCHDOG_MS);
+        expect(await outcome).toMatch(/too long/);
+        expect(created.all.slice(0, 2).every((worker) => worker.terminated)).toBe(true);
+        expect(layoutsPending()).toBe(0);
+        // The pool keeps serving.
+        const after = computeFolderLayout(folderInput(400), vi.fn() as never);
+        const current = created.last!;
+        current.onmessage!({ data: { id: current.posted.at(-1)!.id, folder: folderLayout(400) } });
+        await expect(after).resolves.toEqual({ width: 400 });
+      });
+
+      it("leaves a worker that replies within the bound alone", async () => {
+        const { computeFolderLayout, WORKER_WATCHDOG_MS } = await load();
+        const run = computeFolderLayout(folderInput(500), vi.fn() as never);
+        const worker = created.last!;
+        vi.advanceTimersByTime(WORKER_WATCHDOG_MS - 1);
+        worker.onmessage!({ data: { id: worker.posted[0].id, folder: folderLayout(500) } });
+        await expect(run).resolves.toEqual({ width: 500 });
+        vi.advanceTimersByTime(WORKER_WATCHDOG_MS * 2);
+        expect(worker.terminated).toBe(false);
+        expect(created.count).toBe(1);
+      });
     });
 
     it("rejects an input already aborted without posting it", async () => {
