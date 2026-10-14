@@ -17,6 +17,7 @@ import { folderCandidates, folderComponents, folderPage, isDirectFolderSeed, nat
 import { isLocalAbsolutePath } from "$lib/domain/target-location";
 import { canonicalFixtureImagePath, fixtureImageEntries } from "./image-input-files";
 import { withNativeRequestCapacity } from "./request-capacity";
+import { createReadGate, readInfo, type ReadPredicate } from "./read-gate";
 
 export const eligibilityPending = new URLSearchParams(location.search).get("eligibilityPending") !== "0";
 
@@ -208,13 +209,11 @@ const inputDirectories = new Set<string>();
 let previewLatency = 0;
 // Delay of the folder index and component reads, in ms, like a native backend's IPC round trip.
 let folderLatency = 0;
-let folderReadsHeld = false;
+const folderGate = createReadGate();
 /** How many of the next `trace_component_nodes` reads fail. */
 let nodeReadFailures = 0;
-let heldFolderReads: Array<() => void> = [];
 /** Hold node replies independently, so an index refresh can overtake a cold activation. */
-let nodeReadsHeld = false;
-let heldNodeReads: Array<() => void> = [];
+const nodeGate = createReadGate();
 const titleCalls: number[] = [];
 const titleWaiters = new Map<number, (title: string) => void>();
 
@@ -280,11 +279,11 @@ configureBackend(withNativeRequestCapacity({
     calls.push({ method, params: structuredClone(params) });
     const reply = (value: unknown) => Promise.resolve(value as T);
     const later = (value: unknown) => previewLatency ? new Promise<T>((resolve) => setTimeout(() => resolve(value as T), previewLatency)) : reply(value);
-    const folderReply = (value: unknown) => folderReadsHeld
-      ? new Promise<T>((resolve) => heldFolderReads.push(() => resolve(value as T)))
+    const info = readInfo(method, params);
+    const folderReply = (value: unknown) => folderGate.holds(info)
+      ? folderGate.delay(info, value as T)
       : folderLatency ? new Promise<T>((resolve) => setTimeout(() => resolve(value as T), folderLatency)) : reply(value);
-    const nodeReply = (value: unknown) => nodeReadsHeld
-      ? new Promise<T>((resolve) => heldNodeReads.push(() => resolve(value as T))) : folderReply(value);
+    const nodeReply = (value: unknown) => nodeGate.holds(info) ? nodeGate.delay(info, value as T) : folderReply(value);
     const token = String(version);
     switch (method) {
       // MIRROR answers with the same Trace: another folder whose components reuse the same ids.
@@ -596,10 +595,20 @@ export const backend = {
   dropInput(child: string, parent: string) { const parentKey = state.names.get(parent)!; update(state.names.get(child)!, { parents: state.nodes.find((node) => node.key === state.names.get(child))!.parents.filter((key) => key !== parentKey) }); changed(); },
   addInput(child: string, parent: string) { const node = state.nodes.find((candidate) => candidate.key === state.names.get(child))!; update(node.key, { parents: [...node.parents, state.names.get(parent)!] }); changed(); },
   failNodeReads(count: number) { nodeReadFailures = count; },
-  holdFolderReads() { folderReadsHeld = true; },
-  releaseFolderReads() { folderReadsHeld = false; const pending = heldFolderReads; heldFolderReads = []; pending.forEach((release) => release()); },
-  holdNodeReads() { nodeReadsHeld = true; },
-  releaseNodeReads() { nodeReadsHeld = false; const pending = heldNodeReads; heldNodeReads = []; pending.forEach((release) => release()); },
+  /** Holds folder replies (`folder_has_trace`, components, members, and node pages the node gate lets through); `match` limits it to some requests. */
+  holdFolderReads(match?: ReadPredicate) { folderGate.hold(match); },
+  heldFolderReads: () => folderGate.held(),
+  releaseNextFolderRead: () => folderGate.releaseNext(),
+  rejectNextFolderRead: (error?: unknown) => folderGate.rejectNext(error),
+  releaseFolderReads() { folderGate.releaseAll(); },
+  /** Holds `trace_component_nodes` replies independently of the folder gate; `match` limits it (directory, componentId, offset). */
+  holdNodeReads(match?: ReadPredicate) { nodeGate.hold(match); },
+  heldNodeReads: () => nodeGate.held(),
+  releaseNextNodeRead: () => nodeGate.releaseNext(),
+  rejectNextNodeRead: (error?: unknown) => nodeGate.rejectNext(error),
+  releaseNodeReads() { nodeGate.releaseAll(); },
   releaseSaves() { holdSaves = false; const pending = heldSaves; heldSaves = []; pending.forEach((run) => run()); },
-  reset() { nodeReadFailures = 0; previewLatency = 0; folderLatency = 0; pickerResult = undefined; nextSaveFailure = null; inputFailures = 0; inputsHeld = false; heldInputs = []; inputSymlinks.clear(); inputDirectories.clear(); imageRuns.clear(); imageJobs.clear(); imageOperations.clear(); billing.clear(); state = scenario(); version += 1; calls.length = 0; },
+  /** Stops both read gates and drops what they hold. */
+  resetGates() { folderGate.reset(); nodeGate.reset(); },
+  reset() { folderGate.reset(); nodeGate.reset(); nodeReadFailures = 0; previewLatency = 0; folderLatency = 0; pickerResult = undefined; nextSaveFailure = null; inputFailures = 0; inputsHeld = false; heldInputs = []; inputSymlinks.clear(); inputDirectories.clear(); imageRuns.clear(); imageJobs.clear(); imageOperations.clear(); billing.clear(); state = scenario(); version += 1; calls.length = 0; },
 };

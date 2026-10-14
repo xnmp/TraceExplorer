@@ -8,7 +8,7 @@
  */
 import { layoutGraph, type GraphLayout, type LayoutRequest } from "$lib/domain/trace-graph/layout";
 import { hostAllowsBlobWorkers } from "../../../../sdk";
-import LayoutWorker from "./layout.worker.ts?worker&inline";
+import { createLayoutWorker } from "./layout-worker-factory";
 export { canLayoutInline } from "$lib/domain/trace-graph/layout-workload";
 
 const CACHE_LIMIT = 48;
@@ -92,7 +92,7 @@ function workerInstance(): Worker | null {
   if (worker !== undefined) return worker;
   if (typeof Worker === "undefined" || !hostAllowsBlobWorkers()) return (worker = null);
   try {
-    const created: Worker = new LayoutWorker();
+    const created: Worker = createLayoutWorker();
     created.onmessage = (event: MessageEvent<{ id: number; layout?: GraphLayout; error?: string }>) => {
       if (running?.id !== event.data.id) return;
       finish(event.data.layout ? { layout: event.data.layout } : { error: new Error(event.data.error ?? "Layout failed") });
