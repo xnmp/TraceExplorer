@@ -1014,10 +1014,8 @@ for (const worker of [false, true]) test(`#56 cold open holds the band and follo
   const samples = await page.evaluate(async ({ name, worker }) => {
     const w = window as any, backend = w.trace.backend;
     backend.holdNodeReads();
-    const original = Worker.prototype.postMessage, held: Array<() => void> = [];
-    if (worker) Worker.prototype.postMessage = function (message, options) {
-      held.push(() => original.call(this, message, options as any));
-    };
+    if (worker) w.trace.holdLayoutReplies();
+    const heldReplies = (): number => worker ? w.trace.heldLayoutReplies().length : 0;
     const section = document.querySelector<HTMLElement>(`section[aria-label="${name}"]`)!;
     const cover = section.querySelector<HTMLElement>("[data-grid-cell]")!;
     const row = Number(cover.getAttribute("aria-rowindex")) - 1;
@@ -1044,21 +1042,19 @@ for (const worker of [false, true]) test(`#56 cold open holds the band and follo
         samples.push({ time, top: following.getBoundingClientRect().top + view.scrollTop,
           computedTop: parseFloat(getComputedStyle(following).top) + grid.getBoundingClientRect().top + view.scrollTop,
           bandBottom: bounds.bottom + view.scrollTop, height: bounds.height, content,
-          loading: !!status?.textContent?.trim(), workerHeld: held.length > 0,
+          loading: !!status?.textContent?.trim(), workerHeld: heldReplies() > 0,
           statusInBand: !!statusBounds && statusBounds.top >= bounds.top && statusBounds.bottom <= bounds.bottom });
         if (!readsReleased && time >= 500) { backend.releaseNodeReads(); readsReleased = true; }
-        if (held.length && workerAt === null) workerAt = time;
+        if (heldReplies() && workerAt === null) workerAt = time;
         if (workerAt !== null && time - workerAt >= 500 && !workerReleased) {
-          Worker.prototype.postMessage = original;
-          held.splice(0).forEach((release) => release()); workerReleased = true;
+          w.trace.releaseLayoutReplies(); workerReleased = true;
         }
         const moving = document.getAnimations().some((animation) => animation.playState === "running");
         stable = content && readsReleased && workerReleased && !moving && !w.trace.layoutsPending() ? stable + 1 : 0;
       }
       return { baseline, samples, settled: stable >= 4 };
     } finally {
-      backend.releaseNodeReads(); Worker.prototype.postMessage = original;
-      held.splice(0).forEach((release) => release());
+      backend.releaseNodeReads(); w.trace.releaseLayoutReplies();
     }
   }, { name: worker ? "fan" : "gym", worker });
   await test.info().attach('cold-opening-frames', { body: JSON.stringify(samples), contentType: 'application/json' });

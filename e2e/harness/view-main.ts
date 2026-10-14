@@ -11,9 +11,21 @@ if (query.get("scrollbars") === "host") document.head.append(Object.assign(docum
 if (query.has("zoom")) document.documentElement.style.zoom = query.get("zoom")!;
 import { promptTitles } from "$lib/plugins/trace/prompt-titles.svelte";
 import { layoutsPending } from "$lib/plugins/trace/view/layout-client";
+import { layoutGate, type LayoutReplyPredicate } from "./layout-gate";
+import { sceneSink } from "./scene-sink";
 import ViewHarness from "./ViewHarness.svelte";
 const errors: string[] = [];
 window.addEventListener("error", (event) => errors.push(event.message));
 window.addEventListener("unhandledrejection", (event) => errors.push(String(event.reason)));
 const application = mount(ViewHarness, { target: document.querySelector("#app")! }) as { harness: Record<string, unknown> };
-(window as any).trace = { ...application.harness, errors, layoutsPending, configureTitles: (settings: Record<string, unknown> = {}) => promptTitles.configure(settings) };
+(window as any).trace = { ...application.harness, errors, layoutsPending,
+  /** Worker-reply gate: the real worker runs, delivery of its replies waits. */
+  holdLayoutReplies: (match?: LayoutReplyPredicate) => layoutGate.hold(match),
+  heldLayoutReplies: () => layoutGate.heldReplies(),
+  releaseNextLayoutReply: () => layoutGate.releaseNext(),
+  releaseLayoutReplies: () => layoutGate.releaseAll(),
+  /** Scene instrumentation events: events(), clear(), and the production hooks. */
+  scene: sceneSink,
+  /** Stops every gate and clears recorded events (pages are fresh per test, so this is for tests that reuse one). */
+  resetGates: () => { layoutGate.reset(); sceneSink.clear(); (application.harness.backend as { resetGates(): void }).resetGates(); },
+  configureTitles: (settings: Record<string, unknown> = {}) => promptTitles.configure(settings) };
