@@ -9,6 +9,7 @@ import {
 } from "$lib/plugins/trace/view/presentation";
 import { folderInput, handCase, makeFolder, sourcesOf, type Folder } from "../../domain/trace-graph/folder-layout-fixtures";
 import { presentationView } from "$lib/plugins/trace/view/presentation-view";
+import { motionParticipants } from "$lib/plugins/trace/view/participants";
 
 // ─── Easing ─────────────────────────────────────────────────────────────────
 
@@ -467,18 +468,24 @@ describe("retargetPresentation: review fixes (099e72f)", () => {
     }
   });
 
-  it("a returning record that does not take part leaves its displayed retiree to finish its own fade", () => {
+  // A record coming back while its retiree is shown always takes part (`motionParticipants`),
+  // wherever the viewport is, so it takes over the retiree: a tile is never drawn twice. (A
+  // non-participant return, which would leave both copies, is unreachable.)
+  it("a record returning while its retiree is shown takes part wherever the viewport is, and takes over the retiree", () => {
     const open = sceneFor([A]), closed = sceneFor([], { previous: open.layout }), reopened = sceneFor([A], { previous: closed.layout });
     const closing = step(staticPresentation(open), open, closed, Infinity).presentation;
     const displayed = samplePresentation(closing, fadeEnd(closing) / 2);
-    const members = [...closing.retiring.values()].filter((r) => r.group !== null && displayed.poses.get(r.renderId)!.opacity > PAINTED);
-    expect(members.length).toBeGreaterThan(0);
-    // No record of the reopened band takes part (all far from a viewport): each stays at its target.
-    const p = retargetPresentation(displayed, reopened, diffScenes(closed, reopened), { ...participants(), records: new Set() });
+    const members = [...closing.retiring.values()].filter((r) => r.group !== null && r.record.kind !== "band" && displayed.poses.get(r.renderId)!.opacity > PAINTED);
+    expect(members.some((member) => member.record.kind === "tile")).toBe(true);
+    const records = motionParticipants({ next: reopened, displayed, viewport: { x: 1e6, y: 1e6, width: 10, height: 10 } })!;
+    for (const member of members) expect(records.has(member.record.id), member.record.id).toBe(true);
+    const p = retargetPresentation(displayed, reopened, diffScenes(closed, reopened), { ...participants(), records });
     const first = samplePresentation(p, 0).poses;
     for (const member of members) {
-      expect(p.retiring.has(member.renderId), member.renderId).toBe(true);
-      expect(close(first.get(member.renderId)!, displayed.poses.get(member.renderId)!), member.renderId).toBe(true);
+      // A rerouted connector's old path may crossfade ("old-route"); the departing copy itself is gone.
+      const copies = [...p.retiring.values()].filter((retiree) => retiree.reason === "exit" && retiree.record.id === member.record.id && first.get(retiree.renderId)!.opacity > PAINTED);
+      expect(copies, `${member.record.id}: a retiring copy still shown`).toEqual([]);
+      if (member.record.kind === "tile") expect(close(first.get(p.live.get(member.record.id)!.renderId)!, displayed.poses.get(member.renderId)!), member.record.id).toBe(true);
     }
   });
 });

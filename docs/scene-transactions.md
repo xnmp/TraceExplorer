@@ -544,7 +544,7 @@ Fixes for the independent review of 099e72f, with where they depart from the tex
 - **Retiree limit.** When `RETIREE_LIMIT` drops a publication's departures, the arrivals that would have followed them are shown at once instead (a rider track: the section's motion only, opacity 1). These are a rerouted connector whose old path was dropped, a tile whose node departed from another band, and the connectors arriving with such a tile. Nothing shown goes invisible and comes back.
 - **In-band retirees of a band that closes** keep their own tracks. While no open band draws their graph, `presentationView(...).orphans` lists them. `StackGrid` draws them in folder coordinates (`RetiringRecords.svelte`, which holds no scroll extent, like `RetiringBand`). The driver compiles them relative to no section. When the band reopens, it draws them again.
   - They are not joined to the closing band's exit group. A reopening would then leave the old connector paths in that group without their tiles.
-- **Returning records.** `motionParticipants` includes a record whose identity has a retiree still shown. The record takes over the retiree's pose wherever the viewport is. A non-participant re-entering record no longer consumes a still-visible retiree: the retiree finishes its own fade.
+- **Returning records.** `motionParticipants` includes a record whose identity has a retiree still shown. The record takes over the retiree's pose wherever the viewport is, so a returning record always takes part and no tile is ever drawn twice (a non-participant return, which would leave both copies, is unreachable).
 
 ## 5. Cold expansion and failure
 
