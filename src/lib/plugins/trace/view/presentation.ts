@@ -51,6 +51,8 @@ export interface RetiringRecord extends PresentedRecord {
   /** The exit group whose fade and clip this record shares (it has no track of its own), or null. */
   readonly group: RenderId | null;
   readonly reason: "exit" | "old-route";
+  /** Whether its graph showed a focus when it retired: a connector keeps the tone it was drawn with. */
+  readonly branch: boolean;
 }
 export interface Presentation {
   readonly epoch: number;
@@ -376,6 +378,12 @@ function carry(track: Track, from: GridRect, to: GridRect): Track {
   }) };
 }
 
+/** `track`'s opacity over time for a record that stays at `rect`: it appears or vanishes exactly with the track's record. */
+function withOpacityOf(track: Track, rect: GridRect): Track | null {
+  const frames = track.frames.map((frame) => ({ ...frame, pose: { rect, opacity: frame.pose.opacity, clip: null } }));
+  return frames.every((frame) => samePose(frame.pose, frames[0].pose)) ? null : { frames };
+}
+
 /** A retired record as displayed: moved to where its pose shows it (a connector's path and a junction with it). */
 function displaced(record: SceneRecord, pose: Pose): SceneRecord {
   const shift = displacement(pose, record.rect);
@@ -427,8 +435,14 @@ export function retargetPresentation(displayed: DisplayedPresentation | null, ne
   const moves = (id: EntityId) => !participants.records || participants.records.has(id);
   const reveal = new Set([...diff.policy.graphs].filter(([, change]) => change === "reveal").map(([id]) => id));
   const policyOf = (id: EntityId) => diff.policy.records.get(id) ?? "carry";
-  const still = (id: EntityId) => policyOf(id) === "snap" || !moves(id);
+  // A reveal snaps its graphs whole: their running motion ends and their records take their targets.
+  const revealed = (id: EntityId) => { const graphId = next.records.get(id)?.graphId; return graphId !== undefined && graphId !== null && reveal.has(graphId); };
+  const still = (id: EntityId) => policyOf(id) === "snap" || !moves(id) || revealed(id);
   const shownOpacity = (id: RenderId) => shown.get(id)?.opacity ?? 0;
+  // Graphs that were drawn with a focus (their connectors' branch tone).
+  const focused = new Set<GraphId>();
+  for (const { record } of before.live.values()) if (record.kind === "tile" && record.graphId !== null && record.tile.tone !== "neutral") focused.add(record.graphId);
+  const branch = (graphId: GraphId | null) => graphId !== null && focused.has(graphId);
 
   // Reopening: an entering record takes over the displayed retiree of its identity (exits only).
   const takeovers = new Map<EntityId, RetiringRecord>();
@@ -511,7 +525,12 @@ export function retargetPresentation(displayed: DisplayedPresentation | null, ne
   for (const [id, record] of next.records) {
     if (record.kind !== "route") continue;
     if (still(id)) { tracks.set(id, null); continue; }
-    const target = settledPose(record), kept = continued(id, target);
+    const target = settledPose(record);
+    // A connector to or from a tile that is still arriving appears exactly with it (one opacity interval).
+    const arriving = [endpoint(record.graphId!, endpointKey(record.route.to)), endpoint(record.graphId!, endpointKey(record.route.from))]
+      .find((tile) => tile?.kind === "tile" && !tile.cover && start.get(tile.id)!.opacity <= PAINTED && tracks.get(tile.id));
+    if (arriving) { tracks.set(id, withOpacityOf(tracks.get(arriving.id)!, record.rect)); continue; }
+    const kept = continued(id, target);
     if (kept !== undefined) { tracks.set(id, kept); continue; }
     const was = before.live.get(id), source = was ?? takeovers.get(id);
     const pose = source ? shown.get(source.renderId) : undefined;
@@ -541,7 +560,7 @@ export function retargetPresentation(displayed: DisplayedPresentation | null, ne
     // The displayed path fades out at the start of the motion; the new one arrives at its end.
     const old = departure({ ...pose, rect: from.rect }, w, D);
     if (old) fresh.push({ renderId: retireId(transaction, "old-route", id), record: from, initial: old.frames[0].pose, track: old,
-      sourceTransaction: transaction, group: null, reason: "old-route" });
+      sourceTransaction: transaction, group: null, reason: "old-route", branch: branch(record.graphId) });
     tracks.set(id, arrival({ ...target, opacity: 0 }, target, w, D));
   }
 
@@ -568,7 +587,7 @@ export function retargetPresentation(displayed: DisplayedPresentation | null, ne
   // This publication's exits, by graph.
   const exits = new Map<GraphId, SceneRecord[]>();
   for (const [id, record] of diff.exit) {
-    if (still(id) || record.graphId === null || !(isBandRecord(record) || record.kind === "band") || !before.live.has(id)) continue;
+    if (still(id) || record.graphId === null || reveal.has(record.graphId) || !(isBandRecord(record) || record.kind === "band") || !before.live.has(id)) continue;
     exits.set(record.graphId, [...exits.get(record.graphId) ?? [], record]);
   }
   for (const [graphId, records] of exits) {
@@ -587,7 +606,7 @@ export function retargetPresentation(displayed: DisplayedPresentation | null, ne
         if (record.kind === "band" || !pose || pose.opacity <= PAINTED) continue;
         const track = departure(pose, w, D);
         if (track) fresh.push({ renderId: retireId(transaction, "exit", record.id), record: displaced(record, pose), initial: track.frames[0].pose, track,
-          sourceTransaction: transaction, group: null, reason: "exit" });
+          sourceTransaction: transaction, group: null, reason: "exit", branch: branch(graphId) });
       }
       continue;
     }
@@ -600,7 +619,10 @@ export function retargetPresentation(displayed: DisplayedPresentation | null, ne
     const coverId = entityId("tile", graphId, graphId), cover = before.live.get(coverId);
     const band = records.find((record) => record.kind === "band");
     const top = cover ? (shown.get(coverId)?.rect.y ?? cover.record.rect.y) : Math.min(...members.map(({ pose }) => pose.rect.y));
-    const bandBottom = band && cover ? top + band.rect.y + band.rect.height - cover.record.rect.y : -Infinity;
+    // The band as displayed: its tiles may still be travelling apart from their cover (a shared band row reflowing).
+    const tileShifts = members.flatMap(({ record, pose }) => record.kind === "tile" ? [pose.rect.y - record.rect.y] : []);
+    const bandShift = tileShifts.length ? Math.max(...tileShifts) - (top - (cover?.record.rect.y ?? top)) : 0;
+    const bandBottom = band && cover ? top + band.rect.y + band.rect.height - cover.record.rect.y + bandShift : -Infinity;
     const bottom = Math.max(bandBottom, ...members.map(({ pose }) => pose.rect.y + pose.rect.height));
     const left = Math.min(0, ...members.map(({ pose }) => pose.rect.x));
     const right = Math.max(next.bounds.width, ...members.map(({ pose }) => pose.rect.x + pose.rect.width));
@@ -625,11 +647,11 @@ export function retargetPresentation(displayed: DisplayedPresentation | null, ne
     const groupId = retireId(transaction, "exit", bandId);
     const groupRecord: SceneRecord = band ? { ...band, rect: container }
       : { kind: "band", id: bandId, graphId, rect: container, band: { id: graphId, row: 0, ...container } };
-    fresh.push({ renderId: groupId, record: groupRecord, initial: groupTrack.frames[0].pose, track: groupTrack, sourceTransaction: transaction, group: null, reason: "exit" });
+    fresh.push({ renderId: groupId, record: groupRecord, initial: groupTrack.frames[0].pose, track: groupTrack, sourceTransaction: transaction, group: null, reason: "exit", branch: branch(graphId) });
     for (const { record, pose } of members) {
       const member = displaced(record, pose);
       fresh.push({ renderId: retireId(transaction, "exit", record.id), record: member, initial: { rect: member.rect, opacity: pose.opacity, clip: null }, track: null,
-        sourceTransaction: transaction, group: groupId, reason: "exit" });
+        sourceTransaction: transaction, group: groupId, reason: "exit", branch: branch(graphId) });
     }
   }
   if (carried + fresh.filter((retiree) => retiree.record.kind !== "band").length <= RETIREE_LIMIT) for (const retiree of fresh) retiring.set(retiree.renderId, retiree);
