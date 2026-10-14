@@ -1138,9 +1138,12 @@ for (const worker of [false, true]) test(`cold children reveal from their accept
   expect(result.children).toBeGreaterThan(0);
   expect(result.mounted).not.toBeNull(); expect(result.visible).not.toBeNull();
   if (worker) expect(result.arrived).not.toBeNull();
-  // Presence now waits for tile/connector attachment within the 160 ms reflow.
-  // Twelve frames allow that arrival and scheduling slack; the #63 regression replayed ~20 frames.
-  expect(result.visible! - (worker ? result.arrived! : result.mounted!)).toBeLessThanOrEqual(12);
+  // The scene commits once its layout and its thumbnails are ready (media deadline), so count from the
+  // commit that mounts the band, never from the worker reply. Presence waits for tile/connector
+  // attachment within the 160 ms reflow; twelve frames allow scheduling slack, and the #63 regression
+  // replayed ~20 frames.
+  if (worker) expect(result.mounted!).toBeGreaterThanOrEqual(result.arrived!);
+  expect(result.visible! - result.mounted!).toBeLessThanOrEqual(12);
   expect(result.entrances).toBe(result.children);
   expect(result.epochs, "a second entrance started").toBe(1);
   expect(result.requests).toBe(worker ? 1 : 0);

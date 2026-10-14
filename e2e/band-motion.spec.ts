@@ -66,7 +66,7 @@ async function sampleBand(page: Page, selector: string, ms = 700, actions: Array
           && !((a.effect as KeyframeEffect | null)?.target as Element | null)?.closest?.('[data-cover-progress]')) };
     };
     const frames = [snapshot(0)];
-    let nextAction = 0;
+    let nextAction = 0, moved: number | null = null;
     document.querySelector<HTMLElement>(selector)!.click();
     const channel = new MessageChannel();
     try {
@@ -74,10 +74,13 @@ async function sampleBand(page: Page, selector: string, ms = 700, actions: Array
         const sample = () => {
           try {
             frames.push(snapshot(performance.now() - start));
-            if (nextAction < actions.length && performance.now() - start >= actions[nextAction].at) document.querySelector<HTMLElement>(actions[nextAction++].selector)!.click();
+            // Actions are timed from the first frame the motion runs: the open commits once its
+            // layout and thumbnails are ready, so the click-relative time of the motion varies.
+            if (moved === null && motion.state().running.length > 0) moved = performance.now();
+            if (moved !== null && nextAction < actions.length && performance.now() - moved >= actions[nextAction].at) document.querySelector<HTMLElement>(actions[nextAction++].selector)!.click();
           }
           catch (e) { reject(e); return; }
-          if (performance.now() - start < ms) channel.port2.postMessage(null); else resolve();
+          if (performance.now() - (actions.length ? moved ?? start : start) < ms) channel.port2.postMessage(null); else resolve();
         };
         // Sampled after the frame's callbacks: the motion driver writes only there, so a sample is what the frame paints.
         channel.port1.onmessage = () => requestAnimationFrame(sample);
@@ -571,7 +574,9 @@ for (const fixture of ['bridge', 'junction']) test(`the connector clock survives
   }), 'the clock advances through the stalls while still inside motion').toBe(true);
   // No stalled time is lost: the frames after a stall show at least the time that passed in it
   // (the clock runs on frame time only, also from a release: review fixes b7673b1, L1).
-  for (const { stall, before, after } of stalled) expect(after - before, `${stall} ms stall`).toBeGreaterThanOrEqual(stall / clockScale - .5);
+  // Frame timestamps may trail the wall clock by up to a frame after a stall (Chromium stamps a frame
+  // with its BeginFrame time), so allow one frame; the 85 ms stall still fails if stalled time is lost.
+  for (const { stall, before, after } of stalled) expect(after - before, `${stall} ms stall`).toBeGreaterThanOrEqual((stall - 1000 / 60) / clockScale - .5);
   expect(frames.reduce((n, f) => n + expectAttached(f, [start, end]), 0)).toBeGreaterThan(0);
   expect(await page.locator('[data-motion-route-layer]').count()).toBe(0);
   expect(await uncaught(page)).toEqual([]);
