@@ -1,0 +1,17 @@
+{
+  "extends": "../tsconfig.json",
+  "compilerOptions": {
+    "types": [
+      "svelte"
+    ]
+  },
+  "include": [
+    "corpus.ts",
+    "engine.ts",
+    "geometry.ts",
+    "placement.ts",
+    "render.ts",
+    "../src/**/*.d.ts",
+    "../integration/plugin-sdk/**/*.ts"
+  ]
+}

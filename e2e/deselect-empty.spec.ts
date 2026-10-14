@@ -179,9 +179,7 @@ test("wheel during an empty-background press keeps selection and Preview inputs"
 for (const zoom of ["125%", "80%"]) {
   test(`with the host's document zoom at ${zoom}, edge background clears and a scrollbar press does not`, async ({ page }) => {
     await page.setViewportSize({ width: 1200, height: 400 });
-    await openView(page, 900, "?scrollbars=host");
-    await page.evaluate((value) => { document.documentElement.style.zoom = value; }, zoom);
-    await settle(page);
+    await openView(page, 900, `?scrollbars=host&zoom=${encodeURIComponent(zoom)}`);
     await click(page, "warm");
     const before = await state(page);
     const pane = page.getByTestId("trace-view");

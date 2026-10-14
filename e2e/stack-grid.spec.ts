@@ -1192,17 +1192,26 @@ test("opening a later row preserves an unchanged band's attachment motion", asyn
       const child = document.querySelector<HTMLElement>(`[data-tile-key="${mist}"]`)!;
       const before = child.getBoundingClientRect().y;
       const attachment = child.closest<HTMLElement>(".graph")!.dataset.attachment;
+      const owned = originals.filter((animation) => animation.playState === "running"
+        && (animation.effect as KeyframeEffect | null)?.target === child);
       w.trace.setSelection([...w.trace.state().selected, "/pictures/fan.png"], "/pictures/warm.png");
       for (let i = 0; i < 12; i++) await frame();
       const after = child.getBoundingClientRect().y;
+      const cancelled = owned.filter((animation) => animation.playState !== "running").length;
+      const replacements = (w.__heldAnimations as Animation[]).filter((animation) => !originals.includes(animation)
+        && (animation.effect as KeyframeEffect | null)?.target === child).length;
       for (const animation of w.__heldAnimations as Animation[]) if (animation.playState === "running") animation.currentTime = 80;
       await frame();
       const continued = child.getBoundingClientRect().y;
       for (const animation of w.__heldAnimations as Animation[]) if (animation.playState === "running") animation.currentTime = 160;
       await frame();
-      return { attachment, nextAttachment: child.closest<HTMLElement>(".graph")!.dataset.attachment, before, after, continued, end: child.getBoundingClientRect().y };
+      return { attachment, nextAttachment: child.closest<HTMLElement>(".graph")!.dataset.attachment,
+        owned: owned.length, cancelled, replacements, before, after, continued, end: child.getBoundingClientRect().y };
     }, mist);
     expect(result.nextAttachment).toBe(result.attachment);
+    expect(result.owned).toBeGreaterThan(0);
+    expect(result.cancelled).toBe(0);
+    expect(result.replacements).toBe(0);
     expect(result.after).toBeCloseTo(result.before, 1);
     expect(Math.abs(result.end - result.before)).toBeGreaterThan(2);
     expect(Math.abs(result.continued - result.end)).toBeLessThan(Math.abs(result.before - result.end));

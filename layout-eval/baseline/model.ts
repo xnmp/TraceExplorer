@@ -1,0 +1,64 @@
+/**
+ * Trace view domain model. Every node is one image (artifact) or a stable
+ * placeholder for an output that is still being generated. Keys are derived
+ * from provenance identity, never from filenames, so saving, moving or
+ * renaming an image keeps its key and focus.
+ */
+export type NodeKey = string;
+
+/** Where an image lives relative to the displayed folder (native classification). */
+export type NodeScope = "current" | "subfolder" | "external";
+
+export type NodeState = "present" | "missing" | "unavailable" | "running" | "uncertain";
+
+/** Native component-local badge metadata, compatible with the grid projection's
+ * ReferenceBadge. Artifact identity is supplied instead of a content hash.
+ * Consumers refer to the complete component, possibly on later node pages.
+ */
+export interface ReferenceBadgeRecord {
+  readonly key: NodeKey;
+  readonly path: string;
+  readonly scope: Exclude<NodeScope, "current">;
+  readonly artifactId: number;
+  readonly consumers: readonly NodeKey[];
+}
+
+export interface TraceNode {
+  readonly key: NodeKey;
+  /** null only for a placeholder whose output has not been recorded yet. */
+  readonly artifactId: number | null;
+  readonly runId: number | null;
+  /** Direct parents (input images of the generating run), deduplicated. */
+  readonly parents: readonly NodeKey[];
+  readonly path: string | null;
+  readonly scope: NodeScope;
+  /** Display location: `./name.png`, `refs/name.png` or an outside path. */
+  readonly location: string;
+  readonly state: NodeState;
+  readonly temporary: boolean;
+  readonly discarded: boolean;
+  /** An Interrupted placeholder whose evidence allows Dismiss (no recoverable result). */
+  readonly dismissable?: boolean;
+  readonly earlierRevision: boolean;
+  /** Stable creation order used to break ties deterministically. */
+  readonly order: number;
+  readonly prompt: string;
+  /** Only outside images with no displayed parent; copied once per component.
+   * Legacy views keep rendering the node and its parent edges. */
+  readonly referenceBadge?: ReferenceBadgeRecord;
+}
+
+export interface ComponentSummary {
+  readonly id: string;
+  readonly title: string;
+  readonly cover: { readonly path: string; readonly present: boolean } | null;
+  /** The node the lineage is drawn from: the cover's own revision (an in-place edit's path maps to its newest), or the oldest member when there is no file. */
+  readonly coverKey: string;
+  readonly imageCount: number;
+  readonly nodeCount: number;
+  readonly active: boolean;
+  readonly unsaved: boolean;
+}
+
+export const nodeKeyForArtifact = (artifactId: number, runId: number | null, outputIndex: number): NodeKey =>
+  runId === null ? `a:${artifactId}` : `o:${runId}:${outputIndex}`;

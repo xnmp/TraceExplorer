@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { bandWidthBudget, chooseBandArrangement } from "$lib/domain/trace-graph/band-layout";
+import { bandWidthBudget, bandHistorySignature } from "$lib/domain/trace-graph/band-layout";
 import { layoutGraph, type LayoutItem, type GraphLayout } from "$lib/domain/trace-graph/layout";
 import { bandExtent, attachPackedBand } from "$lib/plugins/trace/view/stack-grid";
 import { samplePathString } from "$lib/plugins/trace/view/path-sampling";
@@ -18,17 +18,6 @@ const assertClear = (graph: GraphLayout) => {
 };
 
 describe("compact band choice", () => {
-  it("minimises height, then ink, then distance with a deterministic tie", () => {
-    const down = layoutGraph({ items: [item("root")], maxWidth: 400 });
-    const right = { ...down, orientation: "right" as const };
-    const candidate = (layout: GraphLayout, height: number, connectorLength: number, coverDistance: number) => ({ layout, height, connectorLength, coverDistance });
-    expect(chooseBandArrangement([candidate(down, 100, 1, 1), candidate(right, 90, 1000, 1000)])).toBe(right);
-    expect(chooseBandArrangement([candidate(down, 100, 10, 1), candidate(right, 100, 9, 100)])).toBe(right);
-    expect(chooseBandArrangement([candidate(down, 100, 10, 2), candidate(right, 100, 10, 1)])).toBe(right);
-    expect(chooseBandArrangement([candidate(right, 100, 10, 1), candidate(down, 100, 10, 1)])).toBe(down);
-    expect(chooseBandArrangement([])).toBeNull();
-    expect(chooseBandArrangement([candidate(down, NaN, 0, 0)])).toBeNull();
-  });
   it("uses width for deep branches without running the cover stem through its first column", () => {
     const graph = band(deep);
     expect(graph.orientation).toBe("right");
@@ -39,10 +28,9 @@ describe("compact band choice", () => {
       expect(samplePathString(route.path, 1)![0]).toEqual({ x: 700, y: 100 });
     }
   });
-  it("retains visible tile positions and arrangement across focus neighborhoods", () => {
-    const first = band(deep, 1150, deep.slice(0, 3)), second = band(deep, 1151, deep.slice(0, 5));
-    expect(second.orientation).toBe(first.orientation);
-    for (const [id, node] of first.nodes) expect(second.nodes.get(id)).toEqual(node);
+  it("hidden topology never allocates positions or changes arrangement", () => {
+    const visible = deep.slice(0, 3);
+    expect(band(deep, 1150, visible)).toEqual(band(visible, 1150));
     expect(bandWidthBudget(1150)).toBe(bandWidthBudget(1151));
   });
   it("handles a single child, thirty children, fifteen generations, narrow and invalid panes, and no descendants", () => {
@@ -86,15 +74,12 @@ describe("band routing regressions", () => {
       assertClear(graph); assertClear(attached(graph));
     }
   });
-  it("retains the packed origin as descendants appear", () => {
-    const items = [item("root"), item("a", ["root"], 1), item("c", ["root"], 2), item("b", ["a"], 3), item("d", ["b"], 4)];
-    const first = attached(band(items, 448, items.slice(0, 3))), next = attached(band(items, 448, items.slice(0, 4)));
-    for (const [id, node] of first.nodes) expect(next.nodes.get(id)).toEqual(node);
+  it("anchors the click and surviving ancestry using explicit history", () => {
+    const request = { items: deep.slice(0, 3), maxWidth: 448, tileWidth: 92, pinned: { key: "root", x: 300 }, band: { key: "root", items: deep } };
+    const first = layoutGraph(request);
+    const placed = attachPackedBand(first, "root", 97, { x: 0, coverX: 300, coverHeight: 97, width: 448, left: 0, right: 448 });
+    const next = layoutGraph({ ...request, items: deep.slice(0, 5), anchorKey: "Saffron", history: { signature: bandHistorySignature(request), layout: first, placed } });
+    expect(next.decision?.fallback).toBeUndefined();
+    assertClear(next);
   });
-});
-
-it("retains the shelf's vertical origin when a descendant lies above its parent", () => {
-  const items = [item("root"), item("a", ["root"], 1), item("b", ["root"], 2), item("c", ["b"], 3), item("e", ["a"], 4), item("d", ["b"], 5), item("f", ["e"], 6)].map((node) => ({ ...node, height: 81 }));
-  const first = attached(band(items, 640, items.slice(0, 3))), next = attached(band(items, 640, [items[0], items[1], items[2], items[4]]));
-  for (const [id, node] of first.nodes) expect(next.nodes.get(id)).toEqual(node);
 });

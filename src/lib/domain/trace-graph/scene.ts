@@ -10,7 +10,7 @@ import { lineage, lineageWithBadges, toneOf, type Lineage, type NodeTone } from 
 import { hiddenDescendantCount, visibleKeys, type VisibilityOptions } from "./visibility";
 import { tileMetrics, tileSize, type TileMetrics, type TileSize } from "./metrics";
 import { chooseOrientation, generationProfile, sidewaysWidth, type OrientationHistory } from "./orientation";
-import type { GraphLayout, LayoutItem, LayoutRequest, PinnedCover, PlacedRoute } from "./layout";
+import type { GraphLayout, BandHistory, LayoutItem, LayoutRequest, PinnedCover, PlacedRoute } from "./layout";
 
 export interface SceneTile {
   readonly key: NodeKey;
@@ -82,6 +82,7 @@ function sceneTiles(dag: TraceDag, members: readonly NodeKey[], focus: NodeKey |
 
 export interface BandSceneOptions extends Pick<SceneOptions, "hint" | "tile"> {
   readonly pinned: PinnedCover;
+  readonly history?: BandHistory;
   /** Hover adds consumer highlighting without changing focus or the visible neighborhood. */
   readonly badgeHighlight?: NodeKey | null;
 }
@@ -94,7 +95,7 @@ export interface BandScenePlan extends ScenePlan {
 /**
  * Opt-in band scene; legacy planScene is unchanged. Project reference badges
  * before computing drawable components. Members contain drawable keys only.
- * Band candidates use the complete lineage so focus cannot change their arrangement.
+ * Band geometry uses visible nodes. Complete lineage supplies stable sizes and parentage.
  */
 export function planBandScene(graph: BadgeProjection, members: readonly NodeKey[], focus: NodeKey | null, maxWidth: number, options: BandSceneOptions): BandScenePlan {
   const { dag } = graph;
@@ -112,7 +113,7 @@ export function planBandScene(graph: BadgeProjection, members: readonly NodeKey[
     const references = graph.byConsumer.get(key);
     return references ? [[key, references] as const] : [];
   }));
-  return { lineage: effective, tiles, badges, request: { items, maxWidth, hint: options.hint, tileWidth: tile.width, orientation: "down", pinned: options.pinned, band: { key: options.pinned.key, items: members.map((key) => {
+  return { lineage: effective, tiles, badges, request: { items, maxWidth, history: options.history, anchorKey: inComponent ? focus ?? undefined : undefined, hint: options.hint, tileWidth: tile.width, orientation: "down", pinned: options.pinned, band: { key: options.pinned.key, items: members.map((key) => {
     const node = dag.nodes.get(key)!;
     const size = tileSize({ foreign: node.scope !== "current", hint: (dag.children.get(key)?.length ?? 0) > 0 && node.scope === "current" }, tile);
     return { key, ...size, order: node.order, parents: (dag.parents.get(key) ?? []).filter((parent) => membership.has(parent)) };

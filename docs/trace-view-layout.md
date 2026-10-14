@@ -12,10 +12,10 @@ saved** (`held`, kept by `StackGrid`) until the grid is laid out afresh, i.e. th
 count changes, when it takes its listed position. Its eventual file name cannot be known before it is saved.
 
 This column rule covers **grid cells** (covers, ordinary files, folders). Inside an open band the
-layout follows the graph rules below. Sideways shelves retain the complete lineage’s
-coordinates and footprint: revealing descendants cannot recenter or shift an existing tile.
-Downward junction layouts may repack when visible inputs or routing change; they do not
-reserve empty rows for hidden branches. Selection styling alone never changes geometry.
+layout follows the visible-first optimisation rules below. Hidden descendants supply
+caption/hint sizes and complete parentage, but never placement slots. The last committed
+visible embedding supplies explicit, priced history. Selection styling with an unchanged
+visible set reuses the committed geometry.
 `gridFlow(items, open, columns, metrics)` takes the host-sorted list **already collapsed** to one
 `{id, kind: "stack"}` at each cover's position, plus ordinary files/folders.
 Use an entry path or cover key as `id`, rather than a component id (which can
@@ -42,27 +42,205 @@ ancestors without highlighting unrelated co-consumers.
 `badgeHighlight` adds hover lineage to the selected lineage without changing
 the selected neighborhood, keyboard focus, or layout request.
 
-`planBandScene` accepts that projection, drawable members and a `PinnedCover`.
-It seeds visibility from current-folder roots and supplies the **complete drawable lineage**
-alongside visible items. `layoutBand` compares two candidates using that complete topology:
+`planBandScene` accepts the projection, drawable members and a `PinnedCover`.
+It seeds visibility from current-folder roots and retains the complete drawable lineage
+for stable captions and history compatibility. `layoutBand` places **only `request.items`**.
+The engine, objective, routing geometry and packing helpers are pure TypeScript in
+`src/lib/domain/trace-graph/`; the view and worker are adapters.
 
-- The existing downward layered layout, including junctions and pixel wrapping.
-- For a single-cover tree, horizontal generation columns. Consecutive columns form
-  width-bounded shelves; a long chain wraps into later shelves. Each shelf reuses the
-  layered engine’s right-oriented routing. Shelf transitions leave through separate
-  right lanes, bend below the shelf, and enter the next column through separate left
-  lanes. The cover reaches its first column from the left, clearing vertically stacked
-  siblings. A candidate whose lanes or columns exceed the budget is rejected.
+Candidates include the downward junction router and top-aligned tree generation shelves.
+A bounded dynamic program scans at most 32 columns at each partition state, alongside
+fixed greedy partitions. Serial chains use the best shelf partition directly where it
+fits. Shelves reserve only their visible entry/exit ports and independent wrap tracks.
+The first generation starts at the cover header; short columns are never centred against
+taller later generations. Width budgets use 32 px buckets, a one-tile minimum and a
+100,000 px cap. Invalid widths use one tile; malformed nodes, cycles, duplicate identities
+and invalid dimensions/metrics are rejected. The upstream DAG projection still cuts
+malformed backend history deterministically before planning.
 
-`chooseBandArrangement` is pure. Its lexicographic cost is occupied **height**, then
-connector length (the deterministic cubic control-polygon upper bound), then horizontal
-cover distance. An exact tie prefers downward flow. Multi-input graphs keep the
-junction-aware downward candidate. This is a bounded heuristic, not an exact global
-minimum-area solver. Width budgets round down to 32 px buckets, with a one-tile minimum;
-invalid/nonpositive widths use one tile, and finite widths are capped at 100,000 px.
-Candidate scoring quantises the cover centre too. Focus does not choose orientation.
-Sideways layouts retain full horizontal bounds and the first-child vertical origin when
-projecting visibility, so packing and attachment cannot recenter surviving tiles.
+`layout-quality.ts` scores candidates after the same exact attachment used by the grid:
+
+```
+C = 16 H/t + 2 A/t² + .08 L/t + .12 B + .1 X
+    + mixedDirections + 3 siblingInversions + .25 unaligned
+    + 100 widthOverflow/t
+    + 1.5 (meanDisplacement/t + .25 maxDisplacement/t + 2 clickedDisplacement/t)
+```
+
+Here H/A are the visible child/routing height and area, t is tile width, L is sampled
+connector length, B is turning in quarter-turn equivalents, X is unrelated-source
+crossings. Empty area is already priced through H/A; whitespace is reported separately.
+Hard gates reject missing/extra nodes, wrong sizes, nonfinite/off-canvas geometry,
+overlaps, connectors through tiles, incorrect directed parentage, invalid paths, broken
+source-to-output connectivity, arrow approaches and shared lanes.
+
+#### Shared lanes
+
+Connectors from different sources never share a lane. `sharedLanePx` is the collinear
+overlap of every pair of flattened route segments whose routes start at different
+sources; that includes two inputs of one junction running along a final stretch, since
+inputs may meet only at the dot. Routes from one source may share (trunks). A candidate
+with `sharedLanePx > 0` fails the hard gates, which `validateLayout` checks exactly. Every
+generator avoids lanes at the source:
+
+- the downward router through its zone, track and fan-in rules ([Routes](#algorithm));
+- shelves, whose channel lanes give a source arriving at the height another source leaves
+  from a lane further out;
+- the incremental embedding, which records placed segments with their source and rejects
+  a route that runs along another source's segment (its alternatives: gutters, travel
+  rows, side columns, nested junction levels, the bounded grid), returning no candidate
+  when nothing is lane-free.
+
+The unchanged-visible shortcut is not taken when the committed layout shares a lane. Only
+when no candidate is lane-free does the engine price the lanes (`4 Q/t`, Q the shared
+length) and show the best candidate, flagged `lane-infeasible`. That holds for cold
+requests too: when the gates keep every candidate out, each one that fails on lanes alone
+is priced (built lazily, the downward layout included) and the cheapest is shown. Only a
+request that defeats every candidate on other gates (malformed input, such as a cover with
+a visible parent: `pinnedViolation`) shows the downward layout as is, flagged
+`gate-infeasible`. `fallbackReason` gives the reason from the layout itself. Across the
+evaluation corpus (6,060 layouts) and the legal tours (2,595 steps, plus 540 dense-tour
+steps) the only shared lane shown is 6 px, in random-dag-40-7502 at 1,400 px / preset 48
+(`lane-infeasible`; no candidate of that cold request is lane-free).
+
+#### Crossings
+
+X counts proper crossings between connectors of unrelated sources. Its weight is an
+exchange rate: one more crossing must save `CROSSING_HEIGHT_TILES` tile widths of band
+height (`.1/16`, about 0.6 px at the default tile), and the evaluation uses the same rate
+to decide whether a layout that crosses more than the baseline paid for it. The value
+comes from a sweep over the corpus and the legal tours:
+
+| Height per crossing (tiles) | Mean crossings | Regressions | Unpriced | Tour height / baseline | Tour displacement |
+|---:|---:|---:|---:|---:|---:|
+| .00625 | 335.2 | 383 | 105 | .857 | 21.7 px |
+| .05 | 334.2 | 357 | 146 | .856 | 23.3 px |
+| .25 | 333.6 | 293 | 151 | .867 | 33.2 px |
+| .5 | 333.6 | 278 | 156 | .881 | 40.0 px |
+| 1 | 333.5 | 265 | 169 | .887 | 52.8 px (fails ≤ 42.5) |
+
+The sweep ran on the engine before the incremental embedding's compaction pass; the
+trend, not the absolute numbers, is what it shows. A higher rate barely moves mean
+crossings (the candidate family, not the weight, decides them) but makes tours taller and
+less stable, so the lowest rate is kept. Most unpriced regressions save no height at all,
+so no rate removes them: they come from the choice of family, not from pricing. The
+baseline mean is 378.6. A matching sweep set the `mixedDirections` weight to 1 (from .5):
+mixed placements 2.16 → 2.12 per layout with every other target unchanged; at 2 they fall
+to 1.93, but one layout becomes more than 10% taller than the baseline without a stability
+reason.
+
+#### Crossing cap
+
+Holding the clicked tile and its visible ancestors still must not buy stillness with a
+crossings explosion. When the winner preserves the anchors, crosses more than 50 times,
+and crosses more than the best unanchored candidate (the layout the engine would choose
+with no anchors: same objective, same orientation rule, found exactly by the same branch
+and bound) by more than `max(50, .25 X_free)`, the anchors yield: the unanchored candidate
+is shown and the decision is flagged `anchor-yield`, which is distinct from
+`anchor-infeasible` (no anchor-preserving candidate exists). `ANCHOR_CROSSING_SLACK` and
+`ANCHOR_CROSSING_RATIO` in `band-layout.ts` hold the two terms. The bound comes from a
+sweep over the corpus and the legal tours (yields are anchor-preserving winners that
+yielded; "infeasible" counts tour clicks flagged `anchor-infeasible`):
+
+| Cap (absolute / relative) | Unpriced crossing regressions | Corpus yields | Tour yields | Tour height / baseline | Tour displacement | Anchor-infeasible clicks |
+|---|---:|---:|---:|---:|---:|---:|
+| none | 88 | 0 | 0 | .785 | 21.3 px | 7 |
+| 100 / 100% | 86 | 3 | 8 | .783 | 20.8 px | 7 |
+| 75 / 50% | 76 | 16 | 29 | .779 | 24.4 px | 9 |
+| 50 / 50% | 75 | 17 | 40 | .790 | 30.9 px | 9 |
+| 50 / 35% | 69 | 33 | 64 | .788 | 32.1 px | 9 |
+| **50 / 25%** | **67** | **38** | **74** | **.788** | **31.5 px** | **9** |
+| 30 / 35% | 68 | 34 | 76 | .801 | 38.0 px | 9 |
+| 25 / 50% | 75 | 18 | 58 | .806 | 39.3 px | 9 |
+| 25 / 100% | 86 | 4 | 38 | .808 | 35.4 px | 7 |
+| 10 / 25% | 61 | 52 | 156 | .840 | 57.3 px (fails ≤ 42.5) | 9 |
+
+Every capped setting brings the worst case, random-dag-100-8101 at 360 px / preset 128
+(step 2: 725 crossings against the baseline's 334), down to 321, and none adds a height
+regression without a stability reason. 50 / 25% removes the most unpriced regressions
+that the displacement target allows: tighter caps either stop removing regressions (the
+remaining ones are not anchored history, below) or move anchors so often that tour
+displacement climbs towards and past the target. The cap costs one exact evaluation of
+the best unanchored candidate whenever an anchored winner crosses more than 50 times
+(about 1.5 ms at p50 on random-dag-40-7503's 24-tile reveal: its gates alone take 1.7 ms).
+
+#### Known readability limits
+
+With the final engine, 417 of 6,060 corpus layouts cross more than the baseline; 67 of
+them are not paid for by the exchange rate, and 52 of those save no height at all. They
+come from three sources, none of which a weight can fix:
+
+- **Shelf crossings in long chains** (50: random-chainy-100/200; 40 of them are the
+  unchanged-visible steps that keep the same layout, which count again): shelf channels
+  route each source's trunk through one lane per source, so long wrapped chains cross
+  more than the baseline's layered sideways drawing (277 → 418 at 640 px, preset 64).
+- **Anchored history within the cap** (11, all flagged `stability`). The clicked tile and
+  its visible ancestors stay put whenever a lane-free embedding allows it and the crossing
+  cap is not exceeded, so a DAG reveal can cross more than a fresh layout (worst:
+  random-dag-100-8101 at 454 px / preset 128, 510 → 571).
+- **Wrapped single columns and small downward layouts** (6: screenshot,
+  random-tree-12-7121, hidden-siblings at 360 px, three DAG states): two sources passing
+  one margin cross once or twice where the baseline drew one on each side. Choosing the
+  emptier margin on ties was tried and rejected: across the corpus it raised mean
+  crossings from 335 to 379.
+Spatial indexes, parsed route plans and cached geometric joins keep repeated checks
+bounded. Cubic diagnostics use the production twelve-step flattener; this is a geometry
+approximation, not a proof about arbitrarily thick strokes.
+An immutable candidate's envelope is captured once and translated with its attachment.
+The search is branch and bound over the candidate family. Every candidate first gets an
+admissible lower bound from its attached rectangles and allocation alone (`rectangleCost`:
+height, area, overflow and node penalties, connector terms taken as zero); a second bound
+adds exact connector length and turning (`optimisticCost`). Connectors are attached,
+translated or evaluated only for candidates whose bound can still change the choice,
+given the incumbent's score and the orientation hysteresis rule. The downward layered
+layout and anchored translations are not even built while their bounds (a downward
+height floor from the longest visible chain; translated rectangles) exclude them, except
+where their exact height decides the cold height budget or a re-embedding. Pruning never
+changes the chosen layout or its decision record. A sole cold embedding runs the same
+hard gates without computing soft diagnostics that cannot affect a choice.
+
+A reveal offers the retained subset, translated anchor embeddings and an incremental
+embedding with retained tiles/routes as obstacles. New edits try deterministic free
+positions in rank order, stopping at the first safe embedding. Ancestor-relative checks
+reject translations that cannot preserve the required anchors before routing them.
+Other retained tiles are re-embedded when the fixed warm embedding exceeds the compact
+height budget; a compact warm embedding keeps its zero displacement.
+Multi-input arrivals get explicit junctions.
+Every route is lane-free: placed segments are indexed with their source, and a route
+that would run along another source's segment takes one of a bounded set of alternative
+lanes. Blocked source ports use a bounded rectilinear visibility grid (5,000 expanded
+points per search, up to 3 fallback slots). Only when nothing is found does a second
+chance run: probes on lanes half a step apart, then the grid with columns beside every
+foreign lane over up to 16 slots (50,000 points per search). An embedding that cannot be
+made lane-free is not offered.
+The work is bounded per layout request, not per search: one `IncrementalBudget` serves
+every incremental embedding a request tries (the incremental tree and the anchored
+repack), with 2,000 probe placements, 200,000 units of plain-fallback grid work and
+200,000 of second-chance grid work (a unit is one expanded point, or eight built ones).
+A spent pool stops its searches, and the embedding gives way to the full layout. The
+budgets trade anchor stability against worst-case time on dense DAG reveals: smaller
+pools moved more anchors (for example 50,000 / 50,000 with 250 probes: 23 legal-tour
+clicks moved their anchor, against 7 at the chosen budgets, before the crossing cap). Retained geometry spanning
+more than 65,536 index rows (about 4 million px) is not indexed: such history is not
+used for an incremental embedding.
+Only previous visible geometry is retained; no candidate reserves future descendants.
+The clicked tile and its visible ancestors have a hard preference among geometry-safe
+candidates. Other surviving tiles pay displacement. A direction change must improve
+quality by at least 15%, preventing near-tie oscillation. Anchored history may exceed the
+compact candidate's height; the decision records that stability exception.
+
+`BandHistory` contains the last accepted raw layout, its exact attached geometry and
+attachment context. History is incompatible after membership/relationships, pane width,
+pin or metrics change. Packing-only updates refresh the accepted geometry without
+replanning. History from a superseded scene is never consumed. Normalisation removes
+preceding packed-band offsets and reconciles host cover chrome before local scoring.
+`decision.fallback` reports `anchor-infeasible` when the bounded candidate family has no
+safe anchor-preserving embedding, `anchor-yield` when one exists but the crossing cap
+let the anchors move (see [Crossing cap](#crossing-cap)), and `packing-infeasible` when
+actual packing cannot keep its allocation. History that is malformed (non-finite
+geometry, a route without a string path or endpoints, routes that are not an array) is
+treated as no history. These diagnostics describe the constructive search; they do not
+prove global infeasibility. Unresolved feasible failures must remain acceptance failures.
 
 `packedGridFlow` keeps covers on their folder columns and creates one shared band per
 folder row. It preserves ordered, balanced first-line positions; later groups try skyline
@@ -73,7 +251,12 @@ neighbour’s space can be used only when tiles and stems both fit. The rectangl
 include their header and footer; wrapped lines add no extra vertical gap. Existing outer
 margins supply bypass lanes first; a small gutter is reserved only when they cannot hold
 all independent stems. Covers and ordinary cells retain their logical row/column and x;
-only folder rows below an expanded band shift vertically.
+only folder rows below an expanded band shift vertically. Active click allocations have
+hard x/y reservations when the ordered rectangles and cover corridors can fit. Other
+retained groups keep a preferred x; neighbors may move around an active reservation.
+An unmeasured newly opened stack reserves its whole row until its first layout arrives.
+Its estimated child height cannot certify a safe shared allocation; this prevents a
+temporary sideways squeeze of an already committed band.
 
 `STACK_STEM_ROOM` is 34 px: bend tracks and the straight arrow approach, independent
 of tile size. Each cover gets a distinct 6 px bend track. Headers grow only when those
@@ -86,8 +269,9 @@ Header drops avoid other cover columns and assigned bypass gutters. Attachment m
 is keyed by actual drawn geometry, so unchanged routes continue when routing constraints
 elsewhere in the row change.
 
-The layout cache includes the complete lineage, visible items, pin and tile metrics;
-workers and the main-thread fallback run the same pure adapter. Open state remains keyed
+The layout cache includes complete membership, visible items, the exact band width,
+pin, metrics, anchor, both history embeddings and attachment context. Workers carry the
+same request (including Maps) and run the same pure entry point as the main thread. Open state remains keyed
 by cover identity while fresh component ids are resolved from the folder index.
 
 The original spike (`19601c1`, 12 hard cases and 2,700 fuzz layouts) established
@@ -221,12 +405,19 @@ The reusable layered algorithm is described top to bottom; a left-to-right shelf
      - When margin lanes or junctions need more room than a margin has, `layoutGraph` reruns the pass with that margin widened by the measured shortfall (at most twice). Lanes are placed relative to the tiles, so one retry fits them exactly; nothing is drawn off the canvas. The graph widens and scrolls horizontally instead of merging lanes.
      - How often this happens depends on how many independent lines must pass the same rows. Graphs whose parents sit close by rarely widen (3 of 900 random graphs, by at most 3%). Graphs that keep reusing a few inputs across many wrapped rows widen in narrow panes: one style applied to 24 photos at 384 px grows by about 20–30%, to 32 photos by about 60%, and the width can change with the selection. The alternative, merging lanes, would hide which input reaches which output.
    - **Shared courses (trie).** The rows a source's routes cross form a trie per source: routes heading to the same place share a prefix of crossings, and each crossing is claimed once per source (memoised). A stretch shared by several routes is emitted once as a **trunk** route (`to === from`, never terminal, its consumers the union of the routes it carries, id: its source and a hash of the consumers it carries). Each route then starts where it branches off; chains follow `continuation`. A fan-out of n children across r rows therefore draws O(n + r) path data instead of O(n·r).
-   - **Zone choice.** Each channel crossing bends inside one zone and runs vertically outside it. The zone is chosen cheapest first: fewest vertical runs that touch a junction the route does not belong to (within `JUNCTION_BERTH`), then most room. Evaluation stops at the first zone with no contact. A second pass re-evaluates every choice against the final set, so the result does not depend on processing order.
+   - **Zone choice.** Each channel crossing bends inside one zone and runs vertically outside it. The zone is chosen cheapest first, in strict priority:
+     1. fewest vertical runs along another source's run on the same column (a shared lane; two inputs of one junction running down its column count too, since inputs may meet only at the dot);
+     2. fewest runs that touch a junction the route does not belong to (within `JUNCTION_BERTH`);
+     3. fewest runs near another source's run;
+     4. most room.
+
+     Evaluation stops at the first zone with no contact. A second pass re-evaluates every choice against the final set, so the result does not depend on processing order.
    - **Tracks.** Within a zone, bends from different sources get distinct heights by left-edge channel routing:
      - leftward bends are ordered by target x ascending, then rightward bends by target x descending, so parallel routes never cross;
      - a bend leaving a column precedes one arriving in it, so a route never turns into a lane another is still using;
-     - two bends that swap columns form a unit and take consecutive tracks, keeping their unavoidable crossing steep;
+     - two bends that swap columns form a unit and take consecutive tracks, keeping their unavoidable crossing steep. Inside a unit, a bend leaving a column exactly where another arrives turns first; the other way round, both would run on that column between their tracks;
      - constraints are sequenced topologically (cycles broken by the sort order), then tracks are assigned by longest path. A zone used by a single source needs no tracks.
+   - **Fan-in.** Inputs of one junction meet only at its dot. Each bending input ends its S-curve up to `FAN_IN` (3 px) to its own side of the junction's column, runs down to the top of the dot's berth, and reaches the dot along a short S-curve that ends vertically (routes stay orthogonal apart from their curves). On each side, nearer inputs keep closer to the column, so inputs from one side do not cross before the dot. The offsets stay inside the berth that other routes and junctions keep from the column. Without this, two inputs bending onto the column would share its last stretch.
    - **Vertical pass.** Zone heights become `max(default, tracks × TRACK_HEIGHT)`; junction y is the previous zone's bottom plus `JUNCTION_BERTH`. Paths are emitted last: vertical run, S-curve inside the route's track slice of the zone, vertical run (through the approach, into a tile).
    - **Guarantees.** Fuzz tests in `tests/domain/trace-graph/layout.test.ts` (60 random graphs at 380, 640 and 1,000 px top to bottom and once left to right, 30 mixed-size graphs in both orientations, plus targeted cases) check that:
      - no route passes within 5 px of a foreign junction;
@@ -244,7 +435,7 @@ The reusable layered algorithm is described top to bottom; a left-to-right shelf
      Targeted tests cover crowded channels: every pair of a dozen inputs combined, sixty sources combined with a few tiles each, one style applied to many photos, and many sources passing one gap.
    - **Route ids** are unique and stable. A route is named by its endpoints; a trunk by its source and a hash of the consumers it carries, not by where it runs, so it keeps its id when a relayout moves it. (Collisions get a deterministic suffix.)
    - **Known limits.**
-     - Bend order inside a zone follows "leave a column before another route arrives in it". When those constraints form a cycle (lanes of several sources in consecutive rows interleaving), one is broken and two routes briefly share a column. A dogleg router (splitting one bend in two through a free column), the standard fix, is not implemented. Over 600 dense test graphs (8 inputs, outputs of 2–5 inputs, a second generation) this affects 2.
+     - Bend order inside a zone follows "leave a column before another route arrives in it". When those constraints form a cycle (lanes of several sources in consecutive rows interleaving), one is broken and two routes briefly share a column. A dogleg router (splitting one bend in two through a free column), the standard fix, is not implemented. Over 600 dense test graphs (8 inputs, outputs of 2–5 inputs, a second generation) this affects 2. In the evaluation corpus it affects 3 of 3,360 distinct downward layouts, each by 6 px. Moving one bend of the cycle to a neighbouring zone was tried and rejected: it created a longer shared stretch elsewhere. The band engine treats such a layout as infeasible (see [shared lanes](#shared-lanes)), so another candidate is shown instead.
      - Past two extra view widths, junctions in an extremely crowded channel (over a hundred combinations in one generation, sooner in narrow panes) may share a column, and their routes can then meet. Even below that, in very crowded channels a tile's exit can line up with another tile's entry; the bend zones cannot always separate the routes using that column. Every pair of 20 inputs at 300 px still shows this.
      - Neither hides parentage: highlighting a node shows its exact lineage.
 8. **Tie-breaks.** Ties use one total order: hinted keys keep their previous relative order, and new keys merge in by creation order. This keeps sorting transitive and independent of input order.
@@ -265,7 +456,7 @@ The reusable layered algorithm is described top to bottom; a left-to-right shelf
   A layout that widens runs the pass again (at most three passes in all). Placing margin lanes costs about S² log S for S sources sharing a margin, within the sources × rows bound above.
 
 - **Benchmarks.** `tests/domain/trace-graph/scale.test.ts` covers a 20,000-step edit chain focused at its end, a 3,000-output fan-out, the same two laid out left to right (transposing adds a linear pass), and a 10,000-image folder made of 500 components. Choosing the orientation is linear in the component's size, apart from the junction estimate, which is computed only for components that pass the cheap checks and exactly only for up to 200 multi-input outputs (800 inputs). It is cached per component, so focus changes reuse it. A benchmark covers 200 outputs of 20 inputs each (the estimate is skipped) and a 96-image component whose estimate runs exactly. A 1,000-child fan-out test bounds the path data (under 250 KB; it was 10.7 MB before trunks).
-- **Off-thread.** Layouts above 60 tiles run in a blob worker when the host announces `blobWorkers` (its CSP permits `worker-src blob:`), and otherwise on the main thread after yielding a frame. Results are cached by their exact request, except that a left-to-right request ignores the pane width (the engine does not use it running right), so resizing reuses its layout. The worker gets one job at a time, so a request superseded while it waits is dropped rather than computed; one already running finishes and is cached.
+- **Off-thread.** A synchronous request has a budget of 30 current plus committed-history tiles and 40 current input edges plus committed-history routes. Requests above either budget run in a blob worker when the host announces `blobWorkers` (its CSP permits `worker-src blob:`), and otherwise on the main thread after yielding a frame. Hidden lineage does not consume placement slots or this geometry budget. Results are cached by their exact request including both committed embeddings and attachment, except that a non-band left-to-right request ignores pane width. The worker gets one job at a time, so a request superseded while it waits is dropped rather than computed; one already running finishes and is cached.
 - **Rendering.** Tiles outside the viewport (±800 px) are not mounted once a component shows more than 120 tiles; connectors and junctions are windowed the same way by their vertical extent. Grid rows and bands beyond a 1,200 px viewport margin are windowed; their logical geometry remains allocated. Closed stacks need only summaries. Open nearby bands load through the existing complete per-component paging and request scheduler. Focused bands stay mounted so keyboard and job reveals can finish even from offscreen.
 
 ## Motion
@@ -321,3 +512,41 @@ columns can. Tidy-tree research motivates retaining local order and subtree coor
 layered engine supplies ordering, while a separate packing stage fits independent stacks
 into the row. Explicit ports and lane reservations keep
 those compaction steps from falsifying parentage.
+
+## Reproducible optimisation acceptance
+
+`bun run layout:eval` compares against a frozen copy of the graph, attachment and
+packing engine at `34ed9a2de1d8ab3c4190b590e0054be3ac32c394`. It runs 65 hand/seeded cases
+at five pane widths and all four tile presets, legal visible-tile click tours, static
+multi-stack packing and real committed packing reveals. Dedicated timing runs follow
+geometry evaluation, alternating engine order after warmup. Cold requests and prepared
+committed reveals are both timed through `layoutGraph`. JSON, CSV, SVGs, a gallery
+and an acceptance/timing table go to git-ignored `layout-eval/out/`. Any failed acceptance
+target makes the command exit nonzero. See `layout-eval/README.md` for metric definitions
+and the limits of the anchor feasibility checks.
+
+#### Known limits
+
+Five acceptance rows fail. Each is a measured limit of this engine, not a loosened target:
+
+- **Legal click anchors stationary: 9 of 2,595 tour steps move their anchor** (baseline:
+  509), every one flagged `anchor-infeasible`: random-dag-100-8103 (454 px step 7, 640 px
+  step 6), random-dag-200-9102 (360 px step 4; 454 px steps 4–6) and random-dag-200-9103
+  (360/640/900 px step 1), 42–94 visible tiles. No lane-free anchor-preserving embedding
+  was found within the per-request budget. Without the crossing cap 7 steps fall back;
+  the cap's 74 yields change later history in some tours.
+- **Dense tours: 83 of 480 clicks move their anchor** (baseline: 476), all flagged
+  `anchor-infeasible`: 6 at fan-in ≤ 4 and 77 at fan-in ≤ 10. 86 more yield to the
+  crossing cap. Where many sources merge into most tiles, the lane-free incremental
+  embedding often finds no route set within its budget.
+- **67 crossing regressions not paid for by height** (of 417 that cross more than the
+  baseline): see [Known readability limits](#known-readability-limits).
+- **8 cases with worse p95 than the baseline**, all with 3–12 visible tiles and a baseline
+  p95 of 0.19–1.10 ms; the largest gap is 0.16 ms. The new engine builds and scores at
+  least two candidates where the baseline ran one layered pass; which sub-millisecond cases
+  land on the list changes between runs.
+- **One request with ≤ 30 visible tiles above 5 ms at p95**: random-dag-40-7503's
+  committed reveal, 7.4 ms (p50 5.6 ms; baseline 12.4 ms). It has 24 visible tiles plus
+  history, so the dispatch rule runs it in the worker. The crossing cap adds about 1.5 ms
+  (its winner crosses 190 times, so the best unanchored layout is evaluated); before the
+  cap it measured 5.2 ms.

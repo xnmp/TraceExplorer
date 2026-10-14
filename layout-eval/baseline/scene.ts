@@ -1,0 +1,141 @@
+/**
+ * Scene composition: the pure pipeline from a component's DAG and the current
+ * focus to everything a renderer needs (visible tiles, sizes, tones, layout
+ * request and route styling). Layout itself may run in a worker; everything
+ * here is cheap and synchronous.
+ */
+import type { NodeKey, TraceNode } from "./model";
+import type { BadgeProjection, ReferenceBadge, TraceDag } from "./projection";
+import { lineage, lineageWithBadges, toneOf, type Lineage, type NodeTone } from "./lineage";
+import { hiddenDescendantCount, visibleKeys, type VisibilityOptions } from "./visibility";
+import { tileMetrics, tileSize, type TileMetrics, type TileSize } from "./metrics";
+import { chooseOrientation, generationProfile, sidewaysWidth, type OrientationHistory } from "./orientation";
+import type { GraphLayout, LayoutItem, LayoutRequest, PinnedCover, PlacedRoute } from "./layout";
+
+export interface SceneTile {
+  readonly key: NodeKey;
+  readonly node: TraceNode;
+  readonly tone: NodeTone;
+  readonly size: TileSize;
+  readonly childCount: number;
+  readonly hiddenDescendants: number;
+  /** Only folder images can expand to reveal their children. */
+  readonly expandable: boolean;
+}
+
+export interface ScenePlan {
+  readonly lineage: Lineage;
+  readonly tiles: ReadonlyMap<NodeKey, SceneTile>;
+  readonly request: LayoutRequest;
+}
+
+export interface SceneOptions {
+  /** Component identity disambiguates references copied into several stacks. */
+  readonly componentId?: string;
+  /** Previous reading order, so siblings keep their places (see `LayoutRequest.hint`). */
+  readonly hint?: ReadonlyMap<NodeKey, number>;
+  /**
+   * Orientations last displayed at each tile width. Hysteresis uses only this
+   * size's committed orientation, so a resize round trip restores it while
+   * the profile and pane width still allow it (orientation.ts).
+   */
+  readonly previous?: OrientationHistory;
+  /** The size of the view's tiles (`tileMetrics`); defaults to the default tile. */
+  readonly tile?: TileMetrics;
+}
+
+export interface ComponentFocus { readonly key: NodeKey; readonly componentId: string }
+
+export function planScene(dag: TraceDag, members: readonly NodeKey[], focus: NodeKey | ComponentFocus | null, maxWidth: number, options: SceneOptions = {}): ScenePlan {
+  const { hint, previous, tile = tileMetrics() } = options;
+  const key = typeof focus === "object" ? focus?.key ?? null : focus;
+  const ownsFocus = typeof focus !== "object" || focus === null || focus.componentId === options.componentId;
+  const inComponent = key !== null && ownsFocus && members.includes(key);
+  const context = lineage(dag, inComponent ? key : null);
+  // Lineage of an out-of-component focus still dims this component entirely.
+  const effective: Lineage = key !== null && !inComponent ? { focus: key, related: new Set() } : context;
+  const { tiles, items } = sceneTiles(dag, members, inComponent ? key : null, effective, tile);
+  // Decided from the whole component, never the focus, so selection cannot flip it.
+  // Running right, the canvas is sized for the whole component, so it does not re-centre as generations appear.
+  const profile = generationProfile(dag, members);
+  const orientation = chooseOrientation(profile, maxWidth, previous?.get(tile.width), tile);
+  const extent = orientation === "right" ? sidewaysWidth(profile, tile) : undefined;
+  return { lineage: effective, tiles, request: { items, maxWidth, hint, orientation, extent, tileWidth: tile.width } };
+}
+
+function sceneTiles(dag: TraceDag, members: readonly NodeKey[], focus: NodeKey | null, context: Lineage, tile: TileMetrics, visibility: VisibilityOptions = {}) {
+  const visible = visibleKeys(dag, members, focus, visibility);
+  const shown = new Set(visible);
+  const tiles = new Map<NodeKey, SceneTile>();
+  const items: LayoutItem[] = [];
+  for (const key of visible) {
+    const node = dag.nodes.get(key)!;
+    const childCount = dag.children.get(key)!.length;
+    const expandable = node.scope === "current" && childCount > 0;
+    // Sizes depend only on the node, never on the focus.
+    const size = tileSize({ foreign: node.scope !== "current", hint: expandable }, tile);
+    tiles.set(key, { key, node, tone: toneOf(context, key), size, childCount, hiddenDescendants: hiddenDescendantCount(dag, key, shown), expandable });
+    items.push({ key, width: size.width, height: size.height, order: node.order, parents: dag.parents.get(key)!.filter((parent) => shown.has(parent)) });
+  }
+  return { tiles, items };
+}
+
+export interface BandSceneOptions extends Pick<SceneOptions, "hint" | "tile"> {
+  readonly pinned: PinnedCover;
+  /** Hover adds consumer highlighting without changing focus or the visible neighborhood. */
+  readonly badgeHighlight?: NodeKey | null;
+}
+
+export interface BandScenePlan extends ScenePlan {
+  /** Badges docked on visible consumers; all references survive the display's three-badge limit. */
+  readonly badges: ReadonlyMap<NodeKey, readonly ReferenceBadge[]>;
+}
+
+/**
+ * Opt-in band scene; legacy planScene is unchanged. Project reference badges
+ * before computing drawable components. Members contain drawable keys only.
+ * Band candidates use the complete lineage so focus cannot change their arrangement.
+ */
+export function planBandScene(graph: BadgeProjection, members: readonly NodeKey[], focus: NodeKey | null, maxWidth: number, options: BandSceneOptions): BandScenePlan {
+  const { dag } = graph;
+  const membership = new Set(members);
+  const badgeConsumers = focus !== null && graph.badges.has(focus)
+    ? members.filter((key) => graph.byConsumer.get(key)?.some((badge) => badge.key === focus)) : [];
+  const inComponent = focus !== null && (membership.has(focus) || badgeConsumers.length > 0);
+  const context = lineageWithBadges(graph, inComponent ? focus : null, membership);
+  const selected: Lineage = focus !== null && !inComponent ? { focus, related: new Set() } : context;
+  const highlight = options.badgeHighlight && graph.badges.has(options.badgeHighlight) ? lineageWithBadges(graph, options.badgeHighlight, membership) : null;
+  const effective: Lineage = highlight ? { focus: selected.focus ?? highlight.focus, related: new Set([...selected.related, ...highlight.related]) } : selected;
+  const tile = options.tile ?? tileMetrics();
+  const { tiles, items } = sceneTiles(dag, members, inComponent && badgeConsumers.length === 0 ? focus : null, effective, tile, { roots: "in-folder", include: badgeConsumers });
+  const badges = new Map([...tiles.keys()].flatMap((key) => {
+    const references = graph.byConsumer.get(key);
+    return references ? [[key, references] as const] : [];
+  }));
+  return { lineage: effective, tiles, badges, request: { items, maxWidth, hint: options.hint, tileWidth: tile.width, orientation: "down", pinned: options.pinned, band: { key: options.pinned.key, items: members.map((key) => {
+    const node = dag.nodes.get(key)!;
+    const size = tileSize({ foreign: node.scope !== "current", hint: (dag.children.get(key)?.length ?? 0) > 0 && node.scope === "current" }, tile);
+    return { key, ...size, order: node.order, parents: (dag.parents.get(key) ?? []).filter((parent) => membership.has(parent)) };
+  }) } } };
+}
+
+export type RouteKind = "current" | "subfolder" | "external";
+
+export interface RouteStyle { readonly kind: RouteKind; readonly related: boolean; readonly highlighted: boolean }
+
+export function routeStyle(route: PlacedRoute, dag: TraceDag, context: Lineage): RouteStyle {
+  const kinds = route.consumers.map((item) => dag.nodes.get(item.parent)?.scope ?? "current");
+  const kind: RouteKind = kinds.every((value) => value === "external") ? "external" : kinds.every((value) => value === "subfolder") ? "subfolder" : "current";
+  if (context.focus === null) return { kind, related: true, highlighted: false };
+  return {
+    kind,
+    related: route.consumers.some((item) => context.related.has(item.parent) && context.related.has(item.child)),
+    highlighted: context.related.has(context.focus) && route.consumers.some((item) => item.parent === context.focus || item.child === context.focus),
+  };
+}
+
+export function junctionRelated(parents: readonly NodeKey[], context: Lineage): boolean {
+  return context.focus !== null && parents.some((id) => context.related.has(id));
+}
+
+export type { GraphLayout };
