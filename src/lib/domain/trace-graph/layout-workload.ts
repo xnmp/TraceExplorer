@@ -7,15 +7,23 @@ export function canLayoutInline(request: LayoutRequest): boolean {
     && request.items.reduce((sum, n) => sum + n.parents.length, 0) + (history?.routes.length ?? 0) <= 40;
 }
 
+/** The scene on screen: how far it reaches horizontally, and the pane width it was laid out for. */
+export interface DisplayedExtent {
+  readonly extent: number;
+  readonly width: number;
+}
+
 /**
  * Whether a folder layout must run before the next paint whatever its workload
- * (docs/scene-transactions.md, "Native findings fixes"). `displayedExtent` is how far the scene on
- * screen reaches horizontally, in folder coordinates; `width` is the width the next layout is for.
- * A scene that still fits stays on screen, unchanged and whole, while a heavy layout runs off the
- * main thread; one that no longer fits (the pane narrowed) would be cut at the pane's edge
- * meanwhile, so its replacement is computed at once instead. Nothing on screen (null), or a
- * measure that is not a finite number, never forces it.
+ * (docs/scene-transactions.md, "Native findings fixes"). `width` is the width the next layout is
+ * for. A scene on screen that the pane narrowed past (it reaches beyond the new width, which is
+ * narrower than the one it was laid out for) would be drawn overflowing the pane while a heavy
+ * layout runs off the main thread, so its replacement is computed at once instead. Otherwise the
+ * scene on screen stays, unchanged and whole, until the worker's layout commits: one that still
+ * fits, and one already wider than its own pane (it scrolls sideways now as it did before).
+ * Nothing on screen (null), or a measure that is not a finite number, never forces it.
  */
-export function mustLayoutBeforePaint(displayedExtent: number | null, width: number): boolean {
-  return displayedExtent !== null && Number.isFinite(displayedExtent) && Number.isFinite(width) && displayedExtent > width;
+export function mustLayoutBeforePaint(displayed: DisplayedExtent | null, width: number): boolean {
+  return displayed !== null && [displayed.extent, displayed.width, width].every(Number.isFinite)
+    && width < displayed.width && displayed.extent > width;
 }
