@@ -4,14 +4,14 @@ import { holdAnchor } from "$lib/plugins/trace/view/motion";
 afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 
 /**
- * Scroll offsets affect screen rects as in a browser, including zoom and clamping. `moving` is the
- * presentation activity the scene controller reports; nothing is read from DOM animations.
+ * Scroll offsets affect screen rects as in a browser, including zoom and clamping. `frame()` is a
+ * motion frame, run after its poses are written (the motion frame loop's `scroll` phase); a hold
+ * never requests frames of its own, and nothing is read from DOM animations.
  */
 function anchorFixture(zoom = 1, quantize: (value: number) => number = (value) => value) {
-  let sequence = 0, present = true, top = 200, left = 20, limit = 1000, moving = false;
-  const frames = new Map<number, FrameRequestCallback>();
-  vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => { frames.set(++sequence, callback); return sequence; });
-  vi.stubGlobal("cancelAnimationFrame", (id: number) => { frames.delete(id); });
+  let present = true, top = 200, left = 20, limit = 1000, requested = 0;
+  const frames = new Set<() => void>();
+  vi.stubGlobal("requestAnimationFrame", () => ++requested);
   vi.stubGlobal("getComputedStyle", () => ({ width: "200px", boxSizing: "border-box" }));
   const listeners = new Map<string, number>();
   const horizontal = Object.assign(new EventTarget(), { scrollLeft: left });
@@ -33,15 +33,16 @@ function anchorFixture(zoom = 1, quantize: (value: number) => number = (value) =
   } as unknown as HTMLElement;
   return {
     scroller: surface as unknown as HTMLElement, horizontal, element, position,
-    options: (onRelease?: () => void) => ({ moving: () => moving, onRelease }),
-    pending: () => frames.size,
+    options: (onRelease?: () => void) => ({ frames: (listener: () => void) => { frames.add(listener); return () => { frames.delete(listener); }; }, onRelease }),
+    /** Holds following motion frames. */
+    following: () => frames.size,
+    /** Frames requested from the browser. */
+    requested: () => requested,
     /** Listeners the hold still has on the scroller. */
     listening: () => [...listeners.values()].reduce((sum, count) => sum + count, 0),
     shrinkLimit(value: number) { limit = value; top = Math.min(top, limit); },
     remove() { present = false; },
-    startMotion() { moving = true; },
-    finishMotion() { moving = false; },
-    frame() { const pending = [...frames.values()]; frames.clear(); for (const callback of pending) callback(0); },
+    frame() { for (const listener of [...frames]) listener(); },
   };
 }
 
@@ -50,7 +51,6 @@ describe("holding a scroll anchor", () => {
     const fixture = anchorFixture(1, Math.floor), released = vi.fn();
     const captured = fixture.element.getBoundingClientRect().top;
     const hold = holdAnchor(fixture.scroller, fixture.element, fixture.options(released));
-    fixture.startMotion();
     for (const shift of [14.59, 21.83, 70.16, 115]) {
       fixture.position.top = 300 - shift;
       hold.update();
@@ -67,34 +67,29 @@ describe("holding a scroll anchor", () => {
     const fixture = anchorFixture(zoom);
     const before = fixture.element.getBoundingClientRect();
     const hold = holdAnchor(fixture.scroller, fixture.element, fixture.options());
-    expect(fixture.pending()).toBe(0);
     // The earlier section commits while the clicked graph is still pending.
-    fixture.startMotion();
     fixture.position.top -= 60;
     hold.update();
     expect(fixture.element.getBoundingClientRect().top).toBeCloseTo(before.top, 8);
     expect(fixture.element.getBoundingClientRect().left).toBeCloseTo(before.left, 8);
-    expect(fixture.pending()).toBe(1);
     for (let i = 0; i < 10; i++) {
       fixture.position.top -= 3;
       fixture.position.left += 2;
       fixture.frame();
       expect(fixture.element.getBoundingClientRect().top).toBeCloseTo(before.top, 8);
       expect(fixture.element.getBoundingClientRect().left).toBeCloseTo(before.left, 8);
-      expect(fixture.pending()).toBe(1);
     }
-    fixture.finishMotion();
     fixture.position.top -= 25;
-    fixture.frame(); // Sample the final frame even when motion has just ended.
+    fixture.frame(); // The final frame, in which motion ends.
     expect(fixture.element.getBoundingClientRect().top).toBeCloseTo(before.top, 8);
     expect(fixture.element.getBoundingClientRect().left).toBeCloseTo(before.left, 8);
-    expect(fixture.pending()).toBe(0);
     fixture.position.top += 30;
     hold.update(); // A later commit wakes the retained anchor.
     expect(fixture.element.getBoundingClientRect().top).toBeCloseTo(before.top, 8);
     expect(fixture.element.getBoundingClientRect().left).toBeCloseTo(before.left, 8);
-    expect(fixture.pending()).toBe(0);
+    expect(fixture.requested()).toBe(0);
     hold.release();
+    expect(fixture.following()).toBe(0);
   });
 
   it("does not let continuous interrupted relayouts grow frames or fight subsequent scrolling", () => {
@@ -102,8 +97,6 @@ describe("holding a scroll anchor", () => {
     const before = fixture.element.getBoundingClientRect();
     const hold = holdAnchor(fixture.scroller, fixture.element, fixture.options());
     for (let i = 0; i < 100; i++) {
-      fixture.finishMotion();
-      fixture.startMotion();
       fixture.position.top += 2;
       hold.update();
       hold.update();
@@ -111,7 +104,7 @@ describe("holding a scroll anchor", () => {
       fixture.scroller.dispatchEvent(new Event("scroll")); // Own queued/coalesced events.
       expect(fixture.element.getBoundingClientRect().top).toBeCloseTo(before.top, 8);
       expect(fixture.element.getBoundingClientRect().left).toBeCloseTo(before.left, 8);
-      expect(fixture.pending()).toBe(1);
+      expect(fixture.following()).toBe(1);
     }
     fixture.scroller.dispatchEvent(new Event("wheel"));
     fixture.scroller.scrollTop += 100;
@@ -120,14 +113,14 @@ describe("holding a scroll anchor", () => {
     hold.update();
     fixture.frame();
     expect(fixture.scroller.scrollTop).toBe(scrolled);
-    expect(fixture.pending()).toBe(0);
+    expect(fixture.following()).toBe(0);
+    expect(fixture.requested()).toBe(0);
     expect(fixture.listening()).toBe(0);
   });
 
   it.each(["scroll", "touchstart", "keydown", "scrollbar", "removed", "released"])("releases on %s and tears down motion monitoring", (reason) => {
     const fixture = anchorFixture();
     const released = vi.fn();
-    fixture.startMotion();
     const hold = holdAnchor(fixture.scroller, fixture.element, fixture.options(released));
     if (reason === "scroll") { fixture.scroller.scrollTop += 40; fixture.scroller.dispatchEvent(new Event("scroll")); }
     else if (reason === "touchstart") fixture.scroller.dispatchEvent(new Event("touchstart"));
@@ -140,19 +133,18 @@ describe("holding a scroll anchor", () => {
     hold.update(); fixture.frame(); hold.release();
     fixture.scroller.dispatchEvent(new Event("wheel"));
     expect(fixture.scroller.scrollTop).toBe(scrolled);
-    expect(fixture.pending()).toBe(0);
+    expect(fixture.following()).toBe(0);
     expect(released).toHaveBeenCalledOnce();
     expect(fixture.listening()).toBe(0);
   });
 
   it("detects scrolling before its scroll event is delivered", () => {
     const fixture = anchorFixture();
-    fixture.startMotion();
     holdAnchor(fixture.scroller, fixture.element, fixture.options());
     fixture.scroller.scrollTop += 40;
     fixture.frame();
     expect(fixture.scroller.scrollTop).toBe(240);
-    expect(fixture.pending()).toBe(0);
+    expect(fixture.following()).toBe(0);
   });
 
   it("retains the hold on modifier keys and section content presses", () => {
@@ -171,7 +163,6 @@ describe("holding a scroll anchor", () => {
   it.each([-400, 1200])("releases when the vertical adjustment is clamped (%s)", (delta) => {
     const fixture = anchorFixture();
     const released = vi.fn();
-    fixture.startMotion();
     const hold = holdAnchor(fixture.scroller, fixture.element, fixture.options(released));
     fixture.position.top += delta;
     fixture.frame();
@@ -180,7 +171,7 @@ describe("holding a scroll anchor", () => {
     fixture.position.top -= delta;
     hold.update();
     expect(fixture.scroller.scrollTop).toBe(delta < 0 ? 0 : 1000);
-    expect(fixture.pending()).toBe(0);
+    expect(fixture.following()).toBe(0);
   });
 
   it("retains a reachable anchor when removing content automatically clamps the scroll offset", () => {
@@ -214,7 +205,7 @@ describe("holding a scroll anchor", () => {
     fixture.position.top += 30;
     hold.update();
     expect(fixture.element.getBoundingClientRect().top).toBeCloseTo(before.top, 8);
-    expect(fixture.pending()).toBe(0);
+    expect(fixture.requested()).toBe(0);
     hold.release();
     fixture.position.top += 10;
     hold.update();
@@ -224,7 +215,6 @@ describe("holding a scroll anchor", () => {
   it("preserves the vertical anchor when horizontal preservation is clamped", () => {
     const fixture = anchorFixture();
     const before = fixture.element.getBoundingClientRect();
-    fixture.startMotion();
     const hold = holdAnchor(fixture.scroller, fixture.element, fixture.options());
     fixture.position.left -= 100;
     fixture.position.top += 20;
@@ -233,22 +223,22 @@ describe("holding a scroll anchor", () => {
     fixture.position.top += 20;
     fixture.frame();
     expect(fixture.element.getBoundingClientRect().top).toBeCloseTo(before.top, 8);
-    expect(fixture.pending()).toBe(1);
+    expect(fixture.following()).toBe(1);
     hold.release();
   });
 
-  it("follows the presentation's activity: frames only while it moves", () => {
+  it("follows the motion frames it is given and requests none of its own; a released hold follows none", () => {
     const fixture = anchorFixture();
+    const before = fixture.element.getBoundingClientRect();
     const hold = holdAnchor(fixture.scroller, fixture.element, fixture.options());
-    expect(fixture.pending()).toBe(0);
-    fixture.startMotion();
-    hold.update();
-    expect(fixture.pending()).toBe(1);
+    fixture.position.top -= 12;
     fixture.frame();
-    expect(fixture.pending()).toBe(1);
-    fixture.finishMotion();
-    fixture.frame();
-    expect(fixture.pending()).toBe(0);
+    expect(fixture.element.getBoundingClientRect().top).toBeCloseTo(before.top, 8);
+    expect(fixture.requested()).toBe(0);
     hold.release();
+    const scrolled = fixture.scroller.scrollTop;
+    fixture.position.top -= 12;
+    fixture.frame();
+    expect(fixture.scroller.scrollTop).toBe(scrolled);
   });
 });

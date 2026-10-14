@@ -299,30 +299,36 @@ test("a large band carried into view by a motion held at its start mounts its ti
 });
 
 // Review 8d257bf: every outside measurement (scroll, publication, motion start) started another
-// frame loop while the presentation moved, so ten scrolls measured eleven times per frame.
-test("scrolling while the presentation moves keeps one measuring frame loop", async ({ page }) => {
+// frame loop while the presentation moved, so ten scrolls measured eleven times per frame. Review
+// b7673b1: measuring and anchoring run inside the motion loop's frame callback, after its poses are
+// written (frame-loop.ts), so the view runs exactly one frame callback per frame while it moves.
+test("scrolling while the presentation moves keeps one frame callback per frame, the motion loop's", async ({ page }) => {
   await bandBelowFan(page);
   await page.evaluate(() => {
     const w = window as any, raf = window.requestAnimationFrame.bind(window);
-    w.__measures = 0;
-    window.requestAnimationFrame = (callback: FrameRequestCallback) => raf((time) => { if (callback.name.startsWith("measure")) w.__measures++; callback(time); });
+    w.__raf = raf;
+    w.__callbacks = 0;
+    window.requestAnimationFrame = (callback: FrameRequestCallback) => raf((time) => { w.__callbacks++; callback(time); });
   });
+  /** The view's frame callbacks in one frame (the test's own use the browser's requestAnimationFrame). */
   const perFrame = () => page.evaluate(async () => {
-    const w = window as any;
-    await new Promise((resolve) => requestAnimationFrame(resolve));
-    const before = w.__measures;
-    await new Promise((resolve) => requestAnimationFrame(resolve));
-    return w.__measures - before;
+    const w = window as any, frame = () => new Promise((resolve) => w.__raf(resolve));
+    await frame();
+    const before = w.__callbacks;
+    await frame();
+    return w.__callbacks - before;
   });
-  await holdMotion(page);
   try {
+    // A slow clock keeps the motion running through the scrolls.
+    await page.evaluate(() => (window as any).trace.motion.setRate(.05));
     await stack(page, "fan").locator("[data-stack-toggle]").evaluate((element: HTMLElement) => element.click());
-    await awaitMotionStarted(page);
-    expect(await perFrame(), "a measuring loop runs while moving").toBe(1);
+    await page.waitForFunction(() => (window as any).trace.motion.state().running.length > 0, undefined, { polling: "raf" });
+    expect(await perFrame(), "one frame callback runs while moving").toBe(1);
     for (let index = 0; index < 10; index++) {
       await view(page).evaluate((element, index) => { element.scrollTop = 10 + index * 3; }, index);
       await page.waitForTimeout(30);
     }
+    expect(await page.evaluate(() => (window as any).trace.motion.state().running.length), "still moving").toBeGreaterThan(0);
     expect(await perFrame(), "still one after ten scrolls").toBe(1);
   } finally { await releaseMotion(page); }
   await settle(page);

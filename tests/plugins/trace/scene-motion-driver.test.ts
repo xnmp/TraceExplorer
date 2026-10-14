@@ -7,7 +7,10 @@ import { engines, type FolderLayout } from "$lib/domain/trace-graph/folder-layou
 import { buildFolderScene, diffScenes, type FolderScene, type SceneScope, type SceneStyling } from "$lib/domain/trace-graph/folder-scene";
 import { tileMetrics } from "$lib/domain/trace-graph/metrics";
 import { MOTION_MS, retargetPresentation, samplePresentation, staticPresentation, type Presentation } from "$lib/plugins/trace/view/presentation";
-import { createSceneMotion, sceneMotionTesting } from "$lib/plugins/trace/view/scene-motion";
+import v8 from "node:v8";
+import vm from "node:vm";
+import { createSceneMotion, FIRST_INTERVAL, sceneMotionTesting } from "$lib/plugins/trace/view/scene-motion";
+import { onFrame } from "$lib/plugins/trace/view/frame-loop";
 import { GRID, type RenderHandles } from "$lib/plugins/trace/view/render-handles";
 import { folderInput, handCase, makeFolder, sourcesOf, type Folder } from "../../domain/trace-graph/folder-layout-fixtures";
 
@@ -47,6 +50,8 @@ function fakeHandles() {
 let now = 0;
 let callbacks = new Map<number, FrameRequestCallback>();
 let ids = 0;
+/** Frames requested from the browser so far. */
+let requests = 0;
 function frame(ms: number): void {
   now += ms;
   const pending = callbacks;
@@ -56,8 +61,8 @@ function frame(ms: number): void {
 const flush = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
 
 beforeEach(() => {
-  now = 1000; callbacks = new Map(); ids = 0;
-  vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => { callbacks.set(++ids, callback); return ids; });
+  now = 1000; callbacks = new Map(); ids = 0; requests = 0;
+  vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => { requests++; callbacks.set(++ids, callback); return ids; });
   vi.stubGlobal("cancelAnimationFrame", (id: number) => { callbacks.delete(id); });
   vi.spyOn(performance, "now").mockImplementation(() => now);
 });
@@ -65,6 +70,8 @@ afterEach(() => {
   sceneMotionTesting.finish();
   sceneMotionTesting.release();
   sceneMotionTesting.setRate(1);
+  // The loop ends at its next frame once nothing runs.
+  for (let i = 0; i < 3 && callbacks.size; i++) frame(16);
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
 });
@@ -87,10 +94,10 @@ describe("the rAF motion driver", () => {
     frame(70);
     expect(motion.displayedAt(presentation)).toBe(0);
     expect(moved(elements).map(([key, element]) => [key, { ...element.style }])).toEqual([...first]);
-    frame(40);
-    expect(motion.displayedAt(presentation)).toBe(40);
+    frame(16);
+    expect(motion.displayedAt(presentation)).toBe(16);
     // A sample is the presentation at the time displayed.
-    expect(motion.sample(presentation).at).toBe(40);
+    expect(motion.sample(presentation).at).toBe(16);
     const changed = [...first].filter(([key, style]) => JSON.stringify(elements.get(key)!.style) !== JSON.stringify(style));
     expect(changed.length).toBeGreaterThan(0);
   });
@@ -130,7 +137,10 @@ describe("the rAF motion driver", () => {
     const displayed = motion.sample(first);
     expect(displayed.at).toBe(49);
     const second = retargetPresentation(displayed, both, diffScenes(closed, both), { transaction: 2, epoch: ++epochs });
+    const before = requests;
     motion.start(second);
+    // The restart keeps the frame already requested: it never re-queues behind other frame callbacks.
+    expect(requests).toBe(before);
     expect(await settled).toBe(false);
     expect(motion.displayedAt(first)).toBe(Infinity);
     expect(motion.displayedAt(second)).toBe(0);
@@ -162,7 +172,10 @@ describe("the rAF motion driver", () => {
     motion.snap();
     expect(await settled).toBe(false);
     for (const [key, element] of elements) expect(element.style, key).toEqual(RENDERED);
+    // The frame already requested passes, and requests no other.
+    frame(16);
     expect(callbacks.size).toBe(0);
+    for (const [key, element] of elements) expect(element.style, key).toEqual(RENDERED);
   });
 
   it("starts nothing under reduced motion or without a duration", async () => {
@@ -185,8 +198,26 @@ describe("the rAF motion driver", () => {
     expect(callbacks.size).toBe(1);
     expect(sceneMotionTesting.state().running).toHaveLength(2);
     frame(16);
+    frame(16);
     frame(MOTION_MS);
     expect(sceneMotionTesting.state().running).toHaveLength(0);
+    expect(callbacks.size).toBe(0);
+  });
+
+  it("one view's snap ends only its own epoch; the loop runs on for the others", async () => {
+    const one = fakeHandles(), two = fakeHandles();
+    const a = createSceneMotion({ handles: one.handles, reduced: () => false });
+    const b = createSceneMotion({ handles: two.handles, reduced: () => false });
+    const pa = moving(open, both), pb = moving(open, closed);
+    a.start(pa);
+    const { settled } = b.start(pb);
+    frame(16); frame(16);
+    a.snap();
+    expect(sceneMotionTesting.state().running.map((r) => r.epoch)).toEqual([pb.epoch]);
+    frame(16);
+    expect(b.displayedAt(pb)).toBe(32);
+    frame(MOTION_MS);
+    expect(await settled).toBe(true);
     expect(callbacks.size).toBe(0);
   });
 
@@ -208,6 +239,9 @@ describe("the rAF motion driver", () => {
       expect(sceneMotionTesting.state().running).toEqual([{ epoch: presentation.epoch, at: MOTION_MS, duration: MOTION_MS, held: true }]);
       sceneMotionTesting.seek(80);
       sceneMotionTesting.release();
+      // The next frame shows the time it was held at, and the clock runs on from that frame.
+      frame(40);
+      expect(motion.displayedAt(presentation)).toBe(80);
       frame(40);
       expect(motion.displayedAt(presentation)).toBe(120);
       frame(40);
@@ -223,12 +257,241 @@ describe("the rAF motion driver", () => {
       sceneMotionTesting.setRate(.1);
       const presentation = moving(open, both);
       motion.start(presentation);
-      frame(16); frame(100);
-      expect(motion.displayedAt(presentation)).toBeCloseTo(10, 9);
+      frame(16); frame(16); frame(100);
+      expect(motion.displayedAt(presentation)).toBeCloseTo(11.6, 9);
       sceneMotionTesting.hold();
       const { settled } = motion.start(moving(open, closed));
       sceneMotionTesting.finish();
       expect(await settled).toBe(true);
     });
+  });
+
+  describe("frame phases", () => {
+    it("listeners of the scroll and read phases see the poses of their frame, after every view wrote, also after an interruption", () => {
+      const one = fakeHandles(), two = fakeHandles();
+      const a = createSceneMotion({ handles: one.handles, reduced: () => false });
+      const b = createSceneMotion({ handles: two.handles, reduced: () => false });
+      const styles = () => JSON.stringify([[...one.elements].map(([key, e]) => [key, { ...e.style }]), [...two.elements].map(([key, e]) => [key, { ...e.style }])]);
+      const seen: { phase: string; styles: string; at: number }[] = [];
+      let shown: Presentation = moving(open, closed);
+      const stops = [onFrame("read", () => seen.push({ phase: "read", styles: styles(), at: a.displayedAt(shown) })),
+        onFrame("scroll", () => seen.push({ phase: "scroll", styles: styles(), at: a.displayedAt(shown) }))];
+      try {
+        a.start(shown); b.start(moving(open, both));
+        frame(16); frame(16); frame(16);
+        // Interrupted between frames: the next epoch starts from the pose on screen.
+        const next = retargetPresentation(a.sample(shown), both, diffScenes(closed, both), { transaction: 2, epoch: ++epochs });
+        a.start(next);
+        shown = next;
+        for (let i = 0; i < 4; i++) {
+          seen.length = 0;
+          frame(16);
+          // Scroll first, then read; each sees exactly what the frame shows once its callbacks ran.
+          expect(seen.map((s) => s.phase)).toEqual(["scroll", "read"]);
+          for (const entry of seen) expect(entry.styles).toBe(styles());
+          expect(seen[0].at).toBe(a.displayedAt(next));
+        }
+        expect(a.displayedAt(next)).toBe(48);
+      } finally { for (const stop of stops) stop(); }
+    });
+
+    it("seek and finish run the later phases at once, so what follows motion sees the poses before the next frame", () => {
+      const { handles, elements } = fakeHandles();
+      const motion = createSceneMotion({ handles, reduced: () => false });
+      const seen: string[] = [];
+      const stop = onFrame("scroll", () => seen.push(JSON.stringify([...elements].map(([, e]) => e.style))));
+      try {
+        sceneMotionTesting.hold();
+        motion.start(moving(open, both));
+        sceneMotionTesting.seek(80);
+        expect(seen).toEqual([JSON.stringify([...elements].map(([, e]) => e.style))]);
+        sceneMotionTesting.finish();
+        expect(seen).toHaveLength(2);
+        expect(seen[1]).toBe(JSON.stringify([...elements].map(([, e]) => e.style)));
+      } finally { stop(); }
+    });
+  });
+
+  describe("the epoch clock", () => {
+    it("counts a first interval longer than a frame or so as one frame (the first frame renders the publication)", () => {
+      const { handles } = fakeHandles();
+      const motion = createSceneMotion({ handles, reduced: () => false });
+      const presentation = moving(open, both);
+      motion.start(presentation);
+      frame(16);
+      frame(117);
+      expect(motion.displayedAt(presentation)).toBeCloseTo(FIRST_INTERVAL.assumed, 9);
+      frame(16);
+      expect(motion.displayedAt(presentation)).toBeCloseTo(FIRST_INTERVAL.assumed + 16, 9);
+    });
+
+    it("keeps a first interval of a frame, and every later interval in full: stalled time is never dropped", () => {
+      const { handles } = fakeHandles();
+      const motion = createSceneMotion({ handles, reduced: () => false });
+      const presentation = moving(open, both);
+      motion.start(presentation);
+      frame(16);
+      frame(FIRST_INTERVAL.threshold);
+      expect(motion.displayedAt(presentation)).toBe(FIRST_INTERVAL.threshold);
+      frame(85);
+      expect(motion.displayedAt(presentation)).toBe(FIRST_INTERVAL.threshold + 85);
+    });
+
+    it("a released epoch shows the time it was held at in its next frame, whatever that frame's timestamp, then runs on", () => {
+      const { handles } = fakeHandles();
+      const motion = createSceneMotion({ handles, reduced: () => false });
+      const presentation = moving(open, both);
+      sceneMotionTesting.hold();
+      motion.start(presentation);
+      sceneMotionTesting.seek(80);
+      sceneMotionTesting.release();
+      // The frame's timestamp is its start, before the task that released (performance.now()).
+      now -= 5;
+      frame(0);
+      expect(motion.displayedAt(presentation)).toBe(80);
+      frame(16);
+      expect(motion.displayedAt(presentation)).toBe(96);
+      // A slower rate runs on from the time displayed: never backwards, never a jump.
+      sceneMotionTesting.setRate(.5);
+      frame(16);
+      expect(motion.displayedAt(presentation)).toBe(104);
+      sceneMotionTesting.setRate(1);
+      frame(16);
+      expect(motion.displayedAt(presentation)).toBe(120);
+    });
+  });
+
+  describe("a hidden document", () => {
+    function fakeDocument(state: DocumentVisibilityState) {
+      const document = Object.assign(new EventTarget(), { visibilityState: state });
+      vi.stubGlobal("document", document);
+      return {
+        hide() { document.visibilityState = "hidden"; document.dispatchEvent(new Event("visibilitychange")); },
+        show() { document.visibilityState = "visible"; document.dispatchEvent(new Event("visibilitychange")); },
+      };
+    }
+
+    it("starts no motion while hidden: the final state shows at once and settles", async () => {
+      fakeDocument("hidden");
+      const { handles, elements } = fakeHandles();
+      const motion = createSceneMotion({ handles, reduced: () => false });
+      const result = motion.start(moving(open, closed));
+      expect(result.started).toBe(false);
+      expect(await result.settled).toBe(true);
+      expect(moved(elements)).toEqual([]);
+      expect(callbacks.size).toBe(0);
+    });
+
+    it("completes a running epoch when the document hides, without waiting for frames; nothing replays on return", async () => {
+      const visibility = fakeDocument("visible");
+      const { handles, elements } = fakeHandles();
+      const motion = createSceneMotion({ handles, reduced: () => false });
+      const presentation = moving(open, closed);
+      const retirees = [...presentation.retiring.values()].filter((retiree) => retiree.track && retiree.group === null).map((retiree) => retiree.renderId);
+      const { settled } = motion.start(presentation);
+      frame(16); frame(16);
+      let result: boolean | null = null;
+      void settled.then((finished) => { result = finished; });
+      visibility.hide();
+      await Promise.resolve();
+      expect(result).toBe(true);
+      expect(motion.displayedAt(presentation)).toBe(Infinity);
+      for (const [key, element] of elements) {
+        if (retirees.includes(key)) expect(element.style.opacity, key).toBe("0");
+        else if (!key.startsWith("layer:")) expect(element.style, key).toEqual(RENDERED);
+      }
+      const shown = JSON.stringify([...elements]);
+      visibility.show();
+      frame(16); frame(16);
+      expect(JSON.stringify([...elements])).toBe(shown);
+      expect(sceneMotionTesting.state().running).toEqual([]);
+    });
+  });
+
+  it("holds no completed epoch's elements: a retiree that unmounted can be collected", async () => {
+    v8.setFlagsFromString("--expose-gc");
+    const gc = vm.runInNewContext("gc") as () => void;
+    const mounted = new Map<string, Fake>();
+    const handles: RenderHandles = {
+      attach: () => () => {},
+      get: (key) => {
+        if (key === GRID) return undefined;
+        if (!mounted.has(key)) mounted.set(key, { style: { ...RENDERED } });
+        return mounted.get(key) as unknown as HTMLElement;
+      },
+    };
+    const motion = createSceneMotion({ handles, reduced: () => false });
+    let presentation: Presentation | null = moving(open, closed);
+    const keys = [...presentation.retiring.values()].filter((retiree) => retiree.track && retiree.group === null).map((retiree) => retiree.renderId);
+    expect(keys.length).toBeGreaterThan(0);
+    const { settled } = motion.start(presentation);
+    presentation = null;
+    frame(16); frame(16); frame(MOTION_MS);
+    expect(await settled).toBe(true);
+    // The settled scene unmounts its retirees.
+    const retirees = keys.map((key) => new WeakRef(mounted.get(key)!));
+    for (const key of keys) mounted.delete(key);
+    await flush();
+    gc();
+    expect(retirees.filter((ref) => ref.deref() !== undefined)).toHaveLength(0);
+    // Elements still mounted keep their final values until the next epoch or snap gives them back.
+    motion.snap();
+    for (const [key, element] of mounted) expect(element.style, key).toEqual(RENDERED);
+  });
+
+  /** Handles whose elements throw on the first transform write once `arm()`ed. */
+  function fragileHandles() {
+    let armed = false;
+    const elements = new Map<string, Fake>();
+    const handles: RenderHandles = {
+      attach: () => () => {},
+      get: (key) => {
+        if (key === GRID) return undefined;
+        if (!elements.has(key)) {
+          const style = { ...RENDERED };
+          let transform = style.transform;
+          Object.defineProperty(style, "transform", { enumerable: true, get: () => transform,
+            set: (value: string) => { if (armed) { armed = false; throw new Error("renderer gone"); } transform = value; } });
+          elements.set(key, { style });
+        }
+        return elements.get(key) as unknown as HTMLElement;
+      },
+    };
+    return { handles, elements, arm: () => { armed = true; } };
+  }
+
+  it("a view whose frame throws snaps to its target scene and settles; the loop runs on for every other view", async () => {
+    const report = vi.fn();
+    vi.stubGlobal("reportError", report);
+    const { handles, elements: fragile, arm } = fragileHandles();
+    const other = fakeHandles();
+    const failing = createSceneMotion({ handles, reduced: () => false });
+    const healthy = createSceneMotion({ handles: other.handles, reduced: () => false });
+    const pf = moving(open, both), ph = moving(open, closed);
+    const failed = failing.start(pf), running = healthy.start(ph);
+    frame(16); frame(16);
+    arm();
+    frame(16);
+    expect(await failed.settled).toBe(true);
+    expect(report).toHaveBeenCalledOnce();
+    for (const [key, element] of fragile) expect(element.style, key).toEqual(RENDERED);
+    expect(sceneMotionTesting.state().running.map((r) => r.epoch)).toEqual([ph.epoch]);
+    expect(healthy.displayedAt(ph)).toBe(32);
+    frame(MOTION_MS);
+    expect(await running.settled).toBe(true);
+    expect(failing.displayedAt(pf)).toBe(Infinity);
+  });
+
+  it("an epoch whose final frame throws still settles, with its view's renderer values", async () => {
+    vi.stubGlobal("reportError", vi.fn());
+    const { handles, elements, arm } = fragileHandles();
+    const motion = createSceneMotion({ handles, reduced: () => false });
+    const { settled } = motion.start(moving(open, both));
+    frame(16); frame(16);
+    arm();
+    frame(MOTION_MS);
+    expect(await settled).toBe(true);
+    for (const [key, element] of elements) expect(element.style, key).toEqual(RENDERED);
+    expect(sceneMotionTesting.state().running).toEqual([]);
   });
 });

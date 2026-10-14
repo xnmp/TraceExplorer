@@ -88,10 +88,10 @@
   let heldAnchor: AnchorHold | null = null;
 
   // Layout changes only by publication: after each one's motion starts, marquee hits and a held anchor follow it once,
-  // then (anchor and marquee alike) every frame while the controller reports presentation activity.
+  // then (anchor and marquee alike) in every motion frame, after its poses are written (frame-loop.ts).
   controller.onPresented(() => { marqueeAttachment?.layoutChanged(); heldAnchor?.update(); });
   /** Holds `element` on screen through the relayout an action causes (captured before any host write). */
-  const hold = (element: HTMLElement) => holdAnchor(scroller!, element, { moving: () => controller.moving, onRelease: () => { heldAnchor = null; } });
+  const hold = (element: HTMLElement) => holdAnchor(scroller!, element, { onRelease: () => { heldAnchor = null; } });
 
   function releaseAnchors(): void {
     anchorReveal?.abort(new DOMException("Trace reveal was superseded", "AbortError"));
@@ -625,7 +625,6 @@
       },
       select: selectMarquee,
       draw: (rect) => marquee = rect,
-      moving: () => controller.moving,
     });
     marqueeAttachment = attachment;
     return { destroy() { attachment.destroy(); marqueeAttachment = null; } };

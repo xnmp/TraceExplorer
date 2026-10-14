@@ -20,7 +20,11 @@
  *   their stack's section, which follows the cover's vertical motion, so they compile relative to
  *   it; a record moving exactly with its section gets no effect.
  * - The driver writes and restores only properties it owns, never CSS transitions on cards. One
- *   frame loop drives every view's running epoch and stops when none runs.
+ *   frame loop (`frame-loop.ts`) drives every view's running epoch in its `update` phase, and
+ *   what follows motion (scroll anchoring, windowing) runs in its later phases of the same frame,
+ *   after every pose is written. A view whose epoch throws snaps; the others run on.
+ * - The clock: an epoch's first interval is lag-smoothed (`FIRST_INTERVAL`); hidden documents show
+ *   final states (an epoch never starts while hidden, and completes when the document hides).
  * - DOM reads: the grid's screen origin and zoom (camera compensation, when scrolling was clamped
  *   by the new layout; the viewport in folder coordinates, which selects motion participants).
  */
@@ -30,6 +34,7 @@ import { EASE, easeAt, sameEase, samplePresentation, sampleTrack, samePose, slic
 import { presentationView, ridesSection, sectionFrame, type SectionFrame } from "./presentation-view";
 import { prefersReducedMotion, zoomOf } from "./motion";
 import { GRID, layerKey, sectionKey, type RenderHandles } from "./render-handles";
+import { afterWrite, onFrame, reportFrameError, requestFrame } from "./frame-loop";
 import type { SceneMotion } from "./scene-controller.svelte";
 
 // ─── Compilation (pure) ─────────────────────────────────────────────────────
@@ -237,67 +242,107 @@ interface Running {
   finish(): void;
   /** Ends now without completing (settled false). */
   cancel(): void;
+  /** Ends after a failure: shows its view's renderer values (the target scene) and settles, so the view commits it. */
+  fail(): void;
   /** Epoch time last written. */
   at: number;
   held: boolean;
   /** Test hook: where the clock is pinned while held. */
   pinned: number;
-  /** Frame time the epoch's clock started at (NaN until its first frame). */
+  /** Frame time the epoch's clock started at (NaN until its next frame sets it). */
   t0: number;
+  /** Epoch time the next frame shows when it sets `t0` (0 for a new epoch; the pinned time after a release). */
+  resumeAt: number;
+  /** Whether the first interval is still to come (see `FIRST_INTERVAL`). */
+  firstInterval: boolean;
+  /** Frame time of the last frame that advanced the clock. */
+  lastNow: number;
 }
 
-/** Every running epoch of every view, driven by one frame loop that runs only while one is. */
+/**
+ * Lag smoothing for an epoch's first interval only (GSAP's `lagSmoothing`, applied once): the first
+ * frame after `start` renders the new publication, which may take far longer than a frame on a
+ * large scene (WebView2 and Chromium time it inside the interval). A native animation's clock
+ * starts once its first frame is presented; this one starts at that frame's callback, so a first
+ * interval longer than `threshold` counts as `assumed`, one nominal frame. Later intervals are the
+ * epoch's own: stalled time is never dropped (`band-motion` "the connector clock survives main-thread stalls").
+ */
+export const FIRST_INTERVAL = { threshold: 25, assumed: 1000 / 60 } as const;
+
+/** Every running epoch of every view, driven by the frame loop's `update` phase while one runs. */
 const active = new Set<Running>();
-let frame = 0;
 /** Test hooks: whether new epochs start held, and the clock's rate. */
 let holding = false;
 let rate = 1;
 let startedEpochs = 0;
 /** Elements whose inline values a driver owns now (test hook `owns`). */
 const writing = new WeakSet<Element>();
-const clock = () => performance.now();
 const runs = () => [...active].some((running) => !running.held);
-/** Requests the next frame while an epoch runs; cancels a requested one once none does. */
+/** Requests the next frame while an epoch runs (a pending request is kept: `frame-loop.ts`). */
 function schedule(): void {
-  if (!frame && runs()) frame = requestAnimationFrame(loop);
-  else if (frame && !runs()) { cancelAnimationFrame(frame); frame = 0; }
+  if (runs()) requestFrame();
 }
-function loop(now: number): void {
-  frame = 0;
-  for (const running of [...active]) if (!running.held) running.tick(now);
+/** Runs `step` on `running`; if it throws, that epoch fails (its view snaps) and the error is reported. */
+function guarded(running: Running, step: (running: Running) => void): void {
+  try { step(running); } catch (error) { running.fail(); reportFrameError(error); }
+}
+/** The `update` phase: each view's epochs advance and write their poses; one that throws snaps its view only. */
+function update(now: number): void {
+  for (const running of [...active]) if (!running.held) guarded(running, (epoch) => epoch.tick(now));
   schedule();
+}
+onFrame("update", update);
+
+/** Whether the document is hidden (nothing is seen, and frames are suspended). */
+const hidden = () => typeof document !== "undefined" && document.visibilityState === "hidden";
+/** Hidden mid-epoch: every epoch completes at once (its final state), instead of waiting for frames that do not come. */
+function visibilityChanged(): void {
+  if (!hidden() || !active.size) return;
+  for (const running of [...active]) guarded(running, (epoch) => epoch.finish());
+  afterWrite();
+}
+let watched: Document | null = null;
+/** Follows the visibility of the current document. */
+function watchVisibility(): void {
+  const current = typeof document !== "undefined" ? document : null;
+  if (current === watched) return;
+  watched?.removeEventListener("visibilitychange", visibilityChanged);
+  current?.addEventListener("visibilitychange", visibilityChanged);
+  watched = current;
 }
 
 /**
  * Test-only control of the motion clock (the browser harness exposes it). It never acts unless
- * called: production motion runs on frame time.
+ * called: production motion runs on frame time. Clocks are only ever frame times: a resumed or
+ * re-rated epoch continues from the time it displays, at its next frame.
  */
 export const sceneMotionTesting = {
   /** Holds every running epoch where it is, and starts every later one held at its first pose. */
   hold(): void {
     holding = true;
     for (const running of active) { running.held = true; running.pinned = running.at; }
-    schedule();
   },
   /** Shows epoch time `at` (clamped to each epoch) in every held epoch, synchronously. A held epoch does not complete. */
   seek(at: number): void {
-    for (const running of [...active]) if (running.held) running.seek(at);
+    let wrote = false;
+    for (const running of [...active]) if (running.held) { running.seek(at); wrote = true; }
+    if (wrote) afterWrite();
   },
-  /** Runs every held epoch on from where it is held; later epochs start running. */
+  /** Runs every held epoch on from where it is held, from its next frame; later epochs start running. */
   release(): void {
     holding = false;
-    const now = clock();
-    for (const running of active) if (running.held) { running.held = false; running.t0 = now - running.pinned / rate; }
+    for (const running of active) if (running.held) { running.held = false; running.t0 = NaN; running.resumeAt = running.pinned; running.firstInterval = false; }
     schedule();
   },
   /** Completes every running epoch now: final values, settled. */
   finish(): void {
+    if (!active.size) return;
     for (const running of [...active]) running.finish();
+    afterWrite();
   },
-  /** Epoch time advances `value` times as fast as frame time (1 normally). */
+  /** Epoch time advances `value` times as fast as frame time (1 normally), from the time each epoch displays now. */
   setRate(value: number): void {
-    const now = clock();
-    for (const running of active) if (!running.held && Number.isFinite(running.t0)) running.t0 = now - (now - running.t0) * rate / value;
+    for (const running of active) if (!running.held && Number.isFinite(running.t0)) running.t0 = running.lastNow - running.at / value;
     rate = value;
   },
   /** Whether a driver shows `element` with values it wrote (it has an effect of its own, or kept a final value). */
@@ -340,11 +385,20 @@ export function createSceneMotion({ handles, scroller = () => null, reduced = pr
   let started = -Infinity;
   /** The grid's screen origin when the displayed presentation was sampled, and the zoom then. */
   let origin: { left: number; top: number; zoom: number } | null = null;
-  const owned = new Map<Styled, Owned>();
+  /** What the driver wrote into each element it owns, and the renderer's values under it. */
+  const owned = new WeakMap<Styled, Owned>();
+  /** The elements the running epoch writes (held strongly while it runs). */
+  const moving = new Set<Styled>();
+  /**
+   * Elements that kept their final values after their epoch completed (fill `forwards`), held
+   * weakly: a retiree unmounts once the settled scene commits, and nothing keeps it alive.
+   */
+  let kept = new Set<WeakRef<Styled>>();
 
   function write(element: Styled, style: Partial<Record<MotionProperty, string>>): void {
     let own = owned.get(element);
     if (!own) { owned.set(element, own = { previous: new Map(), written: new Map() }); writing.add(element); }
+    moving.add(element);
     for (const property in style) {
       const key = property as MotionProperty, value = style[key]!, shown = element.style[key];
       const mine = own.written.get(key);
@@ -361,13 +415,20 @@ export function createSceneMotion({ handles, scroller = () => null, reduced = pr
     if (!own) return;
     owned.delete(element);
     writing.delete(element);
+    moving.delete(element);
     for (const [property, previous] of own.previous) if (element.style[property] === own.written.get(property)) element.style[property] = previous;
   }
 
+  /** Gives every owned property back: the running epoch's and the kept final values of elements still alive. */
+  function restoreAll(): void {
+    for (const element of [...moving]) restore(element);
+    for (const ref of kept) { const element = ref.deref(); if (element) restore(element); }
+    kept = new Set();
+  }
   /** Ends the running epoch (settled false unless it completed) and gives every owned property back. */
   function stop(): void {
     current?.running?.cancel();
-    for (const element of [...owned.keys()]) restore(element);
+    restoreAll();
   }
 
   function displayedTime(presentation: Presentation): number {
@@ -405,7 +466,9 @@ export function createSceneMotion({ handles, scroller = () => null, reduced = pr
       origin = null;
       current = { presentation, running: null, camera: false };
       const { duration } = presentation;
-      if (reduced() || !(duration > 0)) return { started: false, settled: Promise.resolve(true) };
+      watchVisibility();
+      // Nothing is seen while the document is hidden (and frames are suspended): it shows the final state at once.
+      if (reduced() || !(duration > 0) || hidden()) return { started: false, settled: Promise.resolve(true) };
       // Camera: where the grid's screen origin moved since the sample (the new layout clamped
       // scrolling, or a running camera was interrupted); it eases from where it was displayed.
       // Measured with every owned property given back and before any first pose is written: exit
@@ -468,27 +531,45 @@ export function createSceneMotion({ handles, scroller = () => null, reduced = pr
         effects.forEach((effect, i) => write(effect.element, styles[i]));
         running.at = at;
       };
-      /** Ends the epoch: complete (final values, the `none` ones given back) or cancelled. */
-      const end = (finished: boolean) => {
-        if (!active.delete(running)) return;
-        if (finished) {
+      /**
+       * Ends the epoch: complete (final values; the `none` ones given back, the `forwards` ones
+       * kept, held weakly), cancelled, or failed (everything given back: the renderer's values are
+       * the target scene, which settling commits).
+       */
+      let ended = false;
+      const end = (outcome: "complete" | "cancel" | "fail") => {
+        if (ended) return;
+        active.delete(running);
+        // Writing the final values may throw: the epoch then fails (`update`), which still settles it.
+        if (outcome === "complete") {
           render(duration);
-          for (const effect of effects) if (effect.fill === "none") restore(effect.element);
-        }
+          for (const effect of effects) {
+            if (effect.fill === "none") restore(effect.element);
+            else if (moving.delete(effect.element)) kept.add(new WeakRef(effect.element));
+          }
+        } else if (outcome === "fail") restoreAll();
+        ended = true;
         if (epoch.running === running) epoch.running = null;
-        schedule();
-        settle(finished);
+        settle(outcome !== "cancel");
       };
       const running: Running = {
-        epoch: presentation.epoch, duration, at: 0, held: holding, pinned: 0, t0: NaN,
+        epoch: presentation.epoch, duration, at: 0, held: holding, pinned: 0, t0: NaN, resumeAt: 0, firstInterval: true, lastNow: NaN,
         tick(now) {
-          if (!Number.isFinite(running.t0)) running.t0 = now;
+          if (!Number.isFinite(running.t0)) {
+            // Its first frame (or the first after a release) shows the time it starts from.
+            running.t0 = now - running.resumeAt / rate;
+          } else if (running.firstInterval) {
+            running.firstInterval = false;
+            if (now - running.t0 > FIRST_INTERVAL.threshold) running.t0 = now - FIRST_INTERVAL.assumed;
+          }
+          running.lastNow = now;
           const at = Math.min(duration, Math.max(0, (now - running.t0) * rate));
-          if (at >= duration) end(true); else render(at);
+          if (at >= duration) end("complete"); else render(at);
         },
         seek(at) { running.pinned = Math.min(duration, Math.max(0, Number(at) || 0)); render(running.pinned); },
-        finish: () => end(true),
-        cancel: () => end(false),
+        finish: () => end("complete"),
+        cancel: () => end("cancel"),
+        fail: () => end("fail"),
       };
       epoch.running = running;
       // The first pose is written now, synchronously, so the first frame painted shows it.

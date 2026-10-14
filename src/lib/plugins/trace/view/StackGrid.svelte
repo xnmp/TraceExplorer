@@ -21,6 +21,7 @@
   import { NO_GRAPH, presentationView } from "./presentation-view";
   import { createRenderHandles, GRID, sectionKey } from "./render-handles";
   import { createSceneMotion } from "./scene-motion";
+  import { onFrame } from "./frame-loop";
   import { PARTICIPANT_MARGIN } from "./participants";
   import { bandTopAt, bandWindow, displayedTime, quantise, UNMEASURED, type ShownViewport, type Span } from "./scene-window";
   import RetiringBand from "./RetiringBand.svelte";
@@ -79,21 +80,13 @@
   // focus, and whatever is moving this epoch (pinned until it settles); in a large band, tiles near the viewport where the
   // band is displayed now. A cell or tile mounted later shows its target pose (in its moving section) and starts nothing.
   // The window is a function of the publication, the displayed time and the displayed viewport, measured on scroll,
-  // resize, every publication and its motion start, and every frame while the presentation moves.
+  // resize, every publication and its motion start, and in every motion frame once its poses are written.
   let shown = $state.raw<ShownViewport | null>(null);
-  /** The one frame loop that measures while the presentation moves (0 when none is pending). */
-  let frame = 0;
   function measure(): void {
     const view = motion.viewport(), presentation = untrack(() => publication.presentation);
     const next: ShownViewport | null = view && Number.isFinite(view.y) && Number.isFinite(view.height)
       ? { top: view.y, bottom: view.y + view.height, epoch: presentation.epoch, at: motion.displayedAt(presentation) } : null;
     if (next?.top !== shown?.top || next?.bottom !== shown?.bottom || next?.epoch !== shown?.epoch || next?.at !== shown?.at) shown = next;
-    // Outside calls (scroll, publication, motion start) measure at once and join the pending loop.
-    if (controller.moving && !frame) frame = requestAnimationFrame(measureFrame);
-  }
-  function measureFrame(): void {
-    frame = 0;
-    measure();
   }
   const viewport = $derived<Span>(shown ?? UNMEASURED);
   const viewTop = $derived(quantise(viewport)?.top ?? UNMEASURED.top), viewBottom = $derived(quantise(viewport)?.bottom ?? UNMEASURED.bottom);
@@ -110,7 +103,9 @@
     container.addEventListener("scroll", measure, { passive: true });
     const observer = new ResizeObserver(() => measure()); observer.observe(container);
     const stop = controller.onPresented(measure);
-    return () => { container.removeEventListener("scroll", measure); observer.disconnect(); stop(); cancelAnimationFrame(frame); frame = 0; };
+    // Motion frames measure in the frame loop's `read` phase: after every pose and any anchor scroll of that frame.
+    const stopFrames = onFrame("read", measure);
+    return () => { container.removeEventListener("scroll", measure); observer.disconnect(); stop(); stopFrames(); };
   });
   // Every publication (a commit, a restyle, a settled presentation) is measured once it rendered.
   $effect(() => { void publication; untrack(measure); });

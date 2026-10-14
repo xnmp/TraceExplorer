@@ -10,6 +10,7 @@
  * by the measured zoom (`zoomOf`).
  */
 import { anchorDelta, releasesAnchor } from "$lib/domain/scroll-anchor";
+import { onFrame } from "./frame-loop";
 
 export const prefersReducedMotion = () => typeof matchMedia === "function" && matchMedia("(prefers-reduced-motion: reduce)").matches;
 /**
@@ -58,36 +59,42 @@ export function isAnchorScroll(target: EventTarget | null): boolean {
 }
 
 export interface AnchorHold {
-  /** Compensates now, then once per frame while the presentation moves. Called once after each publication's motion starts. */
+  /** Compensates now. Called once after each publication's motion starts; motion frames compensate on their own. */
   update(): void;
   release(): void;
 }
 
 export interface AnchorOptions {
-  /** Whether the presentation is moving (the scene controller's presentation activity). */
-  readonly moving?: () => boolean;
+  /**
+   * Subscribes to the frames presentation motion runs in, after their poses are written (default:
+   * the motion frame loop's `scroll` phase); returns the unsubscription.
+   */
+  readonly frames?: (listener: () => void) => () => void;
   readonly onRelease?: () => void;
 }
+
+const motionFrames = (listener: () => void) => onFrame("scroll", listener);
 
 /**
  * Holds `element` where it is on screen: capture before changing selection. The owner calls
  * `update` once after each publication's motion starts (layout only changes by publication);
- * while the presentation moves, one frame loop follows it. An idle presentation leaves the
- * anchor valid without a frame or a pending promise. User scrolling, scrollbar presses and
- * navigation keys release it, and so does an adjustment the scroll range cannot take.
+ * while the presentation moves, every motion frame compensates once its poses are written, in
+ * that frame (`frame-loop.ts`), never from a frame callback of its own. An idle presentation runs
+ * no frames, and leaves the anchor valid without a pending promise. User scrolling, scrollbar
+ * presses and navigation keys release it, and so does an adjustment the scroll range cannot take.
  */
-export function holdAnchor(scroller: HTMLElement, element: HTMLElement, { moving = () => false, onRelease = () => {} }: AnchorOptions = {}): AnchorHold {
+export function holdAnchor(scroller: HTMLElement, element: HTMLElement, { frames = motionFrames, onRelease = () => {} }: AnchorOptions = {}): AnchorHold {
   const before = element.getBoundingClientRect();
   const horizontal = element.closest<HTMLElement>("[data-horizontal-scroll]");
   let expectedTop = scroller.scrollTop, expectedLeft = horizontal?.scrollLeft ?? 0;
-  let frame = 0;
   let held = true;
+  let unsubscribe = () => {};
   const release = () => {
     if (!held) return;
     held = false;
     anchorOffsets.delete(scroller);
     if (horizontal) anchorOffsets.delete(horizontal);
-    cancelAnimationFrame(frame);
+    unsubscribe();
     for (const type of USER_SCROLL) scroller.removeEventListener(type, onInput, true);
     scroller.removeEventListener("scroll", onScroll, true);
     onRelease();
@@ -142,15 +149,9 @@ export function holdAnchor(scroller: HTMLElement, element: HTMLElement, { moving
     // on the view's vertical scroll axis.
     if (releasesAnchor({ type: "adjustment", actual: expectedTop, requested: requestedTop })) release();
   };
-  const schedule = () => { if (held && !frame && moving()) frame = requestAnimationFrame(step); };
-  const step = () => {
-    frame = 0;
-    adjust();
-    schedule();
-  };
-  const update = () => { adjust(); schedule(); };
-  update();
-  return { update, release };
+  adjust();
+  if (held) unsubscribe = frames(adjust);
+  return { update: adjust, release };
 }
 
 /** Input that may mean the user is scrolling (or about to) themselves; see `scrollsByUser`. */
