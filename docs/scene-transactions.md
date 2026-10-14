@@ -734,7 +734,7 @@ Frame-by-frame verification in the native host (b7673b1 package, `/var/tmp/te-wt
 **Native results** (`/var/tmp/te-wt2/native5/`, package of 6799f57, the native4 host binary and tools, Xvfb with software GL):
 
 - S1, 2 runs × 24 windows: no flagged frame in either run (native4: `video-intermediate` 8 and 9, all in the first Saffron reveal). That window's first reveal goes from the previous scene to the new one, images and selection included, in one video frame (`out/s1-r1/sheets/w0-v286.png`, v289 → v290); its video stall runs are [5, 4] and [3] frames (native4: [10, 5, 1] and [15, 5, 2]).
-- Profiled again (`out/prof-fix`): the commit follows the click by 43 ms, the thumbnails are drawable at the commit, and the next frames take 2 and 37 ms instead of 229 and 152 ms: decoding before the commit removed the stall, not only the frames it showed.
+- Profiled again (`out/prof-fix`): the commit follows the click by 43 ms, the thumbnails are drawable at the commit, and the two frames after the commit's frame take 37 ms and under 25 ms instead of 229 and 152 ms (this machine's frames ran at 25–40 ms under the sampler): decoding before the commit removed the stall, not only the frames it showed.
 - S2 (1 run): `video-flash` 41, 3–4 per expand or collapse of the first stack, as in native4 (33 and 37 in two of its four runs; 0 and 1 in the others); no other flag. S4 (1 run): the same flags and counts as native4 (`mixed-scene` 109 vs 108–110, `video-flash` 143 vs 138–140, `vanish-reappear` and `opacity-decrease` 66, `motion-fault` 56), except `interruption-jump` 25 (native4: 125).
 
 ## 7. Viewport, anchoring, and lifecycle
