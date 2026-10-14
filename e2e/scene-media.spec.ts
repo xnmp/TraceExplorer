@@ -127,3 +127,23 @@ test("collapsing a big stack brings back tiles whose thumbnails went idle: none 
   expect(flagged.map((frame) => frame.bad), "frames drawing a visible tile without its image").toEqual([]);
   expect(frames.at(-1)!.tiles).toBeGreaterThan(0);
 });
+
+test("reference badges hidden behind +n are not part of the scene's media, and load once shown", async ({ page }) => {
+  await openView(page, 420, "?moreBadges=1&thumbnailDelay=10", false);
+  await page.locator('section[data-component][aria-label="village"] [data-stack-toggle]').first().click();
+  await settle(page);
+  const drawn = () => page.evaluate(() => [...document.querySelectorAll("[data-reference-key]")].map((badge) => badge.getAttribute("aria-label")!.split(", ")[0]));
+  const more = page.getByRole("button", { name: /^Show \d+ more references$/ });
+  await expect(more).toHaveCount(1);
+  const shown = await drawn();
+  const requested = await thumbnailRequests(page);
+  // Warm's references: two in a subfolder, two elsewhere; three are drawn and one is behind "+1".
+  const hidden = ["/pictures/refs/mist.png", "/elsewhere/lantern.png", "/pictures/refs/reference-3.png", "/elsewhere/reference-4.png"]
+    .filter((path) => !shown.includes(path));
+  expect(shown).toHaveLength(3);
+  expect(hidden, "one reference is behind +1").toHaveLength(1);
+  for (const path of shown) expect(requested, `drawn badge ${path}`).toContain(path);
+  for (const path of hidden) expect(requested, `hidden badge ${path}`).not.toContain(path);
+  await more.click();
+  for (const path of hidden) await expect(page.locator(`[data-reference-key][aria-label^="${path}, "] img`)).toHaveCount(1);
+});

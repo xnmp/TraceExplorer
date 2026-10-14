@@ -50,9 +50,19 @@ describe("recordThumbnails", () => {
     const placeholder = tiles.find((record) => record.tile.node.state === "running");
     expect(placeholder, "fixture: a running placeholder").toBeDefined();
     expect(recordThumbnails(scene, placeholder!, false).filter((path) => path === placeholder!.tile.node.path)).toEqual([]);
-    const badged = tiles.find((record) => record.badges.length > 0);
+    const badged = tiles.find((record) => record.badges.length > 0 && nodeThumbnail(record.tile.node));
     expect(badged, "fixture: a tile with a reference badge").toBeDefined();
-    expect(recordThumbnails(scene, badged!, false)).toEqual(expect.arrayContaining(badged!.badges.map((badge) => badge.path)));
+    expect(badged!.badges.length).toBeLessThanOrEqual(3);
+    expect(recordThumbnails(scene, badged!, false)).toEqual([badged!.tile.node.path, ...badged!.badges.map((badge) => badge.path)]);
+  });
+
+  it("draws only the badges a tile shows: the first three, and a selected one behind +n", () => {
+    const badged = [...scene.records.values()].find((record): record is TileRecord => record.kind === "tile" && record.badges.length > 0 && !!nodeThumbnail(record.tile.node))!;
+    const extra = Array.from({ length: 5 }, (_, i) => ({ ...badged.badges[0], key: `extra-${i}`, path: `/elsewhere/extra-${i}.png` }));
+    const many: TileRecord = { ...badged, badges: extra };
+    expect(recordThumbnails(scene, many, false)).toEqual([badged.tile.node.path, "/elsewhere/extra-0.png", "/elsewhere/extra-1.png", "/elsewhere/extra-2.png"]);
+    const selecting = { ...scene, inputs: { ...scene.inputs, styling: { ...scene.inputs.styling, selectedKeys: new Set(["extra-4"]) } } };
+    expect(recordThumbnails(selecting, many, false)).toEqual([badged.tile.node.path, "/elsewhere/extra-0.png", "/elsewhere/extra-1.png", "/elsewhere/extra-2.png", "/elsewhere/extra-4.png"]);
   });
 
   it("draws nothing for a host file tile, routes or bands", () => {

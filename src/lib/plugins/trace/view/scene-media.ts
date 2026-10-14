@@ -10,6 +10,7 @@ import type { FileEntry } from "$lib/domain/file";
 import type { GridRect } from "$lib/domain/trace-graph/grid-flow";
 import type { FolderScene, SceneRecord } from "$lib/domain/trace-graph/folder-scene";
 import type { TraceNode } from "$lib/domain/trace-graph/model";
+import { visibleBadges } from "$lib/domain/trace-graph/projection";
 import { PARTICIPANT_MARGIN } from "./participants";
 import { componentNodes } from "./scene-view";
 import { UNMEASURED, type Span } from "./scene-window";
@@ -25,7 +26,10 @@ export function entryThumbnail(entry: FileEntry): string | null {
   return entry.kind !== "directory" && IMAGE.test(entry.name) ? entry.path : null;
 }
 
-/** The thumbnails `record` draws: a tile's image and its reference badges' (`ReferenceBadge`), an ordinary file's. */
+/**
+ * The thumbnails `record` draws: a tile's image and its drawn reference badges' (`visibleBadges`
+ * with the overflow closed, as a tile mounts; `ReferenceBadge`), an ordinary file's.
+ */
 export function recordThumbnails(scene: FolderScene, record: SceneRecord, hostEntries: boolean): string[] {
   if (record.kind === "entry") {
     // A host file tile loads its own image; the plugin cannot prepare it.
@@ -35,7 +39,7 @@ export function recordThumbnails(scene: FolderScene, record: SceneRecord, hostEn
   if (record.kind !== "tile") return [];
   const own = nodeThumbnail(record.tile.node);
   const nodes = record.badges.length && record.graphId !== null ? componentNodes(scene, record.graphId) : undefined;
-  const badges = record.badges.filter((badge) => {
+  const badges = visibleBadges(record.badges, scene.inputs.styling.selectedKeys).filter((badge) => {
     const node = nodes?.get(badge.key);
     return !!badge.path && (!node || node.state === "present");
   }).map((badge) => badge.path);

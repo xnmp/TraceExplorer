@@ -99,8 +99,21 @@ export interface BadgeProjection {
   /** Drawable DAG: references and their outgoing edges are removed, never reparented. */
   readonly dag: TraceDag;
   readonly badges: ReadonlyMap<NodeKey, ReferenceBadge>;
-  /** Each consumer keeps all badges; the renderer shows up to three and a +n overflow. */
+  /** Each consumer keeps all badges; the renderer shows `visibleBadges` and a +n overflow. */
   readonly byConsumer: ReadonlyMap<NodeKey, readonly ReferenceBadge[]>;
+}
+
+/** How many of a tile's reference badges are drawn before its "+n" overflow is opened. */
+export const BADGES_SHOWN = 3;
+
+/**
+ * The reference badges a tile draws (`ReferenceBadges`, and the images a scene prepares): every
+ * one once its overflow is opened; otherwise the first `BADGES_SHOWN`, then any selected badge
+ * behind "+n", shown in its place so choosing it elsewhere (Preview) reveals it. In order.
+ */
+export function visibleBadges(badges: readonly ReferenceBadge[], selected: ReadonlySet<NodeKey>, expanded = false): readonly ReferenceBadge[] {
+  if (expanded || badges.length <= BADGES_SHOWN) return badges;
+  return [...badges.slice(0, BADGES_SHOWN), ...badges.slice(BADGES_SHOWN).filter((badge) => selected.has(badge.key))];
 }
 
 /**

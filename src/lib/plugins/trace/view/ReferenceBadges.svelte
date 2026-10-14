@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { ReferenceBadge } from "$lib/domain/trace-graph/projection";
+  import { BADGES_SHOWN, visibleBadges, type ReferenceBadge } from "$lib/domain/trace-graph/projection";
   import type { TraceNode } from "$lib/domain/trace-graph/model";
   import Badge from "./ReferenceBadge.svelte";
   let { badges, revision, selected, nodes, onactivate, onhover }: {
@@ -7,15 +7,15 @@
     onactivate: (key: string, event: MouseEvent) => void; onhover?: (key: string | null) => void;
   } = $props();
   let expanded = $state(false);
-  // A selected reference hidden behind "+n" is shown in its place, so choosing it elsewhere (Preview) reveals it.
-  const visible = $derived(expanded ? badges : [...badges.slice(0, 3), ...badges.slice(3).filter((badge) => selected.has(badge.key))]);
+  // The scene prepares the images of the same badges (scene-media.ts).
+  const visible = $derived(visibleBadges(badges, selected, expanded));
   const hidden = $derived(badges.length - visible.length);
 </script>
 <div class="badges">
   {#each visible as badge (badge.key)}
     <Badge {badge} node={nodes?.get(badge.key)} {revision} selected={selected.has(badge.key)} {onactivate} {onhover} />
   {/each}
-  {#if badges.length > 3 && (expanded || hidden > 0)}
+  {#if badges.length > BADGES_SHOWN && (expanded || hidden > 0)}
     <button type="button" class="more" aria-label={expanded ? "Show fewer references" : `Show ${hidden} more references`}
       aria-expanded={expanded} onclick={() => expanded = !expanded}>{expanded ? "−" : `+${hidden}`}</button>
   {/if}

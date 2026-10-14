@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { connectedComponents, projectDag, projectReferenceBadges } from "$lib/domain/trace-graph/projection";
+import { BADGES_SHOWN, connectedComponents, projectDag, projectReferenceBadges, visibleBadges, type ReferenceBadge } from "$lib/domain/trace-graph/projection";
 import { lineageWithBadges, toneOf } from "$lib/domain/trace-graph/lineage";
 import { planBandScene, planScene, routeStyle } from "$lib/domain/trace-graph/scene";
 import { componentRoots, visibleKeys } from "$lib/domain/trace-graph/visibility";
@@ -159,5 +159,27 @@ describe("band scene", () => {
     expect(componentRoots(dag, dag.order, "in-folder")).toEqual([]);
     expect(visibleKeys(dag, dag.order, null, { roots: "in-folder" })).toEqual([]);
     expect(visibleKeys(dag, dag.order, "child", { roots: "in-folder" })).toEqual(["ref", "child"]);
+  });
+});
+
+describe("visibleBadges: the badges a tile draws", () => {
+  const badge = (key: string): ReferenceBadge => ({ key, path: `/elsewhere/${key}.png`, scope: "external", consumers: ["c"] });
+  const five = ["r0", "r1", "r2", "r3", "r4"].map(badge);
+  const keys = (badges: readonly ReferenceBadge[]) => badges.map((item) => item.key);
+
+  it("draws every badge up to three, and none of an empty list", () => {
+    expect(BADGES_SHOWN).toBe(3);
+    expect(visibleBadges([], new Set())).toEqual([]);
+    expect(keys(visibleBadges(five.slice(0, 3), new Set()))).toEqual(["r0", "r1", "r2"]);
+  });
+
+  it("draws the first three of more, in order, then the selected ones behind +n", () => {
+    expect(keys(visibleBadges(five, new Set()))).toEqual(["r0", "r1", "r2"]);
+    expect(keys(visibleBadges(five, new Set(["r4", "r1", "unknown"])))).toEqual(["r0", "r1", "r2", "r4"]);
+    expect(keys(visibleBadges(five, new Set(["r4", "r3"])))).toEqual(["r0", "r1", "r2", "r3", "r4"]);
+  });
+
+  it("draws every badge once the overflow is open", () => {
+    expect(keys(visibleBadges(five, new Set(), true))).toEqual(["r0", "r1", "r2", "r3", "r4"]);
   });
 });
