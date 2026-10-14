@@ -1,12 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { pathTranslation, translatePath, displace, interpolatePath, flattenPath, polyline, resample, samplePathString } from "$lib/plugins/trace/view/path-sampling";
+import { pathTranslation, translatePath, flattenPath, polyline, resample, samplePathString } from "$lib/domain/trace-graph/path-sampling";
 
 const close = (actual: { x: number; y: number }, expected: { x: number; y: number }) => {
   expect(actual.x).toBeCloseTo(expected.x, 6);
   expect(actual.y).toBeCloseTo(expected.y, 6);
 };
 
-describe("path sampling for connector motion", () => {
+describe("path sampling", () => {
   it("reads the layout's paths and browser-serialized animated paths alike", () => {
     const layout = flattenPath("M0 0 L0 10 C0 15,20 15,20 20");
     const serialized = flattenPath('path("M 0 0 L 0 10 C 0 15, 20 15, 20 20")');
@@ -44,22 +44,6 @@ describe("path sampling for connector motion", () => {
     expect(resample([], 4)).toEqual([]);
     expect(resample([{ x: 3, y: 4 }], 2)).toEqual([{ x: 3, y: 4 }, { x: 3, y: 4 }, { x: 3, y: 4 }]);
     expect(resample([{ x: 1, y: 1 }, { x: 1, y: 1 }], 1)).toEqual([{ x: 1, y: 1 }, { x: 1, y: 1 }]);
-  });
-
-  it("displaces the start and end by their own offsets and blends between them", () => {
-    const moved = displace([{ x: 0, y: 0 }, { x: 0, y: 5 }, { x: 0, y: 10 }], { x: 10, y: 0 }, { x: 0, y: -4 });
-    expect(moved).toEqual([{ x: 10, y: 0 }, { x: 5, y: 3 }, { x: 0, y: 6 }]);
-  });
-
-  it("keeps connector endpoints attached at intermediate travel progress", () => {
-    const from = samplePathString("M10 20 L10 80", 24)!;
-    const to = samplePathString("M10 20 L10 160 L90 160 L90 240", 24)!;
-    const halfway = interpolatePath(from, to, .5);
-    expect(halfway[0]).toEqual({ x: 10, y: 20 });
-    expect(halfway.at(-1)).toEqual({ x: 50, y: 160 });
-    expect(interpolatePath(from, to, 0)).toEqual(from);
-    expect(interpolatePath(from, to, 1)).toEqual(to);
-    expect(interpolatePath([], [], .5)).toEqual([]);
   });
 
   it("formats a polyline that parses back to the same points", () => {

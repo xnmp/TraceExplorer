@@ -1,8 +1,10 @@
 /**
- * Pure geometry for connector motion: SVG paths made of absolute M, L and C
- * commands (what the layout emits, and how browsers serialize an animated
- * `d`) resampled to a fixed number of points spaced evenly along the path, so
- * any two connectors can be morphed point for point without layout queries.
+ * Pure geometry of connector paths: SVG paths made of absolute M, L and C
+ * commands (what the layout emits). Layout quality flattens them
+ * (`flattenPath`, `flattenInto`); presentation recognises and applies rigid
+ * translations (`pathTranslation`, `translatePath`). `resample` and
+ * `samplePathString` space points evenly along a path: the layout geometry
+ * tests sample routes with them (connectors are never morphed).
  */
 import { isLetter, isSpace, scanNumber, scanned } from "./path-data";
 
@@ -137,25 +139,8 @@ export function samplePathString(d: string, count: number): Point[] | null {
   return points ? resample(points, count) : null;
 }
 
-/** Shifts a polyline so its start moves by `from` and its end by `to`, blending in between. */
-export function displace(points: readonly Point[], from: Point, to: Point): Point[] {
-  const last = Math.max(1, points.length - 1);
-  return points.map((point, index) => {
-    const t = index / last;
-    return { x: point.x + from.x * (1 - t) + to.x * t, y: point.y + from.y * (1 - t) + to.y * t };
-  });
-}
-
 export function polyline(points: readonly Point[]): string {
   return points.map((point, index) => `${index ? "L" : "M"}${point.x.toFixed(2)} ${point.y.toFixed(2)}`).join(" ");
-}
-
-/** Corresponding sampled points interpolate on the same eased progress as their tiles. */
-export function interpolatePath(from: readonly Point[], to: readonly Point[], progress: number): Point[] {
-  return to.map((point, index) => ({
-    x: from[index].x + (point.x - from[index].x) * progress,
-    y: from[index].y + (point.y - from[index].y) * progress,
-  }));
 }
 
 /** Absolute layout commands, with exact control points (no resampling). */
