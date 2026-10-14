@@ -546,6 +546,43 @@ Fixes for the independent review of 099e72f, with where they depart from the tex
   - They are not joined to the closing band's exit group. A reopening would then leave the old connector paths in that group without their tiles.
 - **Returning records.** `motionParticipants` includes a record whose identity has a retiree still shown. The record takes over the retiree's pose wherever the viewport is, so a returning record always takes part and no tile is ever drawn twice (a non-participant return, which would leave both copies, is unreachable).
 
+### Native findings fixes
+
+Frame-by-frame verification in the native WebKitGTK host (on 099e72f) found motion and frames nobody asked for: a return replaying an expansion (B), folder arrivals animating (S6), width changes reflowing with motion (S6/S8), and a fullscreen Preview's exit drawing a wider layout cut into the pane, then animating (S7). Product rule: no blink of any kind; motion only for spatial changes the user initiates.
+
+**Motion policy** (`geometryMotion` in `D/scene-change.ts`, applied by the controller at commit). A restyle (no geometry change) keeps whatever motion runs. A geometry publication:
+
+| Cause | Motion |
+|---|---|
+| `expand`, `collapse` (the user opens or closes a stack, including a cold open completing) | animate |
+| `selection` (selection-driven reflow, host selection included) | animate |
+| arrival: the first scene of a lifetime, a scope reset, `startup`, `restore` and its revalidation | snap |
+| `resize` (pane width, a scrollbar), `metrics` (tile size, grid metrics) | snap |
+| `listing`, `refresh` (backend index or data), `retry`, `reveal` | snap |
+| an unknown cause | snap |
+
+A snap publishes a static presentation: running motion ends and retirees are dropped at once (the driver's `start` cancels what it owns). A restore's continuation (requested stacks the saved data could not open) commits as a `refresh`, so it snaps; other continuations are `expand` (a cold open the user asked for) or `refresh` (a newer index), as before. `reveal` snaps: it shows a target asked for elsewhere, not a spatial change made in the view.
+
+**Width changes paint their own layout on the first frame.**
+
+- The Trace scroller always reserves its vertical scrollbar (`overflow-y: scroll`). `scrollbar-gutter: stable` alone is not enough: WebKit (WebKitGTK 2.54, Safari 26) reserves no gutter for a styled `::-webkit-scrollbar`, which the host uses, so a scrollbar appearing narrowed the view 858 → 850 px. Overlay scrollbars take no space either way; Chromium already honoured the gutter.
+- The width is measured by `bind:clientWidth` (a ResizeObserver). Its callback runs before paint, and everything from the intake to the commit is microtasks when the layout runs inline, so the first frame at a new width shows its layout. `StackGrid` measures its window in its own ResizeObserver callback too (no longer on the next frame).
+- `recentLayouts`: the controller keeps the last 4 layouts it committed this lifetime, by layout basis, and reuses one only when every open stack's component, revision and data object match. A round trip (a fullscreen Preview widening the pane, then narrowing it; a resize dragged back) commits the earlier layout at once, without the engine or the worker.
+- `mustLayoutBeforePaint` (`D/layout-workload.ts`): when the layout would go to the worker but the scene on screen no longer fits the new width (its grid is wider than the pane), it is laid out inline anyway, so a layout for another width is never drawn cut at the pane's edge. A scene that still fits (the pane widened) stays on screen, whole and unchanged, until the worker's layout commits, then snaps.
+
+**Fullscreen Preview (S7), host side.** The pane under a fullscreen Preview is resized because `.preview-pane.fullscreen` becomes `position: fixed; inset: 0` (`PreviewPane.svelte`), which takes it out of the flex flow. Its `.preview-island` (`+page.svelte`) is content-sized (`flex-shrink: 0`, no width of its own), so the island collapses and the workspace panes take its width (870 → 1158 px; with a bottom or top dock, the height). A host fix keeps the island at the docked pane's size while fullscreen, for example a width (or height) captured when fullscreen starts, or a CSS variable the pane sets for its docked size; or renders the fullscreen surface in a separate layer while a same-sized placeholder stays docked. With the plugin fixes above, the exit already paints the narrow layout on its first frame without motion; the host fix would also avoid the hidden relayout.
+
+**Tests.** `e2e/scene-snap.spec.ts` (Chromium and WebKit): a return after a settled expand, folder switches 0–120 ms after a toggle, a first arrival, resizes laid out inline and in the worker, a fullscreen-like widen and narrow (inline and worker), and a held worker reply while widening. `e2e/motion-scrollbars.spec.ts` adds the host-scrollbar cases (a scrollbar appearing, a tab switch, and B with host scrollbars, which reproduced only in WebKit). Frames are sampled just before they paint (`samplePaintedFrames`: a ResizeObserver callback, after the page's own observers and their microtasks), so a state between two tasks that no frame paints is never mistaken for a frame. Each asserts zero motion starts and that the first frame drawn is the settled scene.
+
+### Review fixes (8d257bf)
+
+- **A return is never blank** (supersedes "Restoration uses the pane's current intent" where it refused saved scenes, and its "not covered" note). `restoredInput` lays the current intent on the saved data even when the session knows a newer index or the listing changed; the newer data commits after it as a `refresh`, which snaps. When only the worker could lay the current intent out, the saved scene is shown as it was laid out, styled as the pane is now (a stale focus for a few frames), until the `restore` transaction commits the current scene, which snaps; a saved scene that would not fit the pane is laid out inline instead (`mustLayoutBeforePaint`).
+- **A restore that throws** (the engine or `buildFolderScene` rejecting the data) fails its transaction, reports the failure, and the folder is prepared as a first scene; later offers are never swallowed.
+- **Saved-scene recency.** An unchanged saved scene is touched (`recall`) on every commit, so a pane that only restyles is not evicted by other panes' saves; an evicted one is saved again.
+- **One measuring frame loop.** Outside measurements (scroll, publication, motion start) join `StackGrid`'s pending frame loop instead of starting another.
+- **Retiring tiles keep their band's orientation.** Tile records carry `orientation`; orphaned and exit-group retirees pass it on, so a sideways tile's chevron does not flip while it fades.
+- **Tests.** The returning-selection test fails on blank frames after the return and records every DOM selection state with a MutationObserver. The band carried-into-view test seeks its held motion to nine times. The returning-record test asserts that a record returning while its retiree is shown always takes part (no tile drawn twice).
+
 ## 5. Cold expansion and failure
 
 The committed cover stays in place. Its thumbnail receives an absolutely positioned loading spinner; the cover has `aria-busy="true"` and an accessible “Loading stack” status. No child band, background band, estimated footprint, or following-row displacement appears.
