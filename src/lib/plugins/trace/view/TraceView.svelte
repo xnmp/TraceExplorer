@@ -30,6 +30,7 @@
   import { computeFolderLayout, holdLayoutWork } from "./layout-client";
   import { folderLayoutRuntime } from "./folder-layout-runtime";
   import type { SceneIntent } from "./scene-inputs";
+  import { sceneSnapshots } from "./scene-snapshots";
 
   import StackGrid from "./StackGrid.svelte";
   import { selectableSelector } from "./selectable";
@@ -45,7 +46,7 @@
   const layoutRuntime = folderLayoutRuntime();
   const controller = createSceneController({
     paneId: untrack(() => pane.paneId), data: session, engine: layoutRuntime.engine, inline: layoutRuntime.inline, remember: layoutRuntime.remember,
-    runLayout: (input, signal) => computeFolderLayout(input, layoutRuntime.engine, signal), holdWork: holdLayoutWork,
+    runLayout: (input, signal) => computeFolderLayout(input, layoutRuntime.engine, signal), holdWork: holdLayoutWork, scenes: sceneSnapshots,
   });
   const host = hostFileTile();
   /** Width is quantized so resizing does not relayout on every pixel. */
@@ -126,8 +127,9 @@
   const coverChrome = $derived({ imagePx: host ? (pane.tileSize?.imagePx ?? 64) : null, small: pane.tileSize?.preset === "small" });
   const entriesByPath = $derived(new Map(pane.entries.map((entry) => [entry.path, entry])));
 
-  // Session follows the pane's folder and Trace's invalidation signal.
-  $effect(() => { const dir = directory; untrack(() => { supersedeReveal(); releaseAnchors(); session.setDirectory(dir); claimed = new Map(); }); });
+  // Session and scene follow the pane's folder, before it renders: the old folder's lifetime ends at once (its preparation,
+  // waiters, effects, retirees, notices and anchors), so nothing of it paints for the new one. Then Trace's invalidation signal.
+  $effect.pre(() => { const dir = directory; untrack(() => { controller.enter(dir); supersedeReveal(); releaseAnchors(); session.setDirectory(dir); claimed = new Map(); }); });
   let seenRevision = untrack(() => traceInvalidation.revision);
   $effect(() => {
     const current = traceInvalidation.revision;

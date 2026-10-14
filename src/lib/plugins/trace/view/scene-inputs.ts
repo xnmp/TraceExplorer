@@ -72,7 +72,8 @@ export const sameListing = (a: readonly FileEntry[], b: readonly FileEntry[]): b
   a === b || (a.length === b.length && a.every((entry, index) => sameEntry(entry, b[index])));
 
 const sameFocus = (a: ComponentFocus | null, b: ComponentFocus | null) => a === b || (!!a && !!b && a.key === b.key && a.componentId === b.componentId);
-const sameMetrics = (a: SceneIntent, b: SceneIntent) => a.width === b.width && a.tile.width === b.tile.width && a.tile.image === b.tile.image
+/** Same width, tile, grid and cover metrics: a scene laid out for one fits the other. */
+export const sameGeometry = (a: SceneIntent, b: SceneIntent): boolean => a.width === b.width && a.tile.width === b.tile.width && a.tile.image === b.tile.image
   && a.grid.cellWidth === b.grid.cellWidth && a.grid.cellHeight === b.grid.cellHeight && a.grid.gap === b.grid.gap && a.grid.gridPadding === b.grid.gridPadding
   && a.cover.imagePx === b.cover.imagePx && a.cover.small === b.cover.small;
 
@@ -90,7 +91,7 @@ export interface IntentChange {
 }
 export function intentChange(before: SceneIntent | null, after: SceneIntent): IntentChange {
   if (!before) return { directory: true, hostChoice: true, listing: true, resize: true, metrics: true, other: true };
-  const metrics = !sameMetrics({ ...before, width: 0 }, { ...after, width: 0 });
+  const metrics = !sameGeometry({ ...before, width: 0 }, { ...after, width: 0 });
   return {
     directory: before.directory !== after.directory,
     hostChoice: before.hostChoice !== after.hostChoice,

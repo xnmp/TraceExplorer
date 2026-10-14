@@ -35,6 +35,8 @@ import { motionParticipants } from "./participants";
 import type { GridRect } from "$lib/domain/trace-graph/grid-flow";
 import { sceneInstrumentation, type SceneEvent } from "./scene-instrumentation";
 import { StaleComponentsError, type ComponentLease } from "./folder-session.svelte";
+import { rebind, restoration, savedScene, type SavedScene } from "./scene-snapshots";
+import type { SceneStore } from "./folder-snapshots";
 
 export type { Publication, TransactionId };
 
@@ -122,10 +124,12 @@ export interface SceneControllerOptions {
   readonly deadline?: number;
   /** Counts preparation as pending work (the harness's `layoutsPending`); returns its release. */
   readonly holdWork?: () => () => void;
+  /** Committed scenes kept across mounts, per pane and folder (`scene-snapshots.ts`); none when absent. */
+  readonly scenes?: SceneStore<SavedScene>;
 }
 
 /** Actions that may commit on the last coherent committed data while current data is still loading. */
-const HOT = new Set<SceneCause["kind"]>(["selection", "collapse", "resize", "metrics"]);
+const HOT = new Set<SceneCause["kind"]>(["selection", "collapse", "resize", "metrics", "restore"]);
 const MAX_RESTARTS = 3;
 const STABILISE_TICKS = 8;
 export const PREPARATION_DEADLINE_MS = 5000;
@@ -184,6 +188,9 @@ export function createSceneController(options: SceneControllerOptions) {
   const setTimer = options.setTimer ?? ((run: () => void, ms: number) => { const handle = setTimeout(run, ms); return () => clearTimeout(handle); });
   const deadline = options.deadline ?? PREPARATION_DEADLINE_MS;
   const runLayout = options.runLayout ?? ((input: FolderLayoutInput) => Promise.resolve(engine(input)));
+  const scenes = options.scenes ?? null;
+  /** A store cleared after this controller began (the plugin was disabled) is not written. */
+  const storeEpoch = scenes?.epoch ?? 0;
 
   let published = $state.raw<Publication | null>(null);
   let transactionState = $state.raw<SceneTransaction | null>(null);
@@ -201,6 +208,8 @@ export function createSceneController(options: SceneControllerOptions) {
   /** The action whose operation is running synchronously; nested actions reuse its lease. */
   let operating: Transaction | null = null;
   let committed: Committed | null = null;
+  /** Whether this lifetime may still start from a saved scene (until its first scene or restore attempt). */
+  let restorable = true;
   let motion: SceneMotion | null = null;
   /** A publication rendered but whose motion has not started yet. */
   let presenting: TransactionId | null = null;
@@ -437,21 +446,25 @@ export function createSceneController(options: SceneControllerOptions) {
       if (++rounds > 1000) throw new Error("Trace could not prepare this folder");
       const wake = tx.wake = new AbortController();
       const waiting = AbortSignal.any([tx.controller.signal, wake.signal]);
-      const wanted = intent, index = data.index;
+      const wanted = intent, currentIndex = data.index && data.index.directory === wanted?.directory ? data.index : null;
       tx.intent = wanted;
-      if (!wanted || wanted.width <= 0 || !index || index.directory !== wanted.directory) { finish(tx, "committed"); return; }
+      if (!wanted || wanted.width <= 0) { finish(tx, "committed"); return; }
+      // Restoring before this folder's index is read: the saved coherent snapshot is all there is.
+      const restoring = !currentIndex && tx.cause.kind === "restore" && !!committed && hotAllowed(wanted);
+      if (!currentIndex && !restoring) { finish(tx, "committed"); return; }
+      const index = currentIndex ?? committed!.data.index;
       reconcileCovers();
       const skip = blocked(index);
       const { cells } = folderItems(wanted.listing, index, wanted.claimed, new Set());
       const required = requiredComponents(cells, wanted.open, skip);
-      reconcileLeases(required);
+      if (currentIndex) reconcileLeases(required);
       const isFresh = (id: string) => fresh(source.components.get(id), index, (other) => source.isStale(other), id);
       const missing = [...required].filter(([, id]) => !isFresh(id));
       let sceneData: SceneData, open: ReadonlyMap<GraphId, string>, sceneIntent = wanted, continuation = false;
-      if (!missing.length) {
+      if (currentIndex && !missing.length) {
         sceneData = { index, components: new Map([...required.values()].map((id) => [id, source.components.get(id)!])) };
         open = required;
-      } else if (HOT.has(tx.cause.kind) && committed && hotAllowed(wanted)) {
+      } else if (committed && (restoring || (HOT.has(tx.cause.kind) && hotAllowed(wanted)))) {
         // Interaction while data is revalidated: the last committed coherent snapshot, never mixed with the new index.
         const base = committed.data;
         sceneIntent = { ...wanted, listing: committed.intent.listing, claimed: committed.intent.claimed };
@@ -528,6 +541,28 @@ export function createSceneController(options: SceneControllerOptions) {
     }
   }
 
+  /**
+   * A new lifetime starts from the scene this pane last committed for the folder, if any: shown as
+   * it was (an empty presentation) when it was laid out at this width and metrics, otherwise laid
+   * out again from its coherent data and snapped. Either way current data then revalidates it.
+   */
+  function restore(next: SceneIntent): boolean {
+    if (!restorable || published || committed || !scenes || !(next.width > 0)) return false;
+    restorable = false;
+    const saved = scenes.recall(options.paneId, next.directory);
+    const how = restoration(saved, options.paneId, next);
+    if (!saved || !how) return false;
+    const snapshot: Committed = { intent: saved.intent, data: saved.data, history: saved.history, basis: saved.basis };
+    if (how === "present") {
+      const tx = begin({ kind: "restore", target: null, anchor: "none" });
+      tx.intent = next;
+      commit(tx, rebind(saved.scene, scope), snapshot);
+    } else committed = snapshot;
+    reconcileCovers();
+    void run(begin({ kind: "restore", target: null, anchor: "none" }));
+    return true;
+  }
+
   /** A hot action may use the committed snapshot only when its target is in that snapshot. */
   function hotAllowed(wanted: SceneIntent): boolean {
     if (!committed || committed.intent.directory !== wanted.directory) return false;
@@ -553,11 +588,18 @@ export function createSceneController(options: SceneControllerOptions) {
     return retargetPresentation(displayed, scene, diff, { transaction, epoch: ++epochs, reduced: driver.reduced(), records });
   }
 
+  /** Keeps the published scene and what it was committed from for the next mount of this pane and folder. */
+  function remember(): void {
+    if (!scenes || scenes.epoch !== storeEpoch || !published || !committed || published.scene.scope !== scope || committed.intent.directory !== scope.directory) return;
+    scenes.remember(options.paneId, scope.directory, savedScene(options.paneId, published.scene, committed));
+  }
+
   function commit(tx: Transaction, scene: FolderScene, snapshot: Committed): void {
     const previous = published;
     const diff = diffScenes(previous?.scene ?? null, scene);
     committed = snapshot;
-    if (!differs(previous, scene, diff)) { finish(tx, "committed"); reconcileCovers(); return; }
+    restorable = false;
+    if (!differs(previous, scene, diff)) { finish(tx, "committed"); reconcileCovers(); remember(); return; }
     const geometry = diff.policy.reset || diff.enter.size > 0 || diff.exit.size > 0 || [...diff.policy.records.values()].some((policy) => policy !== "carry");
     // Geometry continues from what is displayed; a restyle keeps the running epoch (tracks and retirees).
     const presentation = !geometry && previous ? restylePresentation(previous.presentation, scene)
@@ -566,6 +608,7 @@ export function createSceneController(options: SceneControllerOptions) {
     const publication: Publication = { transactionId: tx.id, geometryVersion: geometry ? ++geometryVersion : previous?.geometryVersion ?? geometryVersion, scene, presentation };
     published = publication;
     tx.publication = publication;
+    remember();
     if (geometry) sceneInstrumentation.geometryPublication(event(tx, graphKeys(scene)));
     presenting = tx.id;
     finish(tx, "committed");
@@ -599,12 +642,20 @@ export function createSceneController(options: SceneControllerOptions) {
     });
   }
 
+  /**
+   * A new pane lifetime (another folder, or unmount): synchronously, before the next folder can
+   * paint, preparation and its waiters are aborted, owned effects cancelled, retirees and notices
+   * cleared, leases released. Nothing of the old scope is drawn or published again.
+   */
   function resetScope(directory: string): void {
     scope = { paneId: options.paneId, directory, generation: scope.generation + 1 };
     if (current && current.phase !== "done") finish(current, "superseded");
     current = null;
     published = null;
     committed = null;
+    intent = null;
+    data = { index: null, components: new Map() };
+    restorable = true;
     presenting = null;
     failure = null;
     failed.clear();
@@ -639,16 +690,16 @@ export function createSceneController(options: SceneControllerOptions) {
      */
     offer(next: SceneIntent, mark: DataMark): void {
       if (disposed) return;
+      if (next.directory !== scope.directory) resetScope(next.directory);
       const before = intent;
-      if (before && before.directory !== next.directory) resetScope(next.directory);
-      else if (!before) scope = { ...scope, directory: next.directory, generation: scope.generation + 1 };
-      const change = intentChange(intent && intent.directory === next.directory ? intent : null, next);
+      const change = intentChange(before, next);
       const dataChanged = mark.index !== data.index || mark.components !== data.components;
       const tokenChanged = (mark.index?.token ?? null) !== (data.index?.token ?? null);
       if (!anyChange(change) && !dataChanged) return;
       intent = next;
       data = mark;
       revision++;
+      if (restore(next)) return;
       reconcileCovers();
       const tx = current;
       if (tx && tx.phase !== "done" && tx.scope === scope && !change.directory) {
@@ -658,7 +709,16 @@ export function createSceneController(options: SceneControllerOptions) {
         const root = change.hostChoice || (tx.phase === "preparing" && (change.listing || change.resize || change.metrics));
         if (!root) { tx.wake?.abort(); return; }
       }
-      void run(begin(rootCause(change, before && before.directory === next.directory ? before : null, next, tokenChanged)));
+      void run(begin(rootCause(change, before, next, tokenChanged)));
+    },
+
+    /**
+     * The pane moved to `directory` (or its first one): a new lifetime, at once. Call it before
+     * the new folder renders, so nothing of the old scope paints for it.
+     */
+    enter(directory: string): void {
+      if (disposed || directory === scope.directory) return;
+      resetScope(directory);
     },
 
     /**

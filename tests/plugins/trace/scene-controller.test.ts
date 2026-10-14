@@ -5,6 +5,8 @@ import { installSceneInstrumentation } from "$lib/plugins/trace/view/scene-instr
 import type { ComponentLease } from "$lib/plugins/trace/view/folder-session.svelte";
 import type { SceneIntent } from "$lib/plugins/trace/view/scene-inputs";
 import type { Publication } from "$lib/plugins/trace/view/presentation";
+import { createSceneStore, type SceneStore } from "$lib/plugins/trace/view/folder-snapshots";
+import { estimateSavedSceneBytes, type SavedScene } from "$lib/plugins/trace/view/scene-snapshots";
 import { engines, type FolderLayout, type FolderLayoutInput } from "$lib/domain/trace-graph/folder-layout";
 import { fallbackGridMetrics } from "$lib/domain/trace-graph/folder-grid";
 import { tileMetrics } from "$lib/domain/trace-graph/metrics";
@@ -73,7 +75,7 @@ function fakeSource(token = "t1") {
 const flush = async (rounds = 30) => { for (let i = 0; i < rounds; i++) await new Promise<void>((resolve) => setTimeout(resolve, 0)); };
 const tile = tileMetrics(96);
 
-function harness(options: { inline?: (input: FolderLayoutInput) => boolean; token?: string } = {}) {
+function harness(options: { inline?: (input: FolderLayoutInput) => boolean; token?: string; scenes?: SceneStore<SavedScene>; paneId?: string } = {}) {
   const fake = fakeSource(options.token);
   const timers: { run: () => void; ms: number; cancelled: boolean }[] = [];
   const layouts: { input: FolderLayoutInput; signal: AbortSignal; reply: ReturnType<typeof deferred<FolderLayout>> }[] = [];
@@ -87,7 +89,7 @@ function harness(options: { inline?: (input: FolderLayoutInput) => boolean; toke
     failure: (event) => failures.push(event.message),
   });
   controller = createSceneController({
-    paneId: "p", data: fake.source, engine, inline: options.inline ?? (() => true),
+    paneId: options.paneId ?? "p", data: fake.source, engine, inline: options.inline ?? (() => true), scenes: options.scenes,
     runLayout: (input, signal) => { const reply = deferred<FolderLayout>(); layouts.push({ input, signal, reply }); return reply.promise; },
     tick: () => Promise.resolve(),
     setTimer: (run, ms) => { const timer = { run, ms, cancelled: false }; timers.push(timer); return () => { timer.cancelled = true; }; },
@@ -523,5 +525,183 @@ describe("scene controller: failures never block the folder", () => {
     h.layouts[1].reply.resolve(engines.default(h.layouts[1].input)); await flush();
     expect(h.openGraphs()).toEqual(["a1", "b1"]);
     expect(h.published).toHaveLength(2);
+  });
+});
+
+describe("scene controller: lifetime", () => {
+  it("enter() ends the folder's lifetime at once: preparation and waiters aborted, nothing of it published later", async () => {
+    const h = setup();
+    h.offer(); await flush();
+    h.act("expand", () => h.offer({ open: new Set(["a1"]) }));
+    const id = h.controller.transaction!.id;
+    const presented = h.controller.whenPresented(id, "a2"), settled = h.controller.whenSettled(id);
+    await flush();
+    const read = h.fake.pending("ca")[0];
+    expect(read).toBeDefined();
+    h.controller.enter("/elsewhere");
+    // Synchronously: no scene, no notices, the read released, the waiters rejected.
+    expect(h.controller.published).toBeNull();
+    expect(h.controller.notices.size).toBe(0);
+    expect(read.released).toBe(true);
+    await expect(presented).rejects.toMatchObject({ name: "AbortError" });
+    await expect(settled).rejects.toMatchObject({ name: "AbortError" });
+    // The old folder's late data and intent publish nothing.
+    const publications = h.published.length;
+    read.reply.resolve(new Map([["ca", componentData("ca", "t1")]]));
+    await flush();
+    expect(h.published).toHaveLength(publications);
+    expect(h.controller.published).toBeNull();
+  });
+
+  it("enter() snaps the running motion and reports the presentation idle", async () => {
+    const h = setup();
+    const settle = deferred<boolean>();
+    const snaps = { count: 0 };
+    h.controller.attachMotion({
+      reduced: () => false, viewport: () => null,
+      sample: (presentation) => ({ presentation, at: 0, poses: new Map() }),
+      start: () => ({ started: true, settled: settle.promise }),
+      snap: () => { snaps.count++; },
+    });
+    h.offer(); await flush();
+    h.act("collapse", () => h.offer({ width: 400 }));
+    await flush();
+    expect(h.controller.moving).toBe(true);
+    let idle = false;
+    void h.controller.whenIdle().then(() => { idle = true; });
+    await flush();
+    expect(idle).toBe(false);
+    const before = snaps.count;
+    h.controller.enter("/elsewhere");
+    expect(snaps.count).toBe(before + 1);
+    expect(h.controller.moving).toBe(false);
+    await flush();
+    expect(idle).toBe(true);
+    // The old epoch settling later changes nothing.
+    settle.resolve(true);
+    await flush();
+    expect(h.controller.published).toBeNull();
+  });
+
+  it("reports motion from its start until its effects settle", async () => {
+    const h = setup();
+    const settle = deferred<boolean>();
+    h.controller.attachMotion({ reduced: () => false, sample: (presentation) => ({ presentation, at: 0, poses: new Map() }), start: () => ({ started: true, settled: settle.promise }), snap: () => undefined });
+    h.offer(); await flush();
+    expect(h.controller.moving).toBe(true);
+    let idle = false;
+    void h.controller.whenIdle().then(() => { idle = true; });
+    await flush();
+    expect(idle).toBe(false);
+    settle.resolve(true);
+    await flush();
+    expect(h.controller.moving).toBe(false);
+    expect(idle).toBe(true);
+    await expect(h.controller.whenIdle()).resolves.toBeUndefined();
+  });
+});
+
+describe("scene controller: restoration", () => {
+  const store = () => createSceneStore<SavedScene>(estimateSavedSceneBytes);
+
+  /** A first mount that commits `a1` open, then unmounts. */
+  async function previousMount(scenes: SceneStore<SavedScene>) {
+    const h = harness({ scenes });
+    h.offer({ open: new Set(["a1"]) });
+    await flush();
+    h.deliver("ca");
+    await flush();
+    const shown = h.controller.published!;
+    const data = { index: h.fake.source.index, components: h.fake.source.components };
+    h.controller.dispose(); h.restore();
+    return { shown, data };
+  }
+
+  it("shows this pane's committed scene at once when the width and metrics match, then revalidates without a layout", async () => {
+    const scenes = store();
+    const { shown, data } = await previousMount(scenes);
+    const h = setup({ scenes });
+    // The session's folder snapshot provides the same data.
+    h.fake.source.index = data.index; h.fake.source.components = data.components;
+    h.offer({ open: new Set(["a1"]) });
+    // Synchronously, before any layout or read.
+    const restored = h.controller.published!;
+    expect(restored).not.toBeNull();
+    expect(h.engine).not.toHaveBeenCalled();
+    expect(restored.scene.cells).toEqual(shown.scene.cells);
+    expect([...restored.scene.records.keys()]).toEqual([...shown.scene.records.keys()]);
+    expect([...restored.scene.records.values()].map((record) => record.rect)).toEqual([...shown.scene.records.values()].map((record) => record.rect));
+    // An empty presentation, in this pane's new lifetime.
+    expect(restored.presentation.duration).toBe(0);
+    expect(restored.presentation.retiring.size).toBe(0);
+    expect(restored.scene.scope).not.toBe(shown.scene.scope);
+    expect(restored.scene.scope).toEqual({ paneId: "p", directory: "/f", generation: expect.any(Number) });
+    await flush();
+    expect(h.engine).not.toHaveBeenCalled();
+    expect(h.published).toHaveLength(1);
+    expect(h.fake.reads).toHaveLength(0);
+  });
+
+  it("lays the saved data out again at a new width, before the index is read, and snaps", async () => {
+    const scenes = store();
+    const { shown } = await previousMount(scenes);
+    const h = setup({ scenes });
+    h.fake.source.index = null;
+    h.offer({ open: new Set(["a1"]), width: 480 });
+    await flush();
+    const scene = h.controller.published!.scene;
+    expect(h.engine).toHaveBeenCalledTimes(1);
+    expect(scene.inputs.layoutInput.width).not.toBe(shown.scene.inputs.layoutInput.width);
+    expect([...scene.graphs.keys()]).toEqual(["a1"]);
+    expect(h.controller.published!.presentation.duration).toBe(0);
+    expectComplete(h.controller.published!);
+  });
+
+  it("never restores another folder's scene, even with the same component ids", async () => {
+    const scenes = store();
+    await previousMount(scenes);
+    const h = setup({ scenes });
+    h.fake.source.index = { ...indexFor("t1"), directory: "/g" };
+    h.offer({ directory: "/g" });
+    expect(h.controller.published).toBeNull();
+    await flush();
+    expect(h.controller.published!.scene.scope.directory).toBe("/g");
+    expect(h.engine).toHaveBeenCalled();
+    expect(h.openGraphs()).toEqual([]);
+  });
+
+  it("never restores another pane's scene", async () => {
+    const scenes = store();
+    await previousMount(scenes);
+    const h = setup({ scenes, paneId: "other" });
+    h.fake.source.index = null;
+    h.offer({ open: new Set(["a1"]) });
+    await flush();
+    expect(h.controller.published).toBeNull();
+  });
+
+  it("restores nothing once the store was cleared after the pane began", async () => {
+    const scenes = store();
+    const h = setup({ scenes });
+    h.offer({ open: new Set(["a1"]) }); await flush();
+    h.deliver("ca"); await flush();
+    expect(scenes.recall("p", "/f")).toBeDefined();
+    scenes.clear();
+    h.offer({ open: new Set(["a1"]), selectedPaths: new Set(["/f/notes.txt"]) }); await flush();
+    expect(scenes.recall("p", "/f")).toBeUndefined();
+  });
+
+  it("keeps the newest committed scene, without request history", async () => {
+    const scenes = store();
+    const h = setup({ scenes });
+    h.offer({ open: new Set(["a1"]) }); await flush();
+    h.deliver("ca"); await flush();
+    h.act("expand", () => h.offer({ open: new Set(["a1", "b1"]), focus: { key: "a2", componentId: "ca" } })); await flush();
+    h.deliver("cb"); await flush();
+    const saved = scenes.recall("p", "/f")!;
+    expect([...saved.scene.graphs.keys()].sort()).toEqual(["a1", "b1"]);
+    for (const graph of [...saved.scene.graphs.values(), ...saved.scene.layout.graphs.values()]) expect(graph.plan.request.history).toBeUndefined();
+    // The published scene itself is unchanged.
+    expect([...h.controller.published!.scene.graphs.values()].some((graph) => graph.plan.request.history !== undefined)).toBe(true);
   });
 });

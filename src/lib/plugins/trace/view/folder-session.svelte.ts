@@ -13,6 +13,7 @@ import type { OrientationHistory } from "$lib/domain/trace-graph/orientation";
 import { projectDag } from "$lib/domain/trace-graph/projection";
 import { traceBackend, type TraceBackend } from "./backend";
 import { createSnapshotCache, type SnapshotCache } from "./folder-snapshots";
+import { sceneSnapshots } from "./scene-snapshots";
 import { componentRequest } from "./component-requests";
 import { parentDir, samePath } from "$lib/domain/path";
 import { coverAliases, coverIdentity, forgetOpenStack, stackIdentity, pathIdentity, revisionIdentity, resolveOpenStacks } from "./open-stacks";
@@ -72,7 +73,7 @@ export const snapshotWeight = (snapshot: FolderSnapshot): number =>
 /** Shared by every session, so a remounted view finds what the previous one loaded. */
 const folderSnapshots = createSnapshotCache<FolderSnapshot>({ limit: 8, budget: 200_000, weigh: snapshotWeight });
 /** Forgets every folder's data, when the plugin is disabled. */
-export function forgetFolderSnapshots(): void { folderSnapshots.clear(); }
+export function forgetFolderSnapshots(): void { folderSnapshots.clear(); sceneSnapshots.clear(); }
 
 export function createFolderSession(backend: TraceBackend = traceBackend, snapshots: SnapshotCache<FolderSnapshot> = folderSnapshots, paneId = "") {
   let index = $state.raw<FolderIndex | null>(null);
