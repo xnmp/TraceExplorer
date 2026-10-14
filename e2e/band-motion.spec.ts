@@ -567,9 +567,9 @@ for (const fixture of ['bridge', 'junction']) test(`the connector clock survives
     const y = f.tiles.find(t => t.key === b)!.y;
     return y < earlyY - 1 && y > finalY + 2;
   }), 'the clock advances through the stalls while still inside motion').toBe(true);
-  // Stalled time is not lost: the frames after a stall show the time that passed in it (frame
-  // timestamps may lag behind the stall's end under load, so only half of it is required).
-  for (const { stall, before, after } of stalled) expect(after - before, `${stall} ms stall`).toBeGreaterThanOrEqual(stall / clockScale / 2);
+  // No stalled time is lost: the frames after a stall show at least the time that passed in it
+  // (the clock runs on frame time only, also from a release: review fixes b7673b1, L1).
+  for (const { stall, before, after } of stalled) expect(after - before, `${stall} ms stall`).toBeGreaterThanOrEqual(stall / clockScale - .5);
   expect(frames.reduce((n, f) => n + expectAttached(f, [start, end]), 0)).toBeGreaterThan(0);
   expect(await page.locator('[data-motion-route-layer]').count()).toBe(0);
   expect(await uncaught(page)).toEqual([]);
