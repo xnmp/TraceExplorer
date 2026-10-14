@@ -128,24 +128,81 @@ test("collapsing a big stack brings back tiles whose thumbnails went idle: none 
   expect(frames.at(-1)!.tiles).toBeGreaterThan(0);
 });
 
-test("reference badges hidden behind +n are not part of the scene's media, and load once shown", async ({ page }) => {
-  await openView(page, 420, "?moreBadges=1&thumbnailDelay=10", false);
+/** Opens village's stack (Warm draws three of its four references and "+1") and returns the hidden reference. */
+async function openReferences(page: Page, query: string): Promise<string[]> {
+  await openView(page, 420, `?moreBadges=1&${query}`, false);
   await page.locator('section[data-component][aria-label="village"] [data-stack-toggle]').first().click();
   await settle(page);
-  const drawn = () => page.evaluate(() => [...document.querySelectorAll("[data-reference-key]")].map((badge) => badge.getAttribute("aria-label")!.split(", ")[0]));
-  const more = page.getByRole("button", { name: /^Show \d+ more references$/ });
-  await expect(more).toHaveCount(1);
-  const shown = await drawn();
-  const requested = await thumbnailRequests(page);
+  await expect(page.getByRole("button", { name: /^Show \d+ more references$/ })).toHaveCount(1);
+  const shown = await page.evaluate(() => [...document.querySelectorAll("[data-reference-key]")].map((badge) => badge.getAttribute("aria-label")!.split(", ")[0]));
   // Warm's references: two in a subfolder, two elsewhere; three are drawn and one is behind "+1".
   const hidden = ["/pictures/refs/mist.png", "/elsewhere/lantern.png", "/pictures/refs/reference-3.png", "/elsewhere/reference-4.png"]
     .filter((path) => !shown.includes(path));
   expect(shown).toHaveLength(3);
   expect(hidden, "one reference is behind +1").toHaveLength(1);
+  const requested = await thumbnailRequests(page);
   for (const path of shown) expect(requested, `drawn badge ${path}`).toContain(path);
   for (const path of hidden) expect(requested, `hidden badge ${path}`).not.toContain(path);
-  await more.click();
-  for (const path of hidden) await expect(page.locator(`[data-reference-key][aria-label^="${path}, "] img`)).toHaveCount(1);
+  await page.evaluate((hidden) => { (window as any).__hiddenReferences = hidden; }, hidden);
+  return hidden;
+}
+
+type ReferenceFrame = { t: number; more: string | null; badges: Record<string, "img" | "blank" | "placeholder" | "none"> };
+/** Per painted frame: how each hidden reference draws (not at all, its image, an undecoded image or its placeholder), and the overflow button's label. */
+function sampleReferences(): ReferenceFrame {
+  const hidden = (window as any).__hiddenReferences as string[];
+  const all = [...document.querySelectorAll<HTMLElement>("[data-reference-key]")];
+  return {
+    t: performance.now(),
+    more: document.querySelector(".badges .more")?.getAttribute("aria-label") ?? null,
+    badges: Object.fromEntries(hidden.map((path) => {
+      const badge = all.find((candidate) => candidate.getAttribute("aria-label")!.startsWith(`${path}, `));
+      if (!badge) return [path, "none"];
+      const img = badge.querySelector("img") as HTMLImageElement | null;
+      return [path, img ? (img.complete && img.naturalWidth > 0 ? "img" : "blank") : badge.querySelector(".placeholder") ? "placeholder" : "none"];
+    })),
+  };
+}
+
+test("opening +n draws the hidden reference badges together with their images, in no frame a placeholder", async ({ page }) => {
+  const hidden = await openReferences(page, "thumbnailDelay=150");
+  const more = page.getByRole("button", { name: /^Show \d+ more references$/ });
+  const frames = await samplePaintedFrames(page, sampleReferences, 900, () => more.click());
+  for (const [index, frame] of frames.entries()) {
+    const states = new Set(Object.values(frame.badges));
+    expect([...states].every((state) => state === "img" || state === "none"), `frame ${index}: ${JSON.stringify(frame.badges)}`).toBe(true);
+    expect(states.size, `frame ${index}: the hidden badges appear together`).toBe(1);
+    // The tile keeps its look until they appear, then the overflow reads as open.
+    expect(frame.more, `frame ${index}`).toBe(states.has("img") ? "Show fewer references" : `Show ${hidden.length} more references`);
+  }
+  expect(frames.some((frame) => Object.values(frame.badges).includes("none")), "the open waited for the images").toBe(true);
+  expect(Object.values(frames.at(-1)!.badges).every((state) => state === "img"), "opened").toBe(true);
+  for (const path of hidden) expect(await thumbnailRequests(page), `hidden badge ${path} requested on opening`).toContain(path);
+});
+
+test("clicking +n again while its images load withdraws the open; once they are cached it opens in the next frame", async ({ page }) => {
+  const hidden = await openReferences(page, "thumbnailDelay=150");
+  const more = page.getByRole("button", { name: /^Show \d+ more references$/ });
+  // Two clicks a frame apart, well inside the image's 150 ms: the second withdraws the first.
+  const frames = await samplePaintedFrames(page, sampleReferences, 900, () => more.evaluate(async (button: HTMLButtonElement) => {
+    button.click();
+    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    button.click();
+  }));
+  for (const [index, frame] of frames.entries()) {
+    expect(Object.values(frame.badges).every((state) => state === "none"), `frame ${index}: ${JSON.stringify(frame.badges)}`).toBe(true);
+    expect(frame.more, `frame ${index}`).toBe(`Show ${hidden.length} more references`);
+  }
+  for (const path of hidden) expect(await thumbnailRequests(page), `hidden badge ${path} requested by the withdrawn open`).toContain(path);
+  // Its image arrived meanwhile: opening now draws the badges, with their images, in the first frame after the click.
+  await page.evaluate((source) => { (window as any).__sampleReferences = new Function(`return (${source})`)(); }, sampleReferences.toString());
+  const opened = await more.evaluate(async (button: HTMLButtonElement) => {
+    button.click();
+    await new Promise((resolve) => requestAnimationFrame(resolve));
+    return (window as any).__sampleReferences();
+  });
+  expect(opened.badges).toEqual(Object.fromEntries(hidden.map((path) => [path, "img"])));
+  expect(opened.more).toBe("Show fewer references");
 });
 
 test("a thumbnail the host fails to load: the scene commits once it failed, without waiting for the deadline, and draws the placeholder steadily", async ({ page }) => {

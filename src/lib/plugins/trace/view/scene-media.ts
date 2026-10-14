@@ -10,7 +10,7 @@ import type { FileEntry } from "$lib/domain/file";
 import type { GridRect } from "$lib/domain/trace-graph/grid-flow";
 import type { FolderScene, SceneRecord } from "$lib/domain/trace-graph/folder-scene";
 import type { TraceNode } from "$lib/domain/trace-graph/model";
-import { visibleBadges } from "$lib/domain/trace-graph/projection";
+import { visibleBadges, type ReferenceBadge } from "$lib/domain/trace-graph/projection";
 import { PARTICIPANT_MARGIN } from "./participants";
 import { componentNodes } from "./scene-view";
 import { UNMEASURED, type Span } from "./scene-window";
@@ -39,11 +39,20 @@ export function recordThumbnails(scene: FolderScene, record: SceneRecord, hostEn
   if (record.kind !== "tile") return [];
   const own = nodeThumbnail(record.tile.node);
   const nodes = record.badges.length && record.graphId !== null ? componentNodes(scene, record.graphId) : undefined;
-  const badges = visibleBadges(record.badges, scene.inputs.styling.selectedKeys).filter((badge) => {
+  const badges = badgeThumbnails(visibleBadges(record.badges, scene.inputs.styling.selectedKeys), nodes);
+  return own ? [own, ...badges] : badges;
+}
+
+/**
+ * The images `badges` draw (`ReferenceBadge`): a badge whose node is known draws its image only
+ * while the node is present; one without a path draws nothing. Opening a tile's "+n" prepares the
+ * same images (`ReferenceBadges`, `media-gate.ts`).
+ */
+export function badgeThumbnails(badges: readonly ReferenceBadge[], nodes?: ReadonlyMap<string, TraceNode>): string[] {
+  return badges.filter((badge) => {
     const node = nodes?.get(badge.key);
     return !!badge.path && (!node || node.state === "present");
   }).map((badge) => badge.path);
-  return own ? [own, ...badges] : badges;
 }
 
 export interface MediaInput {

@@ -4,7 +4,7 @@ import { buildFolderScene, type FolderScene, type SceneStyling, type TileRecord 
 import { tileMetrics } from "$lib/domain/trace-graph/metrics";
 import type { TraceNode } from "$lib/domain/trace-graph/model";
 import type { FileEntry } from "$lib/domain/file";
-import { entryThumbnail, nodeThumbnail, recordThumbnails, sceneThumbnails } from "$lib/plugins/trace/view/scene-media";
+import { badgeThumbnails, entryThumbnail, nodeThumbnail, recordThumbnails, sceneThumbnails } from "$lib/plugins/trace/view/scene-media";
 import { PARTICIPANT_MARGIN } from "$lib/plugins/trace/view/participants";
 import { UNMEASURED } from "$lib/plugins/trace/view/scene-window";
 import { folderInput, handCase, makeFolder, sourcesOf } from "../../domain/trace-graph/folder-layout-fixtures";
@@ -41,6 +41,17 @@ function sceneFor(open: string[], focus: string | null = null): FolderScene {
 }
 /** Every image a record of `scene` draws, by the record's vertical extent. */
 const drawn = (scene: FolderScene, hostEntries = false) => [...scene.records.values()].flatMap((record) => recordThumbnails(scene, record, hostEntries).map((path) => ({ path, rect: record.rect, kind: record.kind })));
+
+describe("badgeThumbnails", () => {
+  const badge = (key: string, path: string) => ({ key, path, scope: "external" as const, consumers: [] });
+  it("draws each badge's image in order, skipping badges without a path and those whose node is not present", () => {
+    const nodes = new Map<string, TraceNode>([["gone", { ...present, key: "gone", state: "missing" }], ["here", { ...present, key: "here" }]]);
+    const badges = [badge("here", "/r/here.png"), badge("gone", "/r/gone.png"), badge("unknown", "/r/unknown.png"), badge("blank", "")];
+    expect(badgeThumbnails(badges, nodes)).toEqual(["/r/here.png", "/r/unknown.png"]);
+    expect(badgeThumbnails(badges), "without nodes, every badge with a path").toEqual(["/r/here.png", "/r/gone.png", "/r/unknown.png"]);
+    expect(badgeThumbnails([])).toEqual([]);
+  });
+});
 
 describe("recordThumbnails", () => {
   const scene = sceneFor([A, B], [...folder.stacks.get(A)!.graph.dag.nodes.keys()].find((key) => key.endsWith("edited")) ?? null);
