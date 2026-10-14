@@ -505,7 +505,7 @@ Recorded where step 5 (§6, presentation and native motion) departs from the tex
 - **Arrivals.** A connector to or from an arriving tile takes that tile's opacity track (`withOpacityOf`), which is checked before continuation.
 - **`RetiringRecord.branch`.** Added: whether the graph had focus when the record retired, which decides the connector tone a retiring route keeps.
 - **Reveal** snaps the revealed graphs whole: their records take their targets and their retirees are dropped. Everything else is retargeted from sliced tracks as usual.
-- **Calibration probe.** One section, or a single-segment entry track, is bisected against its displayed offset when the clock and the compositor disagree by more than 0.5 px.
+- **Calibration probe.** One section, or a single-segment entry track, is bisected against its displayed offset when the clock and the compositor disagree by more than 0.5 px. *(Superseded: the rAF driver displays exactly the time it samples; see "Motion driver (rAF)".)*
 - **Retiree visuals.** A retiring tile draws `TileVisual` only (card, contents and hint). Reference badges and output actions are not drawn.
 - **Left in place.** The travel helpers in `band-motion.ts` and some path-sampling helpers are no longer used by the app.
 
@@ -630,7 +630,7 @@ Retain test compatibility attributes such as `data-motion-ghost` and `data-motio
 
 ### One clock
 
-Each spatial publication has one presentation epoch. Compile all tracks into native effects created synchronously in `motion.start`. Every effect has the epoch’s common duration; shorter tracks hold their final values. Select one created native animation as the epoch clock and read its `currentTime` once per sample.
+Each spatial publication has one presentation epoch. Compile all tracks synchronously in `motion.start`. Every track has the epoch’s common duration; shorter tracks hold their final values. *(As built: one main-thread frame loop is the epoch clock, not a native animation; see "Motion driver (rAF)" below.)*
 
 Do not assign `startTime` or use task-captured timeline time as a start time. Pending effects sample their inline first pose. The browser resolves readiness; this respects the [Web Animations pending-play model](https://www.w3.org/TR/web-animations-1/#playing-an-animation-section).
 
@@ -669,9 +669,30 @@ DOM reads are restricted to:
 - Pane/scroller/grid origin, zoom, and actual scroll offsets for viewport conversion and browser scroll clamping.
 - Actual anchor screen offset and focus/`scrollIntoView` targets.
 - Registered render handles used to apply native effects.
-- A single modeled moving HTML participant as a compositor-progress calibration probe at interruption, where WebKit’s displayed native transform differs from the clock sample after a stall. Infer one epoch progress and resample all records from the model; never capture individual record geometry.
+- ~~A single modeled moving HTML participant as a compositor-progress calibration probe at interruption.~~ Removed with the rAF driver: what is displayed is the time last written.
 
-No DOM read establishes membership, layout, route shape, retirement identity, or readiness. Native tests must exercise pending readiness and main-thread stalls to validate that calibration.
+No DOM read establishes membership, layout, route shape, retirement identity, or readiness.
+
+### Motion driver (rAF)
+
+`scene-motion.ts` drives every epoch from one main-thread `requestAnimationFrame` loop that writes inline styles. It replaced the Web Animations driver (2026-10-15) for two measured reasons:
+
+- **Snap-back at the end (WebKitGTK 2.54.1).** In the Skia compositor (`SkiaCompositingLayer`), when an accelerated transform or opacity animation ends on the compositor, the layer falls back to its base value from the last style resolution, usually the start pose. That stays on screen until the main thread commits fresh style: 1–3 frames when idle, the whole stall when busy. Our native tests hit it in nearly every animated scenario, GPU included. Upstream fix: [WebKit bug 321993](https://bugs.webkit.org/show_bug.cgi?id=321993), due in 2.54.2.
+- **Interruption jumps (any version).** The driver sampled the displayed pose from `currentTime` plus a `getBoundingClientRect` probe, but the compositor ran 3–31 ms ahead of that, so an interruption restarted from a pose that was never painted: jumps of 1–87 px.
+
+A lab comparison (`/var/tmp/te-wt2/snapback/`) measured the rAF driver at 0 snap-backs and 0 interruption jumps on llvmpipe, GPU, a busy main thread and inside the real host binary, at lower main-thread cost than Web Animations (200 elements: 0.8 ms JS plus 5 ms render per frame, p95 13 ms).
+
+How it works:
+
+- **Compile, then sample.** `compileTrack` still compiles each record's track relative to its frame (section) on the epoch clock. `frameAt(frames, t)` binary-searches the segment and eases it by its starting frame's easing: exactly the values native keyframes would interpolate. `animatedProperties` picks the properties that change and `styleOf` formats them (translate, row translateY/scaleY, opacity, width/height, clip polygon). The camera uses `cameraAt`.
+- **One clock.** `start` writes every first pose synchronously, so the publication's render never paints a target pose. The clock starts at the first frame callback after `start` (`t0` = that frame's timestamp, as a native animation's start time resolves when it is first rendered), so the first frame painted shows the first poses. Each frame computes every value at `t = min(duration, now - t0)` first, then writes them all, with no DOM read in between.
+- **Displayed time.** `displayedAt` and `sample` use the last written `t`, which is what the last frame painted, so an interruption continues from exactly the pose on screen.
+- **Fill.** At `t ≥ duration`, live records and the camera (`fill: none`) give their inline values back to the renderer in that callback, and `settled` resolves there; its microtasks commit the settled scene in the same rendering update. Connector layers and retirees (`fill: forwards`) keep their final values until the next `start`, a `snap`, or their element's removal, so a retiree never pops.
+- **Ownership.** The driver records each property's renderer value before writing it, and notices when the renderer commits a new one meanwhile; restoring keeps the renderer's latest value. It never touches card CSS transitions.
+- **One loop.** A module-level loop drives every view's running epoch, requests frames only while one runs, and cancels its request when idle. `stop`/`snap` cancel the epoch (`settled` resolves false) and give every owned value back.
+- **`will-change`.** Not set. The measurements above are without it (the lab's `rafwc` variant has it); it was not measured in the plugin, and it would promote a layer per moving element.
+
+Test hooks (`sceneMotionTesting`, exposed by the harness as `trace.motion`; `e2e/animation-control.ts`): `hold()` pins running epochs and starts later ones at their first pose; `seek(ms)` shows a time synchronously; `release()`, `finish()`, `setRate(r)`, `owns(element)` and `state()` (`running` epochs with their displayed time, and the count of epochs `started`). Tests detect motion through the driver ("no epoch running", "no epoch started") rather than `getAnimations()`. `e2e/motion-driver.spec.ts` checks, at frame rate, that each restart pose equals the last painted pose within 0.5 px and that every painted frame moves tiles straight to their targets.
 
 ## 7. Viewport, anchoring, and lifecycle
 
@@ -756,5 +777,5 @@ Run the repository’s full check/unit/Rust/browser/package suite, Chromium and 
 | Superseded worker blocks current work | Drop aborted queued jobs immediately. Reject an aborted caller independently of its running computation. A 5s running-worker watchdog terminates the wedged worker, creates a replacement, and requeues still-live jobs; one retry per job, then fail. Callbacks are guarded by worker identity. (Implemented in `layout-client.ts`.) |
 | Worker fallback blocks a frame | The fallback after a worker load failure uses the yielded main-thread path, one job per frame, checking cancellation before each computation. (Implemented.) |
 | History/cache memory growth | Retain at most 48 layout entries and add a 16 MiB estimated-byte budget including signature strings; oversized results are returned uncached. Store no scene back-pointers. Scene snapshots use an independent 8-entry/16 MiB LRU; presentation holds only active/pinned records and ≤200 retirees. |
-| Native clock/model divergence | Common epoch, exact residual easing, inline pending poses, one compositor calibration sample, owned cleanup tokens, and Chromium/WebKit/native stall tests. |
+| Native clock/model divergence | Removed by the rAF driver: one main-thread clock, the displayed time is the time last written; exact residual easing, owned inline values, and Chromium/WebKit frame-rate tests (`motion-driver.spec.ts`). |
 | Late results resurrect failed or old-folder content | Token provenance, action/lifetime guards, blocked failed opening attempts, cancellable interests, and explicit late-reply harness tests. |
