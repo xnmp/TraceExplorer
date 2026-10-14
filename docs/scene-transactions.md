@@ -396,6 +396,14 @@ For a hot selection/collapse during refresh, use the last committed coherent dat
 
 All requested open bands require complete logical geometry, including offscreen bands. Nearness changes loading priority, not whether their geometry exists. Existing complete committed graphs are reused. Newly requested cold opens remain dependencies until completed or explicitly closed.
 
+**One unreadable stack never blocks the folder.** Every component read a transaction waits for is a dependency of one cover, whether that cover is opening or already drawn open and being read again for a new index. If the read fails, or misses the 5,000 ms deadline (§5), that cover fails and the transaction commits everything else:
+
+- The failed stack is drawn **closed** with its in-cover error and Retry. Its committed graph is never kept beside the new index: that would combine an old graph with a new-token index.
+- It stays requested open, so Retry reopens it. A failed *re-read* of an open stack is also read again by the next index, so a later refresh reopens it. A failed cold open waits for Retry (§5).
+- It is not a view failure: no overlay, and later transactions do not depend on it.
+
+Reading an open stack again is silent: its cover shows no progress while the committed band stays drawn.
+
 ### Layout preparation and economy
 
 Plan all open graphs cheaply, but request layouts only where geometry inputs changed:
@@ -408,13 +416,13 @@ Badge hover, selected border changes, and out-of-component dimming reuse raw lay
 
 Compare the geometry basis before constructing fresh history/hint requests. Otherwise a newly committed history value would itself cause another layout request. Once the basis changes, use the complete exact signature, including history, for cache lookup.
 
-For affected graphs use `cachedLayout`, then `layoutNow` for requests within the existing 60-item limit, otherwise `computeLayout(request, signal)` (`layout-client.ts:109`, `:147`, `:153`). Preserve Phase 2’s chosen workload-count rule.
+For affected graphs, reuse the band cache, then lay out inline when every band request the run would compute is within Phase 2’s workload rule (`canLayoutInline`), otherwise run the whole folder in the worker (`computeFolderLayout`); see “Step 4 as implemented”.
 
 A changed graph repacks its entire folder row and can translate later rows. Those consequences require composition/attachment, not new layouts for unaffected graphs.
 
 ### Supersession and commit
 
-Newer actions abort preparation, release transaction interests, and supersede reveal waiters. Already-running worker computations may finish and populate the bounded cache; they cannot publish.
+Newer actions abort preparation, release transaction interests, and supersede reveal waiters. A worker layout is aborted as soon as it can no longer be the one that commits: on supersession, when a cover deadline or new data changes what is laid out, and when its transaction ends. A computation already running in the worker cannot be stopped; it is bounded by the worker watchdog (§9) and can never publish.
 
 Immediately before commit, check lifetime, transaction id, captured source revision, and data token. If normalization changed sources, reprepare under the same id.
 
@@ -463,18 +471,22 @@ Notify marquee hit-testing once after a folder publication’s motion setup, rep
 
 Recorded where step 4 departs from the text above, with the reason.
 
-- **Whole-folder worker message.** `layout.worker.ts` accepts `{ id, folder: FolderLayoutInput }` and replies `{ id, folder: FolderLayout }`, running the memoised default engine; `computeFolderLayout` in `layout-client.ts` sends it (abort rejects at once, a late reply is dropped, no worker means a main-thread fallback). The controller lays out a complete folder per transaction, so sending band requests one by one would split the engine across threads. The per-request path (`computeLayout`) stays for other callers.
+- **Whole-folder worker message.** `layout.worker.ts` accepts `{ id, folder: FolderLayoutInput }` and replies `{ id, folder: FolderLayout }`, running the memoised default engine; `computeFolderLayout` in `layout-client.ts` sends it (abort rejects at once, a late reply is dropped, no worker means a main-thread fallback, one job per frame). The controller lays out a complete folder per transaction, so sending band requests one by one would split the engine across threads. The per-request path (`computeLayout`, `layoutNow`, `cachedLayout` and the worker's band message) had no callers left and is removed.
 - **Inline rule.** `folder-layout-runtime.ts` shares one band cache across panes and runs a folder inline when Phase 2's `canLayoutInline` holds for every band request the run would actually compute (`uncachedBandRequests`). Bands computed in the worker are seeded into that cache (`rememberBands`), so the next inline run reuses them.
-- **Band basis reuse in the engine.** `planBands` keeps a band's committed raw layout when its request differs from the committed one only in history and hint. This is the "compare the geometry basis before history" rule, applied per band inside the default engine, so committing one band's new geometry does not send an unchanged band through a fresh layout. The parity test models the rule. `layout:eval` geometry rows are unchanged. The controller also skips the engine entirely when nothing the engine reads has changed (`layoutBasis`).
+- **Band basis reuse in the engine.** `planBands` keeps a band's committed raw layout when its request differs from the committed one only in history and hint. This is the "compare the geometry basis before history" rule, applied per band inside the default engine, so committing one band's new geometry does not send an unchanged band through a fresh layout. The parity suite's reference pipeline does not model the rule: it checks the engine where the rule cannot apply (fresh displays, and history tours in which every band's request changes), and the rule is tested by itself against the engine's output. `layout:eval` geometry rows are unchanged. The controller also skips the engine entirely when nothing the engine reads has changed (`layoutBasis`).
 - **Transaction state.** `SceneTransaction.intent` carries the captured `SceneIntent`, not a prepared `SceneInputs`. Prepared engine input stays internal to the controller (`prepareLayoutInput`).
 - **Legacy grid motion.** Until step 5, the controller calls `playGrid` through `attachMotion({ sample, start, snap })`, once per geometry commit. Its carry/snap decisions read per-band `data-layout-stamp` (raw layout) and `data-attachment` (attached geometry) stamps, which are now hashed from the published scene instead of serials kept by each graph.
 - **Hot causes.** Selection, collapse, resize and metrics may commit on the committed snapshot while current data is loading. A continuation transaction (`refresh` or `expand`) then completes the current data.
 - **Restyles.** A publication whose styling contents changed is published even when no record changed, because reference badge selection is read from styling.
-- **Deadline.** Each cover gets 5,000 ms from the moment it becomes pending (requested, not committed, not blocked), covering both data and layout. It is not a deadline per transaction. When it expires, the cover fails, the transaction is woken and commits without that cover, and the running worker job's reply is dropped.
+- **Deadline.** Each cover gets 5,000 ms from the moment it becomes pending, covering both data and layout. Pending means requested, not blocked, and not drawn open from current data, so it covers cold opens and re-reads of open stacks for a new index alike: every data dependency of a transaction has a deadline. It is not a deadline per transaction. When it expires, or the read fails, the cover fails as described in §4 ("One unreadable stack never blocks the folder"): the transaction is woken and commits without that cover, drawn closed with its error, and a worker job laid out with it is aborted.
 - **Failed cover disclosure.** Clicking the disclosure of a failed cover dismisses the failure (its label is "Dismiss stack error"); the next click is the explicit reopen. Retry in the cover reopens directly, resolving the stable key against the current index.
+- **Cover press.** Only the disclosure closes a requested stack or cancels a pending open. Pressing the cover of a stack that is not drawn open selects it, and opens it if it is not requested; pressing it again while it is still opening (a double-click on a slow folder) selects and keeps it opening.
+- **View failures.** Only what is not one cover's fault fails the transaction and shows the view overlay: an exhausted stale-index restart, a layout that fails or is retried out by the watchdog. The overlay clears when a scene of current data commits (not one on the older committed snapshot), or on its Retry.
+- **Action operations.** An operation that throws synchronously fails its transaction with that error (instrumented, rethrown to the caller) and never leaves it current; whatever it wrote first is committed by a transaction of its own. An asynchronous operation is awaited for at most the 5,000 ms preparation deadline, through the controller's injected timer. After that the transaction prepares and commits the current intent, and the operation's later writes are changes of their own. External listing, resize, metrics and data changes arriving while an operation runs are therefore never lost: they are read when the transaction captures the intent.
 - **First scene.** "Loading Trace…" is inserted only after 400 ms without a first scene, so a view remounted over cached data never shows a loading frame.
 - **Reveal waits.** `whenPresented` accepts reference badge keys as well as tiles.
-- **Not implemented.** There is no watchdog for a running worker computation beyond the cover deadline. Notices carry one phase (`loading` or `arranging`) for every pending cover of the transaction.
+- **Worker watchdog.** Implemented as §9 describes: a worker still computing one job after 5,000 ms (`WORKER_WATCHDOG_MS`), whether its caller aborted or not, is terminated and replaced; the queue continues on the replacement, a still-live job is retried there once and then fails, and callbacks of a retired worker are ignored (guarded by worker identity).
+- **Not implemented.** Notices carry one phase (`loading` or `arranging`) for every pending cover of the transaction.
 - `folder-layout/types.ts` is unchanged.
 
 ### Step 5 as implemented: deviations
@@ -505,7 +517,7 @@ Show visual progress after 400 ms, preserving the current fast-load restraint. A
 
 The disclosure’s `aria-expanded` reports the committed scene. While pending, clicking it cancels the requested open; its accessible label becomes “Cancel opening stack”.
 
-Give preparation a 5,000 ms deadline, covering data and layout. On success, publish the completed band and displacement together. On error or timeout:
+Give preparation a 5,000 ms deadline, covering data and layout. On success, publish the completed band and displacement together. On error or timeout (of a cold open; a re-read of an open stack fails the same way, see §4):
 
 - Abort the transaction; retain the last scene.
 - Replace the spinner with an in-cover error indicator and Retry control.
@@ -515,7 +527,7 @@ Give preparation a 5,000 ms deadline, covering data and layout. On success, publ
 
 Retry resolves the stable cover/node key against the current index, since component ids may have merged. Closing clears notices immediately without awaiting a worker.
 
-Use a view-level overlay for refresh/index failures. Replace the flow-affecting notice at `TraceView.svelte:806`; error/progress UI must not change scene or scroll geometry.
+Use a view-level overlay for refresh/index failures that are not one cover's: a stack that cannot be read fails in its cover, never in the overlay. Replace the flow-affecting notice at `TraceView.svelte:806`; error/progress UI must not change scene or scroll geometry. A later commit of current data clears the overlay.
 
 ## 6. Presentation and native motion
 
@@ -650,8 +662,8 @@ Run the repository’s full check/unit/Rust/browser/package suite, Chromium and 
 | Scroll anchoring or bottom-scroll clamp jumps | Capture before host writes; compensate after the single motion setup; model camera displacement; retain existing user-scroll/clamp contracts and native frame tests. |
 | Selection/picks regressions | Preserve host-first calls and fresh writable-derived picks at `TraceView.svelte:204`, `:258`; action leases coordinate rendering without becoming selection authority. Keep Shift, modifier, save, Preview, and marquee outcome tests. |
 | Cold/all-open preparation latency | Reuse committed layouts, cache results, inline small work, prioritize targeted rows, show bounded cover progress, and permit immediate close. Hot actions during refresh use a coherent committed snapshot. |
-| Superseded worker blocks current work | Drop aborted queued jobs immediately (`layout-client.ts:135–142`). Reject an aborted caller independently of its running computation. Add a 5s running-worker watchdog: terminate the wedged worker, create a replacement, and requeue still-live jobs; one retry per job, then fail. Guard callbacks by worker generation. |
-| Worker fallback blocks a frame | Replace the synchronous batch fallback at `layout-client.ts:80–83` with the existing yielded fallback path, one job per yield, checking cancellation before each computation. |
+| Superseded worker blocks current work | Drop aborted queued jobs immediately. Reject an aborted caller independently of its running computation. A 5s running-worker watchdog terminates the wedged worker, creates a replacement, and requeues still-live jobs; one retry per job, then fail. Callbacks are guarded by worker identity. (Implemented in `layout-client.ts`.) |
+| Worker fallback blocks a frame | The fallback after a worker load failure uses the yielded main-thread path, one job per frame, checking cancellation before each computation. (Implemented.) |
 | History/cache memory growth | Retain at most 48 layout entries and add a 16 MiB estimated-byte budget including signature strings; oversized results are returned uncached. Store no scene back-pointers. Scene snapshots use an independent 8-entry/16 MiB LRU; presentation holds only active/pinned records and ≤200 retirees. |
 | Native clock/model divergence | Common epoch, exact residual easing, inline pending poses, one compositor calibration sample, owned cleanup tokens, and Chromium/WebKit/native stall tests. |
 | Late results resurrect failed or old-folder content | Token provenance, action/lifetime guards, blocked failed opening attempts, cancellable interests, and explicit late-reply harness tests. |

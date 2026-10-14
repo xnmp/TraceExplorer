@@ -449,8 +449,9 @@
 
   /**
    * Pressing a stack's cover or disclosure is one action: select what its open cover selects (the
-   * listed file, or its node once loaded), then open it. With `toggle`, a requested stack (open,
-   * still opening, or failed) closes instead: pressing a pending stack cancels its opening.
+   * listed file, or its node once loaded), then open it. With `toggle` (the disclosure only), a
+   * requested stack (open, still opening, or failed) closes instead: pressing a pending stack's
+   * disclosure cancels its opening. Pressing the cover itself never closes or cancels it.
    */
   function activateStack(cell: FolderCell, event: MouseEvent, toggle: boolean): void {
     const summary = cell.summary;

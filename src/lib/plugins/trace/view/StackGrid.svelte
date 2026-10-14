@@ -34,7 +34,7 @@
     /** The live focus, for the section's `dimmed` marker only. */
     focus: ComponentFocus | null;
     revision: number; scroller: HTMLElement | null;
-    /** Pressing a stack's cover or disclosure: `toggle` closes a requested (open, opening or failed) stack. */
+    /** Pressing a stack's cover (`toggle` false: selects, and opens a closed stack) or its disclosure (`toggle`: closes a requested, opening or failed stack). */
     onstack: (cell: FolderCell, event: MouseEvent, toggle: boolean) => void;
     onactivate: (key: string, event: MouseEvent, componentId: string) => void;
     onnavigate: (key: string, componentId: string, modifiers?: { shiftKey?: boolean }) => void; onopen: (key: string) => void;
@@ -168,7 +168,7 @@
               imagePx: cover.imagePx ?? undefined, small: cover.small, progress: notice?.phase ?? null, error: notice?.message ?? null }}
             selected={record.selected} {revision} badgeNodes={nodes} badges={record.badges} badgeSelection={styling.selectedKeys}
             onbadge={(key, event) => onactivate(key, event, summary.id)} {onbadgehover} focused={stop === cell.id} onfocus={() => tabStop = cell.id} onstacktoggle={(event) => onstack(cell, event, true)}
-            onactivate={(event) => graph ? onactivate(cell.id, event, summary.id) : onstack(cell, event, true)}
+            onactivate={(event) => graph ? onactivate(cell.id, event, summary.id) : onstack(cell, event, false)}
             onopen={() => { if (!graph && cell.entry) void pane.open(cell.entry); else onopen(cell.id); }}
             onmenu={(event) => { if (!graph && cell.entry) onordinarymenu(cell.entry, event); else onmenu(cell.id, event, summary.id); }}
             onkey={(event) => keydown(cell.id, event)} {captureSelection} onsaved={(path, select) => onsaved(cell.id, path, select)} ondiscarded={() => ondiscarded(cell.id)}

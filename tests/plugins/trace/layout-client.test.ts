@@ -1,30 +1,23 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import type { LayoutRequest } from "$lib/domain/trace-graph/layout";
 
 const sdk = vi.hoisted(() => ({ allow: false }));
 vi.mock("../../../src/sdk", () => ({ hostAllowsBlobWorkers: () => sdk.allow }));
-const created = vi.hoisted(() => ({ count: 0, last: null as null | { posted: Array<{ id: number; request: LayoutRequest }>; onmessage: ((event: { data: unknown }) => void) | null } }));
+type FakeWorker = { posted: Array<{ id: number; folder: unknown }>; onmessage: ((event: { data: unknown }) => void) | null; terminated: boolean };
+const created = vi.hoisted(() => ({ count: 0, last: null as null | FakeWorker, all: [] as FakeWorker[] }));
 vi.mock("$lib/plugins/trace/view/layout.worker.ts?worker&inline", () => ({
   default: class {
-    posted: Array<{ id: number; request: LayoutRequest }> = [];
+    posted: Array<{ id: number; folder: unknown }> = [];
     onmessage: ((event: { data: unknown }) => void) | null = null;
     onerror: unknown = null;
-    constructor() { created.count++; created.last = this; }
-    terminate() {}
-    postMessage(message: { id: number; request: LayoutRequest }) {
-      if (message.request?.items.some((item) => item.key === "unclonable")) throw new DOMException("could not clone", "DataCloneError");
+    terminated = false;
+    constructor() { created.count++; created.last = this; created.all.push(this); }
+    terminate() { this.terminated = true; }
+    postMessage(message: { id: number; folder: { width: number } }) {
+      if (message.folder.width === 13) throw new DOMException("could not clone", "DataCloneError");
       this.posted.push(message);
     }
   },
 }));
-
-const request = (n = 0, width = 800): LayoutRequest => ({
-  maxWidth: width,
-  items: [
-    { key: `a${n}`, width: 100, height: 60, order: 0, parents: [] },
-    { key: `b${n}`, width: 100, height: 60, order: 1, parents: [`a${n}`] },
-  ],
-});
 
 async function load() {
   vi.resetModules();
@@ -33,206 +26,16 @@ async function load() {
 
 beforeEach(() => {
   created.count = 0;
+  created.all = [];
   sdk.allow = false;
   vi.stubGlobal("requestAnimationFrame", (cb: () => void) => { queueMicrotask(cb); return 0; });
 });
 afterEach(() => vi.unstubAllGlobals());
 
-describe("layout client (main-thread fallback)", () => {
-  it("computes on the main thread when no Worker exists", async () => {
-    sdk.allow = true;
-    const client = await load();
-    const layout = await client.computeLayout(request());
-    expect([...layout.nodes.keys()].sort()).toEqual(["a0", "b0"]);
-    expect(created.count).toBe(0);
-  });
-
-  it("does not create a worker when the host forbids blob workers", async () => {
-    vi.stubGlobal("Worker", class {});
-    sdk.allow = false;
-    const client = await load();
-    await client.computeLayout(request());
-    expect(created.count).toBe(0);
-  });
-
-  it("returns the identical cached object for an identical request and exposes it via cachedLayout", async () => {
-    const client = await load();
-    expect(client.cachedLayout(request())).toBeNull();
-    const first = await client.computeLayout(request());
-    const second = await client.computeLayout(request());
-    expect(second).toBe(first);
-    expect(client.cachedLayout(request())).toBe(first);
-    expect(client.cachedLayout(request(1))).toBeNull();
-  });
-
-  it("keeps pinned cover positions and obstacles in the cache contract", async () => {
-    const client = await load();
-    const at = (x: number, obstacles: readonly { x: number; width: number }[] = []): LayoutRequest => ({ ...request(), pinned: { key: "a0", x, obstacles } });
-    const left = client.layoutNow(at(100));
-    expect(client.cachedLayout(at(650))).toBeNull();
-    const right = client.layoutNow(at(650));
-    expect(left.nodes.get("a0")!.x + 50).toBe(100);
-    expect(right.nodes.get("a0")!.x + 50).toBe(650);
-    expect(client.cachedLayout(at(100, [{ x: 200, width: 100 }]))).toBeNull();
-    expect(client.cachedLayout(at(100))).toBe(left);
-  });
-
-  it("a different width is a different cache entry", async () => {
-    const client = await load();
-    const narrow = await client.computeLayout(request(0, 300));
-    expect(client.cachedLayout(request(0, 800))).toBeNull();
-    expect(client.cachedLayout(request(0, 300))).toBe(narrow);
-  });
-
-  it("a different tile size is a different cache entry, even for items of the same size", async () => {
-    const client = await load();
-    const sized = { ...request(0), tileWidth: 172 };
-    const large = await client.computeLayout(sized);
-    expect(client.cachedLayout(request(0))).toBeNull();
-    expect(client.cachedLayout({ ...request(0), tileWidth: 92 })).toBeNull();
-    expect(client.cachedLayout({ ...request(0), tileWidth: 172 })).toBe(large);
-    // Spacing follows the tile size, so the layouts really differ.
-    expect((await client.computeLayout(request(0))).height).not.toBe(large.height);
-  });
-
-  it("reuses a left-to-right layout at any width: running right, generations never wrap", async () => {
-    const client = await load();
-    const sideways = (width: number): LayoutRequest => ({ ...request(0, width), orientation: "right" });
-    const wide = await client.computeLayout(sideways(800));
-    expect(wide.orientation).toBe("right");
-    for (const width of [300, 1600, Number.NaN]) expect(client.cachedLayout(sideways(width)), String(width)).toBe(wide);
-    // The same items running down are a different layout.
-    expect(client.cachedLayout(request(0, 800))).toBeNull();
-  });
-
-  it("layoutNow computes synchronously and caches", async () => {
-    const client = await load();
-    const now = client.layoutNow(request());
-    expect(client.layoutNow(request())).toBe(now);
-    expect(client.cachedLayout(request())).toBe(now);
-    expect(await client.computeLayout(request())).toBe(now);
-  });
-
-  it("handles an empty request", async () => {
-    const client = await load();
-    const layout = await client.computeLayout({ items: [], maxWidth: 500 });
-    expect(layout.nodes.size).toBe(0);
-  });
-
-  it("disposeLayouts clears the cache", async () => {
-    const client = await load();
-    const first = await client.computeLayout(request());
-    client.disposeLayouts();
-    expect(client.cachedLayout(request())).toBeNull();
-    const again = await client.computeLayout(request());
-    expect(again).not.toBe(first);
-  });
-
-  it("bounds the cache: the 49th distinct request evicts the oldest", async () => {
-    const client = await load();
-    for (let i = 0; i < 49; i++) client.layoutNow(request(i));
-    expect(client.cachedLayout(request(0))).toBeNull();
-    expect(client.cachedLayout(request(1))).not.toBeNull();
-    expect(client.cachedLayout(request(48))).not.toBeNull();
-  });
-
-  it("recently reused entries survive eviction", async () => {
-    const client = await load();
-    for (let i = 0; i < 48; i++) client.layoutNow(request(i));
-    client.layoutNow(request(0)); // touch the oldest
-    client.layoutNow(request(48));
-    expect(client.cachedLayout(request(0))).not.toBeNull();
-    expect(client.cachedLayout(request(1))).toBeNull();
-  });
-});
-
-describe("layout client (worker)", () => {
-  beforeEach(() => { sdk.allow = true; vi.stubGlobal("Worker", class {}); });
-
-  it("gives the worker one job at a time and drops requests aborted while they wait", async () => {
-    const { computeLayout } = await load();
-    const { layoutGraph } = await import("$lib/domain/trace-graph/layout");
-    const first = computeLayout(request(1));
-    const stale = new AbortController();
-    const second = computeLayout(request(2), stale.signal);
-    const third = computeLayout(request(3));
-    const worker = created.last!;
-    expect(worker.posted.map((job) => job.request.items[0].key)).toEqual(["a1"]);
-    stale.abort();
-    const reply = (index: number) => {
-      const job = worker.posted[index];
-      worker.onmessage!({ data: { id: job.id, layout: layoutGraph(job.request) } });
-    };
-    reply(0);
-    await expect(first).resolves.toMatchObject({ nodes: expect.any(Map) });
-    await expect(second).rejects.toMatchObject({ name: "AbortError" });
-    // The aborted request never reached the worker; the next one did.
-    expect(worker.posted.map((job) => job.request.items[0].key)).toEqual(["a1", "a3"]);
-    reply(1);
-    expect((await third).nodes.has("a3")).toBe(true);
-  });
-
-  it("finishes a job that was already running when it is aborted, and caches it", async () => {
-    const { computeLayout, cachedLayout } = await load();
-    const { layoutGraph } = await import("$lib/domain/trace-graph/layout");
-    const late = new AbortController();
-    const result = computeLayout(request(4), late.signal);
-    const worker = created.last!;
-    late.abort();
-    const job = worker.posted[0];
-    worker.onmessage!({ data: { id: job.id, layout: layoutGraph(job.request) } });
-    await result;
-    expect(cachedLayout(request(4))).not.toBeNull();
-  });
-
-  it("answers a queued request from the cache when an identical one finished meanwhile", async () => {
-    const { computeLayout } = await load();
-    const { layoutGraph } = await import("$lib/domain/trace-graph/layout");
-    const first = computeLayout(request(5));
-    const again = computeLayout(request(5));
-    const worker = created.last!;
-    const job = worker.posted[0];
-    worker.onmessage!({ data: { id: job.id, layout: layoutGraph(job.request) } });
-    await first;
-    await again;
-    expect(worker.posted).toHaveLength(1);
-  });
-
-  it("keeps working after a request cannot be sent to the worker", async () => {
-    const { computeLayout } = await load();
-    const broken = computeLayout({ maxWidth: 400, items: [{ key: "unclonable", width: 10, height: 10, order: 0, parents: [] }] });
-    const next = computeLayout(request(6));
-    await expect(broken).rejects.toMatchObject({ name: "DataCloneError" });
-    expect(created.last!.posted.map((job) => job.request.items[0].key)).toEqual(["a6"]);
-    void next;
-  });
-
-  it("settles a waiting request as soon as it is aborted", async () => {
-    const { computeLayout } = await load();
-    void computeLayout(request(7));
-    const stale = new AbortController();
-    const waiting = computeLayout(request(8), stale.signal);
-    stale.abort();
-    await expect(waiting).rejects.toMatchObject({ name: "AbortError" });
-  });
-
-  it("does not cache a result that arrives after disposal", async () => {
-    const { computeLayout, cachedLayout, disposeLayouts } = await load();
-    const { layoutGraph } = await import("$lib/domain/trace-graph/layout");
-    const result = computeLayout(request(9));
-    const worker = created.last!;
-    const job = worker.posted[0];
-    worker.onmessage!({ data: { id: job.id, layout: layoutGraph(job.request) } });
-    disposeLayouts();
-    await result;
-    expect(cachedLayout(request(9))).toBeNull();
-  });
-});
-
 describe("layout client (whole folder runs)", () => {
   const folderInput = (width = 640) => ({ items: [], open: new Map(), width, tile: { width: 120, image: 96 } as never, grid: { cellWidth: 120, cellHeight: 150, gap: 8 }, previous: null });
   const folderLayout = (width: number) => ({ width }) as never;
-  type Posted = { id: number; folder?: { width: number }; request?: LayoutRequest };
+  type Posted = { id: number; folder?: { width: number } };
 
   it("runs the fallback engine on the main thread when no worker exists", async () => {
     sdk.allow = true;
@@ -243,8 +46,69 @@ describe("layout client (whole folder runs)", () => {
     expect(created.count).toBe(0);
   });
 
+  it("does not create a worker when the host forbids blob workers", async () => {
+    vi.stubGlobal("Worker", class {});
+    sdk.allow = false;
+    const { computeFolderLayout } = await load();
+    await computeFolderLayout(folderInput(), vi.fn((input: { width: number }) => folderLayout(input.width)) as never);
+    expect(created.count).toBe(0);
+  });
+
+  it("skips a main-thread run aborted before its frame", async () => {
+    const { computeFolderLayout } = await load();
+    const engine = vi.fn(), stale = new AbortController();
+    const result = computeFolderLayout(folderInput(), engine as never, stale.signal);
+    stale.abort();
+    await expect(result).rejects.toMatchObject({ name: "AbortError" });
+    expect(engine).not.toHaveBeenCalled();
+  });
+
   describe("with a worker", () => {
     beforeEach(() => { sdk.allow = true; vi.stubGlobal("Worker", class {}); });
+
+    it("gives the worker one job at a time and drops one aborted while it waits", async () => {
+      const { computeFolderLayout } = await load();
+      const first = computeFolderLayout(folderInput(100), vi.fn() as never);
+      const stale = new AbortController();
+      const second = computeFolderLayout(folderInput(200), vi.fn() as never, stale.signal);
+      const third = computeFolderLayout(folderInput(300), vi.fn() as never);
+      const worker = created.last!;
+      const widths = () => worker.posted.map((job) => (job as unknown as Posted).folder!.width);
+      expect(widths()).toEqual([100]);
+      stale.abort();
+      await expect(second).rejects.toMatchObject({ name: "AbortError" });
+      worker.onmessage!({ data: { id: worker.posted[0].id, folder: folderLayout(100) } });
+      await expect(first).resolves.toEqual({ width: 100 });
+      expect(widths()).toEqual([100, 300]);
+      worker.onmessage!({ data: { id: worker.posted[1].id, folder: folderLayout(300) } });
+      await expect(third).resolves.toEqual({ width: 300 });
+    });
+
+    it("keeps working after an input cannot be sent to the worker", async () => {
+      const { computeFolderLayout } = await load();
+      const broken = computeFolderLayout(folderInput(13), vi.fn() as never);
+      const next = computeFolderLayout(folderInput(14), vi.fn() as never);
+      await expect(broken).rejects.toMatchObject({ name: "DataCloneError" });
+      expect(created.last!.posted.map((job) => (job as unknown as Posted).folder!.width)).toEqual([14]);
+      void next;
+    });
+
+    it("completes queued runs on the main thread, one per frame, when the worker fails to load", async () => {
+      const frames: (() => void)[] = [];
+      vi.stubGlobal("requestAnimationFrame", (cb: () => void) => { frames.push(cb); return frames.length; });
+      const { computeFolderLayout } = await load();
+      const engine = vi.fn((input: { width: number }) => folderLayout(input.width));
+      const first = computeFolderLayout(folderInput(100), engine as never);
+      const second = computeFolderLayout(folderInput(200), engine as never);
+      const worker = created.last! as unknown as { onerror: (event: { preventDefault(): void }) => void };
+      worker.onerror({ preventDefault() {} });
+      expect(engine).not.toHaveBeenCalled();
+      frames.shift()!();
+      expect(engine).toHaveBeenCalledTimes(1);
+      frames.shift()!();
+      await expect(first).resolves.toEqual({ width: 100 });
+      await expect(second).resolves.toEqual({ width: 200 });
+    });
 
     it("sends the whole input as one folder message and resolves with its reply", async () => {
       const { computeFolderLayout, layoutsPending } = await load();
@@ -252,7 +116,6 @@ describe("layout client (whole folder runs)", () => {
       const result = computeFolderLayout(folderInput(700), engine as never);
       const worker = created.last!, job = worker.posted[0] as unknown as Posted;
       expect(job.folder).toMatchObject({ width: 700 });
-      expect(job.request).toBeUndefined();
       expect(layoutsPending()).toBe(1);
       worker.onmessage!({ data: { id: job.id, folder: folderLayout(700) } });
       await expect(result).resolves.toEqual({ width: 700 });
@@ -278,6 +141,66 @@ describe("layout client (whole folder runs)", () => {
       expect(layoutsPending()).toBe(0);
     });
 
+    describe("watchdog", () => {
+      beforeEach(() => { vi.useFakeTimers(); });
+      afterEach(() => { vi.useRealTimers(); });
+      const widths = (worker: FakeWorker) => worker.posted.map((job) => (job as unknown as Posted).folder!.width);
+
+      it("terminates a worker still computing an aborted run after the bound, and serves the queue from a replacement", async () => {
+        const { computeFolderLayout, layoutsPending, WORKER_WATCHDOG_MS } = await load();
+        const stale = new AbortController();
+        const wedged = computeFolderLayout(folderInput(100), vi.fn() as never, stale.signal);
+        const next = computeFolderLayout(folderInput(200), vi.fn() as never);
+        const first = created.last!;
+        stale.abort();
+        await expect(wedged).rejects.toMatchObject({ name: "AbortError" });
+        vi.advanceTimersByTime(WORKER_WATCHDOG_MS - 1);
+        expect(first.terminated).toBe(false);
+        expect(created.count).toBe(1);
+        vi.advanceTimersByTime(1);
+        expect(first.terminated).toBe(true);
+        expect(created.count).toBe(2);
+        const replacement = created.last!;
+        // The queued run is posted at once; the aborted one is not retried.
+        expect(widths(replacement)).toEqual([200]);
+        // A late reply from the terminated worker is ignored.
+        first.onmessage!({ data: { id: first.posted[0].id, folder: folderLayout(100) } });
+        replacement.onmessage!({ data: { id: replacement.posted[0].id, folder: folderLayout(200) } });
+        await expect(next).resolves.toEqual({ width: 200 });
+        expect(layoutsPending()).toBe(0);
+      });
+
+      it("retries a live run once on a replacement worker, then fails it", async () => {
+        const { computeFolderLayout, layoutsPending, WORKER_WATCHDOG_MS } = await load();
+        const run = computeFolderLayout(folderInput(300), vi.fn() as never);
+        const outcome = run.then(() => "resolved", (error: Error) => error.message);
+        vi.advanceTimersByTime(WORKER_WATCHDOG_MS);
+        expect(created.count).toBe(2);
+        expect(widths(created.last!)).toEqual([300]);
+        vi.advanceTimersByTime(WORKER_WATCHDOG_MS);
+        expect(await outcome).toMatch(/too long/);
+        expect(created.all.slice(0, 2).every((worker) => worker.terminated)).toBe(true);
+        expect(layoutsPending()).toBe(0);
+        // The pool keeps serving.
+        const after = computeFolderLayout(folderInput(400), vi.fn() as never);
+        const current = created.last!;
+        current.onmessage!({ data: { id: current.posted.at(-1)!.id, folder: folderLayout(400) } });
+        await expect(after).resolves.toEqual({ width: 400 });
+      });
+
+      it("leaves a worker that replies within the bound alone", async () => {
+        const { computeFolderLayout, WORKER_WATCHDOG_MS } = await load();
+        const run = computeFolderLayout(folderInput(500), vi.fn() as never);
+        const worker = created.last!;
+        vi.advanceTimersByTime(WORKER_WATCHDOG_MS - 1);
+        worker.onmessage!({ data: { id: worker.posted[0].id, folder: folderLayout(500) } });
+        await expect(run).resolves.toEqual({ width: 500 });
+        vi.advanceTimersByTime(WORKER_WATCHDOG_MS * 2);
+        expect(worker.terminated).toBe(false);
+        expect(created.count).toBe(1);
+      });
+    });
+
     it("rejects an input already aborted without posting it", async () => {
       const { computeFolderLayout } = await load();
       created.last = null;
@@ -294,63 +217,5 @@ describe("layout client (whole folder runs)", () => {
     expect(layoutsPending()).toBe(1);
     release(); release();
     expect(layoutsPending()).toBe(0);
-  });
-});
-
-describe("layout client (requests)", () => {
-  it("skips a main-thread request aborted before its frame", async () => {
-    const { computeLayout, cachedLayout } = await load();
-    const stale = new AbortController();
-    const result = computeLayout(request(10), stale.signal);
-    stale.abort();
-    await expect(result).rejects.toMatchObject({ name: "AbortError" });
-    expect(cachedLayout(request(10))).toBeNull();
-  });
-
-  it("treats widths the engine rounds alike as one cache entry, and others as distinct", async () => {
-    const { layoutSignature } = await load();
-    expect(layoutSignature(request(0, 811.2))).toBe(layoutSignature(request(0, 811.9)));
-    expect(layoutSignature(request(0, 811.6))).not.toBe(layoutSignature(request(0, 812.4)));
-  });
-});
-
-
-describe("band history scheduling and caching", () => {
-  it("keys exact band widths and both committed embeddings, independently of selection styles", async () => {
-    const { layoutSignature, layoutNow, cachedLayout, canLayoutInline } = await load();
-    const { bandHistorySignature } = await import("$lib/domain/trace-graph/band-layout");
-    const { attachSingleBand } = await import("$lib/domain/trace-graph/band-geometry");
-    const base = { ...request(), maxWidth: 454.1, pinned: { key: "a0", x: 300 }, band: { key: "a0", items: request().items } };
-    const layout = layoutNow(base), placed = attachSingleBand(layout, base);
-    const next = { ...base, anchorKey: "b0", history: { signature: bandHistorySignature(base), layout, placed } };
-    expect(layoutSignature(next)).not.toBe(layoutSignature({ ...next, maxWidth: 454.9 }));
-    expect(layoutSignature({ ...next, maxWidth: 100001 })).not.toBe(layoutSignature({ ...next, maxWidth: 100002 }));
-    expect(layoutSignature({ ...next, maxWidth: 0 })).not.toBe(layoutSignature({ ...next, maxWidth: -1 }));
-    const translated = { ...placed, nodes: new Map([...placed.nodes].map(([id, n]) => [id, { ...n, x: n.x + 1 }])) };
-    expect(layoutSignature(next)).not.toBe(layoutSignature({ ...next, history: { ...next.history, placed: translated } }));
-    layoutNow(next);
-    expect(cachedLayout({ ...next, history: { ...next.history, placed: translated } })).toBeNull();
-    expect(canLayoutInline({ ...base, band: { key: "a0", items: Array.from({ length: 200 }, (_, i) => ({ ...base.items[0], key: `hidden${i}` })) } })).toBe(true);
-    expect(canLayoutInline({ ...base, items: Array.from({ length: 31 }, (_, i) => ({ ...base.items[0], key: `visible${i}` })) })).toBe(false);
-    expect(canLayoutInline({ ...base, items: base.items.map(n => ({ ...n, parents: Array(30).fill("a0") })) })).toBe(false);
-    const largeHistory = { ...layout, nodes: new Map(Array.from({ length: 29 }, (_, i) => [`old${i}`, { ...layout.nodes.get("a0")!, key: `old${i}` }])) };
-    expect(canLayoutInline({ ...next, history: { ...next.history, layout: largeHistory } })).toBe(false);
-    const denseHistory = { ...layout, routes: Array(40).fill(layout.routes[0]) };
-    expect(canLayoutInline({ ...next, history: { ...next.history, layout: denseHistory } })).toBe(false);
-  });
-  it("sends committed history through the worker with Maps intact and returns the same domain outcome", async () => {
-    sdk.allow = true; vi.stubGlobal("Worker", class {});
-    const { computeLayout } = await load();
-    const { layoutGraph } = await import("$lib/domain/trace-graph/layout");
-    const { bandHistorySignature } = await import("$lib/domain/trace-graph/band-layout");
-    const { attachSingleBand } = await import("$lib/domain/trace-graph/band-geometry");
-    const base = { ...request(), pinned: { key: "a0", x: 300 }, band: { key: "a0", items: request().items } };
-    const layout = layoutGraph(base), placed = attachSingleBand(layout, base);
-    const next = { ...base, anchorKey: "b0", history: { signature: bandHistorySignature(base), layout, placed } };
-    const pending = computeLayout(next), worker = created.last!, job = structuredClone(worker.posted[0]);
-    expect(job.request.history!.placed.nodes).toBeInstanceOf(Map);
-    const result = layoutGraph(job.request);
-    worker.onmessage!({ data: { id: job.id, layout: result } });
-    expect(await pending).toEqual(layoutGraph(next));
   });
 });

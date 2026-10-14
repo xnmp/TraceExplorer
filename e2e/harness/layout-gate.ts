@@ -6,12 +6,11 @@
 export interface LayoutReplyInfo {
   /** The client's job id, echoed by the worker. */
   id: number;
-  /** One band's layout request, or a whole-folder engine run (the scene controller's). */
-  kind: "graph" | "folder";
-  /** Keys of the request's items (a folder run: grid items, then open stacks' members), and of its band, taken when posted. */
+  /** A whole-folder engine run (the scene controller's); the worker's only message kind. */
+  kind: "folder";
+  /** Keys of the run's grid items, then of its open stacks' members, taken when posted. */
   itemKeys: string[];
-  bandKey: string | null;
-  /** A folder run's open stacks (cover keys); empty for a band request. */
+  /** The run's open stacks (cover keys). */
   openKeys: string[];
   /** The worker's error message when the layout failed. */
   error: string | null;

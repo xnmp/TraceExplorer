@@ -12,9 +12,14 @@
  * while its publication is still the published one.
  *
  * Cold opens: a requested stack whose data is not ready stays closed in the scene; its cover
- * carries a notice (busy at once, spinner after 400 ms in the view). Preparation has a 5 s
- * deadline per cover; a failed or timed-out cover is blocked (laid out closed) until Retry or
- * an explicit close, so late results never open it.
+ * carries a notice (busy at once, spinner after 400 ms in the view). Every requested stack whose
+ * current data is not committed (a cold open, or an open stack read again for a new index) has a
+ * 5 s deadline. A failed or timed-out stack fails in its cover only: it is laid out closed with
+ * its error until Retry or an explicit close (a failed re-read also until a newer index), so late
+ * results never open it and the rest of the folder still commits.
+ *
+ * An action's operation that throws fails its transaction; one still pending after the same
+ * bound stops holding the scene, so external changes are never held back by it.
  */
 import { tick as svelteTick } from "svelte";
 import type { NodeKey } from "$lib/domain/trace-graph/model";
@@ -120,6 +125,8 @@ const HOT = new Set<SceneCause["kind"]>(["selection", "collapse", "resize", "met
 const MAX_RESTARTS = 3;
 const STABILISE_TICKS = 8;
 export const PREPARATION_DEADLINE_MS = 5000;
+const noop = () => undefined;
+const thenable = (value: unknown): value is PromiseLike<unknown> => !!value && typeof (value as { then?: unknown }).then === "function";
 
 const superseded = () => new DOMException("Trace scene transaction was superseded", "AbortError");
 const isAbort = (error: unknown) => error instanceof DOMException && error.name === "AbortError";
@@ -142,6 +149,9 @@ interface Committed {
   readonly basis: string;
 }
 
+/** A stack that failed in its cover. `reread` is the index token of a failed re-read of an open stack: a newer index reads it again. */
+interface CoverFailure { readonly error: string; readonly reread: string | null }
+
 interface Transaction {
   readonly id: TransactionId;
   readonly cause: SceneCause;
@@ -158,6 +168,8 @@ interface Transaction {
   publication: Publication | null;
   /** Requested reveals: a cover that failed during this transaction, with its error. */
   readonly coverErrors: Map<GraphId, string>;
+  /** The worker layout it is waiting for, by layout basis, with the job's own abort. */
+  layout: { readonly key: string; readonly promise: Promise<FolderLayout>; readonly job: AbortController } | null;
 }
 
 export function createSceneController(options: SceneControllerOptions) {
@@ -198,8 +210,8 @@ export function createSceneController(options: SceneControllerOptions) {
   const changeListeners = new Set<() => void>();
   /** Recent transactions by id, for reveal waits. */
   const recent = new Map<TransactionId, Transaction>();
-  /** Failed covers by the stable key they failed under, with the error. */
-  const failed = new Map<string, string>();
+  /** Failed covers by the stable key they failed under. */
+  const failed = new Map<string, CoverFailure>();
   /** Running cover deadlines. */
   const deadlines = new Map<GraphId, () => void>();
   /** Component leases by `token\0componentId`. */
@@ -217,20 +229,32 @@ export function createSceneController(options: SceneControllerOptions) {
 
   // ── Covers: pending deadlines, failures and notices ────────────────────────
   const committedOpen = (): ReadonlySet<GraphId> => new Set(published?.scene.graphs.keys() ?? []);
+  const isBlocking = (failure: CoverFailure, index: FolderIndex | null) => failure.reread === null || failure.reread === (index?.token ?? null);
   function blocked(index: FolderIndex): ReadonlySet<GraphId> {
     const keys = new Set<GraphId>();
-    for (const key of failed.keys()) keys.add(resolveCover(index, key) ?? key);
+    for (const [key, failure] of failed) if (isBlocking(failure, index)) keys.add(resolveCover(index, key) ?? key);
     return keys;
+  }
+  /** Failures recorded for `cover` (under any key that resolves to it). */
+  const failuresOf = (cover: GraphId, index: FolderIndex | null) => [...failed].filter(([key]) => key === cover || (!!index && resolveCover(index, key) === cover));
+  /** Whether the published scene draws `cover` open from current data for `index`. */
+  function openOnCurrentData(cover: GraphId, index: FolderIndex): boolean {
+    const graph = published?.scene.graphs.get(cover);
+    const summary = graph && index.components.find((candidate) => candidate.coverKey === cover);
+    return !!summary && graph.componentId === summary.id && fresh(committed?.data.components.get(summary.id), index, (other) => source.isStale(other), summary.id);
   }
 
   function refreshNotices(): void {
     const next = new Map<GraphId, PreparationNotice>();
     const id = current?.id ?? 0;
-    for (const cover of deadlines.keys()) next.set(cover, { transactionId: id, coverKey: cover, phase: current?.status === "preparing-layout" ? "arranging" : "loading", message: null });
+    // Reading an open stack again (a new index) is silent: the committed band stays as drawn.
+    const open = committedOpen();
+    for (const cover of deadlines.keys()) if (!open.has(cover)) next.set(cover, { transactionId: id, coverKey: cover, phase: current?.status === "preparing-layout" ? "arranging" : "loading", message: null });
     const index = data.index;
-    for (const [key, error] of failed) {
+    for (const [key, failure] of failed) {
+      if (!isBlocking(failure, index)) continue;
       const cover = index ? resolveCover(index, key) ?? key : key;
-      next.set(cover, { transactionId: id, coverKey: cover, phase: "failed", message: error });
+      next.set(cover, { transactionId: id, coverKey: cover, phase: "failed", message: failure.error });
     }
     const same = next.size === notices.size && [...next].every(([key, notice]) => {
       const was = notices.get(key);
@@ -239,25 +263,42 @@ export function createSceneController(options: SceneControllerOptions) {
     if (!same) notices = next;
   }
 
-  /** Starts deadlines for newly pending covers, stops them for covers that opened or closed, forgets failures of closed covers. */
+  /**
+   * Starts deadlines for newly pending covers (requested, not blocked, and not drawn open from
+   * current data), stops them for covers that opened or closed, forgets failures of closed covers
+   * and of covers that reopened.
+   */
   function reconcileCovers(): void {
     // An index of another folder (the pane moved on, its index not read yet) has no covers here.
     const index = data.index && data.index.directory === intent?.directory ? data.index : null;
     const requested = intent?.open ?? new Set<GraphId>();
-    if (index) for (const key of [...failed.keys()]) if (!requested.has(resolveCover(index, key) ?? key)) failed.delete(key);
+    if (index) for (const key of [...failed.keys()]) {
+      const cover = resolveCover(index, key) ?? key;
+      if (!requested.has(cover) || openOnCurrentData(cover, index)) failed.delete(key);
+    }
     const stops = new Set(index?.components.map((summary) => summary.coverKey) ?? []);
-    const open = committedOpen(), skip = index ? blocked(index) : new Set<GraphId>();
-    const pending = new Set([...requested].filter((key) => stops.has(key) && !open.has(key) && !skip.has(key)));
+    const skip = index ? blocked(index) : new Set<GraphId>();
+    const pending = new Set([...requested].filter((key) => stops.has(key) && !skip.has(key) && !openOnCurrentData(key, index!)));
     for (const [cover, cancel] of deadlines) if (!pending.has(cover)) { cancel(); deadlines.delete(cover); }
     for (const cover of pending) if (!deadlines.has(cover)) deadlines.set(cover, setTimer(() => coverFailed(cover, "Trace took too long to load this stack"), deadline));
     refreshNotices();
   }
 
+  /**
+   * A requested stack failed (its read failed or its deadline passed): it is laid out closed with
+   * its error, and the transaction preparing commits everything else. A stack drawn open, or one
+   * whose failed re-read is being retried, failed a re-read: a newer index reads it again.
+   */
   function coverFailed(cover: GraphId, error: string): void {
     if (disposed) return;
     deadlines.get(cover)?.();
     deadlines.delete(cover);
-    failed.set(cover, error);
+    const index = data.index;
+    const previous = failuresOf(cover, index);
+    const wasOpen = committedOpen().has(cover);
+    const reread = wasOpen || previous.some(([, failure]) => failure.reread !== null) ? index?.token ?? null : null;
+    for (const [key] of previous) failed.delete(key);
+    failed.set(cover, { error, reread });
     const tx = current;
     if (tx && tx.phase !== "done") {
       tx.coverErrors.set(cover, error);
@@ -267,6 +308,8 @@ export function createSceneController(options: SceneControllerOptions) {
     reconcileLeases(new Map(), true);
     refreshNotices();
     notify();
+    // Nothing is preparing: a stack still drawn open must be drawn closed with its error.
+    if (wasOpen && (!tx || tx.phase === "done") && intent) void run(begin({ kind: "refresh", target: null, anchor: "none" }));
   }
 
   // ── Data leases ────────────────────────────────────────────────────────────
@@ -316,7 +359,7 @@ export function createSceneController(options: SceneControllerOptions) {
   function begin(cause: SceneCause): Transaction {
     const previous = current;
     const tx: Transaction = { id: ++ids, cause, scope, controller: new AbortController(), phase: "operating", owned: 0, wake: null, status: "collecting",
-      intent: null, error: null, publication: null, coverErrors: new Map() };
+      intent: null, error: null, publication: null, coverErrors: new Map(), layout: null };
     current = tx;
     recent.set(tx.id, tx);
     for (const id of recent.keys()) if (recent.size > 64) recent.delete(id); else break;
@@ -374,12 +417,17 @@ export function createSceneController(options: SceneControllerOptions) {
     const release = options.holdWork?.() ?? (() => {});
     try { await prepare(tx); }
     catch (error) { if (live(tx)) { finish(tx, "failed", message(error)); failure = message(error); sceneInstrumentation.failure({ ...event(tx), message: message(error) }); } }
-    finally { release(); }
+    finally { dropLayout(tx); release(); }
+  }
+
+  /** Aborts the worker layout `tx` asked for: it is no longer the one that will commit. */
+  function dropLayout(tx: Transaction): void {
+    tx.layout?.job.abort(superseded());
+    tx.layout = null;
   }
 
   async function prepare(tx: Transaction): Promise<void> {
     let restarts = 0, rounds = 0;
-    let inflight = null as { key: string; promise: Promise<FolderLayout> } | null;
     for (;;) {
       if (!live(tx)) return;
       // Every round awaits new data, a wake-up or a restart; a bound turns a logic error into a failure, not a spin.
@@ -414,6 +462,8 @@ export function createSceneController(options: SceneControllerOptions) {
         sceneData = { index: base.index, components };
         continuation = true;
       } else {
+        // A layout of the scene without this data is not the one that will commit.
+        dropLayout(tx);
         tx.status = "preparing-data";
         publishState(tx);
         refreshNotices();
@@ -430,14 +480,16 @@ export function createSceneController(options: SceneControllerOptions) {
             if (++restarts > MAX_RESTARTS) throw new Error("Trace kept changing while it was loading");
             continue;
           }
+          // One unreadable stack fails in its cover, whether it was opening or already open; the rest commits.
           const cover = (error as { cover?: GraphId }).cover;
-          if (cover !== undefined && !committedOpen().has(cover)) { coverFailed(cover, message(cause)); continue; }
+          if (cover !== undefined) { coverFailed(cover, message(cause)); continue; }
           throw cause;
         }
         continue;
       }
 
       const prepared = prepareLayoutInput(sceneIntent, sceneData, open, committed?.history ?? null, published?.scene.layout ?? null, source.components);
+      if (tx.layout?.key !== prepared.basis) dropLayout(tx);
       let layout: FolderLayout;
       if (published && committed && prepared.basis === committed.basis) layout = published.scene.layout;
       else if (inline(prepared.input)) layout = engine(prepared.input);
@@ -445,12 +497,14 @@ export function createSceneController(options: SceneControllerOptions) {
         tx.status = "preparing-layout";
         publishState(tx);
         refreshNotices();
-        if (inflight?.key !== prepared.basis) {
-          const promise = runLayout(prepared.input, tx.controller.signal);
-          promise.then((computed) => options.remember?.(computed), () => undefined);
-          inflight = { key: prepared.basis, promise };
+        if (!tx.layout) {
+          // Its own signal: aborted by supersession, and by a deadline or new data that changes what is laid out.
+          const job = new AbortController();
+          const promise = runLayout(prepared.input, AbortSignal.any([tx.controller.signal, job.signal]));
+          promise.then((computed) => options.remember?.(computed), noop);
+          tx.layout = { key: prepared.basis, promise, job };
         }
-        try { layout = await abortable(inflight.promise, waiting); }
+        try { layout = await abortable(tx.layout.promise, waiting); }
         catch (error) {
           if (!live(tx)) return;
           if (wake.signal.aborted) continue;
@@ -461,6 +515,8 @@ export function createSceneController(options: SceneControllerOptions) {
       tx.status = "ready";
       const scene = buildFolderScene({ scope, layoutInput: prepared.input, layout, sources: prepared.sources, styling: stylingOf(sceneIntent), coverNodes: prepared.coverNodes });
       commit(tx, scene, { intent: sceneIntent, data: sceneData, history: prepared.history, basis: prepared.basis });
+      // A scene of the current data supersedes whatever failed before it; one on the older snapshot does not.
+      if (!continuation) failure = null;
       if (continuation && !disposed && current === tx) {
         const next = begin({ kind: data.index && committed && data.index.token !== committed.data.index.token ? "refresh" : "expand", target: null, anchor: "none" });
         void run(next);
@@ -603,17 +659,38 @@ export function createSceneController(options: SceneControllerOptions) {
      * Runs one interaction. The lease begins before any host write or await; nested actions reuse
      * it. After the operation (and its promise) finishes, the intent is stabilised over `tick()`s,
      * then prepared and committed once.
+     *
+     * An operation that throws fails the transaction with its error (rethrown to the caller); what
+     * it wrote before throwing commits in a transaction of its own. An operation still pending
+     * after the preparation deadline stops holding the scene: the transaction prepares the
+     * current intent, and the operation's later writes are changes of their own.
      */
     action<T>(cause: SceneCause, operation: (lease: ActionLease) => T): T {
       if (operating && current === operating) return operation(lease(operating));
       const tx = begin(cause);
+      const seen = revision;
       operating = tx;
       own(tx);
       let result: T;
       try { result = operation(lease(tx)); }
-      finally { operating = null; }
+      catch (error) {
+        operating = null;
+        if (live(tx)) {
+          finish(tx, "failed", message(error));
+          sceneInstrumentation.failure({ ...event(tx), message: message(error) });
+          if (revision !== seen) void run(begin(cause));
+        }
+        throw error;
+      }
+      operating = null;
       void (async () => {
-        try { await result; } catch { /* the operation reports its own errors */ }
+        if (thenable(result)) {
+          let stop: () => void = noop;
+          const bound = new Promise<void>((resolve) => { stop = setTimer(resolve, deadline); });
+          // A rejection is the operation's own to report; the scene still commits what it wrote.
+          await Promise.race([Promise.resolve(result).then(noop, noop), bound]);
+          stop();
+        }
         if (live(tx)) await run(tx);
       })();
       return result;
