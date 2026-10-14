@@ -106,6 +106,42 @@ test("returning at the same width shows the kept scene as it was: no layout, no 
   expect(await page.evaluate(() => (window as any).trace.layoutsPending())).toBe(0);
 });
 
+// Review 099e72f: the restored scene was committed with the selection it was saved with, and the
+// pane's current one landed a frame later. The first painted frame must already show the pane's own.
+for (const [label, pick] of [["a tile in an open stack", 12], ["the last listed item", -1]] as const) {
+  test(`returning after the selection changed elsewhere shows it from the first frame (${label})`, async ({ page }) => {
+    await openView(page, 1400);
+    const paths: string[] = await page.evaluate(() => (window as any).trace.listing().map((entry: { path: string }) => entry.path));
+    await page.evaluate((path) => (window as any).trace.selectPath(path), paths[0]);
+    await settle(page);
+    await page.evaluate(() => (window as any).trace.leaveView());
+    await expect(page.locator("[data-tile-key]")).toHaveCount(0);
+    await page.evaluate((path) => (window as any).trace.selectPath(path), paths.at(pick)!);
+    await page.evaluate(() => (window as any).trace.backend.setFolderLatency(600));
+    await clearSceneEvents(page);
+    const selection = () => ({
+      selected: [...document.querySelectorAll('[aria-selected="true"]')]
+        .map((element) => element.getAttribute("data-tile-key") ?? element.closest("[data-grid-cell]")?.getAttribute("data-grid-cell") ?? "?").sort(),
+      tiles: document.querySelectorAll("[data-tile-key]").length,
+    });
+    // A layout the return needs replies late (a slow worker), so a stale first scene would stay on screen meanwhile.
+    await page.evaluate(() => (window as any).trace.holdLayoutReplies());
+    const frames = await sampleFrames(page, selection, 1200, async () => {
+      await page.evaluate(() => (window as any).trace.enterView());
+      await page.waitForTimeout(300);
+      await page.evaluate(() => (window as any).trace.releaseLayoutReplies());
+    });
+    await settle(page);
+    const now = await page.evaluate(selection);
+    expect(now.selected.length).toBeGreaterThan(0);
+    const drawn = frames.filter((frame) => frame.tiles > 0);
+    expect(drawn.length).toBeGreaterThan(0);
+    expect(drawn.filter((frame) => JSON.stringify(frame.selected) !== JSON.stringify(now.selected)), "frames showing a selection that is not the pane's").toEqual([]);
+    // The return snaps: nothing animates into the current scene.
+    expect(await sceneEvents(page, "motion-start")).toEqual([]);
+  });
+}
+
 const oldScope = () => {
   const retirees = document.querySelectorAll("[data-grid-exit], [data-motion-ghost], [data-motion-route-layer], [data-ghost-tile-key]").length;
   // A cover's progress indicator (its spinner, faded in late) is the new view's own pending work, not an effect.

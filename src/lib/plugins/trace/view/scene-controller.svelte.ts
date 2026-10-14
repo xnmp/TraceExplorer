@@ -27,7 +27,7 @@ import type { ComponentData, FolderIndex } from "$lib/domain/trace-graph/folder-
 import { buildFolderScene, diffScenes, type FolderScene, type SceneDiff, type SceneScope } from "$lib/domain/trace-graph/folder-scene";
 import { engines, memoizeEngine, type FolderLayout, type FolderLayoutEngine, type FolderLayoutInput, type GraphId } from "$lib/domain/trace-graph/folder-layout";
 import { folderItems, fresh, intentChange, changed as anyChange, prepareLayoutInput, requiredComponents, resolveCover, stylingOf,
-  sameStyling, type HeldHistory, type IntentChange, type SceneData, type SceneIntent } from "./scene-inputs";
+  sameSet, sameStyling, type HeldHistory, type IntentChange, type SceneData, type SceneIntent } from "./scene-inputs";
 import { restylePresentation, retargetPresentation, settledPresentation, staticPresentation, type DisplayedPresentation, type Presentation,
   type Publication, type TransactionId } from "./presentation";
 import { presents } from "./scene-view";
@@ -35,7 +35,7 @@ import { motionParticipants } from "./participants";
 import type { GridRect } from "$lib/domain/trace-graph/grid-flow";
 import { sceneInstrumentation, type SceneEvent } from "./scene-instrumentation";
 import { StaleComponentsError, type ComponentLease } from "./folder-session.svelte";
-import { rebind, restoration, savedScene, type SavedScene } from "./scene-snapshots";
+import { restoredInput, savedScene, type SavedScene } from "./scene-snapshots";
 import type { SceneStore } from "./folder-snapshots";
 
 export type { Publication, TransactionId };
@@ -157,6 +157,18 @@ interface Committed {
   readonly basis: string;
 }
 
+/** What a saved scene's restoration reads (`restoredInput`), to save again only when it changes. */
+interface RememberedBasis {
+  readonly scope: SceneScope;
+  readonly layout: FolderLayout;
+  readonly data: SceneData;
+  readonly listing: SceneIntent["listing"];
+  readonly history: HeldHistory;
+}
+const sameRemembered = (a: RememberedBasis, b: RememberedBasis): boolean => a.scope === b.scope && a.layout === b.layout && a.listing === b.listing
+  && a.data.index === b.data.index && a.data.components.size === b.data.components.size && [...a.data.components].every(([id, data]) => b.data.components.get(id) === data)
+  && a.history.directory === b.history.directory && a.history.columns === b.history.columns && sameSet(a.history.held, b.history.held);
+
 /** A stack that failed in its cover. `reread` is the index token of a failed re-read of an open stack: a newer index reads it again. */
 interface CoverFailure { readonly error: string; readonly reread: string | null }
 
@@ -218,6 +230,8 @@ export function createSceneController(options: SceneControllerOptions) {
   /** The action whose operation is running synchronously; nested actions reuse its lease. */
   let operating: Transaction | null = null;
   let committed: Committed | null = null;
+  /** What was last saved for the next mount (`remember`). */
+  let remembered: RememberedBasis | null = null;
   /** Whether this lifetime may still start from a saved scene (until its first scene or restore attempt). */
   let restorable = true;
   let motion: SceneMotion | null = null;
@@ -553,22 +567,27 @@ export function createSceneController(options: SceneControllerOptions) {
   }
 
   /**
-   * A new lifetime starts from the scene this pane last committed for the folder, if any: shown as
-   * it was (an empty presentation) when it was laid out at this width and metrics, otherwise laid
-   * out again from its coherent data and snapped. Either way current data then revalidates it.
+   * A new lifetime starts from the scene this pane last committed for the folder, if any, with the
+   * pane's current intent (`restoredInput`): its first frame already shows the current selection,
+   * focus and hover. The saved layout is reused when it fits that intent; otherwise the saved data
+   * is laid out again, inline when small enough, else by the `restore` transaction (in the worker)
+   * before anything is shown. Either way the scene snaps, and current data then revalidates it.
+   * A saved scene known to be out of date is not used: the folder is prepared as a first scene.
    */
   function restore(next: SceneIntent): boolean {
     if (!restorable || published || committed || !scenes || !(next.width > 0)) return false;
     restorable = false;
-    const saved = scenes.recall(options.paneId, next.directory);
-    const how = restoration(saved, options.paneId, next);
-    if (!saved || !how) return false;
-    const snapshot: Committed = { intent: saved.intent, data: saved.data, history: saved.history, basis: saved.basis };
-    if (how === "present") {
+    const restored = restoredInput(scenes.recall(options.paneId, next.directory), options.paneId, next, { index: data.index, components: source.components, isStale: (id) => source.isStale(id) });
+    if (!restored) return false;
+    const { saved, prepared } = restored;
+    committed = { intent: restored.intent, data: restored.data, history: saved.history, basis: saved.basis };
+    const layout = restored.reuse ? saved.scene.layout : inline(prepared.input) ? engine(prepared.input) : null;
+    if (layout) {
       const tx = begin({ kind: "restore", target: null, anchor: "none" });
       tx.intent = next;
-      commit(tx, rebind(saved.scene, scope), snapshot);
-    } else committed = snapshot;
+      const scene = buildFolderScene({ scope, layoutInput: prepared.input, layout, sources: prepared.sources, styling: stylingOf(restored.intent), coverNodes: prepared.coverNodes });
+      commit(tx, scene, { intent: restored.intent, data: restored.data, history: prepared.history, basis: prepared.basis });
+    }
     reconcileCovers();
     void run(begin({ kind: "restore", target: null, anchor: "none" }));
     return true;
@@ -599,9 +618,17 @@ export function createSceneController(options: SceneControllerOptions) {
     return retargetPresentation(displayed, scene, diff, { transaction, epoch: ++epochs, reduced: driver.reduced(), records });
   }
 
-  /** Keeps the published scene and what it was committed from for the next mount of this pane and folder. */
+  /**
+   * Keeps the published scene and what it was committed from for the next mount of this pane and
+   * folder. A restore rebuilds styling from the pane's intent then, so only a change of what it
+   * reuses (layout, data, listing, held history) is saved again; a restyle (a selection, a badge
+   * hover) costs nothing here.
+   */
   function remember(): void {
     if (!scenes || scenes.epoch !== storeEpoch || !published || !committed || published.scene.scope !== scope || committed.intent.directory !== scope.directory) return;
+    const basis: RememberedBasis = { scope, layout: published.scene.layout, data: committed.data, listing: committed.intent.listing, history: committed.history };
+    if (remembered && sameRemembered(remembered, basis)) return;
+    remembered = basis;
     scenes.remember(options.paneId, scope.directory, savedScene(options.paneId, published.scene, committed));
   }
 
@@ -613,8 +640,9 @@ export function createSceneController(options: SceneControllerOptions) {
     if (!differs(previous, scene, diff)) { finish(tx, "committed"); reconcileCovers(); remember(); return; }
     const geometry = diff.policy.reset || diff.enter.size > 0 || diff.exit.size > 0 || [...diff.policy.records.values()].some((policy) => policy !== "carry");
     // Geometry continues from what is displayed; a restyle keeps the running epoch (tracks and retirees).
+    // A returning pane's scene snaps, also when revalidation changes it before anything else happened.
     const presentation = !geometry && previous ? restylePresentation(previous.presentation, scene)
-      : diff.policy.reset || !previous || !motion ? staticPresentation(scene, ++epochs)
+      : diff.policy.reset || !previous || !motion || tx.cause.kind === "restore" ? staticPresentation(scene, ++epochs)
       : retarget(motion, previous.presentation, scene, diff, tx.id);
     const publication: Publication = { transactionId: tx.id, geometryVersion: geometry ? ++geometryVersion : previous?.geometryVersion ?? geometryVersion, scene, presentation };
     published = publication;
@@ -627,10 +655,14 @@ export function createSceneController(options: SceneControllerOptions) {
     reconcileCovers();
     const lifetime = scope;
     void tick().then(() => {
-      if (disposed || lifetime !== scope || published !== publication) return;
+      if (disposed || lifetime !== scope) return;
+      // Still this commit's publication, though its presentation alone may have been replaced
+      // meanwhile (settled): a newer commit's publication presents itself.
+      const shown = published?.transactionId === publication.transactionId ? published : null;
       // An epoch starts once, after its first publication rendered (a restyle committed in the same
       // turn carries it, so it starts the epoch instead).
-      if (motion && presentation.epoch !== startedEpoch) {
+      if (shown && motion && shown.presentation.epoch !== startedEpoch) {
+        const presentation = shown.presentation;
         startedEpoch = presentation.epoch;
         if (diff.policy.reset) motion.snap();
         const { started, settled } = motion.start(presentation);
@@ -648,8 +680,8 @@ export function createSceneController(options: SceneControllerOptions) {
           notify();
         }, () => undefined);
       }
-      presenting = null;
-      for (const listener of [...presentedListeners]) listener();
+      if (presenting === tx.id) presenting = null;
+      if (shown) for (const listener of [...presentedListeners]) listener();
       notify();
     });
   }

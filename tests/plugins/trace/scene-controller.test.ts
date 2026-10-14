@@ -4,7 +4,7 @@ import { createSceneController, type SceneCause, type SceneController } from "$l
 import { installSceneInstrumentation } from "$lib/plugins/trace/view/scene-instrumentation";
 import type { ComponentLease } from "$lib/plugins/trace/view/folder-session.svelte";
 import type { SceneIntent } from "$lib/plugins/trace/view/scene-inputs";
-import type { Publication } from "$lib/plugins/trace/view/presentation";
+import { samplePresentation, type Publication } from "$lib/plugins/trace/view/presentation";
 import { createSceneStore, type SceneStore } from "$lib/plugins/trace/view/folder-snapshots";
 import { estimateSavedSceneBytes, type SavedScene } from "$lib/plugins/trace/view/scene-snapshots";
 import { engines, type FolderLayout, type FolderLayoutInput } from "$lib/domain/trace-graph/folder-layout";
@@ -75,7 +75,7 @@ function fakeSource(token = "t1") {
 const flush = async (rounds = 30) => { for (let i = 0; i < rounds; i++) await new Promise<void>((resolve) => setTimeout(resolve, 0)); };
 const tile = tileMetrics(96);
 
-function harness(options: { inline?: (input: FolderLayoutInput) => boolean; token?: string; scenes?: SceneStore<SavedScene>; paneId?: string } = {}) {
+function harness(options: { inline?: (input: FolderLayoutInput) => boolean; token?: string; scenes?: SceneStore<SavedScene>; paneId?: string; tick?: () => Promise<void> } = {}) {
   const fake = fakeSource(options.token);
   const timers: { run: () => void; ms: number; cancelled: boolean }[] = [];
   const layouts: { input: FolderLayoutInput; signal: AbortSignal; reply: ReturnType<typeof deferred<FolderLayout>> }[] = [];
@@ -91,7 +91,7 @@ function harness(options: { inline?: (input: FolderLayoutInput) => boolean; toke
   controller = createSceneController({
     paneId: options.paneId ?? "p", data: fake.source, engine, inline: options.inline ?? (() => true), scenes: options.scenes,
     runLayout: (input, signal) => { const reply = deferred<FolderLayout>(); layouts.push({ input, signal, reply }); return reply.promise; },
-    tick: () => Promise.resolve(),
+    tick: options.tick ?? (() => Promise.resolve()),
     setTimer: (run, ms) => { const timer = { run, ms, cancelled: false }; timers.push(timer); return () => { timer.cancelled = true; }; },
     holdWork: () => { work.held++; let held = true; return () => { if (held) { held = false; work.held--; } }; },
   });
@@ -703,5 +703,143 @@ describe("scene controller: restoration", () => {
     for (const graph of [...saved.scene.graphs.values(), ...saved.scene.layout.graphs.values()]) expect(graph.plan.request.history).toBeUndefined();
     // The published scene itself is unchanged.
     expect([...h.controller.published!.scene.graphs.values()].some((graph) => graph.plan.request.history !== undefined)).toBe(true);
+  });
+});
+
+describe("scene controller: review fixes (099e72f)", () => {
+  const store = () => createSceneStore<SavedScene>(estimateSavedSceneBytes);
+  /** A first mount that commits `a1` open with the closed stack `b1` selected, then unmounts. */
+  async function previousMount(scenes: SceneStore<SavedScene>) {
+    const h = harness({ scenes });
+    h.offer({ open: new Set(["a1"]), selectedKeys: new Set(["b1"]), focus: { key: "b1", componentId: "cb" } });
+    await flush();
+    h.deliver("ca");
+    await flush();
+    const data = { index: h.fake.source.index, components: h.fake.source.components };
+    h.controller.dispose(); h.restore();
+    return data;
+  }
+  const remount = async (scenes: SceneStore<SavedScene>, options: Parameters<typeof harness>[0] = {}) => {
+    const data = await previousMount(scenes);
+    const h = setup({ scenes, ...options });
+    h.fake.source.index = data.index; h.fake.source.components = data.components;
+    return h;
+  };
+  const selectedTiles = (publication: Publication) => [...publication.scene.tiles.values()].filter((record) => record.selected).map((record) => record.tile.key).sort();
+
+  it("a returning pane's first scene shows the selection it has now, not the one it saved", async () => {
+    const h = await remount(store());
+    h.offer({ open: new Set(["a1"]), selectedPaths: new Set(["/f/notes.txt"]) });
+    // Synchronously: the saved layout fits (no open stack's focus changed), styled as the pane is now.
+    const first = h.controller.published!;
+    expect(h.engine).not.toHaveBeenCalled();
+    expect(selectedTiles(first)).toEqual([]);
+    expect(first.scene.entries.get("/f/notes.txt")?.selected).toBe(true);
+    expect(first.scene.inputs.styling.focus).toBeNull();
+    expect(first.presentation.duration).toBe(0);
+    await flush();
+    expect(h.engine).not.toHaveBeenCalled();
+    for (const publication of [...h.published, h.controller.published!]) {
+      expect(selectedTiles(publication)).toEqual([]);
+      expect(publication.scene.entries.get("/f/notes.txt")?.selected).toBe(true);
+    }
+  });
+
+  it("a focus that changes an open stack's layout is laid out before the first frame and snaps", async () => {
+    const h = await remount(store());
+    h.offer({ open: new Set(["a1"]), selectedKeys: new Set(["a3"]), focus: { key: "a3", componentId: "ca" } });
+    const first = h.controller.published!;
+    expect(h.engine).toHaveBeenCalledTimes(1);
+    expect(first.scene.graphs.get("a1")!.plan.lineage.focus).toBe("a3");
+    expect(selectedTiles(first)).toEqual(["a3"]);
+    expect(first.presentation.duration).toBe(0);
+    await flush();
+    expect(h.published.map((publication) => publication.scene.inputs.styling.focus)).toEqual(["a3"]);
+  });
+
+  it("a layout too large to run inline shows nothing until the current scene is ready, then snaps to it", async () => {
+    const h = await remount(store(), { inline: () => false });
+    h.offer({ open: new Set(["a1"]), selectedKeys: new Set(["a3"]), focus: { key: "a3", componentId: "ca" } });
+    expect(h.controller.published).toBeNull();
+    await flush();
+    expect(h.controller.published).toBeNull();
+    expect(h.layouts).toHaveLength(1);
+    h.layouts[0].reply.resolve(engines.default(h.layouts[0].input));
+    await flush();
+    const first = h.controller.published!;
+    expect(first.scene.graphs.get("a1")!.plan.lineage.focus).toBe("a3");
+    expect(first.presentation.duration).toBe(0);
+    expect(h.published).toHaveLength(1);
+  });
+
+  it("a saved scene older than the index the session knows is never shown", async () => {
+    const h = await remount(store());
+    h.fake.source.index = indexFor("t2");
+    h.offer({ open: new Set(["a1"]), selectedKeys: new Set(["b1"]), focus: { key: "b1", componentId: "cb" } });
+    expect(h.controller.published).toBeNull();
+    await flush();
+    expect(h.controller.published).toBeNull();
+    h.deliver("ca"); await flush();
+    const first = h.controller.published!;
+    expect(first.scene.graphs.get("a1")!.componentId).toBe("ca");
+    expect(h.controller.committedIndex!.token).toBe("t2");
+    expect(h.published).toHaveLength(1);
+  });
+
+  it("saves the scene for the next mount only when what a restore reuses changes", async () => {
+    const scenes = store();
+    const saves = vi.spyOn(scenes, "remember");
+    const h = setup({ scenes });
+    h.offer({ open: new Set(["a1"]) }); await flush();
+    h.deliver("ca"); await flush();
+    const after = saves.mock.calls.length;
+    expect(after).toBeGreaterThan(0);
+    h.offer({ open: new Set(["a1"]), badgeHover: "a2" }); await flush();
+    h.act("selection", () => h.offer({ open: new Set(["a1"]), badgeHover: null, selectedPaths: new Set(["/f/notes.txt"]), hostChoice: "x" })); await flush();
+    expect(saves.mock.calls.length).toBe(after);
+    h.act("resize", () => h.offer({ width: 400 })); await flush();
+    expect(saves.mock.calls.length).toBe(after + 1);
+    // The next mount still starts from the current scene, styled as that pane is then.
+    h.controller.dispose(); h.restore();
+    const next = setup({ scenes });
+    next.fake.source.index = h.fake.source.index; next.fake.source.components = h.fake.source.components;
+    next.offer({ open: new Set(["a1"]), width: 400, selectedPaths: new Set(["/f/notes.txt"]) });
+    expect(next.engine).not.toHaveBeenCalled();
+    expect(next.controller.published!.scene.entries.get("/f/notes.txt")?.selected).toBe(true);
+  });
+
+  it("a restyle whose publication settles before its motion setup still presents: reveal waits never hang", async () => {
+    let held: (() => void)[] | null = null;
+    const tick = () => held ? new Promise<void>((resolve) => held!.push(resolve)) : Promise.resolve();
+    const h = setup({ tick });
+    const settles: ReturnType<typeof deferred<boolean>>[] = [];
+    h.controller.attachMotion({
+      reduced: () => false, viewport: () => null, snap: () => undefined,
+      sample: (presentation) => samplePresentation(presentation, Infinity),
+      start: () => { const settle = deferred<boolean>(); settles.push(settle); return { started: true, settled: settle.promise }; },
+    });
+    h.offer(); await flush();
+    h.act("resize", () => h.offer({ width: 400 })); await flush();
+    expect(h.controller.published!.presentation.duration).toBeGreaterThan(0);
+    const running = settles.at(-1)!;
+    // A restyle commits while the epoch runs; its motion setup waits for the next tick.
+    held = [];
+    const before = h.controller.published;
+    h.act("selection", () => h.offer({ selectedPaths: new Set(["/f/notes.txt"]), hostChoice: "y" }));
+    for (let i = 0; i < 20 && h.controller.published === before; i++) { const next = held.shift(); next?.(); await Promise.resolve(); await Promise.resolve(); }
+    const restyle = h.controller.published!;
+    expect(restyle).not.toBe(before);
+    expect(restyle.scene.entries.get("/f/notes.txt")?.selected).toBe(true);
+    // Meanwhile the running epoch settles: the same publication is presented settled.
+    running.resolve(true);
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    expect(h.controller.published!.transactionId).toBe(restyle.transactionId);
+    expect(h.controller.published!.presentation.duration).toBe(0);
+    const pending = held; held = null;
+    for (const resolve of pending) resolve();
+    let settled = false;
+    void h.controller.whenSettled(restyle.transactionId).then(() => { settled = true; });
+    await flush();
+    expect(settled).toBe(true);
   });
 });

@@ -9,14 +9,19 @@
  * never chain earlier layouts. Everything a later layout reads from it (each band's raw layout,
  * attachment and reading order) stays.
  *
- * Restoring is decided by `restoration`: a scene laid out at the pane's width and metrics is
- * presented as it was ("present"); otherwise its coherent data is laid out again ("recompose").
- * A scene of another folder or pane is never restored, whatever its component ids.
+ * Restoring is decided by `restoredInput`: a returning pane starts from its *current* intent
+ * (selection, focus, badge hover, open stacks, listing, width and metrics) laid out on the saved
+ * coherent data. The saved layout is reused only when that input's layout basis is the saved one;
+ * otherwise it is laid out again before anything is shown. A saved scene whose data is known to be
+ * out of date is not used at all. A scene of another folder or
+ * pane is never restored, whatever its component ids.
  */
 import type { FolderScene, FolderSceneGraph, GraphId } from "$lib/domain/trace-graph/folder-scene";
 import type { FolderGraph, FolderLayout } from "$lib/domain/trace-graph/folder-layout";
+import type { ComponentData, FolderIndex } from "$lib/domain/trace-graph/folder-data";
 import { estimateFolderLayoutBytes } from "$lib/domain/trace-graph/folder-layout/bounded-cache";
-import { sameGeometry, type HeldHistory, type SceneData, type SceneIntent } from "./scene-inputs";
+import { folderItems, fresh, prepareLayoutInput, requiredComponents, sameListing, type HeldHistory, type PreparedLayoutInput, type SceneData,
+  type SceneIntent } from "./scene-inputs";
 import { createSceneStore, type SceneStore } from "./folder-snapshots";
 
 /** A committed scene with what the controller committed it from. */
@@ -62,10 +67,6 @@ export interface CommittedSnapshot {
 export const savedScene = (paneId: string, scene: FolderScene, committed: CommittedSnapshot): SavedScene =>
   ({ paneId, scene: stripHistory(scene), intent: committed.intent, data: committed.data, history: committed.history, basis: committed.basis });
 
-/** `scene` bound to another pane lifetime (scope is compared separately from content). */
-export const rebind = (scene: FolderScene, scope: FolderScene["scope"]): FolderScene =>
-  ({ ...scene, scope, inputs: { ...scene.inputs, scope } });
-
 const OBJECT = 64, RECORD = 4 * OBJECT;
 const text = (value: string | undefined | null) => 2 * (value?.length ?? 0);
 
@@ -84,19 +85,56 @@ export function estimateSavedSceneBytes(saved: SavedScene): number {
   return total;
 }
 
-export type Restoration = "present" | "recompose";
+/** What the session knows of the folder now: its index (null until read) and loaded components. */
+export interface CurrentData {
+  readonly index: FolderIndex | null;
+  readonly components: ReadonlyMap<string, ComponentData>;
+  isStale(id: string): boolean;
+}
+
+/** A returning pane's first scene: its current intent on the saved data, and whether the saved layout fits it. */
+export interface RestoredInput {
+  readonly saved: SavedScene;
+  /** The intent the scene is built from: the pane's current one. */
+  readonly intent: SceneIntent;
+  readonly data: SceneData;
+  readonly prepared: PreparedLayoutInput;
+  /** The saved layout is this input's layout (same layout basis): nothing is laid out again. */
+  readonly reuse: boolean;
+}
 
 /**
- * How a pane showing `intent` may start from `saved`: "present" when the scene was laid out for
- * this folder at this width and metrics, "recompose" when only the width or metrics differ (its
- * data is laid out again), null when it is another folder's or pane's, or malformed.
+ * The scene a pane showing `intent` starts from when it returns to a folder, from what it saved
+ * there: the current intent laid out on the saved coherent data (any component the session has
+ * fresher under the same index stands in for the saved one), so the first frame shows the pane's
+ * selection, focus, hover, open stacks and size as they are now.
+ *
+ * A requested stack whose data is in neither the saved scene nor the session is laid out closed,
+ * as a cold open is until its data is read (it was drawn so when the scene was saved).
+ *
+ * Null (nothing is restored; the folder is prepared as a first scene) when the scene is another
+ * pane's or folder's, or malformed; before the pane has a width; when the session knows a newer
+ * index; or when the listing changed while the index is not known yet.
  */
-export function restoration(saved: SavedScene | undefined, paneId: string, intent: SceneIntent): Restoration | null {
+export function restoredInput(saved: SavedScene | undefined, paneId: string, intent: SceneIntent, current: CurrentData): RestoredInput | null {
   if (!saved || saved.paneId !== paneId || !(intent.width > 0)) return null;
-  const directory = intent.directory;
-  if (saved.scene.scope.directory !== directory || saved.intent.directory !== directory || saved.data.index.directory !== directory) return null;
+  const directory = intent.directory, base = saved.data.index;
+  if (saved.scene.scope.directory !== directory || saved.intent.directory !== directory || base.directory !== directory) return null;
   if (saved.history.directory !== directory || saved.scene.scope.paneId !== paneId) return null;
-  return sameGeometry(saved.intent, intent) ? "present" : "recompose";
+  const index = current.index?.directory === directory ? current.index : null;
+  if (index ? index.token !== base.token : !sameListing(saved.intent.listing, intent.listing)) return null;
+  const { cells } = folderItems(intent.listing, base, intent.claimed, new Set());
+  const requested = requiredComponents(cells, intent.open, new Set());
+  const components = new Map(saved.data.components);
+  for (const id of requested.values()) {
+    const loaded = current.components.get(id);
+    if (fresh(loaded, base, (other) => current.isStale(other), id)) components.set(id, loaded);
+  }
+  // A requested stack whose data is not here yet stays closed, as a cold open does, until it is read.
+  const open = new Map([...requested].filter(([, id]) => components.has(id)));
+  const data: SceneData = { index: base, components };
+  const prepared = prepareLayoutInput(intent, data, open, saved.history, saved.scene.layout, current.components);
+  return { saved, intent, data, prepared, reuse: prepared.basis === saved.basis };
 }
 
 /** Shared by every pane; cleared with the folder snapshots (`forgetFolderSnapshots`). */

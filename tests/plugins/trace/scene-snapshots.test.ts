@@ -5,7 +5,9 @@ import { fallbackGridMetrics } from "$lib/domain/trace-graph/folder-grid";
 import { tileMetrics } from "$lib/domain/trace-graph/metrics";
 import type { SceneIntent } from "$lib/plugins/trace/view/scene-inputs";
 import { createSceneStore } from "$lib/plugins/trace/view/folder-snapshots";
-import { estimateSavedSceneBytes, rebind, restoration, savedScene, stripHistory, type SavedScene } from "$lib/plugins/trace/view/scene-snapshots";
+import { estimateSavedSceneBytes, restoredInput, savedScene, stripHistory, type CurrentData, type SavedScene } from "$lib/plugins/trace/view/scene-snapshots";
+import { prepareLayoutInput, stylingOf, type SceneData } from "$lib/plugins/trace/view/scene-inputs";
+import type { ComponentData } from "$lib/domain/trace-graph/folder-data";
 import { folderInput, handCase, makeFolder, sourcesOf } from "../../domain/trace-graph/folder-layout-fixtures";
 
 const scope = { paneId: "p", directory: "/f", generation: 3 };
@@ -82,39 +84,76 @@ describe("saving a committed scene", () => {
     expect(scenes.recall("p", "/f")).toBeDefined();
   });
 
-  it("rebinds a scene to a new lifetime without changing its content", () => {
-    const next = { paneId: "p", directory: "/f", generation: 9 };
-    const bound = rebind(chained, next);
-    expect(bound.scope).toBe(next);
-    expect(bound.inputs.scope).toBe(next);
-    expect(bound.records).toBe(chained.records);
-    expect(chained.scope).toBe(scope);
-  });
 });
 
 describe("restoration", () => {
-  it("presents a scene laid out at the same width and metrics", () => {
-    expect(restoration(save(), "p", intent())).toBe("present");
-    // Selection, focus and listing changes are revalidated afterwards, not reasons to lay out again.
-    expect(restoration(save(), "p", intent({ selectedPaths: new Set(["/f/file-1.png"]), open: new Set() }))).toBe("present");
+  // A pane that showed A and B open: complete data, laid out and saved as the controller commits it.
+  const components = new Map<string, ComponentData>([...folder.stacks.values()].map((stack, i) =>
+    [stack.componentId, { directory: "/f", token: "t1", version: i + 1, nodes: stack.nodes, dag: stack.graph.dag, members: stack.graph.dag.order }]));
+  const data: SceneData = { index: folder.index, components };
+  const openOf = (keys: string[]) => new Map(keys.map((key) => [key, folder.stacks.get(key)!.componentId]));
+  const shownIntent = intent();
+  const prepared = prepareLayoutInput(shownIntent, data, openOf([A, B]), null, null);
+  const layout = engines.default(prepared.input);
+  const shown = buildFolderScene({ scope, layoutInput: prepared.input, layout, sources: prepared.sources, styling: stylingOf(shownIntent), coverNodes: prepared.coverNodes });
+  const saved = savedScene("p", shown, { intent: shownIntent, data, history: prepared.history, basis: prepared.basis });
+  /** The session after a remount: the folder snapshot's index and components (or none read yet). */
+  const session = (change: Partial<CurrentData> = {}): CurrentData => ({ index: folder.index, components, isStale: () => false, ...change });
+  const [, second] = folder.stacks.get(A)!.graph.dag.order;
+
+  it("reuses the saved layout for the pane's current selection, focus and hover outside the open stacks' layout", () => {
+    const now = intent({ selectedPaths: new Set(["/f/file-1.png"]), badgeHover: "x", focus: null });
+    const restored = restoredInput(saved, "p", now, session())!;
+    expect(restored.reuse).toBe(true);
+    expect(restored.intent).toBe(now);
+    expect(restored.prepared.basis).toBe(saved.basis);
+    // Without the index read yet, the saved coherent snapshot is all there is.
+    expect(restoredInput(saved, "p", now, session({ index: null }))!.reuse).toBe(true);
   });
 
-  it("recomposes when the width or a metric differs", () => {
-    expect(restoration(save(), "p", intent({ width: 900 }))).toBe("recompose");
-    expect(restoration(save(), "p", intent({ tile: tileMetrics(160) }))).toBe("recompose");
-    expect(restoration(save(), "p", intent({ grid: { ...fallbackGridMetrics(tile), gap: 20 } }))).toBe("recompose");
-    expect(restoration(save(), "p", intent({ cover: { imagePx: 64, small: true } }))).toBe("recompose");
+  it("lays out again when the current focus, open stacks, width or metrics change the layout", () => {
+    expect(restoredInput(saved, "p", intent({ focus: { key: second, componentId: folder.stacks.get(A)!.componentId } }), session())!.reuse).toBe(false);
+    expect(restoredInput(saved, "p", intent({ open: new Set([A]) }), session())!.reuse).toBe(false);
+    expect(restoredInput(saved, "p", intent({ width: 900 }), session())!.reuse).toBe(false);
+    expect(restoredInput(saved, "p", intent({ tile: tileMetrics(160) }), session())!.reuse).toBe(false);
+    expect(restoredInput(saved, "p", intent({ grid: { ...fallbackGridMetrics(tile), gap: 20 } }), session())!.reuse).toBe(false);
+  });
+
+  it("uses a component the session holds fresher under the same index, and lays it out again", () => {
+    const id = folder.stacks.get(A)!.componentId, newer = { ...components.get(id)!, version: 99 };
+    const restored = restoredInput(saved, "p", intent(), session({ components: new Map(components).set(id, newer) }))!;
+    expect(restored.data.components.get(id)).toBe(newer);
+    expect(restored.reuse).toBe(false);
+  });
+
+  it("is not used when its data is known to be out of date", () => {
+    // A newer index: the saved stacks may have changed.
+    expect(restoredInput(saved, "p", intent(), session({ index: { ...folder.index, token: "t2" } }))).toBeNull();
+    // A listing changed while the index is not known yet.
+    expect(restoredInput(saved, "p", intent({ listing: folder.entries.slice(1) }), session({ index: null }))).toBeNull();
+    // With the same index known, the current listing is laid out instead.
+    const shorter = folder.entries.filter((entry) => entry.path !== "/f/file-1.png");
+    expect(restoredInput(saved, "p", intent({ listing: shorter }), session())!.prepared.cells.some((cell) => cell.id === "/f/file-1.png")).toBe(false);
+  });
+
+  it("lays out a requested stack whose data is not here closed, as a cold open is until it is read", () => {
+    const partial = savedScene("p", shown, { intent: shownIntent, data: { index: folder.index, components: new Map([...components].slice(0, 1)) }, history: prepared.history, basis: prepared.basis });
+    const pending = restoredInput(partial, "p", intent(), session({ components: new Map() }))!;
+    expect([...pending.prepared.input.open.keys()]).toEqual([A]);
+    expect(pending.reuse).toBe(false);
+    // The session has read it meanwhile: it is drawn open.
+    expect([...restoredInput(partial, "p", intent(), session())!.prepared.input.open.keys()].sort()).toEqual([A, B].sort());
   });
 
   it("never restores another folder's or pane's scene, or before the pane is measured", () => {
-    expect(restoration(undefined, "p", intent())).toBeNull();
-    expect(restoration(save(), "p", intent({ directory: "/g" }))).toBeNull();
-    expect(restoration(save(), "other", intent())).toBeNull();
-    expect(restoration(save(chained, "other"), "p", intent())).toBeNull();
-    expect(restoration(save(), "p", intent({ width: 0 }))).toBeNull();
-    expect(restoration(save(), "p", intent({ width: NaN }))).toBeNull();
+    expect(restoredInput(undefined, "p", intent(), session())).toBeNull();
+    expect(restoredInput(saved, "p", intent({ directory: "/g" }), session())).toBeNull();
+    expect(restoredInput(saved, "other", intent(), session())).toBeNull();
+    expect(restoredInput(savedScene("other", shown, { intent: shownIntent, data, history: prepared.history, basis: prepared.basis }), "p", intent(), session())).toBeNull();
+    expect(restoredInput(saved, "p", intent({ width: 0 }), session())).toBeNull();
+    expect(restoredInput(saved, "p", intent({ width: NaN }), session())).toBeNull();
     // A saved scene whose parts disagree on the folder is malformed.
-    expect(restoration(save(chained, "p", { directory: "/g" }), "p", intent({ directory: "/g" }))).toBeNull();
-    expect(restoration({ ...save(), data: { ...save().data, index: { ...folder.index, directory: "/g" } } }, "p", intent())).toBeNull();
+    expect(restoredInput(save(chained, "p", { directory: "/g" }), "p", intent({ directory: "/g" }), session({ index: null }))).toBeNull();
+    expect(restoredInput({ ...saved, data: { ...saved.data, index: { ...folder.index, directory: "/g" } } }, "p", intent(), session({ index: null }))).toBeNull();
   });
 });
