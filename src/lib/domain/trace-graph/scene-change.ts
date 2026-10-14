@@ -64,15 +64,19 @@ export type SceneCauseKind =
 /** Whether a geometry publication's spatial changes travel (`animate`) or are shown at once (`snap`). */
 export type GeometryMotion = 'animate' | 'snap';
 
-/** The spatial changes the user makes inside the view: opening or closing a stack, and the reflow a selection causes. */
-const USER_SPATIAL: ReadonlySet<string> = new Set<SceneCauseKind>(['expand', 'collapse', 'selection']);
+/**
+ * The spatial changes the user asks for: opening or closing a stack, the reflow a selection causes,
+ * and a reveal (Show image opens the image's stack and selects it; what the reveal itself displaces
+ * already snaps, `classifySceneChange`).
+ */
+const USER_SPATIAL: ReadonlySet<string> = new Set<SceneCauseKind>(['expand', 'collapse', 'selection', 'reveal']);
 
 /**
  * The motion policy for geometry (docs/scene-transactions.md, "Native findings fixes"). Motion is
  * kept for spatial changes the user initiated in the view; every other geometry change snaps,
  * whatever moved: arriving in a folder (`arrival`: the first scene of a lifetime, a startup or a
- * restore), a resize or a scrollbar, tile metrics, the listing, a backend refresh, a retry and a
- * reveal. An unknown cause snaps. Restyles (no geometry change) are not governed here: they keep
+ * restore), a resize or a scrollbar, tile metrics, the listing, a backend refresh and a retry. An
+ * unknown cause snaps. Restyles (no geometry change) are not governed here: they keep
  * whatever motion is running.
  */
 export function geometryMotion(cause: SceneCauseKind, { arrival }: { readonly arrival: boolean }): GeometryMotion {

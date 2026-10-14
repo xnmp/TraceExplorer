@@ -45,7 +45,7 @@ export type { Publication, TransactionId };
 export type TransactionStatus = "collecting" | "preparing-data" | "preparing-layout" | "ready" | "committed" | "superseded" | "failed";
 
 export interface SceneCause {
-  /** Decides the commit's motion (`geometryMotion`): only a spatial change the user made in the view animates. */
+  /** Decides the commit's motion (`geometryMotion`): only a spatial change the user asked for animates. */
   readonly kind: SceneCauseKind;
   /** Stable node key, cover key or entry path. */
   readonly target: string | null;
@@ -545,9 +545,9 @@ export function createSceneController(options: SceneControllerOptions) {
       let layout: FolderLayout;
       const known = published && committed && prepared.basis === committed.basis ? published.scene.layout : recentLayout(prepared);
       if (known) layout = known;
-      // A scene on screen that no longer fits the pane is replaced before the next paint: kept while
-      // a worker lays out, it would be drawn cut at the pane's edge.
-      else if (inline(prepared.input) || mustLayoutBeforePaint(published ? published.scene.layout.size.width : null, prepared.input.width)) layout = engine(prepared.input);
+      // A scene on screen that the pane narrowed past is replaced before the next paint: kept while
+      // a worker lays out, it would be drawn overflowing the narrower pane.
+      else if (inline(prepared.input) || mustLayoutBeforePaint(published && committed ? { extent: published.scene.layout.size.width, width: committed.intent.width } : null, prepared.input.width)) layout = engine(prepared.input);
       else {
         tx.status = "preparing-layout";
         publishState(tx);
@@ -606,7 +606,7 @@ export function createSceneController(options: SceneControllerOptions) {
       if (!restored) return false;
       const { prepared } = restored;
       const layout = restored.reuse ? restored.saved.scene.layout
-        : inline(prepared.input) || mustLayoutBeforePaint(restored.saved.scene.layout.size.width, prepared.input.width) ? engine(prepared.input) : null;
+        : inline(prepared.input) || mustLayoutBeforePaint({ extent: restored.saved.scene.layout.size.width, width: restored.saved.intent.width }, prepared.input.width) ? engine(prepared.input) : null;
       let scene: FolderScene, snapshot: Committed;
       if (layout) {
         scene = buildFolderScene({ scope, layoutInput: prepared.input, layout, sources: prepared.sources, styling: stylingOf(restored.intent), coverNodes: prepared.coverNodes });
@@ -707,7 +707,7 @@ export function createSceneController(options: SceneControllerOptions) {
     if (!differs(previous, scene, diff)) { finish(tx, "committed"); reconcileCovers(); remember(); return; }
     const geometry = diff.policy.reset || diff.enter.size > 0 || diff.exit.size > 0 || [...diff.policy.records.values()].some((policy) => policy !== "carry");
     // A restyle keeps the running epoch (tracks and retirees). Geometry moves only for a spatial
-    // change the user made in the view (`geometryMotion`), continuing from what is displayed; every
+    // change the user asked for (`geometryMotion`), continuing from what is displayed; every
     // other change snaps, ending any motion still running: arriving (a first scene, a new scope, a
     // restore and its revalidation), a resize or scrollbar, metrics, the listing, a refresh, a retry.
     const arrival = !previous || diff.policy.reset;

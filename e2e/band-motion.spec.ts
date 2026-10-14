@@ -664,7 +664,6 @@ for (const returnAt of [0, .01]) test(`closing a travelling group preserves its 
 // when a publication closed that band (no band was left to draw them).
 test('old connector paths fading in a band keep fading when the band closes', async ({ page }) => {
   await openView(page, 1400);
-  const cover = await page.locator('[data-stack-toggle][aria-expanded="true"]').first().evaluate(e => e.closest('[data-grid-cell]')!.getAttribute('data-grid-cell')!);
   /** Connector copies shown (effective opacity > .05) in `scope`: their route ids. Self-contained: it runs in the page. */
   const shown = (scope: string) => page.evaluate(scope => {
     const opacity = (element: Element | null): number => element && element.getAttribute('role') !== 'grid' ? Number(getComputedStyle(element).opacity) * opacity(element.parentElement) : 1;
@@ -672,9 +671,12 @@ test('old connector paths fading in a band keep fading when the band closes', as
   }, scope);
   await holdScriptedAnimations(page);
   try {
-    // A narrower pane reroutes the band's connectors: their old paths fade out in the band.
-    await page.evaluate(() => (window as any).trace.setWidth(900));
+    // Closing the first stack repacks its row and reroutes the connectors of the bands that stay
+    // open: their old paths fade out in those bands. (A resize would snap.)
+    await page.locator('section[data-component]').first().locator('[data-stack-toggle]').evaluate((e: HTMLElement) => e.click());
     await awaitAnimationsCreated(page);
+    const cover = await page.evaluate(() => [...document.querySelectorAll<HTMLElement>('[data-grid-band]')].find(band => band.querySelector('path[data-motion-ghost]'))?.dataset.gridBand ?? null);
+    expect(cover, 'a band with old connector paths fading').not.toBeNull();
     const fading = await shown(`[data-grid-band="${cover}"]`);
     expect(fading.length).toBeGreaterThan(0);
     await page.locator(`[data-grid-cell="${cover}"]`).locator('xpath=ancestor::section[1]').locator('[data-stack-toggle]').evaluate((e: HTMLElement) => e.click());

@@ -78,7 +78,7 @@ test('selection reveals tiles and connectors instantly without disturbing retain
   expect((await uncaught(page)).filter(e => e !== 'ResizeObserver loop completed with undelivered notifications.')).toEqual([]);
 });
 
-for (const interrupt of [false, true]) test(`reflow entrances keep tile and connector opacity together (${interrupt ? 'interrupted while hidden' : 'initial'})`, async ({ page }) => {
+for (const interrupt of [false, true]) test(`reflow entrances keep tile and connector opacity together (${interrupt ? 'a resize while hidden snaps them' : 'initial'})`, async ({ page }) => {
   await openView(page, 454, '?selectionBlink=1', false);
   const parent = await key(page, 'stack'), child = await key(page, 'Cerulean');
   await holdScriptedAnimations(page);
@@ -86,12 +86,20 @@ for (const interrupt of [false, true]) test(`reflow entrances keep tile and conn
     await page.locator('[data-stack-toggle]').click();
     await awaitAnimationsCreated(page);
     if (interrupt) {
-      await page.evaluate(async () => {
+      // A resize snaps (it is not a change the user made in the view): the entrance ends at once,
+      // tile and connector together fully shown on the next frame, with no motion left.
+      const shown = await page.evaluate(async ({ parent, child }) => {
         for (const a of (window as any).__heldAnimations as Animation[]) if (a.playState === 'running') a.currentTime = 40;
         await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
         (window as any).trace.setWidth(500);
-      });
-      await awaitAnimationsCreated(page);
+        await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+        const opacity = (el: Element) => { let value = 1; for (let at: Element | null = el; at; at = at.parentElement) value *= Number(getComputedStyle(at).opacity); return value; };
+        const routes = [...document.querySelectorAll(`path[data-from="node:${parent}"][data-to="node:${child}"], path[data-motion-from="node:${parent}"][data-motion-to="node:${child}"]`)];
+        return { tile: opacity(document.querySelector(`[data-tile-key="${child}"]`)!), connector: Math.max(0, ...routes.map(opacity)),
+          running: document.getAnimations().filter(a => !(a instanceof CSSTransition) && !(a instanceof CSSAnimation) && a.playState === 'running').length };
+      }, { parent, child });
+      expect(shown).toEqual({ tile: 1, connector: 1, running: 0 });
+      return;
     }
     const samples = await page.evaluate(async ({ parent, child }) => {
       const frames = [];
@@ -118,7 +126,7 @@ for (const interrupt of [false, true]) test(`reflow entrances keep tile and conn
   await settle(page);
 });
 
-for (const resize of [false, true]) test(`reflow clocks and source restoration at native playback rate (${resize ? 'tile size' : 'entrance'})`, async ({ page }) => {
+for (const resize of [false, true]) test(`reflow clocks and source restoration at native playback rate (${resize ? 'tile size, which snaps' : 'entrance'})`, async ({ page }) => {
   await openView(page, 454, '?selectionBlink=1&fileTile=1&tileSize=small', resize);
   const parent = await key(page, 'stack'), child = await key(page, 'Cerulean');
   await page.evaluate(() => {
@@ -136,8 +144,17 @@ for (const resize of [false, true]) test(`reflow clocks and source restoration a
     };
   });
   try {
-    if (resize) await page.evaluate(() => (window as any).trace.setTileSize('large'));
-    else await page.locator('[data-stack-toggle]').click();
+    if (resize) {
+      // A tile size change snaps: no effect is created, and the live connector shows at once.
+      await page.evaluate(() => (window as any).trace.setTileSize('large'));
+      await settle(page);
+      expect(await page.evaluate(() => ((window as any).__heldAnimations as Animation[]).length)).toBe(0);
+      await expect(page.locator(`path[data-from="node:${parent}"][data-to="node:${child}"]`)).toHaveCount(1);
+      expect(await page.locator(`path[data-from="node:${parent}"][data-to="node:${child}"]`).evaluate(el => Number(getComputedStyle(el).opacity))).toBe(1);
+      await expect(page.locator('[data-motion-route-layer], [data-motion-ghost]')).toHaveCount(0);
+      return;
+    }
+    await page.locator('[data-stack-toggle]').click();
     await awaitAnimationsCreated(page);
     const clocks = await page.evaluate(async () => {
       const running = ((window as any).__heldAnimations as Animation[]).filter(a => a.playState === 'running');

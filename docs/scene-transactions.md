@@ -556,19 +556,20 @@ Frame-by-frame verification in the native WebKitGTK host (on 099e72f) found moti
 |---|---|
 | `expand`, `collapse` (the user opens or closes a stack, including a cold open completing) | animate |
 | `selection` (selection-driven reflow, host selection included) | animate |
+| `reveal` (Show image: opens the image's stack and selects the image) | animate |
 | arrival: the first scene of a lifetime, a scope reset, `startup`, `restore` and its revalidation | snap |
 | `resize` (pane width, a scrollbar), `metrics` (tile size, grid metrics) | snap |
-| `listing`, `refresh` (backend index or data), `retry`, `reveal` | snap |
+| `listing`, `refresh` (backend index or data), `retry` | snap |
 | an unknown cause | snap |
 
-A snap publishes a static presentation: running motion ends and retirees are dropped at once (the driver's `start` cancels what it owns). A restore's continuation (requested stacks the saved data could not open) commits as a `refresh`, so it snaps; other continuations are `expand` (a cold open the user asked for) or `refresh` (a newer index), as before. `reveal` snaps: it shows a target asked for elsewhere, not a spatial change made in the view.
+A snap publishes a static presentation: running motion ends and retirees are dropped at once (the driver's `start` cancels what it owns). A restore's continuation (requested stacks the saved data could not open) commits as a `refresh`, so it snaps; other continuations are `expand` (a cold open the user asked for) or `refresh` (a newer index), as before. `reveal` animates: the user asked to see the image, and opening its stack is the spatial change they asked for.
 
 **Width changes paint their own layout on the first frame.**
 
 - The Trace scroller always reserves its vertical scrollbar (`overflow-y: scroll`). `scrollbar-gutter: stable` alone is not enough: WebKit (WebKitGTK 2.54, Safari 26) reserves no gutter for a styled `::-webkit-scrollbar`, which the host uses, so a scrollbar appearing narrowed the view 858 → 850 px. Overlay scrollbars take no space either way; Chromium already honoured the gutter.
 - The width is measured by `bind:clientWidth` (a ResizeObserver). Its callback runs before paint, and everything from the intake to the commit is microtasks when the layout runs inline, so the first frame at a new width shows its layout. `StackGrid` measures its window in its own ResizeObserver callback too (no longer on the next frame).
 - `recentLayouts`: the controller keeps the last 4 layouts it committed this lifetime, by layout basis, and reuses one only when every open stack's component, revision and data object match. A round trip (a fullscreen Preview widening the pane, then narrowing it; a resize dragged back) commits the earlier layout at once, without the engine or the worker.
-- `mustLayoutBeforePaint` (`D/layout-workload.ts`): when the layout would go to the worker but the scene on screen no longer fits the new width (its grid is wider than the pane), it is laid out inline anyway, so a layout for another width is never drawn cut at the pane's edge. A scene that still fits (the pane widened) stays on screen, whole and unchanged, until the worker's layout commits, then snaps.
+- `mustLayoutBeforePaint` (`D/layout-workload.ts`): when the layout would go to the worker but the pane narrowed past the scene on screen (the new width is less than the one the scene was laid out for, and its grid reaches beyond it), it is laid out inline anyway, so a layout for another width is never drawn overflowing the pane. A scene that still fits (the pane widened), or one already wider than its own pane whose width did not shrink (it scrolls sideways as before; a click inside it must still go to the worker), stays on screen, whole and unchanged, until the worker's layout commits, then snaps.
 
 **Fullscreen Preview (S7), host side.** The pane under a fullscreen Preview is resized because `.preview-pane.fullscreen` becomes `position: fixed; inset: 0` (`PreviewPane.svelte`), which takes it out of the flex flow. Its `.preview-island` (`+page.svelte`) is content-sized (`flex-shrink: 0`, no width of its own), so the island collapses and the workspace panes take its width (870 → 1158 px; with a bottom or top dock, the height). A host fix keeps the island at the docked pane's size while fullscreen, for example a width (or height) captured when fullscreen starts, or a CSS variable the pane sets for its docked size; or renders the fullscreen surface in a separate layer while a same-sized placeholder stays docked. With the plugin fixes above, the exit already paints the narrow layout on its first frame without motion; the host fix would also avoid the hidden relayout.
 

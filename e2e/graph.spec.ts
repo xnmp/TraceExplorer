@@ -348,12 +348,11 @@ test.describe("tile size", () => {
   });
   const boxes = async (page: Page) => ({ ...(await tileBoxes(page, 0)), ...(await tileBoxes(page, 1)) });
 
-  test("changing the host's tile size resizes Trace tiles and the ordinary tiles to match, smoothly and without a stale layout", async ({ page }) => {
+  test("changing the host's tile size resizes Trace tiles and the ordinary tiles to match, at once and without a stale layout", async ({ page }) => {
     await openView(page, 900, "?fileTile=1&tileSize=small");
     await click(page, "warm");
     const first = await boxes(page);
     const warm = await key(page, "warm");
-    let previous = 92;
     for (const preset of ["large", "medium", "xlarge", "small"] as const) {
       // Record the tile's animations as they are created: polling getAnimations() after a frame misses
       // them when a loaded machine runs the whole motion (or starts it) outside that frame.
@@ -368,7 +367,8 @@ test.describe("tile size", () => {
       }, warm);
       await setTileSize(page, preset);
       await settle(page);
-      // The tiles grow or shrink in motion, from the size shown to the new one.
+      // A tile size change is a metrics change the user did not make in the view: the tiles take
+      // the new size at once, with no resize motion (docs/scene-transactions.md, "Native findings fixes").
       const resizing = await page.evaluate(() => { const w = window as any; w.__restoreAnimate(); return w.__resizes as string[][]; });
       const shown = await sizes(page);
       // One width for every Trace tile: the host's thumbnail edge plus its tile chrome, as wide as the host's own tiles.
@@ -379,10 +379,7 @@ test.describe("tile size", () => {
       expect(shown.ordinary[0], preset).toBeGreaterThanOrEqual(shown.trace[0]);
       // The image keeps its aspect inside the same chrome.
       expect(shown.traceImage, preset).toEqual([Math.round((shown.trace[0] - 12) * 51 / 80)]);
-      // Each relayout of the grid (the tile size, then the band's measured height) replays the tile's motion
-      // from the geometry it displays; every replay is the same single resize, with no stale size in between.
-      expect([...new Set(resizing.map((frames) => frames.join(" -> ")))], preset).toEqual([`${previous}px -> ${shown.trace[0]}px`]);
-      previous = shown.trace[0];
+      expect(resizing, preset).toEqual([]);
       // Relaid out for the new size: nothing overlaps and every arrowhead still ends on its tile's edge.
       expect(overlaps(await tileBoxes(page, 0)), preset).toEqual([]);
       for (const head of await arrowheads(page)) {

@@ -69,15 +69,15 @@ describe('committed scene motion policy', () => {
 });
 
 describe('geometry motion policy', () => {
-  it.each(['expand', 'collapse', 'selection'] as const)('animates a %s the user made in the view', (cause) => {
+  it.each(['expand', 'collapse', 'selection', 'reveal'] as const)('animates a %s the user asked for', (cause) => {
     expect(geometryMotion(cause, { arrival: false })).toBe('animate');
   });
 
-  it.each(['startup', 'restore', 'resize', 'metrics', 'listing', 'refresh', 'retry', 'reveal'] as const)('snaps geometry changed by %s', (cause) => {
+  it.each(['startup', 'restore', 'resize', 'metrics', 'listing', 'refresh', 'retry'] as const)('snaps geometry changed by %s', (cause) => {
     expect(geometryMotion(cause, { arrival: false })).toBe('snap');
   });
 
-  it.each(['expand', 'collapse', 'selection', 'startup', 'restore', 'resize'] as const)('snaps an arrival in a folder, even by %s', (cause) => {
+  it.each(['expand', 'collapse', 'selection', 'reveal', 'startup', 'restore', 'resize'] as const)('snaps an arrival in a folder, even by %s', (cause) => {
     expect(geometryMotion(cause, { arrival: true })).toBe('snap');
   });
 

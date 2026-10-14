@@ -1166,13 +1166,13 @@ test("opening a later row preserves an unchanged band's attachment motion", asyn
   await page.setViewportSize({ width: 800, height: 1600 });
   await openView(page, 420, "?deeper=1&fanChildren=2", false);
   for (const name of ["village", "forest"]) { await stack(page, name).locator("[data-stack-toggle]").click(); await settle(page); }
-  const warm = await key(page, "warm"), mist = await key(page, "forest-mist");
-  await page.locator(`[data-node-key="${warm}"]`).click(); await settle(page);
+  const mist = await key(page, "forest-mist");
   await holdScriptedAnimations(page);
   let result: { before: number; at80: number; after: number; continued: number; end: number };
   try {
-    // A data change is a reflow; focus-only selection would now snap.
-    await page.evaluate(() => (window as any).trace.backend.startGeneration("warm", "carry-new")); await awaitAnimationsCreated(page);
+    // Closing village moves forest's band (a collapse the user makes moves; a data change or a
+    // focus-only selection would snap).
+    await stack(page, "village").locator("[data-stack-toggle]").evaluate((element: HTMLElement) => element.click()); await awaitAnimationsCreated(page);
     result = await page.evaluate(async (mist) => {
       const w = window as any, originals = [...w.__heldAnimations] as Animation[];
       const frame = () => new Promise(requestAnimationFrame);
@@ -1183,7 +1183,7 @@ test("opening a later row preserves an unchanged band's attachment motion", asyn
       const at80 = y();
       await seek(originals, 40);
       const before = y();
-      w.trace.setSelection([...w.trace.state().selected, "/pictures/fan.png"], "/pictures/warm.png");
+      w.trace.setSelection(["/pictures/fan.png"], "/pictures/fan.png");
       for (let i = 0; i < 12; i++) await frame();
       const after = y();
       // The interruption's epoch restarts the clock where the original motion was (40 ms in).
