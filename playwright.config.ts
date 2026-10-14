@@ -4,7 +4,7 @@ import {defineConfig} from "@playwright/test";
  * Specs whose frames and motion WebKit draws differently from Chromium (WebKitGTK is the native
  * host's engine: scrollbar gutters, ResizeObserver and animation timing). They run in both browsers.
  */
-const WEBKIT_SPECS = ["motion-scrollbars", "scene-snap", "tab-switch", "selection-blink", "band-motion", "scene-transactions", "scene-windowing"].map((name) => `${name}.spec.ts`);
+const WEBKIT_SPECS = ["motion-scrollbars", "scene-snap", "tab-switch", "selection-blink", "band-motion", "scene-transactions", "scene-windowing", "motion-driver"].map((name) => `${name}.spec.ts`);
 
 export default defineConfig({
   testDir:"e2e",testMatch:"*.spec.ts",fullyParallel:true,
