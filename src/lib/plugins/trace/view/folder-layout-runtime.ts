@@ -1,0 +1,35 @@
+/**
+ * Where the Trace view runs the folder layout engine: the registered default engine, memoised,
+ * with one band cache shared by every pane. Inline runs are decided by Phase 2's workload rule
+ * (`canLayoutInline`) applied to each band request the run would actually compute (bands the
+ * cache holds cost nothing); heavier runs go to the layout worker, whose bands are then
+ * remembered here so the next inline run reuses them.
+ */
+import { canLayoutInline } from "$lib/domain/trace-graph/layout-workload";
+import { createBoundedCache, createDefaultEngine, estimateLayoutBytes, memoizeEngine, rememberBands, uncachedBandRequests,
+  type FolderLayout, type FolderLayoutEngine, type FolderLayoutInput } from "$lib/domain/trace-graph/folder-layout";
+
+export interface FolderLayoutRuntime {
+  readonly engine: FolderLayoutEngine;
+  /** Whether running the engine on `input` here is within the inline budget. */
+  inline(input: FolderLayoutInput): boolean;
+  /** Keeps the bands of a layout computed off the main thread. */
+  remember(layout: FolderLayout): void;
+}
+
+export function createFolderLayoutRuntime(): FolderLayoutRuntime {
+  const bands = createBoundedCache(estimateLayoutBytes);
+  const engine = memoizeEngine(createDefaultEngine({ bandCache: bands }));
+  return {
+    engine,
+    inline(input) {
+      try { return uncachedBandRequests(input, bands).every(canLayoutInline); }
+      catch { return true; } // Invalid geometry fails the same way inline, at once.
+    },
+    remember: (layout) => rememberBands(layout, bands),
+  };
+}
+
+let shared: FolderLayoutRuntime | null = null;
+/** The runtime every Trace pane shares (one band cache, bounded). */
+export const folderLayoutRuntime = (): FolderLayoutRuntime => (shared ??= createFolderLayoutRuntime());

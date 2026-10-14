@@ -7,6 +7,7 @@
  * view moved on) is dropped instead of computed.
  */
 import { layoutGraph, type GraphLayout, type LayoutRequest } from "$lib/domain/trace-graph/layout";
+import type { FolderLayout, FolderLayoutEngine, FolderLayoutInput } from "$lib/domain/trace-graph/folder-layout";
 import { layoutSignature } from "$lib/domain/trace-graph/layout-signature";
 import { hostAllowsBlobWorkers } from "../../../../sdk";
 import { createLayoutWorker } from "./layout-worker-factory";
@@ -16,7 +17,10 @@ const CACHE_LIMIT = 48;
 const cache = new Map<string, GraphLayout>();
 let worker: Worker | null | undefined;
 let sequence = 0;
-interface Job { readonly id: number; readonly signature: string; readonly request: LayoutRequest; readonly signal?: AbortSignal; resolve(layout: GraphLayout): void; reject(error: Error): void }
+interface GraphJob { readonly kind: "graph"; readonly id: number; readonly signature: string; readonly request: LayoutRequest; readonly signal?: AbortSignal; resolve(layout: GraphLayout): void; reject(error: Error): void }
+/** A whole-folder engine run: rejected as soon as it is aborted, even while the worker computes it (the reply is then dropped). */
+interface FolderJob { readonly kind: "folder"; readonly id: number; readonly input: FolderLayoutInput; readonly fallback: FolderLayoutEngine; readonly signal?: AbortSignal; resolve(layout: FolderLayout): void; reject(error: Error): void }
+type Job = GraphJob | FolderJob;
 /** Jobs waiting for the worker, oldest first, and the one it is computing. */
 let queue: Job[] = [];
 let running: Job | null = null;
@@ -35,11 +39,11 @@ function pump(): void {
     const next = queue.shift();
     if (!next) return;
     if (next.signal?.aborted) { next.reject(aborted()); continue; }
-    const known = cache.get(next.signature);
-    if (known) { next.resolve(known); continue; }
+    const known = next.kind === "graph" ? cache.get(next.signature) : undefined;
+    if (known && next.kind === "graph") { next.resolve(known); continue; }
     running = next;
     try {
-      worker.postMessage({ id: next.id, request: next.request });
+      worker.postMessage(next.kind === "graph" ? { id: next.id, request: next.request } : { id: next.id, folder: next.input });
     } catch (error) {
       running = null;
       next.reject(asError(error));
@@ -48,11 +52,18 @@ function pump(): void {
 }
 
 /** Ends the running job and moves on. */
-function finish(outcome: { layout: GraphLayout } | { error: Error }): void {
+function finish(outcome: { layout: GraphLayout } | { folder: FolderLayout } | { error: Error }): void {
   const job = running;
   running = null;
-  // Cached before the next job starts, so a queued duplicate is answered from it.
-  if (job) { if ("layout" in outcome) job.resolve(remember(job.signature, outcome.layout)); else job.reject(outcome.error); }
+  if (job?.kind === "graph") {
+    // Cached before the next job starts, so a queued duplicate is answered from it.
+    if ("layout" in outcome) job.resolve(remember(job.signature, outcome.layout));
+    else job.reject("error" in outcome ? outcome.error : new Error("Trace layout reply did not match its request"));
+  } else if (job?.kind === "folder") {
+    // An aborted job has already been rejected; settling it again is a no-op.
+    if ("folder" in outcome) job.resolve(outcome.folder);
+    else job.reject("error" in outcome ? outcome.error : new Error("Trace layout reply did not match its request"));
+  }
   pump();
 }
 
@@ -75,7 +86,9 @@ function fallBack(): void {
   queue = [];
   for (const job of jobs) {
     if (job.signal?.aborted) { job.reject(aborted()); continue; }
-    try { job.resolve(layoutGraph(job.request)); } catch (error) { job.reject(asError(error)); }
+    try {
+      if (job.kind === "graph") job.resolve(layoutGraph(job.request)); else job.resolve(job.fallback(job.input));
+    } catch (error) { job.reject(asError(error)); }
   }
 }
 
@@ -84,9 +97,9 @@ function workerInstance(): Worker | null {
   if (typeof Worker === "undefined" || !hostAllowsBlobWorkers()) return (worker = null);
   try {
     const created: Worker = createLayoutWorker();
-    created.onmessage = (event: MessageEvent<{ id: number; layout?: GraphLayout; error?: string }>) => {
+    created.onmessage = (event: MessageEvent<{ id: number; layout?: GraphLayout; folder?: FolderLayout; error?: string }>) => {
       if (running?.id !== event.data.id) return;
-      finish(event.data.layout ? { layout: event.data.layout } : { error: new Error(event.data.error ?? "Layout failed") });
+      finish(event.data.layout ? { layout: event.data.layout } : event.data.folder ? { folder: event.data.folder } : { error: new Error(event.data.error ?? "Layout failed") });
     };
     created.onmessageerror = () => finish({ error: new Error("Trace layout reply could not be read") });
     created.onerror = (event) => { event.preventDefault(); fallBack(); };
@@ -127,7 +140,7 @@ function computeLayoutNow(request: LayoutRequest, signal?: AbortSignal): Promise
   }
   const id = ++sequence;
   return new Promise<GraphLayout>((resolve, reject) => {
-    const job: Job = { id, signature, request, signal, resolve, reject };
+    const job: Job = { kind: "graph", id, signature, request, signal, resolve, reject };
     // A waiting job settles as soon as it is aborted, not when its turn comes.
     signal?.addEventListener("abort", () => {
       if (!queue.includes(job)) return;
@@ -137,6 +150,47 @@ function computeLayoutNow(request: LayoutRequest, signal?: AbortSignal): Promise
     queue.push(job);
     pump();
   }).then(keep);
+}
+
+/**
+ * Runs a folder layout engine off the main thread (the worker runs the registered default
+ * engine; `fallback` must be that engine, used on the main thread after yielding a frame when no
+ * worker is available). Aborting `signal` rejects at once with an AbortError, whether the job is
+ * waiting or already computing; a computation already running finishes and its reply is dropped.
+ */
+export function computeFolderLayout(input: FolderLayoutInput, fallback: FolderLayoutEngine, signal?: AbortSignal): Promise<FolderLayout> {
+  if (signal?.aborted) return Promise.reject(aborted());
+  outstanding++;
+  const pending = new Promise<FolderLayout>((resolve, reject) => {
+    const target = workerInstance();
+    if (!target) {
+      requestAnimationFrame(() => {
+        if (signal?.aborted) { reject(aborted()); return; }
+        try { resolve(fallback(input)); } catch (error) { reject(asError(error)); }
+      });
+      return;
+    }
+    const job: FolderJob = { kind: "folder", id: ++sequence, input, fallback, signal, resolve, reject };
+    signal?.addEventListener("abort", () => {
+      queue = queue.filter((other) => other !== job);
+      reject(aborted());
+    }, { once: true });
+    queue.push(job);
+    pump();
+  });
+  const done = () => { outstanding--; };
+  pending.then(done, done);
+  return pending;
+}
+
+/**
+ * Counts work the view is still preparing (data reads and layout for a scene) as pending layout,
+ * so `layoutsPending` reports a view that will still publish. Returns the release function.
+ */
+export function holdLayoutWork(): () => void {
+  outstanding++;
+  let held = true;
+  return () => { if (held) { held = false; outstanding--; } };
 }
 
 /** Computes small layouts synchronously (and caches them) so they never flash. */

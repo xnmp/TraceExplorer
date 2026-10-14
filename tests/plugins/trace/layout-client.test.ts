@@ -12,7 +12,7 @@ vi.mock("$lib/plugins/trace/view/layout.worker.ts?worker&inline", () => ({
     constructor() { created.count++; created.last = this; }
     terminate() {}
     postMessage(message: { id: number; request: LayoutRequest }) {
-      if (message.request.items.some((item) => item.key === "unclonable")) throw new DOMException("could not clone", "DataCloneError");
+      if (message.request?.items.some((item) => item.key === "unclonable")) throw new DOMException("could not clone", "DataCloneError");
       this.posted.push(message);
     }
   },
@@ -226,6 +226,74 @@ describe("layout client (worker)", () => {
     disposeLayouts();
     await result;
     expect(cachedLayout(request(9))).toBeNull();
+  });
+});
+
+describe("layout client (whole folder runs)", () => {
+  const folderInput = (width = 640) => ({ items: [], open: new Map(), width, tile: { width: 120, image: 96 } as never, grid: { cellWidth: 120, cellHeight: 150, gap: 8 }, previous: null });
+  const folderLayout = (width: number) => ({ width }) as never;
+  type Posted = { id: number; folder?: { width: number }; request?: LayoutRequest };
+
+  it("runs the fallback engine on the main thread when no worker exists", async () => {
+    sdk.allow = true;
+    const { computeFolderLayout } = await load();
+    const engine = vi.fn((input: { width: number }) => folderLayout(input.width));
+    await expect(computeFolderLayout(folderInput(), engine as never)).resolves.toEqual({ width: 640 });
+    expect(engine).toHaveBeenCalledTimes(1);
+    expect(created.count).toBe(0);
+  });
+
+  describe("with a worker", () => {
+    beforeEach(() => { sdk.allow = true; vi.stubGlobal("Worker", class {}); });
+
+    it("sends the whole input as one folder message and resolves with its reply", async () => {
+      const { computeFolderLayout, layoutsPending } = await load();
+      const engine = vi.fn();
+      const result = computeFolderLayout(folderInput(700), engine as never);
+      const worker = created.last!, job = worker.posted[0] as unknown as Posted;
+      expect(job.folder).toMatchObject({ width: 700 });
+      expect(job.request).toBeUndefined();
+      expect(layoutsPending()).toBe(1);
+      worker.onmessage!({ data: { id: job.id, folder: folderLayout(700) } });
+      await expect(result).resolves.toEqual({ width: 700 });
+      expect(engine).not.toHaveBeenCalled();
+      expect(layoutsPending()).toBe(0);
+    });
+
+    it("rejects at once when aborted while running, drops the late reply, and serves the next job", async () => {
+      const { computeFolderLayout, layoutsPending } = await load();
+      const stale = new AbortController();
+      const first = computeFolderLayout(folderInput(500), vi.fn() as never, stale.signal);
+      const second = computeFolderLayout(folderInput(600), vi.fn() as never);
+      const worker = created.last!;
+      const running = worker.posted[0] as unknown as Posted;
+      stale.abort();
+      await expect(first).rejects.toMatchObject({ name: "AbortError" });
+      worker.onmessage!({ data: { id: running.id, folder: folderLayout(500) } });
+      await Promise.resolve();
+      const next = worker.posted.at(-1) as unknown as Posted;
+      expect(next.folder).toMatchObject({ width: 600 });
+      worker.onmessage!({ data: { id: next.id, folder: folderLayout(600) } });
+      await expect(second).resolves.toEqual({ width: 600 });
+      expect(layoutsPending()).toBe(0);
+    });
+
+    it("rejects an input already aborted without posting it", async () => {
+      const { computeFolderLayout } = await load();
+      created.last = null;
+      const stale = new AbortController();
+      stale.abort();
+      await expect(computeFolderLayout(folderInput(), vi.fn() as never, stale.signal)).rejects.toMatchObject({ name: "AbortError" });
+      expect(created.last?.posted ?? []).toHaveLength(0);
+    });
+  });
+
+  it("holdLayoutWork counts as pending until released, once", async () => {
+    const { holdLayoutWork, layoutsPending } = await load();
+    const release = holdLayoutWork();
+    expect(layoutsPending()).toBe(1);
+    release(); release();
+    expect(layoutsPending()).toBe(0);
   });
 });
 

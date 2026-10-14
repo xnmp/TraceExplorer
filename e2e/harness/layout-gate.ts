@@ -6,9 +6,13 @@
 export interface LayoutReplyInfo {
   /** The client's job id, echoed by the worker. */
   id: number;
-  /** Keys of the request's items, and of its band, taken when the request was posted. */
+  /** One band's layout request, or a whole-folder engine run (the scene controller's). */
+  kind: "graph" | "folder";
+  /** Keys of the request's items (a folder run: grid items, then open stacks' members), and of its band, taken when posted. */
   itemKeys: string[];
   bandKey: string | null;
+  /** A folder run's open stacks (cover keys); empty for a band request. */
+  openKeys: string[];
   /** The worker's error message when the layout failed. */
   error: string | null;
 }
@@ -21,7 +25,7 @@ let held: Held[] = [];
 
 export const layoutGate = {
   hold(match: LayoutReplyPredicate = () => true) { predicate = match; },
-  heldReplies: (): LayoutReplyInfo[] => held.map((entry) => ({ ...entry.info, itemKeys: [...entry.info.itemKeys] })),
+  heldReplies: (): LayoutReplyInfo[] => held.map((entry) => ({ ...entry.info, itemKeys: [...entry.info.itemKeys], openKeys: [...entry.info.openKeys] })),
   releaseNext(): boolean { const next = held.shift(); next?.deliver(); return !!next; },
   /** Stops holding and delivers everything held, oldest first. */
   releaseAll() { predicate = null; const pending = held; held = []; pending.forEach((entry) => entry.deliver()); },
