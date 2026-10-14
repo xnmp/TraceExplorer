@@ -60,3 +60,13 @@ export async function awaitMotionStarted(page: Page, stableFrames = 4): Promise<
     }
   }, stableFrames);
 }
+
+/**
+ * Waits until a motion runs, then until the view has finished starting motion. For an action whose
+ * data may arrive after several frames (a cold read), when `awaitMotionStarted` alone could settle
+ * on the frames before its commit.
+ */
+export async function awaitMotionRunning(page: Page): Promise<void> {
+  await page.waitForFunction(() => (window as any).trace.motion.state().running.length > 0, undefined, { polling: "raf" });
+  await awaitMotionStarted(page);
+}

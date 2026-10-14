@@ -7,7 +7,7 @@
  * clock. Keyboard navigation reaches logical tiles that are not mounted.
  */
 import { test, expect, type Page } from "@playwright/test";
-import { awaitMotionStarted, holdMotion, motionState, releaseMotion, seekMotion } from "./animation-control";
+import { awaitMotionRunning, awaitMotionStarted, holdMotion, motionState, releaseMotion, seekMotion } from "./animation-control";
 import { clearSceneEvents, samplePaintedFrames, sampleFrames, sceneEvents } from "./helpers/scene-events";
 import { key, openView, settle, uncaught } from "./support";
 
@@ -70,7 +70,7 @@ test("scrolling the grid while rows move mounts cells at their target, with no e
   try {
     // Opening the first stack moves every row below it.
     await stack(page, "village").locator("[data-stack-toggle]").click();
-    await awaitMotionStarted(page);
+    await awaitMotionRunning(page);
     await seek(page, 40);
     const events = (await sceneEvents(page)).length, effects = await effectsCreated(page), clock = await clockTimes(page);
     expect(effects).toBeGreaterThan(0);
@@ -135,7 +135,7 @@ test("scrolling a windowed band while it moves mounts tiles at their place in th
   try {
     // Opening a stack above the band moves the band's section down.
     await stack(page, "village").locator("[data-stack-toggle]").click();
-    await awaitMotionStarted(page);
+    await awaitMotionRunning(page);
     await seek(page, 60);
     const events = (await sceneEvents(page)).length, effects = await effectsCreated(page), clock = await clockTimes(page);
     const before = await page.evaluate(mounted);
@@ -167,7 +167,7 @@ test("records moving at a commit stay mounted until they settle, wherever the vi
   let moving: string[] = [];
   try {
     await stack(page, "village").locator("[data-stack-toggle]").click();
-    await awaitMotionStarted(page);
+    await awaitMotionRunning(page);
     moving = (await page.evaluate(mounted)).cells.filter((cell) => cell.moving).map((cell) => cell.id);
     expect(moving.length).toBeGreaterThan(0);
     await view(page).evaluate((element) => { element.scrollTop = element.scrollHeight; });
