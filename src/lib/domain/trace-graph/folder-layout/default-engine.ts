@@ -45,7 +45,16 @@ export const gridMetricsOf = (geometry: FolderGridGeometry): GridMetrics =>
 interface Prior {
   readonly history?: BandHistory;
   readonly hint?: ReadonlyMap<NodeKey, number>;
+  /** The committed raw layout and the basis of the request it was laid out from. */
+  readonly committed?: { readonly layout: GraphLayout; readonly basis: string };
 }
+
+/**
+ * A band request's geometry basis: everything but the history and reading-order hint taken from
+ * the committed layout. An unchanged basis keeps the committed layout: a newly committed history
+ * must not itself cause another layout (docs/scene-transactions.md §4, layout economy).
+ */
+const requestBasis = (request: LayoutRequest): string => layoutSignature({ ...request, history: undefined, hint: undefined });
 
 const isObject = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null;
 const finite = (...values: unknown[]) => values.every((value) => typeof value === "number" && Number.isFinite(value));
@@ -62,10 +71,14 @@ function priorOf(previous: Record<string, unknown>, id: GraphId, graph: unknown)
   const cell = (previous.cells as Map<unknown, unknown>).get(id);
   if (!isObject(plan) || !isObject(plan.request) || !isLayout(graph.attached) || !isObject(placement) || !isObject(band) || !isObject(cell)
     || !finite(band.y, cell.y, placement.x, placement.coverX, placement.coverHeight, placement.width, placement.left, placement.right)) return { hint };
-  let signature: string;
-  try { signature = bandHistorySignature(plan.request as unknown as LayoutRequest); } catch { return { hint }; }
+  let signature: string, basis: string;
+  try {
+    signature = bandHistorySignature(plan.request as unknown as LayoutRequest);
+    basis = requestBasis(plan.request as unknown as LayoutRequest);
+  } catch { return { hint }; }
   const bandTop = (band.y as number) - (cell.y as number);
-  return { hint, history: { signature, layout: graph.layout, placed: graph.attached, attachment: { bandTop, placement: placement as unknown as FolderGraph["placement"] } } };
+  return { hint, committed: { layout: graph.layout, basis },
+    history: { signature, layout: graph.layout, placed: graph.attached, attachment: { bandTop, placement: placement as unknown as FolderGraph["placement"] } } };
 }
 
 function priorsOf(previous: unknown): ReadonlyMap<GraphId, Prior> {
@@ -95,23 +108,50 @@ function openStacks(input: FolderLayoutInput): readonly (readonly [GraphId, Open
   });
 }
 
-/** Plans and lays out every open band (step 2). */
-export function layoutBands(input: FolderLayoutInput, geometry: FolderGridGeometry, cache: BoundedCache<GraphLayout> | null = null): ReadonlyMap<GraphId, PlannedBand> {
+/** A planned band: its request, and the committed layout it keeps when its geometry basis is unchanged. */
+interface BandPlan { readonly plan: BandScenePlan; readonly kept: GraphLayout | null }
+
+/** Plans every open band (the first half of step 2): what each band's layout request will be. */
+export function planBands(input: FolderLayoutInput, geometry: FolderGridGeometry): ReadonlyMap<GraphId, BandPlan> {
   const base = gridFlow(input.items, new Map(), geometry.columns, gridMetricsOf(geometry));
   const open = openStacks(input);
   const pins = gridPins(base, open.map(([id]) => id));
   const priors = priorsOf(input.previous);
   const width = Math.max(0, input.width);
-  const bands = new Map<GraphId, PlannedBand>();
+  const plans = new Map<GraphId, BandPlan>();
   for (const [id, stack, members] of open) {
     const prior = priors.get(id);
     const plan = planBandScene(stack.graph, members, typeof stack.focus === "string" ? stack.focus : null, width,
       { pinned: pins.get(id)!, history: prior?.history, hint: prior?.hint, tile: input.tile });
-    const layout = bandLayout(plan.request, cache);
+    plans.set(id, { plan, kept: prior?.committed && prior.committed.basis === requestBasis(plan.request) ? prior.committed.layout : null });
+  }
+  return plans;
+}
+
+/** Plans and lays out every open band (step 2). */
+export function layoutBands(input: FolderLayoutInput, geometry: FolderGridGeometry, cache: BoundedCache<GraphLayout> | null = null): ReadonlyMap<GraphId, PlannedBand> {
+  const bands = new Map<GraphId, PlannedBand>();
+  for (const [id, { plan, kept }] of planBands(input, geometry)) {
+    const layout = kept ?? bandLayout(plan.request, cache);
     // A cover the band does not place cannot be attached; the stack is shown closed.
     if (layout.nodes.has(id)) bands.set(id, { plan, layout });
   }
   return bands;
+}
+
+/**
+ * The band layout requests an engine run with `cache` would compute, the ones it does not hold:
+ * what a caller weighs to decide where to run the engine (Phase 2's per-request workload rule).
+ * Throws as the engine does for invalid geometry.
+ */
+export function uncachedBandRequests(input: FolderLayoutInput, cache: BoundedCache<GraphLayout>): readonly LayoutRequest[] {
+  const geometry = folderGridGeometry(input.width, input.tile, input.grid);
+  return [...planBands(input, geometry).values()].filter(({ kept, plan }) => !kept && !cache.get(layoutSignature(plan.request))).map(({ plan }) => plan.request);
+}
+
+/** Seeds `cache` with the bands of a layout computed elsewhere (a worker), keyed by their exact requests. */
+export function rememberBands(layout: FolderLayout, cache: BoundedCache<GraphLayout>): void {
+  for (const graph of layout.graphs.values()) cache.set(layoutSignature(graph.plan.request), graph.layout);
 }
 
 function bandLayout(request: LayoutRequest, cache: BoundedCache<GraphLayout> | null): GraphLayout {

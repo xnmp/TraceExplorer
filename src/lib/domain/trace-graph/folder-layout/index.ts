@@ -6,5 +6,5 @@ export const engines: Readonly<Record<string, FolderLayoutEngine>> = Object.free
 
 export type * from "./types";
 export { memoizeEngine, type MemoizedEngine } from "./memoize";
-export { defaultFolderLayout, createDefaultEngine, type DefaultEngineOptions } from "./default-engine";
-export { CACHE_BYTES, CACHE_ENTRIES, type CacheBudget } from "./bounded-cache";
+export { defaultFolderLayout, createDefaultEngine, uncachedBandRequests, rememberBands, type DefaultEngineOptions } from "./default-engine";
+export { CACHE_BYTES, CACHE_ENTRIES, createBoundedCache, estimateLayoutBytes, type BoundedCache, type CacheBudget } from "./bounded-cache";

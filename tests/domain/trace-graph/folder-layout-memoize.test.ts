@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { createDefaultEngine, engines, memoizeEngine, CACHE_BYTES, CACHE_ENTRIES, type FolderLayoutEngine } from "$lib/domain/trace-graph/folder-layout";
+import { createDefaultEngine, engines, estimateLayoutBytes, memoizeEngine, rememberBands, uncachedBandRequests, CACHE_BYTES, CACHE_ENTRIES, type FolderLayoutEngine } from "$lib/domain/trace-graph/folder-layout";
 import { createBoundedCache } from "$lib/domain/trace-graph/folder-layout/bounded-cache";
 import { stableKey } from "$lib/domain/trace-graph/folder-layout/stable-key";
 import { folderInput, handCase, makeFolder } from "./folder-layout-fixtures";
@@ -104,5 +104,29 @@ describe("stableKey", () => {
     expect(() => stableKey(cyclic)).toThrow(TypeError);
     expect(() => stableKey({ f: () => 1 })).toThrow(TypeError);
     expect(() => stableKey(new Date())).toThrow(TypeError);
+  });
+});
+
+describe("band layout economy", () => {
+  it("keeps a band's committed layout when only another band's focus changed, and asks nothing for it", () => {
+    const previous = engines.default(input(640, "s0:Saffron"));
+    const next = engines.default({ ...input(640, "s0:Ash"), previous });
+    expect(next.graphs.get("s1:root")!.layout).toBe(previous.graphs.get("s1:root")!.layout);
+    expect(next.graphs.get("s0:root")!.layout).not.toBe(previous.graphs.get("s0:root")!.layout);
+    const pending = uncachedBandRequests({ ...input(640, "s0:Ash"), previous }, createBoundedCache(estimateLayoutBytes));
+    expect(pending).toHaveLength(1);
+    expect(pending[0]).toEqual(next.graphs.get("s0:root")!.plan.request);
+  });
+  it("lays a band out again when its own request changes", () => {
+    const previous = engines.default(input(640));
+    const wider = engines.default({ ...input(900), previous });
+    expect(wider.graphs.get("s1:root")!.layout).not.toBe(previous.graphs.get("s1:root")!.layout);
+    expect(uncachedBandRequests({ ...input(900), previous }, createBoundedCache(estimateLayoutBytes))).toHaveLength(2);
+  });
+  it("rememberBands seeds the band cache so the same requests need no layout", () => {
+    const cache = createBoundedCache(estimateLayoutBytes), layout = engines.default(input(640, "s0:Saffron"));
+    expect(uncachedBandRequests(input(640, "s0:Saffron"), cache)).toHaveLength(2);
+    rememberBands(layout, cache);
+    expect(uncachedBandRequests(input(640, "s0:Saffron"), cache)).toHaveLength(0);
   });
 });

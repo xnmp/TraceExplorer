@@ -2,7 +2,8 @@
  * The default engine is a faithful extraction of the view's pipeline. The expected geometry is
  * computed the way StackGrid and TraceGraph computed it, calling the same domain functions in the
  * same order with the components' own formulas; the engine must produce exactly the same cells,
- * bands, tile rectangles and connector paths, display after display.
+ * bands, tile rectangles and connector paths, display after display. Like a mounted TraceGraph, a
+ * band whose own request is unchanged apart from the committed history keeps its committed layout.
  */
 import { describe, expect, it } from "vitest";
 import { engines, type FolderLayout } from "$lib/domain/trace-graph/folder-layout";
@@ -10,6 +11,7 @@ import { attachPackedBand, bandExtent, bandPlacements, estimatedBandExtent, pack
 import { bandHistorySignature } from "$lib/domain/trace-graph/band-layout";
 import { folderCells, gridPins } from "$lib/domain/trace-graph/folder-grid";
 import { layoutGraph, type BandHistory, type GraphLayout, type PinnedCover } from "$lib/domain/trace-graph/layout";
+import { layoutSignature } from "$lib/domain/trace-graph/layout-signature";
 import { tileMetrics, tileSize, type TileMetrics } from "$lib/domain/trace-graph/metrics";
 import { connectedComponents, projectDag, projectReferenceBadges } from "$lib/domain/trace-graph/projection";
 import { planBandScene, type BandScenePlan, type ComponentFocus } from "$lib/domain/trace-graph/scene";
@@ -46,7 +48,9 @@ function viewPipeline(folder: Folder, display: Display, mounted: ReadonlyMap<str
     const known = mounted.get(cell.id);
     const history: BandHistory | undefined = known && { signature: bandHistorySignature(known.plan.request), layout: known.layout, placed: known.attached, attachment: { bandTop: known.bandTop, placement: known.placement } };
     const plan = planBandScene(projection, projection.dag.order, focus?.key ?? null, innerWidth, { pinned: pins.get(cell.id)!, history, hint: known?.layout.readingOrder, tile, badgeHighlight: null });
-    covers.set(cell.id, { plan, layout: layoutGraph(plan.request) });
+    // A band whose own request is unchanged apart from history and hint keeps its committed layout.
+    const kept = known && requestBasis(known.plan.request) === requestBasis(plan.request) ? known.layout : null;
+    covers.set(cell.id, { plan, layout: kept ?? layoutGraph(plan.request) });
   }
   // StackGrid again: the exact extents replace the reservations; TraceGraph attaches.
   const flow = packedGridFlow(cells, new Map(openCells.map((cell) => [cell.id, bandExtent(covers.get(cell.id)!.layout, cell.id)])), columns, gridMetrics);
@@ -59,6 +63,8 @@ function viewPipeline(folder: Folder, display: Display, mounted: ReadonlyMap<str
   }
   return { columns, flow, committed, innerWidth, grid: { cellWidth: metrics.cellWidth, cellHeight: metrics.cellHeight, gap: metrics.gap } };
 }
+
+const requestBasis = (request: BandScenePlan["request"]) => layoutSignature({ ...request, history: undefined, hint: undefined });
 
 function engineDisplay(folder: Folder, display: Display, previous: FolderLayout | null, innerWidth: number, grid: { cellWidth: number; cellHeight: number; gap: number }): FolderLayout {
   const open = new Map(display.open.flatMap((id) => {
