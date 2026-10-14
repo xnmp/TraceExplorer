@@ -90,6 +90,8 @@ export interface FolderGraph {
 
 export interface FolderLayout {
   readonly columns: number;
+  /** The grid's own box from (0, 0): what the grid element is sized to (connectors may overhang it; see `bounds`). */
+  readonly size: { readonly width: number; readonly height: number };
   /** Folder-coordinate bounds of everything drawn (cells, bands, connectors). */
   readonly bounds: GridRect;
   /** Every grid item's cell, in input order. */

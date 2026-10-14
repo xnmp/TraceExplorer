@@ -140,7 +140,7 @@ export function composeFolderLayout(items: readonly GridItem[], geometry: Folder
     const cell = flow.cells.get(band.id)!, placement = placements.get(band.id)!, { plan, layout } = bands.get(band.id)!;
     graphs.set(band.id, { id: band.id, plan, layout, attached: attachPackedBand(layout, band.id, band.y - cell.y, placement), origin: { x: 0, y: cell.y }, placement });
   }
-  return { columns: geometry.columns, bounds: folderBounds({ x: 0, y: 0, width: flow.width, height: flow.height }, flow.cells.values(), [...flow.bands, ...flow.rowBands], graphs.values()),
+  return { columns: geometry.columns, size: { width: flow.width, height: flow.height }, bounds: folderBounds({ x: 0, y: 0, width: flow.width, height: flow.height }, flow.cells.values(), [...flow.bands, ...flow.rowBands], graphs.values()),
     cells: flow.cells, bands: flow.bands, rowBands: flow.rowBands, graphs };
 }
 
