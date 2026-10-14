@@ -238,6 +238,8 @@ interface Transaction {
   readonly media: SceneMediaHold[];
   /** Its media deadline, once it first waited for media. */
   mediaDue: { readonly expired: Promise<void>; readonly cancel: () => void } | null;
+  /** The covers drawn open by the scene waiting for its media: their data and layout are in hand. */
+  inHand: ReadonlySet<GraphId>;
 }
 
 export function createSceneController(options: SceneControllerOptions) {
@@ -375,10 +377,23 @@ export function createSceneController(options: SceneControllerOptions) {
     const skip = index ? blocked(index) : new Set<GraphId>();
     const pending = new Set([...requested].filter((key) => stops.has(key) && !skip.has(key) && !openOnCurrentData(key, index!)));
     for (const [cover, cancel] of deadlines) if (!pending.has(cover)) { cancel(); deadlines.delete(cover); }
-    for (const cover of pending) if (!deadlines.has(cover)) deadlines.set(cover, setTimer(() => coverFailed(cover, "Trace took too long to load this stack"), deadline));
+    for (const cover of pending) if (!deadlines.has(cover)) deadlines.set(cover, coverDeadline(cover));
     refreshNotices();
   }
 
+  /**
+   * A pending cover's deadline. When it passes while the transaction preparing has the cover's data
+   * and layout in hand and only waits for images, it does not apply: slow images cost only the
+   * images (the media deadline bounds them). It is set again, so a stack whose data is lost
+   * before that scene commits (a newer index) is still bounded.
+   */
+  function coverDeadline(cover: GraphId): () => void {
+    return setTimer(() => {
+      const tx = current;
+      if (tx && live(tx) && tx.status === "preparing-media" && tx.inHand.has(cover) && deadlines.has(cover)) { deadlines.set(cover, coverDeadline(cover)); return; }
+      coverFailed(cover, "Trace took too long to load this stack");
+    }, deadline);
+  }
 
   /**
    * A requested stack failed (its read failed or its deadline passed): it is laid out closed with
@@ -455,7 +470,7 @@ export function createSceneController(options: SceneControllerOptions) {
   function begin(cause: SceneCause): Transaction {
     const previous = current;
     const tx: Transaction = { id: ++ids, cause, scope, controller: new AbortController(), phase: "operating", owned: 0, wake: null, status: "collecting",
-      intent: null, error: null, publication: null, coverErrors: new Map(), layout: null, media: [], mediaDue: null };
+      intent: null, error: null, publication: null, coverErrors: new Map(), layout: null, media: [], mediaDue: null, inHand: new Set() };
     current = tx;
     recent.set(tx.id, tx);
     for (const id of recent.keys()) if (recent.size > 64) recent.delete(id); else break;
@@ -540,6 +555,7 @@ export function createSceneController(options: SceneControllerOptions) {
     if (!hold) return null;
     tx.media.push(hold);
     if (!hold.ready) return null;
+    tx.inHand = new Set(scene.graphs.keys());
     if (!tx.mediaDue) {
       let cancel: () => void = noop;
       const expired = new Promise<void>((resolve) => { cancel = setTimer(resolve, mediaDeadline); });
@@ -564,6 +580,7 @@ export function createSceneController(options: SceneControllerOptions) {
       if (++rounds > 1000) throw new Error("Trace could not prepare this folder");
       const wake = tx.wake = new AbortController();
       const waiting = AbortSignal.any([tx.controller.signal, wake.signal]);
+      tx.inHand = new Set();
       const wanted = intent, currentIndex = data.index && data.index.directory === wanted?.directory ? data.index : null;
       tx.intent = wanted;
       if (!wanted || wanted.width <= 0) { finish(tx, "committed"); return; }

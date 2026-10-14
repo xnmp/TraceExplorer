@@ -1,6 +1,6 @@
 import "./svelte-host";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { createSceneController, MEDIA_DEADLINE_MS, type SceneCause, type SceneController, type SceneMedia } from "$lib/plugins/trace/view/scene-controller.svelte";
+import { createSceneController, MEDIA_DEADLINE_MS, PREPARATION_DEADLINE_MS, type SceneCause, type SceneController, type SceneMedia } from "$lib/plugins/trace/view/scene-controller.svelte";
 import { installSceneInstrumentation } from "$lib/plugins/trace/view/scene-instrumentation";
 import type { ComponentLease } from "$lib/plugins/trace/view/folder-session.svelte";
 import type { SceneIntent } from "$lib/plugins/trace/view/scene-inputs";
@@ -1402,5 +1402,42 @@ describe("scene controller: media review fixes (ff7c027)", () => {
     expect(pins[0].released).toBe(false);
     await flush();
     expect(pins[0].released, "released once the restored scene rendered").toBe(true);
+  });
+
+  it("a stack whose data and layout are ready is not failed by its cover deadline while its images load", async () => {
+    let load!: () => void;
+    const ready = new Promise<void>((resolve) => { load = resolve; });
+    const released: boolean[] = [];
+    const h = setup({ media: (scene) => scene.graphs.size ? (released.push(false), { ready, release: () => { released[released.length - 1] = true; } }) : null });
+    h.offer(); await flush();
+    h.act("expand", () => h.offer({ open: new Set(["a1"]) }));
+    await flush();
+    // The data arrives late, near its cover deadline; the scene waits for its images.
+    h.deliver("ca"); await flush();
+    expect(h.controller.transaction?.status).toBe("preparing-media");
+    h.fire(PREPARATION_DEADLINE_MS); await flush();
+    expect(h.failures, "slow images cost only the images").toEqual([]);
+    expect(h.controller.notices.get("a1")?.phase, "the cover still shows it loading until the scene commits").toBe("loading");
+    expect(h.controller.transaction?.status).toBe("preparing-media");
+    load(); await flush();
+    expect(h.openGraphs()).toEqual(["a1"]);
+    expect(h.controller.notices.get("a1")).toBeUndefined();
+  });
+
+  it("a cover deadline passing during the media wait still bounds the stack if its data is lost again", async () => {
+    const h = setup({ media: (scene) => scene.graphs.size ? { ready: new Promise<void>(() => {}), release: () => {} } : null });
+    h.offer(); await flush();
+    h.act("expand", () => h.offer({ open: new Set(["a1"]) }));
+    await flush();
+    h.deliver("ca"); await flush();
+    expect(h.controller.transaction?.status).toBe("preparing-media");
+    h.fire(PREPARATION_DEADLINE_MS); await flush();
+    expect(h.failures).toEqual([]);
+    // A newer index outdates the stack's data before the images arrive: it is read again, under a deadline.
+    h.fake.source.index = indexFor("t2");
+    h.offer(); await flush();
+    expect(h.controller.transaction?.status).toBe("preparing-data");
+    h.fire(PREPARATION_DEADLINE_MS); await flush();
+    expect(h.controller.notices.get("a1")).toMatchObject({ phase: "failed", message: expect.stringMatching(/too long/) });
   });
 });
