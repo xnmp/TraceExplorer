@@ -116,7 +116,7 @@ async function prepareCrossSectionAnchor(page: Page, name: string, extra = "") {
   return { clicked, earlier, before };
 }
 
-test("a worker-sized clicked neighborhood is anchored while the section above shrinks synchronously", async ({ page }) => {
+test("a worker-sized clicked neighborhood commits with the section above in one scene, anchored throughout", async ({ page }) => {
   const { clicked, earlier, before } = await prepareCrossSectionAnchor(page, "anchor-b-child", "&anchorWorker=1");
   await holdScriptedAnimations(page);
   try {
@@ -129,11 +129,8 @@ test("a worker-sized clicked neighborhood is anchored while the section above sh
       };
       document.querySelector<HTMLElement>(`[data-node-key="${CSS.escape(clicked)}"]`)!.click();
     }, clicked);
-    await page.waitForFunction((earlier) => {
-      const w = window as any;
-      const graph = document.querySelector(`[data-tile-key="${CSS.escape(earlier)}"]`)!.closest("section")!.querySelector(".graph");
-      return w.__anchorLayouts.length > 0 && !graph!.querySelector(`[data-tile-key="${CSS.escape(w.trace.backend.key("anchor-a-last"))}"]`);
-    }, earlier);
+    // One action: while B's worker layout is held, nothing of it commits, A's shrink included.
+    await page.waitForFunction(() => (window as any).__anchorLayouts.length > 0);
     const pending = await page.evaluate(async ({ clicked, earlier, earlierHeight }) => {
       const view = document.querySelector<HTMLElement>("[data-testid=trace-view]")!;
       const tile = () => view.querySelector<HTMLElement>(`[data-tile-key="${CSS.escape(clicked)}"]`)!;
@@ -153,8 +150,9 @@ test("a worker-sized clicked neighborhood is anchored while the section above sh
       return { positions, shrink: height - graph.getBoundingClientRect().height, pending: (window as any).trace.layoutsPending() };
     }, { clicked, earlier, earlierHeight: before.earlierHeight });
     expect(pending.pending, "B's real worker request is still held").toBeGreaterThan(0);
-    expect(pending.shrink).toBe(115);
-    for (const y of pending.positions) expect(Math.abs(y - before.y), "held before B commits").toBeLessThan(1);
+    expect(pending.shrink, "A keeps its committed geometry until B's layout completes").toBe(0);
+    await expect(page.locator(`[data-tile-key="${await key(page, "anchor-a-last")}"]`)).toHaveCount(1);
+    for (const y of pending.positions) expect(Math.abs(y - before.y), "held before the scene commits").toBeLessThan(1);
 
     await page.evaluate(() => {
       const w = window as any;
@@ -162,9 +160,10 @@ test("a worker-sized clicked neighborhood is anchored while the section above sh
       for (const release of w.__anchorLayouts.splice(0)) release();
     });
     await page.waitForFunction(() => (window as any).trace.layoutsPending() === 0);
-    // B's 75 newly revealed descendants prove this was the worker-sized scene.
+    // B's 75 newly revealed descendants prove this was the worker-sized scene; A shrank in the same commit.
     const leaf = await key(page, "anchor-b-leaf-74");
     await expect(page.locator(`[data-tile-key="${leaf}"]`)).toHaveCount(1);
+    await expect(page.locator(`[data-tile-key="${await key(page, "anchor-a-last")}"]`)).toHaveCount(0);
     const positions = await page.evaluate(async (clicked) => {
       const tile = () => document.querySelector<HTMLElement>(`[data-tile-key="${CSS.escape(clicked)}"]`)!;
       const frame = () => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));

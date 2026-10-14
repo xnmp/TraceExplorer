@@ -16,7 +16,17 @@
 
   interface Props {
     /** Folder covers use the ordinary explorer thumbnail/name treatment, retaining graph actions. */
-    explorer?: { readonly name: string; readonly count: number; readonly unsaved: boolean; readonly active: boolean; readonly expanded: boolean; readonly imagePx?: number; readonly small: boolean };
+    explorer?: {
+      readonly name: string; readonly count: number; readonly unsaved: boolean; readonly active: boolean;
+      /** Whether the published scene shows the stack open (never a pending request). */
+      readonly expanded: boolean;
+      readonly imagePx?: number; readonly small: boolean;
+      /** A requested open still preparing, or one that failed (with its error); null otherwise. */
+      readonly progress?: "loading" | "arranging" | "failed" | null;
+      readonly error?: string | null;
+    };
+    /** Retries a failed open (the cover's in-cover error control). */
+    onretry?: () => void;
     badgeNodes?: ReadonlyMap<string, import("$lib/domain/trace-graph/model").TraceNode>;
     badges?: readonly ReferenceBadge[];
     badgeSelection?: ReadonlySet<string>;
@@ -40,7 +50,8 @@
     captureSelection?: () => () => boolean;
   }
 
-  let { tile, placed, orientation = "down", selected, revision, onactivate, onopen, onmenu, onkey, onsaved, ondiscarded, captureSelection, badges = [], badgeNodes, badgeSelection = new Set(), onbadge, onbadgehover, onstacktoggle, focused = true, onfocus, explorer }: Props = $props();
+  let { tile, placed, orientation = "down", selected, revision, onactivate, onopen, onmenu, onkey, onsaved, ondiscarded, captureSelection, badges = [], badgeNodes, badgeSelection = new Set(), onbadge, onbadgehover, onstacktoggle, focused = true, onfocus, explorer, onretry }: Props = $props();
+  const preparing = $derived(explorer?.progress === "loading" || explorer?.progress === "arranging");
   const node = $derived(tile.node);
   const title = $derived(promptTitles.labelFor(node.runId, node.prompt) || nodeTitle(node));
   const status = $derived(nodeStatus(node));
@@ -82,6 +93,14 @@
         {#if explorer.active && node.state !== "running"}<span class="spinner cover-spinner" role="status" aria-label="Generating"></span>{/if}
         <span class="count-badge" aria-hidden="true">{explorer.count}</span>
         {#if explorer.unsaved}<span class="cover-unsaved-dot" aria-hidden="true"></span>{/if}
+        <!-- Cold open progress sits over the committed thumbnail and never resizes the cover. -->
+        {#if preparing}<span class="cover-progress" role="status" aria-label="Loading stack" data-cover-progress><span class="spinner"></span></span>
+        {:else if explorer.progress === "failed"}
+          <span class="cover-error" role="alert" data-cover-error title={explorer.error ?? undefined}>
+            <span class="cover-error-text">Could not open</span>
+            <button type="button" class="cover-retry" data-cover-retry onclick={(event) => { event.stopPropagation(); onretry?.(); }}>Retry</button>
+          </span>
+        {/if}
       {/if}
     </span>
     <span class="label">
@@ -89,7 +108,7 @@
         <span class="stack-name">
           <span class="text">{explorer.name}</span>
           <button type="button" class="stack-disclosure" class:expanded={explorer.expanded} tabindex={focused ? 0 : -1} {onfocus}
-            data-stack-toggle aria-expanded={explorer.expanded} aria-label={explorer.expanded ? "Collapse stack" : "Expand stack"}
+            data-stack-toggle aria-expanded={explorer.expanded} aria-label={preparing ? "Cancel opening stack" : explorer.progress === "failed" ? "Dismiss stack error" : explorer.expanded ? "Collapse stack" : "Expand stack"}
             onclick={onstacktoggle} onkeydown={(event) => {
               if (["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End"].includes(event.key)) onkey(event);
             }}>
@@ -119,7 +138,7 @@
     <!-- Sibling controls: the tile body remains the grid's tab stop; disclosure owns only toggling.
          While this tile is the stop, Tab reaches its disclosure next (it follows the cover in DOM order), so keyboard users can collapse.
          A real button also excludes its pointer presses from marquee selection. -->
-    <div class="card" class:selected class:focus={tile.tone === "focus"} class:discarded={node.discarded}>
+    <div class="card" class:selected class:focus={tile.tone === "focus"} class:discarded={node.discarded} aria-busy={preparing}>
       <button type="button" class="cover-press" tabindex={focused ? 0 : -1} {onfocus} data-node-key={node.key}
         aria-pressed={selected} aria-label="{explorer.name}, {explorer.count} images{status ? `, ${status}` : ''}{unsaved || explorer.unsaved ? ', unsaved' : ''}"
         {@attach explorer.expanded ? tooltip : null} onclick={onactivate} ondblclick={onopen} oncontextmenu={onmenu} onkeydown={onkey}></button>
@@ -173,6 +192,13 @@
   .host-cover .label { height: 37px; align-items: flex-start; font-size: 13px; line-height: 1.4; }
   .host-cover .text { font-size: 13px; line-height: 1.4; white-space: normal; overflow-wrap: anywhere; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; }
   .cover-spinner { position: absolute; top: 3px; right: 3px; }
+  /* Busy state is immediate (aria-busy); the spinner shows only when opening is slow, so a fast open never flashes it. */
+  .cover-progress { position: absolute; inset: 0; display: grid; place-items: center; border-radius: var(--radius-sm); background: color-mix(in srgb, var(--background-solid) 45%, transparent); transition: opacity 150ms ease-out 400ms; }
+  @starting-style { .cover-progress { opacity: 0; } }
+  .cover-progress .spinner { width: 18px; height: 18px; }
+  .cover-error { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; padding: 4px; box-sizing: border-box; border-radius: var(--radius-sm); background: color-mix(in srgb, var(--background-solid) 78%, transparent); color: var(--system-critical-text, var(--system-critical)); font-size: 11px; line-height: 13px; text-align: center; }
+  .cover-retry { pointer-events: auto; padding: 2px 8px; font: inherit; color: var(--text-primary); background: var(--control-fill); border: 1px solid var(--control-stroke); border-radius: var(--radius-sm); cursor: pointer; }
+  .cover-retry:focus-visible { outline: 2px solid var(--focus-stroke-outer); outline-offset: 2px; }
   .count-badge { position: absolute; bottom: -3px; right: -3px; box-sizing: border-box; min-width: 16px; height: 16px; padding: 0 4px; border-radius: var(--radius-pill); background: var(--accent); color: var(--text-on-accent); font-size: 10px; line-height: 16px; text-align: center; }
   .cover-unsaved-dot { position: absolute; left: -2px; top: -2px; width: 6px; height: 6px; border: 2px solid var(--background-solid); border-radius: 50%; background: var(--system-caution-text, var(--system-caution)); }
   .stack-disclosure { flex: none; display: grid; place-items: center; width: 20px; height: 20px; margin-bottom: calc((1lh - 20px) / 2); padding: 0; border: 0; border-radius: var(--radius-sm); background: none; color: var(--text-secondary); cursor: pointer; pointer-events: auto; font: inherit; }

@@ -328,7 +328,9 @@ test("collapsing the target cancels a reveal waiting for worker layout", async (
     w.revealResult = w.trace.showJob(71).then(() => "completed", (error: Error) => error.message);
   });
   await expect.poll(() => page.evaluate(() => (window as any).heldLayouts.length)).toBeGreaterThan(0);
-  await expect(section.locator("[data-stack-toggle]")).toHaveAttribute("aria-expanded", "true");
+  // The open is pending: nothing is committed, and the disclosure cancels it.
+  await expect(section.locator("[data-stack-toggle]")).toHaveAttribute("aria-label", "Cancel opening stack");
+  await expect(section.locator("[data-stack-toggle]")).toHaveAttribute("aria-expanded", "false");
   await section.locator("[data-stack-toggle]").click();
   expect(await page.evaluate(() => (window as any).revealResult)).toContain("superseded");
   await page.evaluate(() => { for (const release of (window as any).heldLayouts) release(); });

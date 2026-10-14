@@ -64,15 +64,17 @@ test.describe("backend read gates", () => {
     await stack(page, "photo-a").locator("[data-stack-toggle]").click();
     await expect.poll(() => trace(page, (t) => t.backend.heldNodeReads().length)).toBe(1);
     expect(await trace(page, (t) => t.backend.rejectNextNodeRead("disk on fire"))).toBe(true);
-    await expect(page.getByText(/disk on fire/)).toBeVisible();
+    // The failure shows in the cover, naming the error; the stack stays closed.
+    const error = stack(page, "photo-a").locator("[data-cover-error]");
+    await expect(error).toBeVisible();
+    await expect(error).toHaveAttribute("title", /disk on fire/);
+    await expect(stack(page, "photo-a").locator("[data-stack-toggle]")).toHaveAttribute("aria-expanded", "false");
     await expect(bandTiles(page, "photo-a")).toHaveCount(0);
     // With the gate released the stack can be opened again.
     await trace(page, (t) => t.backend.releaseNodeReads());
-    const heading = stack(page, "photo-a").locator("[data-stack-toggle]");
-    // Close the failed stack if it is still open, then open it again.
-    if (await heading.getAttribute("aria-expanded") === "true") await heading.click();
-    await heading.click();
+    await stack(page, "photo-a").locator("[data-cover-retry]").click();
     await settle(page);
+    await expect(error).toHaveCount(0);
     await expect(bandTiles(page, "photo-a").first()).toBeVisible();
   });
 
@@ -146,6 +148,7 @@ test.describe("layout worker reply gate", () => {
 test.describe("scene event sink", () => {
   test("records events from the production hooks with their metadata, and clears them", async ({ page }) => {
     await openView(page, 900, "?grouping=two-chains", false);
+    await clearSceneEvents(page);
     await trace(page, (t) => {
       t.scene.hooks.actionBegin({ transaction: 7, scope: "/pictures", geometryVersion: 3, requestKeys: ["c:1"] });
       t.scene.hooks.geometryPublication({ transaction: 7, scope: "/pictures", geometryVersion: 4, requestKeys: ["c:1", "c:2"] });
@@ -164,11 +167,17 @@ test.describe("scene event sink", () => {
     expect(await sceneEvents(page)).toEqual([]);
   });
 
-  test("production code that emits nothing records nothing", async ({ page }) => {
+  test("the scene controller records one geometry publication for opening a stack", async ({ page }) => {
     await openView(page, 900, "?grouping=two-chains", false);
+    await clearSceneEvents(page);
     await stack(page, "photo-a").locator("[data-stack-toggle]").click();
     await settle(page);
-    expect(await sceneEvents(page)).toEqual([]);
+    const events = await sceneEvents(page);
+    const published = events.filter((event) => event.kind === "geometry-publication");
+    expect(published).toHaveLength(1);
+    expect(published[0].scope).toBe("/pictures");
+    expectActionContract(events, published[0].transaction);
+    expect(events.some((event) => event.kind === "settled" && event.transaction === published[0].transaction)).toBe(true);
   });
 
   test("expectActionContract rejects a second geometry publication", async ({ page }) => {

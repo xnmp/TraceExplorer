@@ -1,77 +1,42 @@
 <script lang="ts">
   /**
-   * One connected component: plans the scene for the current focus, lays it
-   * out (synchronously when small, otherwise off-thread with stale results
-   * discarded) and animates from whatever geometry is currently displayed.
-   * Tiles and routes always render from the same committed plan + layout pair.
+   * One open stack's band, drawn from the published scene: its tiles, connectors and junctions
+   * exactly as the committed layout attached them. A renderer only: no planning, layout or
+   * publication happens here (the scene controller owns those).
    */
-  import { onDestroy, tick, untrack } from "svelte";
-  import type { NodeKey } from "$lib/domain/trace-graph/model";
-  import { planBandScene, planScene, routeStyle, junctionRelated, type ComponentFocus, type RouteStyle, type BandScenePlan, type ScenePlan } from "$lib/domain/trace-graph/scene";
-  import { nearestInDirection, type BandHistory, type Direction, type PinnedCover, type GraphLayout } from "$lib/domain/trace-graph/layout";
-  import { bandHistorySignature } from "$lib/domain/trace-graph/band-layout";
-  import { rememberOrientation, type OrientationHistory } from "$lib/domain/trace-graph/orientation";
+  import type { NodeKey, TraceNode } from "$lib/domain/trace-graph/model";
+  import type { RouteStyle } from "$lib/domain/trace-graph/scene";
+  import type { FolderSceneGraph } from "$lib/domain/trace-graph/folder-scene";
   import { endpointKey } from "$lib/domain/trace-graph/junctions";
-  import { ARROW, STACK_STEM_ROOM, tileMetrics, type TileMetrics } from "$lib/domain/trace-graph/metrics";
+  import { ARROW } from "$lib/domain/trace-graph/metrics";
   import { promptTitles } from "../prompt-titles.svelte";
-  import type { ComponentData } from "./folder-session.svelte";
-  import type { GraphScene } from "./graph-commit";
-  import { cachedLayout, computeLayout, layoutNow, canLayoutInline } from "./layout-client";
-  import { selectableSelector } from "./selectable";
-  import { captureGraph, playGraph, snapGraph, prefersReducedMotion, zoomOf } from "./motion";
+  import { zoomOf } from "./motion";
   import { nodeTitle } from "./node-target";
-  import { sameGraphGeometry } from "$lib/domain/trace-graph/layout-geometry";
-  import { classifySceneChange, type CommittedGraph, type SceneChange } from "$lib/domain/trace-graph/scene-change";
+  import { graphStamps, type GraphRecords } from "./scene-view";
   import TraceTile from "./TraceTile.svelte";
 
-  import { projectReferenceBadges } from "$lib/domain/trace-graph/projection";
-  import { attachBand, attachPackedBand, type BandPlacement } from "./stack-grid";
-
   interface Props {
+    graph: FolderSceneGraph;
+    records: GraphRecords;
+    /** The component's nodes (badge and junction titles). */
+    nodes: ReadonlyMap<NodeKey, TraceNode>;
     focusedKey?: string | null;
     onfocuskey?: (key: string) => void;
     onbadgehover?: (key: string | null) => void;
-    badgeHover?: string | null;
-    pinned?: PinnedCover;
-    bandTop?: number;
-    bandPlacement?: BandPlacement;
-    ongeometry?: (plan: BandScenePlan, layout: GraphLayout) => void;
-    ongridkey?: (key: string, event: KeyboardEvent) => void;
-    data: ComponentData;
-    focus: ComponentFocus | null;
+    ongridkey: (key: string, event: KeyboardEvent) => void;
     selected: ReadonlySet<NodeKey>;
-    width: number;
-    /** The size of every tile (the host's tile-size setting); defaults to the default tile. */
-    tile?: TileMetrics;
     revision: number;
     scroller: HTMLElement | null;
     onactivate: (key: NodeKey, event: MouseEvent) => void;
-    onnavigate: (key: NodeKey) => void;
     onopen: (key: NodeKey) => void;
     onmenu: (key: NodeKey, event: MouseEvent) => void;
     onsaved: (key: NodeKey, path: string, select: boolean) => void;
     /** Selection lease for hover saves (see TraceImageActions). */
     captureSelection?: () => () => boolean;
     ondiscarded: (key: NodeKey) => void;
-    /** Called after a new layout is in the DOM and its motion has started. */
-    oncommit?: (scene: GraphScene) => void;
-    /** Capture the whole grid before a pinned graph changes its DOM. */
-    onbeforecommit?: (change: SceneChange) => void;
-    /** Current layout readiness, used only by keyboard/programmatic reveals. */
-    onlayout?: (pending: boolean) => void;
-    onfailure?: (scene: GraphScene, error: Error) => void;
-    reveal?: object | null;
-    /** The current host component id; merges and splits replace it on refresh. */
-    componentId: string;
-    /**
-     * The pane's memory of each component's displayed orientations by tile
-     * width. Written after rendering, never from a superseded plan;
-     * deliberately not reactive, like `ordering` below.
-     */
-    orientations?: Map<string, OrientationHistory>;
   }
 
-  let { data, focus, selected, width, tile = tileMetrics(), revision, scroller, onactivate, onnavigate, onopen, onmenu, onsaved, ondiscarded, oncommit, onbeforecommit, onlayout, captureSelection, componentId, orientations = new Map(), onfailure, reveal = null, pinned, bandTop = 0, bandPlacement, ongeometry, ongridkey, badgeHover = null, focusedKey, onfocuskey, onbadgehover }: Props = $props();
+  let { graph, records, nodes, selected, revision, scroller, onactivate, onopen, onmenu, onsaved, ondiscarded, captureSelection, ongridkey, focusedKey, onfocuskey, onbadgehover }: Props = $props();
 
   /** Tile windowing only pays off for very large neighborhoods. */
   const WINDOW_MIN = 120;
@@ -79,120 +44,15 @@
   const uid = $props.id();
 
   let canvas = $state<HTMLElement | null>(null);
-  let failure = $state("");
-  // Reading order of the last committed layout keeps siblings in place across focus changes.
-  let ordering: ReadonlyMap<NodeKey, number> | undefined;
-  let history: BandHistory | undefined;
-  let previousAttachment: GraphLayout | undefined;
-  let previousAttachmentOwner: GraphLayout | undefined;
-  let running: Animation[] = [];
-  /** Only the latest full commit plays; one superseded before rendering never starts. */
-  let plays = 0;
-  let layoutStamp = $state(0);
+  const attached = $derived(graph.attached);
+  const stamps = $derived(graphStamps(graph));
+  const relative = $derived(new Map(attached.routes.map((route) => [route.id, route])));
 
-  onDestroy(() => {
-    for (const animation of running) animation.cancel();
-    running = [];
-  });
-
-  let hoveredBadge = $state<string | null>(null);
-  const projection = $derived(projectReferenceBadges(data.dag));
-  function committedHistory(): BandHistory | undefined {
-    if (!history) return undefined;
-    const ownsAttachment = previousAttachmentOwner === history.layout;
-    return { ...history,
-      placed: ownsAttachment ? previousAttachment ?? history.placed : history.placed,
-      attachment: ownsAttachment && bandPlacement ? { bandTop, placement: bandPlacement } : history.attachment };
-  }
-  const plan = $derived(pinned ? planBandScene(projection, projection.dag.order, focus?.key ?? null, width, { pinned, history: untrack(committedHistory), hint: ordering, tile, badgeHighlight: hoveredBadge ?? badgeHover }) : planScene(data.dag, data.members, focus, width, { componentId, hint: ordering, previous: orientations.get(componentId), tile }));
-
-  /** What later plans build on: the reading order and the orientation shown. */
-  function rendered(scene: GraphScene, next: ScenePlan, layout: GraphLayout): void {
-    if (!canvas || !scene.isCurrent() || shown?.plan !== next || shown.layout !== layout) return;
-    ordering = layout.readingOrder;
-    if (pinned && attachment.layout) history = { signature: bandHistorySignature(next.request), layout, placed: attachment.layout, attachment: bandPlacement ? { bandTop, placement: bandPlacement } : undefined };
-    orientations.set(componentId, rememberOrientation(orientations.get(componentId), layout.orientation, next.request.tileWidth));
-    onlayout?.(false);
-    if (pinned) ongeometry?.(next as BandScenePlan, layout);
-    oncommit?.(scene);
-  }
-
-  // Publish the footprint before mounting the first graph, so the grid attaches
-  // children at their final packed position and never replays their entrance.
-  let shown = $state.raw<CommittedGraph | null>(null);
-
-  function commit(next: ScenePlan, layout: GraphLayout, scene: GraphScene): void {
-    if (shown && shown.plan === next && shown.layout === layout) {
-      void tick().then(() => rendered(scene, next, layout));
-      return;
-    }
-    const committed: CommittedGraph = { plan: next, layout, data: data.dag, componentId, revision, tile };
-    const change = classifySceneChange(shown, committed);
-    // Same geometry (only tones or selection changed): nothing moves, so
-    // motion still running carries on and nothing is measured.
-    if (change === "restyle") {
-      shown = committed;
-      failure = "";
-      // Report after any pending full commit has started its motion.
-      void tick().then(() => rendered(scene, next, layout));
-      return;
-    }
-    if (pinned) {
-      onbeforecommit?.(change);
-      ongeometry?.(next as BandScenePlan, layout);
-      shown = committed;
-      layoutStamp++;
-      failure = "";
-      void tick().then(() => rendered(scene, next, layout));
-      return;
-    }
-    const element = canvas;
-    const before = element && shown && !prefersReducedMotion() ? captureGraph(element) : null;
-    shown = committed;
-    layoutStamp++;
-    failure = "";
-    const current = ++plays;
-    void tick().then(() => {
-      if (current !== plays || !scene.isCurrent()) return;
-      // Cancelled as the replacements start, not at commit: a later commit before this turn then still captures this motion as displayed.
-      for (const animation of running) animation.cancel();
-      running = [];
-      if (change !== "reveal" && before && canvas) running = playGraph(canvas, before, layout.orientation);
-      else if (canvas) snapGraph(canvas);
-      rendered(scene, next, layout);
-    });
-  }
-
-  $effect(() => {
-    const next = plan;
-    const requestedReveal = reveal;
-    const superseded = new AbortController();
-    const scene: GraphScene = {
-      data, focus: focus?.componentId === componentId ? focus.key : null, reveal: requestedReveal,
-      isCurrent: () => !superseded.signal.aborted && plan === next && reveal === requestedReveal,
-    };
-    onlayout?.(true);
-    const fail = (error: Error) => { failure = error.message; onlayout?.(false); onfailure?.(scene, error); };
-    let ready: GraphLayout | null;
-    // Inline layout fails like the worker does: reported, never thrown out of this effect.
-    try { ready = cachedLayout(next.request) ?? (canLayoutInline(next.request) ? layoutNow(next.request) : null); }
-    catch (error) { untrack(() => fail(error instanceof Error ? error : new Error(String(error)))); return () => { superseded.abort(); onlayout?.(false); }; }
-    // Commit reads displayed geometry, not planning inputs. Tracking those
-    // reads would supersede this scene when its own render updates `shown`.
-    const inline = ready;
-    if (inline) untrack(() => commit(next, inline, scene));
-    else computeLayout(next.request, superseded.signal).then(
-      (layout) => { if (scene.isCurrent()) commit(next, layout, scene); },
-      (error: Error) => { if (scene.isCurrent()) fail(error); },
-    );
-    return () => { superseded.abort(); onlayout?.(false); };
-  });
-
-  // Windowing: only tiles near the scroller's viewport are mounted.
+  // Windowing: only tiles near the scroller's viewport are mounted. The logical scene keeps every record.
   let band = $state.raw<{ top: number; bottom: number } | null>(null);
   $effect(() => {
     const element = canvas, container = scroller;
-    if (!element || !container || (shown?.plan.tiles.size ?? 0) <= WINDOW_MIN) { band = null; return; }
+    if (!element || !container || records.tiles.length + 1 <= WINDOW_MIN) { band = null; return; }
     let frame = 0;
     const update = () => {
       frame = 0;
@@ -210,122 +70,78 @@
     return () => { container.removeEventListener("scroll", schedule); observer.disconnect(); cancelAnimationFrame(frame); };
   });
 
-  let attachmentSerial = 0;
-  const attachment = $derived.by(() => {
-    const layout = shown && pinned ? (bandPlacement ? attachPackedBand(shown.layout, pinned.key, bandTop, bandPlacement) : attachBand(shown.layout, pinned.key, 0, bandTop)) : shown?.layout;
-    // Routing obstacles can change without changing any path. Only displayed
-    // geometry owns attachment motion, so an unrelated opening carries it on.
-    if (layout && (!previousAttachment || !sameGraphGeometry(previousAttachment, layout))) attachmentSerial++;
-    previousAttachment = layout;
-    previousAttachmentOwner = shown?.layout;
-    return { layout, serial: attachmentSerial };
-  });
-  const attached = $derived(attachment.layout);
-
-  const visibleTiles = $derived.by(() => {
-    if (!shown) return [];
-    const { plan: current, layout } = shown;
-    return [...current.tiles.values()].filter((tile) => {
-      const placed = attached?.nodes.get(tile.key);
-      if (!placed || tile.key === pinned?.key) return false;
-      if (!band || tile.key === current.lineage.focus || tile.key === focusedKey || selected.has(tile.key)) return true;
-      return placed.y + placed.height >= band.top && placed.y <= band.bottom;
-    });
-  });
+  const focus = $derived(graph.plan.lineage.focus);
+  const visibleTiles = $derived(records.tiles.filter((record) => {
+    if (!band || record.tile.key === focus || record.tile.key === focusedKey || selected.has(record.tile.key)) return true;
+    return record.placed.y + record.placed.height >= band.top && record.placed.y <= band.bottom;
+  }));
 
   // With a focus, its lineage (the selected branch) is drawn with more contrast than the rest.
-  const branch = $derived(!!shown && shown.plan.lineage.focus !== null);
+  const branch = $derived(focus !== null);
   /** A line's colour: highlight and branch (with a focus) win over the route's scope. */
   const MARKER_TONES = ["", "subfolder", "external", "branch", "highlight"] as const;
   const lineTone = (style: RouteStyle): (typeof MARKER_TONES)[number] =>
     style.highlighted ? "highlight" : branch && style.related ? "branch" : style.kind === "current" ? "" : style.kind;
-  // Each connector's vertical extent, so windowing can skip far-away ones too.
-  const extents = $derived(shown ? new Map(attached!.routes.map((route) => [route.id, verticalExtent(route.path)])) : new Map<string, [number, number]>());
+  // Each connector's vertical extent in band coordinates (its record bounds are in folder coordinates), so windowing can skip far-away ones too.
   const inBand = (top: number, bottom: number) => !band || (bottom >= band.top && top <= band.bottom);
-  const routes = $derived(shown ? attached!.routes
-    .filter((route) => inBand(...extents.get(route.id)!))
-    .map((route) => ({ route, style: routeStyle(route, data.dag, shown!.plan.lineage) })) : []);
-  const junctions = $derived(shown ? [...attached!.junctions.values()].filter((junction) => inBand(junction.y, junction.y)) : []);
+  const routes = $derived(records.routes.flatMap((record) => {
+    const route = relative.get(record.route.id);
+    const top = record.rect.y - graph.origin.y, bottom = top + record.rect.height;
+    return route && inBand(top, bottom) ? [{ route, style: record.style }] : [];
+  }));
+  const junctions = $derived(records.junctions.flatMap((record) => {
+    const junction = attached.junctions.get(record.junction.id);
+    return junction && inBand(junction.y, junction.y) ? [{ junction, highlighted: record.highlighted }] : [];
+  }));
   const junctionTitle = (parents: readonly NodeKey[]) => `Combined inputs: ${parents.map((key) => {
-    const node = data.dag.nodes.get(key);
+    const node = nodes.get(key);
     return node ? promptTitles.labelFor(node.runId, node.prompt) || nodeTitle(node) : key;
   }).join(", ")}`;
 
-  function verticalExtent(path: string): [number, number] {
-    // Paths are absolute M/L/C commands, so every second number is a y coordinate.
-    const numbers = path.match(/-?\d+(?:\.\d+)?/g) ?? [];
-    let top = Infinity, bottom = -Infinity;
-    for (let index = 1; index < numbers.length; index += 2) {
-      const y = Number(numbers[index]);
-      if (y < top) top = y;
-      if (y > bottom) bottom = y;
-    }
-    return [top, bottom];
-  }
-
-  const DIRECTIONS: Record<string, Direction> = { ArrowLeft: "left", ArrowRight: "right", ArrowUp: "up", ArrowDown: "down" };
-  function keydown(key: NodeKey, event: KeyboardEvent): void {
-    if (ongridkey) { ongridkey(key, event); return; }
-    if (event.key === "Enter") { event.preventDefault(); onopen(key); return; }
-    const direction = DIRECTIONS[event.key];
-    if (!direction || !shown || event.altKey || event.ctrlKey || event.metaKey) return;
-    event.preventDefault();
-    const next = nearestInDirection(shown.layout, key, direction);
-    if (!next) return;
-    onnavigate(next);
-    // The view reveals the new tile once it has moved; focusing must not scroll first.
-    void tick().then(() => canvas?.querySelector<HTMLElement>(selectableSelector(next))?.focus({ preventScroll: true }));
-  }
+  // Grid keys (arrows, Enter) belong to the folder grid, which navigates the whole scene.
+  const keydown = (key: NodeKey, event: KeyboardEvent): void => ongridkey(key, event);
 </script>
 
-{#if shown && failure}
-  <!-- The graph shown is stale: say so rather than leave it looking current. -->
-  <div class="pending stale" role="alert">Trace layout failed: {failure}</div>
-{/if}
-{#if shown}
-  <div class="graph" data-layout-stamp={layoutStamp} data-orientation={shown.layout.orientation} data-attachment={pinned ? String(attachment.serial) : undefined} bind:this={canvas} style:width="{attached!.width}px" style:height="{attached!.height}px">
-    <svg class="edges" width={attached!.width} height={attached!.height} aria-hidden="true">
-      <defs>
-        <!--
-          One arrowhead per line colour, so every arrowhead matches its line.
-          Sized in canvas pixels (not stroke widths), so a highlighted line's
-          arrowhead is no bigger than any other. Its base sits on the route's
-          end and its tip one ARROW.length further on, on the tile's edge
-          (layout.ts ends each route that far short of it); `orient="auto"`
-          follows the route's straight final stem.
-        -->
-        {#each MARKER_TONES as tone (tone)}
-          <marker id="arrow-{uid}{tone ? `-${tone}` : ""}" class={tone} markerUnits="userSpaceOnUse" viewBox="0 0 {ARROW.length} {ARROW.width}"
-            refX="0" refY={ARROW.width / 2} markerWidth={ARROW.length} markerHeight={ARROW.width} orient="auto">
-            <polygon points="0,0 {ARROW.length},{ARROW.width / 2} 0,{ARROW.width}" />
-          </marker>
-        {/each}
-      </defs>
-      <!-- Motion's fading copies of departed connectors and junctions (motion.ts); Svelte keeps it empty. -->
-      <g class="ghosts" data-motion-ghosts></g>
-      {#each routes as { route, style } (route.id)}
-        {@const tone = lineTone(style)}
-        <path class={style.kind} class:unrelated={!style.related} class:branch={branch && style.related} class:highlight={style.highlighted}
-          data-route={route.id} data-from={endpointKey(route.from)} data-to={endpointKey(route.to)}
-          marker-end={route.terminal ? `url(#arrow-${uid}${tone ? `-${tone}` : ""})` : undefined} d={route.path} />
+<div class="graph" data-layout-stamp={stamps.layout} data-attachment={stamps.attachment} data-orientation={graph.layout.orientation} bind:this={canvas} style:width="{attached.width}px" style:height="{attached.height}px">
+  <svg class="edges" width={attached.width} height={attached.height} aria-hidden="true">
+    <defs>
+      <!--
+        One arrowhead per line colour, so every arrowhead matches its line.
+        Sized in canvas pixels (not stroke widths), so a highlighted line's
+        arrowhead is no bigger than any other. Its base sits on the route's
+        end and its tip one ARROW.length further on, on the tile's edge
+        (layout.ts ends each route that far short of it); `orient="auto"`
+        follows the route's straight final stem.
+      -->
+      {#each MARKER_TONES as tone (tone)}
+        <marker id="arrow-{uid}{tone ? `-${tone}` : ""}" class={tone} markerUnits="userSpaceOnUse" viewBox="0 0 {ARROW.length} {ARROW.width}"
+          refX="0" refY={ARROW.width / 2} markerWidth={ARROW.length} markerHeight={ARROW.width} orient="auto">
+          <polygon points="0,0 {ARROW.length},{ARROW.width / 2} 0,{ARROW.width}" />
+        </marker>
       {/each}
-      {#each junctions as junction (junction.id)}
-        <circle class="junction" class:highlight={junctionRelated(junction.parents, shown.plan.lineage)}
-          data-junction={junction.id} cx={junction.x} cy={junction.y} r="2.8"><title>{junctionTitle(junction.parents)}</title></circle>
-      {/each}
-    </svg>
-    <!-- Motion's fading copies of departed tiles (motion.ts); Svelte keeps it empty. -->
-    <div class="ghosts" data-motion-ghosts aria-hidden="true" inert></div>
-    {#each visibleTiles as tile (tile.key)}
-      <TraceTile {tile} badgeNodes={data.dag.nodes} focused={focusedKey === undefined || focusedKey === tile.key} onfocus={() => onfocuskey?.(tile.key)} badges={(shown.plan as BandScenePlan).badges?.get(tile.key) ?? []} badgeSelection={selected} onbadge={onactivate} onbadgehover={(key) => { hoveredBadge = key; onbadgehover?.(key); }} placed={attached!.nodes.get(tile.key)!} orientation={shown.layout.orientation} selected={selected.has(tile.key)} {revision}
-        onactivate={(event) => onactivate(tile.key, event)} onopen={() => onopen(tile.key)}
-        onmenu={(event) => onmenu(tile.key, event)} onkey={(event) => keydown(tile.key, event)}
-        {captureSelection} onsaved={(path, select) => onsaved(tile.key, path, select)} ondiscarded={() => ondiscarded(tile.key)} />
+    </defs>
+    <!-- Motion's fading copies of departed connectors and junctions (motion.ts); Svelte keeps it empty. -->
+    <g class="ghosts" data-motion-ghosts></g>
+    {#each routes as { route, style } (route.id)}
+      {@const tone = lineTone(style)}
+      <path class={style.kind} class:unrelated={!style.related} class:branch={branch && style.related} class:highlight={style.highlighted}
+        data-route={route.id} data-from={endpointKey(route.from)} data-to={endpointKey(route.to)}
+        marker-end={route.terminal ? `url(#arrow-${uid}${tone ? `-${tone}` : ""})` : undefined} d={route.path} />
     {/each}
-  </div>
-{:else}
-  <div class="pending" class:delayed={!failure} class:pinned-pending={!!pinned} style:top={pinned ? `${bandTop + STACK_STEM_ROOM}px` : undefined} role="status">{failure ? `Trace layout failed: ${failure}` : "Arranging…"}</div>
-{/if}
+    {#each junctions as { junction, highlighted } (junction.id)}
+      <circle class="junction" class:highlight={highlighted}
+        data-junction={junction.id} cx={junction.x} cy={junction.y} r="2.8"><title>{junctionTitle(junction.parents)}</title></circle>
+    {/each}
+  </svg>
+  <!-- Motion's fading copies of departed tiles (motion.ts); Svelte keeps it empty. -->
+  <div class="ghosts" data-motion-ghosts aria-hidden="true" inert></div>
+  {#each visibleTiles as record (record.tile.key)}
+    <TraceTile tile={record.tile} badgeNodes={nodes} focused={focusedKey === undefined || focusedKey === record.tile.key} onfocus={() => onfocuskey?.(record.tile.key)} badges={record.badges} badgeSelection={selected} onbadge={onactivate} onbadgehover={(key) => onbadgehover?.(key)} placed={record.placed} orientation={graph.layout.orientation} selected={record.selected} {revision}
+      onactivate={(event) => onactivate(record.tile.key, event)} onopen={() => onopen(record.tile.key)}
+      onmenu={(event) => onmenu(record.tile.key, event)} onkey={(event) => keydown(record.tile.key, event)}
+      {captureSelection} onsaved={(path, select) => onsaved(record.tile.key, path, select)} ondiscarded={() => ondiscarded(record.tile.key)} />
+  {/each}
+</div>
 
 <style>
   .graph { position: relative; margin: 0; }
@@ -357,11 +173,4 @@
   .junction.highlight { fill: var(--edge-highlight); }
   .ghosts { pointer-events: none; }
   div.ghosts { position: absolute; inset: 0; }
-  /* Progress text appears only when loading is slow, so a fast load never flashes it. A transition, not an
-     animation: grid motion cancels band animations, and a cancelled transition shows the text at once. */
-  .delayed { transition: opacity 150ms ease-out 400ms; }
-  @starting-style { .delayed { opacity: 0; } }
-  .pinned-pending { position: absolute; left: 0; width: 100%; box-sizing: border-box; }
-  .pending { padding: 18px 12px; color: var(--text-secondary); font-size: 12px; }
-  .pending.stale { padding: 4px 12px; }
 </style>

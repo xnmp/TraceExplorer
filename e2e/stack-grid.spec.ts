@@ -804,15 +804,18 @@ test("#51 a cold activation follows its revision after merging into an older lin
   await page.evaluate(() => (window as any).trace.backend.holdNodeReads());
   await stack(page, "draft").locator("[data-stack-toggle]").click();
   await expect.poll(() => page.evaluate((id) => (window as any).trace.backend.calls("trace_component_nodes").some((call: { params: { componentId: string } }) => call.params.componentId === id), oldId)).toBe(true);
-  // Only nodes are held: the new index overtakes the clicked stack's node load.
+  // Only nodes are held: the new index overtakes the clicked stack's node load. The requested open
+  // is a dependency of the refresh, so the committed scene stays until its data is complete.
   await page.evaluate(() => (window as any).trace.backend.joinGeneration(["village", "draft"], "joined"));
+  await expect.poll(() => page.evaluate(() => (window as any).trace.backend.heldNodeReads().length)).toBeGreaterThan(1);
+  await expect(page.locator(`section[data-component="${oldId}"]`)).toHaveCount(1);
+  await page.evaluate(() => (window as any).trace.backend.releaseNodeReads());
+  await expect.poll(async () => (await state(page)).target).toMatchObject({ id: `trace:${clicked}` });
+  await settle(page);
   await expect(page.locator(`section[data-component="${oldId}"]`)).toHaveCount(0);
   await expect(stack(page, "village")).toBeVisible();
   // The clicked unsaved image is now neither a cover nor a folder member.
   expect(await stack(page, "village").locator(".cover-press").getAttribute("data-node-key")).toBe(await key(page, "village"));
-  await page.evaluate(() => (window as any).trace.backend.releaseNodeReads());
-  await expect.poll(async () => (await state(page)).target).toMatchObject({ id: `trace:${clicked}` });
-  await settle(page);
   const after = await state(page);
   expect(after.selected).toEqual([]);
   expect(after.inputs).toEqual(["/managed/draft.png"]);
@@ -854,12 +857,18 @@ for (const outcome of ["delayed", "failed"] as const) {
   test(`a stack whose data is ${outcome} can be closed again`, async ({ page }) => {
     await openView(page, 420, "?grouping=two-chains", false);
     const backend = (fn: string, ...args: unknown[]) => page.evaluate(([fn, args]) => (window as any).trace.backend[fn as string](...(args as unknown[])), [fn, args] as const);
-    await backend(outcome === "delayed" ? "holdFolderReads" : "failNodeReads", 1);
+    if (outcome === "delayed") await backend("holdFolderReads"); else await backend("failNodeReads", 1);
     const heading = stack(page, "photo-a").locator("[data-stack-toggle]");
     await heading.click();
-    await expect(heading).toHaveAttribute("aria-expanded", "true");
-    await heading.click();
+    // Nothing is committed while the open is pending or after it failed: the disclosure reports the
+    // committed scene and cancels the pending open, or dismisses the failure.
+    if (outcome === "delayed") await expect(heading).toHaveAttribute("aria-label", "Cancel opening stack");
+    else await expect(stack(page, "photo-a").locator("[data-cover-error]")).toBeVisible();
     await expect(heading).toHaveAttribute("aria-expanded", "false");
+    await heading.click();
+    await expect(heading).toHaveAttribute("aria-label", "Expand stack");
+    await expect(heading).toHaveAttribute("aria-expanded", "false");
+    await expect(stack(page, "photo-a").locator("[data-cover-progress], [data-cover-error]")).toHaveCount(0);
     await expect(stack(page, "photo-a").locator("[data-grid-band]")).toHaveCount(0);
     if (outcome === "delayed") await backend("releaseFolderReads");
     await settle(page);
@@ -878,8 +887,9 @@ test("a delayed activation does not undo an explicit close", async ({ page }) =>
   // An unsaved cover is not a listed file: pressing it loads its component before selecting it.
   const heading = stack(page, "out").locator("[data-stack-toggle]");
   await heading.click();
-  await expect(heading).toHaveAttribute("aria-expanded", "true");
+  await expect(heading).toHaveAttribute("aria-label", "Cancel opening stack");
   await heading.click();
+  await expect(heading).toHaveAttribute("aria-label", "Expand stack");
   await expect(heading).toHaveAttribute("aria-expanded", "false");
   await backend("releaseFolderReads"); await settle(page);
   await expect(stack(page, "out").locator("[data-grid-band]")).toHaveCount(0);
@@ -1008,7 +1018,7 @@ test("merging the focused child's stack into another keeps one tab stop and focu
   expect(await uncaught(page)).toEqual([]);
 });
 
-for (const worker of [false, true]) test(`#56 cold open holds the band and following row through ${worker ? "node reads and worker layout" : "node reads"}`, async ({ page }) => {
+for (const worker of [false, true]) test(`#56 cold open keeps the committed grid through ${worker ? "node reads and worker layout" : "node reads"}, then commits the band and following row together`, async ({ page }) => {
   await page.setViewportSize({ width: 800, height: 4000 });
   await openView(page, 420, worker ? "?fanChildren=45" : "?gym=1&fileTile=1&tileSize=small", false);
   const samples = await page.evaluate(async ({ name, worker }) => {
@@ -1018,13 +1028,13 @@ for (const worker of [false, true]) test(`#56 cold open holds the band and follo
     const heldReplies = (): number => worker ? w.trace.heldLayoutReplies().length : 0;
     const section = document.querySelector<HTMLElement>(`section[aria-label="${name}"]`)!;
     const cover = section.querySelector<HTMLElement>("[data-grid-cell]")!;
-    const row = Number(cover.getAttribute("aria-rowindex")) - 1;
     // A real following cell receives grid motion; measuring grid height alone misses a row reversal.
     const following = [...document.querySelectorAll<HTMLElement>("[data-grid-motion]")]
       .find((cell) => cell.getBoundingClientRect().top > cover.getBoundingClientRect().top + 2)!;
     const view = document.querySelector<HTMLElement>('[data-testid="trace-view"]')!;
     const baseline = following.getBoundingClientRect().top + view.scrollTop;
-    const samples: Array<{ time: number; top: number; computedTop: number; bandBottom: number; height: number; content: boolean; loading: boolean; statusInBand: boolean; workerHeld: boolean }> = [];
+    const coverBefore = JSON.stringify(cover.getBoundingClientRect());
+    const samples: Array<{ time: number; top: number; computedTop: number; band: boolean; bandBottom: number; content: boolean; progress: boolean; busy: boolean; coverMoved: boolean; workerHeld: boolean }> = [];
     const start = performance.now();
     let readsReleased = false, workerReleased = !worker, workerAt: number | null = null, stable = 0;
     try {
@@ -1032,25 +1042,22 @@ for (const worker of [false, true]) test(`#56 cold open holds the band and follo
       while (stable < 4 && performance.now() - start < 10_000) {
         await new Promise(requestAnimationFrame);
         const time = performance.now() - start;
-        const band = section.querySelector<HTMLElement>("[data-grid-band]")!;
-        const background = document.querySelector<HTMLElement>(`[data-grid-row-band="${row}"]`)!;
-        const bounds = background.getBoundingClientRect();
-        const status = band.querySelector<HTMLElement>('[role="status"]');
-        const statusBounds = status?.getBoundingClientRect();
-        const content = band.querySelectorAll("[data-tile-key]").length > 0;
+        const band = section.querySelector<HTMLElement>("[data-grid-band]");
+        const background = band && document.querySelector<HTMLElement>(`[data-grid-row-band="${band.dataset.gridBandRow}"]`);
         const grid = following.closest<HTMLElement>('[role="grid"]')!;
         samples.push({ time, top: following.getBoundingClientRect().top + view.scrollTop,
           computedTop: parseFloat(getComputedStyle(following).top) + grid.getBoundingClientRect().top + view.scrollTop,
-          bandBottom: bounds.bottom + view.scrollTop, height: bounds.height, content,
-          loading: !!status?.textContent?.trim(), workerHeld: heldReplies() > 0,
-          statusInBand: !!statusBounds && statusBounds.top >= bounds.top && statusBounds.bottom <= bounds.bottom });
+          band: !!band, bandBottom: background ? background.getBoundingClientRect().bottom + view.scrollTop : 0,
+          content: !!band && band.querySelectorAll("[data-tile-key]").length > 0,
+          progress: !!section.querySelector("[data-cover-progress]"), busy: !!section.querySelector('[aria-busy="true"]'),
+          coverMoved: JSON.stringify(cover.getBoundingClientRect()) !== coverBefore, workerHeld: heldReplies() > 0 });
         if (!readsReleased && time >= 500) { backend.releaseNodeReads(); readsReleased = true; }
         if (heldReplies() && workerAt === null) workerAt = time;
         if (workerAt !== null && time - workerAt >= 500 && !workerReleased) {
           w.trace.releaseLayoutReplies(); workerReleased = true;
         }
         const moving = document.getAnimations().some((animation) => animation.playState === "running");
-        stable = content && readsReleased && workerReleased && !moving && !w.trace.layoutsPending() ? stable + 1 : 0;
+        stable = samples.at(-1)!.content && readsReleased && workerReleased && !moving && !w.trace.layoutsPending() ? stable + 1 : 0;
       }
       return { baseline, samples, settled: stable >= 4 };
     } finally {
@@ -1059,45 +1066,28 @@ for (const worker of [false, true]) test(`#56 cold open holds the band and follo
   }, { name: worker ? "fan" : "gym", worker });
   await test.info().attach('cold-opening-frames', { body: JSON.stringify(samples), contentType: 'application/json' });
   expect(samples.settled).toBe(true);
-  // The first frame showing the reserved background must already place the next row
-  // outside it. A delayed top animation can freeze under a cold native graph mount.
-  for (const sample of samples.samples) {
-    expect(sample.top, JSON.stringify(sample)).toBeGreaterThanOrEqual(sample.bandBottom - .5);
-    expect(sample.computedTop, JSON.stringify(sample)).toBeGreaterThanOrEqual(sample.bandBottom - .5);
+  // Until the complete commit, the committed grid stays exactly as it was: no band, no reserved
+  // space, the cover and the following row in place. Progress is on the cover, busy at once.
+  const pending = samples.samples.filter((sample) => !sample.band);
+  expect(pending.length).toBeGreaterThan(5);
+  expect(pending.at(-1)!.time).toBeGreaterThanOrEqual(500);
+  if (worker) expect(pending.filter((sample) => sample.workerHeld).at(-1)!.time).toBeGreaterThan(900);
+  for (const sample of pending) {
+    expect(Math.abs(sample.top - samples.baseline), JSON.stringify(sample)).toBeLessThan(.5);
+    expect(sample.coverMoved, JSON.stringify(sample)).toBe(false);
+    expect(sample.progress && sample.busy, JSON.stringify(sample)).toBe(true);
   }
-  // Intermediate positions belong to one coordinated resize, rather than a
-  // sequence of jumps. Once settled, the following row stays at its final y.
-  const end = samples.samples.at(-1)!;
-  for (const sample of samples.samples.filter(sample => sample.time >= end.time - 40)) expect(sample.top).toBeCloseTo(end.top, 0);
-  const loading = samples.samples.filter((sample) => !sample.content);
-  expect(loading.length).toBeGreaterThan(5);
-  expect(loading.at(-1)!.time).toBeGreaterThanOrEqual(500);
-  // Pending native effects start at zero on their first presented frame,
-  // without back-dating; samples taken before that frame read zero too.
-  // Zero height is only ever a short leading prefix and never returns.
-  expect(loading.every(sample => sample.loading)).toBe(true);
-  const opened = loading.findIndex(sample => sample.height > 0);
-  expect(opened).toBeGreaterThan(-1);
-  expect(loading[opened].time - loading[0].time).toBeLessThan(250);
-  expect(loading.slice(opened).every(sample => sample.height > 0)).toBe(true);
-  expect(loading.filter(sample => sample.time > 200).every(sample => sample.statusInBand)).toBe(true);
-  if (worker) expect(loading.filter((sample) => sample.workerHeld).at(-1)!.time).toBeGreaterThan(900);
-  // Before content arrives, neither reservation nor following row may reverse upward after opening.
-  let peak = samples.baseline, height = 0;
-  for (const sample of loading) {
-    peak = Math.max(peak, sample.top); height = Math.max(height, sample.height);
-    expect(sample.top, JSON.stringify(sample)).toBeGreaterThanOrEqual(peak - 2);
-    expect(sample.height, JSON.stringify(sample)).toBeGreaterThanOrEqual(height - 2);
-  }
-  expect(peak - samples.baseline).toBeGreaterThan(40);
-  // Content can settle an overestimate upward once, but cannot then push the row down again.
-  peak = samples.baseline;
-  let settlingUp = false, trough = Infinity;
-  for (const sample of samples.samples) {
-    if (sample.top < peak - 2) settlingUp = true;
-    if (settlingUp) { trough = Math.min(trough, sample.top); expect(sample.top).toBeLessThanOrEqual(trough + 2); }
-    else peak = Math.max(peak, sample.top);
-  }
+  // The band commits complete, in one frame with its content and the following row's new place.
+  const committed = samples.samples.slice(pending.length);
+  expect(committed.length).toBeGreaterThan(0);
+  expect(committed.every((sample) => sample.band && sample.content && !sample.progress && !sample.busy)).toBe(true);
+  for (const sample of committed) expect(sample.computedTop, JSON.stringify(sample)).toBeGreaterThanOrEqual(sample.bandBottom - .5);
+  // One coordinated move down to the final row: never back up, then steady.
+  let previous = samples.baseline;
+  for (const sample of committed) { expect(sample.top, JSON.stringify(sample)).toBeGreaterThanOrEqual(previous - .5); previous = sample.top; }
+  const end = committed.at(-1)!;
+  expect(end.top - samples.baseline).toBeGreaterThan(40);
+  for (const sample of committed.filter((sample) => sample.time >= end.time - 40)) expect(sample.top).toBeCloseTo(end.top, 0);
   await expect(stack(page, worker ? "fan" : "gym").locator("[data-grid-band] [data-tile-key]").first()).toBeVisible();
   expect(await uncaught(page)).toEqual([]);
 });

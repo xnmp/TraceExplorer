@@ -4,40 +4,56 @@
    * stack per connected component in the folder grid alongside entries
    * without provenance. All view state (folder session, expansion, anchors)
    * belongs to this pane; selection and Preview go through the pane handle.
+   *
+   * Drawing goes through the pane's scene controller: every interaction is one
+   * action (`controller.action`), the pane's intent reaches it through one
+   * intake effect, and the grid renders only the controller's publication.
    */
   import { flushSync, onDestroy, tick, untrack } from "svelte";
-  import { hostSupportsSelectionAnchor } from "../../../../sdk";
+  import { hostFileTile, hostSupportsSelectionAnchor } from "../../../../sdk";
   import type { FileViewPane, PreviewTarget } from "../../../../../integration/plugin-sdk";
   import type { FileEntry } from "$lib/domain/file";
   import { parentDir, samePath } from "$lib/domain/path";
   import type { ComponentSummary, NodeKey, TraceNode } from "$lib/domain/trace-graph/model";
   import { tileMetrics } from "$lib/domain/trace-graph/metrics";
+  import { fallbackGridMetrics, type FolderCell } from "$lib/domain/trace-graph/folder-grid";
   import { traceInvalidation } from "../invalidation.svelte";
   import { promptTitles } from "../prompt-titles.svelte";
-  import { createFolderSession, type ComponentData, type FolderIndex, type FolderSession } from "./folder-session.svelte";
+  import { createFolderSession, type FolderIndex, type FolderSession } from "./folder-session.svelte";
   import { tracePanes, isTraceTargetData, type TracePaneView } from "./pane-registry.svelte";
   import { NO_PICKS, clickListed, dropPick, followPicks, picksFromHost, pickOnly, pickable, replacePick, resolvePicks, selectionKey, settlePicks, togglePick, type PickLocation, type Picks } from "./input-picks";
   import { nodeTarget } from "./node-target";
   import { revealArtifactId } from "./reveal-target";
-  import type { GraphScene } from "./graph-commit";
   import { findLoadedNode, locateTarget, unresolvedTargetComponents } from "./target-location";
-  import { holdAnchor, zoomOf, scrollsByUser, USER_SCROLL, type AnchorHold, viewMoving } from "./motion";
+  import { holdAnchor, scrollsByUser, USER_SCROLL, type AnchorHold } from "./motion";
+  import { createSceneController, type ActionLease, type SceneCause } from "./scene-controller.svelte";
+  import { computeFolderLayout, holdLayoutWork } from "./layout-client";
+  import { folderLayoutRuntime } from "./folder-layout-runtime";
+  import type { SceneIntent } from "./scene-inputs";
 
   import StackGrid from "./StackGrid.svelte";
   import { selectableSelector } from "./selectable";
   import { attachMarqueeSelection } from "./marquee-attachment";
   import { marqueeSelection, sameSelection, type MarqueeRect } from "./marquee-selection";
   import { pendingMarqueeComponents } from "./marquee-components";
-  import { folderCells, pendingListingPaths } from "./stack-grid";
+  import { pendingListingPaths } from "./stack-grid";
 
   interface Props { pane: FileViewPane; session?: FolderSession }
   let { pane, session: provided }: Props = $props();
 
   const session = untrack(() => provided) ?? createFolderSession(undefined, undefined, untrack(() => pane.paneId));
+  const layoutRuntime = folderLayoutRuntime();
+  const controller = createSceneController({
+    paneId: untrack(() => pane.paneId), data: session, engine: layoutRuntime.engine, inline: layoutRuntime.inline, remember: layoutRuntime.remember,
+    runLayout: (input, signal) => computeFolderLayout(input, layoutRuntime.engine, signal), holdWork: holdLayoutWork,
+  });
+  const host = hostFileTile();
   /** Width is quantized so resizing does not relayout on every pixel. */
   const WIDTH_STEP = 16;
   /** Horizontal space reserved by the view's 10px pane padding. */
   const GRID_CHROME = 20;
+  /** How long a first scene may take before "Loading Trace…" shows. */
+  const LOADING_DELAY_MS = 400;
 
   let scroller = $state<HTMLElement | null>(null);
   let clientWidth = $state(0);
@@ -47,7 +63,7 @@
   let marqueeTurn = 0;
   let marqueeFocus: { key: NodeKey; componentId: string } | null = null;
   let marqueeAttachment: ReturnType<typeof attachMarqueeSelection> | null = null;
-  let near = $state.raw<ReadonlySet<string>>(new Set());
+  let badgeHover = $state<string | null>(null);
   /** A save into this folder waiting for the listing to contain its file; see `callbacks.saved`. */
   /**
    * Files this view just saved, by path, with the index read they predate. The host lists a saved file
@@ -66,40 +82,25 @@
     ...pendingListingPaths(pane.entries, indexedListing.index, indexedListing.paths, !!session.indexError),
   ]));
   let pendingSave = $state.raw<{ directory: string; path: string; key: NodeKey; picks: Picks } | null>(null);
-  type ScrollAnchor = { key: NodeKey; componentId: string; ownsSelection: () => boolean };
-  let anchor: ScrollAnchor | null = null;
-  let releaseAnchor: (() => void) | null = null;
+  /** A keyboard/programmatic reveal of a tile once its action is presented and settled; aborted by input. */
+  let anchorReveal: AbortController | null = null;
   let heldAnchor: AnchorHold | null = null;
-  /** Bounded by mounted sections, with no promises or settlement waiters. */
-  const pendingLayouts = new Set<string>();
-  let anchorUpdateQueued = false;
 
-  function updateHeldAnchor(): void {
-    if (anchorUpdateQueued) return;
-    anchorUpdateQueued = true;
-    // All graphs in this render install their FLIP animations before measuring
-    // the anchor. Measuring between their commit callbacks can see final DOM
-    // geometry that the following callback is about to animate back.
-    void tick().then(() => queueMicrotask(() => { anchorUpdateQueued = false; heldAnchor?.update(); }));
-  }
+  /** Compensates a held anchor once the publication in flight has started its motion (one notification per publication). */
+  const anchorLayoutChanged = () => controller.afterPresentation(() => heldAnchor?.update());
+  controller.onPresented(() => { marqueeAttachment?.layoutChanged(); heldAnchor?.update(); });
 
   function releaseAnchors(): void {
-    anchor = null;
-    releaseAnchor?.();
-    releaseAnchor = null;
+    anchorReveal?.abort(new DOMException("Trace reveal was superseded", "AbortError"));
+    anchorReveal = null;
     heldAnchor?.release();
     heldAnchor = null;
   }
-  /** A repeat click can reuse a displayed scene's motion without waiting for a new focus/plan. */
-  const committedScenes = new WeakMap<ComponentData, GraphScene>();
   type RevealOwner = { controller: AbortController; ownsSelection: () => boolean };
   let activeReveal: RevealOwner | null = null;
-  let revealScene = $state.raw<RevealOwner | null>(null);
-  let pendingReveal: { owner: RevealOwner; key: NodeKey; signal: AbortSignal; finish(error?: unknown): void } | null = null;
 
   function supersedeReveal(): void {
     activeReveal?.controller.abort(new DOMException("Trace reveal was superseded", "AbortError"));
-    pendingReveal?.finish(new DOMException("Trace reveal was superseded", "AbortError"));
   }
 
   function checkReveal(owner: RevealOwner): void {
@@ -110,28 +111,6 @@
     }
   }
 
-  /** A reveal finishes only once its focused tile has settled into the visible layout. */
-  function awaitReveal(owner: RevealOwner, key: NodeKey): Promise<void> {
-    const signal = owner.controller.signal;
-    return new Promise((resolve, reject) => {
-      const request = {
-        owner, key, signal,
-        finish: (error: unknown = undefined) => {
-          if (pendingReveal === request) {
-            pendingReveal = null;
-            releaseAnchor?.();
-            releaseAnchor = null;
-          }
-          signal.removeEventListener("abort", cancel);
-          if (error !== undefined) reject(error); else resolve();
-        },
-      };
-      const cancel = () => { releaseAnchors(); request.finish(signal.reason ?? new DOMException("Reveal aborted", "AbortError")); };
-      pendingReveal = request;
-      signal.addEventListener("abort", cancel, { once: true });
-      if (signal.aborted) cancel();
-    });
-  }
   const issuedTargets = new WeakMap<PreviewTarget, TraceNode>();
 
   const directory = $derived(pane.directory);
@@ -141,6 +120,8 @@
   // (without the "tileSize" capability) leave it undefined: the default tile.
   const imagePx = $derived(pane.tileSize?.imagePx);
   const tile = $derived(tileMetrics(imagePx));
+  const gridMetrics = $derived(host?.tileGridMetrics(pane.tileSize?.preset) ?? fallbackGridMetrics(tile));
+  const coverChrome = $derived({ imagePx: host ? (pane.tileSize?.imagePx ?? 64) : null, small: pane.tileSize?.preset === "small" });
   const entriesByPath = $derived(new Map(pane.entries.map((entry) => [entry.path, entry])));
 
   // Session follows the pane's folder and Trace's invalidation signal.
@@ -154,9 +135,8 @@
   });
 
   const summaries = $derived<readonly ComponentSummary[]>(session.index?.components ?? []);
-  const gridCells = $derived(session.index ? folderCells(pane.entries, session.index) : []);
-  const gridCellsByKey = $derived(new Map(gridCells.map((cell) => [cell.id, cell])));
-  const stackKey = (id: string) => gridCells.find((cell) => cell.summary?.id === id)?.id ?? id;
+  /** Stacks by component id, from the index (cover keys are stack identities). */
+  const coverOf = (id: string) => summaries.find((summary) => summary.id === id)?.coverKey ?? id;
   const openKeys = $derived(session.openStackKeys);
   $effect(() => {
     const choice = JSON.stringify([hostChoice, target?.id, pane.focusedPath]);
@@ -166,7 +146,7 @@
       if (!index || dragging) return;
       const ids = new Set(pane.selection.flatMap((entry) => { const member = session.componentOf(entry.path); return member ? [member.componentId] : []; }));
       if (focus) ids.add(focus.componentId);
-      session.followSelection(choice, ids);
+      controller.derive(() => session.followSelection(choice, ids));
     });
   });
 
@@ -268,16 +248,15 @@
     commitPicks(click.picks);
   }
 
-  const isExpanded = (summary: ComponentSummary, index: number) =>
-    openKeys.has(summary.coverKey);
+  const isExpanded = (summary: ComponentSummary) => openKeys.has(summary.coverKey);
 
-  // Load what is expanded and near the viewport, and every component holding an
-  // extra pick (so a pick in a collapsed section is checked against fresh
-  // data); release the rest.
+  // Load every component holding an extra pick (so a pick in a collapsed section is
+  // checked against fresh data), marquee hits and open-stack identity searches;
+  // release the rest. Open stacks are the scene controller's (its component leases).
   $effect(() => {
     const picked = pickComponents;
     const selecting = marqueeLoading;
-    const wanted = summaries.filter((summary, index) => (isExpanded(summary, index) && near.has(summary.id)) || picked.has(summary.id) || selecting.has(summary.id) || session.openStackSearch.has(summary.id)).map((summary) => summary.id);
+    const wanted = summaries.filter((summary) => picked.has(summary.id) || selecting.has(summary.id) || session.openStackSearch.has(summary.id)).map((summary) => summary.id);
     untrack(() => {
       for (const summary of summaries) if (!wanted.includes(summary.id)) session.release(summary.id);
       for (const id of wanted) void session.ensure(id);
@@ -293,64 +272,24 @@
 
   // How the view keeps the chosen tile in sight through the relayout it
   // causes: a click holds the tile where it was on screen; keyboard and
-  // programmatic navigation reveal it once motion settles.
+  // programmatic navigation reveal it once its action is presented and settled.
   function anchorTile(key: NodeKey, componentId: string | undefined = undefined): HTMLElement | null {
-    const section = componentId ? scroller?.querySelector<HTMLElement>(`section[data-component="${CSS.escape(componentId)}"]`) : scroller;
-    return section?.querySelector<HTMLElement>(selectableSelector(key)) ?? null;
-  }
-  // Holds compensate every section commit, including while the clicked graph
-  // is still computing. Reveals alone wait for their committed motion.
-  /** One cancellable reveal loop; readiness includes workers in sibling sections. */
-  function whenReady(show: () => void): void {
-    releaseAnchor?.();
-    let frame = 0, live = true;
-    const cancel = () => { live = false; cancelAnimationFrame(frame); };
-    releaseAnchor = cancel;
-    const step = () => {
-      frame = 0;
-      if (!live) return;
-      if (!scroller) { cancel(); return; }
-      if (pendingLayouts.size || viewMoving(scroller)) { frame = requestAnimationFrame(step); return; }
-      cancel();
-      if (releaseAnchor === cancel) releaseAnchor = null;
-      show();
-    };
-    frame = requestAnimationFrame(step);
+    const section = componentId ? scroller?.querySelector<HTMLElement>(`section[data-component="${CSS.escape(componentId)}"]`) : null;
+    return section?.querySelector<HTMLElement>(selectableSelector(key)) ?? scroller?.querySelector<HTMLElement>(selectableSelector(key)) ?? null;
   }
 
-  function keepAnchor(scene: GraphScene): void {
-    marqueeAttachment?.layoutChanged();
-    updateHeldAnchor();
-    if (!scene.isCurrent()) return;
-    committedScenes.set(scene.data, scene);
-    const data = scene.data;
-    const request = pendingReveal;
-    if (request && scene.reveal === request.owner && scene.focus === request.key && data.dag.nodes.has(request.key)
-      && data === session.components.get(focus?.componentId ?? "")) {
-      releaseAnchors();
-      whenReady(() => {
-        if (pendingReveal !== request || request.signal.aborted) return;
-        try { checkReveal(request.owner); } catch (error) { request.finish(error); return; }
-        if (focus?.key !== request.key) { supersedeReveal(); return; }
-        const button = anchorTile(request.key, focus?.componentId);
-        if (!button) { request.finish(new Error("Trace image could not be shown")); return; }
-        button.scrollIntoView({ block: "nearest", inline: "nearest" });
-        button.focus({ preventScroll: true });
-        request.finish();
-      });
-      return;
-    }
-    const current = anchor;
-    if (!current || !scroller || !current.ownsSelection() || !data.dag.nodes.has(current.key)
-      || data !== session.components.get(current.componentId)) return;
-    anchor = null;
-    whenReady(() => {
-      if (current.ownsSelection()) {
-        const tile = anchorTile(current.key, current.componentId);
-        tile?.scrollIntoView({ block: "nearest", inline: "nearest" });
-        tile?.focus({ preventScroll: true });
-      }
-    });
+  /** Scrolls `key` into view and focuses it once action `id` is presented and its motion has settled. */
+  function revealWhenSettled(id: number, key: NodeKey, componentId: string): void {
+    anchorReveal?.abort(new DOMException("Trace reveal was superseded", "AbortError"));
+    const reveal = anchorReveal = new AbortController();
+    const dir = directory, ownsSelection = captureSelection();
+    void controller.whenPresented(id, key, reveal.signal).then(() => controller.whenSettled(id, reveal.signal)).then(() => {
+      if (anchorReveal === reveal) anchorReveal = null;
+      if (directory !== dir || !ownsSelection()) return;
+      const tile = anchorTile(key, componentId);
+      tile?.scrollIntoView({ block: "nearest", inline: "nearest" });
+      tile?.focus({ preventScroll: true });
+    }, () => { if (anchorReveal === reveal) anchorReveal = null; });
   }
 
   // Input cancels pending reveals; an active hold applies its own scroll-input
@@ -358,7 +297,7 @@
   $effect(() => {
     const element = scroller;
     if (!element) return;
-    const cancel = (event: Event) => { if (scrollsByUser(event)) { anchor = null; releaseAnchor?.(); releaseAnchor = null; supersedeReveal(); } };
+    const cancel = (event: Event) => { if (scrollsByUser(event)) { anchorReveal?.abort(new DOMException("Trace reveal was superseded", "AbortError")); anchorReveal = null; supersedeReveal(); } };
     for (const type of USER_SCROLL) element.addEventListener(type, cancel, { passive: true, capture: true });
     return () => { for (const type of USER_SCROLL) element.removeEventListener(type, cancel, { capture: true }); };
   });
@@ -398,28 +337,24 @@
     pane.setPreviewTarget(next);
   }
 
-  function focusNode(key: NodeKey, modifiers: { ctrlKey?: boolean; shiftKey?: boolean } = {}, keep: "hold" | "reveal" = "reveal", componentId: string | undefined = undefined): void {
+  /**
+   * Focuses a node within action `lease`. "hold" keeps the clicked tile where it is on screen
+   * through the relayout (captured before any host write); "reveal" scrolls it into view once the
+   * action is presented and settled.
+   */
+  function focusNode(lease: ActionLease, key: NodeKey, modifiers: { ctrlKey?: boolean; shiftKey?: boolean } = {}, keep: "hold" | "reveal" = "reveal", componentId: string | undefined = undefined): void {
     supersedeReveal();
     releaseAnchors();
     const found = findNode(key, componentId);
     if (!found) return;
     if (keep === "hold") {
       const element = anchorTile(key, found.componentId);
-      if (scroller && element) heldAnchor = holdAnchor(scroller, element, () => { heldAnchor = null; }, updateHeldAnchor);
+      if (scroller && element) heldAnchor = holdAnchor(scroller, element, () => { heldAnchor = null; }, anchorLayoutChanged);
       applyFocusNode(key, modifiers, found.componentId);
       return;
     }
     applyFocusNode(key, modifiers, found.componentId);
-    const dir = directory, ownsSelection = captureSelection();
-    const current = anchor = { key, componentId: found.componentId, ownsSelection: () => directory === dir && ownsSelection() };
-    void tick().then(() => {
-      if (anchor !== current || !current.ownsSelection()) return;
-      // Props have now reached the graph: an unchanged focus has no new commit,
-      // but can still have running motion. A superseded scene waits for its replacement.
-      const data = graphData(current.componentId);
-      const committed = data && committedScenes.get(data);
-      if (committed) keepAnchor(committed);
-    });
+    revealWhenSettled(lease.id, key, found.componentId);
   }
 
   function applyFocusNode(key: NodeKey, modifiers: { ctrlKey?: boolean; shiftKey?: boolean } = {}, componentId: string | undefined = undefined): void {
@@ -488,17 +423,60 @@
 
   /** Bumped by every user activation and every explicit close: an activation still loading when it changes does nothing. */
   let activations = 0;
+  const modifiersOf = (event: MouseEvent) => ({ ctrlKey: event.ctrlKey || event.metaKey, shiftKey: event.shiftKey });
 
-  async function navigateNode(key: NodeKey, componentId: string, modifiers: { shiftKey?: boolean } = {}): Promise<void> {
+  /**
+   * Focuses `key` within `lease`, loading its component first when needed. Synchronous when the
+   * node is loaded; otherwise the completed activation is a derived write of the same action.
+   */
+  function reachAndFocus(lease: ActionLease, key: NodeKey, componentId: string, modifiers: { ctrlKey?: boolean; shiftKey?: boolean }, keep: "hold" | "reveal"): Promise<void> | void {
     const turn = ++activations;
-    const holder = findNode(key, componentId) ? componentId : await reachNode(key, componentId, turn);
-    if (holder) focusNode(key, modifiers, "reveal", holder);
+    if (findNode(key, componentId)) { focusNode(lease, key, modifiers, keep, componentId); return; }
+    return reachNode(key, componentId, turn).then((holder) => {
+      if (holder && lease.isCurrent()) lease.derive(() => focusNode(lease, key, modifiers, keep, holder));
+    });
   }
 
-  async function activate(key: NodeKey, event: MouseEvent, componentId: string): Promise<void> {
-    const turn = ++activations;
-    const holder = findNode(key, componentId) ? componentId : await reachNode(key, componentId, turn);
-    if (holder) focusNode(key, { ctrlKey: event.ctrlKey || event.metaKey, shiftKey: event.shiftKey }, "hold", holder);
+  const selection = (target: string | null, anchor: SceneCause["anchor"] = "none"): SceneCause => ({ kind: "selection", target, anchor });
+
+  function navigateNode(key: NodeKey, componentId: string, modifiers: { shiftKey?: boolean } = {}): void {
+    void controller.action(selection(key, "reveal"), (lease) => reachAndFocus(lease, key, componentId, modifiers, "reveal"));
+  }
+
+  function activate(key: NodeKey, event: MouseEvent, componentId: string): void {
+    void controller.action(selection(key, "hold"), (lease) => reachAndFocus(lease, key, componentId, modifiersOf(event), "hold"));
+  }
+
+  /**
+   * Pressing a stack's cover or disclosure is one action: select what its open cover selects (the
+   * listed file, or its node once loaded), then open it. With `toggle`, a requested stack (open,
+   * still opening, or failed) closes instead: pressing a pending stack cancels its opening.
+   */
+  function activateStack(cell: FolderCell, event: MouseEvent, toggle: boolean): void {
+    const summary = cell.summary;
+    if (!summary) return;
+    if (toggle && openKeys.has(cell.id)) {
+      void controller.action({ kind: "collapse", target: cell.id, anchor: "hold" }, () => setExpanded(summary.id, false));
+      return;
+    }
+    void controller.action({ kind: "expand", target: cell.id, anchor: "hold" }, (lease) => {
+      let pending: Promise<void> | void = undefined;
+      const index = controller.committedIndex;
+      if (cell.entry && index?.members.get(cell.entry.path)?.key === cell.coverKey) {
+        supersedeReveal(); releaseAnchors(); keepFocusedOpen(); selectListed(cell.entry, modifiersOf(event));
+      } else pending = reachAndFocus(lease, cell.id, summary.id, modifiersOf(event), "hold");
+      setExpanded(summary.id, true);
+      return pending;
+    });
+  }
+
+  /** Retries a failed open by its stable cover key, against the current index (components may have merged). */
+  function retryStack(coverKey: string): void {
+    void controller.action({ kind: "retry", target: coverKey, anchor: "hold" }, () => {
+      const cover = controller.clearFailure(coverKey);
+      const summary = cover ? summaries.find((candidate) => candidate.coverKey === cover) : undefined;
+      if (summary) setExpanded(summary.id, true);
+    });
   }
 
   /** Double-click or Enter on an image opens its file. An earlier revision has none of its own: the file at its path now holds the newest revision, which is what opens. */
@@ -509,19 +487,26 @@
     if (entry) void pane.open(entry);
   }
 
-  async function menu(key: NodeKey, event: MouseEvent, componentId: string | undefined = undefined): Promise<void> {
-    supersedeReveal();
-    releaseAnchors();
-    let found = findNode(key, componentId);
-    if (!found && componentId) {
-      // A stack not loaded yet: resolve its image the way activation does, then act as for a loaded one.
-      // Claim the event before any await: the host's folder handlers (empty-space menu, clearing the selection) must never see it.
-      event.preventDefault();
-      event.stopPropagation();
-      const holder = await reachNode(key, componentId, ++activations);
-      found = holder ? findNode(key, holder) : null;
-      if (!found) return;
-    }
+  function menu(key: NodeKey, event: MouseEvent, componentId: string | undefined = undefined): void {
+    void controller.action(selection(key), (lease) => {
+      supersedeReveal();
+      releaseAnchors();
+      const found = findNode(key, componentId);
+      if (!found && componentId) {
+        // A stack not loaded yet: resolve its image the way activation does, then act as for a loaded one.
+        // Claim the event before any await: the host's folder handlers (empty-space menu, clearing the selection) must never see it.
+        event.preventDefault();
+        event.stopPropagation();
+        return reachNode(key, componentId, ++activations).then((holder) => {
+          const reached = holder ? findNode(key, holder) : null;
+          if (reached && lease.isCurrent()) lease.derive(() => menuFor(reached, event));
+        });
+      }
+      menuFor(found, event);
+    });
+  }
+
+  function menuFor(found: { node: TraceNode; componentId: string } | null, event: MouseEvent): void {
     const entry = found && fileEntry(found.node);
     if (entry) {
       if (!selectedPaths.has(entry.path)) { keepFocusedOpen(); selectListed(entry); }
@@ -534,16 +519,22 @@
   }
 
   function background(): void {
-    supersedeReveal();
-    releaseAnchors();
-    keepFocusedOpen();
-    pane.clearSelection();
-    if (targetData) pane.setPreviewTarget(null);
-    commitPicks(NO_PICKS);
+    void controller.action(selection(null), () => {
+      supersedeReveal();
+      releaseAnchors();
+      keepFocusedOpen();
+      pane.clearSelection();
+      if (targetData) pane.setPreviewTarget(null);
+      commitPicks(NO_PICKS);
+    });
   }
 
   /** Apply one marquee frame through the host, then record a fresh ordered-picks object. */
   function selectMarquee(keys: readonly string[], additive: boolean, load = true): void {
+    void controller.action(selection(null), () => applyMarquee(keys, additive, load));
+  }
+
+  function applyMarquee(keys: readonly string[], additive: boolean, load: boolean): void {
     const turn = ++marqueeTurn;
     const missing = load ? missingMarqueeComponents(keys) : [];
     marqueeLoading = new Set(missing);
@@ -555,13 +546,13 @@
         if (!fileEntry(found.node) && !pickable(found.node)) return [];
         return [{ path: found.node.path!, key, componentId: found.componentId }];
       }
-      const cell = gridCellsByKey.get(key);
-      if (cell?.summary) {
-        const path = cell.summary.cover?.path;
+      const summary = summaries.find((candidate) => candidate.coverKey === key);
+      if (summary) {
+        const path = summary.cover?.path;
         // An unloaded cover's path may now hold a newer revision. Only the index
         // can establish that this drawn cover is the listed file itself.
         return path && entriesByPath.has(path) && session.componentOf(path)?.key === key
-          ? [{ path, key, componentId: cell.summary.id }] : [];
+          ? [{ path, key, componentId: summary.id }] : [];
       }
       return entriesByPath.has(key) ? [{ path: key, key }] : [];
     });
@@ -645,7 +636,7 @@
     untrack(() => {
       pendingSave = null;
       // Picks changed since the save finished: that newer choice stands.
-      if (here && picks === save.picks) selectSaved(save.picks, save.key, save.path);
+      if (here && picks === save.picks) controller.derive(() => selectSaved(save.picks, save.key, save.path));
     });
   });
 
@@ -674,10 +665,10 @@
       isStale: (id) => session.isStale(id),
     });
     if (located === "unknown") return;
-    if (located === "gone") { untrack(() => pane.setPreviewTarget(null)); return; }
+    if (located === "gone") { untrack(() => controller.derive(() => pane.setPreviewTarget(null))); return; }
     const { node: fresh, componentId } = located;
     if (issuedTargets.get(current) === fresh && componentId === data.componentId) return;
-    untrack(() => {
+    untrack(() => controller.derive(() => {
       const entry = fileEntry(fresh);
       // The target is a listed file now (saved by a save that did not select
       // it, or elsewhere). While it is picked, its file takes its place among
@@ -689,7 +680,7 @@
       const before = picks;
       preview(fresh, componentId);
       if (picks !== before) { void hostChoice; picks = settlePicks(before, hostSelected); }
-    });
+    }));
   });
 
   async function reveal(targetId: string, signal: AbortSignal): Promise<void> {
@@ -703,27 +694,33 @@
     signal.addEventListener("abort", cancel, { once: true });
     const dir = directory;
     try {
-      session.setDirectory(dir);
-      const found = await session.resolveArtifact(id, owner.controller.signal);
-      checkReveal(owner);
-      if (dir !== directory) throw new DOMException("Trace folder changed during reveal", "AbortError");
-      // Expansion and Preview/picks are committed together after loading succeeds.
-      let visible!: Promise<void>;
-      flushSync(() => {
+      // One action: resolving the image, opening its stack and focusing it commit together.
+      const shown = await controller.action({ kind: "reveal", target: null, anchor: "reveal" }, async (lease) => {
+        session.setDirectory(dir);
+        const found = await session.resolveArtifact(id, owner.controller.signal);
         checkReveal(owner);
-        session.setStackOpen(found.componentId, true);
-        near = new Set(near).add(found.componentId);
-        applyFocusNode(found.node.key, {}, found.componentId);
-        owner.ownsSelection = captureSelection();
-        revealScene = owner;
-        visible = awaitReveal(owner, found.node.key);
+        if (dir !== directory) throw new DOMException("Trace folder changed during reveal", "AbortError");
+        // Expansion and Preview/picks are written together after loading succeeds.
+        lease.derive(() => flushSync(() => {
+          checkReveal(owner);
+          session.setStackOpen(found.componentId, true);
+          applyFocusNode(found.node.key, {}, found.componentId);
+          owner.ownsSelection = captureSelection();
+        }));
+        return { id: lease.id, key: found.node.key, componentId: found.componentId };
       });
-      await visible;
+      await controller.whenPresented(shown.id, shown.key, owner.controller.signal);
       checkReveal(owner);
+      await controller.whenSettled(shown.id, owner.controller.signal);
+      checkReveal(owner);
+      if (focus?.key !== shown.key) throw new DOMException("Trace reveal was superseded", "AbortError");
+      const button = anchorTile(shown.key, shown.componentId);
+      if (!button) throw new Error("Trace image could not be shown");
+      button.scrollIntoView({ block: "nearest", inline: "nearest" });
+      button.focus({ preventScroll: true });
     } finally {
       signal.removeEventListener("abort", cancel);
       if (activeReveal === owner) activeReveal = null;
-      if (revealScene === owner) revealScene = null;
     }
   }
 
@@ -733,10 +730,12 @@
     node: (key) => findNode(key, focus?.componentId)?.node ?? null,
     nodeForPath: (path) => { const member = session.componentOf(path); return member ? findNode(member.key, member.componentId)?.node ?? null : null; },
     focus: (key) => {
-      const found = findNode(key, focus?.componentId);
-      if (found && !summaries.some((summary, index) => summary.id === found.componentId && isExpanded(summary, index))) setExpanded(found.componentId, true);
-      else if (found) session.setStackOpen(found.componentId, true);
-      focusNode(key, {}, "reveal", found?.componentId);
+      void controller.action(selection(key, "reveal"), (lease) => {
+        const found = findNode(key, focus?.componentId);
+        if (found && !summaries.some((summary) => summary.id === found.componentId && isExpanded(summary))) setExpanded(found.componentId, true);
+        else if (found) session.setStackOpen(found.componentId, true);
+        focusNode(lease, key, {}, "reveal", found?.componentId);
+      });
     },
     get active() { return pane.active; },
     inputs: () => inputs,
@@ -755,56 +754,85 @@
     for (const data of session.components.values()) for (const node of data.nodes) if (node.runId !== null) untrack(() => promptTitles.loadFor(node.runId, node.prompt));
   });
 
+  /** Requests a stack open or closed (within an action). Its data is the scene controller's to load. */
   function setExpanded(id: string, opening: boolean): void {
-    const element = scroller?.querySelector<HTMLElement>(`[data-grid-cell="${CSS.escape(stackKey(id))}"]`) ?? null;
-    if (scroller && element && !heldAnchor) heldAnchor = holdAnchor(scroller, element, () => { heldAnchor = null; }, updateHeldAnchor);
-    if (!opening && pendingReveal && session.components.get(id)?.dag.nodes.has(pendingReveal.key)) supersedeReveal();
-    if (!opening) activations++;
+    const element = scroller?.querySelector<HTMLElement>(`[data-grid-cell="${CSS.escape(coverOf(id))}"]`) ?? null;
+    if (scroller && element && !heldAnchor) heldAnchor = holdAnchor(scroller, element, () => { heldAnchor = null; }, anchorLayoutChanged);
+    if (!opening) { activations++; anchorReveal?.abort(new DOMException("Trace reveal was superseded", "AbortError")); }
     session.setStackOpen(id, opening);
-    if (opening) void session.ensure(id);
-    updateHeldAnchor();
+    anchorLayoutChanged();
   }
 
   function keepFocusedOpen(): void {
     const id = focus?.componentId;
-    if (id && openKeys.has(stackKey(id))) session.setStackOpen(id, true);
+    if (id && openKeys.has(coverOf(id))) session.setStackOpen(id, true);
   }
 
   onDestroy(() => {
     marqueeTurn++;
     supersedeReveal();
     releaseAnchors();
+    controller.dispose();
     session.dispose();
     if (pane.previewTarget && isTraceTargetData(pane.previewTarget.data)) pane.setPreviewTarget(null);
   });
 
-  const graphData = (id: string): ComponentData | undefined => session.components.get(id);
+  // The one intake: the pane's intent and data revision, compared by content in the controller.
+  $effect(() => {
+    const intent: SceneIntent = {
+      directory, listing: pane.entries, claimed: claimedPaths, open: openKeys, focus, selectedKeys, selectedPaths, badgeHover,
+      // Unmeasured (0) holds the first publication until the pane has a width.
+      width: clientWidth > 0 ? Math.max(width, 1) : 0, tile, grid: gridMetrics, cover: coverChrome,
+      hostChoice: JSON.stringify([hostChoice, target?.id ?? null, pane.focusedPath]),
+    };
+    const mark = { index: session.index, components: session.components };
+    untrack(() => controller.offer(intent, mark));
+  });
+
+  const published = $derived(controller.published);
+  /**
+   * "Loading Trace…" appears only once a first scene has taken a while (its visual delay), so a
+   * view mounted over cached data presents its first scene without a loading frame in between.
+   */
+  let loadingDue = $state(false);
+  $effect(() => {
+    if (published) { loadingDue = false; return; }
+    const timer = setTimeout(() => loadingDue = true, LOADING_DELAY_MS);
+    return () => clearTimeout(timer);
+  });
+  /** Refresh and index failures: a view-level overlay that never changes scene or scroll geometry. */
+  const overlayError = $derived(session.index ? session.indexError || controller.failure || "" : "");
 </script>
 
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <div class="trace-view" bind:this={scroller} bind:clientWidth use:backgroundSelection
   oncontextmenu={(event) => { if (event.target === event.currentTarget) pane.contextMenu(event); }}
   data-testid="trace-view">
-  {#if session.status === "loading" && !session.index}
-    <div class="message delayed" role="status">Loading Trace…</div>
+  <!-- Zero-height and sticky: failures overlay the top of the view without moving the grid or changing its scroll extent. -->
+  <div class="overlay-anchor">
+    {#if overlayError}
+      <div class="overlay" role="alert">
+        <span>{overlayError}</span>
+        <button type="button" onclick={() => { controller.clearViewFailure(); void session.refresh(); }}>Retry</button>
+      </div>
+    {/if}
+  </div>
+  {#if published}
+    <StackGrid {pane} {controller} publication={published} notices={controller.notices} gridPadding={gridMetrics.gridPadding} {focus} {revision} {scroller}
+      onstack={activateStack} onactivate={activate} onnavigate={navigateNode} onopen={open} onmenu={menu}
+      onselect={(entry, event) => void controller.action(selection(entry.path), () => { supersedeReveal(); releaseAnchors(); keepFocusedOpen(); selectListed(entry, modifiersOf(event)); })}
+      onordinarymenu={(entry, event) => void controller.action(selection(entry.path), () => { supersedeReveal(); releaseAnchors(); if (!selectedPaths.has(entry.path)) { keepFocusedOpen(); selectListed(entry); } pane.contextMenu(event, entry); })}
+      onbadgehover={(key) => badgeHover = key} onretry={retryStack}
+      {captureSelection} onsaved={(key, path, select) => callbacks.saved(path, key, select)} ondiscarded={(key) => callbacks.discarded(key)} />
+    {#if !published.scene.cells.length}<div class="message">This folder is empty.</div>{/if}
   {:else if session.status === "error" && !session.index}
     <div class="message" role="alert">
       <span>Trace could not be loaded: {session.error}</span>
       <button type="button" onclick={() => void session.refresh()}>Retry</button>
       <button type="button" onclick={() => pane.exitView()}>Show files</button>
     </div>
-  {:else}
-    <StackGrid {pane} {session} {focus} selected={selectedKeys} {tile} {revision} {scroller} {width} {openKeys} {claimedPaths}
-      onexpand={setExpanded} onnear={(ids) => near = ids} onactivate={activate}
-      onnavigate={navigateNode} onopen={open} onmenu={menu}
-      onselect={(entry, event) => { supersedeReveal(); releaseAnchors(); keepFocusedOpen(); selectListed(entry, { ctrlKey: event.ctrlKey || event.metaKey, shiftKey: event.shiftKey }); }}
-      onordinarymenu={(entry, event) => { supersedeReveal(); releaseAnchors(); if (!selectedPaths.has(entry.path)) { keepFocusedOpen(); selectListed(entry); } pane.contextMenu(event, entry); }}
-      {captureSelection} onsaved={(key, path, select) => callbacks.saved(path, key, select)} ondiscarded={(key) => callbacks.discarded(key)} oncommit={keepAnchor}
-      ongeometry={() => marqueeAttachment?.layoutChanged()}
-      onlayout={(id, pending) => { if (pending) pendingLayouts.add(id); else pendingLayouts.delete(id); }} reveal={revealScene}
-      onfailure={(scene, error) => { if (pendingReveal && scene.isCurrent() && scene.reveal === pendingReveal.owner && scene.focus === pendingReveal.key && scene.data.dag.nodes.has(pendingReveal.key)) pendingReveal.finish(error); }} />
-    {#if session.error && session.index}<p class="notice" role="alert">{session.error}</p>{/if}
-    {#if !gridCells.length && session.index}<div class="message">This folder is empty.</div>{/if}
+  {:else if loadingDue}
+    <div class="message" role="status">Loading Trace…</div>
   {/if}
   {#if marquee}
     <div class="marquee-rect" aria-hidden="true" style:left="{marquee.left}px" style:top="{marquee.top}px" style:width="{marquee.width}px" style:height="{marquee.height}px"></div>
@@ -816,9 +844,12 @@
   .marquee-rect { position: absolute; pointer-events: none; z-index: 10; box-sizing: border-box; border: 1px solid var(--accent); background: color-mix(in srgb, var(--accent) 20%, transparent); }
   /* Progress text appears only when loading is slow, so a fast load never flashes it. A transition, not an
      animation: grid motion cancels band animations, and a cancelled transition shows the text at once. */
-  .delayed { transition: opacity 150ms ease-out 400ms; }
-  @starting-style { .delayed { opacity: 0; } }
   .message { display: flex; flex-direction: column; align-items: center; gap: 10px; padding: 40px 12px; color: var(--text-secondary); }
   .message button { padding: 4px 12px; font: inherit; color: var(--text-primary); background: var(--control-fill); border: 1px solid var(--control-stroke); border-radius: var(--radius-sm); cursor: pointer; }
-  .notice { margin: 0 0 10px; font-size: 12px; color: var(--system-critical-text, var(--system-critical)); }
+  /* Over the content, out of flow: an error never moves the grid or changes its scroll extent. */
+  .overlay-anchor { position: sticky; top: 0; height: 0; z-index: 11; }
+  .overlay { position: absolute; top: -4px; right: 2px; z-index: 11; display: flex; align-items: center; gap: 8px; max-width: calc(100% - 24px); box-sizing: border-box; padding: 4px 8px; font-size: 12px;
+    color: var(--system-critical-text, var(--system-critical)); background: var(--background-solid); border: 1px solid var(--control-stroke); border-radius: var(--radius-sm); }
+  .overlay span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .overlay button { flex: none; padding: 2px 8px; font: inherit; color: var(--text-primary); background: var(--control-fill); border: 1px solid var(--control-stroke); border-radius: var(--radius-sm); cursor: pointer; }
 </style>
