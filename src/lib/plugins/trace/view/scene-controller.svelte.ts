@@ -31,6 +31,8 @@ import { folderItems, fresh, intentChange, changed as anyChange, prepareLayoutIn
 import { restylePresentation, retargetPresentation, settledPresentation, staticPresentation, type DisplayedPresentation, type Presentation,
   type Publication, type TransactionId } from "./presentation";
 import { presents } from "./scene-view";
+import { motionParticipants } from "./participants";
+import type { GridRect } from "$lib/domain/trace-graph/grid-flow";
 import { sceneInstrumentation, type SceneEvent } from "./scene-instrumentation";
 import { StaleComponentsError, type ComponentLease } from "./folder-session.svelte";
 
@@ -95,6 +97,8 @@ export interface DataMark {
  * settled (false when superseded). `snap` ends owned motion.
  */
 export interface SceneMotion {
+  /** The visible area in folder coordinates (null when unknown): it selects motion participants (`motionParticipants`). */
+  viewport?(): GridRect | null;
   sample(presentation: Presentation): DisplayedPresentation;
   reduced(): boolean;
   start(presentation: Presentation): { readonly started: boolean; readonly settled: Promise<boolean> };
@@ -543,6 +547,13 @@ export function createSceneController(options: SceneControllerOptions) {
     return false;
   }
 
+  /** Continues from what `driver` displays: only records near the viewport, chosen or still moving take part. */
+  function retarget(driver: SceneMotion, from: Presentation, scene: FolderScene, diff: SceneDiff, transaction: TransactionId): Presentation {
+    const displayed = driver.sample(from);
+    const records = motionParticipants({ next: scene, displayed, viewport: driver.viewport?.() ?? null });
+    return retargetPresentation(displayed, scene, diff, { transaction, epoch: ++epochs, reduced: driver.reduced(), records });
+  }
+
   function commit(tx: Transaction, scene: FolderScene, snapshot: Committed): void {
     const previous = published;
     const diff = diffScenes(previous?.scene ?? null, scene);
@@ -552,7 +563,7 @@ export function createSceneController(options: SceneControllerOptions) {
     // Geometry continues from what is displayed; a restyle keeps the running epoch (tracks and retirees).
     const presentation = !geometry && previous ? restylePresentation(previous.presentation, scene)
       : diff.policy.reset || !previous || !motion ? staticPresentation(scene, ++epochs)
-      : retargetPresentation(motion.sample(previous.presentation), scene, diff, { transaction: tx.id, epoch: ++epochs, reduced: motion.reduced() });
+      : retarget(motion, previous.presentation, scene, diff, tx.id);
     const publication: Publication = { transactionId: tx.id, geometryVersion: geometry ? ++geometryVersion : previous?.geometryVersion ?? geometryVersion, scene, presentation };
     published = publication;
     tx.publication = publication;

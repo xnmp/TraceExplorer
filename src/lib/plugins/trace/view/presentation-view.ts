@@ -30,6 +30,8 @@ export interface ExitGroupView {
 export interface PresentationView {
   readonly graphs: ReadonlyMap<GraphId, GraphPresentation>;
   readonly exits: readonly ExitGroupView[];
+  /** Graphs with a pinned record (moving this epoch) or an in-band retiree: their bands stay mounted until they settle. */
+  readonly pinnedGraphs: ReadonlySet<GraphId>;
 }
 
 /** The motion frame a band record moves in: its cover's track and rect (the section follows its vertical motion). */
@@ -71,7 +73,12 @@ export function presentationView(presentation: Presentation): PresentationView {
       else if (record.kind === "junction") exit.junctions.push(retiree);
     } else if (record.graphId !== null) graph(record.graphId).retiring.push(retiree);
   }
-  const view: PresentationView = { graphs, exits: [...exits.values()].filter((exit) => exit.tiles.length + exit.routes.length + exit.junctions.length > 0) };
+  const pinnedGraphs = new Set<GraphId>(graphs.keys());
+  for (const id of presentation.pinned) {
+    const graphId = presentation.live.get(id)?.record.graphId;
+    if (graphId !== undefined && graphId !== null) pinnedGraphs.add(graphId);
+  }
+  const view: PresentationView = { graphs, pinnedGraphs, exits: [...exits.values()].filter((exit) => exit.tiles.length + exit.routes.length + exit.junctions.length > 0) };
   views.set(presentation, view);
   return view;
 }

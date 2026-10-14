@@ -27,6 +27,8 @@
     records: GraphRecords;
     /** This band's motion layers and retirees this epoch. */
     presented: GraphPresentation;
+    /** Records moving this epoch: mounted until they settle, wherever the viewport is. */
+    pinned: ReadonlySet<string>;
     handles: RenderHandles;
     /** The component's nodes (badge and junction titles). */
     nodes: ReadonlyMap<NodeKey, TraceNode>;
@@ -46,7 +48,7 @@
     ondiscarded: (key: NodeKey) => void;
   }
 
-  let { graph, records, presented, handles, nodes, selected, revision, scroller, onactivate, onopen, onmenu, onsaved, ondiscarded, captureSelection, ongridkey, focusedKey, onfocuskey, onbadgehover }: Props = $props();
+  let { graph, records, presented, pinned, handles, nodes, selected, revision, scroller, onactivate, onopen, onmenu, onsaved, ondiscarded, captureSelection, ongridkey, focusedKey, onfocuskey, onbadgehover }: Props = $props();
 
   /** Tile windowing only pays off for very large neighborhoods. */
   const WINDOW_MIN = 120;
@@ -57,7 +59,9 @@
   const attached = $derived(graph.attached);
   const relative = $derived(new Map(attached.routes.map((route) => [route.id, route])));
 
-  // Windowing: only tiles near the scroller's viewport are mounted. The logical scene keeps every record.
+  // Windowing: only tiles near the scroller's viewport are mounted, with the focus (or the tile carrying it as a badge), the
+  // keyboard stop, the selection and whatever moves this epoch. The logical scene keeps every record; a tile mounted later
+  // shows its target pose in its section and starts no motion.
   let band = $state.raw<{ top: number; bottom: number } | null>(null);
   $effect(() => {
     const element = canvas, container = scroller;
@@ -81,7 +85,8 @@
 
   const focus = $derived(graph.plan.lineage.focus);
   const visibleTiles = $derived(records.tiles.filter((record) => {
-    if (!band || record.tile.key === focus || record.tile.key === focusedKey || selected.has(record.tile.key)) return true;
+    if (!band || record.tile.key === focus || record.tile.key === focusedKey || selected.has(record.tile.key) || pinned.has(record.id)
+      || (focus !== null && record.badges.some((badge) => badge.key === focus))) return true;
     return record.placed.y + record.placed.height >= band.top && record.placed.y <= band.bottom;
   }));
 
@@ -92,11 +97,11 @@
   const routes = $derived(records.routes.flatMap((record) => {
     const route = relative.get(record.route.id);
     const top = record.rect.y - graph.origin.y, bottom = top + record.rect.height;
-    return route && inBand(top, bottom) ? [{ id: record.id, route, style: record.style }] : [];
+    return route && (inBand(top, bottom) || pinned.has(record.id)) ? [{ id: record.id, route, style: record.style }] : [];
   }));
   const junctions = $derived(records.junctions.flatMap((record) => {
     const junction = attached.junctions.get(record.junction.id);
-    return junction && inBand(junction.y, junction.y) ? [{ id: record.id, junction, highlighted: record.highlighted }] : [];
+    return junction && (inBand(junction.y, junction.y) || pinned.has(record.id)) ? [{ id: record.id, junction, highlighted: record.highlighted }] : [];
   }));
   // Motion layers: live connectors and junctions moving apart from their section, then retiring ones.
   type Layer = { key: string; record: RouteRecord | JunctionRecord; branch: boolean; opacity?: number };

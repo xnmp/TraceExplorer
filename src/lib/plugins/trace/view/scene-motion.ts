@@ -12,7 +12,7 @@
  *   it; a record moving exactly with its section gets no effect.
  * - The driver cancels only what it owns, never CSS transitions on cards.
  * - DOM reads: the grid's screen origin and zoom (camera compensation, when scrolling was clamped
- *   by the new layout) and, at an interruption, one modelled moving HTML element as a
+ *   by the new layout; the viewport in folder coordinates, which selects motion participants) and, at an interruption, one modelled moving HTML element as a
  *   compositor-progress probe (WebKit can display more progress than the main-thread clock
  *   reports after a stall). Nothing else is measured.
  */
@@ -197,6 +197,8 @@ interface Epoch {
 
 export interface SceneMotionOptions {
   readonly handles: RenderHandles;
+  /** The view's scroller, whose client area is the viewport (`viewport`). */
+  readonly scroller?: () => Element | null;
   /** Reduced motion (default: the user's preference). */
   readonly reduced?: () => boolean;
 }
@@ -219,7 +221,7 @@ function timeAt(track: Track, axis: "x" | "y", value: number): number {
   return (low + high) / 2;
 }
 
-export function createSceneMotion({ handles, reduced = prefersReducedMotion }: SceneMotionOptions): SceneMotion {
+export function createSceneMotion({ handles, scroller = () => null, reduced = prefersReducedMotion }: SceneMotionOptions): SceneMotion {
   let epoch: Epoch | null = null;
   /** The newest epoch started (an unstarted newer presentation still displays its first poses). */
   let started = -Infinity;
@@ -250,6 +252,13 @@ export function createSceneMotion({ handles, reduced = prefersReducedMotion }: S
 
   return {
     reduced,
+
+    viewport(): GridRect | null {
+      const grid = handles.get(GRID), view = scroller();
+      if (!grid || !view) return null;
+      const origin = grid.getBoundingClientRect(), box = view.getBoundingClientRect(), zoom = zoomOf(grid as HTMLElement, origin);
+      return { x: (box.left - origin.left) / zoom, y: (box.top - origin.top) / zoom, width: box.width / zoom, height: box.height / zoom };
+    },
 
     sample(presentation: Presentation): DisplayedPresentation {
       const grid = handles.get(GRID);

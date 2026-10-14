@@ -269,10 +269,15 @@ const departure = (from: Pose, w: number, duration = MOTION_MS): Track | null =>
 
 const settled = (record: SceneRecord): PresentedRecord => ({ renderId: record.id, record, initial: settledPose(record), track: null });
 
-function presentation(epoch: number, live: ReadonlyMap<RenderId, PresentedRecord>, retiring: ReadonlyMap<RenderId, RetiringRecord> = new Map()): Presentation {
+/** `riders` move only with their section (no motion of their own): they are not pinned. */
+function presentation(epoch: number, live: ReadonlyMap<RenderId, PresentedRecord>, retiring: ReadonlyMap<RenderId, RetiringRecord> = new Map(),
+  riders: ReadonlySet<RenderId> = new Set()): Presentation {
   let duration = 0;
   const pinned = new Set<RenderId>();
-  for (const record of live.values()) if (record.track) { duration = Math.max(duration, trackEnd(record.track)); pinned.add(record.renderId); }
+  for (const record of live.values()) if (record.track) {
+    duration = Math.max(duration, trackEnd(record.track));
+    if (!riders.has(record.renderId)) pinned.add(record.renderId);
+  }
   for (const record of retiring.values()) {
     if (record.track) duration = Math.max(duration, trackEnd(record.track));
     pinned.add(record.renderId);
@@ -301,7 +306,7 @@ export function restylePresentation(current: Presentation, scene: FolderScene): 
     const was = current.live.get(id);
     live.set(id, was ? { ...was, record } : settled(record));
   }
-  return { ...presentation(current.epoch, live, current.retiring), duration: current.duration };
+  return { ...presentation(current.epoch, live, current.retiring), duration: current.duration, pinned: current.pinned };
 }
 
 /** Whether a presentation moves anything (it has an epoch to run). */
@@ -399,7 +404,10 @@ function displaced(record: SceneRecord, pose: Pose): SceneRecord {
 export interface Participants {
   readonly transaction: TransactionId;
   readonly epoch: number;
-  /** Records that may move (null or absent: every record). The others take their target pose. */
+  /**
+   * Records that may move (null or absent: every record; see `motionParticipants`). The others
+   * take their target pose: a band record in a section that moves rides with it.
+   */
   readonly records?: ReadonlySet<EntityId> | null;
   /** Reduced motion: target poses only. */
   readonly reduced?: boolean;
@@ -438,6 +446,8 @@ export function retargetPresentation(displayed: DisplayedPresentation | null, ne
   // A reveal snaps its graphs whole: their running motion ends and their records take their targets.
   const revealed = (id: EntityId) => { const graphId = next.records.get(id)?.graphId; return graphId !== undefined && graphId !== null && reveal.has(graphId); };
   const still = (id: EntityId) => policyOf(id) === "snap" || !moves(id) || revealed(id);
+  /** A non-participant that would otherwise move: in a moving section it rides with it (target pose in its section). */
+  const rider = (id: EntityId) => !moves(id) && policyOf(id) !== "snap" && !revealed(id);
   const shownOpacity = (id: RenderId) => shown.get(id)?.opacity ?? 0;
   // Graphs that were drawn with a focus (their connectors' branch tone).
   const focused = new Set<GraphId>();
@@ -475,6 +485,7 @@ export function retargetPresentation(displayed: DisplayedPresentation | null, ne
     const cover = coverOf(record), base = cover ? next.records.get(cover) : undefined;
     return base ? { x: 0, y: start.get(base.id)!.rect.y - base.rect.y } : { x: 0, y: 0 };
   };
+  for (const [id, record] of next.records) if (rider(id) && isBandRecord(record)) start.set(id, { ...start.get(id)!, rect: translate(record.rect, sectionShift(record)) });
   const relative = (record: SceneRecord, pose: Pose): Point => {
     const d = displacement(pose, record.rect), section = sectionShift(record);
     return { x: d.x - section.x, y: d.y - section.y };
@@ -509,9 +520,18 @@ export function retargetPresentation(displayed: DisplayedPresentation | null, ne
     if (from.opacity <= PAINTED) return arrival(from, target, windowOf(record.graphId), D);
     return retargetTrack(from, target, D);
   };
-  for (const [id, record] of next.records) {
-    if (record.kind === "route") continue;
-    if (still(id)) { tracks.set(id, null); continue; }
+  /** A rider's track: its section's vertical motion only, so it needs no effect of its own. */
+  const riders = new Set<EntityId>();
+  const ride = (record: SceneRecord): Track | null => {
+    const cover = coverOf(record), frame = cover ? tracks.get(cover) : null, base = cover ? next.records.get(cover) : undefined;
+    if (!frame || !base) return null;
+    riders.add(record.id);
+    return { frames: frame.frames.map((f) => ({ ...f, pose: { rect: translate(record.rect, { x: 0, y: f.pose.rect.y - base.rect.y }), opacity: 1, clip: null } })) };
+  };
+  // Cells, covers, rows and entries first: band records move within their cover's section.
+  for (const band of [false, true]) for (const [id, record] of next.records) {
+    if (record.kind === "route" || isBandRecord(record) !== band) continue;
+    if (still(id)) { tracks.set(id, band && rider(id) ? ride(record) : null); continue; }
     const target = settledPose(record), kept = continued(id, target);
     tracks.set(id, kept !== undefined ? kept : move(record, start.get(id)!, target));
   }
@@ -524,7 +544,7 @@ export function retargetPresentation(displayed: DisplayedPresentation | null, ne
   };
   for (const [id, record] of next.records) {
     if (record.kind !== "route") continue;
-    if (still(id)) { tracks.set(id, null); continue; }
+    if (still(id)) { tracks.set(id, rider(id) ? ride(record) : null); continue; }
     const target = settledPose(record);
     // A connector to or from a tile that is still arriving appears exactly with it (one opacity interval).
     const arriving = [endpoint(record.graphId!, endpointKey(record.route.to)), endpoint(record.graphId!, endpointKey(record.route.from))]
@@ -655,5 +675,5 @@ export function retargetPresentation(displayed: DisplayedPresentation | null, ne
     }
   }
   if (carried + fresh.filter((retiree) => retiree.record.kind !== "band").length <= RETIREE_LIMIT) for (const retiree of fresh) retiring.set(retiree.renderId, retiree);
-  return presentation(epoch, live, retiring);
+  return presentation(epoch, live, retiring, riders);
 }
