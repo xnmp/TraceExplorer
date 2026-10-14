@@ -1,8 +1,8 @@
 /**
- * Read-only views of a published folder scene for the renderers: records grouped by graph, and a
- * geometry stamp per graph. Pure; derived from one scene, never from DOM or live session data.
+ * Read-only views of a published folder scene for the renderers: records grouped by graph, graph
+ * ownership and the nodes a stack names. Pure; derived from one scene, never from DOM or live
+ * session data.
  */
-import type { FolderLayout } from "$lib/domain/trace-graph/folder-layout";
 import type { FolderScene, JunctionRecord, RouteRecord, TileRecord } from "$lib/domain/trace-graph/folder-scene";
 import type { GraphId } from "$lib/domain/trace-graph/folder-layout";
 import type { NodeKey, TraceNode } from "$lib/domain/trace-graph/model";
@@ -32,31 +32,6 @@ export function recordsByGraph(scene: FolderScene): ReadonlyMap<GraphId, GraphRe
   grouped.set(scene, groups);
   return groups;
 }
-
-const stamps = new WeakMap<object, string>();
-type SceneGraph = FolderLayout["graphs"] extends ReadonlyMap<GraphId, infer G> ? G : never;
-type Geometry = SceneGraph["layout"];
-function geometryStamp(geometry: Geometry): string {
-  const known = stamps.get(geometry);
-  if (known !== undefined) return known;
-  let hash = 0x811c9dc5;
-  const mix = (text: string) => { for (let i = 0; i < text.length; i++) { hash ^= text.charCodeAt(i); hash = Math.imul(hash, 0x01000193) >>> 0; } };
-  mix(`${geometry.width},${geometry.height};`);
-  for (const node of geometry.nodes.values()) mix(`n${node.key},${node.x},${node.y},${node.width},${node.height};`);
-  for (const route of geometry.routes) mix(`r${route.id},${route.path};`);
-  for (const junction of geometry.junctions.values()) mix(`j${junction.id},${junction.x},${junction.y};`);
-  const stamp = hash.toString(36);
-  stamps.set(geometry, stamp);
-  return stamp;
-}
-
-/**
- * Stamps for the legacy grid motion (`playGrid`): `layout` changes only when the band's own raw
- * layout changes (a restyle or a kept layout leaves it alone), `attachment` when its packed,
- * attached geometry changes. A band whose stamps are both unchanged carries its running motion.
- */
-export const graphStamps = (graph: SceneGraph): { readonly layout: string; readonly attachment: string } =>
-  ({ layout: geometryStamp(graph.layout), attachment: geometryStamp(graph.attached) });
 
 /** The cover a graph key or tile key belongs to among the scene's open graphs. */
 export function graphOwning(scene: FolderScene, key: string): GraphId | undefined {

@@ -509,7 +509,9 @@ test("closing during emergence reclaims rows without overlapping the remaining b
       expect(cell.bottom).toBeLessThanOrEqual(cell.ownTop + .5);
     }
     await expect(stack(page, "photo-a").locator(`[data-tile-key="${child}"]`)).toHaveCount(0);
-    await expect(page.locator('[data-grid-exit]')).toHaveAttribute('inert', '');
+    // Whatever retires is passive: inert and hidden from assistive technology.
+    expect(await page.locator('[data-grid-exit], [data-ghost-tile-key], [data-motion-route-layer]').evaluateAll((elements) =>
+      elements.every((element) => !!element.closest('[inert]') && !!element.closest('[aria-hidden="true"]')))).toBe(true);
     await expect(stack(page, "photo-b").locator("[data-grid-band] [data-tile-key]").first()).toBeVisible();
   } finally { await releaseScriptedAnimations(page); }
   await settle(page);
@@ -1167,42 +1169,39 @@ test("opening a later row preserves an unchanged band's attachment motion", asyn
   const warm = await key(page, "warm"), mist = await key(page, "forest-mist");
   await page.locator(`[data-node-key="${warm}"]`).click(); await settle(page);
   await holdScriptedAnimations(page);
+  let result: { before: number; at80: number; after: number; continued: number; end: number };
   try {
     // A data change is a reflow; focus-only selection would now snap.
     await page.evaluate(() => (window as any).trace.backend.startGeneration("warm", "carry-new")); await awaitAnimationsCreated(page);
-    const result = await page.evaluate(async (mist) => {
+    result = await page.evaluate(async (mist) => {
       const w = window as any, originals = [...w.__heldAnimations] as Animation[];
       const frame = () => new Promise(requestAnimationFrame);
-      for (const animation of originals) if (animation.playState === "running") animation.currentTime = 40;
-      await frame();
-      const child = document.querySelector<HTMLElement>(`[data-tile-key="${mist}"]`)!;
-      const before = child.getBoundingClientRect().y;
-      const attachment = child.closest<HTMLElement>(".graph")!.dataset.attachment;
-      const owned = originals.filter((animation) => animation.playState === "running"
-        && (animation.effect as KeyframeEffect | null)?.target === child);
+      const y = () => document.querySelector<HTMLElement>(`[data-tile-key="${mist}"]`)!.getBoundingClientRect().y;
+      const seek = async (animations: Animation[], time: number) => { for (const animation of animations) if (animation.playState === "running") animation.currentTime = time; await frame(); };
+      // The original trajectory ahead of the interruption, then back to where it is interrupted.
+      await seek(originals, 80);
+      const at80 = y();
+      await seek(originals, 40);
+      const before = y();
       w.trace.setSelection([...w.trace.state().selected, "/pictures/fan.png"], "/pictures/warm.png");
       for (let i = 0; i < 12; i++) await frame();
-      const after = child.getBoundingClientRect().y;
-      const cancelled = owned.filter((animation) => animation.playState !== "running").length;
-      const replacements = (w.__heldAnimations as Animation[]).filter((animation) => !originals.includes(animation)
-        && (animation.effect as KeyframeEffect | null)?.target === child).length;
-      for (const animation of w.__heldAnimations as Animation[]) if (animation.playState === "running") animation.currentTime = 80;
-      await frame();
-      const continued = child.getBoundingClientRect().y;
-      for (const animation of w.__heldAnimations as Animation[]) if (animation.playState === "running") animation.currentTime = 160;
-      await frame();
-      return { attachment, nextAttachment: child.closest<HTMLElement>(".graph")!.dataset.attachment,
-        owned: owned.length, cancelled, replacements, before, after, continued, end: child.getBoundingClientRect().y };
+      const after = y();
+      // The interruption's epoch restarts the clock where the original motion was (40 ms in).
+      const current = (w.__heldAnimations as Animation[]).filter((animation) => !originals.includes(animation));
+      await seek(current, 40);
+      const continued = y();
+      await seek(current, 120);
+      return { before, at80, after, continued, end: y() };
     }, mist);
-    expect(result.nextAttachment).toBe(result.attachment);
-    expect(result.owned).toBeGreaterThan(0);
-    expect(result.cancelled).toBe(0);
-    expect(result.replacements).toBe(0);
-    expect(result.after).toBeCloseTo(result.before, 1);
-    expect(Math.abs(result.end - result.before)).toBeGreaterThan(2);
-    expect(Math.abs(result.continued - result.end)).toBeLessThan(Math.abs(result.before - result.end));
   } finally { await releaseScriptedAnimations(page); }
   await settle(page);
+  const settled = await page.locator(`[data-tile-key="${mist}"]`).evaluate((element) => element.getBoundingClientRect().y);
+  // The unchanged band keeps travelling exactly as before: no jump at the interruption, the same
+  // position 40 ms later as the original motion would have shown, and the original destination.
+  expect(result.after).toBeCloseTo(result.before, 1);
+  expect(Math.abs(settled - result.before)).toBeGreaterThan(2);
+  expect(Math.abs(result.continued - result.at80)).toBeLessThanOrEqual(.5);
+  expect(Math.abs(result.end - settled)).toBeLessThanOrEqual(.5);
   expect(await uncaught(page)).toEqual([]);
 });
 

@@ -23,7 +23,8 @@ import { buildFolderScene, diffScenes, type FolderScene, type SceneDiff, type Sc
 import { engines, memoizeEngine, type FolderLayout, type FolderLayoutEngine, type FolderLayoutInput, type GraphId } from "$lib/domain/trace-graph/folder-layout";
 import { folderItems, fresh, intentChange, changed as anyChange, prepareLayoutInput, requiredComponents, resolveCover, stylingOf,
   sameStyling, type HeldHistory, type IntentChange, type SceneData, type SceneIntent } from "./scene-inputs";
-import { staticPresentation, type Publication, type TransactionId } from "./presentation";
+import { restylePresentation, retargetPresentation, settledPresentation, staticPresentation, type DisplayedPresentation, type Presentation,
+  type Publication, type TransactionId } from "./presentation";
 import { presents } from "./scene-view";
 import { sceneInstrumentation, type SceneEvent } from "./scene-instrumentation";
 import { StaleComponentsError, type ComponentLease } from "./folder-session.svelte";
@@ -82,13 +83,16 @@ export interface DataMark {
 }
 
 /**
- * Native motion for a geometry publication. `sample` runs before the publication renders (the
- * previous scene is still displayed); `start` runs once, in the commit's microtask checkpoint,
- * after it rendered, and returns when the motion it started has settled. `snap` ends owned motion.
+ * The renderer's native motion driver (`scene-motion.ts`). `sample` runs before a geometry
+ * publication renders and reports what the published presentation displays now; `start` runs
+ * once after the publication rendered, in the commit's microtask checkpoint, creating every
+ * effect of the new presentation's epoch, and reports whether anything started and when it has
+ * settled (false when superseded). `snap` ends owned motion.
  */
 export interface SceneMotion {
-  sample(): unknown;
-  start(sampled: unknown, diff: SceneDiff): Promise<void>;
+  sample(presentation: Presentation): DisplayedPresentation;
+  reduced(): boolean;
+  start(presentation: Presentation): { readonly started: boolean; readonly settled: Promise<boolean> };
   snap(): void;
 }
 
@@ -187,6 +191,9 @@ export function createSceneController(options: SceneControllerOptions) {
   let afterPresentation: (() => void)[] = [];
   let motionSettled: Promise<void> = Promise.resolve();
   let motionIdle = true;
+  /** Presentation epochs: one per geometry publication. */
+  let epochs = 0;
+  let startedEpoch = 0;
   const presentedListeners = new Set<() => void>();
   const changeListeners = new Set<() => void>();
   /** Recent transactions by id, for reveal waits. */
@@ -486,8 +493,11 @@ export function createSceneController(options: SceneControllerOptions) {
     committed = snapshot;
     if (!differs(previous, scene, diff)) { finish(tx, "committed"); reconcileCovers(); return; }
     const geometry = diff.policy.reset || diff.enter.size > 0 || diff.exit.size > 0 || [...diff.policy.records.values()].some((policy) => policy !== "carry");
-    const sampled = geometry && !diff.policy.reset && motion ? motion.sample() : null;
-    const publication: Publication = { transactionId: tx.id, geometryVersion: geometry ? ++geometryVersion : previous?.geometryVersion ?? geometryVersion, scene, presentation: staticPresentation(scene) };
+    // Geometry continues from what is displayed; a restyle keeps the running epoch (tracks and retirees).
+    const presentation = !geometry && previous ? restylePresentation(previous.presentation, scene)
+      : diff.policy.reset || !previous || !motion ? staticPresentation(scene, ++epochs)
+      : retargetPresentation(motion.sample(previous.presentation), scene, diff, { transaction: tx.id, epoch: ++epochs, reduced: motion.reduced() });
+    const publication: Publication = { transactionId: tx.id, geometryVersion: geometry ? ++geometryVersion : previous?.geometryVersion ?? geometryVersion, scene, presentation };
     published = publication;
     tx.publication = publication;
     if (geometry) sceneInstrumentation.geometryPublication(event(tx, graphKeys(scene)));
@@ -497,20 +507,25 @@ export function createSceneController(options: SceneControllerOptions) {
     const lifetime = scope;
     void tick().then(() => {
       if (disposed || lifetime !== scope || published !== publication) return;
-      if (geometry && motion) {
-        if (diff.policy.reset || sampled === null) motion.snap();
-        else {
-          const settled = motion.start(sampled, diff);
-          sceneInstrumentation.motionStart(event(tx, graphKeys(scene)));
-          motionIdle = false;
-          const mine = motionSettled = settled.then(() => undefined, () => undefined);
-          void mine.then(() => {
-            if (motionSettled !== mine) return;
-            motionIdle = true;
-            if (published === publication) sceneInstrumentation.settled(event(tx, graphKeys(scene)));
-            notify();
-          });
-        }
+      // An epoch starts once, after its first publication rendered (a restyle committed in the same
+      // turn carries it, so it starts the epoch instead).
+      if (motion && presentation.epoch !== startedEpoch) {
+        startedEpoch = presentation.epoch;
+        if (diff.policy.reset) motion.snap();
+        const { started, settled } = motion.start(presentation);
+        if (started) sceneInstrumentation.motionStart(event(tx, graphKeys(scene)));
+        motionIdle = false;
+        const mine = motionSettled = settled.then(() => undefined, () => undefined);
+        void settled.then((finished) => {
+          if (motionSettled !== mine || disposed || lifetime !== scope) return;
+          motionIdle = true;
+          // The epoch is over: present the same scene settled (retirees gone, every record at its target).
+          if (finished && published?.presentation.epoch === presentation.epoch) {
+            if (published.presentation.duration > 0) published = { ...published, presentation: settledPresentation(published.presentation) };
+            sceneInstrumentation.settled(event(tx, graphKeys(scene)));
+          }
+          notify();
+        }, () => undefined);
       }
       presenting = null;
       const queued = afterPresentation;
@@ -675,8 +690,18 @@ export function createSceneController(options: SceneControllerOptions) {
     },
     /** The renderer's native motion; one at a time. */
     attachMotion(adapter: SceneMotion): () => void {
+      // A presentation whose epoch no driver runs is shown settled.
+      const settle = () => {
+        if (published && published.presentation.duration > 0) published = { ...published, presentation: settledPresentation(published.presentation) };
+        startedEpoch = published?.presentation.epoch ?? startedEpoch;
+        motionIdle = true;
+        motionSettled = Promise.resolve();
+        notify();
+      };
+      motion?.snap();
       motion = adapter;
-      return () => { if (motion === adapter) { adapter.snap(); motion = null; } };
+      settle();
+      return () => { if (motion === adapter) { adapter.snap(); motion = null; settle(); } };
     },
     /** Clears a view-level failure (the caller retries the refresh). */
     clearViewFailure(): void { failure = null; },
