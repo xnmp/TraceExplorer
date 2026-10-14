@@ -26,8 +26,10 @@ import type { NodeKey } from "$lib/domain/trace-graph/model";
 import type { ComponentData, FolderIndex } from "$lib/domain/trace-graph/folder-data";
 import { buildFolderScene, diffScenes, type FolderScene, type SceneDiff, type SceneScope } from "$lib/domain/trace-graph/folder-scene";
 import { engines, memoizeEngine, type FolderLayout, type FolderLayoutEngine, type FolderLayoutInput, type GraphId } from "$lib/domain/trace-graph/folder-layout";
+import { geometryMotion, type SceneCauseKind } from "$lib/domain/trace-graph/scene-change";
+import { mustLayoutBeforePaint } from "$lib/domain/trace-graph/layout-workload";
 import { folderItems, fresh, intentChange, changed as anyChange, prepareLayoutInput, requiredComponents, resolveCover, stylingOf,
-  sameSet, sameStyling, type HeldHistory, type IntentChange, type SceneData, type SceneIntent } from "./scene-inputs";
+  sameSet, sameStyling, type HeldHistory, type IntentChange, type PreparedLayoutInput, type SceneData, type SceneIntent } from "./scene-inputs";
 import { restylePresentation, retargetPresentation, settledPresentation, staticPresentation, type DisplayedPresentation, type Presentation,
   type Publication, type TransactionId } from "./presentation";
 import { presents } from "./scene-view";
@@ -43,7 +45,8 @@ export type { Publication, TransactionId };
 export type TransactionStatus = "collecting" | "preparing-data" | "preparing-layout" | "ready" | "committed" | "superseded" | "failed";
 
 export interface SceneCause {
-  readonly kind: "startup" | "restore" | "selection" | "expand" | "collapse" | "resize" | "metrics" | "listing" | "refresh" | "reveal" | "retry";
+  /** Decides the commit's motion (`geometryMotion`): only a spatial change the user made in the view animates. */
+  readonly kind: SceneCauseKind;
   /** Stable node key, cover key or entry path. */
   readonly target: string | null;
   readonly anchor: "hold" | "reveal" | "none";
@@ -131,6 +134,8 @@ export interface SceneControllerOptions {
 /** Actions that may commit on the last coherent committed data while current data is still loading. */
 const HOT = new Set<SceneCause["kind"]>(["selection", "collapse", "resize", "metrics", "restore"]);
 const MAX_RESTARTS = 3;
+/** Recently committed layouts kept per lifetime, by layout basis (`recentLayout`). */
+const RECENT_LAYOUTS = 4;
 const STABILISE_TICKS = 8;
 export const PREPARATION_DEADLINE_MS = 5000;
 const noop = () => undefined;
@@ -230,6 +235,12 @@ export function createSceneController(options: SceneControllerOptions) {
   /** The action whose operation is running synchronously; nested actions reuse its lease. */
   let operating: Transaction | null = null;
   let committed: Committed | null = null;
+  /**
+   * Layouts this lifetime committed, by layout basis, newest last: a size or metrics round trip
+   * (a fullscreen Preview widening the pane underneath it, then narrowing it on exit; a resize
+   * dragged back) lays out nothing and commits the earlier layout before the first frame.
+   */
+  const recentLayouts = new Map<string, { readonly layout: FolderLayout; readonly sources: PreparedLayoutInput["sources"] }>();
   /** What was last saved for the next mount (`remember`). */
   let remembered: RememberedBasis | null = null;
   /** Whether this lifetime may still start from a saved scene (until its first scene or restore attempt). */
@@ -532,8 +543,11 @@ export function createSceneController(options: SceneControllerOptions) {
       const prepared = prepareLayoutInput(sceneIntent, sceneData, open, committed?.history ?? null, published?.scene.layout ?? null, source.components);
       if (tx.layout?.key !== prepared.basis) dropLayout(tx);
       let layout: FolderLayout;
-      if (published && committed && prepared.basis === committed.basis) layout = published.scene.layout;
-      else if (inline(prepared.input)) layout = engine(prepared.input);
+      const known = published && committed && prepared.basis === committed.basis ? published.scene.layout : recentLayout(prepared);
+      if (known) layout = known;
+      // A scene on screen that no longer fits the pane is replaced before the next paint: kept while
+      // a worker lays out, it would be drawn cut at the pane's edge.
+      else if (inline(prepared.input) || mustLayoutBeforePaint(published ? published.scene.layout.size.width : null, prepared.input.width)) layout = engine(prepared.input);
       else {
         tx.status = "preparing-layout";
         publishState(tx);
@@ -555,11 +569,15 @@ export function createSceneController(options: SceneControllerOptions) {
       }
       tx.status = "ready";
       const scene = buildFolderScene({ scope, layoutInput: prepared.input, layout, sources: prepared.sources, styling: stylingOf(sceneIntent), coverNodes: prepared.coverNodes });
+      keepLayout(prepared.basis, layout, prepared.sources);
       commit(tx, scene, { intent: sceneIntent, data: sceneData, history: prepared.history, basis: prepared.basis });
       // A scene of the current data supersedes whatever failed before it; one on the older snapshot does not.
       if (!continuation) { failure = null; expose(); }
       if (continuation && !disposed && current === tx) {
-        const next = begin({ kind: data.index && committed && data.index.token !== committed.data.index.token ? "refresh" : "expand", target: null, anchor: "none" });
+        // The newer index, or the requested stacks the committed snapshot could not open yet (a cold
+        // open completing). Completing a restore is revalidation: it snaps, as the arrival did.
+        const kind = tx.cause.kind === "restore" || (data.index && committed && data.index.token !== committed.data.index.token) ? "refresh" : "expand";
+        const next = begin({ kind, target: null, anchor: "none" });
         void run(next);
       }
       return;
@@ -586,11 +604,35 @@ export function createSceneController(options: SceneControllerOptions) {
       const tx = begin({ kind: "restore", target: null, anchor: "none" });
       tx.intent = next;
       const scene = buildFolderScene({ scope, layoutInput: prepared.input, layout, sources: prepared.sources, styling: stylingOf(restored.intent), coverNodes: prepared.coverNodes });
+      keepLayout(prepared.basis, layout, prepared.sources);
       commit(tx, scene, { intent: restored.intent, data: restored.data, history: prepared.history, basis: prepared.basis });
     }
     reconcileCovers();
     void run(begin({ kind: "restore", target: null, anchor: "none" }));
     return true;
+  }
+
+  /**
+   * A layout this lifetime committed for the same basis, if it was laid out from the same data
+   * (component, revision and data object for every open stack); it becomes the newest.
+   */
+  function recentLayout(prepared: PreparedLayoutInput): FolderLayout | null {
+    const entry = recentLayouts.get(prepared.basis);
+    if (!entry) return null;
+    const same = entry.sources.size === prepared.sources.size && [...prepared.sources].every(([id, source]) => {
+      const kept = entry.sources.get(id);
+      return !!kept && kept.componentId === source.componentId && kept.revision === source.revision && kept.data === source.data;
+    });
+    if (!same) return null;
+    recentLayouts.delete(prepared.basis);
+    recentLayouts.set(prepared.basis, entry);
+    return entry.layout;
+  }
+
+  function keepLayout(basis: string, layout: FolderLayout, sources: PreparedLayoutInput["sources"]): void {
+    recentLayouts.delete(basis);
+    recentLayouts.set(basis, { layout, sources });
+    for (const key of recentLayouts.keys()) if (recentLayouts.size > RECENT_LAYOUTS) recentLayouts.delete(key); else break;
   }
 
   /** A hot action may use the committed snapshot only when its target is in that snapshot. */
@@ -639,10 +681,13 @@ export function createSceneController(options: SceneControllerOptions) {
     restorable = false;
     if (!differs(previous, scene, diff)) { finish(tx, "committed"); reconcileCovers(); remember(); return; }
     const geometry = diff.policy.reset || diff.enter.size > 0 || diff.exit.size > 0 || [...diff.policy.records.values()].some((policy) => policy !== "carry");
-    // Geometry continues from what is displayed; a restyle keeps the running epoch (tracks and retirees).
-    // A returning pane's scene snaps, also when revalidation changes it before anything else happened.
+    // A restyle keeps the running epoch (tracks and retirees). Geometry moves only for a spatial
+    // change the user made in the view (`geometryMotion`), continuing from what is displayed; every
+    // other change snaps, ending any motion still running: arriving (a first scene, a new scope, a
+    // restore and its revalidation), a resize or scrollbar, metrics, the listing, a refresh, a retry.
+    const arrival = !previous || diff.policy.reset;
     const presentation = !geometry && previous ? restylePresentation(previous.presentation, scene)
-      : diff.policy.reset || !previous || !motion || tx.cause.kind === "restore" ? staticPresentation(scene, ++epochs)
+      : !previous || !motion || geometryMotion(tx.cause.kind, { arrival }) === "snap" ? staticPresentation(scene, ++epochs)
       : retarget(motion, previous.presentation, scene, diff, tx.id);
     const publication: Publication = { transactionId: tx.id, geometryVersion: geometry ? ++geometryVersion : previous?.geometryVersion ?? geometryVersion, scene, presentation };
     published = publication;
@@ -697,6 +742,7 @@ export function createSceneController(options: SceneControllerOptions) {
     current = null;
     published = null;
     committed = null;
+    recentLayouts.clear();
     intent = null;
     data = { index: null, components: new Map() };
     restorable = true;

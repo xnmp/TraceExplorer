@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { classifySceneChange, type CommittedGraph } from '$lib/domain/trace-graph/scene-change';
+import { classifySceneChange, geometryMotion, type CommittedGraph, type SceneCauseKind } from '$lib/domain/trace-graph/scene-change';
 import { layoutGraph } from '$lib/domain/trace-graph/layout';
 import { projectDag, projectReferenceBadges } from '$lib/domain/trace-graph/projection';
 import { planBandScene } from '$lib/domain/trace-graph/scene';
@@ -65,5 +65,23 @@ describe('committed scene motion policy', () => {
   ])('conservatively reflows malformed input %#', value => {
     expect(classifySceneChange(value as CommittedGraph, scene())).toBe('reflow');
     expect(classifySceneChange(scene(), value as CommittedGraph)).toBe('reflow');
+  });
+});
+
+describe('geometry motion policy', () => {
+  it.each(['expand', 'collapse', 'selection'] as const)('animates a %s the user made in the view', (cause) => {
+    expect(geometryMotion(cause, { arrival: false })).toBe('animate');
+  });
+
+  it.each(['startup', 'restore', 'resize', 'metrics', 'listing', 'refresh', 'retry', 'reveal'] as const)('snaps geometry changed by %s', (cause) => {
+    expect(geometryMotion(cause, { arrival: false })).toBe('snap');
+  });
+
+  it.each(['expand', 'collapse', 'selection', 'startup', 'restore', 'resize'] as const)('snaps an arrival in a folder, even by %s', (cause) => {
+    expect(geometryMotion(cause, { arrival: true })).toBe('snap');
+  });
+
+  it.each(['', 'Expand', 'toString', '__proto__', 'constructor'])('snaps an unknown cause %j', (cause) => {
+    expect(geometryMotion(cause as SceneCauseKind, { arrival: false })).toBe('snap');
   });
 });

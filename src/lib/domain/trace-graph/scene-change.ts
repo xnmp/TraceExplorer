@@ -55,3 +55,26 @@ export function classifySceneChange(previous: CommittedGraph | null | undefined,
     || [...previous.plan.tiles.keys()].some(key => !next.plan.tiles.has(key));
   return sameInputs && (previous.plan.lineage.focus !== next.plan.lineage.focus || visibilityChanged) ? 'reveal' : 'reflow';
 }
+
+/** Why a scene transaction committed (the controller's `SceneCause.kind`). */
+export type SceneCauseKind =
+  | 'startup' | 'restore' | 'selection' | 'expand' | 'collapse'
+  | 'resize' | 'metrics' | 'listing' | 'refresh' | 'reveal' | 'retry';
+
+/** Whether a geometry publication's spatial changes travel (`animate`) or are shown at once (`snap`). */
+export type GeometryMotion = 'animate' | 'snap';
+
+/** The spatial changes the user makes inside the view: opening or closing a stack, and the reflow a selection causes. */
+const USER_SPATIAL: ReadonlySet<string> = new Set<SceneCauseKind>(['expand', 'collapse', 'selection']);
+
+/**
+ * The motion policy for geometry (docs/scene-transactions.md, "Native findings fixes"). Motion is
+ * kept for spatial changes the user initiated in the view; every other geometry change snaps,
+ * whatever moved: arriving in a folder (`arrival`: the first scene of a lifetime, a startup or a
+ * restore), a resize or a scrollbar, tile metrics, the listing, a backend refresh, a retry and a
+ * reveal. An unknown cause snaps. Restyles (no geometry change) are not governed here: they keep
+ * whatever motion is running.
+ */
+export function geometryMotion(cause: SceneCauseKind, { arrival }: { readonly arrival: boolean }): GeometryMotion {
+  return !arrival && USER_SPATIAL.has(cause) ? 'animate' : 'snap';
+}

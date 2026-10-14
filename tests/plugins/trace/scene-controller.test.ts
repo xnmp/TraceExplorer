@@ -819,7 +819,9 @@ describe("scene controller: review fixes (099e72f)", () => {
       start: () => { const settle = deferred<boolean>(); settles.push(settle); return { started: true, settled: settle.promise }; },
     });
     h.offer(); await flush();
-    h.act("resize", () => h.offer({ width: 400 })); await flush();
+    // An expand the user made moves (a resize would snap).
+    h.act("expand", () => h.offer({ open: new Set(["a1"]) })); await flush();
+    h.deliver("ca"); await flush();
     expect(h.controller.published!.presentation.duration).toBeGreaterThan(0);
     const running = settles.at(-1)!;
     // A restyle commits while the epoch runs; its motion setup waits for the next tick.
@@ -841,5 +843,123 @@ describe("scene controller: review fixes (099e72f)", () => {
     void h.controller.whenSettled(restyle.transactionId).then(() => { settled = true; });
     await flush();
     expect(settled).toBe(true);
+  });
+});
+
+describe("scene controller: geometry motion policy (native findings)", () => {
+  /** A motion stub whose epochs never settle on their own; records what each start was given. */
+  function attach(h: ReturnType<typeof harness>) {
+    const starts: { duration: number; started: boolean }[] = [];
+    let snaps = 0;
+    h.controller.attachMotion({
+      reduced: () => false, viewport: () => null, snap: () => { snaps++; },
+      sample: (presentation) => samplePresentation(presentation, 0),
+      start: (presentation) => {
+        const started = presentation.duration > 0;
+        starts.push({ duration: presentation.duration, started });
+        return { started, settled: new Promise<boolean>(() => undefined) };
+      },
+    });
+    return { starts, snaps: () => snaps };
+  }
+  const moving = (h: ReturnType<typeof harness>) => h.controller.published!.presentation.duration > 0;
+
+  it("animates the expand and collapse the user makes", async () => {
+    const h = setup();
+    h.offer({ open: new Set(["b1"]) }); await flush();
+    h.deliver("cb"); await flush();
+    const motion = attach(h);
+    h.act("expand", () => h.offer({ open: new Set(["a1", "b1"]) })); await flush();
+    h.deliver("ca"); await flush();
+    expect(moving(h)).toBe(true);
+    h.act("collapse", () => h.offer({ open: new Set(["b1"]) })); await flush();
+    expect(moving(h)).toBe(true);
+    expect(motion.starts.every((start) => start.started)).toBe(true);
+  });
+
+  it.each([
+    ["resize", { width: 600 }],
+    ["metrics", { tile: tileMetrics(160), grid: fallbackGridMetrics(tileMetrics(160)) }],
+    ["listing", { listing: [LISTING[1], LISTING[0], LISTING[2]] }],
+  ] as const)("snaps a geometry change by %s, ending motion still running", async (cause, change) => {
+    const h = setup();
+    h.offer({ open: new Set(["b1"]) }); await flush();
+    h.deliver("cb"); await flush();
+    const motion = attach(h);
+    h.act("expand", () => h.offer({ open: new Set(["a1", "b1"]) })); await flush();
+    h.deliver("ca"); await flush();
+    expect(moving(h)).toBe(true);
+    const before = h.published.length;
+    // Not an action: the host changed the pane (a resize, a scrollbar, a tile size, a re-sort).
+    h.offer(change); await flush();
+    expect(h.published.length, `${cause} publishes geometry`).toBe(before + 1);
+    expect(h.controller.published!.presentation.duration).toBe(0);
+    expect(h.controller.published!.presentation.retiring.size).toBe(0);
+    expect(motion.starts.at(-1)).toEqual({ duration: 0, started: false });
+  });
+
+  it("snaps a refresh that changes the scene", async () => {
+    const h = setup();
+    h.offer({ open: new Set(["a1"]) }); await flush();
+    h.deliver("ca"); await flush();
+    attach(h);
+    // The backend's new index drops stack b.
+    h.fake.source.index = indexFor("t2", ["ca"]);
+    h.offer(); await flush();
+    h.deliver("ca"); await flush();
+    expect(h.controller.committedIndex!.token).toBe("t2");
+    expect(h.controller.published!.scene.cells.some((cell) => cell.id === "b1")).toBe(false);
+    expect(moving(h)).toBe(false);
+  });
+
+  it("a size round trip commits the layout it had before without laying out again", async () => {
+    const h = setup({ inline: () => false });
+    h.offer({ open: new Set(["a1"]) }); await flush();
+    h.deliver("ca"); await flush();
+    h.layouts.at(-1)!.reply.resolve(engines.default(h.layouts.at(-1)!.input)); await flush();
+    const narrow = h.controller.published!;
+    expect(narrow.scene.graphs.has("a1")).toBe(true);
+    // Widened under a fullscreen Preview: laid out off the main thread (the narrow scene fits meanwhile).
+    h.offer({ width: 1300 }); await flush();
+    expect(h.controller.published).toBe(narrow);
+    const wide = h.layouts.at(-1)!;
+    expect(wide.input.width).toBeGreaterThan(narrow.scene.inputs.layoutInput.width);
+    wide.reply.resolve(engines.default(wide.input)); await flush();
+    expect(h.controller.published!.scene.inputs.layoutInput.width).toBe(wide.input.width);
+    // Narrowed again on exit: the earlier layout is committed at once, nothing is laid out.
+    const asked = h.layouts.length, inlineRuns = h.engine.mock.calls.length;
+    h.offer({ width: 900 });
+    await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
+    expect(h.controller.published!.scene.layout).toBe(narrow.scene.layout);
+    expect(h.layouts.length).toBe(asked);
+    expect(h.engine.mock.calls.length).toBe(inlineRuns);
+  });
+
+  it("lays out at once, whatever the workload, when the scene on screen no longer fits the pane", async () => {
+    const h = setup({ inline: () => false });
+    h.offer({ open: new Set(["a1"]), width: 1300 }); await flush();
+    h.deliver("ca"); await flush();
+    h.layouts.at(-1)!.reply.resolve(engines.default(h.layouts.at(-1)!.input)); await flush();
+    const wide = h.controller.published!;
+    const asked = h.layouts.length;
+    h.offer({ width: 500 }); await flush();
+    expect(h.layouts.length, "no worker layout").toBe(asked);
+    expect(h.controller.published).not.toBe(wide);
+    expect(h.controller.published!.scene.layout.size.width).toBeLessThanOrEqual(h.controller.published!.scene.inputs.layoutInput.width);
+  });
+
+  it("does not reuse a layout of the same basis laid out from other data", async () => {
+    const h = setup({ inline: () => false });
+    h.offer({ open: new Set(["a1"]) }); await flush();
+    h.deliver("ca"); await flush();
+    h.layouts.at(-1)!.reply.resolve(engines.default(h.layouts.at(-1)!.input)); await flush();
+    const first = h.controller.published!;
+    h.offer({ width: 1300 }); await flush();
+    h.layouts.at(-1)!.reply.resolve(engines.default(h.layouts.at(-1)!.input)); await flush();
+    // Another data object under the same version (the basis cannot tell them apart).
+    const was = h.fake.source.components.get("ca")!;
+    h.fake.source.components = new Map([["ca", { ...was, dag: projectDag(STACKS.ca) }]]);
+    h.offer({ width: 900 }); await flush();
+    expect(h.controller.published!.scene.layout).not.toBe(first.scene.layout);
   });
 });
