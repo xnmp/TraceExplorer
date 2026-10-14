@@ -103,3 +103,6 @@ export function randomFolder(seed: number): { folder: Folder; options: InputOpti
 }
 
 export { corpusNode };
+
+/** Data provenance per stack: one revision, the stack's projection standing for its DAG's identity. */
+export const sourcesOf = (folder: Folder) => new Map([...folder.stacks].map(([id, stack]) => [id, { componentId: stack.componentId, revision: 1, data: stack.graph }]));
