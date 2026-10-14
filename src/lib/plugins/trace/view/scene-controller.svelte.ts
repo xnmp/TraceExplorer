@@ -192,10 +192,20 @@ export function createSceneController(options: SceneControllerOptions) {
   /** A store cleared after this controller began (the plugin was disabled) is not written. */
   const storeEpoch = scenes?.epoch ?? 0;
 
-  let published = $state.raw<Publication | null>(null);
-  let transactionState = $state.raw<SceneTransaction | null>(null);
-  let notices = $state.raw<ReadonlyMap<GraphId, PreparationNotice>>(new Map());
-  let failure = $state.raw<string | null>(null);
+  // The controller's own state is plain: its logic must read what it last wrote. Svelte shows a
+  // teardown the values its effect last saw, so a cleanup that calls in here (a renderer detaching
+  // its motion as the old folder unmounts) would otherwise read, and could republish, the old
+  // scope's scene. The reactive copies are only what the getters expose; `expose` follows each write
+  // (assigning an unchanged value notifies nothing).
+  let published: Publication | null = null;
+  let transactionState: SceneTransaction | null = null;
+  let notices: ReadonlyMap<GraphId, PreparationNotice> = new Map();
+  let failure: string | null = null;
+  let shownPublication = $state.raw<Publication | null>(null), shownTransaction = $state.raw<SceneTransaction | null>(null);
+  let shownNotices = $state.raw(notices), shownFailure = $state.raw<string | null>(null);
+  function expose(): void {
+    shownPublication = published; shownTransaction = transactionState; shownNotices = notices; shownFailure = failure;
+  }
 
   let disposed = false;
   let scope: SceneScope = { paneId: options.paneId, directory: "", generation: 0 };
@@ -237,6 +247,7 @@ export function createSceneController(options: SceneControllerOptions) {
   function publishState(tx: Transaction): void {
     if (current !== tx) return;
     transactionState = { id: tx.id, scope: tx.scope, intent: tx.intent, cause: tx.cause, status: tx.status, pending: new Set(deadlines.keys()), error: tx.error };
+    expose();
   }
 
   // ── Covers: pending deadlines, failures and notices ────────────────────────
@@ -272,7 +283,7 @@ export function createSceneController(options: SceneControllerOptions) {
       const was = notices.get(key);
       return was && was.phase === notice.phase && was.message === notice.message;
     });
-    if (!same) notices = next;
+    if (!same) { notices = next; expose(); }
   }
 
   /**
@@ -428,7 +439,7 @@ export function createSceneController(options: SceneControllerOptions) {
     tx.phase = "preparing";
     const release = options.holdWork?.() ?? (() => {});
     try { await prepare(tx); }
-    catch (error) { if (live(tx)) { finish(tx, "failed", message(error)); failure = message(error); sceneInstrumentation.failure({ ...event(tx), message: message(error) }); } }
+    catch (error) { if (live(tx)) { finish(tx, "failed", message(error)); failure = message(error); expose(); sceneInstrumentation.failure({ ...event(tx), message: message(error) }); } }
     finally { dropLayout(tx); release(); }
   }
 
@@ -532,7 +543,7 @@ export function createSceneController(options: SceneControllerOptions) {
       const scene = buildFolderScene({ scope, layoutInput: prepared.input, layout, sources: prepared.sources, styling: stylingOf(sceneIntent), coverNodes: prepared.coverNodes });
       commit(tx, scene, { intent: sceneIntent, data: sceneData, history: prepared.history, basis: prepared.basis });
       // A scene of the current data supersedes whatever failed before it; one on the older snapshot does not.
-      if (!continuation) failure = null;
+      if (!continuation) { failure = null; expose(); }
       if (continuation && !disposed && current === tx) {
         const next = begin({ kind: data.index && committed && data.index.token !== committed.data.index.token ? "refresh" : "expand", target: null, anchor: "none" });
         void run(next);
@@ -607,6 +618,7 @@ export function createSceneController(options: SceneControllerOptions) {
       : retarget(motion, previous.presentation, scene, diff, tx.id);
     const publication: Publication = { transactionId: tx.id, geometryVersion: geometry ? ++geometryVersion : previous?.geometryVersion ?? geometryVersion, scene, presentation };
     published = publication;
+    expose();
     tx.publication = publication;
     remember();
     if (geometry) sceneInstrumentation.geometryPublication(event(tx, graphKeys(scene)));
@@ -630,7 +642,7 @@ export function createSceneController(options: SceneControllerOptions) {
           motionIdle = true;
           // The epoch is over: present the same scene settled (retirees gone, every record at its target).
           if (finished && published?.presentation.epoch === presentation.epoch) {
-            if (published.presentation.duration > 0) published = { ...published, presentation: settledPresentation(published.presentation) };
+            if (published.presentation.duration > 0) { published = { ...published, presentation: settledPresentation(published.presentation) }; expose(); }
             sceneInstrumentation.settled(event(tx, graphKeys(scene)));
           }
           notify();
@@ -667,19 +679,20 @@ export function createSceneController(options: SceneControllerOptions) {
     motionSettled = Promise.resolve();
     transactionState = null;
     refreshNotices();
+    expose();
     notify();
   }
 
   // ── Public API ─────────────────────────────────────────────────────────────
   return {
     /** The only drawable state: the complete committed scene, or null before the first commit. */
-    get published() { return published; },
+    get published() { return shownPublication; },
     /** The newest transaction's progress (never drawable). */
-    get transaction() { return transactionState; },
+    get transaction() { return shownTransaction; },
     /** Cover progress and failures, by cover key (never drawable geometry). */
-    get notices() { return notices; },
+    get notices() { return shownNotices; },
     /** A view-level failure (a refresh that could not be prepared); the last scene stays. */
-    get failure() { return failure; },
+    get failure() { return shownFailure; },
     /** The index the published scene was built from (for interaction rules that must match what is drawn). */
     get committedIndex(): FolderIndex | null { return committed?.data.index ?? null; },
 
@@ -845,7 +858,7 @@ export function createSceneController(options: SceneControllerOptions) {
     attachMotion(adapter: SceneMotion): () => void {
       // A presentation whose epoch no driver runs is shown settled.
       const settle = () => {
-        if (published && published.presentation.duration > 0) published = { ...published, presentation: settledPresentation(published.presentation) };
+        if (published && published.presentation.duration > 0) { published = { ...published, presentation: settledPresentation(published.presentation) }; expose(); }
         startedEpoch = published?.presentation.epoch ?? startedEpoch;
         motionIdle = true;
         motionSettled = Promise.resolve();
@@ -857,7 +870,7 @@ export function createSceneController(options: SceneControllerOptions) {
       return () => { if (motion === adapter) { adapter.snap(); motion = null; settle(); } };
     },
     /** Clears a view-level failure (the caller retries the refresh). */
-    clearViewFailure(): void { failure = null; },
+    clearViewFailure(): void { failure = null; expose(); },
     dispose(): void {
       if (disposed) return;
       resetScope("");
