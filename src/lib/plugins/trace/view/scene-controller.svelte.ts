@@ -24,6 +24,9 @@
  * Media: the images a prepared scene draws near the viewport (`media`) are part of it. A scene
  * whose images are not decoded yet waits for them, at most `MEDIA_DEADLINE_MS` per transaction,
  * then commits; an image still loading then draws its placeholder until it arrives, in place.
+ * Slow images cost only the images: a cover's deadline does not fail a stack whose scene only
+ * waits for them. A committed scene keeps its images pinned in the cache until its views have
+ * subscribed (after its first render and its motion).
  */
 import { tick as svelteTick } from "svelte";
 import type { NodeKey } from "$lib/domain/trace-graph/model";
