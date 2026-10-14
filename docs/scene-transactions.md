@@ -459,6 +459,24 @@ Restyle commits update payloads without restarting tracks. Presentation settleme
 
 Notify marquee hit-testing once after a folder publication’s motion setup, replacing the multiple geometry callbacks.
 
+### Step 4 as implemented: deviations
+
+Recorded where step 4 departs from the text above, with the reason.
+
+- **Whole-folder worker message.** `layout.worker.ts` accepts `{ id, folder: FolderLayoutInput }` and replies `{ id, folder: FolderLayout }`, running the memoised default engine; `computeFolderLayout` in `layout-client.ts` sends it (abort rejects at once, a late reply is dropped, no worker means a main-thread fallback). The controller lays out a complete folder per transaction, so sending band requests one by one would split the engine across threads. The per-request path (`computeLayout`) stays for other callers.
+- **Inline rule.** `folder-layout-runtime.ts` shares one band cache across panes and runs a folder inline when Phase 2's `canLayoutInline` holds for every band request the run would actually compute (`uncachedBandRequests`). Bands computed in the worker are seeded into that cache (`rememberBands`), so the next inline run reuses them.
+- **Band basis reuse in the engine.** `planBands` keeps a band's committed raw layout when its request differs from the committed one only in history and hint. This is the "compare the geometry basis before history" rule, applied per band inside the default engine, so committing one band's new geometry does not send an unchanged band through a fresh layout. The parity test models the rule. `layout:eval` geometry rows are unchanged. The controller also skips the engine entirely when nothing the engine reads has changed (`layoutBasis`).
+- **Transaction state.** `SceneTransaction.intent` carries the captured `SceneIntent`, not a prepared `SceneInputs`. Prepared engine input stays internal to the controller (`prepareLayoutInput`).
+- **Legacy grid motion.** Until step 5, the controller calls `playGrid` through `attachMotion({ sample, start, snap })`, once per geometry commit. Its carry/snap decisions read per-band `data-layout-stamp` (raw layout) and `data-attachment` (attached geometry) stamps, which are now hashed from the published scene instead of serials kept by each graph.
+- **Hot causes.** Selection, collapse, resize and metrics may commit on the committed snapshot while current data is loading. A continuation transaction (`refresh` or `expand`) then completes the current data.
+- **Restyles.** A publication whose styling contents changed is published even when no record changed, because reference badge selection is read from styling.
+- **Deadline.** Each cover gets 5,000 ms from the moment it becomes pending (requested, not committed, not blocked), covering both data and layout. It is not a deadline per transaction. When it expires, the cover fails, the transaction is woken and commits without that cover, and the running worker job's reply is dropped.
+- **Failed cover disclosure.** Clicking the disclosure of a failed cover dismisses the failure (its label is "Dismiss stack error"); the next click is the explicit reopen. Retry in the cover reopens directly, resolving the stable key against the current index.
+- **First scene.** "Loading Trace…" is inserted only after 400 ms without a first scene, so a view remounted over cached data never shows a loading frame.
+- **Reveal waits.** `whenPresented` accepts reference badge keys as well as tiles.
+- **Not implemented.** There is no watchdog for a running worker computation beyond the cover deadline. Notices carry one phase (`loading` or `arranging`) for every pending cover of the transaction.
+- `folder-layout/types.ts` is unchanged.
+
 ## 5. Cold expansion and failure
 
 The committed cover stays in place. Its thumbnail receives an absolutely positioned loading spinner; the cover has `aria-busy="true"` and an accessible “Loading stack” status. No child band, background band, estimated footprint, or following-row displacement appears.
