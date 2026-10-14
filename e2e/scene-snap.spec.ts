@@ -11,7 +11,7 @@
  */
 import { expect, test, type Page } from "@playwright/test";
 import { clearSceneEvents, samplePaintedFrames as sampleFrames, sceneEvents } from "./helpers/scene-events";
-import { drawn, expectSnapped, navigateRemounting as navigate, now, scene, sceneFrame, setExpanded, toggleOf, type SceneFrame } from "./helpers/scene-frames";
+import { drawn, expectHeldThenSnapped, expectSnapped, navigateRemounting as navigate, now, scene, sceneFrame, setExpanded, toggleOf, type SceneFrame } from "./helpers/scene-frames";
 import { openView, settle, uncaught } from "./support";
 
 const DIRECTORY = "/pictures", MIRROR = "/pictures-mirror";
@@ -93,30 +93,62 @@ test.describe("arriving in a folder snaps", () => {
   });
 });
 
-/** Changes the pane's width while sampling; returns frames at the new width only. */
-async function widthFrames(page: Page, width: number, during: () => Promise<void> = async () => {}): Promise<{ frames: SceneFrame[]; settled: SceneFrame }> {
-  const before = (await now(page)).width;
-  const frames = await sampleFrames(page, sceneFrame, 700, async () => {
+/**
+ * Width variants: small stacks (laid out inline) or the fan with 40 more children (too large to lay
+ * out inline: a widening goes to the worker), each without and with the host's grid padding
+ * (`?fileTile=1`, padding 8: the scene is laid out for the width inside it).
+ */
+const VARIANTS = [
+  { label: "small stacks, laid out inline", query: "", worker: false },
+  { label: "small stacks, laid out inline, host grid padding", query: "?fileTile=1", worker: false },
+  { label: "a stack too large to lay out inline", query: "?fanChildren=40", worker: true },
+  { label: "a stack too large to lay out inline, host grid padding", query: "?fanChildren=40&fileTile=1", worker: true },
+] as const;
+
+/**
+ * Changes the pane's width while sampling, holding worker replies for `hold` ms; returns the frames
+ * at the new width only, the scene before, and how many layouts the change sent to the worker.
+ */
+async function widthFrames(page: Page, width: number, hold = 250): Promise<{ frames: SceneFrame[]; before: SceneFrame; settled: SceneFrame; workers: number }> {
+  const before = await now(page);
+  let workers = 0;
+  await page.evaluate(() => (window as any).trace.holdLayoutReplies());
+  const frames = await sampleFrames(page, sceneFrame, 700 + hold, async () => {
     await page.evaluate((width) => (window as any).trace.setWidth(width), width);
-    await during();
+    await page.waitForTimeout(hold);
+    workers = await page.evaluate(() => (window as any).trace.heldLayoutReplies().length);
+    await page.evaluate(() => (window as any).trace.releaseLayoutReplies());
   });
   await settle(page);
   const settled = await now(page);
-  expect(settled.width).not.toBe(before);
-  return { frames: frames.filter((frame) => frame.width === settled.width), settled };
+  expect(settled.width).not.toBe(before.width);
+  return { frames: frames.filter((frame) => frame.width === settled.width), before, settled, workers };
+}
+
+/** A width change commits one scene and never moves: laid out inline it is shown from the first frame; in the worker the previous scene stays until it commits. */
+function expectWidthSnapped({ frames, before, settled, workers }: Awaited<ReturnType<typeof widthFrames>>, label: string): void {
+  if (workers > 0) expectHeldThenSnapped(frames, before, settled, label);
+  else expectSnapped(frames, settled, label);
+  expect(frames.every((frame) => frame.clipped === 0), `${label}: no frame cuts tiles at the pane's edge`).toBe(true);
 }
 
 test.describe("a width change snaps, and its first frame shows the layout for that width", () => {
-  for (const [label, query] of [["small stacks, laid out inline", ""], ["a stack too large to lay out inline", "?anchorWorker"]] as const) {
+  for (const { label, query, worker } of VARIANTS) {
     test(`resizing narrower and wider (${label})`, async ({ page }) => {
       await openView(page, 1100, query);
-      for (const width of [760, 1250, 640, 1100]) {
+      const workers: number[] = [];
+      let width = (await now(page)).width;
+      for (const next of [760, 1000, 1250, 640, 1100]) {
         await clearSceneEvents(page);
-        const { frames, settled } = await widthFrames(page, width);
-        expectSnapped(frames, settled, `width ${width}`);
-        expect(frames.every((frame) => frame.clipped === 0), `width ${width}: no frame cuts tiles at the pane's edge`).toBe(true);
-        expect(await sceneEvents(page, "motion-start"), `width ${width}`).toEqual([]);
+        const step = await widthFrames(page, next);
+        expectWidthSnapped(step, `width ${next}`);
+        // A pane narrowed past the scene on screen is laid out before its next paint, whatever the workload.
+        if (next < width) expect(step.workers, `width ${next}: narrowing waited for the worker`).toBe(0);
+        workers.push(step.workers);
+        width = step.settled.width;
+        expect(await sceneEvents(page, "motion-start"), `width ${next}`).toEqual([]);
       }
+      if (worker) expect(workers.some((count) => count > 0), `the worker laid out a widening (${workers})`).toBe(true);
       expect(await uncaught(page)).toEqual([]);
     });
   }
@@ -124,34 +156,30 @@ test.describe("a width change snaps, and its first frame shows the layout for th
   // Native finding S7: while the fullscreen Preview covers it, the pane widens (1150 px) and the
   // view reflows underneath; on exit the first frame showed the wide layout clipped into the
   // narrow pane, then animated a 58-tile reflow.
-  for (const query of ["", "?anchorWorker"]) {
-    test(`a fullscreen-like widen and narrow returns to the narrow layout on its first frame${query ? " (worker)" : ""}`, async ({ page }) => {
+  for (const { label, query, worker } of VARIANTS) {
+    test(`a fullscreen-like widen and narrow returns to the narrow layout on its first frame (${label})`, async ({ page }) => {
       await openView(page, 870, query);
       const narrow = await now(page);
       await clearSceneEvents(page);
-      await page.evaluate(() => (window as any).trace.setWidth(1158));
-      await settle(page);
-      const { frames, settled } = await widthFrames(page, 870);
-      expect(scene(settled)).toEqual(scene(narrow));
-      expectSnapped(frames, settled, "exit");
-      expect(frames.every((frame) => frame.clipped === 0)).toBe(true);
+      const widen = await widthFrames(page, 1158);
+      expectWidthSnapped(widen, "enter");
+      if (worker) expect(widen.workers, "the widened pane was laid out in the worker").toBeGreaterThan(0);
+      const exit = await widthFrames(page, 870);
+      expect(scene(exit.settled)).toEqual(scene(narrow));
+      expect(exit.workers, "the exit waited for the worker").toBe(0);
+      expectSnapped(exit.frames, exit.settled, "exit");
+      expect(exit.frames.every((frame) => frame.clipped === 0)).toBe(true);
       expect(await sceneEvents(page, "motion-start")).toEqual([]);
     });
   }
 
   test("while a wider layout is computed off the main thread, the previous scene stays as it was", async ({ page }) => {
-    await openView(page, 900, "?anchorWorker");
-    const before = await now(page);
+    await openView(page, 900, "?fanChildren=40");
     await clearSceneEvents(page);
-    const { frames, settled } = await widthFrames(page, 1300, async () => {
-      await page.evaluate(() => (window as any).trace.holdLayoutReplies());
-      await page.waitForTimeout(250);
-      await page.evaluate(() => (window as any).trace.releaseLayoutReplies());
-    });
-    for (const [index, frame] of frames.entries()) {
-      expect(frame.owned, `frame ${index}`).toBe(0);
-      expect([scene(before), scene(settled)], `frame ${index} shows one of the two scenes`).toContainEqual(scene(frame));
-    }
+    const step = await widthFrames(page, 1300);
+    expect(step.workers, "the wider layout went to the worker").toBeGreaterThan(0);
+    expectHeldThenSnapped(step.frames, step.before, step.settled, "widen");
+    expect(step.frames.some((frame) => JSON.stringify(scene(frame)) !== JSON.stringify(scene(step.settled))), "the previous scene was shown while the worker was held").toBe(true);
     expect(await sceneEvents(page, "motion-start")).toEqual([]);
   });
 });

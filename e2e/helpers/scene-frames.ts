@@ -52,16 +52,45 @@ export const drawn = (frame: SceneFrame) => Object.keys(frame.tiles).length > 0;
 /** The scene a frame shows, without the bookkeeping that legitimately differs between frames. */
 export const scene = ({ tiles, cells, routes }: SceneFrame) => ({ tiles, cells, routes });
 
-/** Once drawn, every frame is motionless and shows `settled`, from the first one on. */
+/** A frame's scene as text, independent of the order its records were mounted in. */
+const canonical = (value: unknown): string => JSON.stringify(value, (_, inner) => inner && typeof inner === "object" && !Array.isArray(inner)
+  ? Object.fromEntries(Object.entries(inner).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))) : inner);
+
+/** The frames from the first drawn one on; none of them may be blank (a blank frame after a drawn one is a blink). */
+function fromFirstDrawn(frames: SceneFrame[], label: string): SceneFrame[] {
+  const first = frames.findIndex(drawn);
+  expect(first, `${label}: frames drawn`).toBeGreaterThanOrEqual(0);
+  const shown = frames.slice(first);
+  const blank = shown.flatMap((frame, index) => drawn(frame) ? [] : [index]);
+  expect(blank, `${label}: blank frames after the first drawn one`).toEqual([]);
+  return shown;
+}
+
+/** Once drawn, every frame is motionless and shows `settled`, from the first one on, and none is blank. */
 export function expectSnapped(frames: SceneFrame[], settled: SceneFrame, label: string): void {
-  const shown = frames.filter(drawn);
-  expect(shown.length, `${label}: frames drawn`).toBeGreaterThan(0);
+  const shown = fromFirstDrawn(frames, label);
   expect(scene(shown[0]), `${label}: the first frame drawn is the settled scene`).toEqual(scene(settled));
   for (const [index, frame] of shown.entries()) {
     expect(frame.owned, `${label}: frame ${index} runs scene motion`).toBe(0);
     expect(frame.retirees, `${label}: frame ${index} draws retirees`).toBe(0);
     expect(scene(frame), `${label}: frame ${index}`).toEqual(scene(settled));
   }
+}
+
+/**
+ * A change laid out off the main thread: once drawn, every frame is motionless and shows `before`
+ * until the new scene commits, then `settled` from then on; none is blank and none shows anything else.
+ */
+export function expectHeldThenSnapped(frames: SceneFrame[], before: SceneFrame, settled: SceneFrame, label: string): void {
+  const shown = fromFirstDrawn(frames, label);
+  let arrived = false;
+  for (const [index, frame] of shown.entries()) {
+    expect(frame.owned, `${label}: frame ${index} runs scene motion`).toBe(0);
+    expect(frame.retirees, `${label}: frame ${index} draws retirees`).toBe(0);
+    arrived ||= canonical(scene(frame)) === canonical(scene(settled));
+    expect(scene(frame), `${label}: frame ${index} shows ${arrived ? "the new scene" : "the previous scene until the new one commits"}`).toEqual(scene(arrived ? settled : before));
+  }
+  expect(scene(shown.at(-1)!), `${label}: the last frame shows the new scene`).toEqual(scene(settled));
 }
 
 
