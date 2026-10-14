@@ -13,7 +13,7 @@ import { folderCells, folderGridGeometry, gridInnerWidth, unlistedCovers, type F
 import type { TileMetrics } from "$lib/domain/trace-graph/metrics";
 import type { FolderLayout, FolderLayoutInput, GraphId, OpenStack } from "$lib/domain/trace-graph/folder-layout";
 import type { FolderScene, SceneGraphSource, SceneStyling } from "$lib/domain/trace-graph/folder-scene";
-import type { GeometryInputs } from "$lib/domain/trace-graph/scene-change";
+import { arrivingStacks, type GeometryInputs } from "$lib/domain/trace-graph/scene-change";
 
 /** What the pane wants shown, captured from host and session state (data excluded). */
 export interface SceneIntent {
@@ -202,13 +202,16 @@ export const stylingOf = (intent: SceneIntent): SceneStyling => ({
 
 /**
  * What a committed scene was laid out from, for the motion policy (`geometryMotion`): its layout
- * input, the intent and index token it was committed with, and the requested stacks that failed.
- * `current` is false for a saved scene shown as it was laid out until the pane's own layout commits.
+ * input, the intent and index token it was committed with. `previous` is what the scene on screen
+ * was laid out from (null on arriving) and `failed` the requested stacks that failed, to carry the
+ * arrival's pending stacks (`arrivingStacks`). `current` is false for a saved scene shown as it was
+ * laid out until the pane's own layout commits.
  */
-export const geometryInputsOf = (scene: FolderScene, intent: SceneIntent, token: string, failed: ReadonlySet<GraphId>, current: boolean): GeometryInputs => {
-  const input = scene.inputs.layoutInput;
+export function geometryInputsOf(scene: FolderScene, intent: SceneIntent, token: string, failed: ReadonlySet<GraphId>, current: boolean, previous: GeometryInputs | null): GeometryInputs {
+  const input = scene.inputs.layoutInput, open = scene.inputs.sources;
   return {
     current, width: input.width, padding: intent.grid.gridPadding, tile: input.tile, grid: input.grid,
-    items: input.items.map((item) => `${item.kind}\0${item.id}`), token, open: scene.inputs.sources, requested: intent.open, failed, focus: intent.focus?.key ?? null,
+    items: input.items.map((item) => `${item.kind}\0${item.id}`), token, open, requested: intent.open,
+    arriving: arrivingStacks(previous, intent.open, open, failed), focus: intent.focus?.key ?? null,
   };
-};
+}

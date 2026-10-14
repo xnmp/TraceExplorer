@@ -95,8 +95,11 @@ export interface GeometryInputs {
   readonly open: ReadonlyMap<string, OpenStackSource>;
   /** The stacks the user asks to be open (laid out open, or not yet: loading or failed). */
   readonly requested: ReadonlySet<string>;
-  /** Requested stacks that failed in their cover (laid out closed with their error until Retry). */
-  readonly failed: ReadonlySet<string>;
+  /**
+   * Requested stacks the pane's arrival has not opened yet (`arrivingStacks`): a return whose saved
+   * data lacked them. Their opening completes the arrival; it is not something the user just did.
+   */
+  readonly arriving: ReadonlySet<string>;
   /** The focus the scene was laid out for. */
   readonly focus: string | null;
 }
@@ -108,13 +111,21 @@ const sameSource = (a: OpenStackSource, b: OpenStackSource) => a.componentId ===
 const sameItems = (a: readonly string[], b: readonly string[]) => a === b || (a.length === b.length && a.every((item, index) => item === b[index]));
 
 /**
- * Whether a stack opening is the user's doing: they asked for it since the scene on screen (it was
- * not requested then, or it had failed and they chose Retry). A request the scene on screen already
- * carried, opening once its data arrives (a return completing, a cold open after a click committed
- * in between), is data arriving.
+ * The requested stacks an arrival has not opened yet: on arriving (no `previous`), every requested
+ * stack laid out closed that has not failed; afterwards, those of them still requested, closed and
+ * not failed. A stack the user requests later, or that failed and is retried, is never arriving.
  */
-const openedByUser = (previous: GeometryInputs, next: GeometryInputs, id: string): boolean =>
-  next.requested.has(id) && (!previous.requested.has(id) || previous.failed.has(id));
+export function arrivingStacks(previous: GeometryInputs | null, requested: ReadonlySet<string>, open: ReadonlyMap<string, unknown>, failed: ReadonlySet<string>): ReadonlySet<string> {
+  const pending = (id: string) => requested.has(id) && !open.has(id) && !failed.has(id);
+  return new Set([...(previous ? previous.arriving : requested)].filter(pending));
+}
+
+/**
+ * Whether a stack opening is the user's doing: it is requested, and not as part of the arrival (a
+ * return opening a stack its saved data lacked). An expand, a cold open completing (also after
+ * other commits in between), Retry and Show image are.
+ */
+const openedByUser = (previous: GeometryInputs, next: GeometryInputs, id: string): boolean => next.requested.has(id) && !previous.arriving.has(id);
 
 /**
  * Whether anything other than the user changed the geometry inputs: the width, padding, tile or grid
@@ -148,7 +159,7 @@ const userChange = (previous: GeometryInputs, next: GeometryInputs): boolean => 
  * - **snap** when any input the user does not drive changed (`outsideChange`): the old positions
  *   are no longer comparable, so a user change committing with it snaps too;
  * - **animate** when only user inputs changed: opening or closing a stack (an expand, a collapse,
- *   a cold open completing in the same commit, Retry, Show image) or the focus (a selection);
+ *   a cold open completing, Retry, Show image) or the focus (a selection);
  * - **snap** otherwise (geometry changed although no input did).
  *
  * Restyles (no geometry change) are not governed here: they keep whatever motion is running.

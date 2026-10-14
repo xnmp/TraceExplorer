@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { classifySceneChange, geometryMotion, type CommittedGraph, type GeometryInputs } from '$lib/domain/trace-graph/scene-change';
+import { arrivingStacks, classifySceneChange, geometryMotion, type CommittedGraph, type GeometryInputs } from '$lib/domain/trace-graph/scene-change';
 import { layoutGraph } from '$lib/domain/trace-graph/layout';
 import { projectDag, projectReferenceBadges } from '$lib/domain/trace-graph/projection';
 import { planBandScene } from '$lib/domain/trace-graph/scene';
@@ -73,7 +73,7 @@ describe('geometry motion policy', () => {
   const base: GeometryInputs = {
     current: true, width: 880, padding: 8, tile: { width: 96, image: 72 }, grid: { cellWidth: 104, cellHeight: 120, gap: 8 },
     items: ['stack\0a1', 'stack\0b1', 'file\0/f/notes.txt'], token: 't1',
-    open: new Map([['b1', { componentId: 'cb', revision: 1, data: dataB }]]), requested: new Set(['b1']), failed: new Set(), focus: null,
+    open: new Map([['b1', { componentId: 'cb', revision: 1, data: dataB }]]), requested: new Set(['b1']), arriving: new Set(), focus: null,
   };
   const with_ = (change: Partial<GeometryInputs>): GeometryInputs => ({ ...base, ...change });
   const opened = with_({ open: new Map([...base.open, ['a1', { componentId: 'ca', revision: 1, data: dataA }]]), requested: new Set(['a1', 'b1']) });
@@ -87,9 +87,10 @@ describe('geometry motion policy', () => {
     expect(geometryMotion(base, { ...opened, focus: 'a3' }), 'reveal').toBe('animate');
   });
 
-  it('animates Retry: a failed stack the user asks to read again opens', () => {
-    const failed = with_({ requested: new Set(['a1', 'b1']), failed: new Set(['a1']) });
-    expect(geometryMotion(failed, opened)).toBe('animate');
+  it('animates a requested stack opening once its data arrives: a cold open, Retry, also after other commits in between', () => {
+    // The scene on screen already carried the request (a click committed while the stack was read, or it failed and Retry read it again).
+    expect(geometryMotion(with_({ requested: new Set(['a1', 'b1']) }), opened)).toBe('animate');
+    expect(geometryMotion(with_({ requested: new Set(['a1', 'b1']), focus: 'a1' }), { ...opened, focus: 'a1' })).toBe('animate');
   });
 
   it.each([
@@ -114,13 +115,13 @@ describe('geometry motion policy', () => {
     expect(geometryMotion(with_({ current: false }), opened)).toBe('snap');
   });
 
-  it('snaps a requested stack opening once its data arrives after the scene on screen already asked for it', () => {
-    // A return whose saved data lacked the stack, or a cold open with a click committed in between.
-    expect(geometryMotion(with_({ requested: new Set(['a1', 'b1']) }), opened)).toBe('snap');
+  it('snaps a stack the arrival requested opening once its data arrives: it completes the arrival', () => {
+    // A return whose saved data lacked the stack.
+    expect(geometryMotion(with_({ requested: new Set(['a1', 'b1']), arriving: new Set(['a1']) }), opened)).toBe('snap');
   });
 
   it('snaps a stack closing while it is still requested (it failed in its cover)', () => {
-    expect(geometryMotion(opened, { ...base, requested: new Set(['a1', 'b1']), failed: new Set(['a1']) })).toBe('snap');
+    expect(geometryMotion(opened, { ...base, requested: new Set(['a1', 'b1']) })).toBe('snap');
   });
 
   it('snaps a stack opening that nobody requested', () => {
@@ -145,9 +146,31 @@ describe('geometry motion policy', () => {
 
   it('handles empty scenes and huge listings', () => {
     const empty = with_({ items: [], open: new Map(), requested: new Set() });
-    expect(geometryMotion(empty, with_({ items: [], open: new Map(), requested: new Set(), focus: 'x' }))).toBe('animate');
+    expect(geometryMotion(empty, { ...empty, focus: 'x' })).toBe('animate');
     const many = Array.from({ length: 50_000 }, (_, index) => `file\0/f/${index}.png`);
     expect(geometryMotion(with_({ items: many }), with_({ items: [...many], focus: 'b2' }))).toBe('animate');
     expect(geometryMotion(with_({ items: many }), with_({ items: [...many.slice(1), many[0]], focus: 'b2' }))).toBe('snap');
+  });
+});
+
+describe('arriving stacks', () => {
+  const open = (...ids: string[]) => new Map(ids.map((id) => [id, {}]));
+  const inputs = (arriving: string[]) => ({ arriving: new Set(arriving) }) as unknown as GeometryInputs;
+
+  it('on arriving, are the requested stacks laid out closed that have not failed', () => {
+    expect([...arrivingStacks(null, new Set(['a1', 'b1', 'c1']), open('b1'), new Set(['c1']))]).toEqual(['a1']);
+    expect([...arrivingStacks(null, new Set(), open(), new Set())]).toEqual([]);
+  });
+
+  it('afterwards, keeps only those still requested, closed and not failed; never adds a later request', () => {
+    const previous = inputs(['a1', 'b1', 'c1', 'd1']);
+    // a1 opened, b1 was closed by the user, c1 failed, d1 is still loading; e1 is a new request.
+    expect([...arrivingStacks(previous, new Set(['a1', 'c1', 'd1', 'e1']), open('a1'), new Set(['c1']))]).toEqual(['d1']);
+    expect([...arrivingStacks(inputs([]), new Set(['e1']), open(), new Set())]).toEqual([]);
+  });
+
+  it('a retried stack that had failed on arrival is no longer arriving', () => {
+    const failedOnArrival = arrivingStacks(inputs(['a1']), new Set(['a1']), open(), new Set(['a1']));
+    expect([...arrivingStacks(inputs([...failedOnArrival]), new Set(['a1']), open(), new Set())]).toEqual([]);
   });
 });

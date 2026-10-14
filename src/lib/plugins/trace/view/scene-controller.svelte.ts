@@ -721,7 +721,7 @@ export function createSceneController(options: SceneControllerOptions) {
     const diff = diffScenes(previous?.scene ?? null, scene);
     const shown = !previous || diff.policy.reset ? null : shownInputs;
     committed = snapshot;
-    shownInputs = geometryInputsOf(scene, snapshot.intent, snapshot.data.index.token, blocked(snapshot.data.index), !provisional);
+    shownInputs = geometryInputsOf(scene, snapshot.intent, snapshot.data.index.token, blocked(snapshot.data.index), !provisional, shown);
     restorable = false;
     if (!differs(previous, scene, diff)) { finish(tx, "committed"); reconcileCovers(); remember(); return; }
     const geometry = diff.policy.reset || diff.enter.size > 0 || diff.exit.size > 0 || [...diff.policy.records.values()].some((policy) => policy !== "carry");

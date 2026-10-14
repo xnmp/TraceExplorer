@@ -1164,6 +1164,20 @@ describe("scene controller: review fixes (dc33274)", () => {
     expect(h.controller.published!.presentation.duration).toBeGreaterThan(0);
   });
 
+  it("a host selection that opens a cold stack animates the opening, though the selection committed before its data arrived", async () => {
+    const h = setup();
+    h.offer({ open: new Set(["b1"]) }); await flush();
+    h.deliver("cb"); await flush();
+    attachStill(h);
+    const before = h.published.length;
+    h.act("selection", () => h.offer({ hostChoice: "a1", focus: { key: "a1", componentId: "ca" }, selectedKeys: new Set(["a1"]), open: new Set(["a1", "b1"]) })); await flush();
+    expect(h.openGraphs(), "the selection committed on the data it had").toEqual(["b1"]);
+    h.deliver("ca"); await flush();
+    expect(h.openGraphs()).toEqual(["a1", "b1"]);
+    expect(h.published.length).toBeGreaterThan(before);
+    expect(h.controller.published!.presentation.duration).toBeGreaterThan(0);
+  });
+
   it("a stack a return could not open from the saved scene opens with a snap when its data arrives", async () => {
     const scenes = store();
     const first = harness({ scenes });
