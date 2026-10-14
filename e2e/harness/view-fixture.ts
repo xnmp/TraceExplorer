@@ -458,8 +458,14 @@ const color = (path: string) => `hsl(${[...path].reduce((sum, char) => (sum * 31
  * later task, never within the caller's microtasks, with a new JPEG blob URL.
  */
 const thumbnailDelay = Math.max(0, Number(new URLSearchParams(globalThis.location?.search ?? "").get("thumbnailDelay") ?? 0) || 0);
+/**
+ * `?thumbnailFail=<substring>`: thumbnails of paths containing it fail, after the same delay, as
+ * the host's do (`getThumbnailData` resolves `{ ok: false, error }` for a missing file, an image
+ * over the decode limit or an IPC error; it never rejects).
+ */
+const thumbnailFail = new URLSearchParams(globalThis.location?.search ?? "").get("thumbnailFail") || null;
 const thumbnailRequests: string[] = [];
-async function thumbnailData(path: string): Promise<{ ok: true; data: string }> {
+async function thumbnailData(path: string): Promise<{ ok: true; data: string } | { ok: false; error: string }> {
   thumbnailRequests.push(path);
   // A message task, not a timer, when there is no delay: specs that fake the clock still get answers.
   await new Promise<void>((resolve) => {
@@ -468,6 +474,7 @@ async function thumbnailData(path: string): Promise<{ ok: true; data: string }> 
     channel.port1.onmessage = () => { channel.port1.close(); resolve(); };
     channel.port2.postMessage(null);
   });
+  if (thumbnailFail !== null && path.includes(thumbnailFail)) return { ok: false, error: `Failed to load thumbnail: ${path}` };
   const canvas = new OffscreenCanvas(160, 96);
   const context = canvas.getContext("2d")!;
   context.fillStyle = color(path);

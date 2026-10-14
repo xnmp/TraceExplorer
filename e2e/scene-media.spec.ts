@@ -147,3 +147,19 @@ test("reference badges hidden behind +n are not part of the scene's media, and l
   await more.click();
   for (const path of hidden) await expect(page.locator(`[data-reference-key][aria-label^="${path}, "] img`)).toHaveCount(1);
 });
+
+test("a thumbnail the host fails to load: the scene commits once it failed, without waiting for the deadline, and draws the placeholder steadily", async ({ page }) => {
+  await prepare(page, "?selectionBlink=1&thumbnailDelay=150&thumbnailFail=Blastoise");
+  const frames = await samplePaintedFrames(page, sampleTiles, 900, () => press(page, "Saffron"));
+  const pressedAt = await page.evaluate(() => (window as any).__pressedAt as number);
+  const revealed = frames.findIndex((frame) => frame.tiles["Blastoise"] !== null && frame.tiles["Ash"] !== null);
+  expect(revealed, "the scene commits").toBeGreaterThan(-1);
+  // A failed image settles the wait: the scene does not wait for the media deadline (400 ms).
+  expect(frames[revealed].t - pressedAt, "committed before the media deadline").toBeLessThan(400);
+  frames.slice(revealed).forEach((frame, index) => {
+    expect(frame.tiles["Blastoise"]?.image, `frame ${revealed + index}: the failed image's placeholder`).toBe("placeholder");
+    expect(frame.tiles["Ash"]?.image, `frame ${revealed + index}: Ash's image`).toBe("img");
+  });
+  expect((await thumbnailRequests(page)).some((path) => path.includes("Blastoise")), "the failing thumbnail was asked for").toBe(true);
+  expect((await uncaught(page)).filter((e) => e !== "ResizeObserver loop completed with undelivered notifications.")).toEqual([]);
+});
