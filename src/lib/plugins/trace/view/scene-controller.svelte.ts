@@ -585,27 +585,50 @@ export function createSceneController(options: SceneControllerOptions) {
   }
 
   /**
-   * A new lifetime starts from the scene this pane last committed for the folder, if any, with the
-   * pane's current intent (`restoredInput`): its first frame already shows the current selection,
-   * focus and hover. The saved layout is reused when it fits that intent; otherwise the saved data
-   * is laid out again, inline when small enough, else by the `restore` transaction (in the worker)
-   * before anything is shown. Either way the scene snaps, and current data then revalidates it.
-   * A saved scene known to be out of date is not used: the folder is prepared as a first scene.
+   * A new lifetime starts from the scene this pane last committed for the folder, if any, so a
+   * returning pane is never blank. Its first frame is the pane's current intent laid out on the
+   * saved coherent data (`restoredInput`): the saved layout is reused when it fits that intent;
+   * otherwise it is laid out again inline when small enough, or when the saved scene would not fit
+   * the pane. When only a worker could lay it out, the saved scene is shown as it was laid out,
+   * styled as the pane is now, until the `restore` transaction commits the current one. A newer
+   * index the session knows commits after it, as a refresh. Every commit of the return snaps.
+   *
+   * Building the first scene can throw (an engine or scene that rejects the data): the return then
+   * fails like any transaction and the folder is prepared as a first scene instead.
    */
   function restore(next: SceneIntent): boolean {
     if (!restorable || published || committed || !scenes || !(next.width > 0)) return false;
     restorable = false;
-    const restored = restoredInput(scenes.recall(options.paneId, next.directory), options.paneId, next, { index: data.index, components: source.components, isStale: (id) => source.isStale(id) });
-    if (!restored) return false;
-    const { saved, prepared } = restored;
-    committed = { intent: restored.intent, data: restored.data, history: saved.history, basis: saved.basis };
-    const layout = restored.reuse ? saved.scene.layout : inline(prepared.input) ? engine(prepared.input) : null;
-    if (layout) {
-      const tx = begin({ kind: "restore", target: null, anchor: "none" });
+    let tx: Transaction | null = null;
+    try {
+      const saved = scenes.recall(options.paneId, next.directory);
+      const restored = restoredInput(saved, options.paneId, next, { index: data.index, components: source.components, isStale: (id) => source.isStale(id) });
+      if (!restored) return false;
+      const { prepared } = restored;
+      const layout = restored.reuse ? restored.saved.scene.layout
+        : inline(prepared.input) || mustLayoutBeforePaint(restored.saved.scene.layout.size.width, prepared.input.width) ? engine(prepared.input) : null;
+      let scene: FolderScene, snapshot: Committed;
+      if (layout) {
+        scene = buildFolderScene({ scope, layoutInput: prepared.input, layout, sources: prepared.sources, styling: stylingOf(restored.intent), coverNodes: prepared.coverNodes });
+        snapshot = { intent: restored.intent, data: restored.data, history: prepared.history, basis: prepared.basis };
+        keepLayout(prepared.basis, layout, prepared.sources);
+      } else {
+        // Shown as saved (it fits the pane), until the worker's layout of the current intent commits.
+        const { saved } = restored;
+        scene = buildFolderScene({ ...saved.scene.inputs, scope, layout: saved.scene.layout, styling: stylingOf(next) });
+        snapshot = { intent: saved.intent, data: saved.data, history: saved.history, basis: saved.basis };
+      }
+      committed = snapshot;
+      tx = begin({ kind: "restore", target: null, anchor: "none" });
       tx.intent = next;
-      const scene = buildFolderScene({ scope, layoutInput: prepared.input, layout, sources: prepared.sources, styling: stylingOf(restored.intent), coverNodes: prepared.coverNodes });
-      keepLayout(prepared.basis, layout, prepared.sources);
-      commit(tx, scene, { intent: restored.intent, data: restored.data, history: prepared.history, basis: prepared.basis });
+      commit(tx, scene, snapshot);
+    } catch (error) {
+      committed = null;
+      if (published) { published = null; expose(); }
+      const failed = tx ?? begin({ kind: "restore", target: null, anchor: "none" });
+      finish(failed, "failed", message(error));
+      sceneInstrumentation.failure({ ...event(failed), message: message(error) });
+      return false;
     }
     reconcileCovers();
     void run(begin({ kind: "restore", target: null, anchor: "none" }));
@@ -664,12 +687,14 @@ export function createSceneController(options: SceneControllerOptions) {
    * Keeps the published scene and what it was committed from for the next mount of this pane and
    * folder. A restore rebuilds styling from the pane's intent then, so only a change of what it
    * reuses (layout, data, listing, held history) is saved again; a restyle (a selection, a badge
-   * hover) costs nothing here.
+   * hover) only makes it the most recently used.
    */
   function remember(): void {
     if (!scenes || scenes.epoch !== storeEpoch || !published || !committed || published.scene.scope !== scope || committed.intent.directory !== scope.directory) return;
     const basis: RememberedBasis = { scope, layout: published.scene.layout, data: committed.data, listing: committed.intent.listing, history: committed.history };
-    if (remembered && sameRemembered(remembered, basis)) return;
+    // Unchanged: only its recency is refreshed (`recall`), so a pane that only restyles is not
+    // evicted by others' saves; an evicted entry is saved again.
+    if (remembered && sameRemembered(remembered, basis) && scenes.recall(options.paneId, scope.directory)) return;
     remembered = basis;
     scenes.remember(options.paneId, scope.directory, savedScene(options.paneId, published.scene, committed));
   }

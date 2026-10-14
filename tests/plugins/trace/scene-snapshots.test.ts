@@ -126,11 +126,14 @@ describe("restoration", () => {
     expect(restored.reuse).toBe(false);
   });
 
-  it("is not used when its data is known to be out of date", () => {
-    // A newer index: the saved stacks may have changed.
-    expect(restoredInput(saved, "p", intent(), session({ index: { ...folder.index, token: "t2" } }))).toBeNull();
-    // A listing changed while the index is not known yet.
-    expect(restoredInput(saved, "p", intent({ listing: folder.entries.slice(1) }), session({ index: null }))).toBeNull();
+  it("is used with its own data when the session knows a newer index or the listing changed: a return is never blank", () => {
+    // A newer index: the saved coherent data is laid out (the newer index commits after it).
+    const newer = restoredInput(saved, "p", intent(), session({ index: { ...folder.index, token: "t2" } }))!;
+    expect(newer.data.index.token).toBe(folder.index.token);
+    expect(newer.reuse).toBe(true);
+    // A listing changed while the index is not known yet: the current listing on the saved index.
+    const shortened = restoredInput(saved, "p", intent({ listing: folder.entries.slice(1) }), session({ index: null }))!;
+    expect(shortened.prepared.cells.some((cell) => cell.id === folder.entries[0].path)).toBe(false);
     // With the same index known, the current listing is laid out instead.
     const shorter = folder.entries.filter((entry) => entry.path !== "/f/file-1.png");
     expect(restoredInput(saved, "p", intent({ listing: shorter }), session())!.prepared.cells.some((cell) => cell.id === "/f/file-1.png")).toBe(false);

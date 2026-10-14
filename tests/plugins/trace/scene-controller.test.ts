@@ -757,33 +757,89 @@ describe("scene controller: review fixes (099e72f)", () => {
     expect(h.published.map((publication) => publication.scene.inputs.styling.focus)).toEqual(["a3"]);
   });
 
-  it("a layout too large to run inline shows nothing until the current scene is ready, then snaps to it", async () => {
+  // Review 8d257bf: a return that needed the worker was blank, then "Loading Trace…".
+  it("a layout too large to run inline shows the saved scene, styled as now, until the current scene is ready, then snaps to it", async () => {
     const h = await remount(store(), { inline: () => false });
     h.offer({ open: new Set(["a1"]), selectedKeys: new Set(["a3"]), focus: { key: "a3", componentId: "ca" } });
-    expect(h.controller.published).toBeNull();
+    // Synchronously: the saved layout, with the selection the pane has now.
+    const saved = h.controller.published!;
+    expect(saved).not.toBeNull();
+    expect(saved.scene.graphs.get("a1")!.plan.lineage.focus).not.toBe("a3");
+    expect(saved.scene.inputs.styling.selectedKeys).toEqual(new Set(["a3"]));
+    expect(selectedTiles(saved), "not the selection it was saved with").not.toContain("b1");
+    expect(saved.presentation.duration).toBe(0);
     await flush();
-    expect(h.controller.published).toBeNull();
+    expect(h.controller.published!.scene.layout).toBe(saved.scene.layout);
     expect(h.layouts).toHaveLength(1);
     h.layouts[0].reply.resolve(engines.default(h.layouts[0].input));
     await flush();
-    const first = h.controller.published!;
-    expect(first.scene.graphs.get("a1")!.plan.lineage.focus).toBe("a3");
-    expect(first.presentation.duration).toBe(0);
-    expect(h.published).toHaveLength(1);
+    const current = h.controller.published!;
+    expect(current.scene.graphs.get("a1")!.plan.lineage.focus).toBe("a3");
+    expect(current.presentation.duration).toBe(0);
+    expect(h.published).toHaveLength(2);
   });
 
-  it("a saved scene older than the index the session knows is never shown", async () => {
+  // Review 8d257bf: a return after the folder's index moved on was blank, then "Loading Trace…".
+  it("a saved scene older than the index the session knows is shown at once, and the newer index snaps in after it", async () => {
     const h = await remount(store());
     h.fake.source.index = indexFor("t2");
     h.offer({ open: new Set(["a1"]), selectedKeys: new Set(["b1"]), focus: { key: "b1", componentId: "cb" } });
-    expect(h.controller.published).toBeNull();
-    await flush();
-    expect(h.controller.published).toBeNull();
-    h.deliver("ca"); await flush();
     const first = h.controller.published!;
-    expect(first.scene.graphs.get("a1")!.componentId).toBe("ca");
+    expect(first).not.toBeNull();
+    expect(h.controller.committedIndex!.token).toBe("t1");
+    await flush();
+    expect(h.controller.published!.scene.layout).toBe(first.scene.layout);
+    h.deliver("ca"); await flush();
+    const current = h.controller.published!;
+    expect(current.scene.graphs.get("a1")!.componentId).toBe("ca");
     expect(h.controller.committedIndex!.token).toBe("t2");
-    expect(h.published).toHaveLength(1);
+    expect(current.presentation.duration).toBe(0);
+  });
+
+  // Review 8d257bf: a throw building the restored scene, inside the intake, left its transaction
+  // operating for ever, so every later offer was swallowed.
+  it("a return whose first scene cannot be built fails it and recovers on the next offers", async () => {
+    const h = await remount(store());
+    let poisoned = true;
+    h.engine.mockImplementation((input: FolderLayoutInput) => {
+      const layout = engines.default(input);
+      if (!poisoned) return layout;
+      poisoned = false;
+      // A NaN graph origin: the scene rejects it.
+      return { ...layout, graphs: new Map([...layout.graphs].map(([id, graph]) => [id, { ...graph, origin: { x: NaN, y: 0 } }])) };
+    });
+    // The focus changes an open stack's layout, so the return lays it out (inline) and builds it.
+    expect(() => h.offer({ open: new Set(["a1"]), selectedKeys: new Set(["a3"]), focus: { key: "a3", componentId: "ca" } })).not.toThrow();
+    expect(poisoned).toBe(false);
+    expect(h.failures.length).toBeGreaterThan(0);
+    await flush();
+    expect(h.controller.published).not.toBeNull();
+    expect(h.controller.published!.scene.graphs.get("a1")!.plan.lineage.focus).toBe("a3");
+    // Data, a selection and a resize all still commit.
+    h.fake.source.components = new Map(h.fake.source.components);
+    h.offer({ selectedPaths: new Set(["/f/notes.txt"]), hostChoice: "n" }); await flush();
+    expect(h.controller.published!.scene.entries.get("/f/notes.txt")?.selected).toBe(true);
+    h.offer({ width: 500 }); await flush();
+    expect(h.controller.published!.scene.inputs.layoutInput.width).toBeLessThan(900);
+    expect(h.controller.transaction!.status).toBe("committed");
+  });
+
+  // Review 8d257bf: a pane that only restyled stopped refreshing its saved scene's recency, so other saves evicted it.
+  it("a restyle keeps the saved scene the most recently used, without saving it again", async () => {
+    const scenes = createSceneStore<SavedScene>(estimateSavedSceneBytes, { limit: 2 });
+    const saves = vi.spyOn(scenes, "remember");
+    const h = setup({ scenes });
+    h.offer({ open: new Set(["a1"]) }); await flush();
+    h.deliver("ca"); await flush();
+    const after = saves.mock.calls.length;
+    const other = scenes.recall("p", "/f")!;
+    scenes.remember("q", "/f", other);
+    // The pane restyles: its entry becomes the most recently used again.
+    h.act("selection", () => h.offer({ open: new Set(["a1"]), selectedPaths: new Set(["/f/notes.txt"]), hostChoice: "x" })); await flush();
+    expect(saves.mock.calls.length).toBe(after + 1); // only the "q" save above
+    scenes.remember("r", "/f", other);
+    expect(scenes.recall("p", "/f")).toBeDefined();
+    expect(scenes.recall("q", "/f")).toBeUndefined();
   });
 
   it("saves the scene for the next mount only when what a restore reuses changes", async () => {

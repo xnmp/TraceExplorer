@@ -12,15 +12,14 @@
  * Restoring is decided by `restoredInput`: a returning pane starts from its *current* intent
  * (selection, focus, badge hover, open stacks, listing, width and metrics) laid out on the saved
  * coherent data. The saved layout is reused only when that input's layout basis is the saved one;
- * otherwise it is laid out again before anything is shown. A saved scene whose data is known to be
- * out of date is not used at all. A scene of another folder or
+ * otherwise it is laid out again (see the controller's `restore`). A scene of another folder or
  * pane is never restored, whatever its component ids.
  */
 import type { FolderScene, FolderSceneGraph, GraphId } from "$lib/domain/trace-graph/folder-scene";
 import type { FolderGraph, FolderLayout } from "$lib/domain/trace-graph/folder-layout";
 import type { ComponentData, FolderIndex } from "$lib/domain/trace-graph/folder-data";
 import { estimateFolderLayoutBytes } from "$lib/domain/trace-graph/folder-layout/bounded-cache";
-import { folderItems, fresh, prepareLayoutInput, requiredComponents, sameListing, type HeldHistory, type PreparedLayoutInput, type SceneData,
+import { folderItems, fresh, prepareLayoutInput, requiredComponents, type HeldHistory, type PreparedLayoutInput, type SceneData,
   type SceneIntent } from "./scene-inputs";
 import { createSceneStore, type SceneStore } from "./folder-snapshots";
 
@@ -112,17 +111,18 @@ export interface RestoredInput {
  * A requested stack whose data is in neither the saved scene nor the session is laid out closed,
  * as a cold open is until its data is read (it was drawn so when the scene was saved).
  *
+ * The saved data is used even when the session already knows a newer index, or the listing
+ * changed: the return shows the last coherent scene at once, and the newer data commits after it
+ * (a refresh, which snaps). Components are merged only under the saved index.
+ *
  * Null (nothing is restored; the folder is prepared as a first scene) when the scene is another
- * pane's or folder's, or malformed; before the pane has a width; when the session knows a newer
- * index; or when the listing changed while the index is not known yet.
+ * pane's or folder's, or malformed; or before the pane has a width.
  */
 export function restoredInput(saved: SavedScene | undefined, paneId: string, intent: SceneIntent, current: CurrentData): RestoredInput | null {
   if (!saved || saved.paneId !== paneId || !(intent.width > 0)) return null;
   const directory = intent.directory, base = saved.data.index;
   if (saved.scene.scope.directory !== directory || saved.intent.directory !== directory || base.directory !== directory) return null;
   if (saved.history.directory !== directory || saved.scene.scope.paneId !== paneId) return null;
-  const index = current.index?.directory === directory ? current.index : null;
-  if (index ? index.token !== base.token : !sameListing(saved.intent.listing, intent.listing)) return null;
   const { cells } = folderItems(intent.listing, base, intent.claimed, new Set());
   const requested = requiredComponents(cells, intent.open, new Set());
   const components = new Map(saved.data.components);

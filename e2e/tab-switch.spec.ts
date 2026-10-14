@@ -1,6 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 import { awaitAnimationsCreated, holdScriptedAnimations, releaseScriptedAnimations } from "./animation-control";
-import { clearSceneEvents, sampleFrames, sceneEvents } from "./helpers/scene-events";
+import { clearSceneEvents, samplePaintedFrames, sampleFrames, sceneEvents } from "./helpers/scene-events";
 import { openView, settle, uncaught } from "./support";
 
 // Switching to another tab unmounts the Trace view; switching back mounts a new one.
@@ -123,20 +123,34 @@ for (const [label, pick] of [["a tile in an open stack", 12], ["the last listed 
       selected: [...document.querySelectorAll('[aria-selected="true"]')]
         .map((element) => element.getAttribute("data-tile-key") ?? element.closest("[data-grid-cell]")?.getAttribute("data-grid-cell") ?? "?").sort(),
       tiles: document.querySelectorAll("[data-tile-key]").length,
+      entered: !!(window as any).__entered,
     });
     // A layout the return needs replies late (a slow worker), so a stale first scene would stay on screen meanwhile.
     await page.evaluate(() => (window as any).trace.holdLayoutReplies());
     const frames = await sampleFrames(page, selection, 1200, async () => {
-      await page.evaluate(() => (window as any).trace.enterView());
+      // Every DOM state that holds tiles, not only sampled frames: a stale selection for part of a frame is caught too.
+      await page.evaluate(() => {
+        const w = window as any; w.__states = [];
+        const read = () => [...document.querySelectorAll('[aria-selected="true"]')]
+          .map((element) => element.getAttribute("data-tile-key") ?? element.closest("[data-grid-cell]")?.getAttribute("data-grid-cell") ?? "?").sort().join(",");
+        new MutationObserver(() => { if (document.querySelectorAll("[data-tile-key]").length) w.__states.push(read()); })
+          .observe(document.body, { subtree: true, childList: true, attributes: true, attributeFilter: ["aria-selected"] });
+        w.__entered = true;
+        w.trace.enterView();
+      });
       await page.waitForTimeout(300);
       await page.evaluate(() => (window as any).trace.releaseLayoutReplies());
     });
     await settle(page);
     const now = await page.evaluate(selection);
     expect(now.selected.length).toBeGreaterThan(0);
-    const drawn = frames.filter((frame) => frame.tiles > 0);
-    expect(drawn.length).toBeGreaterThan(0);
-    expect(drawn.filter((frame) => JSON.stringify(frame.selected) !== JSON.stringify(now.selected)), "frames showing a selection that is not the pane's").toEqual([]);
+    // From the return on, every frame shows the folder: none is blank.
+    const returned = frames.filter((frame) => frame.entered).slice(1);
+    expect(returned.length).toBeGreaterThan(0);
+    expect(returned.filter((frame) => frame.tiles === 0).length, "blank frames after returning").toBe(0);
+    expect(returned.filter((frame) => JSON.stringify(frame.selected) !== JSON.stringify(now.selected)), "frames showing a selection that is not the pane's").toEqual([]);
+    const states: string[] = await page.evaluate(() => (window as any).__states);
+    expect([...new Set(states)].filter((state) => state !== now.selected.join(",")), "DOM states with a selection that is not the pane's").toEqual([]);
     // The return snaps: nothing animates into the current scene.
     expect(await sceneEvents(page, "motion-start")).toEqual([]);
   });
@@ -205,5 +219,65 @@ test("switching tab during motion and pending work shows no retirees or effects 
   // Only the new view's own work publishes: its re-requested open of stack A.
   await expect(page.locator("section[aria-label=\"stack-a\"] [data-stack-toggle]")).toHaveAttribute("aria-expanded", "true");
   await expect(page.locator("[data-grid-exit], [data-motion-ghost], [data-motion-route-layer]")).toHaveCount(0);
+  expect(await uncaught(page)).toEqual([]);
+});
+
+// Review 8d257bf: returning after the folder's index moved on (a refresh still reading when the
+// pane left, or another pane advancing the shared folder snapshot) showed nothing, then
+// "Loading Trace…". The saved scene is shown at once; the newer index snaps in after it.
+test("returning after the folder changed while its refresh was still reading shows the folder on every frame", async ({ page }) => {
+  await openView(page, 1400);
+  const tiles = await page.locator("[data-tile-key]").count();
+  await page.evaluate(() => { const backend = (window as any).trace.backend; backend.holdNodeReads(); backend.startGeneration("village", "while-away"); });
+  // The session reads the new index, and its node pages wait.
+  await expect.poll(() => page.evaluate(() => (window as any).trace.backend.heldNodeReads().length)).toBeGreaterThan(0);
+  await page.waitForTimeout(300);
+  await page.evaluate(() => (window as any).trace.leaveView());
+  await expect(page.locator("[data-tile-key]")).toHaveCount(0);
+  await clearSceneEvents(page);
+  const frames = await samplePaintedFrames(page, () => ({ tiles: document.querySelectorAll("[data-tile-key]").length, loading: document.body.textContent!.includes("Loading Trace"), entered: !!(window as any).__entered }), 1200, async () => {
+    await page.evaluate(() => { (window as any).__entered = true; (window as any).trace.enterView(); });
+    await page.waitForTimeout(800);
+    await page.evaluate(() => (window as any).trace.backend.releaseNodeReads());
+  });
+  await settle(page);
+  const returned = frames.filter((frame) => frame.entered);
+  expect(returned.length).toBeGreaterThan(5);
+  expect(returned.filter((frame) => frame.tiles === 0 || frame.loading), "blank or loading frames after returning").toEqual([]);
+  expect(returned[0].tiles).toBe(tiles);
+  // The new job's image arrives with the newer index, without motion (a refresh snaps).
+  await expect(page.locator("[data-tile-key]")).toHaveCount(tiles + 1);
+  expect(await sceneEvents(page, "motion-start")).toEqual([]);
+  expect(await uncaught(page)).toEqual([]);
+});
+
+// Review 8d257bf: a return whose current focus needs a band laid out in the worker showed nothing,
+// then "Loading Trace…". The saved scene stays shown (a stale focus for a few frames) until the
+// current scene commits, and snaps.
+test("returning with a new focus inside a large open stack shows the saved scene until the current one is laid out", async ({ page }) => {
+  await openView(page, 1400, "?revealLarge=1");
+  const path = (name: string) => page.evaluate((name) => (window as any).trace.backend.path(name), name);
+  const fan = page.locator('section[data-component][aria-label="fan"] [data-stack-toggle]');
+  if (await fan.getAttribute("aria-expanded") !== "true") { await fan.click(); await settle(page); }
+  await page.evaluate((path) => (window as any).trace.selectPath(path), await path("wide-3"));
+  await settle(page);
+  await page.evaluate(() => (window as any).trace.leaveView());
+  await expect(page.locator("[data-tile-key]")).toHaveCount(0);
+  const target = await path("wide-60");
+  await page.evaluate((path) => (window as any).trace.selectPath(path), target);
+  await page.evaluate(() => (window as any).trace.holdLayoutReplies());
+  await clearSceneEvents(page);
+  const frames = await samplePaintedFrames(page, () => ({ tiles: document.querySelectorAll("[data-tile-key]").length, loading: document.body.textContent!.includes("Loading Trace"), entered: !!(window as any).__entered }), 1200, async () => {
+    await page.evaluate(() => { (window as any).__entered = true; (window as any).trace.enterView(); });
+    await page.waitForTimeout(700);
+    expect(await page.evaluate(() => (window as any).trace.heldLayoutReplies().length), "the return waits for the worker").toBeGreaterThan(0);
+    await page.evaluate(() => (window as any).trace.releaseLayoutReplies());
+  });
+  await settle(page);
+  const returned = frames.filter((frame) => frame.entered);
+  expect(returned.length).toBeGreaterThan(5);
+  expect(returned.filter((frame) => frame.tiles === 0 || frame.loading), "blank or loading frames after returning").toEqual([]);
+  await expect(page.locator(`.tile[aria-selected="true"]`).first()).toBeVisible();
+  expect(await sceneEvents(page, "motion-start")).toEqual([]);
   expect(await uncaught(page)).toEqual([]);
 });
