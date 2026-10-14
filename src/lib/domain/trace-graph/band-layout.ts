@@ -3,7 +3,7 @@ import { downwardBandBound, layoutLayered, type GraphLayout, type LayoutItem, ty
 import { spacingFor, STACK_STEM_ROOM } from "./metrics";
 import { bandWidthBudget, columnsFor, partitions, buildShelves, validate } from "./band-shelves";
 import { attachSingleBand, attachPackedBand, localBandPlacement, bandExtent, withBandBounds, singleBandSkeleton } from "./band-geometry";
-import { measure, validateLayout, cost, routePlan, type Measures } from "./layout-quality";
+import { measure, validateLayout, cost, routePlan, sharedLaneLength, type Measures, type Weights } from "./layout-quality";
 import { incrementalTree } from "./band-incremental";
 import { forEachPathNumber, isPlainPathData, mapPathNumbers, pathNumbers } from "./path-data";
 import { extentCost, optimisticCost, rectangleCost } from "./layout-cost-bound";
@@ -177,6 +177,8 @@ function downwardHeightFloor(items: readonly LayoutItem[], key: string): number 
   return best;
 }
 
+const PRICED_LANES: Weights = Object.freeze({ stability: 1.5, sharedLanes: "priced" });
+
 const NO_COST: Measures = { height: 0, width: 0, area: 0, tileArea: 0, whitespace: 0, paneWhitespace: 0, length: 0, bends: 0, crossings: 0, sharedLanePx: 0,
   tileIntersections: 0, overlaps: 0, directionViolations: 0, mixedDirections: 0, siblingInversions: 0, unaligned: 0, overflow: 0, displacement: 0,
   maxDisplacement: 0, movedFraction: 0, anchorDisplacement: 0, missingEdges: 0, extraEdges: 0, missingNodes: 0, extraNodes: 0, invalidGeometry: 0,
@@ -245,10 +247,12 @@ export function layoutBand(input: LayoutRequest): GraphLayout {
   const compatible = request.history;
   const previous = compatible?.attachment ? normalizedHistory(compatible, request) : compatible?.placed;
   const anchors = previous ? anchorKeys(request, previous) : [];
+  // Unchanged geometry is kept as is, unless it shares lanes between sources (an
+  // earlier fallback): then the search below looks for a layout that does not.
   if (previous && request.items.length === previous.nodes.size && request.items.every(n => {
     const p = previous.nodes.get(n.key);
     return p && p.width === n.width && p.height === n.height;
-  })) {
+  }) && !(sharedLaneLength(previous) > 0)) {
     const retained = input.history!.layout;
     if (retained) return { ...retained, preferredX: bandExtent(previous, key).left, anchorY: anchors.length && compatible?.attachment ? compatible.attachment.bandTop - compatible.attachment.placement.coverHeight : undefined, anchorX: anchors.length ? bandExtent(previous, key).left : undefined, decision: { candidate: "unchanged-visible", stability: true, partition: input.history?.layout.decision?.partition } };
   }
@@ -392,6 +396,8 @@ export function layoutBand(input: LayoutRequest): GraphLayout {
     if (p.name === "visible-down" && anchors.length) lazy.push(...anchoredPending(c));
   }
 
+  // Candidates kept out only by shared lanes, priced instead, for when no candidate avoids them.
+  const laneScored: Scored[] = [];
   const eligible = (c: Prepared) => Number.isFinite(c.floor) && (anchors.length > 0 || c.height <= minimumFeasibleHeight * 1.1 + .01)
     && (!gates.has(c.layout) || feasible(gates.get(c.layout)!.metrics));
   const scored: Scored[] = [];
@@ -414,7 +420,11 @@ export function layoutBand(input: LayoutRequest): GraphLayout {
     const known = gates.get(c.layout);
     const metrics = known && (known.complete || !previous && !lazy.length && prepared.filter(eligible).length === 1) ? known.metrics : gate(c, true);
     const score = cost(metrics, tileWidth);
-    if (!Number.isFinite(score)) return;
+    if (!Number.isFinite(score)) {
+      const priced = cost(metrics, tileWidth, PRICED_LANES);
+      if (Number.isFinite(priced)) laneScored.push({ ...c, placed, metrics, score: priced, anchors: c.holds });
+      return;
+    }
     scored.push({ ...c, placed, metrics, score, anchors: c.holds });
     minimumFeasibleHeight = Math.min(minimumFeasibleHeight, metrics.height);
     if (!c.holds) return;
@@ -448,10 +458,13 @@ export function layoutBand(input: LayoutRequest): GraphLayout {
   }
   // Malformed input (a cover with a visible parent) can defeat every candidate. Show the
   // downward layout, flagged, rather than no graph at all.
-  if (!scored.length) return { ...visibleDown().layout, decision: { candidate: "visible-down", stability: false, fallback: "gate-infeasible" } };
-  const holding = scored.filter(c => c.anchors);
-  const preserving = holding.length ? holding : scored;
-  const minimumHeight = anchors.length ? Math.min(...scored.map(c => c.metrics.height)) : minimumFeasibleHeight;
+  // When every candidate shares lanes between sources, the best of them is shown, flagged.
+  const lanesShared = !scored.length && laneScored.length > 0;
+  const ranked = lanesShared ? laneScored : scored;
+  if (!ranked.length) return { ...visibleDown().layout, decision: { candidate: "visible-down", stability: false, fallback: "gate-infeasible" } };
+  const holding = ranked.filter(c => c.anchors);
+  const preserving = holding.length ? holding : ranked;
+  const minimumHeight = anchors.length || lanesShared ? Math.min(...ranked.map(c => c.metrics.height)) : minimumFeasibleHeight;
   const compact = preserving.filter(c => c.metrics.height <= minimumHeight * 1.1 + .01);
   const pool = anchors.length && holding.length ? preserving : compact.length ? compact : preserving;
   pool.sort((a, b) => a.score - b.score);
@@ -472,9 +485,9 @@ export function layoutBand(input: LayoutRequest): GraphLayout {
       // A pending height is exact for translations and a lower bound for the downward layout.
       if ("build" in c) { realise(c); continue; }
       if (!Number.isFinite(c.floor)) continue;
-      if (feasible(scored.find(s => s.layout === c.layout)?.metrics ?? gate(c, false))) { stability = true; break; }
+      if (feasible(ranked.find(s => s.layout === c.layout)?.metrics ?? gate(c, false))) { stability = true; break; }
     }
   }
   return { ...winner.layout, anchorY: anchors.length && winner.anchors && compatible?.attachment ? compatible.attachment.bandTop - compatible.attachment.placement.coverHeight : undefined, anchorX: anchors.length && winner.anchors ? bandExtent(winner.placed, key).left : undefined, decision: { candidate: winner.name, partition: winner.partition, stability,
-    ...(anchors.length && !winner.anchors ? { fallback: "anchor-infeasible" as const } : {}) } };
+    ...(lanesShared ? { fallback: "lane-infeasible" as const } : anchors.length && !winner.anchors ? { fallback: "anchor-infeasible" as const } : {}) } };
 }

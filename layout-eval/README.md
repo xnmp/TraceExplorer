@@ -41,6 +41,21 @@ and one correctly approached terminal arrow per output. Cubics use twelve subdiv
 segment/tile intersections include arrow tips. Stroke/junction clearance beyond these
 checks is not implied by zero counters.
 
+Readability (`readability.md`, `readability.html`, and three acceptance rows):
+
+- **Shared lanes.** `sharedLanePx` is the collinear overlap of connectors from different
+  sources (two inputs of one junction included). It is a hard gate. A production layout
+  may show one only as a listed fallback (`lane-infeasible`, or the malformed-input
+  `gate-infeasible`), with its reason; any other is an acceptance failure.
+- **Crossings.** The mean must not exceed the baseline's. A layout may cross more than the
+  baseline only where each extra crossing saves `CROSSING_HEIGHT_TILES` tile widths of band
+  height, the objective's own exchange rate (`layout-quality.ts`; the calibration is in
+  `docs/trace-view-layout.md`). Every other per-layout regression is "unpriced" and fails.
+- `readability.md` lists the worst 20 crossing regressions (candidate, stability flag,
+  height saved and needed) and every shared lane shown. `readability.html` pairs baseline
+  and production SVGs for the worst cases; shared stretches are drawn as yellow marks and
+  the header gives the shared length.
+
 The solver is constructive, with bounded work. An `anchor-infeasible` decision means its
 candidate family found no safe embedding; it is not a proof that no drawing exists.
 Acceptance lists every fallback and rejects independently demonstrated feasible failures.

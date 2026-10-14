@@ -128,8 +128,11 @@ export interface BandDecision {
   readonly candidate: string;
   readonly partition?: readonly number[];
   readonly stability: boolean;
-  /** `gate-infeasible`: no candidate passed the hard gates (e.g. a cover that is not a root); the downward layout is shown as is. */
-  readonly fallback?: "anchor-infeasible" | "packing-infeasible" | "gate-infeasible";
+  /**
+   * `gate-infeasible`: no candidate passed the hard gates (e.g. a cover that is not a root); the downward layout is shown as is.
+   * `lane-infeasible`: every candidate ran connectors from different sources along a shared lane; the best of them, priced, is shown.
+   */
+  readonly fallback?: "anchor-infeasible" | "packing-infeasible" | "gate-infeasible" | "lane-infeasible";
 }
 
 export interface GraphLayout {
@@ -173,6 +176,8 @@ const unitRoot = (unit: number[], index: number): number => unit[index] === inde
 const NO_JUNCTIONS: ReadonlySet<string> = new Set();
 /** Narrowest separation between lanes sharing a gap. */
 const MIN_LANE = 3;
+/** Widest offset, from its junction's column, at which an input ends its bend (see the fan-in step). */
+const FAN_IN = 3;
 /** Distance kept outside a forbidden interval when stepping past it. */
 const FREE_STEP = 0.5;
 /** No tile is anywhere near this big; larger sizes are clamped so coordinates stay exact. */
@@ -1186,20 +1191,24 @@ function layoutPass(prepared: Prepared, extra: { readonly left: number; readonly
       }
       runsOf.delete(item);
     };
-    /** Other routes' runs that a run at `x` from level `from` to `to`, bending at `bend`, would touch. */
-    const clashes = (item: Leg, x: number, from: number, to: number, bend: number | null) => {
-      let count = 0;
+    /**
+     * Other routes' runs that a run at `x` from level `from` to `to`, bending at `bend`, would
+     * touch (`near`), and those it would run along (`shared`): routes from different sources
+     * sharing a lane. Inputs of one junction may meet, but only at the junction itself, so
+     * two of them running down its column share a lane.
+     */
+    const clashes = (item: Leg, x: number, from: number, to: number, bend: number | null, found: { near: number; shared: number }) => {
       const home = bucket(x), source = item.source;
       for (let key = home - 1; key <= home + 1; key++) {
         const list = runsAt.get(key);
         if (list) for (const other of list) {
-          if (other.leg.source === source || !near(other.x, x) || compatible(other.leg, item)) continue;
-          const top = Math.max(other.from, from), bottom = Math.min(other.to, to);
+          if (other.leg.source === source || !near(other.x, x)) continue;
+          const top = Math.max(other.from, from), bottom = Math.min(other.to, to), column = Math.abs(other.x - x) < .01;
+          if (compatible(other.leg, item)) { if (column && top < bottom) found.shared++; continue; }
           if (top > bottom || (other.bend !== null && other.bend === bend && top === bottom)) continue;
-          count++;
+          if (column) found.shared++; else found.near++;
         }
       }
-      return count;
     };
     const runsFor = (item: Leg, zone: number): Run[] => [{ x: item.x1, from: item.lo, to: zone, bend: zone, leg: item }, { x: item.x2, from: zone, to: item.hi, bend: zone, leg: item }];
     for (const item of legs) if (!bends(item)) register(item, [{ x: item.x1, from: item.lo, to: item.hi, bend: null, leg: item }]);
@@ -1218,11 +1227,12 @@ function layoutPass(prepared: Prepared, extra: { readonly left: number; readonly
       let best: { zone: number; cost: number } | null = null;
       for (const option of options) {
         if (best && option.touches * 1000 > best.cost) break;
-        const zone = option.zone;
-        const crowding = clashes(item, item.x1, item.lo, zone, zone) + clashes(item, item.x2, zone, item.hi, zone);
-        const cost = option.touches * 1000 + crowding * 10 - option.room / 100;
+        const zone = option.zone, found = { near: 0, shared: 0 };
+        clashes(item, item.x1, item.lo, zone, zone, found); clashes(item, item.x2, zone, item.hi, zone, found);
+        // A shared lane is never traded for anything else; a junction contact outweighs crowding.
+        const cost = found.shared * 1e6 + option.touches * 1000 + found.near * 10 - option.room / 100;
         if (!best || cost < best.cost) best = { zone, cost };
-        if (!crowding) break;
+        if (!found.near && !found.shared) break;
       }
       item.zone = best!.zone;
       register(item, runsFor(item, item.zone));
@@ -1277,6 +1287,16 @@ function layoutPass(prepared: Prepared, extra: { readonly left: number; readonly
       unitOf.push(id);
       if (members[id]) members[id].push(i); else { members[id] = [i]; units.push(id); }
     }
+    const column = (a: number, b: number) => Math.abs(a - b) < .01;
+    const inTurn = (group: number[]): number[] => {
+      if (group.length < 2) return group;
+      const rest = [...group], out: number[] = [];
+      while (rest.length) {
+        const free = rest.findIndex((i) => !rest.some((j) => j !== i && column(ordered[j].x1, ordered[i].x2) && !column(ordered[i].x1, ordered[j].x2)));
+        out.push(...rest.splice(free < 0 ? 0 : free, 1));
+      }
+      return out;
+    };
     const forced: (Set<number> | undefined)[] = [];
     const pending = new Array<number>(count).fill(0);
     for (let i = 0; i < count; i++) for (let j = 0; j < count; j++) {
@@ -1298,7 +1318,9 @@ function layoutPass(prepared: Prepared, extra: { readonly left: number; readonly
       sequenced[next] = true;
       const later = forced[next];
       if (later) for (const id of later) pending[id]--;
-      const group = members[next];
+      // Within a unit, a bend leaving a column exactly where another arrives turns first: in a
+      // near swap the other way round would leave both on that column between their tracks.
+      const group = inTurn(members[next]);
       let track = 0;
       for (const earlier of done) {
         if (!(ordered[earlier].track + 1 > track)) continue;
@@ -1313,6 +1335,20 @@ function layoutPass(prepared: Prepared, extra: { readonly left: number; readonly
     (trackCount[channel] ??= [])[zone] = most;
   }
   const tracksIn = (channel: number, zone: number) => trackCount[channel]?.[zone] ?? 1;
+
+  // Fan-in. Inputs of one junction meet only at its dot: each bending input ends its bend a
+  // little to its own side of the junction's column and reaches the dot along its own slope,
+  // so no two share a final stretch (a lane shared between sources). Nearer inputs keep closer
+  // to the column, so inputs from one side do not cross before the dot. Offsets stay within
+  // the berth other routes and junctions keep from the column.
+  const fanIn = new Map<Leg, number>();
+  const intoJunction = new Map<string, Leg[]>();
+  for (const item of finalLegs) if ("junction" in item.to && bends(item)) append(intoJunction, item.to.junction, item);
+  for (const inputs of intoJunction.values()) for (const side of [-1, 1]) {
+    const group = inputs.filter((item) => Math.sign(item.x1 - item.x2) === side)
+      .sort((a, b) => Math.abs(a.x1 - a.x2) - Math.abs(b.x1 - b.x2) || (a.source < b.source ? -1 : a.source > b.source ? 1 : 0));
+    group.forEach((item, rank) => fanIn.set(item, side * FAN_IN * (rank + 1) / group.length));
+  }
 
   // 6. Vertical placement. Each zone is as tall as its tracks need (crowded
   // channels grow instead of squeezing bends), and junction levels sit
@@ -1371,6 +1407,13 @@ function layoutPass(prepared: Prepared, extra: { readonly left: number; readonly
     const slice = (bottom - top) / tracksIn(item.channel, item.zone);
     const start = top + slice * item.track, end = start + slice;
     const left = `${round(x1)}`, middle = `${round((start + end) / 2)}`;
+    const fan = fanIn.get(item);
+    if (fan) {
+      // Into a junction: down its own side of the column to the berth, then a short S-curve
+      // that reaches the dot vertically (routes stay orthogonal apart from their curves).
+      const side = `${round(x2 + fan)}`, berthTop = Math.max(end, y2 - JUNCTION_BERTH), into = `${round((berthTop + y2) / 2)}`;
+      return `${start > y1 ? ` L${left} ${round(start)}` : ""} C${left} ${middle},${side} ${middle},${side} ${round(end)}${end < berthTop ? ` L${side} ${round(berthTop)}` : ""} C${side} ${into},${right} ${into},${right} ${round(y2)}`;
+    }
     return `${start > y1 ? ` L${left} ${round(start)}` : ""} C${left} ${middle},${right} ${middle},${right} ${round(end)}${end < y2 ? ` L${right} ${round(y2)}` : ""}`;
   };
   // Shared stretches are drawn once, as trunks carrying the consumers of

@@ -1314,6 +1314,8 @@ interface GateMemo {
     readonly disconnectedEdges: number;
     readonly segmentJoins: boolean;
     readonly needsJoins: boolean;
+    /** The crossing join validation ran for the shared-lane gate, reused by measure. */
+    readonly join?: { readonly crossings: number; readonly sharedLanePx: number; readonly spatial: boolean };
 }
 
 /**
@@ -1352,6 +1354,25 @@ function recallGates(layout: GraphLayout, coverKey: string, paneWidth: number, i
     return sameGateInputs(layout, items, memo.inputs) ? memo : undefined;
 }
 
+/** Crossings and shared lane length between different sources' routes (none with invalid geometry). */
+function joinRoutes(layout: GraphLayout, routeGeometry: readonly RouteData[], invalidGeometry: number): { readonly crossings: number; readonly sharedLanePx: number; readonly spatial: boolean } {
+    const sources = sourcesOf(layout, routeGeometry);
+    let segmentCount = 0;
+    for (const plan of routeGeometry) segmentCount += plan.count;
+    const mayCross = sourcesMayCross(sources);
+    const spatial = !invalidGeometry && mayCross && (routeGeometry.length > 64 || segmentCount > 1024);
+    if (invalidGeometry || !mayCross) return { crossings: 0, sharedLanePx: 0, spatial };
+    return { ...crossingJoin(layout, routeGeometry, sources, spatial), spatial };
+}
+
+/**
+ * Length along which routes from different sources run together: the `sharedLanePx` of
+ * {@link measure} for valid geometry, for layouts reused without ranking. Unparsable routes contribute nothing.
+ */
+export function sharedLaneLength(layout: GraphLayout): number {
+    return joinRoutes(layout, layout.routes.map(routeData), 0).sharedLanePx;
+}
+
 /** Complete deterministic diagnostics; shared route geometry is parsed and indexed once per invocation. */
 function evaluate(layout: GraphLayout, coverKey: string, paneWidth: number, items: readonly LayoutItem[], previous?: GraphLayout, anchorKey?: string, gatesOnly = false): Measures {
     const routeGeometry = layout.routes.map(routeData);
@@ -1365,16 +1386,11 @@ function evaluate(layout: GraphLayout, coverKey: string, paneWidth: number, item
         gates = hardGates(layout, coverKey, paneWidth, items, routeGeometry, edges, wanted);
     }
     const invalidGeometry = gates.invalidGeometry;
-    let length = 0, turning = 0, crossings = 0, sharedLanePx = 0, spatialCrossings = false;
-    if (!gatesOnly) {
-        for (const plan of routeGeometry) { const metrics = metricsOf(plan); length += metrics.length; turning += metrics.bends * (Math.PI / 2); }
-        const sources = sourcesOf(layout, routeGeometry);
-        let segmentCount = 0;
-        for (const plan of routeGeometry) segmentCount += plan.count;
-        const mayCross = sourcesMayCross(sources);
-        spatialCrossings = !invalidGeometry && mayCross && (routeGeometry.length > 64 || segmentCount > 1024);
-        if (!invalidGeometry && mayCross) ({ crossings, sharedLanePx } = crossingJoin(layout, routeGeometry, sources, spatialCrossings));
-    }
+    let length = 0, turning = 0;
+    if (!gatesOnly) for (const plan of routeGeometry) { const metrics = metricsOf(plan); length += metrics.length; turning += metrics.bends * (Math.PI / 2); }
+    // Shared lanes are a hard gate, so validation joins routes too; measure reuses its join.
+    const join = memo?.join ?? joinRoutes(layout, routeGeometry, invalidGeometry);
+    const { sharedLanePx, spatial: spatialCrossings } = join, crossings = gatesOnly ? 0 : join.crossings;
     // The reference evaluator joins shared routes through its segment index whenever it built one.
     const segmentJoins = spatialCrossings || gates.tallJoins;
     let disconnectedEdges: number;
@@ -1384,7 +1400,7 @@ function evaluate(layout: GraphLayout, coverKey: string, paneWidth: number, item
     // Only validation records gates: the engine ranks (measures) a candidate after validating it,
     // never the reverse, so a record made by measure would only cost its snapshot.
     if (!memo && gatesOnly) {
-        gateMemo.set(layout, { coverKey, paneWidth, items, inputs: gateInputs(layout, items), gates, disconnectedEdges, segmentJoins, needsJoins: edgesFor().needsJoins });
+        gateMemo.set(layout, { coverKey, paneWidth, items, inputs: gateInputs(layout, items), gates, disconnectedEdges, segmentJoins, needsJoins: edgesFor().needsJoins, join });
     }
     const penalties = gatesOnly ? gatePenalties(gates.directionViolations) : softPenalties(layout, coverKey, items, previous, anchorKey, gates.directionViolations, gates.right, gates.down);
     const { height, width, area, tileArea, whitespace, paneWhitespace, tileIntersections, overlaps, overflow, missingEdges, extraEdges, missingNodes, extraNodes, invalidPaths, terminalViolations } = gates;
@@ -1396,21 +1412,45 @@ export function measure(layout: GraphLayout, coverKey: string, paneWidth: number
 }
 
 /** Exact hard constraints for a sole cold constructive candidate; objective ranking is vacuous.
- * Soft diagnostic fields are zero. A choice between candidates must use full measure(). */
+ * Soft diagnostic fields are zero; `sharedLanePx`, a hard gate, is exact. A choice between candidates must use full measure(). */
 export function validateLayout(layout: GraphLayout, coverKey: string, paneWidth: number, items: readonly LayoutItem[]): Measures {
     return evaluate(layout, coverKey, paneWidth, items, undefined, undefined, true);
 }
 
 export const HEIGHT_WEIGHT = 16;
-export const CROSSING_WEIGHT = .1;
+/**
+ * Band height, in tile widths, one more crossing must save to be worth drawing: the
+ * objective's exchange rate between crossings and height, and the readability acceptance
+ * threshold (docs/trace-scene-plan.md, phase 2 §4). Calibrated on the evaluation corpus
+ * (docs/trace-view-layout.md, "Crossings"): raising it barely lowers crossings (mean 335.2
+ * to 333.5 at 1 tile) but makes legal tours taller and less stable, and fails the
+ * displacement target at 1 tile.
+ */
+export const CROSSING_HEIGHT_TILES = .1 / 16;
+export const CROSSING_WEIGHT = HEIGHT_WEIGHT * CROSSING_HEIGHT_TILES;
+
+/**
+ * Cost of a band that places children both down and right. Calibrated on the evaluation
+ * corpus (layout-eval, readability sweep): 1 lowers mixed placements and unpriced crossing
+ * regressions with every other target unchanged; 2 lowers them further but makes one layout
+ * more than 10% taller than the baseline without a stability reason.
+ */
+export const MIXED_DIRECTIONS_WEIGHT = 1;
 
 export interface Weights {
     readonly stability: number;
+    /**
+     * Routes from different sources sharing a lane: a hard gate (the default), or priced
+     * like the other soft terms. Pricing serves only the explicit fallback when no
+     * candidate can avoid them.
+     */
+    readonly sharedLanes?: "gate" | "priced";
 }
 /** Tile-size normalized perceptual cost, with hard geometry/parentage gates. Whitespace is reported separately: area and height already price it. */
 const DEFAULT_WEIGHTS: Weights = Object.freeze({ stability: 1.5 });
 export function cost(m: Measures, tileWidth: number, weights: Weights = DEFAULT_WEIGHTS): number {
     if (m.overlaps || m.tileIntersections || m.directionViolations || m.missingEdges || m.extraEdges || m.missingNodes || m.extraNodes || m.invalidGeometry || m.invalidPaths || m.terminalViolations || m.disconnectedEdges)
         return Infinity;
-    return HEIGHT_WEIGHT * m.height / tileWidth + 2 * m.area / (tileWidth * tileWidth) + .08 * m.length / tileWidth + .12 * m.bends + CROSSING_WEIGHT * m.crossings + 4 * m.sharedLanePx / tileWidth + .5 * m.mixedDirections + 3 * m.siblingInversions + .25 * m.unaligned + 100 * m.overflow / tileWidth + weights.stability * (m.displacement / tileWidth + .25 * m.maxDisplacement / tileWidth + 2 * m.anchorDisplacement / tileWidth);
+    if (m.sharedLanePx > 0 && weights.sharedLanes !== "priced") return Infinity;
+    return HEIGHT_WEIGHT * m.height / tileWidth + 2 * m.area / (tileWidth * tileWidth) + .08 * m.length / tileWidth + .12 * m.bends + CROSSING_WEIGHT * m.crossings + 4 * m.sharedLanePx / tileWidth + MIXED_DIRECTIONS_WEIGHT * m.mixedDirections + 3 * m.siblingInversions + .25 * m.unaligned + 100 * m.overflow / tileWidth + weights.stability * (m.displacement / tileWidth + .25 * m.maxDisplacement / tileWidth + 2 * m.anchorDisplacement / tileWidth);
 }

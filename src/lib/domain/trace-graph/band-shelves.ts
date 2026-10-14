@@ -95,17 +95,32 @@ function channelFor(items: readonly LayoutItem[], next: readonly LayoutItem[], c
     const spans = items.flatMap(item => {
         const targets = children.get(item.key);
         if (!targets?.length) return [];
-        const ys = [sourceCenters.get(item.key)!, ...targets.map(child => childCenters.get(child.key)!)];
-        return [{ item, low: Math.min(...ys) - 3, high: Math.max(...ys) + 3 }];
+        const arrivals = targets.map(child => childCenters.get(child.key)!), ys = [sourceCenters.get(item.key)!, ...arrivals];
+        return [{ item, exit: ys[0], arrivals, low: Math.min(...ys) - 3, high: Math.max(...ys) + 3 }];
     }).sort((a, b) => a.low - b.low || a.high - b.high || order(a.item, b.item));
-    const occupiedUntil: number[] = [], lanes = new Map<string, number>();
-    for (const span of spans) {
-        let lane = 0;
-        while (lane < occupiedUntil.length && occupiedUntil[lane] > span.low) lane++;
-        occupiedUntil[lane] = span.high;
+    // A route leaves its source and reaches its targets horizontally at their centers. One
+    // arriving at the height another source leaves from must take a lane further out (nearer
+    // the targets), or its arrival would run along that exit: two sources sharing a lane.
+    // Spans are placed in that order (sort order otherwise), each in the first free lane
+    // beyond those it must clear; a cycle of such constraints is broken in sort order.
+    const after = spans.map(() => [] as number[]), waiting = spans.map(() => 0);
+    spans.forEach((a, i) => spans.forEach((b, j) => {
+        if (i !== j && a.arrivals.some(y => Math.abs(y - b.exit) < .01)) { after[j].push(i); waiting[i]++; }
+    }));
+    const lanes = new Map<string, number>(), laneOf: number[] = spans.map(() => -1), occupied: { low: number; high: number }[][] = [];
+    const floor = spans.map(() => 0);
+    for (let placed = 0; placed < spans.length; placed++) {
+        let i = spans.findIndex((_, k) => laneOf[k] < 0 && !waiting[k]);
+        if (i < 0) i = spans.findIndex((_, k) => laneOf[k] < 0);
+        const span = spans[i];
+        let lane = floor[i];
+        while (occupied[lane]?.some(o => o.low < span.high && span.low < o.high)) lane++;
+        (occupied[lane] ??= []).push(span);
+        laneOf[i] = lane;
         lanes.set(span.item.key, lane);
+        for (const k of after[i]) { waiting[k]--; floor[k] = Math.max(floor[k], lane + 1); }
     }
-    return { lanes, count: occupiedUntil.length };
+    return { lanes, count: occupied.length };
 }
 function shelfFor(columns: readonly Column[], start: number, end: number, request: LayoutRequest, s = spacingFor(request.tileWidth)): Shelf {
     // Callers guarantee 0 <= start < end <= columns.length.

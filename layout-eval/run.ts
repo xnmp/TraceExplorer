@@ -34,6 +34,14 @@ const perfRegressions = timing.rows.filter((r: any) => r.proposed.p95 > r.baseli
 const smallSlow = timing.rows.filter((r: any) => r.mainThread && r.proposed.p95 > 5);
 const maxSmall = (engine: string) => Math.max(...timing.rows.filter((r: any) => r.mainThread).map((r: any) => r[engine].p95));
 const maxVisible = (engine: string) => Math.max(...timing.rows.filter((r: any) => r.visible <= 30).map((r: any) => r[engine].p95));
+// Readability gates. A shared lane is allowed only as a flagged, listed fallback; a crossing
+// regression only where each extra crossing saves the calibrated band height (bench.ts).
+const laneReason = (fallback: string | undefined) => fallback === 'lane-infeasible' ? 'lane-infeasible: no candidate keeps every source in its own lane'
+  : fallback === 'gate-infeasible' ? 'gate-infeasible: malformed input (the cover has a visible parent); the downward layout is shown as is' : null;
+const tourLanes = tours.rows.filter((r: any) => r.proposed.sharedLanePx > 0).map((r: any) => ({ case: r.case, width: r.width, imagePx: 96, step: r.step, candidate: r.decision?.candidate, sharedLanePx: r.proposed.sharedLanePx, reason: laneReason(r.decision?.fallback), source: 'tour' }));
+const laneCases = [...broad.readability.sharedLanes.map((r: any) => ({ ...r, source: 'bench' })), ...tourLanes];
+const unexplainedLanes = laneCases.filter((r: any) => !r.reason);
+const crossingMean = (engine: string) => broad.summary[engine].mean.crossings;
 const acceptance = [
   { target: 'Reported band ≤350 px', baseline: pairs.find(({ b }: any) => b.case === 'screenshot' && b.width === 454 && b.imagePx === 96 && b.focus === 'Saffron')?.b.metrics.height, proposed: m.height, pass: m.height <= 350 },
   { target: 'Cover → first child =34 px', baseline: baselineGap, proposed: firstGap, pass: firstGap === 34 },
@@ -42,15 +50,20 @@ const acceptance = [
   { target: 'Mean legal height ≥15% lower px', baseline: tours.summary.baseline.height, proposed: tours.summary.proposed.height, pass: tours.summary.proposed.height <= tours.summary.baseline.height * .85 },
   { target: '>10% height regressions without stability reason', baseline: 0, proposed: unpricedHeight.length, pass: unpricedHeight.length === 0 },
   { target: 'Hard gate violations/errors (corpus + tours + packing)', baseline: totalHard(broad.rows.filter((r: any) => r.engine === 'baseline')) + totalHard(tours.rows.map((r: any) => ({ proposed: r.baseline }))) + totalHard(packing.filter((r: any) => r.engine === 'baseline')), proposed: totalHard(newRows) + totalHard(tours.rows) + totalHard(packing.filter((r: any) => r.engine === 'proposed')) + newRows.filter((r: any) => r.error).length + packing.filter((r: any) => r.engine === 'proposed' && r.error).length, pass: false },
+  { target: 'Shared lanes between sources, not a listed fallback (corpus + tours)', baseline: broad.rows.filter((r: any) => r.engine === 'baseline' && r.metrics?.sharedLanePx > 0).length, proposed: unexplainedLanes.length, pass: unexplainedLanes.length === 0 },
+  { target: 'Mean crossings ≤ baseline', baseline: crossingMean('baseline'), proposed: crossingMean('proposed'), pass: crossingMean('proposed') <= crossingMean('baseline') },
+  { target: `Crossing regressions not paid for by ${broad.readability.crossingHeightTiles} tile widths of height per extra crossing`, baseline: 0, proposed: broad.readability.unpricedCrossingRegressions, pass: broad.readability.unpricedCrossingRegressions === 0 },
   { target: 'Cases with worse p95 than baseline', baseline: 0, proposed: perfRegressions.length, pass: perfRegressions.length === 0 },
   { target: 'Maximum p95 for main-thread requests (dispatch rule: ≤30 current+history tiles) ≤5ms', baseline: maxSmall('baseline'), proposed: maxSmall('proposed'), pass: smallSlow.length === 0 },
   { target: 'Maximum p95 for requests with ≤30 visible tiles (any thread) ≤5ms', baseline: maxVisible('baseline'), proposed: maxVisible('proposed'), pass: maxVisible('proposed') <= 5 },
 ];
 acceptance[6].pass = acceptance[6].proposed === 0;
+const laneList = laneCases.length ? ['| Source | Case | Width / image | Step | Candidate | Shared lane px | Reason |', '|---|---|---|---:|---|---:|---|',
+  ...laneCases.map((r: any) => `| ${r.source} | ${r.case} | ${r.width} / ${r.imagePx} | ${r.step} | ${r.candidate} | ${r.sharedLanePx.toFixed(1)} | ${r.reason ?? '**unexplained**'} |`)].join('\n') : 'None.';
 const table = ['| Acceptance target | Baseline | New | Result |', '|---|---:|---:|---|', ...acceptance.map(r => `| ${r.target} | ${Number(r.baseline).toFixed(3)} | ${r.proposed.toFixed(3)} | ${r.pass ? 'PASS' : 'FAIL'} |`)].join('\n');
 const metrics = ['| Metric (mean per layout) | Baseline | New |', '|---|---:|---:|', ...Object.keys(broad.summary.baseline.mean).map(k => `| ${k} | ${broad.summary.baseline.mean[k].toFixed(3)} | ${broad.summary.proposed.mean[k].toFixed(3)} |`)].join('\n');
-const report = `${table}\n\n${metrics}\n\nExplicit anchor fallbacks: ${moved.length}. Height exceptions selected for stability: ${heightExceptions.length - unpricedHeight.length}.\n\n${await readFile(`${out}/perf.log`, 'utf8')}`;
+const report = `${table}\n\n${metrics}\n\nExplicit anchor fallbacks: ${moved.length}. Height exceptions selected for stability: ${heightExceptions.length - unpricedHeight.length}.\n\n### Shared lanes shown (listed fallbacks)\n\n${laneList}\n\n${await readFile(`${out}/readability.md`, 'utf8')}\n${await readFile(`${out}/perf.log`, 'utf8')}`;
 await writeFile(`${out}/acceptance.md`, report);
-await writeFile(`${out}/acceptance.json`, JSON.stringify({ acceptance, moved, heightExceptions, perfRegressions, smallSlow }, null, 2));
+await writeFile(`${out}/acceptance.json`, JSON.stringify({ acceptance, moved, heightExceptions, perfRegressions, smallSlow, laneCases }, null, 2));
 console.log(report);
 if (acceptance.some(r => !r.pass)) process.exitCode = 1;

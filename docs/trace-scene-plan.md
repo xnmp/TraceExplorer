@@ -111,6 +111,13 @@ but moved tiles more per click (73 px vs 42 px) and was not faster.
    - mean band height over legal tours ≥ 15% lower than today; no case more
      than 10% taller than today unless the stability rule chose it;
    - zero hard-gate violations across the corpus;
+   - readability: connectors from different sources never share a lane (a
+     hard gate; a truly infeasible case is shown only as a listed, flagged
+     fallback with its reason); mean crossings no higher than today; no layout
+     crosses more than today unless each extra crossing buys
+     `CROSSING_HEIGHT_TILES` tile widths of band height, the calibrated
+     exchange rate of the objective (`.1/16`; the sweep and the reason are in
+     [trace-view-layout.md](trace-view-layout.md#crossings));
    - p95 layout time per case no worse than today; ≤ 5 ms for ≤ 30 visible.
 5. Tests: behavioural contracts (no hidden-topology influence on geometry,
    no empty rows above the first child, anchoring, determinism, immutability)

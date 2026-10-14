@@ -61,18 +61,86 @@ malformed backend history deterministically before planning.
 `layout-quality.ts` scores candidates after the same exact attachment used by the grid:
 
 ```
-C = 16 H/t + 2 A/t² + .08 L/t + .12 B + .1 X + 4 Q/t
-    + .5 mixedDirections + 3 siblingInversions + .25 unaligned
+C = 16 H/t + 2 A/t² + .08 L/t + .12 B + .1 X
+    + mixedDirections + 3 siblingInversions + .25 unaligned
     + 100 widthOverflow/t
     + 1.5 (meanDisplacement/t + .25 maxDisplacement/t + 2 clickedDisplacement/t)
 ```
 
 Here H/A are the visible child/routing height and area, t is tile width, L is sampled
 connector length, B is turning in quarter-turn equivalents, X is unrelated-source
-crossings and Q is coincident lane length. Empty area is already priced through H/A;
-whitespace is reported separately. Hard gates reject missing/extra nodes, wrong sizes,
-nonfinite/off-canvas geometry, overlaps, connectors through tiles, incorrect directed
-parentage, invalid paths, broken source-to-output connectivity and arrow approaches.
+crossings. Empty area is already priced through H/A; whitespace is reported separately.
+Hard gates reject missing/extra nodes, wrong sizes, nonfinite/off-canvas geometry,
+overlaps, connectors through tiles, incorrect directed parentage, invalid paths, broken
+source-to-output connectivity, arrow approaches and shared lanes.
+
+#### Shared lanes
+
+Connectors from different sources never share a lane. `sharedLanePx` is the collinear
+overlap of every pair of flattened route segments whose routes start at different
+sources; that includes two inputs of one junction running along a final stretch, since
+inputs may meet only at the dot. Routes from one source may share (trunks). A candidate
+with `sharedLanePx > 0` fails the hard gates, which `validateLayout` checks exactly. Every
+generator avoids lanes at the source:
+
+- the downward router through its zone, track and fan-in rules ([Routes](#algorithm));
+- shelves, whose channel lanes give a source arriving at the height another source leaves
+  from a lane further out;
+- the incremental embedding, which records placed segments with their source and rejects
+  a route that runs along another source's segment (its alternatives: gutters, travel
+  rows, side columns, nested junction levels, the bounded grid), returning no candidate
+  when nothing is lane-free.
+
+The unchanged-visible shortcut is not taken when the committed layout shares a lane. Only
+when no candidate is lane-free does the engine price the lanes (`4 Q/t`, Q the shared
+length) and show the best candidate, flagged `lane-infeasible`. Across the evaluation
+corpus (6,060 layouts and 2,595 tour steps) the only shared lane shown is a 6 px one in a
+malformed request (a cover with a visible parent, `gate-infeasible`).
+
+#### Crossings
+
+X counts proper crossings between connectors of unrelated sources. Its weight is an
+exchange rate: one more crossing must save `CROSSING_HEIGHT_TILES` tile widths of band
+height (`.1/16`, about 0.6 px at the default tile), and the evaluation uses the same rate
+to decide whether a layout that crosses more than the baseline paid for it. The value
+comes from a sweep over the corpus and the legal tours:
+
+| Height per crossing (tiles) | Mean crossings | Regressions | Unpriced | Tour height / baseline | Tour displacement |
+|---:|---:|---:|---:|---:|---:|
+| .00625 | 335.2 | 383 | 105 | .857 | 21.7 px |
+| .05 | 334.2 | 357 | 146 | .856 | 23.3 px |
+| .25 | 333.6 | 293 | 151 | .867 | 33.2 px |
+| .5 | 333.6 | 278 | 156 | .881 | 40.0 px |
+| 1 | 333.5 | 265 | 169 | .887 | 52.8 px (fails ≤ 42.5) |
+
+The sweep ran on the engine before the incremental embedding's compaction pass; the
+trend, not the absolute numbers, is what it shows. A higher rate barely moves mean
+crossings (the candidate family, not the weight, decides them) but makes tours taller and
+less stable, so the lowest rate is kept. Most unpriced regressions save no height at all,
+so no rate removes them: they come from the choice of family, not from pricing. The
+baseline mean is 378.6. A matching sweep set the `mixedDirections` weight to 1 (from .5):
+mixed placements 2.16 → 2.12 per layout with every other target unchanged; at 2 they fall
+to 1.93, but one layout becomes more than 10% taller than the baseline without a stability
+reason.
+
+#### Known readability limits
+
+With the final engine, 469 of 6,060 corpus layouts cross more than the baseline; 88 of
+them are not paid for by the exchange rate, and 67 of those save no height at all. They
+come from three sources, none of which a weight can fix:
+
+- **Anchored history** (72 of 88, all flagged `stability`). The clicked tile and its
+  visible ancestors stay put whenever a lane-free embedding allows it, and the lane-free
+  incremental embedding detours around retained routes, so a dense DAG reveal can cross
+  much more than a fresh layout (worst: random-dag-100-8101 at 360 px, 334 → 725). The
+  unchanged-visible steps that keep such a layout count again.
+- **Shelf crossings in long chains** (random-chainy-100/200): shelf channels route each
+  source's trunk through one lane per source, so long wrapped chains cross more than the
+  baseline's layered sideways drawing (277 → 418 at 640 px, image 64).
+- **Wrapped single columns** (screenshot, random-tree-12-7121, hidden-siblings at 360 px):
+  two sources passing one margin cross once or twice where the baseline drew one on each
+  side. Choosing the emptier margin on ties was tried and rejected: across the corpus it
+  raised mean crossings from 335 to 379.
 Spatial indexes, parsed route plans and cached geometric joins keep repeated checks
 bounded. Cubic diagnostics use the production twelve-step flattener; this is a geometry
 approximation, not a proof about arbitrarily thick strokes.
@@ -96,7 +164,13 @@ reject translations that cannot preserve the required anchors before routing the
 Other retained tiles are re-embedded when the fixed warm embedding exceeds the compact
 height budget; a compact warm embedding keeps its zero displacement.
 Multi-input arrivals get explicit junctions.
-Blocked source ports use a bounded rectilinear visibility grid (at most 250,000 points).
+Every route is lane-free: placed segments are indexed with their source, and a route
+that would run along another source's segment takes one of a bounded set of alternative
+lanes. Blocked source ports use a bounded rectilinear visibility grid (5,000 expanded
+points, up to 3 fallback slots). Only when nothing is found does a second chance run:
+probes on lanes half a step apart, then the grid with columns beside every foreign lane
+over up to 16 slots, its work capped at 200,000 per request. An embedding that cannot be
+made lane-free is not offered.
 Only previous visible geometry is retained; no candidate reserves future descendants.
 The clicked tile and its visible ancestors have a hard preference among geometry-safe
 candidates. Other surviving tiles pay displacement. A direction change must improve
@@ -276,12 +350,19 @@ The reusable layered algorithm is described top to bottom; a left-to-right shelf
      - When margin lanes or junctions need more room than a margin has, `layoutGraph` reruns the pass with that margin widened by the measured shortfall (at most twice). Lanes are placed relative to the tiles, so one retry fits them exactly; nothing is drawn off the canvas. The graph widens and scrolls horizontally instead of merging lanes.
      - How often this happens depends on how many independent lines must pass the same rows. Graphs whose parents sit close by rarely widen (3 of 900 random graphs, by at most 3%). Graphs that keep reusing a few inputs across many wrapped rows widen in narrow panes: one style applied to 24 photos at 384 px grows by about 20–30%, to 32 photos by about 60%, and the width can change with the selection. The alternative, merging lanes, would hide which input reaches which output.
    - **Shared courses (trie).** The rows a source's routes cross form a trie per source: routes heading to the same place share a prefix of crossings, and each crossing is claimed once per source (memoised). A stretch shared by several routes is emitted once as a **trunk** route (`to === from`, never terminal, its consumers the union of the routes it carries, id: its source and a hash of the consumers it carries). Each route then starts where it branches off; chains follow `continuation`. A fan-out of n children across r rows therefore draws O(n + r) path data instead of O(n·r).
-   - **Zone choice.** Each channel crossing bends inside one zone and runs vertically outside it. The zone is chosen cheapest first: fewest vertical runs that touch a junction the route does not belong to (within `JUNCTION_BERTH`), then most room. Evaluation stops at the first zone with no contact. A second pass re-evaluates every choice against the final set, so the result does not depend on processing order.
+   - **Zone choice.** Each channel crossing bends inside one zone and runs vertically outside it. The zone is chosen cheapest first, in strict priority:
+     1. fewest vertical runs along another source's run on the same column (a shared lane; two inputs of one junction running down its column count too, since inputs may meet only at the dot);
+     2. fewest runs that touch a junction the route does not belong to (within `JUNCTION_BERTH`);
+     3. fewest runs near another source's run;
+     4. most room.
+
+     Evaluation stops at the first zone with no contact. A second pass re-evaluates every choice against the final set, so the result does not depend on processing order.
    - **Tracks.** Within a zone, bends from different sources get distinct heights by left-edge channel routing:
      - leftward bends are ordered by target x ascending, then rightward bends by target x descending, so parallel routes never cross;
      - a bend leaving a column precedes one arriving in it, so a route never turns into a lane another is still using;
-     - two bends that swap columns form a unit and take consecutive tracks, keeping their unavoidable crossing steep;
+     - two bends that swap columns form a unit and take consecutive tracks, keeping their unavoidable crossing steep. Inside a unit, a bend leaving a column exactly where another arrives turns first; the other way round, both would run on that column between their tracks;
      - constraints are sequenced topologically (cycles broken by the sort order), then tracks are assigned by longest path. A zone used by a single source needs no tracks.
+   - **Fan-in.** Inputs of one junction meet only at its dot. Each bending input ends its S-curve up to `FAN_IN` (3 px) to its own side of the junction's column, runs down to the top of the dot's berth, and reaches the dot along a short S-curve that ends vertically (routes stay orthogonal apart from their curves). On each side, nearer inputs keep closer to the column, so inputs from one side do not cross before the dot. The offsets stay inside the berth that other routes and junctions keep from the column. Without this, two inputs bending onto the column would share its last stretch.
    - **Vertical pass.** Zone heights become `max(default, tracks × TRACK_HEIGHT)`; junction y is the previous zone's bottom plus `JUNCTION_BERTH`. Paths are emitted last: vertical run, S-curve inside the route's track slice of the zone, vertical run (through the approach, into a tile).
    - **Guarantees.** Fuzz tests in `tests/domain/trace-graph/layout.test.ts` (60 random graphs at 380, 640 and 1,000 px top to bottom and once left to right, 30 mixed-size graphs in both orientations, plus targeted cases) check that:
      - no route passes within 5 px of a foreign junction;
@@ -299,7 +380,7 @@ The reusable layered algorithm is described top to bottom; a left-to-right shelf
      Targeted tests cover crowded channels: every pair of a dozen inputs combined, sixty sources combined with a few tiles each, one style applied to many photos, and many sources passing one gap.
    - **Route ids** are unique and stable. A route is named by its endpoints; a trunk by its source and a hash of the consumers it carries, not by where it runs, so it keeps its id when a relayout moves it. (Collisions get a deterministic suffix.)
    - **Known limits.**
-     - Bend order inside a zone follows "leave a column before another route arrives in it". When those constraints form a cycle (lanes of several sources in consecutive rows interleaving), one is broken and two routes briefly share a column. A dogleg router (splitting one bend in two through a free column), the standard fix, is not implemented. Over 600 dense test graphs (8 inputs, outputs of 2–5 inputs, a second generation) this affects 2.
+     - Bend order inside a zone follows "leave a column before another route arrives in it". When those constraints form a cycle (lanes of several sources in consecutive rows interleaving), one is broken and two routes briefly share a column. A dogleg router (splitting one bend in two through a free column), the standard fix, is not implemented. Over 600 dense test graphs (8 inputs, outputs of 2–5 inputs, a second generation) this affects 2. In the evaluation corpus it affects 3 of 3,360 distinct downward layouts, each by 6 px. Moving one bend of the cycle to a neighbouring zone was tried and rejected: it created a longer shared stretch elsewhere. The band engine treats such a layout as infeasible (see [shared lanes](#shared-lanes)), so another candidate is shown instead.
      - Past two extra view widths, junctions in an extremely crowded channel (over a hundred combinations in one generation, sooner in narrow panes) may share a column, and their routes can then meet. Even below that, in very crowded channels a tile's exit can line up with another tile's entry; the bend zones cannot always separate the routes using that column. Every pair of 20 inputs at 300 px still shows this.
      - Neither hides parentage: highlighting a node shows its exact lineage.
 8. **Tie-breaks.** Ties use one total order: hinted keys keep their previous relative order, and new keys merge in by creation order. This keeps sorting transitive and independent of input order.
