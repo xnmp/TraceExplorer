@@ -845,7 +845,10 @@
 </div>
 
 <style>
-  .trace-view { position: relative; flex: 1; min-height: 0; overflow: auto; padding: 10px 10px 24px; box-sizing: border-box; overflow-anchor: none; scrollbar-gutter: stable; }
+  /* The vertical scrollbar's space is always reserved, so a scrollbar appearing never changes the
+     layout width. `scrollbar-gutter: stable` alone is not enough: WebKit (WebKitGTK, Safari) reserves
+     no gutter for a styled (::-webkit-scrollbar) bar, as the host's is. Overlay scrollbars take no space either way. */
+  .trace-view { position: relative; flex: 1; min-height: 0; overflow-x: auto; overflow-y: scroll; padding: 10px 10px 24px; box-sizing: border-box; overflow-anchor: none; scrollbar-gutter: stable; }
   .marquee-rect { position: absolute; pointer-events: none; z-index: 10; box-sizing: border-box; border: 1px solid var(--accent); background: color-mix(in srgb, var(--accent) 20%, transparent); }
   /* Progress text appears only when loading is slow, so a fast load never flashes it. A transition, not an
      animation: grid motion cancels band animations, and a cancelled transition shows the text at once. */

@@ -54,3 +54,39 @@ export async function sampleFrames<T>(page: Page, sample: () => T, duration: num
   await page.waitForFunction(() => (window as any).__framesDone === true, undefined, { polling: "raf" });
   return page.evaluate(() => (window as any).__frames as unknown[]) as Promise<T[]>;
 }
+
+/**
+ * Like `sampleFrames`, but each sample runs at the last moment before its frame paints: in a
+ * ResizeObserver callback, fired every frame by a probe that a frame callback resizes. The
+ * page's own observers (the view's measured width) were created before it, so they and the
+ * microtasks they started have run by then; the sample sees what that frame paints, never a state
+ * between two tasks that no frame shows. Use it when the test drives changes (a width) that the
+ * page reacts to in its own ResizeObserver.
+ */
+export async function samplePaintedFrames<T>(page: Page, sample: () => T, duration: number, during?: () => Promise<void>): Promise<T[]> {
+  await page.evaluate(({ source, duration }) => {
+    const w = window as any, read = new Function(`return (${source})`)() as () => unknown;
+    w.__frames = []; w.__framesDone = false;
+    const probe = document.createElement("div");
+    probe.style.cssText = "position:fixed;left:-10px;top:-10px;width:1px;height:1px;pointer-events:none";
+    document.body.append(probe);
+    let frame = 0, sampled = -1;
+    const start = performance.now();
+    const observer = new ResizeObserver(() => {
+      if (sampled === frame) return;
+      sampled = frame;
+      w.__frames.push(read());
+    });
+    observer.observe(probe);
+    const next = () => {
+      if (performance.now() - start >= duration) { observer.disconnect(); probe.remove(); w.__framesDone = true; return; }
+      frame++;
+      probe.style.width = `${1 + (frame % 2)}px`;
+      requestAnimationFrame(next);
+    };
+    requestAnimationFrame(next);
+  }, { source: sample.toString(), duration });
+  await during?.();
+  await page.waitForFunction(() => (window as any).__framesDone === true, undefined, { polling: "raf" });
+  return page.evaluate(() => (window as any).__frames as unknown[]) as Promise<T[]>;
+}
