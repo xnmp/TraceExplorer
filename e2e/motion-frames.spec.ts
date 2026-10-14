@@ -78,6 +78,13 @@ const clickAfter = (page: Page, selector: string, frames: number) => page.evalua
 const toggle = (name: string) => `section[aria-label="stack-${name}"] [data-stack-toggle]`;
 
 /**
+ * Position tolerance: the held anchor compensates the camera in whole scroll pixels (WebKit's
+ * scroll offsets are integers, and the anchor holds within 1 px), so a frame may sit up to a pixel
+ * off a fractional camera's path. A scroll that lags the camera by a frame is off by several.
+ */
+const PX = 1;
+
+/**
  * What a run of painted frames does wrong: a position (per axis) that leaves the span between its
  * first and last value or turns back from its last value; an opacity that turns back; a retiree
  * that disappears while visible; a connector shown at both ends that dips below .4.
@@ -92,9 +99,9 @@ function faults(painted: Frame[], from = 0, to = painted.length): string[] {
       let previous = a;
       for (const { i, v } of values) {
         const at = v[axis];
-        if (Math.abs(b - a) < .5) { if (Math.abs(at - a) >= 1) out.push(`${name} moves ${(at - a).toFixed(1)} on ${axis} at ${i}`); }
-        else if (at < Math.min(a, b) - .5 || at > Math.max(a, b) + .5) out.push(`${name} leaves ${a.toFixed(1)}→${b.toFixed(1)} (${at.toFixed(1)}) on ${axis} at ${i}`);
-        else if (Math.abs(at - b) > Math.abs(previous - b) + .5) out.push(`${name} turns back ${previous.toFixed(1)}→${at.toFixed(1)} (end ${b.toFixed(1)}) on ${axis} at ${i}`);
+        if (Math.abs(b - a) < PX) { if (Math.abs(at - a) > PX) out.push(`${name} moves ${(at - a).toFixed(1)} on ${axis} at ${i}`); }
+        else if (at < Math.min(a, b) - PX || at > Math.max(a, b) + PX) out.push(`${name} leaves ${a.toFixed(1)}→${b.toFixed(1)} (${at.toFixed(1)}) on ${axis} at ${i}`);
+        else if (Math.abs(at - b) > Math.abs(previous - b) + PX) out.push(`${name} turns back ${previous.toFixed(1)}→${at.toFixed(1)} (end ${b.toFixed(1)}) on ${axis} at ${i}`);
         previous = at;
       }
     }
