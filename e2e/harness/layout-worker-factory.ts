@@ -13,9 +13,9 @@ export function createLayoutWorker(): Worker {
   let handler: ((event: MessageEvent) => unknown) | null = null;
   Object.defineProperty(real, "onmessage", { configurable: true, get: () => handler, set: (next) => { handler = next; } });
   const posted = new Map<number, PostedRequest>();
-  const post = real.postMessage.bind(real) as (message: any, options?: any) => void;
+  // Resolved per call, so specs that patch `Worker.prototype.postMessage` still intercept.
   real.postMessage = ((message: any, options?: any) => {
-    post(message, options);
+    Worker.prototype.postMessage.call(real, message, options);
     posted.set(message.id, { itemKeys: (message.request?.items ?? []).map((item: { key: string }) => item.key), bandKey: message.request?.band?.key ?? null });
   }) as Worker["postMessage"];
   real.addEventListener("message", (event) => {
