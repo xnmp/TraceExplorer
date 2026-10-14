@@ -143,6 +143,9 @@ const noop = () => undefined;
  * How far a scene reaches and the width it was laid out for, both inside the grid's padding: the
  * layout input's width, never the pane's (`SceneIntent.width` includes the padding).
  */
+/** Same width, tile and grid metrics: the inputs a size or metrics change alters. */
+const sameLayoutMetrics = (a: FolderLayoutInput, b: FolderLayoutInput): boolean => a.width === b.width && a.tile.width === b.tile.width
+  && a.tile.image === b.tile.image && a.grid.cellWidth === b.grid.cellWidth && a.grid.cellHeight === b.grid.cellHeight && a.grid.gap === b.grid.gap;
 const displayedExtent = (scene: FolderScene): DisplayedExtent => ({ extent: scene.layout.size.width, width: scene.inputs.layoutInput.width });
 const thenable = (value: unknown): value is PromiseLike<unknown> => !!value && typeof (value as { then?: unknown }).then === "function";
 
@@ -243,7 +246,8 @@ export function createSceneController(options: SceneControllerOptions) {
   /**
    * Layouts this lifetime committed, by layout basis, newest last: a size or metrics round trip
    * (a fullscreen Preview widening the pane underneath it, then narrowing it on exit; a resize
-   * dragged back) lays out nothing and commits the earlier layout before the first frame.
+   * dragged back) lays out nothing and commits the earlier layout before the first frame. Only
+   * such a round trip reuses one (`recentLayout`).
    */
   const recentLayouts = new Map<string, { readonly layout: FolderLayout; readonly sources: PreparedLayoutInput["sources"] }>();
   /** What was last saved for the next mount (`remember`). */
@@ -548,7 +552,7 @@ export function createSceneController(options: SceneControllerOptions) {
       const prepared = prepareLayoutInput(sceneIntent, sceneData, open, committed?.history ?? null, published?.scene.layout ?? null, source.components);
       if (tx.layout?.key !== prepared.basis) dropLayout(tx);
       let layout: FolderLayout;
-      const known = published && committed && prepared.basis === committed.basis ? published.scene.layout : recentLayout(prepared);
+      const known = published && committed && prepared.basis === committed.basis ? published.scene.layout : recentLayout(prepared, published);
       if (known) layout = known;
       // A scene on screen that the pane narrowed past is replaced before the next paint: kept while
       // a worker lays out, it would be drawn overflowing the narrower pane.
@@ -642,9 +646,13 @@ export function createSceneController(options: SceneControllerOptions) {
 
   /**
    * A layout this lifetime committed for the same basis, if it was laid out from the same data
-   * (component, revision and data object for every open stack); it becomes the newest.
+   * (component, revision and data object for every open stack); it becomes the newest. Only a size
+   * or metrics round trip reuses one (the scene on screen was laid out for another width, tile or
+   * grid): any other change at the same size lays out again with the scene on screen as its
+   * history, so a selection that returns to an earlier focus keeps the band decisions made since.
    */
-  function recentLayout(prepared: PreparedLayoutInput): FolderLayout | null {
+  function recentLayout(prepared: PreparedLayoutInput, shown: Publication | null): FolderLayout | null {
+    if (!shown || sameLayoutMetrics(shown.scene.inputs.layoutInput, prepared.input)) return null;
     const entry = recentLayouts.get(prepared.basis);
     if (!entry) return null;
     const same = entry.sources.size === prepared.sources.size && [...prepared.sources].every(([id, source]) => {

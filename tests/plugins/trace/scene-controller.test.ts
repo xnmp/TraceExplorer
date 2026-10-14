@@ -1038,4 +1038,33 @@ describe("scene controller: review fixes (dc33274)", () => {
     expect(h.engine.mock.calls.length, "laid out inline on the main thread").toBe(inlineRuns);
     expect(h.layouts.length, "asked the worker").toBe(asked + 1);
   });
+
+  // M2: a cached layout was reused for any cause; a selection round trip skipped the band history made since.
+  it("R4c: a selection round trip lays out with the band's history, like any other selection (not the cached first layout)", async () => {
+    const village = screenshotStack();
+    const savedStack = STACKS.ca, savedCover = COVERS.ca;
+    STACKS.ca = village; COVERS.ca = "root";
+    try {
+      const h = setup();
+      const listing = [entry("root.png"), entry("b1.png"), entry("notes.txt")];
+      const pick = (key: string, choice: string) => ({ focus: { key, componentId: "ca" }, selectedKeys: new Set([key]), hostChoice: choice });
+      h.offer({ listing, open: new Set(["root"]), ...pick("Ash", "1") }); await flush();
+      h.deliver("ca"); await flush();
+      h.act("selection", () => h.offer(pick("root", "2"))); await flush();
+      const middle = h.controller.published!.scene.layout;
+      h.act("selection", () => h.offer(pick("Ash", "3"))); await flush();
+      const back = h.controller.published!.scene;
+      const steady = engines.default({ ...back.inputs.layoutInput, previous: middle });
+      const nodesOf = (layout: FolderLayout) => new Map([...layout.graphs.values()].flatMap((g) => [...g.attached.nodes].map(([k, n]) => [k, `${Math.round(n.x)},${Math.round(n.y)}`] as const)));
+      const moved = (from: FolderLayout, to: FolderLayout) => { const a = nodesOf(from); return [...nodesOf(to)].filter(([k, p]) => a.get(k) !== p).length; };
+      expect({ committedMoves: moved(middle, back.layout) }).toEqual({ committedMoves: moved(middle, steady) });
+    } finally { STACKS.ca = savedStack; COVERS.ca = savedCover; }
+  });
 });
+
+/** A stack shaped like the native screenshot's: two edits of the root, each with children, one of them hidden until focused. */
+function screenshotStack(): TraceNode[] {
+  let order = 0;
+  const n = (key: string, parents: string[] = []) => node(key, ++order, parents);
+  return [n("root"), n("Cerulean", ["root"]), n("Saffron", ["root"]), n("Cerulean-hidden", ["Cerulean"]), n("Blastoise", ["Saffron"]), n("Ash", ["Saffron"]), n("Ash-hidden", ["Ash"])];
+}
