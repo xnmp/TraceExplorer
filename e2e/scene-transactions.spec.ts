@@ -188,3 +188,23 @@ test("an open stack that can no longer be read fails in its cover; the rest of t
   await expect(toggle(page, "photo-a")).toHaveAttribute("aria-expanded", "true");
   expect(await uncaught(page)).toEqual([]);
 });
+
+test("a second press on a cover that is still opening selects it and keeps it opening", async ({ page }) => {
+  await openView(page, 900, "?grouping=two-chains", false);
+  await trace(page, (t) => t.backend.setFolderLatency(400));
+  await stack(page, "photo-b").locator(".cover-press").dblclick();
+  await settle(page);
+  await expect(stack(page, "photo-b").locator("[data-grid-band] [data-tile-key]").first()).toBeVisible();
+  await expect(page.locator("[data-grid-band]")).toHaveCount(1);
+  expect((await state(page)).selected).toEqual(["/pictures/photo-b.png"]);
+  // Only the disclosure cancels a pending open.
+  await trace(page, (t) => t.backend.holdNodeReads());
+  await toggle(page, "photo-a").click();
+  await expect(toggle(page, "photo-a")).toHaveAttribute("aria-label", "Cancel opening stack");
+  await stack(page, "photo-a").locator(".cover-press").click();
+  await expect(toggle(page, "photo-a")).toHaveAttribute("aria-label", "Cancel opening stack");
+  await trace(page, (t) => t.backend.releaseNodeReads());
+  await settle(page);
+  await expect(page.locator("[data-grid-band]")).toHaveCount(2);
+  expect(await uncaught(page)).toEqual([]);
+});
