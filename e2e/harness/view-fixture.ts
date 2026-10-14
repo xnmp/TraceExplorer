@@ -452,6 +452,28 @@ export const fileDropTargets = new URLSearchParams(globalThis.location?.search ?
 /** `fileDropTargets=refuse`: the host announces the capability but refuses the element, as it does for elements outside plugin-owned content. */
 export const fileDropTargetsRefused = new URLSearchParams(globalThis.location?.search ?? "").get("fileDropTargets") === "refuse";
 const color = (path: string) => `hsl(${[...path].reduce((sum, char) => (sum * 31 + char.charCodeAt(0)) % 360, 7)} 45% 55%)`;
+/**
+ * `?thumbnailDelay=<ms>`: how long the host takes to answer a thumbnail (default 0). Like the host's
+ * `thumbnailData` (`get_thumbnail_data` over IPC, then `dataUriToBlobUrl`), every call answers in a
+ * later task, never within the caller's microtasks, with a new JPEG blob URL.
+ */
+const thumbnailDelay = Math.max(0, Number(new URLSearchParams(globalThis.location?.search ?? "").get("thumbnailDelay") ?? 0) || 0);
+const thumbnailRequests: string[] = [];
+async function thumbnailData(path: string): Promise<{ ok: true; data: string }> {
+  thumbnailRequests.push(path);
+  // A message task, not a timer, when there is no delay: specs that fake the clock still get answers.
+  await new Promise<void>((resolve) => {
+    if (thumbnailDelay > 0) { setTimeout(resolve, thumbnailDelay); return; }
+    const channel = new MessageChannel();
+    channel.port1.onmessage = () => { channel.port1.close(); resolve(); };
+    channel.port2.postMessage(null);
+  });
+  const canvas = new OffscreenCanvas(160, 96);
+  const context = canvas.getContext("2d")!;
+  context.fillStyle = color(path);
+  context.fillRect(0, 0, 160, 96);
+  return { ok: true, data: URL.createObjectURL(await canvas.convertToBlob({ type: "image/jpeg", quality: 0.8 })) };
+}
 (globalThis as any).__TAURI_EXPLORER_PLUGIN_SDK__ = {
   sdkVersion: 1, apiVersion: 2, svelteVersion: "5.56.3",
   capabilities: [...(eligibilityPending ? ["fileViewEligibilityPending"] : []), "fileViews", "previewInfo", "previewTargets", "blobWorkers", "jobReveal", "jobCost", "fileViewReveal", ...(selectionAnchor ? ["selectionAnchor"] : []), ...(fileTile ? ["fileTile"] : []), ...(fileTiles ? ["fileTiles"] : []), ...(initialTileSize ? ["tileSize"] : []), ...(paneDialogs ? ["paneDialogs"] : []), ...(fileDropTargets ? ["fileDropTargets"] : [])],
@@ -463,9 +485,7 @@ const color = (path: string) => `hsl(${[...path].reduce((sum, char) => (sum * 31
     } } } : {}),
   },
   pickSaveFile: async () => pickerResult === undefined ? `${DIRECTORY}/picked.png` : pickerResult,
-  thumbnailData: async (path: string) => ({ ok: true, data: URL.createObjectURL(new Blob([
-    `<svg xmlns="http://www.w3.org/2000/svg" width="160" height="96"><rect width="160" height="96" fill="${color(path)}"/></svg>`,
-  ], { type: "image/svg+xml" })) }),
+  thumbnailData,
 };
 
 let imageService = imageAvailability();
@@ -473,6 +493,8 @@ let imageDescriptionsHeld = false;
 let imageDescriptionWaiters: Array<() => void> = [];
 
 export const backend = {
+  /** Every thumbnail the view asked the host for, in order (paths). */
+  thumbnailRequests: () => [...thumbnailRequests],
   /** A journal notification with unchanged visible content still re-reads index, members and nodes. */
   refresh() { changed(); },
   jobStatus: (jobId: number) => invoke<ReturnType<typeof jobSnapshot>>("jobs.status", { operationId: imageOperations.get(jobId) ?? operationIdFor(jobId) }),
