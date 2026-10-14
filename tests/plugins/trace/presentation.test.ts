@@ -8,6 +8,7 @@ import {
   type Presentation, type Track,
 } from "$lib/plugins/trace/view/presentation";
 import { folderInput, handCase, makeFolder, sourcesOf, type Folder } from "../../domain/trace-graph/folder-layout-fixtures";
+import { presentationView } from "$lib/plugins/trace/view/presentation-view";
 
 // ─── Easing ─────────────────────────────────────────────────────────────────
 
@@ -395,6 +396,89 @@ describe("retargetPresentation", () => {
     for (const route of routesOf(both, B)) {
       const live = p.live.get(route.id)!;
       expect(ridesWithSection(live.track, route.rect, cover.track, cover.record.rect), route.id).toBe(true);
+    }
+  });
+});
+
+describe("retargetPresentation: review fixes (099e72f)", () => {
+  const fadeEnd = (closing: Presentation) => [...closing.retiring.values()].find((r) => r.record.kind === "band")!.track!.frames[1].at;
+  /** Connectors displayed before `p` whose live track starts hidden with no old path fading out in their place: they would blink. */
+  function blinking(displayed: ReturnType<typeof samplePresentation>, p: Presentation): string[] {
+    const ids: string[] = [];
+    for (const [id, live] of p.live) {
+      if (live.record.kind !== "route" || !live.track) continue;
+      const was = displayed.poses.get(id);
+      if (!was || was.opacity <= PAINTED) continue;
+      const old = [...p.retiring.values()].some((r) => r.reason === "old-route" && r.record.id === id);
+      if (sampleTrack(live.track, 0).opacity <= PAINTED && !old) ids.push(id);
+    }
+    return ids;
+  }
+
+  it("a rerouted connector whose old path the retiree limit dropped stays shown instead of blinking out", () => {
+    const big = makeFolder({ stacks: [handCase("fan-200"), handCase("screenshot"), handCase("merges-3")], files: 12 });
+    const [F, S, M] = [...big.stacks.keys()];
+    let overLimit = 0;
+    for (const [w1, w2] of [[1400, 900], [1400, 640], [900, 640], [640, 1400]]) {
+      // Closing the 200-tile stack while the others reflow: more than RETIREE_LIMIT departures.
+      const open = sceneFor([F, S, M], { of: big, width: w1 });
+      const next = sceneFor([S, M], { of: big, width: w2, previous: open.layout });
+      const { displayed, presentation: p } = step(staticPresentation(open), open, next, Infinity);
+      expect(blinking(displayed, p), `${w1} → ${w2}`).toEqual([]);
+      // The same reflow without the large exit crossfades: the limit is what dropped the old paths.
+      const control = sceneFor([S, M], { of: big, width: w1 }), controlNext = sceneFor([S, M], { of: big, width: w2, previous: control.layout });
+      const reference = step(staticPresentation(control), control, controlNext, Infinity).presentation;
+      if (p.retiring.size === 0 && [...reference.retiring.values()].some((r) => r.reason === "old-route")) {
+        overLimit++;
+        // Every connector the reference crossfades is shown whole throughout instead.
+        for (const old of [...reference.retiring.values()].filter((r) => r.reason === "old-route")) {
+          const live = p.live.get(old.record.id)!;
+          for (let t = 0; t <= MOTION_MS; t += 8) expect(samplePresentation(p, t).poses.get(live.renderId)!.opacity, `${old.record.id} at ${t}`).toBe(1);
+        }
+      }
+    }
+    expect(overLimit).toBeGreaterThan(0);
+  });
+
+  it("in-band retirees of a band that closes join its exit group and fade from where they were", () => {
+    const narrow = sceneFor([A, B], { width: 640 }), wide = sceneFor([A, B], { width: 900, previous: narrow.layout });
+    const resizing = step(staticPresentation(narrow), narrow, wide, Infinity).presentation;
+    const inBand = [...resizing.retiring.values()].filter((r) => r.group === null && r.record.graphId === A && r.record.kind !== "band");
+    expect(inBand.length).toBeGreaterThan(0);
+    const closed = sceneFor([B], { width: 900, previous: wide.layout });
+    const { displayed, presentation: p } = step(resizing, wide, closed, 1);
+    const shown = inBand.filter((r) => displayed.poses.get(r.renderId)!.opacity > PAINTED);
+    expect(shown.length).toBeGreaterThan(0);
+    const view = presentationView(p);
+    const drawn = new Set(view.exits.flatMap((exit) => [...exit.tiles, ...exit.routes, ...exit.junctions].map((r) => r.renderId)));
+    const first = samplePresentation(p, 0).poses;
+    for (const retiree of shown) {
+      // Drawn by the closing band's exit group (no band draws A any more), continuing from its displayed pose.
+      expect(drawn.has(retiree.renderId), retiree.renderId).toBe(true);
+      expect(close(first.get(retiree.renderId)!, displayed.poses.get(retiree.renderId)!), retiree.renderId).toBe(true);
+      // It never comes back: its opacity only falls.
+      let last = Infinity;
+      for (let t = 0; t <= MOTION_MS; t += 4) {
+        const opacity = samplePresentation(p, t).poses.get(retiree.renderId)!.opacity;
+        expect(opacity).toBeLessThanOrEqual(last + 1e-9);
+        last = opacity;
+      }
+    }
+    expect(view.graphs.get(A)?.retiring ?? []).toEqual([]);
+  });
+
+  it("a returning record that does not take part leaves its displayed retiree to finish its own fade", () => {
+    const open = sceneFor([A]), closed = sceneFor([], { previous: open.layout }), reopened = sceneFor([A], { previous: closed.layout });
+    const closing = step(staticPresentation(open), open, closed, Infinity).presentation;
+    const displayed = samplePresentation(closing, fadeEnd(closing) / 2);
+    const members = [...closing.retiring.values()].filter((r) => r.group !== null && displayed.poses.get(r.renderId)!.opacity > PAINTED);
+    expect(members.length).toBeGreaterThan(0);
+    // No record of the reopened band takes part (all far from a viewport): each stays at its target.
+    const p = retargetPresentation(displayed, reopened, diffScenes(closed, reopened), { ...participants(), records: new Set() });
+    const first = samplePresentation(p, 0).poses;
+    for (const member of members) {
+      expect(p.retiring.has(member.renderId), member.renderId).toBe(true);
+      expect(close(first.get(member.renderId)!, displayed.poses.get(member.renderId)!), member.renderId).toBe(true);
     }
   });
 });

@@ -463,7 +463,9 @@ export function retargetPresentation(displayed: DisplayedPresentation | null, ne
   const consumed = new Set<RenderId>();
   for (const id of next.records.keys()) {
     const retiree = before.live.has(id) ? undefined : takeovers.get(id);
-    if (retiree) consumed.add(retiree.renderId);
+    // Only a record that takes over the retiree's displayed pose consumes it (a snap or reveal
+    // ends it by policy); a non-participant at its target leaves the retiree to finish its track.
+    if (retiree && !rider(id)) consumed.add(retiree.renderId);
   }
 
   // 1. Where every record starts: its displayed pose (retained), a retiree's (reopened), or its entrance.
@@ -474,7 +476,7 @@ export function retargetPresentation(displayed: DisplayedPresentation | null, ne
     if (still(id)) { start.set(id, target); continue; }
     if (before.live.has(id)) { start.set(id, shown.get(id) ?? target); continue; }
     const retiree = takeovers.get(id);
-    if (retiree) start.set(id, shown.get(retiree.renderId)!);
+    if (retiree && consumed.has(retiree.renderId)) start.set(id, shown.get(retiree.renderId)!);
     else if (record.kind === "tile" && !record.cover) start.set(id, { ...target, rect: translate(record.rect, enterOffset(orientationOf(record.graphId))), opacity: 0 });
     else if (record.kind === "row") start.set(id, { ...target, rect: { ...record.rect, height: 0 } });
     else if (record.kind === "route" || record.kind === "junction") start.set(id, { ...target, opacity: 0 });
@@ -538,6 +540,8 @@ export function retargetPresentation(displayed: DisplayedPresentation | null, ne
 
   // 4. Connectors: travel with endpoints that move rigidly with them, else crossfade exact paths.
   const fresh: RetiringRecord[] = [];
+  /** Connectors that appear exactly with an arriving tile, by that tile. */
+  const follows = new Map<EntityId, EntityId>();
   const endpoint = (graphId: GraphId, end: string): SceneRecord | undefined => {
     const colon = end.indexOf(":"), kind = end.slice(0, colon), local = end.slice(colon + 1);
     return next.records.get(kind === "junction" ? entityId("junction", graphId, local) : entityId("tile", graphId, local));
@@ -549,7 +553,7 @@ export function retargetPresentation(displayed: DisplayedPresentation | null, ne
     // A connector to or from a tile that is still arriving appears exactly with it (one opacity interval).
     const arriving = [endpoint(record.graphId!, endpointKey(record.route.to)), endpoint(record.graphId!, endpointKey(record.route.from))]
       .find((tile) => tile?.kind === "tile" && !tile.cover && start.get(tile.id)!.opacity <= PAINTED && tracks.get(tile.id));
-    if (arriving) { tracks.set(id, withOpacityOf(tracks.get(arriving.id)!, record.rect)); continue; }
+    if (arriving) { tracks.set(id, withOpacityOf(tracks.get(arriving.id)!, record.rect)); follows.set(id, arriving.id); continue; }
     const kept = continued(id, target);
     if (kept !== undefined) { tracks.set(id, kept); continue; }
     const was = before.live.get(id), source = was ?? takeovers.get(id);
@@ -584,18 +588,21 @@ export function retargetPresentation(displayed: DisplayedPresentation | null, ne
     tracks.set(id, arrival({ ...target, opacity: 0 }, target, w, D));
   }
 
-  const live = new Map<RenderId, PresentedRecord>();
-  for (const [id, record] of next.records) {
-    const track = tracks.get(id) ?? null;
-    live.set(id, { renderId: id, record, initial: track ? track.frames[0].pose : settledPose(record), track });
-  }
-
   // 5. Retirees. Running ones continue while they still paint; a reveal drops its graphs'.
   const retiring = new Map<RenderId, RetiringRecord>();
   const dropped = (retiree: RetiringRecord) => consumed.has(retiree.renderId) || shownOpacity(retiree.renderId) <= PAINTED
     || (retiree.record.graphId !== null && reveal.has(retiree.record.graphId));
+  // In-band retirees (departures, old routes) of a band this publication closes have no band to
+  // draw them any more: they join its exit group with their displayed pose, and fade and clip with it.
+  const orphans = new Map<GraphId, { record: SceneRecord; pose: Pose; retiree: RetiringRecord }[]>();
   for (const retiree of before.retiring.values()) {
     if (retiree.group !== null || dropped(retiree)) continue;
+    const graphId = retiree.record.graphId;
+    if (retiree.record.kind !== "band" && graphId !== null && !next.graphs.has(graphId)) {
+      const pose = shown.get(retiree.renderId);
+      if (pose && pose.opacity > PAINTED) orphans.set(graphId, [...orphans.get(graphId) ?? [], { record: retiree.record, pose, retiree }]);
+      continue;
+    }
     const track = retiree.track ? sliceTrack(retiree.track, at) : null;
     if (track) retiring.set(retiree.renderId, { ...retiree, initial: track.frames[0].pose, track });
   }
@@ -610,6 +617,7 @@ export function retargetPresentation(displayed: DisplayedPresentation | null, ne
     if (still(id) || record.graphId === null || reveal.has(record.graphId) || !(isBandRecord(record) || record.kind === "band") || !before.live.has(id)) continue;
     exits.set(record.graphId, [...exits.get(record.graphId) ?? [], record]);
   }
+  for (const graphId of orphans.keys()) if (!exits.has(graphId)) exits.set(graphId, []);
   for (const [graphId, records] of exits) {
     const w = windowOf(graphId);
     if (next.graphs.has(graphId)) {
@@ -631,10 +639,10 @@ export function retargetPresentation(displayed: DisplayedPresentation | null, ne
       continue;
     }
     // A closed stack: its displayed band retires as one group spanning its section.
-    const members = records.flatMap((record) => {
+    const members: { record: SceneRecord; pose: Pose; retiree?: RetiringRecord }[] = [...records.flatMap((record) => {
       const pose = shown.get(record.id);
       return record.kind !== "band" && pose && pose.opacity > PAINTED ? [{ record, pose }] : [];
-    });
+    }), ...orphans.get(graphId) ?? []];
     if (!members.length) continue;
     const coverId = entityId("tile", graphId, graphId), cover = before.live.get(coverId);
     const band = records.find((record) => record.kind === "band");
@@ -668,12 +676,35 @@ export function retargetPresentation(displayed: DisplayedPresentation | null, ne
     const groupRecord: SceneRecord = band ? { ...band, rect: container }
       : { kind: "band", id: bandId, graphId, rect: container, band: { id: graphId, row: 0, ...container } };
     fresh.push({ renderId: groupId, record: groupRecord, initial: groupTrack.frames[0].pose, track: groupTrack, sourceTransaction: transaction, group: null, reason: "exit", branch: branch(graphId) });
-    for (const { record, pose } of members) {
+    for (const { record, pose, retiree } of members) {
       const member = displaced(record, pose);
-      fresh.push({ renderId: retireId(transaction, "exit", record.id), record: member, initial: { rect: member.rect, opacity: pose.opacity, clip: null }, track: null,
-        sourceTransaction: transaction, group: groupId, reason: "exit", branch: branch(graphId) });
+      fresh.push(retiree
+        ? { ...retiree, record: member, initial: { rect: member.rect, opacity: pose.opacity, clip: null }, track: null, group: groupId }
+        : { renderId: retireId(transaction, "exit", record.id), record: member, initial: { rect: member.rect, opacity: pose.opacity, clip: null }, track: null,
+          sourceTransaction: transaction, group: groupId, reason: "exit", branch: branch(graphId) });
     }
   }
   if (carried + fresh.filter((retiree) => retiree.record.kind !== "band").length <= RETIREE_LIMIT) for (const retiree of fresh) retiring.set(retiree.renderId, retiree);
+  else {
+    // This publication's departures snap. What would have arrived in their place appears at once
+    // instead of after them, so nothing shown vanishes and comes back: a rerouted connector whose
+    // old path was dropped, a tile whose node departed elsewhere, and connectors arriving with it.
+    const rerouted = new Set(fresh.flatMap((retiree) => retiree.reason === "old-route" ? [retiree.record.id] : []));
+    const departedKeys = new Set(fresh.flatMap((retiree) => retiree.record.kind === "tile" ? [retiree.record.tile.key] : []));
+    const arrives = (id: EntityId) => { const track = tracks.get(id); return !!track && track.frames[0].pose.opacity <= PAINTED; };
+    const snapped = new Set<EntityId>();
+    for (const [id, record] of next.records) {
+      if (!arrives(id)) continue;
+      if (rerouted.has(id) || (record.kind === "tile" && !record.cover && departedKeys.has(record.tile.key))) snapped.add(id);
+    }
+    for (const [id, tile] of follows) if (snapped.has(tile)) snapped.add(id);
+    for (const id of snapped) tracks.set(id, ride(next.records.get(id)!));
+  }
+
+  const live = new Map<RenderId, PresentedRecord>();
+  for (const [id, record] of next.records) {
+    const track = tracks.get(id) ?? null;
+    live.set(id, { renderId: id, record, initial: track ? track.frames[0].pose : settledPose(record), track });
+  }
   return presentation(epoch, live, retiring, riders);
 }

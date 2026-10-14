@@ -172,3 +172,26 @@ describe("presenting with participants", () => {
     expect(restyled.pinned).toEqual(presentation.pinned);
   });
 });
+
+describe("participants: returning records", () => {
+  it("takes a record coming back while its retiree is still shown, wherever the viewport is", () => {
+    const open = sceneFor([A]), closed = sceneFor([]), reopened = sceneFor([A]);
+    const closing = retarget(settled(open), open, closed, null);
+    const group = [...closing.retiring.values()].find((r) => r.record.kind === "band")!;
+    const displayed = samplePresentation(closing, group.track!.frames[1].at / 2);
+    const members = [...closing.retiring.values()].filter((r) => r.group !== null && displayed.poses.get(r.renderId)!.opacity > .01);
+    expect(members.length).toBeGreaterThan(0);
+    const far: GridRect = { x: 0, y: 1e6, width: 360, height: 300 };
+    const records = motionParticipants({ next: reopened, displayed, viewport: far, margin: 0 })!;
+    for (const member of members) expect(records.has(member.record.id), member.record.id).toBe(true);
+    // Taking part, each takes over its retiree's displayed pose, and the retiree is gone.
+    const p = retarget(displayed, closed, reopened, records);
+    for (const member of members) {
+      if (member.record.kind !== "tile") continue;
+      const first = sampleTrack(p.live.get(member.record.id)!.track!, 0), was = displayed.poses.get(member.renderId)!;
+      expect(Math.abs(first.rect.y - was.rect.y) + Math.abs(first.rect.x - was.rect.x), member.record.id).toBeLessThanOrEqual(.5);
+      expect(first.opacity).toBeCloseTo(was.opacity, 2);
+      expect(p.retiring.has(member.renderId)).toBe(false);
+    }
+  });
+});

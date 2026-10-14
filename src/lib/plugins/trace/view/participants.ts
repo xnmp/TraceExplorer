@@ -6,7 +6,8 @@
  * A record participates when its target or its displayed pose lies within `margin` of the
  * viewport, when it is focused or selected, or when it is still moving (a track that has not
  * ended at the sampled time). Records displayed but leaving the scene participate on the same
- * terms, by their displayed pose. Every other record takes its target pose: it is offscreen, so
+ * terms, by their displayed pose, and a record coming back while its retiree is still shown
+ * participates (it takes over the retiree's pose). Every other record takes its target pose: it is offscreen, so
  * snapping it shows nothing, and a later viewport mount draws it where the model says it is.
  *
  * Without a viewport (none measured yet, or one that is not a finite rectangle) every record
@@ -15,7 +16,7 @@
 import type { GridRect } from "$lib/domain/trace-graph/grid-flow";
 import type { EntityId, FolderScene, SceneRecord } from "$lib/domain/trace-graph/folder-scene";
 import type { NodeKey } from "$lib/domain/trace-graph/model";
-import { trackEnd, type DisplayedPresentation } from "./presentation";
+import { PAINTED, trackEnd, type DisplayedPresentation } from "./presentation";
 
 /** The grid's windowing margin (StackGrid), which also covers a large graph's smaller one (TraceGraph). */
 export const PARTICIPANT_MARGIN = 1200;
@@ -58,6 +59,11 @@ export function motionParticipants({ next, displayed, viewport, margin = PARTICI
     if (ids.has(id)) continue;
     const moving = presented.track !== null && displayed.at < trackEnd(presented.track);
     if (moving || near(shown?.get(id)?.rect) || (!next.records.has(id) && chosen(presented.record, focus))) ids.add(id);
+  }
+  // A record coming back while its retiree is still shown takes over the retiree's displayed pose (its motion is running).
+  if (displayed) for (const retiree of displayed.presentation.retiring.values()) {
+    const id = retiree.record.id;
+    if (retiree.reason === "exit" && retiree.record.kind !== "band" && next.records.has(id) && (shown?.get(retiree.renderId)?.opacity ?? 0) > PAINTED) ids.add(id);
   }
   return ids;
 }
