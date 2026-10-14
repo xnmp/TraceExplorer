@@ -285,7 +285,8 @@ export function layoutBand(input: LayoutRequest): GraphLayout {
   // The downward layout's display rows bound its height, width and tree ink before it is
   // routed. An anchored translation keeps width and ink; its first row can rise only into
   // stem room beyond the default, so its height bound gives up exactly that.
-  const rows = wantsDown ? downwardBandBound(request, key, STACK_STEM_ROOM) : null;
+  // Bounds of the downward layout as built below: at the band's own width budget.
+  const rows = wantsDown ? downwardBandBound({ ...request, maxWidth: width }, key, STACK_STEM_ROOM) : null;
   const rowsHeight = rows ? Math.max(downFloor, rows.height) : downFloor;
   const shiftedRowsHeight = rows ? Math.max(downFloor, rows.height - Math.max(0, (request.history?.attachment?.placement.stemRoom ?? STACK_STEM_ROOM) - STACK_STEM_ROOM) - .01) : downFloor;
   let down: Candidate | undefined;

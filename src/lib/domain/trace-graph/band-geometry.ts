@@ -318,14 +318,20 @@ export function attachPackedBand(layout: GraphLayout, key: string, bandTop: numb
 }
 
 /** Round orthogonal stem corners, clamping the radius for short runs. */
-function roundedStem(points: readonly { readonly x: number; readonly y: number }[]): string {
-  // Drop repeated points, then points inside straight runs.
-  const distinct: { readonly x: number; readonly y: number }[] = [];
-  for (let i = 0; i < points.length; i++) if (!i || points[i].x !== points[i - 1].x || points[i].y !== points[i - 1].y) distinct.push(points[i]);
-  const corners: { readonly x: number; readonly y: number }[] = [];
-  for (let i = 0; i < distinct.length; i++) {
-    const point = distinct[i];
-    if (!i || i === distinct.length - 1 || !((distinct[i - 1].x === point.x && point.x === distinct[i + 1].x) || (distinct[i - 1].y === point.y && point.y === distinct[i + 1].y))) corners.push(point);
+export function roundedStem(points: readonly { readonly x: number; readonly y: number }[]): string {
+  // Drop repeated points, then points inside straight runs, until neither is left: a run that
+  // doubles back leaves two equal corners, whose zero-length run has no direction to round.
+  let corners: readonly { readonly x: number; readonly y: number }[] = points;
+  for (let changed = true; changed;) {
+    const distinct: { readonly x: number; readonly y: number }[] = [];
+    for (let i = 0; i < corners.length; i++) if (!i || corners[i].x !== corners[i - 1].x || corners[i].y !== corners[i - 1].y) distinct.push(corners[i]);
+    const kept: { readonly x: number; readonly y: number }[] = [];
+    for (let i = 0; i < distinct.length; i++) {
+      const point = distinct[i];
+      if (!i || i === distinct.length - 1 || !((distinct[i - 1].x === point.x && point.x === distinct[i + 1].x) || (distinct[i - 1].y === point.y && point.y === distinct[i + 1].y))) kept.push(point);
+    }
+    changed = kept.length !== corners.length;
+    corners = kept;
   }
   let path = `M${corners[0].x} ${corners[0].y}`;
   for (let i = 1; i < corners.length - 1; i++) {
