@@ -18,7 +18,7 @@
  */
 import type { GridRect } from "$lib/domain/trace-graph/grid-flow";
 import type { Point } from "$lib/domain/trace-graph/path-sampling";
-import { EASE, sameEase, samplePresentation, sampleTrack, samePose, sliceEase, trackEnd, type DisplayedPresentation, type Ease, type Pose, type Presentation, type Track } from "./presentation";
+import { EASE, easeAt, sameEase, samplePresentation, sampleTrack, samePose, sliceEase, trackEnd, type DisplayedPresentation, type Ease, type Pose, type Presentation, type Track } from "./presentation";
 import { presentationView, ridesSection, sectionFrame, type SectionFrame } from "./presentation-view";
 import { prefersReducedMotion, zoomOf } from "./motion";
 import { GRID, layerKey, sectionKey, type RenderHandles } from "./render-handles";
@@ -193,7 +193,15 @@ interface Epoch {
   readonly animations: readonly Animation[];
   readonly clock: Animation | null;
   readonly probe: Probe | null;
+  /** The camera's starting displacement of the grid (CSS px), easing to none over the epoch; null without a camera. */
+  readonly camera: Point | null;
 }
+
+/** The camera's displacement at epoch time `at`: `shift` eased away over `duration` (the effect's own keyframes). */
+export const cameraAt = (shift: Point, at: number, duration: number): Point => {
+  const left = 1 - easeAt(EASE, duration > 0 ? at / duration : 1);
+  return { x: shift.x * left, y: shift.y * left };
+};
 
 export interface SceneMotionOptions {
   readonly handles: RenderHandles;
@@ -233,21 +241,26 @@ export function createSceneMotion({ handles, scroller = () => null, reduced = pr
     for (const animation of epoch?.animations ?? []) if (owned(animation)) animation.cancel();
   }
 
-  /** Epoch time displayed now for `presentation`. */
-  function displayedTime(presentation: Presentation): number {
-    if (presentation.duration <= 0) return Infinity;
-    if (!epoch || epoch.presentation.epoch !== presentation.epoch) return presentation.epoch > started ? 0 : Infinity;
+  /**
+   * Epoch time displayed now for `presentation` (`at`), and the clock's own time (`clock`): what
+   * the main thread applies, which the grid's measured rect reflects.
+   */
+  function displayedTime(presentation: Presentation): { readonly at: number; readonly clock: number } {
+    const settled = { at: Infinity, clock: Infinity };
+    if (presentation.duration <= 0) return settled;
+    if (!epoch || epoch.presentation.epoch !== presentation.epoch) return presentation.epoch > started ? { at: 0, clock: 0 } : settled;
     const { clock, probe } = epoch;
-    if (!clock || !owned(clock)) return Infinity;
+    if (!clock || !owned(clock)) return settled;
     const total = Number(clock.effect?.getTiming().duration) || presentation.duration;
-    let at = Math.min(presentation.duration, Math.max(0, (Number(clock.currentTime) || 0) / total * presentation.duration));
+    const time = Math.min(presentation.duration, Math.max(0, (Number(clock.currentTime) || 0) / total * presentation.duration));
+    let at = time;
     const grid = handles.get(GRID);
     if (probe && grid && probe.element.isConnected) {
       // The compositor may show more progress than the clock reports (a stalled main thread in WebKit).
       const shown = offsetIn(grid, probe.element)[probe.axis];
       if (Math.abs(shown - sampleTrack(probe.track, at).rect[probe.axis]) > .5) at = timeAt(probe.track, probe.axis, shown);
     }
-    return at;
+    return { at, clock: time };
   }
 
   return {
@@ -262,11 +275,17 @@ export function createSceneMotion({ handles, scroller = () => null, reduced = pr
 
     sample(presentation: Presentation): DisplayedPresentation {
       const grid = handles.get(GRID);
+      const { at, clock } = displayedTime(presentation);
       if (grid) {
-        const rect = grid.getBoundingClientRect();
-        origin = { left: rect.left, top: rect.top, zoom: zoomOf(grid as HTMLElement, rect) };
+        const rect = grid.getBoundingClientRect(), zoom = zoomOf(grid as HTMLElement, rect);
+        // The grid's rect includes the running camera as the clock applies it; the interruption continues from where
+        // it is displayed (the calibrated time), so the next camera starts from the displayed origin.
+        const camera = epoch?.camera && epoch.presentation.epoch === presentation.epoch && Number.isFinite(clock) ? epoch.camera : null;
+        const applied = camera ? cameraAt(camera, clock, presentation.duration) : { x: 0, y: 0 };
+        const shown = camera ? cameraAt(camera, at, presentation.duration) : applied;
+        origin = { left: rect.left + (shown.x - applied.x) * zoom, top: rect.top + (shown.y - applied.y) * zoom, zoom };
       }
-      return samplePresentation(presentation, displayedTime(presentation));
+      return samplePresentation(presentation, at);
     },
 
     start(presentation: Presentation) {
@@ -278,7 +297,7 @@ export function createSceneMotion({ handles, scroller = () => null, reduced = pr
       let probe: Probe | null = null;
       const { duration } = presentation;
       if (reduced() || !(duration > 0)) {
-        epoch = { presentation, animations, clock: null, probe };
+        epoch = { presentation, animations, clock: null, probe, camera: null };
         return { started: false, settled: Promise.resolve(true) };
       }
       // Camera: where the grid's screen origin moved since the sample (the new layout clamped
@@ -335,13 +354,14 @@ export function createSceneMotion({ handles, scroller = () => null, reduced = pr
         if (record.kind === "band") play(retiree.renderId, retiree.track, record.rect, null, "layer", "forwards");
         else play(retiree.renderId, retiree.track, record.rect, inSection(sectionFrame(presentation, record)), record.kind === "tile" ? "box" : "layer", "forwards");
       }
-      if (grid && animations.length && Math.hypot(shift.x, shift.y) >= .5) {
+      const camera = grid && animations.length && Math.hypot(shift.x, shift.y) >= .5 ? shift : null;
+      if (grid && camera) {
         animations.push(animateInverted(grid, [
           { offset: 0, easing: cssEasing(EASE), transform: `translate(${px(shift.x)}, ${px(shift.y)})` },
           { offset: 1, transform: "translate(0px, 0px)" },
         ], timing("none")));
       }
-      epoch = { presentation, animations, clock: animations[0] ?? null, probe: probe && animations.length ? probe : null };
+      epoch = { presentation, animations, clock: animations[0] ?? null, probe: probe && animations.length ? probe : null, camera };
       if (!animations.length) return { started: false, settled: Promise.resolve(true) };
       return { started: true, settled: Promise.all(animations.map((animation) => animation.finished)).then(() => true, () => false) };
     },

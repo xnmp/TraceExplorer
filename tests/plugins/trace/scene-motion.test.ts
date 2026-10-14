@@ -5,7 +5,7 @@ import type { GridRect } from "$lib/domain/trace-graph/grid-flow";
 import { tileMetrics } from "$lib/domain/trace-graph/metrics";
 import { EASE, MOTION_MS, retargetPresentation, retargetTrack, samplePresentation, sampleTrack, sliceEase, staticPresentation, type Pose, type Track } from "$lib/plugins/trace/view/presentation";
 import { presentationView, ridesSection } from "$lib/plugins/trace/view/presentation-view";
-import { compileTrack, cssEasing, keyframesOf, type CompiledFrame } from "$lib/plugins/trace/view/scene-motion";
+import { cameraAt, compileTrack, cssEasing, keyframesOf, type CompiledFrame } from "$lib/plugins/trace/view/scene-motion";
 import { folderInput, handCase, makeFolder, sourcesOf, type Folder } from "../../domain/trace-graph/folder-layout-fixtures";
 
 const rect = (x: number, y: number, width = 50, height = 40): GridRect => ({ x, y, width, height });
@@ -118,6 +118,23 @@ function sceneFor(open: string[], previous: FolderLayout | null = null, width = 
   return buildFolderScene({ scope, layoutInput: input, layout: engines.default(input), sources: sourcesOf(folder), styling: plain });
 }
 const participants = { transaction: 1, epoch: 1 };
+
+describe("the camera", () => {
+  it("eases its displacement away over the epoch, as its keyframes do", () => {
+    const shift = { x: -12, y: 300 };
+    expect(cameraAt(shift, 0, MOTION_MS)).toEqual(shift);
+    expect(cameraAt(shift, MOTION_MS, MOTION_MS)).toEqual({ x: -0, y: 0 });
+    expect(cameraAt(shift, 10 * MOTION_MS, MOTION_MS).y).toBe(0);
+    const k = sampleTrack(retargetTrack(pose(0, 0), pose(1, 0))!, 40).rect.x;
+    expect(cameraAt(shift, 40, MOTION_MS).y).toBeCloseTo(300 * (1 - k), 9);
+    expect(cameraAt(shift, 40, MOTION_MS).x).toBeCloseTo(-12 * (1 - k), 9);
+  });
+
+  it("has no displacement without an epoch to ease over", () => {
+    expect(cameraAt({ x: 5, y: 5 }, 0, 0)).toEqual({ x: 0, y: 0 });
+    expect(cameraAt({ x: 5, y: 5 }, NaN, MOTION_MS)).toEqual({ x: 5, y: 5 });
+  });
+});
 
 describe("presentationView", () => {
   it("draws nothing extra for a settled presentation", () => {
