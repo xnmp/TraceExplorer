@@ -16,12 +16,13 @@
   import type { Publication, PreparationNotice, SceneController } from "./scene-controller.svelte";
   import { selectableSelector } from "./selectable";
   import { gridNeighbor, rovingStop } from "./stack-grid";
-  import { presentationActivity, zoomOf } from "./motion";
+  import { presentationActivity } from "./motion";
   import { componentNodes, graphOwning, recordsByGraph } from "./scene-view";
   import { NO_GRAPH, presentationView } from "./presentation-view";
   import { createRenderHandles, GRID, sectionKey } from "./render-handles";
   import { createSceneMotion } from "./scene-motion";
   import { PARTICIPANT_MARGIN } from "./participants";
+  import { bandTopAt, bandWindow, displayedTime, quantise, UNMEASURED, type ShownViewport, type Span } from "./scene-window";
   import RetiringBand from "./RetiringBand.svelte";
   import TraceGraph from "./TraceGraph.svelte";
   import TraceTile from "./TraceTile.svelte";
@@ -48,8 +49,9 @@
   const HostTile = host?.default;
   /** Cells within this of the viewport stay mounted (the same margin selects motion participants). */
   const WINDOW_MARGIN = PARTICIPANT_MARGIN;
+  /** A large band's tiles within this of the viewport stay mounted (TraceGraph). */
+  const BAND_MARGIN = 800;
   let grid = $state<HTMLElement | null>(null);
-  let viewport = $state.raw({ top: 0, bottom: 2000 });
   let failedVideoPaths = $state.raw<ReadonlySet<string>>(new Set());
   let tabStop = $state<string | null>(null);
 
@@ -67,9 +69,48 @@
   // that is drawn; once it leaves (a deselected band tile, a merged stack) it falls to the stack that held it.
   const stops = $derived(new Set([...cells.map((cell) => cell.id), ...[...scene.graphs.values()].flatMap((graph) => [...graph.plan.tiles.keys()])]));
   const stop = $derived(rovingStop(tabStop, stops, (key) => graphOwning(scene, key), cells[0]?.id ?? null));
-  // Windowing selects records of the published scene: cells near the viewport, the keyboard stop and the focus, and
-  // whatever is moving this epoch (pinned until it settles). A cell mounted later shows its target pose and starts nothing.
-  const nearRect = (top: number, height: number) => top + height >= viewport.top - WINDOW_MARGIN && top <= viewport.bottom + WINDOW_MARGIN;
+  // Native motion: the controller samples and starts it once per presentation epoch.
+  const handles = createRenderHandles();
+  const motion = createSceneMotion({ handles, scroller: () => scroller });
+  $effect(() => untrack(() => controller.attachMotion(motion)));
+
+  // Windowing selects records of the published scene (scene-window.ts): cells near the viewport, the keyboard stop and the
+  // focus, and whatever is moving this epoch (pinned until it settles); in a large band, tiles near the viewport where the
+  // band is displayed now. A cell or tile mounted later shows its target pose (in its moving section) and starts nothing.
+  // The window is a function of the publication, the displayed time and the displayed viewport, measured on scroll,
+  // resize, every publication and its motion start, and every frame while the presentation moves.
+  let shown = $state.raw<ShownViewport | null>(null);
+  let frame = 0;
+  function measure(): void {
+    frame = 0;
+    const view = motion.viewport(), presentation = untrack(() => publication.presentation);
+    const next: ShownViewport | null = view && Number.isFinite(view.y) && Number.isFinite(view.height)
+      ? { top: view.y, bottom: view.y + view.height, epoch: presentation.epoch, at: motion.displayedAt(presentation) } : null;
+    if (next?.top !== shown?.top || next?.bottom !== shown?.bottom || next?.epoch !== shown?.epoch || next?.at !== shown?.at) shown = next;
+    if (controller.moving && !frame) frame = requestAnimationFrame(measure);
+  }
+  const viewport = $derived<Span>(shown ?? UNMEASURED);
+  const viewTop = $derived(quantise(viewport)?.top ?? UNMEASURED.top), viewBottom = $derived(quantise(viewport)?.bottom ?? UNMEASURED.bottom);
+  const shownAt = $derived(displayedTime(publication.presentation, shown));
+  /** A band canvas's window in its own coordinates, where it is displayed now. */
+  const bandSpan = (graph: string, top: number) => bandWindow(viewport, bandTopAt(publication.presentation, graph, top, shownAt), BAND_MARGIN);
+  $effect(() => {
+    const container = scroller, element = grid;
+    if (!container || !element) return;
+    untrack(measure);
+    // Resizes are measured on the next frame: re-rendering inside the ResizeObserver callback can
+    // resize the scroller again and loses its notifications.
+    let resized = 0;
+    const resize = () => { if (!resized) resized = requestAnimationFrame(() => { resized = 0; measure(); }); };
+    container.addEventListener("scroll", measure, { passive: true });
+    const observer = new ResizeObserver(resize); observer.observe(container);
+    const stop = controller.onPresented(measure);
+    return () => { container.removeEventListener("scroll", measure); observer.disconnect(); stop(); cancelAnimationFrame(resized); cancelAnimationFrame(frame); frame = 0; };
+  });
+  // Every publication (a commit, a restyle, a settled presentation) is measured once it rendered.
+  $effect(() => { void publication; untrack(measure); });
+
+  const nearRect = (top: number, height: number) => top + height >= viewTop - WINDOW_MARGIN && top <= viewBottom + WINDOW_MARGIN;
   const holdsStop = (id: string) => stop !== null && !!scene.inputs.layoutInput.open.get(id)?.graph.dag.nodes.has(stop);
   const pinned = $derived(publication.presentation.pinned);
   const pinnedCell = (cell: FolderCell) => cell.summary ? pinned.has(entityId("tile", cell.id, cell.id)) || presented.pinnedGraphs.has(cell.id)
@@ -80,29 +121,6 @@
     return stop === cell.id || holdsStop(cell.id) || nearRect(rect.y, band ? band.y + band.height - rect.y : rect.height) || (!!cell.summary && cell.summary.id === focus?.componentId)
       || pinnedCell(cell);
   }));
-  $effect(() => {
-    const container = scroller, element = grid;
-    if (!container || !element) return;
-    let frame = 0;
-    const update = () => {
-      frame = 0;
-      const view = container.getBoundingClientRect(), rect = element.getBoundingClientRect(), zoom = zoomOf(element, rect);
-      const top = Math.floor((view.top - rect.top) / zoom / 200) * 200;
-      const bottom = Math.ceil((view.bottom - rect.top) / zoom / 200) * 200;
-      if (top !== viewport.top || bottom !== viewport.bottom) viewport = { top, bottom };
-    };
-    // Resizes are applied on the next frame, as TraceGraph's window is: re-rendering inside the
-    // ResizeObserver callback can resize the scroller again and loses its notifications.
-    const schedule = () => { if (!frame) frame = requestAnimationFrame(update); };
-    update(); container.addEventListener("scroll", schedule, { passive: true });
-    const observer = new ResizeObserver(schedule); observer.observe(container);
-    return () => { container.removeEventListener("scroll", schedule); observer.disconnect(); cancelAnimationFrame(frame); };
-  });
-
-  // Native motion: the controller samples and starts it once per presentation epoch.
-  const handles = createRenderHandles();
-  const motion = createSceneMotion({ handles, scroller: () => scroller });
-  $effect(() => untrack(() => controller.attachMotion(motion)));
 
   // Keyboard focus belongs to the grid until it genuinely leaves (a blur to another element or the page).
   // Removing the focused element fires no blur, so a cover replaced by a toggle, a band tile that leaves
@@ -186,7 +204,9 @@
         {#if band && graph && placement && nodes}
           <div class="content" data-grid-band={cell.id} data-grid-band-row={band.row} data-group-left={placement.left} data-group-width={placement.right - placement.left} data-child-group-left={band.x} data-child-group-width={band.width} data-horizontal-scroll style:height="{band.y + band.height - rect.y}px">
             {#if nearRect(band.y, band.height) || focus?.componentId === summary.id || holdsStop(cell.id) || presented.pinnedGraphs.has(cell.id)}
-              <TraceGraph {graph} records={grouped.get(cell.id)!} presented={presented.graphs.get(cell.id) ?? NO_GRAPH} {pinned} {handles} {nodes} focusedKey={stop ?? undefined} onfocuskey={(key) => tabStop = key} {onbadgehover} selected={styling.selectedKeys} {revision} {scroller}
+              {@const span = bandSpan(cell.id, graph.origin.y)}
+              <TraceGraph {graph} records={grouped.get(cell.id)!} presented={presented.graphs.get(cell.id) ?? NO_GRAPH} {pinned} {handles} {nodes} focusedKey={stop ?? undefined} onfocuskey={(key) => tabStop = key} {onbadgehover} selected={styling.selectedKeys} {revision}
+                windowTop={span?.top ?? null} windowBottom={span?.bottom ?? null}
                 ongridkey={keydown} onactivate={(key, event) => onactivate(key, event, summary.id)} {onopen}
                 onmenu={(key, event) => onmenu(key, event, summary.id)} {captureSelection} {onsaved} {ondiscarded} />
             {/if}

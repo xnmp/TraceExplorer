@@ -229,7 +229,14 @@ function timeAt(track: Track, axis: "x" | "y", value: number): number {
   return (low + high) / 2;
 }
 
-export function createSceneMotion({ handles, scroller = () => null, reduced = prefersReducedMotion }: SceneMotionOptions): SceneMotion {
+/** The driver, which also reports the epoch time it displays (windowing samples the presentation there). */
+export interface SceneMotionDriver extends SceneMotion {
+  viewport(): GridRect | null;
+  /** The epoch time `presentation` is displayed at now (calibrated; Infinity once settled, 0 before its epoch started). */
+  displayedAt(presentation: Presentation): number;
+}
+
+export function createSceneMotion({ handles, scroller = () => null, reduced = prefersReducedMotion }: SceneMotionOptions): SceneMotionDriver {
   let epoch: Epoch | null = null;
   /** The newest epoch started (an unstarted newer presentation still displays its first poses). */
   let started = -Infinity;
@@ -265,6 +272,8 @@ export function createSceneMotion({ handles, scroller = () => null, reduced = pr
 
   return {
     reduced,
+
+    displayedAt: (presentation) => displayedTime(presentation).at,
 
     viewport(): GridRect | null {
       const grid = handles.get(GRID), view = scroller();

@@ -209,3 +209,62 @@ test("arrow keys reach band tiles that are not mounted, mounting and focusing th
   await expect(page.locator(`.tile[data-tile-key="${reached}"]`)).toHaveAttribute("aria-selected", "true");
   expect(await uncaught(page)).toEqual([]);
 });
+
+// Review 099e72f: a large band's window was measured only through an effect/ResizeObserver feedback
+// loop, so it could stay at the pose a motion started from; at settle its moving tiles unpinned and
+// the band showed empty in view until the next scroll.
+/** The wr-0 band's canvas: how much of it is in view, and how many of its mounted tiles are. Self-contained: it runs in the page. */
+function bandInView() {
+  const section = [...document.querySelectorAll<HTMLElement>("section[data-component]")].find((element) => element.getAttribute("aria-label") === "wr-0");
+  const canvas = section?.querySelector<HTMLElement>(".graph");
+  if (!canvas) return { visible: 0, tiles: 0 };
+  const view = document.querySelector<HTMLElement>("[data-testid=trace-view]")!.getBoundingClientRect(), box = canvas.getBoundingClientRect();
+  const tiles = [...canvas.querySelectorAll<HTMLElement>("[data-tile-key]")].filter((tile) => {
+    const rect = tile.getBoundingClientRect();
+    return rect.bottom > view.top && rect.top < view.bottom;
+  }).length;
+  return { visible: Math.round(Math.min(view.bottom, box.bottom) - Math.max(view.top, box.top)), tiles };
+}
+
+/** wr-0's large band below the fan's: closing the fan carries it up into view. Both browsers lay it out alike at this width. */
+async function bandBelowFan(page: Page): Promise<void> {
+  await page.setViewportSize({ width: 900, height: 700 });
+  await openView(page, 400, "?fanChildren=200&wideRoots=70", false);
+  await stack(page, "wr-0").locator("[data-stack-toggle]").click();
+  await settle(page);
+  await stack(page, "fan").locator("[data-stack-toggle]").evaluate((element: HTMLElement) => element.click());
+  await settle(page);
+  await view(page).evaluate((element) => { element.scrollTop = 0; });
+  await settle(page);
+  expect((await page.evaluate(bandInView)).visible, "wr-0 starts below the view").toBeLessThan(0);
+}
+
+test("a large band carried into view has its tiles mounted in view on every frame, and after it settles", async ({ page }) => {
+  await bandBelowFan(page);
+  const frames = await sampleFrames(page, bandInView, 700, () => stack(page, "fan").locator("[data-stack-toggle]").click());
+  await settle(page);
+  const after = await page.evaluate(bandInView);
+  expect(after.visible).toBeGreaterThan(300);
+  expect(after.tiles).toBeGreaterThan(0);
+  const empty = frames.filter((frame) => frame.visible > 300 && frame.tiles === 0);
+  expect(empty, "frames showing the band in view without its tiles").toEqual([]);
+  expect(frames.at(-1)!.tiles).toBeGreaterThan(0);
+});
+
+test("a large band carried into view by a motion held at its start mounts its tiles once released", async ({ page }) => {
+  await bandBelowFan(page);
+  await holdScriptedAnimations(page);
+  try {
+    await stack(page, "fan").locator("[data-stack-toggle]").click();
+    await awaitAnimationsCreated(page);
+    await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+  } finally { await releaseScriptedAnimations(page); }
+  await settle(page);
+  // No scroll since: the window follows the motion and its settlement, not scroll events.
+  const after = await page.evaluate(bandInView);
+  expect(after.visible).toBeGreaterThan(300);
+  expect(after.tiles, "band tiles mounted in view after settle").toBeGreaterThan(0);
+  await view(page).evaluate((element) => element.dispatchEvent(new Event("scroll")));
+  await settle(page);
+  expect((await page.evaluate(bandInView)).tiles).toBe(after.tiles);
+});

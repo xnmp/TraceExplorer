@@ -12,7 +12,6 @@
   import type { NodeKey, TraceNode } from "$lib/domain/trace-graph/model";
   import { JUNCTION_RADIUS, type FolderSceneGraph, type JunctionRecord, type RouteRecord, type TileRecord } from "$lib/domain/trace-graph/folder-scene";
   import { promptTitles } from "../prompt-titles.svelte";
-  import { zoomOf } from "./motion";
   import { nodeTitle } from "./node-target";
   import type { GraphRecords } from "./scene-view";
   import type { GraphPresentation } from "./presentation-view";
@@ -38,7 +37,12 @@
     ongridkey: (key: string, event: KeyboardEvent) => void;
     selected: ReadonlySet<NodeKey>;
     revision: number;
-    scroller: HTMLElement | null;
+    /**
+     * The window of this band's canvas to mount, in its own coordinates (StackGrid derives it from
+     * the displayed viewport and where the band is displayed now; `scene-window.ts`), or null for all.
+     */
+    windowTop: number | null;
+    windowBottom: number | null;
     onactivate: (key: NodeKey, event: MouseEvent) => void;
     onopen: (key: NodeKey) => void;
     onmenu: (key: NodeKey, event: MouseEvent) => void;
@@ -48,40 +52,20 @@
     ondiscarded: (key: NodeKey) => void;
   }
 
-  let { graph, records, presented, pinned, handles, nodes, selected, revision, scroller, onactivate, onopen, onmenu, onsaved, ondiscarded, captureSelection, ongridkey, focusedKey, onfocuskey, onbadgehover }: Props = $props();
+  let { graph, records, presented, pinned, handles, nodes, selected, revision, windowTop, windowBottom, onactivate, onopen, onmenu, onsaved, ondiscarded, captureSelection, ongridkey, focusedKey, onfocuskey, onbadgehover }: Props = $props();
 
   /** Tile windowing only pays off for very large neighborhoods. */
   const WINDOW_MIN = 120;
-  const WINDOW_MARGIN = 800;
   const uid = $props.id();
-
-  let canvas = $state<HTMLElement | null>(null);
   const attached = $derived(graph.attached);
   const relative = $derived(new Map(attached.routes.map((route) => [route.id, route])));
 
-  // Windowing: only tiles near the scroller's viewport are mounted, with the focus (or the tile carrying it as a badge), the
-  // keyboard stop, the selection and whatever moves this epoch. The logical scene keeps every record; a tile mounted later
-  // shows its target pose in its section and starts no motion.
-  let band = $state.raw<{ top: number; bottom: number } | null>(null);
-  $effect(() => {
-    const element = canvas, container = scroller;
-    if (!element || !container || records.tiles.length + 1 <= WINDOW_MIN) { band = null; return; }
-    let frame = 0;
-    const update = () => {
-      frame = 0;
-      // Rects may be in zoomed pixels; the band is in the canvas's own.
-      const box = element.getBoundingClientRect(), view = container.getBoundingClientRect(), zoom = zoomOf(element, box);
-      const top = Math.floor(((view.top - box.top) / zoom - WINDOW_MARGIN) / 200) * 200;
-      const bottom = Math.ceil(((view.bottom - box.top) / zoom + WINDOW_MARGIN) / 200) * 200;
-      if (band?.top !== top || band?.bottom !== bottom) band = { top, bottom };
-    };
-    const schedule = () => { if (!frame) frame = requestAnimationFrame(update); };
-    update();
-    container.addEventListener("scroll", schedule, { passive: true });
-    const observer = new ResizeObserver(schedule);
-    observer.observe(container);
-    return () => { container.removeEventListener("scroll", schedule); observer.disconnect(); cancelAnimationFrame(frame); };
-  });
+  // Windowing: only tiles within the window are mounted, with the focus (or the tile carrying it as a badge), the keyboard
+  // stop, the selection and whatever moves this epoch. The logical scene keeps every record; a tile mounted later shows its
+  // target pose in its section and starts no motion. Small bands mount everything.
+  const windowed = $derived(records.tiles.length + 1 > WINDOW_MIN);
+  const bandTop = $derived(windowed ? windowTop : null), bandBottom = $derived(windowed ? windowBottom : null);
+  const band = $derived(bandTop === null || bandBottom === null ? null : { top: bandTop, bottom: bandBottom });
 
   const focus = $derived(graph.plan.lineage.focus);
   const visibleTiles = $derived(records.tiles.filter((record) => {
@@ -120,7 +104,7 @@
   const keydown = (key: NodeKey, event: KeyboardEvent): void => ongridkey(key, event);
 </script>
 
-<div class="graph" data-orientation={graph.layout.orientation} bind:this={canvas} style:width="{attached.width}px" style:height="{attached.height}px">
+<div class="graph" data-orientation={graph.layout.orientation} style:width="{attached.width}px" style:height="{attached.height}px">
   <svg class="edges trace-edges" width={attached.width} height={attached.height} aria-hidden="true">
     <EdgeMarkers {uid} />
     {#each routes as { id, route, style } (route.id)}
