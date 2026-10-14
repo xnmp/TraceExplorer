@@ -659,3 +659,31 @@ for (const returnAt of [0, .01]) test(`closing a travelling group preserves its 
   expect(await page.locator('[data-grid-exit], [data-motion-ghost], [data-motion-route-layer]').count()).toBe(0);
   expect(await uncaught(page)).toEqual([]);
 });
+
+// Review 099e72f: old connector paths fading inside a band were dropped from the page, mid-fade,
+// when a publication closed that band (no band was left to draw them).
+test('old connector paths fading in a band keep fading when the band closes', async ({ page }) => {
+  await openView(page, 1400);
+  const cover = await page.locator('[data-stack-toggle][aria-expanded="true"]').first().evaluate(e => e.closest('[data-grid-cell]')!.getAttribute('data-grid-cell')!);
+  /** Connector copies shown (effective opacity > .05) in `scope`: their route ids. Self-contained: it runs in the page. */
+  const shown = (scope: string) => page.evaluate(scope => {
+    const opacity = (element: Element | null): number => element && element.getAttribute('role') !== 'grid' ? Number(getComputedStyle(element).opacity) * opacity(element.parentElement) : 1;
+    return [...document.querySelectorAll<SVGPathElement>(`${scope} path[data-motion-ghost]`)].filter(path => opacity(path) > .05).map(path => path.dataset.motionRoute!).sort();
+  }, scope);
+  await holdScriptedAnimations(page);
+  try {
+    // A narrower pane reroutes the band's connectors: their old paths fade out in the band.
+    await page.evaluate(() => (window as any).trace.setWidth(900));
+    await awaitAnimationsCreated(page);
+    const fading = await shown(`[data-grid-band="${cover}"]`);
+    expect(fading.length).toBeGreaterThan(0);
+    await page.locator(`[data-grid-cell="${cover}"]`).locator('xpath=ancestor::section[1]').locator('[data-stack-toggle]').evaluate((e: HTMLElement) => e.click());
+    await awaitAnimationsCreated(page);
+    expect(await page.locator(`[data-grid-band="${cover}"]`).count()).toBe(0);
+    const after = new Set(await shown('[role="grid"]'));
+    expect(fading.filter(id => !after.has(id)), 'old paths that vanished mid-fade').toEqual([]);
+  } finally { await releaseScriptedAnimations(page); }
+  await settle(page);
+  await expect(page.locator('[data-grid-exit], [data-grid-retiring], [data-motion-ghost], [data-motion-route-layer]')).toHaveCount(0);
+  expect(await uncaught(page)).toEqual([]);
+});

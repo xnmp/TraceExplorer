@@ -440,31 +440,31 @@ describe("retargetPresentation: review fixes (099e72f)", () => {
     expect(overLimit).toBeGreaterThan(0);
   });
 
-  it("in-band retirees of a band that closes join its exit group and fade from where they were", () => {
+  it("in-band retirees of a band that closes keep their own fade, drawn by the grid", () => {
     const narrow = sceneFor([A, B], { width: 640 }), wide = sceneFor([A, B], { width: 900, previous: narrow.layout });
     const resizing = step(staticPresentation(narrow), narrow, wide, Infinity).presentation;
     const inBand = [...resizing.retiring.values()].filter((r) => r.group === null && r.record.graphId === A && r.record.kind !== "band");
     expect(inBand.length).toBeGreaterThan(0);
     const closed = sceneFor([B], { width: 900, previous: wide.layout });
-    const { displayed, presentation: p } = step(resizing, wide, closed, 1);
+    const at = 1, { displayed, presentation: p } = step(resizing, wide, closed, at);
     const shown = inBand.filter((r) => displayed.poses.get(r.renderId)!.opacity > PAINTED);
     expect(shown.length).toBeGreaterThan(0);
     const view = presentationView(p);
-    const drawn = new Set(view.exits.flatMap((exit) => [...exit.tiles, ...exit.routes, ...exit.junctions].map((r) => r.renderId)));
-    const first = samplePresentation(p, 0).poses;
     for (const retiree of shown) {
-      // Drawn by the closing band's exit group (no band draws A any more), continuing from its displayed pose.
-      expect(drawn.has(retiree.renderId), retiree.renderId).toBe(true);
-      expect(close(first.get(retiree.renderId)!, displayed.poses.get(retiree.renderId)!), retiree.renderId).toBe(true);
-      // It never comes back: its opacity only falls.
-      let last = Infinity;
+      // No band draws A any more: the grid does, and the retiree continues exactly as it would have.
+      expect(view.orphaned.has(retiree.renderId), retiree.renderId).toBe(true);
+      expect(view.graphs.get(A)?.retiring ?? []).not.toContain(p.retiring.get(retiree.renderId));
       for (let t = 0; t <= MOTION_MS; t += 4) {
-        const opacity = samplePresentation(p, t).poses.get(retiree.renderId)!.opacity;
-        expect(opacity).toBeLessThanOrEqual(last + 1e-9);
-        last = opacity;
+        expect(close(samplePresentation(p, t).poses.get(retiree.renderId)!, samplePresentation(resizing, at + t).poses.get(retiree.renderId)!), `${retiree.renderId} at ${t}`).toBe(true);
       }
     }
-    expect(view.graphs.get(A)?.retiring ?? []).toEqual([]);
+    // Reopened, the band draws them again: nothing is orphaned or duplicated in an exit group.
+    const reopened = sceneFor([A, B], { width: 900, previous: closed.layout });
+    const again = step(p, closed, reopened, 1).presentation, againView = presentationView(again);
+    for (const retiree of shown) if (again.retiring.has(retiree.renderId)) {
+      expect(againView.orphaned.has(retiree.renderId)).toBe(false);
+      expect(againView.graphs.get(A)!.retiring.map((r) => r.renderId)).toContain(retiree.renderId);
+    }
   });
 
   it("a returning record that does not take part leaves its displayed retiree to finish its own fade", () => {

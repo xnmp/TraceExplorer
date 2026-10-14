@@ -592,17 +592,10 @@ export function retargetPresentation(displayed: DisplayedPresentation | null, ne
   const retiring = new Map<RenderId, RetiringRecord>();
   const dropped = (retiree: RetiringRecord) => consumed.has(retiree.renderId) || shownOpacity(retiree.renderId) <= PAINTED
     || (retiree.record.graphId !== null && reveal.has(retiree.record.graphId));
-  // In-band retirees (departures, old routes) of a band this publication closes have no band to
-  // draw them any more: they join its exit group with their displayed pose, and fade and clip with it.
-  const orphans = new Map<GraphId, { record: SceneRecord; pose: Pose; retiree: RetiringRecord }[]>();
+  // In-band retirees (departures, old routes) continue on their own tracks, also when this
+  // publication closes their band (the grid then draws them; `presentationView`).
   for (const retiree of before.retiring.values()) {
     if (retiree.group !== null || dropped(retiree)) continue;
-    const graphId = retiree.record.graphId;
-    if (retiree.record.kind !== "band" && graphId !== null && !next.graphs.has(graphId)) {
-      const pose = shown.get(retiree.renderId);
-      if (pose && pose.opacity > PAINTED) orphans.set(graphId, [...orphans.get(graphId) ?? [], { record: retiree.record, pose, retiree }]);
-      continue;
-    }
     const track = retiree.track ? sliceTrack(retiree.track, at) : null;
     if (track) retiring.set(retiree.renderId, { ...retiree, initial: track.frames[0].pose, track });
   }
@@ -617,7 +610,6 @@ export function retargetPresentation(displayed: DisplayedPresentation | null, ne
     if (still(id) || record.graphId === null || reveal.has(record.graphId) || !(isBandRecord(record) || record.kind === "band") || !before.live.has(id)) continue;
     exits.set(record.graphId, [...exits.get(record.graphId) ?? [], record]);
   }
-  for (const graphId of orphans.keys()) if (!exits.has(graphId)) exits.set(graphId, []);
   for (const [graphId, records] of exits) {
     const w = windowOf(graphId);
     if (next.graphs.has(graphId)) {
@@ -639,10 +631,10 @@ export function retargetPresentation(displayed: DisplayedPresentation | null, ne
       continue;
     }
     // A closed stack: its displayed band retires as one group spanning its section.
-    const members: { record: SceneRecord; pose: Pose; retiree?: RetiringRecord }[] = [...records.flatMap((record) => {
+    const members = records.flatMap((record) => {
       const pose = shown.get(record.id);
       return record.kind !== "band" && pose && pose.opacity > PAINTED ? [{ record, pose }] : [];
-    }), ...orphans.get(graphId) ?? []];
+    });
     if (!members.length) continue;
     const coverId = entityId("tile", graphId, graphId), cover = before.live.get(coverId);
     const band = records.find((record) => record.kind === "band");
@@ -676,12 +668,10 @@ export function retargetPresentation(displayed: DisplayedPresentation | null, ne
     const groupRecord: SceneRecord = band ? { ...band, rect: container }
       : { kind: "band", id: bandId, graphId, rect: container, band: { id: graphId, row: 0, ...container } };
     fresh.push({ renderId: groupId, record: groupRecord, initial: groupTrack.frames[0].pose, track: groupTrack, sourceTransaction: transaction, group: null, reason: "exit", branch: branch(graphId) });
-    for (const { record, pose, retiree } of members) {
+    for (const { record, pose } of members) {
       const member = displaced(record, pose);
-      fresh.push(retiree
-        ? { ...retiree, record: member, initial: { rect: member.rect, opacity: pose.opacity, clip: null }, track: null, group: groupId }
-        : { renderId: retireId(transaction, "exit", record.id), record: member, initial: { rect: member.rect, opacity: pose.opacity, clip: null }, track: null,
-          sourceTransaction: transaction, group: groupId, reason: "exit", branch: branch(graphId) });
+      fresh.push({ renderId: retireId(transaction, "exit", record.id), record: member, initial: { rect: member.rect, opacity: pose.opacity, clip: null }, track: null,
+        sourceTransaction: transaction, group: groupId, reason: "exit", branch: branch(graphId) });
     }
   }
   if (carried + fresh.filter((retiree) => retiree.record.kind !== "band").length <= RETIREE_LIMIT) for (const retiree of fresh) retiring.set(retiree.renderId, retiree);

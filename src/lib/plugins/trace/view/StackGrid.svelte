@@ -24,6 +24,7 @@
   import { PARTICIPANT_MARGIN } from "./participants";
   import { bandTopAt, bandWindow, displayedTime, quantise, UNMEASURED, type ShownViewport, type Span } from "./scene-window";
   import RetiringBand from "./RetiringBand.svelte";
+  import RetiringRecords from "./RetiringRecords.svelte";
   import TraceGraph from "./TraceGraph.svelte";
   import TraceTile from "./TraceTile.svelte";
   import OrdinaryTile from "./OrdinaryTile.svelte";
@@ -229,6 +230,7 @@
   {#each presented.exits as exit (exit.group.renderId)}
     <RetiringBand {exit} {handles} {revision} />
   {/each}
+  {#if presented.orphans.length}<RetiringRecords retirees={presented.orphans} {handles} {revision} />{/if}
 </div>
 <style>
   /* Motion travels tiles and ghosts outside the grid mid-flight; that must not toggle the view's horizontal scrollbar. */

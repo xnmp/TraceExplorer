@@ -361,7 +361,11 @@ export function createSceneMotion({ handles, scroller = () => null, reduced = pr
         if (!retiree.track || retiree.group !== null) continue;
         const { record } = retiree;
         if (record.kind === "band") play(retiree.renderId, retiree.track, record.rect, null, "layer", "forwards");
-        else play(retiree.renderId, retiree.track, record.rect, inSection(sectionFrame(presentation, record)), record.kind === "tile" ? "box" : "layer", "forwards");
+        else {
+          // A retiree whose band closed is drawn by the grid, in folder coordinates.
+          const frame = drawn.orphaned.has(retiree.renderId) ? null : inSection(sectionFrame(presentation, record));
+          play(retiree.renderId, retiree.track, record.rect, frame, record.kind === "tile" ? "box" : "layer", "forwards");
+        }
       }
       const camera = grid && animations.length && Math.hypot(shift.x, shift.y) >= .5 ? shift : null;
       if (grid && camera) {

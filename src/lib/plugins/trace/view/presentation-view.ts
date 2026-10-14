@@ -32,12 +32,22 @@ export interface PresentationView {
   readonly exits: readonly ExitGroupView[];
   /** Graphs with a pinned record (moving this epoch) or an in-band retiree: their bands stay mounted until they settle. */
   readonly pinnedGraphs: ReadonlySet<GraphId>;
+  /**
+   * In-band retirees of a band no longer open (a publication closed it while they faded): no band
+   * draws them, so the grid does, in folder coordinates, for the rest of their own tracks.
+   */
+  readonly orphans: readonly RetiringRecord[];
+  /** Render ids of `orphans`, whose effects are not relative to any section. */
+  readonly orphaned: ReadonlySet<string>;
 }
 
 /** The motion frame a band record moves in: its cover's track and rect (the section follows its vertical motion). */
 export interface SectionFrame { readonly track: Track | null; readonly base: GridRect }
 
 export const NO_GRAPH: GraphPresentation = { layered: new Set(), retiring: [] };
+
+/** Band records: what an open band draws (its cover is a grid cell). */
+const inBand = (record: SceneRecord) => record.kind === "route" || record.kind === "junction" || (record.kind === "tile" && !record.cover);
 
 export function sectionFrame(presentation: Presentation, record: SceneRecord): SectionFrame | null {
   const cover = coverOf(record), presented = cover !== null ? presentation.live.get(cover) : undefined;
@@ -60,6 +70,9 @@ export function presentationView(presentation: Presentation): PresentationView {
   for (const { record, track } of presentation.live.values()) {
     if ((record.kind === "route" || record.kind === "junction") && record.graphId !== null && track && !ridesSection(presentation, record, track)) graph(record.graphId).layered.add(record.id);
   }
+  const open = new Set<GraphId>();
+  for (const { record } of presentation.live.values()) if (record.graphId !== null && inBand(record)) open.add(record.graphId);
+  const orphans: RetiringRecord[] = [];
   const exits = new Map<string, { group: RetiringRecord; tiles: RetiringRecord[]; routes: RetiringRecord[]; junctions: RetiringRecord[] }>();
   for (const retiree of presentation.retiring.values()) if (retiree.record.kind === "band") exits.set(retiree.renderId, { group: retiree, tiles: [], routes: [], junctions: [] });
   for (const retiree of presentation.retiring.values()) {
@@ -71,14 +84,18 @@ export function presentationView(presentation: Presentation): PresentationView {
       if (record.kind === "tile") exit.tiles.push(retiree);
       else if (record.kind === "route") exit.routes.push(retiree);
       else if (record.kind === "junction") exit.junctions.push(retiree);
-    } else if (record.graphId !== null) graph(record.graphId).retiring.push(retiree);
+    } else if (record.graphId !== null) {
+      if (open.has(record.graphId)) graph(record.graphId).retiring.push(retiree);
+      else orphans.push(retiree);
+    }
   }
   const pinnedGraphs = new Set<GraphId>(graphs.keys());
   for (const id of presentation.pinned) {
     const graphId = presentation.live.get(id)?.record.graphId;
     if (graphId !== undefined && graphId !== null) pinnedGraphs.add(graphId);
   }
-  const view: PresentationView = { graphs, pinnedGraphs, exits: [...exits.values()].filter((exit) => exit.tiles.length + exit.routes.length + exit.junctions.length > 0) };
+  const view: PresentationView = { graphs, pinnedGraphs, orphans, orphaned: new Set(orphans.map((retiree) => retiree.renderId)),
+    exits: [...exits.values()].filter((exit) => exit.tiles.length + exit.routes.length + exit.junctions.length > 0) };
   views.set(presentation, view);
   return view;
 }
