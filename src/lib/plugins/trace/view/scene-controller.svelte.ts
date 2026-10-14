@@ -20,6 +20,10 @@
  *
  * An action's operation that throws fails its transaction; one still pending after the same
  * bound stops holding the scene, so external changes are never held back by it.
+ *
+ * Media: the images a prepared scene draws near the viewport (`media`) are part of it. A scene
+ * whose images are not decoded yet waits for them, at most `MEDIA_DEADLINE_MS` per transaction,
+ * then commits; an image still loading then draws its placeholder until it arrives, in place.
  */
 import { tick as svelteTick } from "svelte";
 import type { NodeKey } from "$lib/domain/trace-graph/model";
@@ -42,7 +46,7 @@ import type { SceneStore } from "./folder-snapshots";
 
 export type { Publication, TransactionId };
 
-export type TransactionStatus = "collecting" | "preparing-data" | "preparing-layout" | "ready" | "committed" | "superseded" | "failed";
+export type TransactionStatus = "collecting" | "preparing-data" | "preparing-layout" | "preparing-media" | "ready" | "committed" | "superseded" | "failed";
 
 export interface SceneCause {
   /** Why the transaction began (instrumentation, anchoring, continuations). Motion never depends on it: `geometryMotion` compares inputs. */
@@ -110,6 +114,19 @@ export interface SceneMotion {
   snap(): void;
 }
 
+/** A preparation's hold on a scene's media: `ready` settles once every image is drawable or has failed. */
+export interface SceneMediaHold {
+  readonly ready: Promise<void>;
+  release(): void;
+}
+
+/**
+ * Holds the media `scene` draws at its commit (`scene-media.ts`), given the scene on screen and the
+ * viewport (folder coordinates, null when unknown). Null when all of it is ready: the commit then
+ * waits for nothing.
+ */
+export type SceneMedia = (scene: FolderScene, previous: FolderScene | null, viewport: GridRect | null) => SceneMediaHold | null;
+
 export interface SceneControllerOptions {
   readonly paneId: string;
   readonly data: SceneDataSource;
@@ -129,6 +146,10 @@ export interface SceneControllerOptions {
   readonly holdWork?: () => () => void;
   /** Committed scenes kept across mounts, per pane and folder (`scene-snapshots.ts`); none when absent. */
   readonly scenes?: SceneStore<SavedScene>;
+  /** The images a scene draws, prepared before it commits; none when absent. */
+  readonly media?: SceneMedia;
+  /** How long a transaction waits for its scene's media (`MEDIA_DEADLINE_MS`). */
+  readonly mediaDeadline?: number;
 }
 
 /** Actions that may commit on the last coherent committed data while current data is still loading. */
@@ -138,6 +159,13 @@ const MAX_RESTARTS = 3;
 const RECENT_LAYOUTS = 4;
 const STABILISE_TICKS = 8;
 export const PREPARATION_DEADLINE_MS = 5000;
+/**
+ * How long a transaction waits for the images its scene draws (from when it first waits for them).
+ * The same 400 ms after which the view shows progress for a slow load: until then the previous
+ * scene stays, after it the scene commits and an image still loading draws its placeholder until
+ * it arrives (its request continues). Images already decoded add no wait.
+ */
+export const MEDIA_DEADLINE_MS = 400;
 const noop = () => undefined;
 /**
  * How far a scene reaches and the width it was laid out for, both inside the grid's padding: the
@@ -203,6 +231,10 @@ interface Transaction {
   readonly coverErrors: Map<GraphId, string>;
   /** The worker layout it is waiting for, by layout basis, with the job's own abort. */
   layout: { readonly key: string; readonly promise: Promise<FolderLayout>; readonly job: AbortController } | null;
+  /** Media held for its scenes, released once its commit rendered (or it ended). */
+  readonly media: SceneMediaHold[];
+  /** Its media deadline, once it first waited for media. */
+  mediaDue: { readonly expired: Promise<void>; readonly cancel: () => void } | null;
 }
 
 export function createSceneController(options: SceneControllerOptions) {
@@ -212,6 +244,7 @@ export function createSceneController(options: SceneControllerOptions) {
   const tick = options.tick ?? svelteTick;
   const setTimer = options.setTimer ?? ((run: () => void, ms: number) => { const handle = setTimeout(run, ms); return () => clearTimeout(handle); });
   const deadline = options.deadline ?? PREPARATION_DEADLINE_MS;
+  const mediaDeadline = options.mediaDeadline ?? MEDIA_DEADLINE_MS;
   const runLayout = options.runLayout ?? ((input: FolderLayoutInput) => Promise.resolve(engine(input)));
   const scenes = options.scenes ?? null;
   /** A store cleared after this controller began (the plugin was disabled) is not written. */
@@ -418,7 +451,7 @@ export function createSceneController(options: SceneControllerOptions) {
   function begin(cause: SceneCause): Transaction {
     const previous = current;
     const tx: Transaction = { id: ++ids, cause, scope, controller: new AbortController(), phase: "operating", owned: 0, wake: null, status: "collecting",
-      intent: null, error: null, publication: null, coverErrors: new Map(), layout: null };
+      intent: null, error: null, publication: null, coverErrors: new Map(), layout: null, media: [], mediaDue: null };
     current = tx;
     recent.set(tx.id, tx);
     for (const id of recent.keys()) if (recent.size > 64) recent.delete(id); else break;
@@ -476,7 +509,37 @@ export function createSceneController(options: SceneControllerOptions) {
     const release = options.holdWork?.() ?? (() => {});
     try { await prepare(tx); }
     catch (error) { if (live(tx)) { finish(tx, "failed", message(error)); failure = message(error); expose(); sceneInstrumentation.failure({ ...event(tx), message: message(error) }); } }
-    finally { dropLayout(tx); release(); }
+    finally { dropLayout(tx); dropMedia(tx); release(); }
+  }
+
+  /**
+   * Ends `tx`'s media wait. Its holds are released once a committed scene rendered, so the views
+   * that draw those images have subscribed to them first.
+   */
+  function dropMedia(tx: Transaction): void {
+    tx.mediaDue?.cancel();
+    tx.mediaDue = null;
+    const holds = tx.media.splice(0);
+    if (holds.length) void tick().then(() => { for (const hold of holds) hold.release(); });
+  }
+
+  /**
+   * The wait for the media `scene` draws, at most until the transaction's media deadline; null when
+   * it is all drawable (no wait at all, not even a microtask). Woken or aborted like any
+   * preparation step.
+   */
+  function mediaWait(tx: Transaction, scene: FolderScene, waiting: AbortSignal): Promise<void> | null {
+    const hold = options.media?.(scene, published?.scene ?? null, motion?.viewport?.() ?? null) ?? null;
+    if (!hold) return null;
+    tx.media.push(hold);
+    if (!tx.mediaDue) {
+      let cancel: () => void = noop;
+      const expired = new Promise<void>((resolve) => { cancel = setTimer(resolve, mediaDeadline); });
+      tx.mediaDue = { expired, cancel };
+    }
+    tx.status = "preparing-media";
+    publishState(tx);
+    return abortable(Promise.race([hold.ready, tx.mediaDue.expired]), waiting);
   }
 
   /** Aborts the worker layout `tx` asked for: it is no longer the one that will commit. */
@@ -578,8 +641,19 @@ export function createSceneController(options: SceneControllerOptions) {
         }
         if (!live(tx)) return;
       }
-      tx.status = "ready";
       const scene = buildFolderScene({ scope, layoutInput: prepared.input, layout, sources: prepared.sources, styling: stylingOf(sceneIntent), coverNodes: prepared.coverNodes });
+      // Its images are part of the scene: the previous scene stays until they are drawable.
+      const media = mediaWait(tx, scene, waiting);
+      if (media) {
+        try { await media; }
+        catch (error) {
+          if (!live(tx)) return;
+          if (wake.signal.aborted) continue;
+          throw error;
+        }
+        if (!live(tx)) return;
+      }
+      tx.status = "ready";
       keepLayout(prepared.basis, layout, prepared.sources);
       commit(tx, scene, { intent: sceneIntent, data: sceneData, history: prepared.history, basis: prepared.basis });
       // A scene of the current data supersedes whatever failed before it; one on the older snapshot does not.

@@ -31,6 +31,8 @@
   import { folderLayoutRuntime } from "./folder-layout-runtime";
   import type { SceneIntent } from "./scene-inputs";
   import { sceneSnapshots } from "./scene-snapshots";
+  import { sceneThumbnails } from "./scene-media";
+  import { traceThumbnails } from "../thumbnail-cache";
 
   import StackGrid from "./StackGrid.svelte";
   import { selectableSelector } from "./selectable";
@@ -44,11 +46,13 @@
 
   const session = untrack(() => provided) ?? createFolderSession(undefined, undefined, untrack(() => pane.paneId));
   const layoutRuntime = folderLayoutRuntime();
+  const host = hostFileTile();
   const controller = createSceneController({
     paneId: untrack(() => pane.paneId), data: session, engine: layoutRuntime.engine, inline: layoutRuntime.inline, remember: layoutRuntime.remember,
     runLayout: (input, signal) => computeFolderLayout(input, layoutRuntime.engine, signal), holdWork: holdLayoutWork, scenes: sceneSnapshots,
+    // The thumbnails a scene draws near the viewport are fetched and decoded before it commits.
+    media: (scene, previous, viewport) => traceThumbnails.hold(sceneThumbnails({ next: scene, previous, viewport, hostEntries: !!host }), untrack(() => traceInvalidation.revision)),
   });
-  const host = hostFileTile();
   /** Width is quantized so resizing does not relayout on every pixel. */
   const WIDTH_STEP = 16;
   /** Horizontal space reserved by the view's 10px pane padding. */

@@ -425,7 +425,12 @@ test.describe("motion", () => {
     const missing = await page.evaluate(async (keys) => {
       const missing: string[] = [];
       for (const k of keys) {
-        const element = document.querySelector<HTMLElement>(`[data-node-key="${CSS.escape(k)}"]`);
+        // A tile the previous click reveals is drawn once its scene commits, images included (a few frames when they are cold).
+        let element: HTMLElement | null = null;
+        for (let frame = 0; frame < 120 && !element; frame++) {
+          element = document.querySelector<HTMLElement>(`[data-node-key="${CSS.escape(k)}"]`);
+          if (!element) await new Promise((resolve) => requestAnimationFrame(resolve));
+        }
         if (element) element.click(); else missing.push(k);
         await new Promise((resolve) => setTimeout(resolve, 15));
       }
@@ -570,7 +575,11 @@ test.describe("motion", () => {
     await expect(await tile(page, "evening")).toHaveCount(1);
     const result = await page.evaluate(async ({ target, evening }) => {
       document.querySelector<HTMLElement>(`[data-node-key="${target}"]`)!.click();
-      await new Promise(resolve => requestAnimationFrame(resolve));
+      // The first frame of the new scene (it commits once its images are drawable): the target is the focus.
+      for (let frame = 0; frame < 120; frame++) {
+        await new Promise(resolve => requestAnimationFrame(resolve));
+        if (document.querySelector<HTMLElement>(`[data-tile-key="${target}"]`)?.dataset.tone === "focus") break;
+      }
       return { tiles: document.querySelectorAll(`[data-tile-key="${evening}"]`).length,
         paths: document.querySelectorAll(`path[data-to="node:${evening}"]`).length,
         ghosts: document.querySelectorAll('[data-motion-ghost]').length };

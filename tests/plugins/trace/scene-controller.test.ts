@@ -1,6 +1,6 @@
 import "./svelte-host";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { createSceneController, type SceneCause, type SceneController } from "$lib/plugins/trace/view/scene-controller.svelte";
+import { createSceneController, MEDIA_DEADLINE_MS, type SceneCause, type SceneController, type SceneMedia } from "$lib/plugins/trace/view/scene-controller.svelte";
 import { installSceneInstrumentation } from "$lib/plugins/trace/view/scene-instrumentation";
 import type { ComponentLease } from "$lib/plugins/trace/view/folder-session.svelte";
 import type { SceneIntent } from "$lib/plugins/trace/view/scene-inputs";
@@ -75,7 +75,7 @@ function fakeSource(token = "t1") {
 const flush = async (rounds = 30) => { for (let i = 0; i < rounds; i++) await new Promise<void>((resolve) => setTimeout(resolve, 0)); };
 const tile = tileMetrics(96);
 
-function harness(options: { inline?: (input: FolderLayoutInput) => boolean; token?: string; scenes?: SceneStore<SavedScene>; paneId?: string; tick?: () => Promise<void> } = {}) {
+function harness(options: { inline?: (input: FolderLayoutInput) => boolean; token?: string; scenes?: SceneStore<SavedScene>; paneId?: string; tick?: () => Promise<void>; media?: SceneMedia } = {}) {
   const fake = fakeSource(options.token);
   const timers: { run: () => void; ms: number; cancelled: boolean }[] = [];
   const layouts: { input: FolderLayoutInput; signal: AbortSignal; reply: ReturnType<typeof deferred<FolderLayout>> }[] = [];
@@ -94,6 +94,7 @@ function harness(options: { inline?: (input: FolderLayoutInput) => boolean; toke
     tick: options.tick ?? (() => Promise.resolve()),
     setTimer: (run, ms) => { const timer = { run, ms, cancelled: false }; timers.push(timer); return () => { timer.cancelled = true; }; },
     holdWork: () => { work.held++; let held = true; return () => { if (held) { held = false; work.held--; } }; },
+    media: options.media,
   });
   let intent: SceneIntent = {
     directory: "/f", listing: LISTING, claimed: new Set(), open: new Set(), focus: null, selectedKeys: new Set(), selectedPaths: new Set(),
@@ -1203,3 +1204,118 @@ function screenshotStack(): TraceNode[] {
   const n = (key: string, parents: string[] = []) => node(key, ++order, parents);
   return [n("root"), n("Cerulean", ["root"]), n("Saffron", ["root"]), n("Cerulean-hidden", ["Cerulean"]), n("Blastoise", ["Saffron"]), n("Ash", ["Saffron"]), n("Ash-hidden", ["Ash"])];
 }
+
+describe("scene controller: media (native re-run fixes)", () => {
+  /** Media the test controls: every scene that draws an open band holds its band's images until `load` settles them. */
+  function fakeMedia() {
+    const holds: { scene: Publication["scene"]; previous: Publication["scene"] | null; viewport: unknown; ready: ReturnType<typeof deferred<void>>; released: boolean }[] = [];
+    let loaded = false;
+    const media: SceneMedia = (scene, previous, viewport) => {
+      if (loaded || scene.graphs.size === 0) return null;
+      const hold = { scene, previous, viewport, ready: deferred<void>(), released: false };
+      holds.push(hold);
+      return { ready: hold.ready.promise, release: () => { hold.released = true; } };
+    };
+    const load = () => { loaded = true; for (const hold of holds) hold.ready.resolve(); };
+    return { media, holds, load };
+  }
+  const openA = async (h: ReturnType<typeof harness>) => {
+    h.offer(); await flush();
+    h.act("expand", () => h.offer({ open: new Set(["a1"]) }));
+    await flush();
+    h.deliver("ca");
+    await flush();
+  };
+
+  it("keeps the previous scene until the next scene's images are drawable, then commits it once", async () => {
+    const m = fakeMedia();
+    const h = setup({ media: m.media });
+    h.offer(); await flush();
+    const before = h.controller.published;
+    h.act("expand", () => h.offer({ open: new Set(["a1"]) }));
+    await flush();
+    h.deliver("ca");
+    await flush();
+    expect(h.controller.published, "the previous scene stays while the images load").toBe(before);
+    expect(h.controller.transaction?.status).toBe("preparing-media");
+    expect(m.holds).toHaveLength(1);
+    expect(m.holds[0].scene.graphs.has("a1")).toBe(true);
+    expect(m.holds[0].previous).toBe(before!.scene);
+    expect(h.work.held, "preparation is pending work").toBe(1);
+    m.load(); await flush();
+    expect(h.openGraphs()).toEqual(["a1"]);
+    expect(h.published).toHaveLength(2);
+    expect(h.controller.published!.scene).toBe(m.holds[0].scene);
+    expect(m.holds[0].released, "released once the commit rendered").toBe(true);
+    expect(h.work.held).toBe(0);
+  });
+
+  it("commits at the media deadline without the images; the deadline is the transaction's, not restarted by a wake", async () => {
+    const m = fakeMedia();
+    const h = setup({ media: m.media });
+    await openA(h);
+    expect(h.openGraphs()).toEqual([]);
+    const deadlines = () => h.timers.filter((timer) => timer.ms === MEDIA_DEADLINE_MS && !timer.cancelled);
+    expect(deadlines()).toHaveLength(1);
+    // A derived write wakes the preparation: it prepares again and waits for the same deadline.
+    h.controller.derive(() => h.offer({ badgeHover: "a2" }));
+    await flush();
+    expect(m.holds.length).toBeGreaterThan(1);
+    expect(deadlines()).toHaveLength(1);
+    expect(h.openGraphs()).toEqual([]);
+    h.fire(MEDIA_DEADLINE_MS); await flush();
+    expect(h.openGraphs(), "committed at the deadline").toEqual(["a1"]);
+    expect(h.published).toHaveLength(2);
+    expect(m.holds.every((hold) => hold.released)).toBe(true);
+    // The images arriving later commit nothing: they draw in place.
+    m.load(); await flush();
+    expect(h.published).toHaveLength(2);
+  });
+
+  it("images already drawable add no wait, not even a microtask", async () => {
+    /** Microtask turns from the intake until a scene with the band is published. */
+    const turns = async (media?: SceneMedia) => {
+      const h = harness({ media });
+      h.offer(); await flush();
+      h.act("expand", () => h.offer({ open: new Set(["a1"]) }));
+      await flush();
+      h.fake.deliver("ca");
+      h.offer();
+      let count = 0;
+      while (!h.controller.published?.scene.graphs.has("a1") && count < 500) { await Promise.resolve(); count++; }
+      const timers = h.timers.filter((timer) => timer.ms === MEDIA_DEADLINE_MS).length;
+      h.controller.dispose(); h.restore();
+      return { count, timers };
+    };
+    const consulted: number[] = [];
+    const ready = await turns(() => { consulted.push(1); return null; });
+    const none = await turns();
+    expect(consulted.length, "the media was asked about the scene").toBeGreaterThan(0);
+    expect(ready.count).toBeLessThan(500);
+    expect(ready.count).toBe(none.count);
+    expect(ready.timers).toBe(0);
+  });
+
+  it("a newer action supersedes a scene waiting for its images: it never commits, and its hold is released", async () => {
+    const m = fakeMedia();
+    const h = setup({ media: m.media });
+    await openA(h);
+    const waiting = m.holds[0];
+    h.act("collapse", () => h.offer({ open: new Set() }));
+    await flush();
+    expect(h.openGraphs()).toEqual([]);
+    expect(waiting.released).toBe(true);
+    expect(h.timers.filter((timer) => timer.ms === MEDIA_DEADLINE_MS && !timer.cancelled)).toHaveLength(0);
+    m.load(); await flush();
+    expect(h.openGraphs(), "the superseded scene never commits").toEqual([]);
+  });
+
+  it("passes the viewport the motion adapter reports", async () => {
+    const m = fakeMedia();
+    const h = setup({ media: m.media });
+    h.controller.attachMotion({ viewport: () => ({ x: 0, y: 300, width: 900, height: 500 }), reduced: () => true,
+      sample: (presentation) => ({ presentation, at: 0, poses: new Map() }), start: () => ({ started: false, settled: Promise.resolve(true) }), snap: () => undefined });
+    await openA(h);
+    expect(m.holds[0].viewport).toEqual({ x: 0, y: 300, width: 900, height: 500 });
+  });
+});

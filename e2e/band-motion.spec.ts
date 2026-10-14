@@ -61,7 +61,9 @@ async function sampleBand(page: Page, selector: string, ms = 700, actions: Array
           return { opacity: Number(getComputedStyle(e).opacity), id: e.dataset.route, to: e.dataset.to?.slice(5), end: { x: end.x, y: end.y }, rect: rect(e), path: getComputedStyle(e).getPropertyValue('d').replace(/^none$/, '') || e.getAttribute('d') };
         }),
         ghosts: document.querySelectorAll('[data-motion-ghost]').length,
-        moving: motion.state().running.length > 0 || document.getAnimations().some(a => (a.pending || a.playState === 'running') && a.effect?.getTiming().iterations !== Infinity) };
+        // A cold open's cover progress fades in after 400 ms (a delayed transition): progress, not motion.
+        moving: motion.state().running.length > 0 || document.getAnimations().some(a => (a.pending || a.playState === 'running') && a.effect?.getTiming().iterations !== Infinity
+          && !((a.effect as KeyframeEffect | null)?.target as Element | null)?.closest?.('[data-cover-progress]')) };
     };
     const frames = [snapshot(0)];
     let nextAction = 0;
