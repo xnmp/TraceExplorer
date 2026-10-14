@@ -3,7 +3,7 @@ import { engines, type FolderLayout, type FolderLayoutInput } from "$lib/domain/
 import { buildFolderScene, entityId, JUNCTION_RADIUS, type FolderScene, type SceneStyling } from "$lib/domain/trace-graph/folder-scene";
 import { pathNumbers } from "$lib/domain/trace-graph/path-data";
 import { folderInput, handCase, makeFolder, sourcesOf, type Folder, type InputOptions } from "./folder-layout-fixtures";
-import { mockupNodes } from "./fixtures";
+import { mockupNodes, node } from "./fixtures";
 import { connectedComponents, projectDag } from "$lib/domain/trace-graph/projection";
 
 const scope = { paneId: "p1", directory: "/f", generation: 1 };
@@ -124,6 +124,25 @@ describe("folder scene records", () => {
     const { scene } = build(folder, { open: ["s0:root"] }, { badgeHover: "s0:outside" });
     expect(scene.tiles.get(entityId("tile", "s0:root", "s0:edited"))!.tile.tone).not.toBe("neutral");
     expect([...scene.edges.values()].some((edge) => edge.badge && edge.parent === "s0:outside" && edge.child === "s0:edited")).toBe(true);
+  });
+
+  // Review 8d257bf: a retiring tile drawn outside its band (an orphan, an exit group) has only its
+  // record to say how its band drew it, so a sideways tile kept its chevron while it fades.
+  it("records how each band tile's band draws it, sideways or down; covers draw down", () => {
+    const chain = [node("root"), ...Array.from({ length: 15 }, (_, i) => node(`c${i}`, [i ? `c${i - 1}` : "root"]))];
+    const orientations = new Set<string>();
+    for (const [folder, width, focus] of [[mockup(), 1400, null], [makeFolder({ stacks: [chain] }), 420, "c14"]] as const) {
+      const { scene } = build(folder, { open: [...folder.stacks.keys()], focus: focus && keyOf(folder, focus), width });
+      for (const record of scene.tiles.values()) {
+        const graph = record.graphId === null ? undefined : scene.graphs.get(record.graphId);
+        if (record.cover) expect(record.orientation, record.id).toBeUndefined();
+        else {
+          expect(record.orientation, record.id).toBe(graph!.layout.orientation);
+          orientations.add(record.orientation!);
+        }
+      }
+    }
+    expect(orientations).toEqual(new Set(["down", "right"]));
   });
 
   it("builds an empty scene", () => {

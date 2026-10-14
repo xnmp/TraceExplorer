@@ -35,7 +35,7 @@
   </svg>
   {#each exit.tiles as retiree (retiree.renderId)}
     {@const record = retiree.record as TileRecord}
-    <RetiringTile {record} x={record.rect.x - rect.x} y={record.rect.y - rect.y} opacity={retiree.initial.opacity} {revision} />
+    <RetiringTile {record} x={record.rect.x - rect.x} y={record.rect.y - rect.y} opacity={retiree.initial.opacity} {revision} orientation={record.orientation} />
   {/each}
 </div>
 

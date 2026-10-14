@@ -14,7 +14,7 @@ import type { FileEntry } from "../file";
 import type { NodeKey, TraceNode } from "./model";
 import type { ReferenceBadge } from "./projection";
 import type { GridBand, GridRect } from "./grid-flow";
-import type { PlacedJunction, PlacedNode, PlacedRoute } from "./layout";
+import type { Orientation, PlacedJunction, PlacedNode, PlacedRoute } from "./layout";
 import { tileSize, type TileMetrics } from "./metrics";
 import { bandFocus, junctionRelated, routeStyle, type RouteStyle, type SceneTile } from "./scene";
 import { toneOf } from "./lineage";
@@ -93,6 +93,8 @@ export type TileRecord = RecordBase & {
   readonly badges: readonly ReferenceBadge[];
   readonly selected: boolean;
   readonly cover: CoverDecoration | null;
+  /** How its band draws it (a sideways band's chevron); absent for covers, which draw "down". */
+  readonly orientation?: Orientation;
 };
 export type EntryRecord = RecordBase & { readonly kind: "entry"; readonly entry: FileEntry; readonly selected: boolean };
 /** `route.path` is in folder coordinates; `rect` is its padded control-point bounds. */
@@ -237,7 +239,7 @@ export function buildFolderScene(input: FolderSceneInput): FolderScene {
       navigation.set(key, rect);
       const id = entityId("tile", graph.id, key);
       tiles.set(id, add<TileRecord>({ kind: "tile", id, graphId: graph.id, rect, tile: { ...planned, tone: toneOf(lineage, key) }, placed,
-        badges: plan.badges.get(key) ?? [], selected: styling.selectedKeys.has(key), cover: null }));
+        badges: plan.badges.get(key) ?? [], selected: styling.selectedKeys.has(key), cover: null, orientation: graph.layout.orientation }));
     }
     for (const route of attached.routes) {
       const path = dx === 0 && dy === 0 ? route.path : mapPathNumbers(route.path, (value, index) => value + (index % 2 ? dy : dx));

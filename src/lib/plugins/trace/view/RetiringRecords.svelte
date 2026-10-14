@@ -22,7 +22,7 @@
 {#each retirees as retiree (retiree.renderId)}
   {@const record = retiree.record}
   {#if record.kind === "tile"}
-    <RetiringTile record={record as TileRecord} x={record.rect.x} y={record.rect.y} {revision} handle={handles.attach(retiree.renderId)} />
+    <RetiringTile record={record as TileRecord} x={record.rect.x} y={record.rect.y} {revision} orientation={record.orientation} handle={handles.attach(retiree.renderId)} />
   {:else if record.kind === "route" || record.kind === "junction"}
     {@const rect = record.rect}
     <div class="route-layer" data-motion-route-layer="" aria-hidden="true" inert {@attach handles.attach(retiree.renderId)}

@@ -132,7 +132,7 @@
   {/each}
   {#each retiringTiles as retiree (retiree.renderId)}
     {@const record = retiree.record as TileRecord}
-    <RetiringTile {record} x={record.rect.x - graph.origin.x} y={record.rect.y - graph.origin.y} {revision} orientation={graph.layout.orientation} handle={handles.attach(retiree.renderId)} />
+    <RetiringTile {record} x={record.rect.x - graph.origin.x} y={record.rect.y - graph.origin.y} {revision} orientation={record.orientation ?? graph.layout.orientation} handle={handles.attach(retiree.renderId)} />
   {/each}
   {#each visibleTiles as record (record.tile.key)}
     <TraceTile tile={record.tile} badgeNodes={nodes} focused={focusedKey === undefined || focusedKey === record.tile.key} onfocus={() => onfocuskey?.(record.tile.key)} badges={record.badges} badgeSelection={selected} onbadge={onactivate} onbadgehover={(key) => onbadgehover?.(key)} placed={record.placed} orientation={graph.layout.orientation} selected={record.selected} {revision}
