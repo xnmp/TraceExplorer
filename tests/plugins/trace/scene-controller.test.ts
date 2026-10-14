@@ -1021,6 +1021,16 @@ describe("scene controller: geometry motion policy (native findings)", () => {
 });
 
 describe("scene controller: review fixes (dc33274)", () => {
+  /** A motion stub whose epochs never settle on their own. */
+  const attachStill = (h: ReturnType<typeof harness>) => h.controller.attachMotion({
+    reduced: () => false, viewport: () => null, snap: () => undefined,
+    sample: (presentation) => samplePresentation(presentation, 0),
+    start: (presentation) => ({ started: presentation.duration > 0, settled: new Promise<boolean>(() => undefined) }),
+  });
+  /** Lays out everything asked of the worker with the default engine. */
+  const replyAll = (h: ReturnType<typeof harness>) => { for (const job of h.layouts) job.reply.resolve(engines.default(job.input)); };
+  const store = () => createSceneStore<SavedScene>(estimateSavedSceneBytes);
+
   // H1: `mustLayoutBeforePaint` compared the pane's width (grid padding included) with an inner
   // extent, so with host padding every scene wider than its inner width was laid out inline.
   it.each([["host grid padding 8", 8, 100], ["no grid padding", 0, 84]] as const)("R1: a scene wider than its pane, at an unchanged width, still lays out in the worker (%s)", async (_, gridPadding, width) => {
@@ -1059,6 +1069,117 @@ describe("scene controller: review fixes (dc33274)", () => {
       const moved = (from: FolderLayout, to: FolderLayout) => { const a = nodesOf(from); return [...nodesOf(to)].filter(([k, p]) => a.get(k) !== p).length; };
       expect({ committedMoves: moved(middle, back.layout) }).toEqual({ committedMoves: moved(middle, steady) });
     } finally { STACKS.ca = savedStack; COVERS.ca = savedCover; }
+  });
+
+  // M1: motion followed the cause of whichever transaction committed, not what changed.
+  it("R6: a click while a returning pane waits for the worker does not animate the return's resize", async () => {
+    const scenes = store();
+    // First mount: a1 open at width 900.
+    const first = harness({ scenes });
+    first.offer({ open: new Set(["a1"]), selectedKeys: new Set(["b1"]), focus: { key: "b1", componentId: "cb" } }); await flush();
+    first.deliver("ca"); await flush();
+    const data = { index: first.fake.source.index, components: first.fake.source.components };
+    first.controller.dispose(); first.restore();
+    // The pane comes back wider (resized while it showed another folder); its layout needs the worker.
+    const h = setup({ scenes, inline: () => false });
+    h.fake.source.index = data.index; h.fake.source.components = data.components;
+    attachStill(h);
+    h.offer({ open: new Set(["a1"]), selectedKeys: new Set(["b1"]), focus: { key: "b1", componentId: "cb" }, width: 1600 });
+    expect(h.controller.published, "the saved scene is shown at once").not.toBeNull();
+    await flush();
+    // The user clicks a file before the worker replies.
+    h.act("selection", () => h.offer({ selectedPaths: new Set(["/f/notes.txt"]), selectedKeys: new Set(), focus: null, hostChoice: "click" })); await flush();
+    replyAll(h); await flush();
+    const now = h.controller.published!;
+    expect(now.scene.inputs.layoutInput.width).toBe(1600);
+    expect(now.presentation.duration, "the return's resize reflow animated").toBe(0);
+  });
+
+  it("R6b: a click while a widened pane waits for the worker does not animate the resize's reflow", async () => {
+    const h = setup({ inline: () => false });
+    h.offer({ open: new Set(["a1"]) }); await flush();
+    h.deliver("ca"); await flush();
+    replyAll(h); await flush();
+    attachStill(h);
+    const narrow = h.controller.published!;
+    h.offer({ width: 1600 }); await flush();
+    expect(h.controller.published).toBe(narrow);
+    // A click before the worker replies.
+    h.act("selection", () => h.offer({ selectedPaths: new Set(["/f/notes.txt"]), hostChoice: "click" })); await flush();
+    replyAll(h); await flush();
+    const now = h.controller.published!;
+    expect(now.scene.inputs.layoutInput.width).toBe(1600);
+    expect(now.presentation.duration, "the resize's reflow animated").toBe(0);
+  });
+
+  // R7 asked for the expand to animate. The resize changes the width (900 → 950), so the old
+  // positions are not comparable with the new ones: under the input policy (any non-user change
+  // snaps) the expand and the reflow commit together, at once. What it guards now is that the
+  // outcome does not depend on which transaction commits: the same changes give the same answer
+  // when the expand commits first and the resize after it.
+  it("R7: an expand that commits with a resize landed while its layout was in the worker snaps, like the resize", async () => {
+    const h = setup({ inline: () => false });
+    h.offer({ open: new Set(["b1"]) }); await flush();
+    h.deliver("cb"); await flush();
+    replyAll(h); await flush();
+    attachStill(h);
+    h.act("expand", () => h.offer({ open: new Set(["a1", "b1"]) })); await flush();
+    h.deliver("ca"); await flush();
+    expect(h.controller.transaction!.status).toBe("preparing-layout");
+    // The pane widens a little while the expand's layout is computed.
+    h.offer({ width: 950 }); await flush();
+    replyAll(h); await flush();
+    const now = h.controller.published!;
+    expect(now.scene.graphs.has("a1")).toBe(true);
+    expect(now.scene.inputs.layoutInput.width).toBe(950);
+    expect(now.presentation.duration, "the expand and the resize committed together").toBe(0);
+  });
+
+  it("an expand alone animates whichever transaction commits it, a resize committed before it included", async () => {
+    const h = setup({ inline: () => false });
+    h.offer({ open: new Set(["b1"]) }); await flush();
+    h.deliver("cb"); await flush();
+    replyAll(h); await flush();
+    attachStill(h);
+    h.offer({ width: 950 }); await flush();
+    replyAll(h); await flush();
+    expect(h.controller.published!.presentation.duration, "the resize").toBe(0);
+    h.act("expand", () => h.offer({ open: new Set(["a1", "b1"]) })); await flush();
+    h.deliver("ca"); await flush();
+    replyAll(h); await flush();
+    expect(h.controller.published!.scene.graphs.has("a1")).toBe(true);
+    expect(h.controller.published!.presentation.duration, "the expand").toBeGreaterThan(0);
+  });
+
+  it("Retry animates the stack it opens, like an expand", async () => {
+    const h = setup();
+    h.offer(); await flush();
+    h.act("expand", () => h.offer({ open: new Set(["a1"]) })); await flush();
+    h.fire(5000); await flush();
+    expect(h.controller.notices.get("a1")?.phase).toBe("failed");
+    attachStill(h);
+    h.act("retry", () => { h.controller.clearFailure("a1"); h.offer(); }); await flush();
+    h.deliver("ca"); await flush();
+    expect(h.openGraphs()).toEqual(["a1"]);
+    expect(h.controller.published!.presentation.duration).toBeGreaterThan(0);
+  });
+
+  it("a stack a return could not open from the saved scene opens with a snap when its data arrives", async () => {
+    const scenes = store();
+    const first = harness({ scenes });
+    first.offer(); await flush();
+    const index = first.fake.source.index;
+    first.controller.dispose(); first.restore();
+    const h = setup({ scenes });
+    h.fake.source.index = index;
+    attachStill(h);
+    h.offer({ open: new Set(["a1"]) });
+    expect(h.controller.published, "the saved scene is shown at once").not.toBeNull();
+    expect(h.openGraphs()).toEqual([]);
+    await flush();
+    h.deliver("ca"); await flush();
+    expect(h.openGraphs()).toEqual(["a1"]);
+    expect(h.controller.published!.presentation.duration).toBe(0);
   });
 });
 

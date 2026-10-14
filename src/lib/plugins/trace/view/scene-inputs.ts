@@ -12,7 +12,8 @@ import { projectReferenceBadges, type BadgeProjection } from "$lib/domain/trace-
 import { folderCells, folderGridGeometry, gridInnerWidth, unlistedCovers, type FolderCell, type HostGridMetrics } from "$lib/domain/trace-graph/folder-grid";
 import type { TileMetrics } from "$lib/domain/trace-graph/metrics";
 import type { FolderLayout, FolderLayoutInput, GraphId, OpenStack } from "$lib/domain/trace-graph/folder-layout";
-import type { SceneGraphSource, SceneStyling } from "$lib/domain/trace-graph/folder-scene";
+import type { FolderScene, SceneGraphSource, SceneStyling } from "$lib/domain/trace-graph/folder-scene";
+import type { GeometryInputs } from "$lib/domain/trace-graph/scene-change";
 
 /** What the pane wants shown, captured from host and session state (data excluded). */
 export interface SceneIntent {
@@ -198,3 +199,16 @@ export const sameStyling = (a: SceneStyling, b: SceneStyling): boolean => a === 
 export const stylingOf = (intent: SceneIntent): SceneStyling => ({
   focus: intent.focus?.key ?? null, selectedKeys: intent.selectedKeys, selectedPaths: intent.selectedPaths, badgeHover: intent.badgeHover, cover: intent.cover,
 });
+
+/**
+ * What a committed scene was laid out from, for the motion policy (`geometryMotion`): its layout
+ * input, the intent and index token it was committed with, and the requested stacks that failed.
+ * `current` is false for a saved scene shown as it was laid out until the pane's own layout commits.
+ */
+export const geometryInputsOf = (scene: FolderScene, intent: SceneIntent, token: string, failed: ReadonlySet<GraphId>, current: boolean): GeometryInputs => {
+  const input = scene.inputs.layoutInput;
+  return {
+    current, width: input.width, padding: intent.grid.gridPadding, tile: input.tile, grid: input.grid,
+    items: input.items.map((item) => `${item.kind}\0${item.id}`), token, open: scene.inputs.sources, requested: intent.open, failed, focus: intent.focus?.key ?? null,
+  };
+};

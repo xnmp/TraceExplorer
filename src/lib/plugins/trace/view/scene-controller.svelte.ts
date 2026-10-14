@@ -26,9 +26,9 @@ import type { NodeKey } from "$lib/domain/trace-graph/model";
 import type { ComponentData, FolderIndex } from "$lib/domain/trace-graph/folder-data";
 import { buildFolderScene, diffScenes, type FolderScene, type SceneDiff, type SceneScope } from "$lib/domain/trace-graph/folder-scene";
 import { engines, memoizeEngine, type FolderLayout, type FolderLayoutEngine, type FolderLayoutInput, type GraphId } from "$lib/domain/trace-graph/folder-layout";
-import { geometryMotion, type SceneCauseKind } from "$lib/domain/trace-graph/scene-change";
+import { geometryMotion, type GeometryInputs, type SceneCauseKind } from "$lib/domain/trace-graph/scene-change";
 import { mustLayoutBeforePaint, type DisplayedExtent } from "$lib/domain/trace-graph/layout-workload";
-import { folderItems, fresh, intentChange, changed as anyChange, prepareLayoutInput, requiredComponents, resolveCover, stylingOf,
+import { folderItems, fresh, geometryInputsOf, intentChange, changed as anyChange, prepareLayoutInput, requiredComponents, resolveCover, stylingOf,
   sameSet, sameStyling, type HeldHistory, type IntentChange, type PreparedLayoutInput, type SceneData, type SceneIntent } from "./scene-inputs";
 import { restylePresentation, retargetPresentation, settledPresentation, staticPresentation, type DisplayedPresentation, type Presentation,
   type Publication, type TransactionId } from "./presentation";
@@ -45,7 +45,7 @@ export type { Publication, TransactionId };
 export type TransactionStatus = "collecting" | "preparing-data" | "preparing-layout" | "ready" | "committed" | "superseded" | "failed";
 
 export interface SceneCause {
-  /** Decides the commit's motion (`geometryMotion`): only a spatial change the user asked for animates. */
+  /** Why the transaction began (instrumentation, anchoring, continuations). Motion never depends on it: `geometryMotion` compares inputs. */
   readonly kind: SceneCauseKind;
   /** Stable node key, cover key or entry path. */
   readonly target: string | null;
@@ -243,6 +243,8 @@ export function createSceneController(options: SceneControllerOptions) {
   /** The action whose operation is running synchronously; nested actions reuse its lease. */
   let operating: Transaction | null = null;
   let committed: Committed | null = null;
+  /** What the scene on screen was laid out from (`geometryMotion` compares the next commit's with it); null before the first. */
+  let shownInputs: GeometryInputs | null = null;
   /**
    * Layouts this lifetime committed, by layout basis, newest last: a size or metrics round trip
    * (a fullscreen Preview widening the pane underneath it, then narrowing it on exit; a resize
@@ -630,9 +632,11 @@ export function createSceneController(options: SceneControllerOptions) {
       committed = snapshot;
       tx = begin({ kind: "restore", target: null, anchor: "none" });
       tx.intent = next;
-      commit(tx, scene, snapshot);
+      // A saved scene shown as it was laid out is not laid out for this pane: the commit that replaces it completes the arrival.
+      commit(tx, scene, snapshot, !layout);
     } catch (error) {
       committed = null;
+      shownInputs = null;
       if (published) { published = null; expose(); }
       const failed = tx ?? begin({ kind: "restore", target: null, anchor: "none" });
       finish(failed, "failed", message(error));
@@ -712,20 +716,21 @@ export function createSceneController(options: SceneControllerOptions) {
     scenes.remember(options.paneId, scope.directory, savedScene(options.paneId, published.scene, committed));
   }
 
-  function commit(tx: Transaction, scene: FolderScene, snapshot: Committed): void {
+  function commit(tx: Transaction, scene: FolderScene, snapshot: Committed, provisional = false): void {
     const previous = published;
     const diff = diffScenes(previous?.scene ?? null, scene);
+    const shown = !previous || diff.policy.reset ? null : shownInputs;
     committed = snapshot;
+    shownInputs = geometryInputsOf(scene, snapshot.intent, snapshot.data.index.token, blocked(snapshot.data.index), !provisional);
     restorable = false;
     if (!differs(previous, scene, diff)) { finish(tx, "committed"); reconcileCovers(); remember(); return; }
     const geometry = diff.policy.reset || diff.enter.size > 0 || diff.exit.size > 0 || [...diff.policy.records.values()].some((policy) => policy !== "carry");
-    // A restyle keeps the running epoch (tracks and retirees). Geometry moves only for a spatial
-    // change the user asked for (`geometryMotion`), continuing from what is displayed; every
-    // other change snaps, ending any motion still running: arriving (a first scene, a new scope, a
-    // restore and its revalidation), a resize or scrollbar, metrics, the listing, a refresh, a retry.
-    const arrival = !previous || diff.policy.reset;
+    // A restyle keeps the running epoch (tracks and retirees). Geometry moves only when the user's
+    // own inputs are all that changed since the scene on screen (`geometryMotion`), continuing from
+    // what is displayed; otherwise it snaps, ending any motion still running: arriving, a width,
+    // metrics, listing or data change, whichever transaction commits it.
     const presentation = !geometry && previous ? restylePresentation(previous.presentation, scene)
-      : !previous || !motion || geometryMotion(tx.cause.kind, { arrival }) === "snap" ? staticPresentation(scene, ++epochs)
+      : !previous || !motion || geometryMotion(shown, shownInputs) === "snap" ? staticPresentation(scene, ++epochs)
       : retarget(motion, previous.presentation, scene, diff, tx.id);
     const publication: Publication = { transactionId: tx.id, geometryVersion: geometry ? ++geometryVersion : previous?.geometryVersion ?? geometryVersion, scene, presentation };
     published = publication;
@@ -780,6 +785,7 @@ export function createSceneController(options: SceneControllerOptions) {
     current = null;
     published = null;
     committed = null;
+    shownInputs = null;
     recentLayouts.clear();
     intent = null;
     data = { index: null, components: new Map() };
