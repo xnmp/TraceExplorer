@@ -8,6 +8,7 @@ import { optimizedBand, type Optimized } from './engine';
 import { svg, gallery } from './render';
 import { attached } from './baseline/placement';
 import { attachSingleBand } from '../src/lib/domain/trace-graph/band-geometry';
+import { fallbackReason } from '../src/lib/domain/trace-graph/band-layout';
 const quick = process.argv.includes('--quick'), stability = 1.5;
 const widths = quick ? [454, 900] : [360, 454, 640, 900, 1400], presets = quick ? [96] : [48, 64, 96, 128];
 const outputDir = process.argv.find(a => a.startsWith('--out='))?.slice(6) ?? (quick ? 'layout-eval/out/quick' : 'layout-eval/out');
@@ -28,6 +29,8 @@ interface Row {
     error?: string;
     changed: boolean;
     decision?: import("../src/lib/domain/trace-graph/layout").BandDecision;
+    /** Why a proposed layout is an explicit fallback, from the layout itself (`fallbackReason`). */
+    reason?: string | null;
 }
 const rows: Row[] = [], renders: {
     name: string;
@@ -69,7 +72,7 @@ for (const c of cases)
                     }
                     const placed = result ? (engine === 'baseline' ? attached(result, request) : attachSingleBand(result, request)) : undefined;
                     const metrics = placed ? measure(placed, request.band!.key, width, request.items, changed ? (engine === 'baseline' ? prevAttachedB : prevAttachedP) : undefined, focus ?? undefined) : null;
-                    rows.push({ case: c.id, width, imagePx, step, focus, visible: request.items.length, total: request.band!.items.length, tileWidth: request.tileWidth ?? 92, engine, candidate, ms, metrics, error, changed, decision: engine === "proposed" ? proposed?.layout.decision : undefined });
+                    rows.push({ case: c.id, width, imagePx, step, focus, visible: request.items.length, total: request.band!.items.length, tileWidth: request.tileWidth ?? 92, engine, candidate, ms, metrics, error, changed, decision: engine === "proposed" ? proposed?.layout.decision : undefined, reason: engine === "proposed" && proposed ? fallbackReason(proposed.layout) : null });
                     if (rows.length % 500 === 0)
                         console.log(`Completed ${rows.length} engine runs (${c.id}, ${width}px, image ${imagePx})`);
                     if (placed) {
@@ -105,7 +108,7 @@ const crossingRegressions = pairs.filter(({ b, p }) => p.metrics!.crossings > b.
     return { case: p.case, width: p.width, imagePx: p.imagePx, step: p.step, candidate: p.candidate, stability: !!p.decision?.stability, baseline: b.metrics!.crossings, proposed: p.metrics!.crossings, extra, saved, needed, priced: saved >= needed };
 }).sort((x, y) => Number(x.priced) - Number(y.priced) || y.extra - x.extra || x.saved - y.saved);
 const sharedLanes = rows.filter(r => r.engine === 'proposed' && r.metrics && r.metrics.sharedLanePx > 0).map(r => ({ case: r.case, width: r.width, imagePx: r.imagePx, step: r.step, candidate: r.candidate, sharedLanePx: r.metrics!.sharedLanePx,
-    reason: r.decision?.fallback === 'lane-infeasible' ? 'lane-infeasible: no candidate keeps every source in its own lane' : r.decision?.fallback === 'gate-infeasible' ? 'gate-infeasible: malformed input (the cover has a visible parent); the downward layout is shown as is' : null }))
+    reason: r.reason ?? null }))
     .sort((x, y) => y.sharedLanePx - x.sharedLanePx);
 const baselineLanes = pairs.filter(({ b }) => b.metrics!.sharedLanePx > 0).sort((x, y) => y.b.metrics!.sharedLanePx - x.b.metrics!.sharedLanePx);
 const readability = { crossingHeightTiles: CROSSING_HEIGHT_TILES, crossingRegressions: crossingRegressions.length, unpricedCrossingRegressions: crossingRegressions.filter(r => !r.priced).length,

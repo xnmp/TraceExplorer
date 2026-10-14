@@ -4,7 +4,7 @@ import { spacingFor, STACK_STEM_ROOM } from "./metrics";
 import { bandWidthBudget, columnsFor, partitions, buildShelves, validate } from "./band-shelves";
 import { attachSingleBand, attachPackedBand, localBandPlacement, bandExtent, withBandBounds, singleBandSkeleton } from "./band-geometry";
 import { measure, validateLayout, cost, routePlan, sharedLaneLength, type Measures, type Weights } from "./layout-quality";
-import { incrementalTree } from "./band-incremental";
+import { incrementalBudget, incrementalTree } from "./band-incremental";
 import { forEachPathNumber, isPlainPathData, mapPathNumbers, pathNumbers } from "./path-data";
 import { extentCost, optimisticCost, rectangleCost } from "./layout-cost-bound";
 
@@ -177,6 +177,14 @@ function downwardHeightFloor(items: readonly LayoutItem[], key: string): number 
   return best;
 }
 
+/**
+ * The crossing cap. An anchor-preserving layout may cross more than the best unanchored one
+ * by at most the larger of these (an absolute count, and a share of the unanchored layout's
+ * crossings); beyond that the anchors yield (`anchor-yield`). Calibrated on the evaluation
+ * corpus and legal tours (docs/trace-view-layout.md, "Crossing cap").
+ */
+const ANCHOR_CROSSING_SLACK = 50;
+const ANCHOR_CROSSING_RATIO = .25;
 const PRICED_LANES: Weights = Object.freeze({ stability: 1.5, sharedLanes: "priced" });
 
 const NO_COST: Measures = { height: 0, width: 0, area: 0, tileArea: 0, whitespace: 0, paneWhitespace: 0, length: 0, bends: 0, crossings: 0, sharedLanePx: 0,
@@ -207,8 +215,11 @@ function rigidConnectorCost(layout: GraphLayout, key: string, tileWidth: number)
 /** History is plain committed geometry; anything non-finite or unparsable is treated as no history. */
 function usableHistory(history: import("./layout").BandHistory): boolean {
   const finite = (...values: readonly (number | undefined)[]) => values.every(v => v === undefined || Number.isFinite(v));
-  const geometry = (layout: GraphLayout | undefined) => !!layout && [...layout.nodes.values()].every(n => finite(n.x, n.y, n.width, n.height))
-    && layout.routes.every(r => isPlainPathData(r.path)) && [...layout.junctions.values()].every(j => finite(j.x, j.y));
+  const endpoint = (e: unknown) => !!e && typeof e === "object" && typeof (e as { kind?: unknown }).kind === "string";
+  const geometry = (layout: GraphLayout | undefined) => !!layout && layout.nodes instanceof Map && Array.isArray(layout.routes) && layout.junctions instanceof Map
+    && [...layout.nodes.values()].every(n => !!n && finite(n.x, n.y, n.width, n.height))
+    && layout.routes.every(r => !!r && typeof r.path === "string" && isPlainPathData(r.path) && endpoint(r.from) && endpoint(r.to))
+    && [...layout.junctions.values()].every(j => !!j && finite(j.x, j.y));
   const a = history.attachment;
   return geometry(history.layout) && geometry(history.placed) && (!a || finite(a.bandTop, a.placement.x, a.placement.coverX,
     a.placement.coverHeight, a.placement.width, a.placement.left, a.placement.right, a.placement.track, a.placement.stemRoom,
@@ -220,6 +231,18 @@ function normalizedHistory(history: import("./layout").BandHistory, request: Lay
   const key = request.band!.key, cover = history.layout.nodes.get(key);
   if (!cover || !history.attachment) return history.placed;
   return attachPackedBand(history.layout, key, cover.height, localBandPlacement(history.attachment.placement, cover.height));
+}
+
+/**
+ * Why a band layout is an explicit fallback that may show a shared lane or break a gate,
+ * read from the layout itself; null when it is not one.
+ */
+export function fallbackReason(layout: GraphLayout): string | null {
+  const fallback = layout.decision?.fallback;
+  if (fallback === "lane-infeasible") return "lane-infeasible: no candidate keeps every source in its own lane; the best, its lanes priced, is shown";
+  if (fallback !== "gate-infeasible") return null;
+  return layout.pinnedViolation ? "gate-infeasible: malformed input (the cover has a visible parent); the downward layout is shown as is"
+    : "gate-infeasible: no candidate passed the hard gates; the downward layout is shown as is";
 }
 
 export function layoutBand(input: LayoutRequest): GraphLayout {
@@ -302,7 +325,9 @@ export function layoutBand(input: LayoutRequest): GraphLayout {
   })();
   const history: Candidate[] = [];
   if (previous) {
-    const incremental = incrementalTree(request, previous);
+    // One grid-work budget for every incremental embedding this request tries.
+    const budget = incrementalBudget();
+    const incremental = incrementalTree(request, previous, budget);
     if (incremental) history.push({ name: "incremental-tree", layout: incremental });
     // Re-embed other retained tiles only when the fixed warm embedding exceeds
     // the compact height budget (shelves and the downward layout); otherwise its
@@ -314,7 +339,7 @@ export function layoutBand(input: LayoutRequest): GraphLayout {
       const repack = !incremental || height > compactShelf * 1.1
         || (wantsDown && height > rowsHeight * 1.1 && height > bandExtent(visibleDown().layout, key).height * 1.1);
       const subset = repack ? projected(previous, { ...request, items: request.items.filter(n => fixed.has(n.key)) }) : null;
-      const compact = subset && incrementalTree(request, { ...subset, bandBounds: undefined, anchorX: undefined, anchorY: undefined });
+      const compact = subset && incrementalTree(request, { ...subset, bandBounds: undefined, anchorX: undefined, anchorY: undefined }, budget);
       if (compact) history.push({ name: "anchored-repack", layout: compact });
     }
     const retained = projected(previous, request);
@@ -456,6 +481,18 @@ export function layoutBand(input: LayoutRequest): GraphLayout {
     for (let i = 0; i < lazy.length; i++) realise(lazy[i]);
     for (const c of prepared.filter(c => !c.holds).sort(byFloor)) consider(c);
   }
+  // No candidate is lane-free: the gates kept every one out, so none was ranked. Price the
+  // lanes of those that fail on lanes alone and show the best of them (`lane-infeasible`).
+  if (!scored.length && !laneScored.length) {
+    for (let i = 0; i < lazy.length; i++) realise(lazy[i]);
+    if (wantsDown) visibleDown();
+    if (down && !prepared.some(c => c.layout === down!.layout)) prepared.push(prepare(down));
+    for (const c of [...prepared].sort(byFloor)) {
+      if (!Number.isFinite(c.floor)) continue;
+      const metrics = gate(c, true), priced = cost(metrics, tileWidth, PRICED_LANES);
+      if (Number.isFinite(priced)) laneScored.push({ ...c, placed: placementFor(c), metrics, score: priced, anchors: c.holds });
+    }
+  }
   // Malformed input (a cover with a visible parent) can defeat every candidate. Show the
   // downward layout, flagged, rather than no graph at all.
   // When every candidate shares lanes between sources, the best of them is shown, flagged.
@@ -472,11 +509,49 @@ export function layoutBand(input: LayoutRequest): GraphLayout {
   // A direction switch must earn a visible quality saving, not a rounding-sized difference.
   const same = previous && pool.filter(c => c.layout.orientation === previous.orientation).sort((a, b) => a.score - b.score)[0];
   if (same && winner.layout.orientation !== same.layout.orientation && winner.score > same.score * .85) winner = same;
-  let stability = !!previous && (winner.metrics.height > minimumHeight * 1.1 || winner.name.startsWith("anchored") || winner.name === "retained-visible" || winner.name === "incremental-tree");
+  // Crossing cap: holding the clicked tile and its ancestors still must not cost a crossings
+  // explosion. An anchored winner that crosses more than the best unanchored candidate by more
+  // than the slack (absolute, or relative to that candidate) yields: the tile moves, flagged.
+  let yielded = false;
+  if (anchors.length && winner.anchors && !lanesShared && winner.metrics.crossings > ANCHOR_CROSSING_SLACK) {
+    const free = bestUnanchored();
+    if (free && winner.metrics.crossings > free.metrics.crossings + Math.max(ANCHOR_CROSSING_SLACK, ANCHOR_CROSSING_RATIO * free.metrics.crossings)) { winner = free; yielded = true; }
+  }
+  /**
+   * The candidate the engine would show if no tile were anchored: the same objective and
+   * orientation rule over the unanchored family, found exactly by branch and bound (the
+   * main search's lower bounds prune what cannot change it; the downward layout is built
+   * only if its bound may).
+   */
+  function bestUnanchored(): Scored | undefined {
+    const free = ranked.filter(c => !c.anchors);
+    let same = Infinity, turned = Infinity;
+    const note = (c: Scored) => { if (c.layout.orientation === previous!.orientation) same = Math.min(same, c.score); else turned = Math.min(turned, c.score); };
+    free.forEach(note);
+    const limit = (orientation: GraphLayout["orientation"]) => orientation === previous!.orientation ? Math.min(same, turned / .85) : Math.min(turned, same * .85);
+    const beyond = (bound: number, orientation: GraphLayout["orientation"]) => bound > limit(orientation) + 1e-7;
+    const pending = lazy.find(p => p.name === "visible-down" && !realised.has(p));
+    if (pending && !beyond(pending.floor, pending.orientation)) realise(pending);
+    for (const c of prepared.filter(c => !c.holds && Number.isFinite(c.floor)).sort(byFloor)) {
+      if (beyond(c.floor, c.layout.orientation) || free.some(f => f.layout === c.layout)) continue;
+      if (!placements.has(c.layout) && beyond((c.floor + rigidConnectorCost(c.layout, key, tileWidth)) * (1 - 1e-9), c.layout.orientation)) continue;
+      const placed = placementFor(c);
+      if (beyond(optimisticCost(placed, key, request.maxWidth, tileWidth, request.items, previous, request.anchorKey), c.layout.orientation)) continue;
+      const metrics = gate(c, true), score = cost(metrics, tileWidth);
+      if (!Number.isFinite(score)) continue;
+      const scoredFree: Scored = { ...c, placed, metrics, score, anchors: false };
+      free.push(scoredFree);
+      note(scoredFree);
+    }
+    const best = free.reduce<Scored | undefined>((a, c) => !a || c.score < a.score ? c : a, undefined);
+    const sameFree = free.filter(c => c.layout.orientation === previous!.orientation).sort((a, b) => a.score - b.score)[0];
+    return best && sameFree && best.layout.orientation !== sameFree.layout.orientation && best.score > sameFree.score * .85 ? sameFree : best;
+  }
+  let stability = !yielded && !!previous && (winner.metrics.height > minimumHeight * 1.1 || winner.name.startsWith("anchored") || winner.name === "retained-visible" || winner.name === "incremental-tree");
   // A shorter safe embedding may have been pruned because it moved an anchor.
   // Its existence still explains a height-for-stability exception; certify only
   // the hard constraints needed for that diagnostic, without rescoring routes.
-  if (!stability && previous && anchors.length) {
+  if (!stability && !yielded && previous && anchors.length) {
     const checked = new Set<Prepared | Pending>();
     for (;;) {
       const c = [...prepared, ...lazy].filter(c => !checked.has(c) && c.height * 1.1 + .01 < winner.metrics.height).sort(byHeight)[0];
@@ -489,5 +564,5 @@ export function layoutBand(input: LayoutRequest): GraphLayout {
     }
   }
   return { ...winner.layout, anchorY: anchors.length && winner.anchors && compatible?.attachment ? compatible.attachment.bandTop - compatible.attachment.placement.coverHeight : undefined, anchorX: anchors.length && winner.anchors ? bandExtent(winner.placed, key).left : undefined, decision: { candidate: winner.name, partition: winner.partition, stability,
-    ...(lanesShared ? { fallback: "lane-infeasible" as const } : anchors.length && !winner.anchors ? { fallback: "anchor-infeasible" as const } : {}) } };
+    ...(lanesShared ? { fallback: "lane-infeasible" as const } : yielded ? { fallback: "anchor-yield" as const } : anchors.length && !winner.anchors ? { fallback: "anchor-infeasible" as const } : {}) } };
 }

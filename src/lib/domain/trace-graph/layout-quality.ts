@@ -1365,12 +1365,17 @@ function joinRoutes(layout: GraphLayout, routeGeometry: readonly RouteData[], in
     return { ...crossingJoin(layout, routeGeometry, sources, spatial), spatial };
 }
 
+/** Shared-lane lengths already measured, per (immutable) layout object. */
+const laneLengths = new WeakMap<GraphLayout, number>();
 /**
  * Length along which routes from different sources run together: the `sharedLanePx` of
  * {@link measure} for valid geometry, for layouts reused without ranking. Unparsable routes contribute nothing.
+ * Memoised per layout object, so a committed layout reused request after request is joined once.
  */
 export function sharedLaneLength(layout: GraphLayout): number {
-    return joinRoutes(layout, layout.routes.map(routeData), 0).sharedLanePx;
+    let known = laneLengths.get(layout);
+    if (known === undefined) laneLengths.set(layout, known = joinRoutes(layout, layout.routes.map(routeData), 0).sharedLanePx);
+    return known;
 }
 
 /** Complete deterministic diagnostics; shared route geometry is parsed and indexed once per invocation. */

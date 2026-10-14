@@ -131,8 +131,9 @@ export interface BandDecision {
   /**
    * `gate-infeasible`: no candidate passed the hard gates (e.g. a cover that is not a root); the downward layout is shown as is.
    * `lane-infeasible`: every candidate ran connectors from different sources along a shared lane; the best of them, priced, is shown.
+   * `anchor-yield`: an anchor-preserving layout existed, but crossed far more than the best unanchored one (the crossing cap); the anchors moved.
    */
-  readonly fallback?: "anchor-infeasible" | "packing-infeasible" | "gate-infeasible" | "lane-infeasible";
+  readonly fallback?: "anchor-infeasible" | "anchor-yield" | "packing-infeasible" | "gate-infeasible" | "lane-infeasible";
 }
 
 export interface GraphLayout {

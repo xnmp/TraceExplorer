@@ -12,8 +12,8 @@ const route = (id: string, from: string, to: string, path: string): PlacedRoute 
 const layoutOf = (routes: PlacedRoute[]): GraphLayout => ({ orientation: "down", width: 400, height: 400, nodes: new Map(), routes, junctions: new Map(), rows: [], readingOrder: new Map() });
 const placed = (request: LayoutRequest) => attachSingleBand(layoutGraph(request), request);
 const history = (request: LayoutRequest) => { const layout = layoutGraph(request); return { signature: bandHistorySignature(request), layout, placed: attachSingleBand(layout, request) }; };
-/** Every shared lane a production layout may show is an explicit, flagged fallback. */
-const explained = (layout: GraphLayout) => layout.decision?.fallback === "lane-infeasible" || layout.decision?.fallback === "gate-infeasible";
+/** Every shared lane a production layout may show is an explicit fallback: no lane-free candidate, or malformed input. */
+const explained = (layout: GraphLayout) => layout.decision?.fallback === "lane-infeasible" || (layout.decision?.fallback === "gate-infeasible" && layout.pinnedViolation !== undefined);
 
 describe("shared lanes between sources", () => {
   it("measures the stretch two sources' connectors run along together, and nothing else", () => {
@@ -55,9 +55,12 @@ describe("shared lanes between sources", () => {
 });
 
 describe("lane-free production layouts", () => {
-  it("never shows a shared lane across the corpus unless it says why", () => {
+  // One test per corpus case, so each fits vitest's 5 s default: the whole corpus in one test
+  // took 3.2 s locally and timed out on the x86_64 Linux CI runner; the slowest case
+  // (random-dag-200-9102) takes 0.8 s locally.
+  it.each(corpus().map(c => [c.id, c] as const))("never shows a shared lane in %s unless it says why", (_, c) => {
     const unexplained: string[] = [];
-    for (const c of corpus()) for (const width of [360, 900]) {
+    for (const width of [360, 900]) {
       let previous: ReturnType<typeof history> | undefined;
       for (const focus of c.focuses) {
         const request = requestFor(c, focus, width, 96);

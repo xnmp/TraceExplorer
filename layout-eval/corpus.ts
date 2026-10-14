@@ -43,6 +43,24 @@ function randomCase(seed: number, n: number, shape: 'tree' | 'dag' | 'bushy' | '
     }
     return { id: `random-${shape}-${n}-${seed}`, nodes, focuses: [null, `n${Math.floor(n / 3)}`, `n${Math.floor(n * 2 / 3)}`, `n${n - 1}`, null], full: seed % 3 === 0 };
 }
+/**
+ * Dense tour cases: most tiles merge several earlier ones (up to `fanIn` parents). The broad
+ * corpus's DAGs have at most four parents per tile and merge half the time, so anchor
+ * stability is measured separately at higher fan-in (reveals.ts, the "dense" tours).
+ */
+function denseCase(seed: number, n: number, fanIn: number): Case {
+    const random = rng(seed);
+    const nodes = [node('root')];
+    for (let i = 1; i < n; i++) {
+        const parents = new Set([nodes[Math.floor(random() * i)].key]);
+        if (i > 2 && random() < .8)
+            for (let j = 0; j < 1 + Math.floor(random() * (fanIn - 1)); j++)
+                parents.add(nodes[Math.floor(random() * i)].key);
+        nodes.push(node(`n${i}`, [...parents], i));
+    }
+    return { id: `dense-f${fanIn}-${n}-${seed}`, nodes, focuses: [null] };
+}
+export function denseCorpus(): readonly Case[] { return [4, 10].flatMap(fanIn => [40, 100].flatMap(n => [1, 2, 3].map(k => denseCase(20000 + 100 * fanIn + n + k, n, fanIn)))); }
 export function corpus(): readonly Case[] { return [...handCases, ...(['tree', 'dag', 'bushy', 'chainy'] as const).flatMap((shape, s) => [12, 40, 100, 200].flatMap(n => [1, 2, 3].map(k => randomCase(7000 + 100 * s + 10 * n + k, n, shape))))]; }
 export function requestFor(c: Case, focus: string | null, width: number, imagePx: number, hint?: ReadonlyMap<string, number>): LayoutRequest {
     const graph = projectReferenceBadges(projectDag(c.nodes));

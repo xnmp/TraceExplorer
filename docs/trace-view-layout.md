@@ -93,9 +93,15 @@ generator avoids lanes at the source:
 
 The unchanged-visible shortcut is not taken when the committed layout shares a lane. Only
 when no candidate is lane-free does the engine price the lanes (`4 Q/t`, Q the shared
-length) and show the best candidate, flagged `lane-infeasible`. Across the evaluation
-corpus (6,060 layouts and 2,595 tour steps) the only shared lane shown is a 6 px one in a
-malformed request (a cover with a visible parent, `gate-infeasible`).
+length) and show the best candidate, flagged `lane-infeasible`. That holds for cold
+requests too: when the gates keep every candidate out, each one that fails on lanes alone
+is priced (built lazily, the downward layout included) and the cheapest is shown. Only a
+request that defeats every candidate on other gates (malformed input, such as a cover with
+a visible parent: `pinnedViolation`) shows the downward layout as is, flagged
+`gate-infeasible`. `fallbackReason` gives the reason from the layout itself. Across the
+evaluation corpus (6,060 layouts) and the legal tours (2,595 steps, plus 540 dense-tour
+steps) the only shared lane shown is 6 px, in random-dag-40-7502 at 1,400 px / preset 48
+(`lane-infeasible`; no candidate of that cold request is lane-free).
 
 #### Crossings
 
@@ -123,24 +129,60 @@ mixed placements 2.16 → 2.12 per layout with every other target unchanged; at 
 to 1.93, but one layout becomes more than 10% taller than the baseline without a stability
 reason.
 
+#### Crossing cap
+
+Holding the clicked tile and its visible ancestors still must not buy stillness with a
+crossings explosion. When the winner preserves the anchors, crosses more than 50 times,
+and crosses more than the best unanchored candidate (the layout the engine would choose
+with no anchors: same objective, same orientation rule, found exactly by the same branch
+and bound) by more than `max(50, .25 X_free)`, the anchors yield: the unanchored candidate
+is shown and the decision is flagged `anchor-yield`, which is distinct from
+`anchor-infeasible` (no anchor-preserving candidate exists). `ANCHOR_CROSSING_SLACK` and
+`ANCHOR_CROSSING_RATIO` in `band-layout.ts` hold the two terms. The bound comes from a
+sweep over the corpus and the legal tours (yields are anchor-preserving winners that
+yielded; "infeasible" counts tour clicks flagged `anchor-infeasible`):
+
+| Cap (absolute / relative) | Unpriced crossing regressions | Corpus yields | Tour yields | Tour height / baseline | Tour displacement | Anchor-infeasible clicks |
+|---|---:|---:|---:|---:|---:|---:|
+| none | 88 | 0 | 0 | .785 | 21.3 px | 7 |
+| 100 / 100% | 86 | 3 | 8 | .783 | 20.8 px | 7 |
+| 75 / 50% | 76 | 16 | 29 | .779 | 24.4 px | 9 |
+| 50 / 50% | 75 | 17 | 40 | .790 | 30.9 px | 9 |
+| 50 / 35% | 69 | 33 | 64 | .788 | 32.1 px | 9 |
+| **50 / 25%** | **67** | **38** | **74** | **.788** | **31.5 px** | **9** |
+| 30 / 35% | 68 | 34 | 76 | .801 | 38.0 px | 9 |
+| 25 / 50% | 75 | 18 | 58 | .806 | 39.3 px | 9 |
+| 25 / 100% | 86 | 4 | 38 | .808 | 35.4 px | 7 |
+| 10 / 25% | 61 | 52 | 156 | .840 | 57.3 px (fails ≤ 42.5) | 9 |
+
+Every capped setting brings the worst case, random-dag-100-8101 at 360 px / preset 128
+(step 2: 725 crossings against the baseline's 334), down to 321, and none adds a height
+regression without a stability reason. 50 / 25% removes the most unpriced regressions
+that the displacement target allows: tighter caps either stop removing regressions (the
+remaining ones are not anchored history, below) or move anchors so often that tour
+displacement climbs towards and past the target. The cap costs one exact evaluation of
+the best unanchored candidate whenever an anchored winner crosses more than 50 times
+(about 1.5 ms at p50 on random-dag-40-7503's 24-tile reveal: its gates alone take 1.7 ms).
+
 #### Known readability limits
 
-With the final engine, 469 of 6,060 corpus layouts cross more than the baseline; 88 of
-them are not paid for by the exchange rate, and 67 of those save no height at all. They
+With the final engine, 417 of 6,060 corpus layouts cross more than the baseline; 67 of
+them are not paid for by the exchange rate, and 52 of those save no height at all. They
 come from three sources, none of which a weight can fix:
 
-- **Anchored history** (72 of 88, all flagged `stability`). The clicked tile and its
-  visible ancestors stay put whenever a lane-free embedding allows it, and the lane-free
-  incremental embedding detours around retained routes, so a dense DAG reveal can cross
-  much more than a fresh layout (worst: random-dag-100-8101 at 360 px, 334 → 725). The
-  unchanged-visible steps that keep such a layout count again.
-- **Shelf crossings in long chains** (random-chainy-100/200): shelf channels route each
-  source's trunk through one lane per source, so long wrapped chains cross more than the
-  baseline's layered sideways drawing (277 → 418 at 640 px, image 64).
-- **Wrapped single columns** (screenshot, random-tree-12-7121, hidden-siblings at 360 px):
-  two sources passing one margin cross once or twice where the baseline drew one on each
-  side. Choosing the emptier margin on ties was tried and rejected: across the corpus it
-  raised mean crossings from 335 to 379.
+- **Shelf crossings in long chains** (50: random-chainy-100/200; 40 of them are the
+  unchanged-visible steps that keep the same layout, which count again): shelf channels
+  route each source's trunk through one lane per source, so long wrapped chains cross
+  more than the baseline's layered sideways drawing (277 → 418 at 640 px, preset 64).
+- **Anchored history within the cap** (11, all flagged `stability`). The clicked tile and
+  its visible ancestors stay put whenever a lane-free embedding allows it and the crossing
+  cap is not exceeded, so a DAG reveal can cross more than a fresh layout (worst:
+  random-dag-100-8101 at 454 px / preset 128, 510 → 571).
+- **Wrapped single columns and small downward layouts** (6: screenshot,
+  random-tree-12-7121, hidden-siblings at 360 px, three DAG states): two sources passing
+  one margin cross once or twice where the baseline drew one on each side. Choosing the
+  emptier margin on ties was tried and rejected: across the corpus it raised mean
+  crossings from 335 to 379.
 Spatial indexes, parsed route plans and cached geometric joins keep repeated checks
 bounded. Cubic diagnostics use the production twelve-step flattener; this is a geometry
 approximation, not a proof about arbitrarily thick strokes.
@@ -167,10 +209,20 @@ Multi-input arrivals get explicit junctions.
 Every route is lane-free: placed segments are indexed with their source, and a route
 that would run along another source's segment takes one of a bounded set of alternative
 lanes. Blocked source ports use a bounded rectilinear visibility grid (5,000 expanded
-points, up to 3 fallback slots). Only when nothing is found does a second chance run:
-probes on lanes half a step apart, then the grid with columns beside every foreign lane
-over up to 16 slots, its work capped at 200,000 per request. An embedding that cannot be
+points per search, up to 3 fallback slots). Only when nothing is found does a second
+chance run: probes on lanes half a step apart, then the grid with columns beside every
+foreign lane over up to 16 slots (50,000 points per search). An embedding that cannot be
 made lane-free is not offered.
+The work is bounded per layout request, not per search: one `IncrementalBudget` serves
+every incremental embedding a request tries (the incremental tree and the anchored
+repack), with 2,000 probe placements, 200,000 units of plain-fallback grid work and
+200,000 of second-chance grid work (a unit is one expanded point, or eight built ones).
+A spent pool stops its searches, and the embedding gives way to the full layout. The
+budgets trade anchor stability against worst-case time on dense DAG reveals: smaller
+pools moved more anchors (for example 50,000 / 50,000 with 250 probes: 23 legal-tour
+clicks moved their anchor, against 7 at the chosen budgets, before the crossing cap). Retained geometry spanning
+more than 65,536 index rows (about 4 million px) is not indexed: such history is not
+used for an incremental embedding.
 Only previous visible geometry is retained; no candidate reserves future descendants.
 The clicked tile and its visible ancestors have a hard preference among geometry-safe
 candidates. Other surviving tiles pay displacement. A direction change must improve
@@ -183,8 +235,11 @@ pin or metrics change. Packing-only updates refresh the accepted geometry withou
 replanning. History from a superseded scene is never consumed. Normalisation removes
 preceding packed-band offsets and reconciles host cover chrome before local scoring.
 `decision.fallback` reports `anchor-infeasible` when the bounded candidate family has no
-safe anchor-preserving embedding, and `packing-infeasible` when actual packing cannot
-keep its allocation. These diagnostics describe the constructive search; they do not
+safe anchor-preserving embedding, `anchor-yield` when one exists but the crossing cap
+let the anchors move (see [Crossing cap](#crossing-cap)), and `packing-infeasible` when
+actual packing cannot keep its allocation. History that is malformed (non-finite
+geometry, a route without a string path or endpoints, routes that are not an array) is
+treated as no history. These diagnostics describe the constructive search; they do not
 prove global infeasibility. Unresolved feasible failures must remain acceptance failures.
 
 `packedGridFlow` keeps covers on their folder columns and creates one shared band per
@@ -469,3 +524,29 @@ committed reveals are both timed through `layoutGraph`. JSON, CSV, SVGs, a galle
 and an acceptance/timing table go to git-ignored `layout-eval/out/`. Any failed acceptance
 target makes the command exit nonzero. See `layout-eval/README.md` for metric definitions
 and the limits of the anchor feasibility checks.
+
+#### Known limits
+
+Five acceptance rows fail. Each is a measured limit of this engine, not a loosened target:
+
+- **Legal click anchors stationary: 9 of 2,595 tour steps move their anchor** (baseline:
+  509), every one flagged `anchor-infeasible`: random-dag-100-8103 (454 px step 7, 640 px
+  step 6), random-dag-200-9102 (360 px step 4; 454 px steps 4–6) and random-dag-200-9103
+  (360/640/900 px step 1), 42–94 visible tiles. No lane-free anchor-preserving embedding
+  was found within the per-request budget. Without the crossing cap 7 steps fall back;
+  the cap's 74 yields change later history in some tours.
+- **Dense tours: 83 of 480 clicks move their anchor** (baseline: 476), all flagged
+  `anchor-infeasible`: 6 at fan-in ≤ 4 and 77 at fan-in ≤ 10. 86 more yield to the
+  crossing cap. Where many sources merge into most tiles, the lane-free incremental
+  embedding often finds no route set within its budget.
+- **67 crossing regressions not paid for by height** (of 417 that cross more than the
+  baseline): see [Known readability limits](#known-readability-limits).
+- **8 cases with worse p95 than the baseline**, all with 3–12 visible tiles and a baseline
+  p95 of 0.19–1.10 ms; the largest gap is 0.16 ms. The new engine builds and scores at
+  least two candidates where the baseline ran one layered pass; which sub-millisecond cases
+  land on the list changes between runs.
+- **One request with ≤ 30 visible tiles above 5 ms at p95**: random-dag-40-7503's
+  committed reveal, 7.4 ms (p50 5.6 ms; baseline 12.4 ms). It has 24 visible tiles plus
+  history, so the dispatch rule runs it in the worker. The crossing cap adds about 1.5 ms
+  (its winner crosses 190 times, so the best unanchored layout is evaluated); before the
+  cap it measured 5.2 ms.

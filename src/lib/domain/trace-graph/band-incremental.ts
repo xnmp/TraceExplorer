@@ -42,6 +42,8 @@ const HOLE_ROWS = 8;
 const HOLE_TRIES = 2;
 /** Grid points a fallback route search may expand before it gives up (a bounded failure). */
 const GRID_BUDGET = 5000;
+/** Most 64 px rows one segment may span in the lane index (about 4 million px): beyond it the history is not usable. */
+const MAX_INDEX_ROWS = 65_536;
 
 /**
  * Grid work one layout request may spend on its second chance (~45 ms of grid search; the
@@ -49,31 +51,40 @@ const GRID_BUDGET = 5000;
  * more, at a steep cost in time.
  */
 const SECOND_CHANCE_WORK = 200_000;
+/** Probe placements a layout request may try to wire (see `IncrementalBudget`). */
+const PROBE_WORK = 2000;
+/** Grid work the plain fallback may spend per layout request (see `IncrementalBudget`). */
+const FALLBACK_WORK = 200_000;
 
-/** How hard the fallback tries: clear slots, grid points per search, and the grid it routes on. */
+/**
+ * Work a layout request may still spend on incremental embeddings: grid work (points
+ * expanded, plus built points / 8) for the plain fallback and for the second chance, and
+ * probe placements to wire. One budget serves every incremental embedding tried for one
+ * layout request, so the incremental path's worst case is bounded however many tiles,
+ * parents, ports and slots it tries; once a pool is spent, its searches stop and the
+ * embedding gives way to the full layout.
+ */
+export interface IncrementalBudget { fallback: number; second: number; probes: number }
+export const incrementalBudget = (): IncrementalBudget => ({ fallback: FALLBACK_WORK, second: SECOND_CHANCE_WORK, probes: PROBE_WORK });
+
+/** How hard the fallback tries: clear slots, grid points per search, the grid it routes on, and the pool it spends. */
 interface Effort {
   readonly slots: number;
   readonly budget: number;
   readonly everyLane: boolean;
-  /** Grid work (points expanded, plus built points / 8) left for this layout, shared by every search. */
-  work: number;
+  readonly pool: IncrementalBudget;
+  readonly spends: keyof IncrementalBudget;
   /** The parent that last had no route (wired first next time, so a hopeless slot fails fast). */
   hardest?: string;
 }
-const fallbackEffort = (): Effort => ({ slots: FALLBACK_SLOTS, budget: GRID_BUDGET, everyLane: false, work: Infinity });
+const left = (effort: Effort) => effort.pool[effort.spends];
+const spend = (effort: Effort, spent: { readonly pops: number; readonly cells: number }) => { effort.pool[effort.spends] -= spent.pops + spent.cells / 8; };
+const fallbackEffort = (pool: IncrementalBudget): Effort => ({ slots: FALLBACK_SLOTS, budget: GRID_BUDGET, everyLane: false, pool, spends: "fallback" });
 /**
  * The second chance, taken only when a tile has no placement otherwise (so layouts found
- * without it are unchanged): more slots, longer searches, and columns beside every lane. Its
- * grid work is capped per layout, so a scene with no lane-free route still fails in bounded time.
+ * without it are unchanged): more slots, longer searches, and columns beside every lane.
  */
-const secondChance = (): Effort => ({ slots: 16, budget: 50_000, everyLane: true, work: SECOND_CHANCE_WORK });
-/** One second-chance budget per layout request, shared by every embedding tried for it. */
-const secondChances = new WeakMap<LayoutRequest, Effort>();
-function secondChanceFor(request: LayoutRequest): Effort {
-  let effort = secondChances.get(request);
-  if (!effort) secondChances.set(request, effort = secondChance());
-  return effort;
-}
+const secondChance = (pool: IncrementalBudget): Effort => ({ slots: 16, budget: 50_000, everyLane: true, pool, spends: "second" });
 
 /** The M/L path through `points`, written once per run of repeated points. */
 const path = (points: readonly Point[]) => {
@@ -191,6 +202,10 @@ class LaneIndex {
   private readonly vertical = new Map<number, Run[]>();
   /** Every list an addition pushed onto, in order. */
   private readonly log: unknown[][] = [];
+  /** A segment spanned more rows than the index allows (absurd coordinates): its rows were not filed. */
+  private oversized = false;
+  /** Whether this index, or its base, met geometry too large to index; its answers are then incomplete. */
+  tooLarge(): boolean { return this.oversized || !!this.base?.tooLarge(); }
 
   add(list: readonly Segment[], source: string): void {
     for (const segment of list) {
@@ -198,6 +213,7 @@ class LaneIndex {
       this.log.push(this.all);
       const [a, b] = segment;
       const top = Math.floor(Math.min(a.y, b.y) / 64), bottom = Math.floor(Math.max(a.y, b.y) / 64);
+      if (bottom - top > MAX_INDEX_ROWS) { this.oversized = true; continue; }
       for (let row = top; row <= bottom; row++) this.log.push(push(this.rows, row, index));
       const dx = Math.abs(a.x - b.x), dy = Math.abs(a.y - b.y);
       if (!(dx + dy > 0) || !Number.isFinite(dx + dy)) continue;
@@ -710,10 +726,10 @@ function gridWire(parents: readonly PlacedNode[], n: PlacedNode, s: Scene, lanes
     const goals = levels ? levels.map((end, level): Arrival => ({ end, heading: "down", level })) : [{ end: point(n.x + n.width / 2, n.y - 16), heading: "down" as const, level: -1 }];
     let found: Route | undefined;
     search: for (const [port, start] of ports) for (const arrival of goals) {
-      if (!(effort.work > 0)) break search;
+      if (!(left(effort) > 0)) break search;
       const spent = { cells: 0, pops: 0 };
-      const grid = orthogonalRoute(start, arrival.end, obstacles, s.width, foreign, { budget: Math.min(effort.budget, effort.work), everyLane: effort.everyLane, spent });
-      effort.work -= spent.pops + spent.cells / 8;
+      const grid = orthogonalRoute(start, arrival.end, obstacles, s.width, foreign, { budget: Math.min(effort.budget, left(effort)), everyLane: effort.everyLane, spent });
+      spend(effort, spent);
       if (!grid) continue;
       const points = [port, ...grid, ...(levels ? [] : [point(arrival.end.x, n.y - ARROW.length)])];
       const ss = pathSegments(points);
@@ -754,10 +770,10 @@ function gridWireAll(parents: readonly PlacedNode[], n: PlacedNode, s: Scene, la
     if (!cover) ports.push([point(p.x + p.width, p.y + p.height / 2), point(p.x + p.width + 2, p.y + p.height / 2)]);
     let found: Route | undefined;
     for (const [port, start] of ports) {
-      if (!(effort.work > 0)) break;
+      if (!(left(effort) > 0)) break;
       const spent = { cells: 0, pops: 0 };
-      const grid = orthogonalRoute(start, goal, obstacles, s.width, foreign, { budget: Math.min(effort.budget, effort.work), everyLane: true, spent, column });
-      effort.work -= spent.pops + spent.cells / 8;
+      const grid = orthogonalRoute(start, goal, obstacles, s.width, foreign, { budget: Math.min(effort.budget, left(effort)), everyLane: true, spent, column });
+      spend(effort, spent);
       if (!grid) continue;
       const end = grid[grid.length - 1], level = levels ? levels.findIndex(l => l.y === end.y) : -1;
       const points = [port, ...grid, ...(levels ? [] : [point(goal.x, n.y - ARROW.length)])];
@@ -797,7 +813,7 @@ function coverStemFor(request: LayoutRequest, cover: PlacedNode): (points: reado
   };
 }
 
-export function incrementalTree(request: LayoutRequest, previous: GraphLayout): GraphLayout | null {
+export function incrementalTree(request: LayoutRequest, previous: GraphLayout, budget: IncrementalBudget = incrementalBudget()): GraphLayout | null {
   const key = request.band!.key, s = spacingFor(request.tileWidth), wanted = new Set(request.items.map(n => n.key));
   if (request.items.length > INCREMENTAL_LIMIT || !wanted.has(key)) return null;
   if (!previous.nodes.has(key) || request.items.some(n => n.key !== key && n.parents.length === 0 && !previous.nodes.has(n.key))) return null;
@@ -816,6 +832,8 @@ export function incrementalTree(request: LayoutRequest, previous: GraphLayout): 
   const joins = new Map<string, PlacedJunction>();
   previous.junctions.forEach((join, id) => { if (referenced.has(id)) joins.set(id, join); });
   const lanes = new LaneIndex(retainedIndex(previous, kept));
+  // Retained geometry beyond any real band (millions of pixels) cannot be indexed; lay out afresh.
+  if (lanes.tooLarge()) return null;
   const remaining = request.items.filter(n => !nodes.has(n.key));
   if (!remaining.length) return null;
   const width = request.maxWidth, cover = nodes.get(key)!;
@@ -832,6 +850,7 @@ export function incrementalTree(request: LayoutRequest, previous: GraphLayout): 
     return { tiles, extra: n, width, clearance: s.clearance, header: header || (n.band === 0 && n.row === 0 ? n.height : 0), bottomAbove, cover: key, coverStem, grain };
   };
   let second: Effort | undefined;
+  const plain = fallbackEffort(budget);
   // Each node gets at most 96 primary placement probes; fallback uses visible row corners and up to 32 columns. Order is topological, with stable sibling ties.
   while (remaining.length) {
     const index = remaining.findIndex(n => n.parents.every(p => nodes.has(p)));
@@ -875,6 +894,8 @@ export function incrementalTree(request: LayoutRequest, previous: GraphLayout): 
         if (hole && !holeTries) continue;
         const n: PlacedNode = { key: item.key, x, y, width: item.width, height: item.height, row: y === parent.y ? parent.row : parent.row + 1, band: parent.band + 1 };
         if (!free(n)) continue;
+        if (!(budget.probes > 0)) return undefined;
+        budget.probes--;
         const wiring = wire(parents, n, sceneFor(n), lanes, item.key, hardest);
         if (wiring) return { node: n, wiring };
         if (hole) holeTries--;
@@ -891,7 +912,7 @@ export function incrementalTree(request: LayoutRequest, previous: GraphLayout): 
         for (const y of rowYs) for (const x of slotXs) {
           const n: PlacedNode = { key: item.key, x, y, width: item.width, height: item.height, row: parent.row + 1, band: parent.band + 1 };
           if (!(parents.every(p => n.y >= p.y + p.height || n.x >= p.x + p.width) && clear(n))) continue;
-          if (!(x >= 0 && x + item.width <= width) || tried++ >= effort.slots || !(effort.work > 0)) return undefined;
+          if (!(x >= 0 && x + item.width <= width) || tried++ >= effort.slots || !(left(effort) > 0)) return undefined;
           const wiring = gridWire(parents, n, sceneFor(n), lanes, item.key, effort);
           if (wiring) return { node: n, wiring };
         }
@@ -899,10 +920,10 @@ export function incrementalTree(request: LayoutRequest, previous: GraphLayout): 
       };
       // Once a tile needed the second chance, later tiles go to it directly: the scene has proved
       // too crowded for the plain fallback, and its failures cost as much as the second chance.
-      best = second ? undefined : fallback(fallbackEffort());
+      best = second ? undefined : fallback(plain);
       if (!best) {
         // The second chance: the probes again on lanes half a step apart, then the grid router.
-        second ??= secondChanceFor(request);
+        second ??= secondChance(budget);
         grain = FINE_GRAIN;
         best = probes() ?? fallback(second);
         grain = GRAIN;

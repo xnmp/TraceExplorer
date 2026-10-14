@@ -13,7 +13,11 @@ The corpus includes Cerulean/Saffron, fans, chains, merges, hidden descendants, 
 backend graphs after projection and seeded trees/DAGs. The broad run contains 6,060 paired
 states at widths 360/454/640/900/1400 and thumbnail presets 48/64/96/128. The legal tour
 chooses only already-visible expandable tiles. Packing exercises the real domain grid
-pipeline, including history on a later packed line.
+pipeline, including history on a later packed line. The legal tours also run twelve dense
+DAGs (`denseCorpus`: 40 and 100 nodes, most tiles merging up to 4 or up to 10 earlier
+ones), where every lane is crowded; they are reported beside the broad tours (their own
+anchor row and a per-fan-in table of fallbacks) and count towards the hard-gate and
+shared-lane rows, but not towards the tour height and displacement targets.
 
 Timings (`perf.ts`) run every corpus case at 454 px / preset 96, plus its first legal
 committed reveal where one exists, after twelve warm-up calls per engine. The engines
@@ -46,7 +50,8 @@ Readability (`readability.md`, `readability.html`, and three acceptance rows):
 - **Shared lanes.** `sharedLanePx` is the collinear overlap of connectors from different
   sources (two inputs of one junction included). It is a hard gate. A production layout
   may show one only as a listed fallback (`lane-infeasible`, or the malformed-input
-  `gate-infeasible`), with its reason; any other is an acceptance failure.
+  `gate-infeasible`), with its reason (`fallbackReason`, read from the layout itself);
+  any other is an acceptance failure.
 - **Crossings.** The mean must not exceed the baseline's. A layout may cross more than the
   baseline only where each extra crossing saves `CROSSING_HEIGHT_TILES` tile widths of band
   height, the objective's own exchange rate (`layout-quality.ts`; the calibration is in
@@ -57,7 +62,10 @@ Readability (`readability.md`, `readability.html`, and three acceptance rows):
   the header gives the shared length.
 
 The solver is constructive, with bounded work. An `anchor-infeasible` decision means its
-candidate family found no safe embedding; it is not a proof that no drawing exists.
+candidate family found no safe embedding; it is not a proof that no drawing exists. An
+`anchor-yield` decision means an anchor-preserving embedding existed but crossed too much
+more than the best unanchored one (the crossing cap); the anchor rows do not count yields
+as failures, and the report lists them.
 Acceptance lists every fallback and rejects independently demonstrated feasible failures.
 Do not interpret a reported fallback alone as satisfying the plan's feasibility target.
 

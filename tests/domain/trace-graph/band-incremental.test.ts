@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { layoutGraph, type GraphLayout, type LayoutItem, type LayoutRequest, type PlacedRoute } from "$lib/domain/trace-graph/layout";
-import { incrementalTree, INCREMENTAL_LIMIT } from "$lib/domain/trace-graph/band-incremental";
+import { incrementalBudget, incrementalTree, INCREMENTAL_LIMIT } from "$lib/domain/trace-graph/band-incremental";
 import { attachSingleBand, bandExtent } from "$lib/domain/trace-graph/band-geometry";
 import { measure, segments } from "$lib/domain/trace-graph/layout-quality";
 import { ARROW } from "$lib/domain/trace-graph/metrics";
@@ -207,5 +207,21 @@ describe("incremental tree: second chance", () => {
 
   it("is deterministic, also for a fresh copy of the same request", () => {
     expect(incrementalTree(structuredClone(request), previous)).toEqual(incrementalTree(request, previous));
+  });
+
+  it("gives way to the full layout once its request's work budget is spent", () => {
+    expect(incrementalTree(request, previous, incrementalBudget())).not.toBeNull();
+    expect(incrementalTree(request, previous, { fallback: 0, second: 0, probes: 0 })).toBeNull();
+    // The plain fallback alone places the tile for about 7,500 units of grid work; 3,000 is not enough.
+    expect(incrementalTree(request, previous, { fallback: 20_000, second: 0, probes: 0 })).not.toBeNull();
+    expect(incrementalTree(request, previous, { fallback: 3000, second: 0, probes: 0 })).toBeNull();
+  });
+
+  it("shares one budget across every embedding tried for a request", () => {
+    // Enough for one embedding, not two: the second call sees what the first left.
+    const budget = { fallback: 10_000, second: 0, probes: 0 };
+    expect(incrementalTree(request, previous, budget)).not.toBeNull();
+    expect(incrementalTree(request, previous, budget)).toBeNull();
+    expect(incrementalTree(request, previous, { fallback: 10_000, second: 0, probes: 0 })).not.toBeNull();
   });
 });
