@@ -208,3 +208,27 @@ test("a second press on a cover that is still opening selects it and keeps it op
   await expect(page.locator("[data-grid-band]")).toHaveCount(2);
   expect(await uncaught(page)).toEqual([]);
 });
+
+// Review of dc33274 (H1): with the host's grid padding, a scene already wider than its pane, at an
+// unchanged width, is still laid out off the main thread; only a pane that narrowed past the scene
+// forces an inline layout.
+for (const [label, query] of [["host grid padding", "&fileTile=1"], ["no grid padding", ""]] as const) {
+  test(`a click inside a scene wider than its pane goes to the worker (${label})`, async ({ page }) => {
+    await page.setViewportSize({ width: 900, height: 700 });
+    await openView(page, 400, `?fanChildren=200&wideRoots=70${query}`, false);
+    await toggle(page, "wr-0").click();
+    await settle(page);
+    const wide = await page.evaluate(() => {
+      const view = document.querySelector<HTMLElement>("[data-testid=trace-view]")!, grid = view.querySelector<HTMLElement>('[role="grid"]')!;
+      return { view: view.clientWidth, grid: grid.getBoundingClientRect().width };
+    });
+    expect(wide.grid, "the scene is wider than its pane").toBeGreaterThan(wide.view);
+    await trace(page, (t) => t.holdLayoutReplies());
+    await toggle(page, "fan").evaluate((element: HTMLElement) => element.click());
+    await expect.poll(() => trace(page, (t) => t.heldLayoutReplies().length), { message: "the expand was laid out by the worker" }).toBeGreaterThan(0);
+    await trace(page, (t) => t.releaseLayoutReplies());
+    await settle(page);
+    await expect(toggle(page, "fan")).toHaveAttribute("aria-expanded", "true");
+    expect(await uncaught(page)).toEqual([]);
+  });
+}

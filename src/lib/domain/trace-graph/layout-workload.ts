@@ -7,7 +7,10 @@ export function canLayoutInline(request: LayoutRequest): boolean {
     && request.items.reduce((sum, n) => sum + n.parents.length, 0) + (history?.routes.length ?? 0) <= 40;
 }
 
-/** The scene on screen: how far it reaches horizontally, and the pane width it was laid out for. */
+/**
+ * The scene on screen: how far it reaches horizontally, and the width it was laid out for. Both are
+ * measured the same way, inside the grid's padding (the layout input's width), as is the next width.
+ */
 export interface DisplayedExtent {
   readonly extent: number;
   readonly width: number;

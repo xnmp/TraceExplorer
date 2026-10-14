@@ -27,7 +27,7 @@ import type { ComponentData, FolderIndex } from "$lib/domain/trace-graph/folder-
 import { buildFolderScene, diffScenes, type FolderScene, type SceneDiff, type SceneScope } from "$lib/domain/trace-graph/folder-scene";
 import { engines, memoizeEngine, type FolderLayout, type FolderLayoutEngine, type FolderLayoutInput, type GraphId } from "$lib/domain/trace-graph/folder-layout";
 import { geometryMotion, type SceneCauseKind } from "$lib/domain/trace-graph/scene-change";
-import { mustLayoutBeforePaint } from "$lib/domain/trace-graph/layout-workload";
+import { mustLayoutBeforePaint, type DisplayedExtent } from "$lib/domain/trace-graph/layout-workload";
 import { folderItems, fresh, intentChange, changed as anyChange, prepareLayoutInput, requiredComponents, resolveCover, stylingOf,
   sameSet, sameStyling, type HeldHistory, type IntentChange, type PreparedLayoutInput, type SceneData, type SceneIntent } from "./scene-inputs";
 import { restylePresentation, retargetPresentation, settledPresentation, staticPresentation, type DisplayedPresentation, type Presentation,
@@ -139,6 +139,11 @@ const RECENT_LAYOUTS = 4;
 const STABILISE_TICKS = 8;
 export const PREPARATION_DEADLINE_MS = 5000;
 const noop = () => undefined;
+/**
+ * How far a scene reaches and the width it was laid out for, both inside the grid's padding: the
+ * layout input's width, never the pane's (`SceneIntent.width` includes the padding).
+ */
+const displayedExtent = (scene: FolderScene): DisplayedExtent => ({ extent: scene.layout.size.width, width: scene.inputs.layoutInput.width });
 const thenable = (value: unknown): value is PromiseLike<unknown> => !!value && typeof (value as { then?: unknown }).then === "function";
 
 const superseded = () => new DOMException("Trace scene transaction was superseded", "AbortError");
@@ -547,7 +552,7 @@ export function createSceneController(options: SceneControllerOptions) {
       if (known) layout = known;
       // A scene on screen that the pane narrowed past is replaced before the next paint: kept while
       // a worker lays out, it would be drawn overflowing the narrower pane.
-      else if (inline(prepared.input) || mustLayoutBeforePaint(published && committed ? { extent: published.scene.layout.size.width, width: committed.intent.width } : null, prepared.input.width)) layout = engine(prepared.input);
+      else if (inline(prepared.input) || mustLayoutBeforePaint(published ? displayedExtent(published.scene) : null, prepared.input.width)) layout = engine(prepared.input);
       else {
         tx.status = "preparing-layout";
         publishState(tx);
@@ -606,7 +611,7 @@ export function createSceneController(options: SceneControllerOptions) {
       if (!restored) return false;
       const { prepared } = restored;
       const layout = restored.reuse ? restored.saved.scene.layout
-        : inline(prepared.input) || mustLayoutBeforePaint({ extent: restored.saved.scene.layout.size.width, width: restored.saved.intent.width }, prepared.input.width) ? engine(prepared.input) : null;
+        : inline(prepared.input) || mustLayoutBeforePaint(displayedExtent(restored.saved.scene), prepared.input.width) ? engine(prepared.input) : null;
       let scene: FolderScene, snapshot: Committed;
       if (layout) {
         scene = buildFolderScene({ scope, layoutInput: prepared.input, layout, sources: prepared.sources, styling: stylingOf(restored.intent), coverNodes: prepared.coverNodes });

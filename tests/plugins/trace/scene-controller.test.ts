@@ -1019,3 +1019,23 @@ describe("scene controller: geometry motion policy (native findings)", () => {
     expect(h.controller.published!.scene.layout).not.toBe(first.scene.layout);
   });
 });
+
+describe("scene controller: review fixes (dc33274)", () => {
+  // H1: `mustLayoutBeforePaint` compared the pane's width (grid padding included) with an inner
+  // extent, so with host padding every scene wider than its inner width was laid out inline.
+  it.each([["host grid padding 8", 8, 100], ["no grid padding", 0, 84]] as const)("R1: a scene wider than its pane, at an unchanged width, still lays out in the worker (%s)", async (_, gridPadding, width) => {
+    const h = setup({ inline: () => false });
+    const grid = { ...fallbackGridMetrics(tile), gridPadding };
+    // A pane narrower than one tile plus its padding: the scene is wider than the pane (it scrolls sideways).
+    h.offer({ width, grid }); await flush();
+    h.layouts.at(-1)!.reply.resolve(engines.default(h.layouts.at(-1)!.input)); await flush();
+    const first = h.controller.published!;
+    expect(first.scene.layout.size.width).toBeGreaterThan(first.scene.inputs.layoutInput.width);
+    const asked = h.layouts.length, inlineRuns = h.engine.mock.calls.length;
+    // The user opens a stack; the pane's width did not change.
+    h.act("expand", () => h.offer({ open: new Set(["a1"]) })); await flush();
+    h.deliver("ca"); await flush();
+    expect(h.engine.mock.calls.length, "laid out inline on the main thread").toBe(inlineRuns);
+    expect(h.layouts.length, "asked the worker").toBe(asked + 1);
+  });
+});
