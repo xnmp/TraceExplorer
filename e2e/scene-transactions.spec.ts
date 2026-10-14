@@ -162,3 +162,29 @@ test("a cold open that times out fails in its cover, never opens late, and Retry
   await expect(merged.locator("[data-stack-toggle]")).toHaveAttribute("aria-expanded", "true");
   expect(await uncaught(page)).toEqual([]);
 });
+
+test("an open stack that can no longer be read fails in its cover; the rest of the folder still updates", async ({ page }) => {
+  await openView(page, 900, "?grouping=two-chains", false);
+  await toggle(page, "photo-a").click();
+  await settle(page);
+  await expect(stack(page, "photo-a").locator("[data-grid-band] [data-tile-key]").first()).toBeVisible();
+  await expect(stack(page, "photo-b")).toHaveAttribute("data-stack-count", "2 images");
+  await trace(page, (t) => t.backend.failNodeReads(1000));
+  await trace(page, (t) => { t.backend.startGeneration("photo-b", "gen-x"); t.backend.completeGeneration("gen-x"); t.backend.saveGeneration("gen-x"); });
+  // One unreadable stack never blocks the folder: photo-b updates, photo-a shows its error and Retry, drawn closed.
+  await expect(stack(page, "photo-b")).toHaveAttribute("data-stack-count", "3 images");
+  const error = stack(page, "photo-a").locator("[data-cover-error]");
+  await expect(error).toBeVisible();
+  await expect(error).toHaveAttribute("title", /could not read/);
+  await expect(stack(page, "photo-a").locator("[data-grid-band]")).toHaveCount(0);
+  await settle(page);
+  await expect(page.locator(".overlay[role=alert]")).toHaveCount(0);
+  // It is still requested open: Retry reads it again and reopens it.
+  await trace(page, (t) => t.backend.failNodeReads(0));
+  await stack(page, "photo-a").locator("[data-cover-retry]").click();
+  await settle(page);
+  await expect(error).toHaveCount(0);
+  await expect(stack(page, "photo-a").locator("[data-grid-band] [data-tile-key]").first()).toBeVisible();
+  await expect(toggle(page, "photo-a")).toHaveAttribute("aria-expanded", "true");
+  expect(await uncaught(page)).toEqual([]);
+});
