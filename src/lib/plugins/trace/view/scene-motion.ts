@@ -1,20 +1,28 @@
 /**
- * The native motion driver (docs/scene-transactions.md §6): compiles one publication's
- * presentation into Web Animations on one clock.
+ * The motion driver (docs/scene-transactions.md §6, "Motion driver (rAF)"): shows one
+ * publication's presentation by writing inline styles from one main-thread frame loop.
  *
- * - Every effect of an epoch is created synchronously in `start`, with the epoch's common
- *   duration (shorter tracks hold their final values), so they share one start time. The first
- *   created animation is the epoch clock; a sample reads its `currentTime` once. No start time is
- *   ever assigned: the browser resolves readiness, and until then each element shows its first
- *   pose inline (written under an ownership token, cleared on ready, finish or cancel).
+ * - `start` compiles every moving record's track (`compileTrack`) on the epoch's clock and writes
+ *   their first poses synchronously. The clock starts at the first frame after it (`t0`, that
+ *   frame's callback time, as a native animation's start time resolves when it is first
+ *   rendered), so the first frame painted shows the first poses. Each frame then computes every
+ *   value at epoch time `min(duration, now - t0)` (`frameAt`) and writes them all, with no DOM
+ *   read in between.
+ * - What is displayed is what was last written: an interruption samples the presentation at that
+ *   time (`sample`), so it continues from exactly the pose on screen. No compositor clock runs
+ *   ahead of it (WebKitGTK 2.54.1 also snaps a compositor animation back to its start pose as it
+ *   ends, WebKit bug 321993; the native Web Animations driver this replaces suffered both).
+ * - Fill: when the epoch completes, `none` effects (live records, the camera) give their inline
+ *   values back to the renderer in that same frame, and `settled` resolves there, so the settled
+ *   scene commits before it paints; `forwards` effects (connector layers, retirees) keep their
+ *   final values until the next epoch, a snap, or their element's removal.
  * - Effects apply to registered render handles (`render-handles.ts`). Band records move inside
  *   their stack's section, which follows the cover's vertical motion, so they compile relative to
  *   it; a record moving exactly with its section gets no effect.
- * - The driver cancels only what it owns, never CSS transitions on cards.
+ * - The driver writes and restores only properties it owns, never CSS transitions on cards. One
+ *   frame loop drives every view's running epoch and stops when none runs.
  * - DOM reads: the grid's screen origin and zoom (camera compensation, when scrolling was clamped
- *   by the new layout; the viewport in folder coordinates, which selects motion participants) and, at an interruption, one modelled moving HTML element as a
- *   compositor-progress probe (WebKit can display more progress than the main-thread clock
- *   reports after a stall). Nothing else is measured.
+ *   by the new layout; the viewport in folder coordinates, which selects motion participants).
  */
 import type { GridRect } from "$lib/domain/trace-graph/grid-flow";
 import type { Point } from "$lib/domain/trace-graph/path-sampling";
@@ -108,100 +116,201 @@ export function compileTrack(track: Track, base: GridRect, frame: MotionFrame | 
 }
 const displacement = (pose: Pose | null, base: GridRect): Point => pose ? { x: pose.rect.x - base.x, y: pose.rect.y - base.y } : { x: 0, y: 0 };
 
-const num = (value: number) => +(Math.round(value * 1e6) / 1e6) || 0;
-const px = (value: number) => `${num(value)}px`;
-export const cssEasing = (easing: Ease): string => easing === "linear" ? "linear" : `cubic-bezier(${easing.map(num).join(", ")})`;
-const polygon = (clip: GridRect) => {
-  const left = px(clip.x), top = px(clip.y), right = px(clip.x + clip.width), bottom = px(clip.y + clip.height);
-  return `polygon(${left} ${top}, ${right} ${top}, ${right} ${bottom}, ${left} ${bottom})`;
-};
+
+// ─── Sampling compiled frames (pure) ────────────────────────────────────────
+
+/** What a compiled track displays at one epoch time. */
+export interface FrameValues {
+  readonly dx: number;
+  readonly dy: number;
+  readonly width: number;
+  readonly height: number;
+  readonly opacity: number;
+  /** Clip in the element's own box coordinates, or null. */
+  readonly clip: GridRect | null;
+}
+
+const values = ({ dx, dy, width, height, opacity, clip }: CompiledFrame): FrameValues => ({ dx, dy, width, height, opacity, clip });
+const mix = (a: number, b: number, k: number) => a + (b - a) * k;
+/** A frame's clip, or its whole box: an unclipped frame next to a clipped one interpolates from its full extent. */
+const clipOf = (f: CompiledFrame): GridRect => f.clip ?? { x: 0, y: 0, width: f.width, height: f.height };
 
 /**
- * Keyframes for compiled frames: `move` translates only (cells, covers, sections), `box` also
- * fades, clips and resizes (tiles), `layer` fades and clips (motion layers, exit groups), `row`
- * translates and scales vertically from its top (row backgrounds). Null when nothing changes.
+ * The values compiled `frames` display at epoch time `t`: the segment holding `t`, eased by its
+ * starting frame's easing, every value interpolated linearly by that progress. Before the first
+ * frame (or for a time that is not a number) the first frame's values; from the last frame on, its
+ * values. These are exactly the values a native effect would interpolate from the same keyframes.
  */
-export function keyframesOf(frames: readonly CompiledFrame[], base: GridRect, kind: "move" | "box" | "layer" | "row", duration: number): Keyframe[] | null {
+export function frameAt(frames: readonly CompiledFrame[], t: number): FrameValues {
+  if (!frames.length) throw new RangeError("frameAt: no compiled frames");
+  const first = frames[0], last = frames[frames.length - 1];
+  if (!(t > first.at)) return values(first);
+  if (t >= last.at) return values(last);
+  // The last frame at or before `t`; the next one is after it.
+  let low = 0, high = frames.length - 1;
+  while (high - low > 1) {
+    const middle = (low + high) >> 1;
+    if (frames[middle].at <= t) low = middle; else high = middle;
+  }
+  const a = frames[low], b = frames[high];
+  const k = easeAt(a.easing, (t - a.at) / (b.at - a.at));
+  const clip = a.clip || b.clip ? (() => {
+    const from = clipOf(a), to = clipOf(b);
+    return { x: mix(from.x, to.x, k), y: mix(from.y, to.y, k), width: mix(from.width, to.width, k), height: mix(from.height, to.height, k) };
+  })() : null;
+  return { dx: mix(a.dx, b.dx, k), dy: mix(a.dy, b.dy, k), width: mix(a.width, b.width, k), height: mix(a.height, b.height, k), opacity: mix(a.opacity, b.opacity, k), clip };
+}
+
+/** The inline properties the driver writes. */
+export type MotionProperty = "transform" | "opacity" | "clipPath" | "width" | "height";
+/**
+ * How an element shows its frames: `move` translates only (cells, covers, sections), `box` also
+ * fades, clips and resizes (tiles), `layer` fades and clips (motion layers, exit groups), `row`
+ * translates and scales vertically from its top (row backgrounds).
+ */
+export type MotionKind = "move" | "box" | "layer" | "row";
+
+/** The properties compiled `frames` change for an element of `kind` laid out at `base`: none when it holds still. */
+export function animatedProperties(frames: readonly CompiledFrame[], base: GridRect, kind: MotionKind): readonly MotionProperty[] {
   const moves = frames.some((f) => Math.abs(f.dx) > 1e-3 || Math.abs(f.dy) > 1e-3);
   const sized = kind === "box" && frames.some((f) => Math.abs(f.width - base.width) > 1e-3 || Math.abs(f.height - base.height) > 1e-3);
   const fades = kind !== "move" && kind !== "row" && frames.some((f) => Math.abs(f.opacity - 1) > 1e-4);
   const clips = (kind === "box" || kind === "layer") && frames.some((f) => f.clip !== null);
   const scales = kind === "row" && frames.some((f) => Math.abs(f.height - base.height) > 1e-3);
-  if (!moves && !sized && !fades && !clips && !scales) return null;
-  return frames.map((f) => {
-    const frame: Keyframe = { offset: duration > 0 ? Math.min(1, Math.max(0, f.at / duration)) : 0, easing: cssEasing(f.easing) };
-    if (kind === "row") frame.transform = `translateY(${px(f.dy)}) scaleY(${num(base.height > 0 ? f.height / base.height : 1)})`;
-    else if (moves) frame.transform = `translate(${px(f.dx)}, ${px(f.dy)})`;
-    if (sized) { frame.width = px(f.width); frame.height = px(f.height); }
-    if (fades) frame.opacity = num(f.opacity);
-    if (clips) frame.clipPath = polygon(f.clip ?? { x: 0, y: 0, width: f.width, height: f.height });
-    return frame;
-  });
+  const properties: MotionProperty[] = [];
+  if (kind === "row" ? moves || scales : moves) properties.push("transform");
+  if (sized) properties.push("width", "height");
+  if (fades) properties.push("opacity");
+  if (clips) properties.push("clipPath");
+  return properties;
 }
 
-// ─── Native effects ─────────────────────────────────────────────────────────
+const num = (value: number) => +(Math.round(value * 1e6) / 1e6) || 0;
+const px = (value: number) => `${num(value)}px`;
+const polygon = (clip: GridRect) => {
+  const left = px(clip.x), top = px(clip.y), right = px(clip.x + clip.width), bottom = px(clip.y + clip.height);
+  return `polygon(${left} ${top}, ${right} ${top}, ${right} ${bottom}, ${left} ${bottom})`;
+};
 
-type Styled = (HTMLElement | SVGElement) & ElementCSSInlineStyle;
-const INLINE = ["transform", "opacity", "clipPath", "width", "height"] as const;
-const inversions = new WeakMap<Element, Map<string, object>>();
-
-/**
- * Animates `element` from inline first-pose values: the first keyframe is written inline under
- * an ownership token until the effect is ready (a pending effect shows it), and cleared on ready,
- * finish or cancel, unless a later effect owns the property. Width and height are restored from
- * the element's current record (`size`), since Svelte may have committed new dimensions meanwhile.
- */
-function animateInverted(element: Styled, frames: Keyframe[], timing: KeyframeAnimationOptions, size?: () => { width: number; height: number } | null): Animation {
-  const owned = inversions.get(element) ?? new Map<string, object>();
-  inversions.set(element, owned);
-  const token = {};
-  const values = INLINE.flatMap((property) => {
-    const value = frames[0][property];
-    if (value === undefined) return [];
-    const previous = element.style[property];
-    owned.set(property, token);
-    element.style[property] = String(value);
-    return [{ property, previous, applied: element.style[property] }];
-  });
-  const clear = () => {
-    for (const { property, previous, applied } of values) if (owned.get(property) === token) {
-      owned.delete(property);
-      if (element.style[property] !== applied) continue; // Svelte committed a new value meanwhile.
-      const dimensions = property === "width" || property === "height" ? size?.() : null;
-      element.style[property] = dimensions ? px(dimensions[property as "width" | "height"]) : previous;
+/** The inline values of `properties` that show `shown` on an element of `kind` laid out at `base`. */
+export function styleOf(shown: FrameValues, base: GridRect, kind: MotionKind, properties: readonly MotionProperty[]): Partial<Record<MotionProperty, string>> {
+  const style: Partial<Record<MotionProperty, string>> = {};
+  for (const property of properties) {
+    switch (property) {
+      case "transform":
+        style.transform = kind === "row" ? `translateY(${px(shown.dy)}) scaleY(${num(base.height > 0 ? shown.height / base.height : 1)})` : `translate(${px(shown.dx)}, ${px(shown.dy)})`;
+        break;
+      case "width": style.width = px(shown.width); break;
+      case "height": style.height = px(shown.height); break;
+      case "opacity": style.opacity = String(num(shown.opacity)); break;
+      case "clipPath": style.clipPath = polygon(shown.clip ?? { x: 0, y: 0, width: shown.width, height: shown.height }); break;
     }
-  };
-  let animation: Animation;
-  try { animation = element.animate(frames, timing); }
-  catch (error) { clear(); throw error; }
-  const cancel = animation.cancel.bind(animation);
-  animation.cancel = () => { clear(); cancel(); };
-  animation.ready.then(clear, clear);
-  animation.finished.then(clear, clear);
-  return animation;
+  }
+  return style;
 }
 
-interface Probe {
-  readonly element: HTMLElement;
-  readonly track: Track;
-  /** The element's laid-out position on the probed axis (grid coordinates): the track's base. */
-  readonly axis: "x" | "y";
-}
-
-interface Epoch {
-  readonly presentation: Presentation;
-  readonly animations: readonly Animation[];
-  readonly clock: Animation | null;
-  readonly probe: Probe | null;
-  /** The camera's starting displacement of the grid (CSS px), easing to none over the epoch; null without a camera. */
-  readonly camera: Point | null;
-}
-
-/** The camera's displacement at epoch time `at`: `shift` eased away over `duration` (the effect's own keyframes). */
+/** The camera's displacement at epoch time `at`: `shift` eased away over `duration`. */
 export const cameraAt = (shift: Point, at: number, duration: number): Point => {
   const left = 1 - easeAt(EASE, duration > 0 ? at / duration : 1);
   return { x: shift.x * left, y: shift.y * left };
 };
+
+// ─── The frame loop ─────────────────────────────────────────────────────────
+
+/** One element's motion in an epoch. */
+interface Effect {
+  readonly element: Styled;
+  readonly style: (at: number) => Partial<Record<MotionProperty, string>>;
+  /** `none`: the renderer's values return when the epoch completes; `forwards`: the final values stay until the next epoch, a snap or the element's removal. */
+  readonly fill: "none" | "forwards";
+}
+
+/** An epoch the loop drives. */
+interface Running {
+  readonly epoch: number;
+  readonly duration: number;
+  /** Advances to frame time `now` (complete once the epoch's duration has elapsed). */
+  tick(now: number): void;
+  /** Test hook: shows epoch time `at` now. */
+  seek(at: number): void;
+  /** Completes now (final values, settled). */
+  finish(): void;
+  /** Ends now without completing (settled false). */
+  cancel(): void;
+  /** Epoch time last written. */
+  at: number;
+  held: boolean;
+  /** Test hook: where the clock is pinned while held. */
+  pinned: number;
+  /** Frame time the epoch's clock started at (NaN until its first frame). */
+  t0: number;
+}
+
+/** Every running epoch of every view, driven by one frame loop that runs only while one is. */
+const active = new Set<Running>();
+let frame = 0;
+/** Test hooks: whether new epochs start held, and the clock's rate. */
+let holding = false;
+let rate = 1;
+let startedEpochs = 0;
+/** Elements whose inline values a driver owns now (test hook `owns`). */
+const writing = new WeakSet<Element>();
+const clock = () => performance.now();
+const runs = () => [...active].some((running) => !running.held);
+/** Requests the next frame while an epoch runs; cancels a requested one once none does. */
+function schedule(): void {
+  if (!frame && runs()) frame = requestAnimationFrame(loop);
+  else if (frame && !runs()) { cancelAnimationFrame(frame); frame = 0; }
+}
+function loop(now: number): void {
+  frame = 0;
+  for (const running of [...active]) if (!running.held) running.tick(now);
+  schedule();
+}
+
+/**
+ * Test-only control of the motion clock (the browser harness exposes it). It never acts unless
+ * called: production motion runs on frame time.
+ */
+export const sceneMotionTesting = {
+  /** Holds every running epoch where it is, and starts every later one held at its first pose. */
+  hold(): void {
+    holding = true;
+    for (const running of active) { running.held = true; running.pinned = running.at; }
+    schedule();
+  },
+  /** Shows epoch time `at` (clamped to each epoch) in every held epoch, synchronously. A held epoch does not complete. */
+  seek(at: number): void {
+    for (const running of [...active]) if (running.held) running.seek(at);
+  },
+  /** Runs every held epoch on from where it is held; later epochs start running. */
+  release(): void {
+    holding = false;
+    const now = clock();
+    for (const running of active) if (running.held) { running.held = false; running.t0 = now - running.pinned / rate; }
+    schedule();
+  },
+  /** Completes every running epoch now: final values, settled. */
+  finish(): void {
+    for (const running of [...active]) running.finish();
+  },
+  /** Epoch time advances `value` times as fast as frame time (1 normally). */
+  setRate(value: number): void {
+    const now = clock();
+    for (const running of active) if (!running.held && Number.isFinite(running.t0)) running.t0 = now - (now - running.t0) * rate / value;
+    rate = value;
+  },
+  /** Whether a driver shows `element` with values it wrote (it has an effect of its own, or kept a final value). */
+  owns: (element: Element): boolean => writing.has(element),
+  /** What runs: each running epoch's number, displayed time and duration, and how many epochs started motion so far. */
+  state(): { readonly running: readonly { epoch: number; at: number; duration: number; held: boolean }[]; readonly started: number } {
+    return { running: [...active].map(({ epoch, at, duration, held }) => ({ epoch, at, duration, held })), started: startedEpochs };
+  },
+};
+
+// ─── The driver ─────────────────────────────────────────────────────────────
+
+type Styled = (HTMLElement | SVGElement) & ElementCSSInlineStyle;
 
 export interface SceneMotionOptions {
   readonly handles: RenderHandles;
@@ -211,69 +320,66 @@ export interface SceneMotionOptions {
   readonly reduced?: () => boolean;
 }
 
-/** Folder coordinates of `element`'s top-left in `grid`, from their rects (both include running transforms). */
-function offsetIn(grid: Element, element: Element): Point {
-  const origin = grid.getBoundingClientRect(), box = element.getBoundingClientRect(), zoom = zoomOf(grid as HTMLElement, origin);
-  return { x: (box.left - origin.left) / zoom, y: (box.top - origin.top) / zoom };
-}
-
-/** The epoch time at which `track` places its record at `value` on `axis` (bisection; the track is one monotone segment). */
-function timeAt(track: Track, axis: "x" | "y", value: number): number {
-  const end = trackEnd(track), at = (t: number) => sampleTrack(track, t).rect[axis];
-  const ascending = at(end) >= at(0);
-  let low = 0, high = end;
-  for (let i = 0; i < 40; i++) {
-    const mid = (low + high) / 2;
-    if ((at(mid) < value) === ascending) low = mid; else high = mid;
-  }
-  return (low + high) / 2;
-}
-
 /** The driver, which also reports the epoch time it displays (windowing samples the presentation there). */
 export interface SceneMotionDriver extends SceneMotion {
   viewport(): GridRect | null;
-  /** The epoch time `presentation` is displayed at now (calibrated; Infinity once settled, 0 before its epoch started). */
+  /** The epoch time `presentation` is displayed at now (Infinity once settled, 0 before its epoch started). */
   displayedAt(presentation: Presentation): number;
 }
 
+/** The renderer's inline values under the ones the driver wrote, per element and property. */
+interface Owned {
+  readonly previous: Map<MotionProperty, string>;
+  readonly written: Map<MotionProperty, string>;
+}
+
 export function createSceneMotion({ handles, scroller = () => null, reduced = prefersReducedMotion }: SceneMotionOptions): SceneMotionDriver {
-  let epoch: Epoch | null = null;
+  /** The newest epoch started, and its loop entry while it runs. */
+  let current: { readonly presentation: Presentation; running: Running | null; camera: boolean } | null = null;
   /** The newest epoch started (an unstarted newer presentation still displays its first poses). */
   let started = -Infinity;
   /** The grid's screen origin when the displayed presentation was sampled, and the zoom then. */
   let origin: { left: number; top: number; zoom: number } | null = null;
+  const owned = new Map<Styled, Owned>();
 
-  const owned = (animation: Animation) => animation.playState !== "finished" && animation.playState !== "idle";
-  function stop(): void {
-    for (const animation of epoch?.animations ?? []) if (owned(animation)) animation.cancel();
+  function write(element: Styled, style: Partial<Record<MotionProperty, string>>): void {
+    let own = owned.get(element);
+    if (!own) { owned.set(element, own = { previous: new Map(), written: new Map() }); writing.add(element); }
+    for (const property in style) {
+      const key = property as MotionProperty, value = style[key]!, shown = element.style[key];
+      const mine = own.written.get(key);
+      // The renderer's value: before the first write, or whatever it committed since the last.
+      if (mine === undefined || shown !== mine) own.previous.set(key, shown);
+      if (shown === value && mine !== undefined) continue;
+      element.style[key] = value;
+      own.written.set(key, element.style[key]);
+    }
+  }
+  /** Gives `element`'s properties back to the renderer (keeping any value it committed meanwhile). */
+  function restore(element: Styled): void {
+    const own = owned.get(element);
+    if (!own) return;
+    owned.delete(element);
+    writing.delete(element);
+    for (const [property, previous] of own.previous) if (element.style[property] === own.written.get(property)) element.style[property] = previous;
   }
 
-  /**
-   * Epoch time displayed now for `presentation` (`at`), and the clock's own time (`clock`): what
-   * the main thread applies, which the grid's measured rect reflects.
-   */
-  function displayedTime(presentation: Presentation): { readonly at: number; readonly clock: number } {
-    const settled = { at: Infinity, clock: Infinity };
-    if (presentation.duration <= 0) return settled;
-    if (!epoch || epoch.presentation.epoch !== presentation.epoch) return presentation.epoch > started ? { at: 0, clock: 0 } : settled;
-    const { clock, probe } = epoch;
-    if (!clock || !owned(clock)) return settled;
-    const total = Number(clock.effect?.getTiming().duration) || presentation.duration;
-    const time = Math.min(presentation.duration, Math.max(0, (Number(clock.currentTime) || 0) / total * presentation.duration));
-    let at = time;
-    const grid = handles.get(GRID);
-    if (probe && grid && probe.element.isConnected) {
-      // The compositor may show more progress than the clock reports (a stalled main thread in WebKit).
-      const shown = offsetIn(grid, probe.element)[probe.axis];
-      if (Math.abs(shown - sampleTrack(probe.track, at).rect[probe.axis]) > .5) at = timeAt(probe.track, probe.axis, shown);
-    }
-    return { at, clock: time };
+  /** Ends the running epoch (settled false unless it completed) and gives every owned property back. */
+  function stop(): void {
+    current?.running?.cancel();
+    for (const element of [...owned.keys()]) restore(element);
+  }
+
+  function displayedTime(presentation: Presentation): number {
+    if (presentation.duration <= 0) return Infinity;
+    if (!current || current.presentation.epoch !== presentation.epoch) return presentation.epoch > started ? 0 : Infinity;
+    return current.running ? current.running.at : Infinity;
   }
 
   return {
     reduced,
 
-    displayedAt: (presentation) => displayedTime(presentation).at,
+    displayedAt: displayedTime,
 
     viewport(): GridRect | null {
       const grid = handles.get(GRID), view = scroller();
@@ -284,17 +390,12 @@ export function createSceneMotion({ handles, scroller = () => null, reduced = pr
 
     sample(presentation: Presentation): DisplayedPresentation {
       const grid = handles.get(GRID);
-      const { at, clock } = displayedTime(presentation);
       if (grid) {
-        const rect = grid.getBoundingClientRect(), zoom = zoomOf(grid as HTMLElement, rect);
-        // The grid's rect includes the running camera as the clock applies it; the interruption continues from where
-        // it is displayed (the calibrated time), so the next camera starts from the displayed origin.
-        const camera = epoch?.camera && epoch.presentation.epoch === presentation.epoch && Number.isFinite(clock) ? epoch.camera : null;
-        const applied = camera ? cameraAt(camera, clock, presentation.duration) : { x: 0, y: 0 };
-        const shown = camera ? cameraAt(camera, at, presentation.duration) : applied;
-        origin = { left: rect.left + (shown.x - applied.x) * zoom, top: rect.top + (shown.y - applied.y) * zoom, zoom };
+        // The grid's rect includes the camera as last written: what is displayed.
+        const rect = grid.getBoundingClientRect();
+        origin = { left: rect.left, top: rect.top, zoom: zoomOf(grid as HTMLElement, rect) };
       }
-      return samplePresentation(presentation, at);
+      return samplePresentation(presentation, displayedTime(presentation));
     },
 
     start(presentation: Presentation) {
@@ -302,33 +403,23 @@ export function createSceneMotion({ handles, scroller = () => null, reduced = pr
       started = Math.max(started, presentation.epoch);
       const sampled = origin;
       origin = null;
-      const animations: Animation[] = [];
-      let probe: Probe | null = null;
+      current = { presentation, running: null, camera: false };
       const { duration } = presentation;
-      if (reduced() || !(duration > 0)) {
-        epoch = { presentation, animations, clock: null, probe, camera: null };
-        return { started: false, settled: Promise.resolve(true) };
-      }
+      if (reduced() || !(duration > 0)) return { started: false, settled: Promise.resolve(true) };
       // Camera: where the grid's screen origin moved since the sample (the new layout clamped
       // scrolling, or a running camera was interrupted); it eases from where it was displayed.
-      // Measured before any first pose is written: exit groups never hold the scroll extent
-      // (RetiringBand), so scrolling has already clamped to the settled scene.
+      // Measured with every owned property given back and before any first pose is written: exit
+      // groups never hold the scroll extent (RetiringBand), so scrolling has already clamped to the settled scene.
       const grid = handles.get(GRID) as Styled | undefined;
       const rect = grid && sampled ? grid.getBoundingClientRect() : null;
       const shift = rect && sampled ? { x: (sampled.left - rect.left) / sampled.zoom, y: (sampled.top - rect.top) / sampled.zoom } : { x: 0, y: 0 };
-      const timing = (fill: FillMode): KeyframeAnimationOptions => ({ duration, easing: "linear", fill });
-      const sizeOf = (key: string) => () => {
-        const record = (epoch?.presentation ?? presentation).live.get(key)?.record;
-        return record ? { width: record.rect.width, height: record.rect.height } : null;
-      };
-      const play = (key: string, track: Track, base: GridRect, frame: MotionFrame | null, kind: "move" | "box" | "layer" | "row", fill: FillMode, map?: (f: CompiledFrame) => CompiledFrame) => {
+      const effects: Effect[] = [];
+      const play = (key: string, track: Track, base: GridRect, frame: MotionFrame | null, kind: MotionKind, fill: Effect["fill"], map?: (f: CompiledFrame) => CompiledFrame) => {
         const element = handles.get(key) as Styled | undefined;
-        if (!element) return null;
-        const compiled = compileTrack(track, base, frame, duration);
-        const frames = keyframesOf(map ? compiled.map(map) : compiled, base, kind, duration);
-        if (!frames) return null;
-        animations.push(animateInverted(element, frames, timing(fill), kind === "box" ? sizeOf(key) : undefined));
-        return element;
+        if (!element) return;
+        const compiled = compileTrack(track, base, frame, duration), frames = map ? compiled.map(map) : compiled;
+        const properties = animatedProperties(frames, base, kind);
+        if (properties.length) effects.push({ element, fill, style: (at) => styleOf(frameAt(frames, at), base, kind, properties) });
       };
       const inSection = (frame: SectionFrame | null): MotionFrame | null => frame ? { track: frame.track, base: frame.base, x: false } : null;
       const drawn = presentationView(presentation);
@@ -336,17 +427,12 @@ export function createSceneMotion({ handles, scroller = () => null, reduced = pr
         if (!track) continue;
         switch (record.kind) {
           case "row": play(record.id, track, record.rect, null, "row", "none"); break;
-          case "entry": {
-            const element = play(record.id, track, record.rect, null, "move", "none");
-            if (element instanceof HTMLElement) probe = better(probe, { element, track, axis: axisOf(track, record.rect) });
-            break;
-          }
+          case "entry": play(record.id, track, record.rect, null, "move", "none"); break;
           case "tile":
             if (record.cover) {
               // The section follows the cover's row; the cover's cell moves sideways within it.
               play(record.id, track, record.rect, { track, base: record.rect, x: false }, "move", "none");
-              const section = play(sectionKey(record.graphId!), track, record.rect, null, "move", "none", (f) => ({ ...f, dx: 0 }));
-              if (section instanceof HTMLElement && axisOf(track, record.rect) === "y") probe = better(probe, { element: section, track, axis: "y" });
+              play(sectionKey(record.graphId!), track, record.rect, null, "move", "none", (f) => ({ ...f, dx: 0 }));
             } else if (!ridesSection(presentation, record, track)) play(record.id, track, record.rect, inSection(sectionFrame(presentation, record)), "box", "none");
             break;
           case "route": case "junction":
@@ -367,38 +453,56 @@ export function createSceneMotion({ handles, scroller = () => null, reduced = pr
           play(retiree.renderId, retiree.track, record.rect, frame, record.kind === "tile" ? "box" : "layer", "forwards");
         }
       }
-      const camera = grid && animations.length && Math.hypot(shift.x, shift.y) >= .5 ? shift : null;
-      if (grid && camera) {
-        animations.push(animateInverted(grid, [
-          { offset: 0, easing: cssEasing(EASE), transform: `translate(${px(shift.x)}, ${px(shift.y)})` },
-          { offset: 1, transform: "translate(0px, 0px)" },
-        ], timing("none")));
+      if (grid && effects.length && Math.hypot(shift.x, shift.y) >= .5) {
+        effects.push({ element: grid, fill: "none", style: (at) => { const { x, y } = cameraAt(shift, at, duration); return { transform: `translate(${px(x)}, ${px(y)})` }; } });
+        current.camera = true;
       }
-      epoch = { presentation, animations, clock: animations[0] ?? null, probe: probe && animations.length ? probe : null, camera };
-      if (!animations.length) return { started: false, settled: Promise.resolve(true) };
-      return { started: true, settled: Promise.all(animations.map((animation) => animation.finished)).then(() => true, () => false) };
+      if (!effects.length) return { started: false, settled: Promise.resolve(true) };
+
+      let settle!: (finished: boolean) => void;
+      const settled = new Promise<boolean>((resolve) => { settle = resolve; });
+      const epoch = current;
+      /** Writes every effect's values at `at`: all computed first, then written, with no read between. */
+      const render = (at: number) => {
+        const styles = effects.map((effect) => effect.style(at));
+        effects.forEach((effect, i) => write(effect.element, styles[i]));
+        running.at = at;
+      };
+      /** Ends the epoch: complete (final values, the `none` ones given back) or cancelled. */
+      const end = (finished: boolean) => {
+        if (!active.delete(running)) return;
+        if (finished) {
+          render(duration);
+          for (const effect of effects) if (effect.fill === "none") restore(effect.element);
+        }
+        if (epoch.running === running) epoch.running = null;
+        schedule();
+        settle(finished);
+      };
+      const running: Running = {
+        epoch: presentation.epoch, duration, at: 0, held: holding, pinned: 0, t0: NaN,
+        tick(now) {
+          if (!Number.isFinite(running.t0)) running.t0 = now;
+          const at = Math.min(duration, Math.max(0, (now - running.t0) * rate));
+          if (at >= duration) end(true); else render(at);
+        },
+        seek(at) { running.pinned = Math.min(duration, Math.max(0, Number(at) || 0)); render(running.pinned); },
+        finish: () => end(true),
+        cancel: () => end(false),
+      };
+      epoch.running = running;
+      // The first pose is written now, synchronously, so the first frame painted shows it.
+      render(0);
+      active.add(running);
+      startedEpochs++;
+      schedule();
+      return { started: true, settled };
     },
 
     snap(): void {
       stop();
-      epoch = null;
+      current = null;
       origin = null;
     },
   };
-}
-
-/** The axis a single-segment track travels furthest on, for a probe. */
-function axisOf(track: Track, base: GridRect): "x" | "y" {
-  const first = track.frames[0].pose.rect;
-  return Math.abs(first.y - base.y) >= Math.abs(first.x - base.x) ? "y" : "x";
-}
-
-/** The better progress probe: one monotone segment travelling furthest (at least a pixel). */
-function better(current: Probe | null, candidate: Probe): Probe | null {
-  const travel = (probe: Probe) => {
-    const { frames } = probe.track;
-    return frames.length === 2 ? Math.abs(frames[1].pose.rect[probe.axis] - frames[0].pose.rect[probe.axis]) : 0;
-  };
-  if (travel(candidate) < 1) return current;
-  return !current || travel(candidate) > travel(current) ? candidate : current;
 }

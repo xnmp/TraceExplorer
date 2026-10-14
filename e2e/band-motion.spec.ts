@@ -1,19 +1,14 @@
 import { test, expect, type Page } from '@playwright/test';
-import { holdScriptedAnimations, releaseScriptedAnimations, awaitAnimationsCreated, applyHeldAnimationEffects } from './animation-control';
+import { holdMotion, releaseMotion, awaitMotionStarted } from './animation-control';
 import { openView, settle, key, uncaught } from './support';
 
 /** Screen-space rectangles, including every ancestor clip, sampled after the frame callbacks. */
 async function sampleBand(page: Page, selector: string, ms = 700, actions: Array<{ at: number; selector: string }> = [], speed = 1) {
   return page.evaluate(async ({ selector, ms, actions, speed }) => {
     const start = performance.now();
-    const animate = Element.prototype.animate;
-    const held: Array<{ animation: Animation; epoch?: number }> = [];
-    Element.prototype.animate = function(frames, options) {
-      const timing = typeof options === 'number' ? options * speed : { ...options, duration: Number(options?.duration ?? 0) * speed };
-      const animation = animate.call(this, frames, timing);
-      if (speed > 1) { animation.playbackRate = 0; held.push({ animation }); }
-      return animation;
-    };
+    const motion = (window as any).trace.motion;
+    // The slow pass runs the epoch clock `speed` times slower than frame time.
+    motion.setRate(1 / speed);
     const rect = (element: Element) => {
       const b = element.getBoundingClientRect();
       return { x: b.x, y: b.y, width: b.width, height: b.height };
@@ -66,7 +61,7 @@ async function sampleBand(page: Page, selector: string, ms = 700, actions: Array
           return { opacity: Number(getComputedStyle(e).opacity), id: e.dataset.route, to: e.dataset.to?.slice(5), end: { x: end.x, y: end.y }, rect: rect(e), path: getComputedStyle(e).getPropertyValue('d').replace(/^none$/, '') || e.getAttribute('d') };
         }),
         ghosts: document.querySelectorAll('[data-motion-ghost]').length,
-        moving: document.getAnimations().some(a => (a.pending || a.playState === 'running') && a.effect?.getTiming().iterations !== Infinity) };
+        moving: motion.state().running.length > 0 || document.getAnimations().some(a => (a.pending || a.playState === 'running') && a.effect?.getTiming().iterations !== Infinity) };
     };
     const frames = [snapshot(0)];
     let nextAction = 0;
@@ -82,26 +77,12 @@ async function sampleBand(page: Page, selector: string, ms = 700, actions: Array
           catch (e) { reject(e); return; }
           if (performance.now() - start < ms) channel.port2.postMessage(null); else resolve();
         };
-        channel.port1.onmessage = () => {
-          // The slow QA pass seeks a held clock before the next frame, so
-          // native tiles and connector effects are frozen during measurement.
-          // Normal speed continues to sample uninterrupted native animation.
-          const now = Number(document.timeline.currentTime);
-          for (const entry of held) {
-            const { animation } = entry;
-            if (animation.playState === 'idle' || animation.playState === 'finished') continue;
-            entry.epoch ??= Number(animation.startTime ?? now);
-            const duration = Number(animation.effect!.getTiming().duration);
-            animation.currentTime = Math.min(duration, now - entry.epoch);
-            if (now - entry.epoch >= duration) { animation.playbackRate = 1; animation.finish(); }
-          }
-          requestAnimationFrame(sample);
-        };
+        // Sampled after the frame's callbacks: the motion driver writes only there, so a sample is what the frame paints.
+        channel.port1.onmessage = () => requestAnimationFrame(sample);
         channel.port2.postMessage(null);
       });
     } finally {
-      channel.port1.close(); channel.port2.close(); Element.prototype.animate = animate;
-      for (const { animation } of held) if (animation.playState !== 'idle') animation.playbackRate = 1;
+      channel.port1.close(); channel.port2.close(); motion.setRate(1);
     }
     return { frames };
   }, { selector, ms, actions, speed });
@@ -196,13 +177,9 @@ for (const reopen of [false, true]) test(`initial entrance can close${reopen ? "
   expect(await uncaught(page)).toEqual([]);
 });
 
-/** Frozen tiles and SVG geometry are read on the same held animation frame. */
-async function routeFrame(page: Page, stallMs = 0) {
-  return page.evaluate((stallMs) => {
-    // Measure before yielding this task: an rAF SVG writer cannot catch up
-    // after the compositor advances during the deliberate main-thread stall.
-    const until = performance.now() + stallMs;
-    while (performance.now() < until) { /* simulate blocked application work */ }
+/** Tiles and SVG geometry read in one task, between frames: what the last frame painted. */
+async function routeFrame(page: Page) {
+  return page.evaluate(() => {
     const opacity = (element: Element) => {
       let value = 1;
       for (let at: Element | null = element; at; at = at.parentElement) value *= Number(getComputedStyle(at).opacity);
@@ -323,7 +300,9 @@ async function routeFrame(page: Page, stallMs = 0) {
       return { id: path.dataset.route ?? path.dataset.motionRoute ?? 'ghost', d, curves, opacity: shown, hits, diagonals, endpointTiles, endpointDots,
         from, tip, source, target, painted: samples.some(visible),
         portsVisible: [from, tip].every(p => motionClips.every(c => p.x >= c.x && p.x <= c.right && p.y >= c.y && p.y <= c.bottom)),
-        keyframes: [...path.getAnimations(), ...(path.closest("[data-motion-route-layer]")?.getAnimations() ?? [])].flatMap(a => (a.effect as KeyframeEffect).getKeyframes()),
+        // Moved by the motion driver (the path or its motion layer), and any path it wrote inline (it never should: a path is never interpolated).
+        driven: [path, path.closest("[data-motion-route-layer]")].some(element => !!element && (window as any).trace.motion.owns(element)),
+        inlinePath: path.style.getPropertyValue('d'),
         orphan: !!exit && samples.some(visible) && exitTiles.every(t => t.opacity === 0 || t.bottom <= t.y) && opacity(path) > 0 };
     });
     const dots = [...document.querySelectorAll<SVGCircleElement>('[data-grid-band] [data-junction], [data-grid-exit] [data-junction], [data-grid-band] [data-motion-junction]')].map(dot => {
@@ -331,7 +310,7 @@ async function routeFrame(page: Page, stallMs = 0) {
       return { id: dot.dataset.junction ?? dot.dataset.motionJunction!, x: b.x + b.width / 2, y: b.y + b.height / 2, opacity: opacity(dot) };
     });
     return { tiles, routes, dots };
-  }, stallMs);
+  });
 }
 
 for (const fixture of ['1', 'bridge', 'native-large', 'junction', 'junction-collapse', 'trunks']) for (const scenario of ['close A', 'open A', 'B alone', 'close B alone', 'interrupt close A']) test(`connectors stay outside tiles and preserve orthogonal routes (${fixture}, ${scenario})`, async ({ page }, testInfo) => {
@@ -352,25 +331,25 @@ for (const fixture of ['1', 'bridge', 'native-large', 'junction', 'junction-coll
     expect(start.tiles.find(t => t.key === b)!.y).toBeGreaterThan(start.tiles.find(t => t.key === a)!.bottom);
     if (fixture.startsWith('bridge')) { const cover = await key(page, 'stack-b'); expect(start.routes.filter(r => r.id.startsWith(`node:${cover}`)).some(r => r.curves.filter(c => c.to - c.from > 1).length >= 3), JSON.stringify(start.routes)).toBe(true); }
   }
-  await holdScriptedAnimations(page);
+  await holdMotion(page);
   const frames: Array<{ time: number; scene: Awaited<ReturnType<typeof routeFrame>> }> = [];
   try {
     await page.locator(toggle(scenario.includes('B alone') ? 'b' : 'a')).evaluate((element: HTMLElement) => element.dispatchEvent(new MouseEvent('click', { bubbles: true, ctrlKey: true })));
-    await awaitAnimationsCreated(page);
+    await awaitMotionStarted(page);
     let interrupted = false;
     for (const time of [...Array.from({ length: 10 }, (_, i) => i * 1000 / 60), 159, 160]) {
       await page.evaluate(async time => {
-        for (const a of (window as any).__heldAnimations as Animation[]) if (a.playState === 'running') a.currentTime = time;
+        (window as any).trace.motion.seek(time);
         await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
       }, time);
       frames.push({ time, scene: await routeFrame(page) });
       if (scenario === 'interrupt close A' && time >= 33 && !interrupted) {
         interrupted = true;
         await page.locator(toggle('a')).evaluate((element: HTMLElement) => element.dispatchEvent(new MouseEvent('click', { bubbles: true, ctrlKey: true })));
-        await awaitAnimationsCreated(page);
+        await awaitMotionStarted(page);
         for (const resumed of [0, ...Array.from({ length: 10 }, (_, i) => i * 1000 / 60), 159, 160]) {
           await page.evaluate(async time => {
-            for (const a of (window as any).__heldAnimations as Animation[]) if (a.playState === 'running') a.currentTime = time;
+            (window as any).trace.motion.seek(time);
             await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
           }, resumed);
           frames.push({ time: time + resumed, scene: await routeFrame(page) });
@@ -378,7 +357,7 @@ for (const fixture of ['1', 'bridge', 'native-large', 'junction', 'junction-coll
         break;
       }
     }
-  } finally { await releaseScriptedAnimations(page); }
+  } finally { await releaseMotion(page); }
   await settle(page);
   const end = await routeFrame(page);
   await testInfo.attach('route-frames', { body: JSON.stringify({ start, frames, end }), contentType: 'application/json' });
@@ -404,22 +383,22 @@ test('a retiring group keeps its connector fade when another group closes', asyn
   const toggle = (name: string) => page.locator(`section[aria-label="stack-${name}"] [data-stack-toggle]`);
   for (const name of ['a', 'b']) { await toggle(name).click(); await settle(page); }
   const a = await key(page, 'stack-a');
-  await holdScriptedAnimations(page);
+  await holdMotion(page);
   try {
     await toggle('a').evaluate((element: HTMLElement) => element.click());
-    await awaitAnimationsCreated(page);
+    await awaitMotionStarted(page);
     await page.evaluate(async () => {
-      for (const animation of (window as any).__heldAnimations as Animation[]) if (animation.playState === 'running') animation.currentTime = .01;
+      (window as any).trace.motion.seek(.01);
       await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
     });
     const before = (await routeFrame(page)).routes.filter(r => r.id.startsWith(`node:${a}>`) && r.opacity > 0);
     expect(before.length).toBeGreaterThan(0);
     expect(before.every(r => r.opacity > 0 && r.opacity < 1)).toBe(true);
     await toggle('b').evaluate((element: HTMLElement) => element.click());
-    await awaitAnimationsCreated(page);
+    await awaitMotionStarted(page);
     const after = (await routeFrame(page)).routes.filter(r => r.id.startsWith(`node:${a}>`) && r.opacity > 0);
     expect(after.map(r => ({ id: r.id, opacity: r.opacity, d: r.d }))).toEqual(before.map(r => ({ id: r.id, opacity: r.opacity, d: r.d })));
-  } finally { await releaseScriptedAnimations(page); }
+  } finally { await releaseMotion(page); }
   await settle(page);
   expect(await page.locator('[data-grid-exit], [data-motion-ghost]').count()).toBe(0);
   expect(await uncaught(page)).toEqual([]);
@@ -431,7 +410,7 @@ const travelPositions = (page: Page, keys: string[]) => page.evaluate(keys => {
   return [...band, ...rows].map(e => ({ id: e.dataset.tileKey ?? e.dataset.gridCell!, y: e.getBoundingClientRect().y }));
 }, keys);
 
-for (const interrupt of [false, true]) test(`inline FLIP holds the painted start until native effects apply${interrupt ? ' across interruption' : ''}`, async ({ page }, testInfo) => {
+for (const interrupt of [false, true]) test(`inline FLIP holds the painted start until the clock advances${interrupt ? ' across interruption' : ''}`, async ({ page }, testInfo) => {
   await page.setViewportSize({ width: 1000, height: 1300 });
   await openView(page, 420, '?bandMotion=1', false);
   const toggle = (name: string) => page.locator(`section[aria-label="stack-${name}"] [data-stack-toggle]`);
@@ -439,12 +418,12 @@ for (const interrupt of [false, true]) test(`inline FLIP holds the painted start
   const keys = await Promise.all([key(page, 'stack-b-1'), key(page, 'stack-b-2')]);
   const start = await travelPositions(page, keys);
   expect(start.length).toBeGreaterThan(2);
-  await holdScriptedAnimations(page, true);
+  await holdMotion(page);
   const samples: Awaited<ReturnType<typeof travelPositions>>[] = [start];
   try {
     await toggle('a').evaluate((e: HTMLElement) => e.click());
-    await awaitAnimationsCreated(page);
-    // Several actual render opportunities with no native effect at all.
+    await awaitMotionStarted(page);
+    // Several actual render opportunities with the clock held at the epoch's start.
     // Screenshots force presentation too, rather than testing only inline CSS.
     for (let i = 0; i < 3; i++) {
       samples.push(await travelPositions(page, keys));
@@ -453,21 +432,20 @@ for (const interrupt of [false, true]) test(`inline FLIP holds the painted start
     }
     if (interrupt) {
       await toggle('a').evaluate((e: HTMLElement) => e.click());
-      await awaitAnimationsCreated(page);
+      await awaitMotionStarted(page);
       expect(await travelPositions(page, keys)).toEqual(start);
       await toggle('a').evaluate((e: HTMLElement) => e.click());
-      await awaitAnimationsCreated(page);
+      await awaitMotionStarted(page);
       expect(await travelPositions(page, keys)).toEqual(start);
     }
-    await applyHeldAnimationEffects(page);
     for (const time of [0, 8, 16, 32, 64, 100, 140, 160]) {
       await page.evaluate(async time => {
-        for (const a of (window as any).__heldAnimations as Animation[]) if (a.playState === 'running') a.currentTime = time;
+        (window as any).trace.motion.seek(time);
         await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
       }, time);
       samples.push(await travelPositions(page, keys));
     }
-  } finally { await releaseScriptedAnimations(page); }
+  } finally { await releaseMotion(page); }
   await settle(page);
   const end = await travelPositions(page, keys);
   await testInfo.attach('travel', { body: JSON.stringify({ samples, end }), contentType: 'application/json' });
@@ -499,7 +477,7 @@ function expectAttached(scene: Awaited<ReturnType<typeof routeFrame>>, reference
     expect(route.hits, `visible connector crosses a tile: ${route.id}`).toEqual([]);
     expect(route.orphan).toBe(false);
     expect(route.portsVisible, `${route.id} has a clipped endpoint`).toBe(true);
-    expect(route.keyframes.every(f => !('d' in f)), `native route ${route.id}`).toBe(true);
+    expect(route.inlinePath, `route ${route.id} interpolates its path`).toBe('');
     for (const [side, endpoint] of [['from', route.source], ['tip', route.target]] as const) {
       if (!endpoint) continue;
       if (endpoint.startsWith('junction:')) {
@@ -528,78 +506,88 @@ function expectAttached(scene: Awaited<ReturnType<typeof routeFrame>>, reference
   return attached;
 }
 
-for (const fixture of ['bridge', 'junction']) test(`native connector clock survives main-thread stalls (${fixture})`, async ({ page }, testInfo) => {
+for (const fixture of ['bridge', 'junction']) test(`the connector clock survives main-thread stalls (${fixture})`, async ({ page }, testInfo) => {
   await page.setViewportSize({ width: 1000, height: 1300 });
   await openView(page, 390, `?bandMotion=${fixture}`, false);
   const toggle = (name: string) => page.locator(`section[aria-label="stack-${name}"] [data-stack-toggle]`);
   for (const name of ['b', 'a']) { await toggle(name).click(); await settle(page); }
   const b = await key(page, 'stack-b-1');
   const start = await routeFrame(page);
-  // First hold and seek native effects so every sample exercises an active
+  // First hold and seek the clock so every sample exercises an active
   // route/transform, including the opacity > .2 boundaries of the crossfade.
   const clockScale = 10;
-  await holdScriptedAnimations(page, false, clockScale);
+  await holdMotion(page, { rate: 1 / clockScale });
   const frames: Awaited<ReturnType<typeof routeFrame>>[] = [];
+  /** Epoch times displayed before and after each stall. */
+  const stalled: Array<{ stall: number; before: number; after: number }> = [];
   try {
     await toggle('a').evaluate((e: HTMLElement) => e.click());
-    await awaitAnimationsCreated(page);
+    await awaitMotionStarted(page);
     for (const time of [0, .01, .1, 16]) {
       await page.evaluate(async time => {
-        for (const a of (window as any).__heldAnimations as Animation[]) if (a.playState === 'running') a.currentTime = time;
+        (window as any).trace.motion.seek(time);
         await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
-      }, time * clockScale);
+      }, time);
       frames.push(await routeFrame(page));
     }
-    // Resume the already presented early state without rewinding any clock.
-    // Longer native durations keep all stalls inside active motion at normal
-    // playback rate, so the compositor advances while the rAF writer cannot.
+    // Resume the already presented early state without rewinding the clock. The slower clock keeps
+    // all stalls inside active motion; the frame after each stall shows the time that passed.
     await page.evaluate(async () => {
-      for (const a of (window as any).__heldAnimations as Animation[]) if (a.playState === 'running') a.playbackRate = 1;
+      (window as any).trace.motion.release();
       await new Promise(resolve => requestAnimationFrame(resolve));
     });
-    for (const stall of [25, 45, 85]) frames.push(await routeFrame(page, stall));
-    await page.evaluate(() => {
-      for (const a of (window as any).__heldAnimations as Animation[]) if (a.playState === 'running') a.playbackRate = 0;
-    });
-    for (const time of [32, 64, 100, 140, 159.9]) {
-      await page.evaluate(async time => {
-        for (const a of (window as any).__heldAnimations as Animation[]) if (a.playState === 'running') a.currentTime = time;
+    for (const stall of [25, 45, 85]) {
+      stalled.push(await page.evaluate(async stall => {
+        const motion = (window as any).trace.motion, before = motion.state().running[0].at as number;
+        const until = performance.now() + stall;
+        while (performance.now() < until) { /* simulate blocked application work */ }
         await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
-      }, time * clockScale);
+        return { stall, before, after: motion.state().running[0].at as number };
+      }, stall));
       frames.push(await routeFrame(page));
     }
-  } finally { await releaseScriptedAnimations(page); }
+    await page.evaluate(() => (window as any).trace.motion.hold());
+    for (const time of [32, 64, 100, 140, 159.9]) {
+      await page.evaluate(async time => {
+        (window as any).trace.motion.seek(time);
+        await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      }, time);
+      frames.push(await routeFrame(page));
+    }
+  } finally { await releaseMotion(page); }
   await settle(page);
   const end = await routeFrame(page);
   await testInfo.attach('stalled-frames', { body: JSON.stringify({ start, frames, end }), contentType: 'application/json' });
   const by = start.tiles.find(t => t.key === b)!.y, finalY = end.tiles.find(t => t.key === b)!.y;
   expect(by - finalY).toBeGreaterThan(100);
   expect(frames.some(f => { const y = f.tiles.find(t => t.key === b)!.y; return y > finalY + 2 && y < by - 2; })).toBe(true);
-  expect(frames.some(f => f.routes.some(r => r.keyframes.length > 0))).toBe(true);
+  expect(frames.some(f => f.routes.some(r => r.driven))).toBe(true);
   const earlyY = frames[3].tiles.find(t => t.key === b)!.y;
   expect(frames.slice(4, 7).some(f => {
     const y = f.tiles.find(t => t.key === b)!.y;
     return y < earlyY - 1 && y > finalY + 2;
-  }), 'compositor advances during the stalls while still inside motion').toBe(true);
+  }), 'the clock advances through the stalls while still inside motion').toBe(true);
+  // No stalled time is lost: the frame after a stall shows at least the time that passed in it.
+  for (const { stall, before, after } of stalled) expect(after - before, `${stall} ms stall`).toBeGreaterThanOrEqual(stall / clockScale - .5);
   expect(frames.reduce((n, f) => n + expectAttached(f, [start, end]), 0)).toBeGreaterThan(0);
   expect(await page.locator('[data-motion-route-layer]').count()).toBe(0);
   expect(await uncaught(page)).toEqual([]);
 });
 
 // Shared tile/edge exit visibility can end very early as the clip reclaims space.
-for (const returnAt of [0, .01]) test(`closing a travelling group preserves its displayed tiles and ports before native readiness (return at ${returnAt}ms)`, async ({ page }, testInfo) => {
+for (const returnAt of [0, .01]) test(`closing a travelling group preserves its displayed tiles and ports before its first frame (return at ${returnAt}ms)`, async ({ page }, testInfo) => {
   await page.setViewportSize({ width: 1000, height: 1300 });
   await openView(page, 390, '?bandMotion=junction', false);
   const toggle = (name: string) => page.locator(`section[aria-label="stack-${name}"] [data-stack-toggle]`);
   for (const name of ['b', 'a']) { await toggle(name).click(); await settle(page); }
   const b = await key(page, 'stack-b'), child = await key(page, 'stack-b-merge');
   const start = await routeFrame(page);
-  await holdScriptedAnimations(page, true);
+  await holdMotion(page);
   try {
     await toggle('a').evaluate((e: HTMLElement) => e.click());
-    await awaitAnimationsCreated(page);
+    await awaitMotionStarted(page);
     await toggle('b').evaluate((e: HTMLElement) => e.click());
-    await awaitAnimationsCreated(page);
+    await awaitMotionStarted(page);
     const scene = await routeFrame(page);
     await testInfo.attach('delayed-exit', { body: JSON.stringify({ start, scene }), contentType: 'application/json' });
     const old = start.tiles.find(t => t.key === child)!;
@@ -609,16 +597,14 @@ for (const returnAt of [0, .01]) test(`closing a travelling group preserves its 
     expect(copies[0].bottom).toBeCloseTo(old.bottom, 1);
     expect(expectAttached(scene, [start])).toBeGreaterThan(0);
     if (returnAt) {
-      await applyHeldAnimationEffects(page);
       await page.evaluate(async time => {
-        for (const animation of (window as any).__heldAnimations as Animation[]) if (animation.playState === 'running') animation.currentTime = time;
+        (window as any).trace.motion.seek(time);
         await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
-        (window as any).__delayApplication = true;
       }, returnAt);
     }
     const beforeReturn = await routeFrame(page);
     await toggle('b').evaluate((e: HTMLElement) => e.click());
-    await awaitAnimationsCreated(page);
+    await awaitMotionStarted(page);
     const reopened = await routeFrame(page);
     const returned = reopened.tiles.find(t => t.key === child && t.opacity > .2)!;
     const captured = beforeReturn.tiles.find(t => t.key === child)!;
@@ -627,34 +613,31 @@ for (const returnAt of [0, .01]) test(`closing a travelling group preserves its 
     const visible = expectAttached(reopened, [start]);
     if (!returnAt) expect(visible).toBeGreaterThan(0);
     expect(await page.locator(`[data-grid-exit="${b}"]`).count()).toBe(0);
-    await applyHeldAnimationEffects(page);
     if (returnAt) {
       await page.evaluate(async () => {
-        for (const animation of (window as any).__heldAnimations as Animation[]) if (animation.playState === 'running') animation.currentTime = 16;
+        (window as any).trace.motion.seek(16);
         await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
-        (window as any).__delayApplication = true;
       });
       const partialReturn = await routeFrame(page);
       await toggle('b').evaluate((e: HTMLElement) => e.click());
-      await awaitAnimationsCreated(page);
+      await awaitMotionStarted(page);
       await toggle('b').evaluate((e: HTMLElement) => e.click());
-      await awaitAnimationsCreated(page);
+      await awaitMotionStarted(page);
       const secondReturn = await routeFrame(page);
       const prior = partialReturn.tiles.find(t => t.key === child)!;
       const current = secondReturn.tiles.find(t => t.key === child)!;
       expect(current.y).toBeCloseTo(prior.y, 1);
       expect(current.bottom).toBeCloseTo(prior.bottom, 1);
       expectAttached(secondReturn, [start]);
-      await applyHeldAnimationEffects(page);
     }
     for (const time of [0, .01, 16, 64, 140, 159.9]) {
       await page.evaluate(async time => {
-        for (const animation of (window as any).__heldAnimations as Animation[]) if (animation.playState === 'running') animation.currentTime = time;
+        (window as any).trace.motion.seek(time);
         await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
       }, time);
       expectAttached(await routeFrame(page), [start]);
     }
-  } finally { await releaseScriptedAnimations(page); }
+  } finally { await releaseMotion(page); }
   await settle(page);
   expect(await page.locator('[data-grid-exit], [data-motion-ghost], [data-motion-route-layer]').count()).toBe(0);
   expect(await uncaught(page)).toEqual([]);
@@ -669,22 +652,22 @@ test('old connector paths fading in a band keep fading when the band closes', as
     const opacity = (element: Element | null): number => element && element.getAttribute('role') !== 'grid' ? Number(getComputedStyle(element).opacity) * opacity(element.parentElement) : 1;
     return [...document.querySelectorAll<SVGPathElement>(`${scope} path[data-motion-ghost]`)].filter(path => opacity(path) > .05).map(path => path.dataset.motionRoute!).sort();
   }, scope);
-  await holdScriptedAnimations(page);
+  await holdMotion(page);
   try {
     // Closing the first stack repacks its row and reroutes the connectors of the bands that stay
     // open: their old paths fade out in those bands. (A resize would snap.)
     await page.locator('section[data-component]').first().locator('[data-stack-toggle]').evaluate((e: HTMLElement) => e.click());
-    await awaitAnimationsCreated(page);
+    await awaitMotionStarted(page);
     const cover = await page.evaluate(() => [...document.querySelectorAll<HTMLElement>('[data-grid-band]')].find(band => band.querySelector('path[data-motion-ghost]'))?.dataset.gridBand ?? null);
     expect(cover, 'a band with old connector paths fading').not.toBeNull();
     const fading = await shown(`[data-grid-band="${cover}"]`);
     expect(fading.length).toBeGreaterThan(0);
     await page.locator(`[data-grid-cell="${cover}"]`).locator('xpath=ancestor::section[1]').locator('[data-stack-toggle]').evaluate((e: HTMLElement) => e.click());
-    await awaitAnimationsCreated(page);
+    await awaitMotionStarted(page);
     expect(await page.locator(`[data-grid-band="${cover}"]`).count()).toBe(0);
     const after = new Set(await shown('[role="grid"]'));
     expect(fading.filter(id => !after.has(id)), 'old paths that vanished mid-fade').toEqual([]);
-  } finally { await releaseScriptedAnimations(page); }
+  } finally { await releaseMotion(page); }
   await settle(page);
   await expect(page.locator('[data-grid-exit], [data-grid-retiring], [data-motion-ghost], [data-motion-route-layer]')).toHaveCount(0);
   expect(await uncaught(page)).toEqual([]);

@@ -1,8 +1,8 @@
 /**
  * Whole-scene frame samples for frame-level invariants (used with `sampleFrames`): each mounted
  * tile, cell and connector relative to the grid with its effective opacity, the view's width, and
- * the view's own scene motion (CSS transitions and CSS animations, such as spinners and selection
- * borders, are not scene motion).
+ * the view's own scene motion: the motion driver's running epochs (CSS transitions and CSS
+ * animations, such as spinners and selection borders, are not scene motion).
  */
 import { expect, type Page } from "@playwright/test";
 import { settle } from "../support";
@@ -12,7 +12,8 @@ export function sceneFrame() {
   const view = document.querySelector<HTMLElement>("[data-testid=trace-view]");
   const grid = view?.querySelector<HTMLElement>('[role="grid"]');
   const directory = document.querySelector<HTMLElement>("[data-directory]")?.dataset.directory ?? "";
-  const owned = document.getAnimations().filter((animation) => {
+  // Scene motion: epochs the motion driver runs, and any scripted animation in the view besides.
+  const owned = ((window as any).trace?.motion?.state().running.length ?? 0) + document.getAnimations().filter((animation) => {
     const target = (animation.effect as KeyframeEffect | null)?.target;
     return !!view && target instanceof Element && view.contains(target) && !(animation instanceof CSSTransition) && !(animation instanceof CSSAnimation)
       && animation.playState !== "finished" && animation.playState !== "idle";

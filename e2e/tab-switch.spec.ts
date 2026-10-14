@@ -1,5 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
-import { awaitAnimationsCreated, holdScriptedAnimations, releaseScriptedAnimations } from "./animation-control";
+import { awaitMotionStarted, holdMotion, releaseMotion } from "./animation-control";
 import { clearSceneEvents, samplePaintedFrames, sampleFrames, sceneEvents } from "./helpers/scene-events";
 import { openView, settle, uncaught } from "./support";
 
@@ -65,7 +65,7 @@ test("returning at another width lays the kept data out again and snaps, without
   const frames = await sampleFrames(page, () => ({
     loading: document.body.textContent?.includes("Loading Trace…") ?? false,
     tiles: document.querySelectorAll("[data-tile-key]").length,
-    moving: document.getAnimations().filter((animation) => {
+    moving: (window as any).trace.motion.state().running.length + document.getAnimations().filter((animation) => {
       const target = (animation.effect as KeyframeEffect | null)?.target;
       return !(target instanceof Element && target.closest(".spinner, .title-spinner"));
     }).length,
@@ -158,8 +158,9 @@ for (const [label, pick] of [["a tile in an open stack", 12], ["the last listed 
 
 const oldScope = () => {
   const retirees = document.querySelectorAll("[data-grid-exit], [data-motion-ghost], [data-motion-route-layer], [data-ghost-tile-key]").length;
-  // A cover's progress indicator (its spinner, faded in late) is the new view's own pending work, not an effect.
-  const effects = document.getAnimations().filter((animation) => {
+  // Scene motion running, and any other animation. A cover's progress indicator (its spinner, faded
+  // in late) is the new view's own pending work, not an effect.
+  const effects = (window as any).trace.motion.state().running.length + document.getAnimations().filter((animation) => {
     const target = (animation.effect as KeyframeEffect | null)?.target;
     return !(target instanceof Element && target.closest(".spinner, .title-spinner, .cover-progress"));
   }).length;
@@ -175,9 +176,9 @@ async function motionAndPendingWork(page: Page): Promise<void> {
   await page.evaluate(() => (window as any).trace.backend.holdNodeReads());
   await toggle("a");
   await expect.poll(() => page.evaluate(() => (window as any).trace.backend.heldNodeReads().length)).toBeGreaterThan(0);
-  await holdScriptedAnimations(page);
+  await holdMotion(page);
   await toggle("b");
-  await awaitAnimationsCreated(page);
+  await awaitMotionStarted(page);
   await expect(page.locator("[data-grid-exit]")).not.toHaveCount(0);
   await clearSceneEvents(page);
 }
@@ -191,7 +192,7 @@ test("switching folder during motion and pending work shows nothing of the old f
     const after = frames.filter((frame) => frame.switched);
     expect(after.length).toBeGreaterThan(5);
     for (const frame of after) expect(frame, "a frame after the switch").toEqual({ switched: true, retirees: 0, effects: 0, busy: 0 });
-  } finally { await releaseScriptedAnimations(page); }
+  } finally { await releaseMotion(page); }
   // The old folder's reads complete: nothing of it is published.
   await page.evaluate(() => (window as any).trace.backend.releaseNodeReads());
   await settle(page);
@@ -213,7 +214,7 @@ test("switching tab during motion and pending work shows no retirees or effects 
     for (const frame of after) expect({ retirees: frame.retirees, effects: frame.effects }, "a frame after returning").toEqual({ retirees: 0, effects: 0 });
     // The returned view shows the folder at once, from the last committed scene.
     await expect(page.locator("section[aria-label=\"stack-b\"] [data-stack-toggle]")).toHaveAttribute("aria-expanded", "false");
-  } finally { await releaseScriptedAnimations(page); }
+  } finally { await releaseMotion(page); }
   await page.evaluate(() => (window as any).trace.backend.releaseNodeReads());
   await settle(page);
   // Only the new view's own work publishes: its re-requested open of stack A.

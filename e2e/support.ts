@@ -37,8 +37,8 @@ export const state = (page: Page) => page.evaluate(() => (window as any).trace.s
 export const uncaught = (page: Page): Promise<string[]> => page.evaluate(() => [...(window as any).trace.errors]);
 
 /**
- * Waits for layout and motion to finish: no layout queued or computing and no
- * geometry animation, for several consecutive frames, so a layout that a
+ * Waits for layout and motion to finish: no layout queued or computing, no scene
+ * motion running (the motion driver idle) and no other animation, for several consecutive frames, so a layout that a
  * final scroll or reveal starts late is waited for too. Looping spinners are
  * not geometry motion.
  */
@@ -48,7 +48,7 @@ export async function settle(page: Page): Promise<void> {
     const animating = document.getAnimations().some((a) => {
       const target = a.effect && (a.effect as KeyframeEffect).target;
       return !(target instanceof Element && target.closest(".spinner, .title-spinner"));
-    });
+    }) || ((window as any).trace?.motion?.state().running.length ?? 0) > 0;
     // A layout still queued or computing (the worker is slow on a loaded machine) has started no motion yet.
     const laying = ((window as any).trace?.layoutsPending?.() ?? 0) > 0;
     const w = window as any;

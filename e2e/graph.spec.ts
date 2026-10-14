@@ -1,7 +1,7 @@
 import { settledScrollTop } from "./motion-support";
 import { test, expect, type Page } from "@playwright/test";
 import { openView, click, key, tile, card, state, uncaught, settle, tileBoxes, overlaps, rendered, type Box } from "./support";
-import { awaitAnimationsCreated, holdScriptedAnimations, releaseScriptedAnimations } from "./animation-control";
+import { awaitMotionStarted, holdMotion, motionState, releaseMotion } from "./animation-control";
 
 /** Rendered width and image height of every tile, keyed by node key. */
 const tileSizes = (page: Page) => page.evaluate(() => Object.fromEntries([...document.querySelectorAll<HTMLElement>("[data-tile-key]")].map((element) => {
@@ -354,22 +354,14 @@ test.describe("tile size", () => {
     const first = await boxes(page);
     const warm = await key(page, "warm");
     for (const preset of ["large", "medium", "xlarge", "small"] as const) {
-      // Record the tile's animations as they are created: polling getAnimations() after a frame misses
-      // them when a loaded machine runs the whole motion (or starts it) outside that frame.
-      await page.evaluate((k) => {
-        const w = window as any, original = Element.prototype.animate;
-        w.__resizes = [];
-        w.__restoreAnimate = () => { Element.prototype.animate = original; };
-        Element.prototype.animate = function (this: Element, keyframes: any, options: any) {
-          if (this.getAttribute("data-tile-key") === k) w.__resizes.push((keyframes as Keyframe[]).map((frame) => frame.width).filter(Boolean));
-          return original.call(this, keyframes, options);
-        };
-      }, warm);
+      // Count the motion the change starts, however short: polling after a frame misses one that a
+      // loaded machine runs whole (or starts) outside that frame.
+      const startedBefore = (await motionState(page)).started;
       await setTileSize(page, preset);
       await settle(page);
       // A tile size change is a metrics change the user did not make in the view: the tiles take
       // the new size at once, with no resize motion (docs/scene-transactions.md, "Native findings fixes").
-      const resizing = await page.evaluate(() => { const w = window as any; w.__restoreAnimate(); return w.__resizes as string[][]; });
+      const resizing = (await motionState(page)).started - startedBefore;
       const shown = await sizes(page);
       // One width for every Trace tile: the host's thumbnail edge plus its tile chrome, as wide as the host's own tiles.
       expect(shown.preset, preset).toBe(preset);
@@ -379,7 +371,7 @@ test.describe("tile size", () => {
       expect(shown.ordinary[0], preset).toBeGreaterThanOrEqual(shown.trace[0]);
       // The image keeps its aspect inside the same chrome.
       expect(shown.traceImage, preset).toEqual([Math.round((shown.trace[0] - 12) * 51 / 80)]);
-      expect(resizing, preset).toEqual([]);
+      expect(resizing, `${preset}: motion started`).toBe(0);
       // Relaid out for the new size: nothing overlaps and every arrowhead still ends on its tile's edge.
       expect(overlaps(await tileBoxes(page, 0)), preset).toEqual([]);
       for (const head of await arrowheads(page)) {
@@ -461,13 +453,17 @@ test.describe("motion", () => {
     await openView(page, 420);
     for (const name of ["fan", "fan-3", "fan-12", "fan-7", "fan"]) {
       const before = await page.evaluate(() => [...document.querySelectorAll<SVGPathElement>("path[data-route]")].map((path) => [path.dataset.route!, path.dataset.from!] as const));
+      // Held at its first pose: a connector that fades in shows no instance there.
+      await holdMotion(page);
       await (await card(page, name)).click();
-      await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(resolve)));
+      await awaitMotionStarted(page);
       const excess = await page.evaluate((previous) => {
         const shown = new Set(previous.map(([id]) => id));
         const paths = [...document.querySelectorAll<SVGPathElement>("path[data-route]")];
         const present = new Set(paths.map((path) => path.dataset.route!));
-        const fromZero = (path: SVGPathElement) => path.getAnimations().some((animation) => Number((animation.effect as KeyframeEffect).getKeyframes()[0]?.opacity ?? 1) === 0);
+        const opacity = (element: Element) => { let value = 1; for (let at: Element | null = element; at; at = at.parentElement) value *= Number(getComputedStyle(at).opacity); return value; };
+        const instances = (id: string) => [...document.querySelectorAll<SVGPathElement>("path[data-route], path[data-motion-route]")].filter((path) => (path.dataset.route ?? path.dataset.motionRoute) === id);
+        const fromZero = (path: SVGPathElement) => Math.max(0, ...instances(path.dataset.route!).map(opacity)) <= .01;
         // Per source, only connectors beyond those that vanished may fade in.
         const sources = new Set(paths.map((path) => path.dataset.from!));
         return [...sources].flatMap((source) => {
@@ -477,6 +473,7 @@ test.describe("motion", () => {
           return fading > Math.max(0, fresh.length - vanished) ? [`${source}: ${fading} fade in, ${fresh.length} new, ${vanished} vanished`] : [];
         });
       }, before);
+      await releaseMotion(page);
       expect(excess, name).toEqual([]);
       await settle(page);
     }
@@ -484,25 +481,22 @@ test.describe("motion", () => {
 
   test("a reveal finishes an owned entrance and displays the new neighborhood immediately", async ({ page }) => {
     await openView(page, undefined, "", false);
-    await holdScriptedAnimations(page);
+    await holdMotion(page);
     try {
       await page.locator('section[data-component]').first().locator('[data-stack-toggle]').click();
-      await awaitAnimationsCreated(page);
-      const before = await page.evaluate(() => (window as any).__heldAnimations.length);
-      expect(before).toBeGreaterThan(0);
+      await awaitMotionStarted(page);
+      expect((await motionState(page)).running, "the entrance is held").toHaveLength(1);
       await (await card(page, "daylight")).evaluate((el: HTMLElement) => el.click());
-      await awaitAnimationsCreated(page);
+      await awaitMotionStarted(page);
       const target = await key(page, "merge");
       const result = await page.evaluate(target => {
         const graph = document.querySelector(`[data-tile-key="${target}"]`)!.closest('.graph')!;
         return { opacity: Number(getComputedStyle(graph.querySelector(`[data-tile-key="${target}"]`)!).opacity),
-          active: ((window as any).__heldAnimations as Animation[]).filter(a => {
-            const el = (a.effect as KeyframeEffect)?.target;
-            return el && graph.contains(el) && a.playState === 'running';
-          }).length, ghosts: graph.querySelectorAll('[data-motion-ghost]').length };
+          active: [graph, ...graph.querySelectorAll('*')].filter(el => (window as any).trace.motion.owns(el)).length,
+          ghosts: graph.querySelectorAll('[data-motion-ghost]').length };
       }, target);
       expect(result).toEqual({ opacity: 1, active: 0, ghosts: 0 });
-    } finally { await releaseScriptedAnimations(page); }
+    } finally { await releaseMotion(page); }
     await settle(page);
   });
 
@@ -555,7 +549,10 @@ test.describe("motion", () => {
       const first = boxes();
       const jumps = [...first].filter(([k, box]) => before.has(k) && Math.max(Math.abs(box.left - before.get(k)!.left), Math.abs(box.top - before.get(k)!.top)) > 2).map(([k]) => k);
       const paths = [...section.querySelectorAll<SVGPathElement>("path[data-route]")];
-      const refaded = paths.filter((path) => shownRoutes.has(path.dataset.route!) && path.getAnimations().some((animation) => (animation.effect as KeyframeEffect).getKeyframes().some((frame) => "opacity" in frame))).length;
+      // A connector already shown is faded when the motion driver writes an opacity to it or to a layer holding it.
+      const fading = (element: Element) => { for (let at: Element | null = element; at && at !== section; at = at.parentElement) if ((window as any).trace.motion.owns(at) && (at as HTMLElement).style.opacity !== "") return true; return false; };
+      const instances = [...section.querySelectorAll<SVGPathElement>("path[data-route], path[data-motion-route]")];
+      const refaded = instances.filter((path) => shownRoutes.has(path.dataset.route ?? path.dataset.motionRoute!) && fading(path)).length;
       const undimmed = paths.filter((path) => shownRoutes.has(path.dataset.route!) && path.classList.contains("unrelated") && Number(getComputedStyle(path).opacity) > 0.5).length;
       await new Promise((resolve) => setTimeout(resolve, 400));
       return { jumps, refaded, undimmed, widthChanged: Math.abs(graph().getBoundingClientRect().width - widthBefore) > 20 };
@@ -585,26 +582,29 @@ test.describe("motion", () => {
   test("rapid branch swaps return one fully opaque tile without a fading copy", async ({ page }) => {
     await openView(page);
     await click(page, "warm");
-    await holdScriptedAnimations(page);
+    await holdMotion(page);
     try {
       for (const name of ["daylight", "warm"]) {
         await (await card(page, name)).click();
-        await awaitAnimationsCreated(page);
+        await awaitMotionStarted(page);
       }
       const evening = await key(page, "evening");
       await expect(await tile(page, "evening")).toHaveCount(1);
       expect(await (await tile(page, "evening")).evaluate(el => Number(getComputedStyle(el).opacity))).toBe(1);
       expect(await page.locator('[data-motion-ghost]').count()).toBe(0);
-    } finally { await releaseScriptedAnimations(page); }
+    } finally { await releaseMotion(page); }
     await settle(page);
   });
 
   test("reduced motion starts no animations when selection changes", async ({ page }) => {
     await page.emulateMedia({ reducedMotion: "reduce" });
     await openView(page);
+    const startedBefore = (await motionState(page)).started;
     await (await card(page, "warm")).click();
     await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(resolve)));
+    await settle(page);
     expect(await page.evaluate(() => document.getAnimations().length)).toBe(0);
+    expect((await motionState(page)).started, "motion started").toBe(startedBefore);
     expect(await rendered(page, "tone", "focus")).toEqual(["warm"]);
   });
 });

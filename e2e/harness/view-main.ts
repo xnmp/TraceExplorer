@@ -11,6 +11,7 @@ if (query.get("scrollbars") === "host") document.head.append(Object.assign(docum
 if (query.has("zoom")) document.documentElement.style.zoom = query.get("zoom")!;
 import { promptTitles } from "$lib/plugins/trace/prompt-titles.svelte";
 import { layoutsPending } from "$lib/plugins/trace/view/layout-client";
+import { sceneMotionTesting } from "$lib/plugins/trace/view/scene-motion";
 import { layoutGate, type LayoutReplyPredicate } from "./layout-gate";
 import { sceneSink } from "./scene-sink";
 import ViewHarness from "./ViewHarness.svelte";
@@ -26,6 +27,8 @@ const application = mount(ViewHarness, { target: document.querySelector("#app")!
   releaseLayoutReplies: () => layoutGate.releaseAll(),
   /** Scene instrumentation events: events(), clear(), and the production hooks. */
   scene: sceneSink,
+  /** The motion driver's clock (e2e/animation-control.ts): hold(), seek(ms), release(), finish(), setRate(r), state(). */
+  motion: sceneMotionTesting,
   /** Stops every gate and clears recorded events (pages are fresh per test, so this is for tests that reuse one). */
   resetGates: () => { layoutGate.reset(); sceneSink.clear(); (application.harness.backend as { resetGates(): void }).resetGates(); },
   configureTitles: (settings: Record<string, unknown> = {}) => promptTitles.configure(settings) };

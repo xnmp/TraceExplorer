@@ -7,20 +7,17 @@
  * clock. Keyboard navigation reaches logical tiles that are not mounted.
  */
 import { test, expect, type Page } from "@playwright/test";
-import { awaitAnimationsCreated, holdScriptedAnimations, releaseScriptedAnimations } from "./animation-control";
+import { awaitMotionStarted, holdMotion, motionState, releaseMotion, seekMotion } from "./animation-control";
 import { clearSceneEvents, samplePaintedFrames, sampleFrames, sceneEvents } from "./helpers/scene-events";
 import { key, openView, settle, uncaught } from "./support";
 
 const stack = (page: Page, name: string) => page.locator(`section[data-component][aria-label="${name}"]`);
 const view = (page: Page) => page.getByTestId("trace-view");
 
-const seek = (page: Page, time: number) => page.evaluate(async (time) => {
-  for (const animation of (window as any).__heldAnimations as Animation[]) if (animation.playState === "running") animation.currentTime = time;
-  await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
-}, time);
+const seek = seekMotion;
 
 /**
- * Every mounted grid cell and band tile: whether it has an effect of its own, and how far it is
+ * Every mounted grid cell and band tile: whether it moves on values the motion driver writes to it, and how far it is
  * displayed from its laid-out place (cells against the grid, band tiles against their band's
  * canvas, so a tile riding with its moving section shows no offset). Self-contained: it runs in the page.
  */
@@ -29,7 +26,7 @@ function mounted() {
   const grid = document.querySelector<HTMLElement>('[role="grid"]');
   if (!grid) return { cells: [], tiles: [] };
   const origin = grid.getBoundingClientRect(), scale = zoom(grid);
-  const own = (element: Element) => element.getAnimations().filter((animation) => animation.playState !== "idle" && animation.playState !== "finished").length > 0;
+  const own = (element: Element) => (window as any).trace.motion.owns(element) as boolean;
   const cells = [...grid.querySelectorAll<HTMLElement>("[data-grid-cell]")].map((cell) => {
     const section = cell.closest<HTMLElement>("section.component");
     const box = cell.getBoundingClientRect();
@@ -60,18 +57,20 @@ function expectAtTarget(records: readonly { moving: boolean; dx: number; dy: num
   }
 }
 
-const effectsCreated = (page: Page) => page.evaluate(() => ((window as any).__heldAnimations as Animation[]).length);
-const clockTimes = (page: Page) => page.evaluate(() => ((window as any).__heldAnimations as Animation[]).filter((animation) => animation.playState === "running").map((animation) => Number(animation.currentTime)));
+/** Epochs that started motion so far. */
+const effectsCreated = async (page: Page) => (await motionState(page)).started;
+/** Each running epoch and the time it displays. */
+const clockTimes = async (page: Page) => (await motionState(page)).running.map(({ epoch, at }) => [epoch, at]);
 
 test("scrolling the grid while rows move mounts cells at their target, with no effect, publication or motion start", async ({ page }) => {
   await page.setViewportSize({ width: 900, height: 700 });
   await openView(page, 180, "?many=80", false);
   await expect(page.getByRole("grid", { name: "Folder", exact: true })).toHaveAttribute("aria-colcount", "1");
-  await holdScriptedAnimations(page);
+  await holdMotion(page);
   try {
     // Opening the first stack moves every row below it.
     await stack(page, "village").locator("[data-stack-toggle]").click();
-    await awaitAnimationsCreated(page);
+    await awaitMotionStarted(page);
     await seek(page, 40);
     const events = (await sceneEvents(page)).length, effects = await effectsCreated(page), clock = await clockTimes(page);
     expect(effects).toBeGreaterThan(0);
@@ -90,7 +89,7 @@ test("scrolling the grid while rows move mounts cells at their target, with no e
     // In every frame, a cell mounted by the scroll is where the scene puts it.
     for (const [index, frame] of frames.entries()) expectAtTarget(mountedSince(before, frame).cells, `frame ${index}`);
     expect((await sceneEvents(page)).slice(events).filter((event) => event.kind !== "action-begin"), "a mount publishes and starts nothing").toEqual([]);
-    expect(await effectsCreated(page), "a mount creates no effect").toBe(effects);
+    expect(await effectsCreated(page), "a mount starts no motion").toBe(effects);
     expect(await clockTimes(page), "the clock is not restarted").toEqual(clock);
 
     // The model agrees with what a mount displays: interrupting now continues those cells from where they are shown.
@@ -104,7 +103,7 @@ test("scrolling the grid while rows move mounts cells at their target, with no e
         .find((section) => { const box = section.getBoundingClientRect(); return box.top >= view.top && box.top + 100 <= view.bottom; });
       (window as any).trace.selectPath(`/pictures/${visible!.getAttribute("aria-label")}.png`);
     });
-    await awaitAnimationsCreated(page);
+    await awaitMotionStarted(page);
     const replaced = await shownAt();
     let compared = 0;
     for (const cell of fresh.cells) {
@@ -115,7 +114,7 @@ test("scrolling the grid while rows move mounts cells at their target, with no e
       compared++;
     }
     expect(compared).toBeGreaterThan(5);
-  } finally { await releaseScriptedAnimations(page); }
+  } finally { await releaseMotion(page); }
   await settle(page);
   await expect(page.locator("[data-grid-exit], [data-motion-ghost], [data-motion-route-layer]")).toHaveCount(0);
   expect(await uncaught(page)).toEqual([]);
@@ -132,11 +131,11 @@ test("scrolling a windowed band while it moves mounts tiles at their place in th
   await view(page).evaluate((element) => { element.scrollTop = 0; });
   await settle(page);
   await clearSceneEvents(page);
-  await holdScriptedAnimations(page);
+  await holdMotion(page);
   try {
     // Opening a stack above the band moves the band's section down.
     await stack(page, "village").locator("[data-stack-toggle]").click();
-    await awaitAnimationsCreated(page);
+    await awaitMotionStarted(page);
     await seek(page, 60);
     const events = (await sceneEvents(page)).length, effects = await effectsCreated(page), clock = await clockTimes(page);
     const before = await page.evaluate(mounted);
@@ -155,7 +154,7 @@ test("scrolling a windowed band while it moves mounts tiles at their place in th
     expect((await sceneEvents(page)).slice(events).filter((event) => event.kind !== "action-begin")).toEqual([]);
     expect(await effectsCreated(page)).toBe(effects);
     expect(await clockTimes(page)).toEqual(clock);
-  } finally { await releaseScriptedAnimations(page); }
+  } finally { await releaseMotion(page); }
   await settle(page);
   await expect(page.locator("[data-grid-exit], [data-motion-ghost], [data-motion-route-layer]")).toHaveCount(0);
   expect(await uncaught(page)).toEqual([]);
@@ -164,18 +163,18 @@ test("scrolling a windowed band while it moves mounts tiles at their place in th
 test("records moving at a commit stay mounted until they settle, wherever the view scrolls", async ({ page }) => {
   await page.setViewportSize({ width: 900, height: 700 });
   await openView(page, 180, "?many=80", false);
-  await holdScriptedAnimations(page);
+  await holdMotion(page);
   let moving: string[] = [];
   try {
     await stack(page, "village").locator("[data-stack-toggle]").click();
-    await awaitAnimationsCreated(page);
+    await awaitMotionStarted(page);
     moving = (await page.evaluate(mounted)).cells.filter((cell) => cell.moving).map((cell) => cell.id);
     expect(moving.length).toBeGreaterThan(0);
     await view(page).evaluate((element) => { element.scrollTop = element.scrollHeight; });
     await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
     const still = (await page.evaluate(mounted)).cells.map((cell) => cell.id);
     for (const id of moving) expect(still, `${id} was unmounted mid-motion`).toContain(id);
-  } finally { await releaseScriptedAnimations(page); }
+  } finally { await releaseMotion(page); }
   await settle(page);
   // Settled, they are no longer pinned: the window holds only what is near the viewport again.
   await view(page).evaluate((element) => element.dispatchEvent(new Event("scroll")));
@@ -257,16 +256,16 @@ function bandTiles() {
 // that the settled scene mounts and that is in view where the band is displayed then is mounted.
 test("a large band carried into view has every in-view tile mounted at each time of its motion, and after it settles", async ({ page }) => {
   await bandBelowFan(page);
-  await holdScriptedAnimations(page);
+  await holdMotion(page);
   const shown: { time: number; band: ReturnType<typeof bandTiles> }[] = [];
   try {
     await stack(page, "fan").locator("[data-stack-toggle]").click();
-    await awaitAnimationsCreated(page);
+    await awaitMotionStarted(page);
     for (const time of [0, 20, 40, 60, 80, 100, 120, 140, 159]) {
       await seek(page, time);
       shown.push({ time, band: await page.evaluate(bandTiles) });
     }
-  } finally { await releaseScriptedAnimations(page); }
+  } finally { await releaseMotion(page); }
   await settle(page);
   const after = await page.evaluate(bandInView);
   expect(after.visible).toBeGreaterThan(300);
@@ -283,12 +282,12 @@ test("a large band carried into view has every in-view tile mounted at each time
 
 test("a large band carried into view by a motion held at its start mounts its tiles once released", async ({ page }) => {
   await bandBelowFan(page);
-  await holdScriptedAnimations(page);
+  await holdMotion(page);
   try {
     await stack(page, "fan").locator("[data-stack-toggle]").click();
-    await awaitAnimationsCreated(page);
+    await awaitMotionStarted(page);
     await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
-  } finally { await releaseScriptedAnimations(page); }
+  } finally { await releaseMotion(page); }
   await settle(page);
   // No scroll since: the window follows the motion and its settlement, not scroll events.
   const after = await page.evaluate(bandInView);
@@ -315,17 +314,17 @@ test("scrolling while the presentation moves keeps one measuring frame loop", as
     await new Promise((resolve) => requestAnimationFrame(resolve));
     return w.__measures - before;
   });
-  await holdScriptedAnimations(page);
+  await holdMotion(page);
   try {
     await stack(page, "fan").locator("[data-stack-toggle]").evaluate((element: HTMLElement) => element.click());
-    await awaitAnimationsCreated(page);
+    await awaitMotionStarted(page);
     expect(await perFrame(), "a measuring loop runs while moving").toBe(1);
     for (let index = 0; index < 10; index++) {
       await view(page).evaluate((element, index) => { element.scrollTop = 10 + index * 3; }, index);
       await page.waitForTimeout(30);
     }
     expect(await perFrame(), "still one after ten scrolls").toBe(1);
-  } finally { await releaseScriptedAnimations(page); }
+  } finally { await releaseMotion(page); }
   await settle(page);
   expect(await perFrame(), "none once settled").toBe(0);
 });

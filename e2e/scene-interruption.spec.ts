@@ -1,5 +1,5 @@
 import { test, expect, type Page } from "@playwright/test";
-import { applyHeldAnimationEffects, awaitAnimationsCreated, holdScriptedAnimations, releaseScriptedAnimations } from "./animation-control";
+import { awaitMotionStarted, holdMotion, releaseMotion, seekMotion } from "./animation-control";
 import { byTransaction, clearSceneEvents, sampleFrames, sceneEvents } from "./helpers/scene-events";
 import { openView, settle, uncaught } from "./support";
 
@@ -7,8 +7,8 @@ import { openView, settle, uncaught } from "./support";
  * Interrupting motion (docs/scene-transactions.md §6): a publication that arrives while another
  * presentation is moving continues from exactly what is displayed. Its first frame shows every
  * tile and connector where, and as opaque as, it was (within half a CSS pixel and 0.01 opacity),
- * with visible connectors attached to their tiles, whether the interrupted motion's native effects
- * had applied yet or not. Each action starts motion once.
+ * with visible connectors attached to their tiles, whether the interrupted motion had shown a frame
+ * yet or not. Each action starts motion once.
  */
 
 interface Shown { key: string; live: boolean; x: number; y: number; width: number; bottom: number; opacity: number }
@@ -86,10 +86,7 @@ function expectAttached(scene: Displayed, label: string): number {
   return attached;
 }
 
-const seek = (page: Page, time: number) => page.evaluate(async (time) => {
-  for (const animation of (window as any).__heldAnimations as Animation[]) if (animation.playState === "running") animation.currentTime = time;
-  await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
-}, time);
+const seek = seekMotion;
 
 const toggle = (page: Page, name: string) => page.locator(`section[aria-label="stack-${name}"] [data-stack-toggle]`)
   .evaluate((element: HTMLElement) => element.click());
@@ -117,44 +114,43 @@ const scenarios = [
   { name: "a reflow of another band", setup: ["b"], first: "a", second: "a" },
 ];
 
-for (const scenario of scenarios) for (const at of ["before readiness", .01, 40, 100] as const) {
+for (const scenario of scenarios) for (const at of ["before its first frame", .01, 40, 100] as const) {
   test(`interrupting ${scenario.name} ${typeof at === "number" ? `at ${at} ms` : at} continues from what is displayed`, async ({ page }) => {
     await page.setViewportSize({ width: 1000, height: 1300 });
     await openView(page, 390, "?bandMotion=junction", false);
     for (const name of scenario.setup) { await toggle(page, name); await settle(page); }
     const settledScene = await displayed(page);
     await clearSceneEvents(page);
-    const delayed = at === "before readiness";
-    await holdScriptedAnimations(page, delayed);
+    // Held, an epoch shows its first pose until seeked: as before the driver's first frame.
+    const delayed = at === "before its first frame";
+    await holdMotion(page);
     try {
       const actions = [scenario.first, scenario.second, ...(scenario.third ? [scenario.third] : [])];
       await toggle(page, actions[0]);
-      await awaitAnimationsCreated(page);
+      await awaitMotionStarted(page);
       if (typeof at === "number") await seek(page, at);
       let previous = await displayed(page);
       // An action may restyle at once (focus and relatedness), but nothing moves before its motion runs.
-      if (delayed) expectContinuous(settledScene, previous, "pending effects show their first pose", { opacity: false });
+      if (delayed) expectContinuous(settledScene, previous, "a motion shows its first pose before its first frame", { opacity: false });
       for (const [index, action] of actions.slice(1).entries()) {
         await toggle(page, action);
-        await awaitAnimationsCreated(page);
+        await awaitMotionStarted(page);
         const replaced = await displayed(page);
         expect(expectContinuous(previous, replaced, `interruption ${index + 1}`)).toBeGreaterThan(0);
         expectAttached(replaced, `interruption ${index + 1}`);
         if (delayed) {
-          // Applying the replacement's effects at its clock's start changes nothing displayed.
-          await applyHeldAnimationEffects(page);
-          expectContinuous(replaced, await displayed(page), `applied ${index + 1}`);
-          await page.evaluate(() => { (window as any).__delayApplication = true; });
+          // The replacement's first frame (its clock's start) changes nothing displayed.
+          await seek(page, 0);
+          expectContinuous(replaced, await displayed(page), `first frame ${index + 1}`);
         }
         previous = replaced;
       }
-      if (delayed) await applyHeldAnimationEffects(page);
       for (const time of [0, 16, 48, 96, 159.9]) {
         await seek(page, time);
         expectAttached(await displayed(page), `${time} ms`);
       }
       await expectOneMotionPerAction(page, actions.length);
-    } finally { await releaseScriptedAnimations(page); }
+    } finally { await releaseMotion(page); }
     await settle(page);
     await expect(page.locator("[data-grid-exit], [data-motion-ghost], [data-motion-route-layer]")).toHaveCount(0);
     expect(await uncaught(page)).toEqual([]);

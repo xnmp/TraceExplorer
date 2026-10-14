@@ -1,6 +1,7 @@
 import { test, expect } from "@playwright/test";
-import { awaitAnimationsCreated, holdScriptedAnimations, releaseScriptedAnimations } from "./animation-control";
+import { awaitMotionStarted, holdMotion, motionState, releaseMotion } from "./animation-control";
 import { openView, state, tile, card, settle, click } from "./support";
+import { sampleFrames } from "./helpers/scene-events";
 
 const estimated = { amount: "0.04", currency: "USD", estimated: true, source: "ratecard:fixture" };
 
@@ -45,25 +46,15 @@ test("revealing the already focused image keeps displayed band tiles still", asy
   await generated(page);
   await page.evaluate(() => (window as any).trace.showJob(71)); await settle(page);
   const image = await tile(page, "revealed"), before = (await image.boundingBox())!;
-  const original = await page.evaluate(() => {
-    const w = window as any, original = Element.prototype.animate;
-    w.revealAnimations = [];
-    Element.prototype.animate = function (...args: Parameters<Element["animate"]>) {
-      w.revealAnimations.push({ target: this, frames: args[0] });
-      return original.apply(this, args);
-    };
-    w.restoreRevealAnimate = () => Element.prototype.animate = original;
-    return true;
-  });
-  expect(original).toBe(true);
-  try {
-    await page.evaluate(() => (window as any).trace.showJob(71)); await settle(page);
-    const after = (await image.boundingBox())!;
-    expect(after.x).toBeCloseTo(before.x, 1); expect(after.y).toBeCloseTo(before.y, 1);
-    expect(await page.evaluate(() => (window as any).revealAnimations.filter((call: { target: Element; frames: Keyframe[] }) =>
-      call.target.matches('[data-tile-key]') && Array.isArray(call.frames) && call.frames.some((frame) => "transform" in frame)).length)).toBe(0);
-    await expect(await card(page, "revealed")).toBeFocused();
-  } finally { await page.evaluate(() => (window as any).restoreRevealAnimate()); }
+  // Every frame from the reveal until it settles: band tiles the motion driver moves (a transform it wrote).
+  const moved = await sampleFrames(page, () => [...document.querySelectorAll<HTMLElement>("[data-tile-key]")]
+    .filter((tile) => (window as any).trace.motion.owns(tile) && tile.style.transform !== "").map((tile) => tile.dataset.tileKey), 600,
+  async () => { await page.evaluate(() => (window as any).trace.showJob(71)); });
+  await settle(page);
+  const after = (await image.boundingBox())!;
+  expect(after.x).toBeCloseTo(before.x, 1); expect(after.y).toBeCloseTo(before.y, 1);
+  expect(moved.flat(), "band tiles moved by the reveal").toEqual([]);
+  await expect(await card(page, "revealed")).toBeFocused();
 });
 
 test("Show image loads an offscreen component and omits cost when unavailable", async ({ page }) => {
@@ -347,7 +338,7 @@ async function revealDuringHeldMotion(page: import("@playwright/test").Page) {
   const section = page.locator('section.component[aria-label="village"]');
   await section.locator("[data-stack-toggle]").click();
   await settle(page);
-  await holdScriptedAnimations(page);
+  await holdMotion(page);
   await page.evaluate(() => {
     const w = window as any;
     w.revealController = new AbortController();
@@ -355,8 +346,8 @@ async function revealDuringHeldMotion(page: import("@playwright/test").Page) {
     w.trace.showJob(71, w.revealController.signal).then(() => w.revealOutcome = "completed", (error: Error) => w.revealOutcome = error.name);
   });
   await expect(section.locator("[data-stack-toggle]")).toHaveAttribute("aria-expanded", "true");
-  await awaitAnimationsCreated(page);
-  expect(await page.evaluate(() => (window as any).__heldAnimations.length)).toBeGreaterThan(0);
+  await awaitMotionStarted(page);
+  expect((await motionState(page)).running, "the opening's motion is held").toHaveLength(1);
   return section;
 }
 
@@ -367,7 +358,7 @@ test("a reveal waits for the controller's motion to settle, not for frames or CS
     await expect(await tile(page, "revealed")).toHaveCount(1);
     await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => requestAnimationFrame(resolve)))));
     expect(await page.evaluate(() => (window as any).revealOutcome)).toBe("pending");
-  } finally { await releaseScriptedAnimations(page); }
+  } finally { await releaseMotion(page); }
   await expect.poll(() => page.evaluate(() => (window as any).revealOutcome)).toBe("completed");
   await expect(await card(page, "revealed")).toBeFocused();
   await expect(await tile(page, "revealed")).toBeInViewport();
@@ -383,10 +374,10 @@ test("aborting a reveal while its motion runs rejects at once", async ({ page })
       w.revealController.abort();
       const start = performance.now();
       while (w.revealOutcome === "pending" && performance.now() - start < 1000) await new Promise((resolve) => setTimeout(resolve, 0));
-      return { outcome: w.revealOutcome, quick: performance.now() - start < 100, moving: (w.__heldAnimations as Animation[]).some((a) => a.playState === "running" || a.pending) };
+      return { outcome: w.revealOutcome, quick: performance.now() - start < 100, moving: w.trace.motion.state().running.length > 0 };
     });
     expect(outcome).toEqual({ outcome: "AbortError", quick: true, moving: true });
-  } finally { await releaseScriptedAnimations(page); }
+  } finally { await releaseMotion(page); }
   await settle(page);
   await expect(await card(page, "revealed")).not.toBeFocused();
 });
