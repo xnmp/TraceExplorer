@@ -241,14 +241,15 @@ async function bandBelowFan(page: Page): Promise<void> {
 
 test("a large band carried into view has its tiles mounted in view on every frame, and after it settles", async ({ page }) => {
   await bandBelowFan(page);
-  const frames = await sampleFrames(page, bandInView, 700, () => stack(page, "fan").locator("[data-stack-toggle]").click());
+  // Sampled until well after the motion settles, however late a loaded machine starts it.
+  const frames = await sampleFrames(page, bandInView, 2500, () => stack(page, "fan").locator("[data-stack-toggle]").click());
   await settle(page);
   const after = await page.evaluate(bandInView);
   expect(after.visible).toBeGreaterThan(300);
   expect(after.tiles).toBeGreaterThan(0);
+  expect(frames.some((frame) => frame.visible > 300), "the band came into view while sampled").toBe(true);
   const empty = frames.filter((frame) => frame.visible > 300 && frame.tiles === 0);
   expect(empty, "frames showing the band in view without its tiles").toEqual([]);
-  expect(frames.at(-1)!.tiles).toBeGreaterThan(0);
 });
 
 test("a large band carried into view by a motion held at its start mounts its tiles once released", async ({ page }) => {
