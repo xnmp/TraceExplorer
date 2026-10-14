@@ -281,3 +281,34 @@ test("returning with a new focus inside a large open stack shows the saved scene
   expect(await sceneEvents(page, "motion-start")).toEqual([]);
   expect(await uncaught(page)).toEqual([]);
 });
+
+// Review of dc33274 (R5): a return after the folder changed (a new image saved into a stack, its index
+// read, its stack's nodes still reading) shows a coherent scene: the saved one, then the current one.
+// The current listing laid on the saved index would show the new file as a loose cell, then snap it into its stack.
+test("returning after an image was saved into a stack never shows it as a loose file, nor a blank frame", async ({ page }) => {
+  await openView(page, 1400);
+  await page.evaluate(() => { const backend = (window as any).trace.backend; backend.holdNodeReads(); backend.startGeneration("village", "while-away"); backend.saveGeneration("while-away"); });
+  await expect.poll(() => page.evaluate(() => (window as any).trace.backend.heldNodeReads().length)).toBeGreaterThan(0);
+  await page.waitForTimeout(300);
+  const path = await page.evaluate(() => (window as any).trace.backend.path("while-away"));
+  expect(await page.locator(`[data-grid-cell="${path}"]`).count(), "before leaving, the new image is not a loose file").toBe(0);
+  await page.evaluate(() => (window as any).trace.leaveView());
+  await expect(page.locator("[data-tile-key]")).toHaveCount(0);
+  const frames = await samplePaintedFrames(page, () => ({
+    entered: !!(window as any).__entered,
+    cells: [...document.querySelectorAll<HTMLElement>("[data-grid-cell]")].map((cell) => cell.dataset.gridCell!),
+    tiles: document.querySelectorAll("[data-tile-key]").length,
+  }), 1500, async () => {
+    await page.evaluate(() => { (window as any).__entered = true; (window as any).trace.enterView(); });
+    await page.waitForTimeout(800);
+    await page.evaluate(() => (window as any).trace.backend.releaseNodeReads());
+  });
+  await settle(page);
+  expect(await page.locator(`[data-grid-cell="${path}"]`).count(), "settled: the saved image is in its stack, not a loose cell").toBe(0);
+  const returned = frames.filter((frame) => frame.entered);
+  const first = returned.findIndex((frame) => frame.tiles > 0);
+  expect(first, "the return drew its scene").toBeGreaterThanOrEqual(0);
+  expect(returned.slice(first).filter((frame) => frame.tiles === 0).length, "blank frames after the return drew").toBe(0);
+  expect(returned.filter((frame) => frame.cells.includes(path)).length, "frames showing the new image as a loose file").toBe(0);
+  expect(await uncaught(page)).toEqual([]);
+});

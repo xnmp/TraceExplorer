@@ -12,7 +12,7 @@
 import { expect, test, type Page } from "@playwright/test";
 import { clearSceneEvents, samplePaintedFrames as sampleFrames, sceneEvents } from "./helpers/scene-events";
 import { drawn, expectHeldThenSnapped, expectSnapped, navigateRemounting as navigate, now, scene, sceneFrame, setExpanded, toggleOf, type SceneFrame } from "./helpers/scene-frames";
-import { openView, settle, uncaught } from "./support";
+import { key, openView, settle, tile, uncaught } from "./support";
 
 const DIRECTORY = "/pictures", MIRROR = "/pictures-mirror";
 
@@ -182,4 +182,23 @@ test.describe("a width change snaps, and its first frame shows the layout for th
     expect(step.frames.some((frame) => JSON.stringify(scene(frame)) !== JSON.stringify(scene(step.settled))), "the previous scene was shown while the worker was held").toBe(true);
     expect(await sceneEvents(page, "motion-start")).toEqual([]);
   });
+});
+
+// Review of dc33274 (R6b): motion follows what changed, not which transaction commits. A click
+// while a widened pane waits for the worker commits with the new width, so it snaps.
+test("a click while a widened pane waits for the worker commits the click and the width at once, without motion", async ({ page }) => {
+  await openView(page, 760, "?fanChildren=40");
+  const narrow = (await now(page)).width;
+  await clearSceneEvents(page);
+  await page.evaluate(() => (window as any).trace.holdLayoutReplies());
+  await page.evaluate(() => (window as any).trace.setWidth(1000));
+  await expect.poll(() => page.evaluate(() => (window as any).trace.heldLayoutReplies().length), { message: "the wider layout went to the worker" }).toBeGreaterThan(0);
+  // Focusing daylight widens its graph: the click changes the layout.
+  await (await tile(page, "daylight")).click();
+  await page.evaluate(() => (window as any).trace.releaseLayoutReplies());
+  await settle(page);
+  expect((await now(page)).width).toBeGreaterThan(narrow);
+  expect(await page.locator(`[data-tile-key="${await key(page, "daylight")}"]`).getAttribute("aria-selected")).toBe("true");
+  expect(await sceneEvents(page, "motion-start")).toEqual([]);
+  expect(await uncaught(page)).toEqual([]);
 });
