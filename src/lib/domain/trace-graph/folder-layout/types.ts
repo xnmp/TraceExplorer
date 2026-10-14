@@ -78,9 +78,12 @@ export interface FolderGraph {
   readonly plan: BandScenePlan;
   /** The band as laid out, in cover-relative coordinates (history and caching use this). */
   readonly layout: GraphLayout;
-  /** The same band attached to the packed grid: tile rects and connector paths in cover-relative coordinates. */
+  /**
+   * The same band attached to the packed grid: tile rects and connector paths relative to
+   * `origin` (x is already the folder's; y counts from the cover cell's top).
+   */
   readonly attached: GraphLayout;
-  /** Folder coordinates of the cover cell's top-left; `attached` is relative to it. */
+  /** Folder coordinates of `attached`'s (0, 0): the grid's left edge at the cover cell's top. */
   readonly origin: { readonly x: number; readonly y: number };
   readonly placement: BandPlacement;
 }
