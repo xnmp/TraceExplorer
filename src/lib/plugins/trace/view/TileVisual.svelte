@@ -24,6 +24,7 @@
   import TraceThumbnail from "../TraceThumbnail.svelte";
   import { promptTitles } from "../prompt-titles.svelte";
   import { nodeStatus, nodeTitle } from "./node-target";
+  import { nodeThumbnail } from "./scene-media";
 
   interface Props {
     tile: SceneTile;
@@ -48,7 +49,7 @@
   const node = $derived(tile.node);
   const title = $derived(promptTitles.labelFor(node.runId, node.prompt) || nodeTitle(node));
   const status = $derived(nodeStatus(node));
-  const present = $derived(node.state === "present" && !node.earlierRevision && !node.discarded && !!node.path);
+  const thumbnail = $derived(nodeThumbnail(node));
   const unsaved = $derived(node.temporary && !node.discarded && node.artifactId !== null);
   const hint = $derived(tile.expandable
     ? tile.tone === "focus" ? `${tile.childCount} ${tile.childCount === 1 ? "child" : "children"} open`
@@ -65,8 +66,8 @@
     {/if}
     {#if node.state === "running"}
       <span class="spinner" role="status" aria-label="Generating"></span>
-    {:else if present}
-      <TraceThumbnail path={node.path!} present={true} {revision} label="" prompt="" />
+    {:else if thumbnail}
+      <TraceThumbnail path={thumbnail} present={true} {revision} label="" prompt="" />
     {:else}
       <span class="placeholder" aria-hidden="true">▧</span>
     {/if}
@@ -193,6 +194,9 @@
   .spinner { width: 14px; height: 14px; border: 2px solid var(--divider); border-top-color: var(--accent); border-radius: 50%; animation: spin 800ms linear infinite; }
   .title-spinner { width: 8px; height: 8px; flex: none; border: 1px solid var(--control-stroke); border-top-color: var(--accent); border-radius: 50%; animation: spin 800ms linear infinite; }
   @keyframes spin { to { transform: rotate(360deg); } }
-  @media (prefers-reduced-motion: no-preference) { .stack-disclosure { transition: background-color var(--transition-fast), color var(--transition-fast); } .card { transition: background-color 120ms, border-color 120ms, box-shadow 120ms, opacity 160ms, filter 160ms; } .image { transition: filter 160ms; } }
+  /* Cards have no transitions: selection, focus and dimming are scene styling and change in the frame the
+     scene commits (a transition paints the previous look first, and a main-thread stall holds it). Hover
+     shares the card's background, so it is instant too. */
+  @media (prefers-reduced-motion: no-preference) { .stack-disclosure { transition: background-color var(--transition-fast), color var(--transition-fast); } }
   @media (prefers-reduced-motion: reduce) { .spinner, .title-spinner { animation: none; } }
 </style>

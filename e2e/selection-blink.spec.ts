@@ -53,15 +53,20 @@ test('selection reveals tiles and connectors instantly without disturbing retain
     await info.attach(`${name} frames`, { body: JSON.stringify(frames), contentType: 'application/json' });
     const children = name === 'Cerulean' ? ["Pikachu's Ball"] : ['Blastoise', 'Ash'];
     expect(frames.length).toBeGreaterThan(3);
-    expect(frames[0].styling, 'selection CSS transitions remain running').toBe(true);
-    for (const frame of frames) {
+    // Selection styling is part of the scene: it changes in the commit's frame, with no transition ("Native re-run fixes").
+    for (const frame of frames) expect(frame.styling, 'no selection CSS transition').toBe(false);
+    // The scene commits once its images are drawable: until then, frames show the previous scene, none of its new children.
+    const revealed = frames.findIndex((frame: any) => children.some((child) => frame.tiles[child] !== null));
+    expect(revealed, `${name}: its children appear`).toBeGreaterThan(-1);
+    for (const [index, frame] of frames.entries()) {
       expect(frame.ghosts, `${name}: no retiring copies`).toBe(0);
       for (const retained of ['Cerulean', 'Saffron']) {
         expect(frame.retained[retained].x).toBeCloseTo(before[retained].x, 1);
         expect(frame.retained[retained].y).toBeCloseTo(before[retained].y, 1);
       }
+      if (index < revealed) continue;
       for (const child of children) {
-        expect(frame.tiles[child], `${name}: ${child} fully visible from first frame`).toBe(1);
+        expect(frame.tiles[child], `${name}: ${child} fully visible from its first frame`).toBe(1);
         expect(frame.cards[child], `${child}: effective card opacity`).toBe(1);
         expect(frame.connectors[child], `${child}: one live opaque connector`).toEqual([1]);
       }
@@ -70,7 +75,7 @@ test('selection reveals tiles and connectors instantly without disturbing retain
     for (let i = 1; i < frames.length; i++) {
       for (const n of names) if (frames[i - 1].tiles[n] !== null && frames[i].tiles[n] !== null)
         expect(frames[i].tiles[n]).toBeGreaterThanOrEqual(frames[i - 1].tiles[n]);
-      for (const child of children) expect(Math.max(...frames[i].connectors[child])).toBeGreaterThanOrEqual(Math.max(...frames[i - 1].connectors[child]));
+      if (i > revealed) for (const child of children) expect(Math.max(...frames[i].connectors[child])).toBeGreaterThanOrEqual(Math.max(...frames[i - 1].connectors[child]));
     }
     await settle(page);
     expect(await page.locator('.graph').getAttribute('data-orientation'), `${name}: orientation kept`).toBe(orientation);
