@@ -8,7 +8,7 @@
  */
 import { test, expect, type Page } from "@playwright/test";
 import { awaitAnimationsCreated, holdScriptedAnimations, releaseScriptedAnimations } from "./animation-control";
-import { clearSceneEvents, sampleFrames, sceneEvents } from "./helpers/scene-events";
+import { clearSceneEvents, samplePaintedFrames, sampleFrames, sceneEvents } from "./helpers/scene-events";
 import { key, openView, settle, uncaught } from "./support";
 
 const stack = (page: Page, name: string) => page.locator(`section[data-component][aria-label="${name}"]`);
@@ -239,17 +239,46 @@ async function bandBelowFan(page: Page): Promise<void> {
   expect((await page.evaluate(bandInView)).visible, "wr-0 starts below the view").toBeLessThan(0);
 }
 
-test("a large band carried into view has its tiles mounted in view on every frame, and after it settles", async ({ page }) => {
+/** wr-0's canvas top and its mounted tiles, relative to the canvas, with the view's span. Self-contained: it runs in the page. */
+function bandTiles() {
+  const section = [...document.querySelectorAll<HTMLElement>("section[data-component]")].find((element) => element.getAttribute("aria-label") === "wr-0");
+  const canvas = section?.querySelector<HTMLElement>(".graph");
+  const view = document.querySelector<HTMLElement>("[data-testid=trace-view]")!.getBoundingClientRect();
+  if (!canvas) return { top: NaN, viewTop: view.top, viewBottom: view.bottom, tiles: {} as Record<string, [number, number]> };
+  const box = canvas.getBoundingClientRect();
+  const tiles = Object.fromEntries([...canvas.querySelectorAll<HTMLElement>("[data-tile-key]")].map((tile) => {
+    const rect = tile.getBoundingClientRect();
+    return [tile.dataset.tileKey!, [rect.top - box.top, rect.bottom - box.top] as [number, number]];
+  }));
+  return { top: box.top, viewTop: view.top, viewBottom: view.bottom, tiles };
+}
+
+// Deterministic: the motion is held and sought to chosen times. At each, every tile of the band
+// that the settled scene mounts and that is in view where the band is displayed then is mounted.
+test("a large band carried into view has every in-view tile mounted at each time of its motion, and after it settles", async ({ page }) => {
   await bandBelowFan(page);
-  // Sampled until well after the motion settles, however late a loaded machine starts it.
-  const frames = await sampleFrames(page, bandInView, 2500, () => stack(page, "fan").locator("[data-stack-toggle]").click());
+  await holdScriptedAnimations(page);
+  const shown: { time: number; band: ReturnType<typeof bandTiles> }[] = [];
+  try {
+    await stack(page, "fan").locator("[data-stack-toggle]").click();
+    await awaitAnimationsCreated(page);
+    for (const time of [0, 20, 40, 60, 80, 100, 120, 140, 159]) {
+      await seek(page, time);
+      shown.push({ time, band: await page.evaluate(bandTiles) });
+    }
+  } finally { await releaseScriptedAnimations(page); }
   await settle(page);
   const after = await page.evaluate(bandInView);
   expect(after.visible).toBeGreaterThan(300);
   expect(after.tiles).toBeGreaterThan(0);
-  expect(frames.some((frame) => frame.visible > 300), "the band came into view while sampled").toBe(true);
-  const empty = frames.filter((frame) => frame.visible > 300 && frame.tiles === 0);
-  expect(empty, "frames showing the band in view without its tiles").toEqual([]);
+  const settled = await page.evaluate(bandTiles);
+  expect(Object.keys(settled.tiles).length).toBeGreaterThan(0);
+  expect(shown.some(({ band }) => band.top < band.viewBottom - 300), "the band came into view while sought").toBe(true);
+  for (const { time, band } of shown) {
+    if (!Number.isFinite(band.top)) continue;
+    const inView = Object.entries(settled.tiles).filter(([, [top, bottom]]) => band.top + bottom > band.viewTop && band.top + top < band.viewBottom).map(([key]) => key);
+    expect(inView.filter((key) => !(key in band.tiles)), `in-view tiles not mounted at ${time} ms`).toEqual([]);
+  }
 });
 
 test("a large band carried into view by a motion held at its start mounts its tiles once released", async ({ page }) => {
@@ -268,4 +297,51 @@ test("a large band carried into view by a motion held at its start mounts its ti
   await view(page).evaluate((element) => element.dispatchEvent(new Event("scroll")));
   await settle(page);
   expect((await page.evaluate(bandInView)).tiles).toBe(after.tiles);
+});
+
+// Review 8d257bf: every outside measurement (scroll, publication, motion start) started another
+// frame loop while the presentation moved, so ten scrolls measured eleven times per frame.
+test("scrolling while the presentation moves keeps one measuring frame loop", async ({ page }) => {
+  await bandBelowFan(page);
+  await page.evaluate(() => {
+    const w = window as any, raf = window.requestAnimationFrame.bind(window);
+    w.__measures = 0;
+    window.requestAnimationFrame = (callback: FrameRequestCallback) => raf((time) => { if (callback.name.startsWith("measure")) w.__measures++; callback(time); });
+  });
+  const perFrame = () => page.evaluate(async () => {
+    const w = window as any;
+    await new Promise((resolve) => requestAnimationFrame(resolve));
+    const before = w.__measures;
+    await new Promise((resolve) => requestAnimationFrame(resolve));
+    return w.__measures - before;
+  });
+  await holdScriptedAnimations(page);
+  try {
+    await stack(page, "fan").locator("[data-stack-toggle]").evaluate((element: HTMLElement) => element.click());
+    await awaitAnimationsCreated(page);
+    expect(await perFrame(), "a measuring loop runs while moving").toBe(1);
+    for (let index = 0; index < 10; index++) {
+      await view(page).evaluate((element, index) => { element.scrollTop = 10 + index * 3; }, index);
+      await page.waitForTimeout(30);
+    }
+    expect(await perFrame(), "still one after ten scrolls").toBe(1);
+  } finally { await releaseScriptedAnimations(page); }
+  await settle(page);
+  expect(await perFrame(), "none once settled").toBe(0);
+});
+
+// Review 8d257bf: a resize was measured on the next frame, so a pane growing taller by more than
+// the window margin painted a frame with cells mounted only to the old window.
+test("a pane growing much taller mounts the cells it shows on the first frame", async ({ page }) => {
+  await page.setViewportSize({ width: 900, height: 300 });
+  await openView(page, 900, "?many=400", false);
+  const probe = () => {
+    const view = document.querySelector<HTMLElement>("[data-testid=trace-view]")!.getBoundingClientRect();
+    const grid = document.querySelector<HTMLElement>('[role="grid"]')!.getBoundingClientRect();
+    const bottoms = [...document.querySelectorAll<HTMLElement>("[data-grid-cell]")].map((cell) => cell.getBoundingClientRect().bottom);
+    return { view: Math.round(view.bottom), grid: Math.round(grid.bottom), mounted: Math.round(Math.max(...bottoms)) };
+  };
+  const frames = await samplePaintedFrames(page, probe, 600, () => page.setViewportSize({ width: 900, height: 3000 }));
+  expect(frames.some((frame) => frame.view > 2000), "the pane grew while sampled").toBe(true);
+  expect(frames.filter((frame) => frame.grid > frame.view && frame.mounted < frame.view - 150), "frames with unmounted cells in view").toEqual([]);
 });

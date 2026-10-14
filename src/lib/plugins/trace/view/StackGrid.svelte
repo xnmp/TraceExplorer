@@ -81,14 +81,19 @@
   // The window is a function of the publication, the displayed time and the displayed viewport, measured on scroll,
   // resize, every publication and its motion start, and every frame while the presentation moves.
   let shown = $state.raw<ShownViewport | null>(null);
+  /** The one frame loop that measures while the presentation moves (0 when none is pending). */
   let frame = 0;
   function measure(): void {
-    frame = 0;
     const view = motion.viewport(), presentation = untrack(() => publication.presentation);
     const next: ShownViewport | null = view && Number.isFinite(view.y) && Number.isFinite(view.height)
       ? { top: view.y, bottom: view.y + view.height, epoch: presentation.epoch, at: motion.displayedAt(presentation) } : null;
     if (next?.top !== shown?.top || next?.bottom !== shown?.bottom || next?.epoch !== shown?.epoch || next?.at !== shown?.at) shown = next;
-    if (controller.moving && !frame) frame = requestAnimationFrame(measure);
+    // Outside calls (scroll, publication, motion start) measure at once and join the pending loop.
+    if (controller.moving && !frame) frame = requestAnimationFrame(measureFrame);
+  }
+  function measureFrame(): void {
+    frame = 0;
+    measure();
   }
   const viewport = $derived<Span>(shown ?? UNMEASURED);
   const viewTop = $derived(quantise(viewport)?.top ?? UNMEASURED.top), viewBottom = $derived(quantise(viewport)?.bottom ?? UNMEASURED.bottom);
@@ -99,14 +104,13 @@
     const container = scroller, element = grid;
     if (!container || !element) return;
     untrack(measure);
-    // Resizes are measured on the next frame: re-rendering inside the ResizeObserver callback can
-    // resize the scroller again and loses its notifications.
-    let resized = 0;
-    const resize = () => { if (!resized) resized = requestAnimationFrame(() => { resized = 0; measure(); }); };
+    // A resize is measured in the observer's callback, before the frame paints, so the first frame
+    // at the new size mounts what it shows. The scroller's size does not follow its content (its
+    // vertical scrollbar is always reserved), so the re-render cannot resize it again.
     container.addEventListener("scroll", measure, { passive: true });
-    const observer = new ResizeObserver(resize); observer.observe(container);
+    const observer = new ResizeObserver(() => measure()); observer.observe(container);
     const stop = controller.onPresented(measure);
-    return () => { container.removeEventListener("scroll", measure); observer.disconnect(); stop(); cancelAnimationFrame(resized); cancelAnimationFrame(frame); frame = 0; };
+    return () => { container.removeEventListener("scroll", measure); observer.disconnect(); stop(); cancelAnimationFrame(frame); frame = 0; };
   });
   // Every publication (a commit, a restyle, a settled presentation) is measured once it rendered.
   $effect(() => { void publication; untrack(measure); });
