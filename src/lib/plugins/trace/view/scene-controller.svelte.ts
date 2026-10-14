@@ -114,16 +114,19 @@ export interface SceneMotion {
   snap(): void;
 }
 
-/** A preparation's hold on a scene's media: `ready` settles once every image is drawable or has failed. */
+/**
+ * A preparation's hold on a scene's media: every image stays cached (pinned) until `release`, and
+ * `ready` settles once every image is drawable or has failed; null when they all already are.
+ */
 export interface SceneMediaHold {
-  readonly ready: Promise<void>;
+  readonly ready: Promise<void> | null;
   release(): void;
 }
 
 /**
  * Holds the media `scene` draws at its commit (`scene-media.ts`), given the scene on screen and the
- * viewport (folder coordinates, null when unknown). Null when all of it is ready: the commit then
- * waits for nothing.
+ * viewport (folder coordinates, null when unknown). When all of it is ready (`ready` null), the
+ * commit waits for nothing; the hold still pins it until the scene's views have subscribed.
  */
 export type SceneMedia = (scene: FolderScene, previous: FolderScene | null, viewport: GridRect | null) => SceneMediaHold | null;
 
@@ -231,7 +234,7 @@ interface Transaction {
   readonly coverErrors: Map<GraphId, string>;
   /** The worker layout it is waiting for, by layout basis, with the job's own abort. */
   layout: { readonly key: string; readonly promise: Promise<FolderLayout>; readonly job: AbortController } | null;
-  /** Media held for its scenes, released once its commit rendered (or it ended). */
+  /** Media held for its scenes: its commit releases them once its views subscribed (`commit`), otherwise once it ended. */
   readonly media: SceneMediaHold[];
   /** Its media deadline, once it first waited for media. */
   mediaDue: { readonly expired: Promise<void>; readonly cancel: () => void } | null;
@@ -376,6 +379,7 @@ export function createSceneController(options: SceneControllerOptions) {
     refreshNotices();
   }
 
+
   /**
    * A requested stack failed (its read failed or its deadline passed): it is laid out closed with
    * its error, and the transaction preparing commits everything else. A stack drawn open, or one
@@ -513,25 +517,29 @@ export function createSceneController(options: SceneControllerOptions) {
   }
 
   /**
-   * Ends `tx`'s media wait. Its holds are released once a committed scene rendered, so the views
-   * that draw those images have subscribed to them first.
+   * Ends `tx`'s media wait. A commit took the holds of the scene it published (`commit`); the rest
+   * belong to scenes never drawn, released once a flush has run.
    */
   function dropMedia(tx: Transaction): void {
     tx.mediaDue?.cancel();
     tx.mediaDue = null;
-    const holds = tx.media.splice(0);
-    if (holds.length) void tick().then(() => { for (const hold of holds) hold.release(); });
+    releaseMedia(tx.media.splice(0), tick());
+  }
+
+  function releaseMedia(holds: readonly SceneMediaHold[], after: Promise<unknown>): void {
+    if (holds.length) void after.then(() => { for (const hold of holds) hold.release(); }, () => { for (const hold of holds) hold.release(); });
   }
 
   /**
    * The wait for the media `scene` draws, at most until the transaction's media deadline; null when
    * it is all drawable (no wait at all, not even a microtask). Woken or aborted like any
-   * preparation step.
+   * preparation step. Either way the scene's images are held (pinned) for the transaction.
    */
   function mediaWait(tx: Transaction, scene: FolderScene, waiting: AbortSignal): Promise<void> | null {
     const hold = options.media?.(scene, published?.scene ?? null, motion?.viewport?.() ?? null) ?? null;
     if (!hold) return null;
     tx.media.push(hold);
+    if (!hold.ready) return null;
     if (!tx.mediaDue) {
       let cancel: () => void = noop;
       const expired = new Promise<void>((resolve) => { cancel = setTimer(resolve, mediaDeadline); });
@@ -706,6 +714,9 @@ export function createSceneController(options: SceneControllerOptions) {
       committed = snapshot;
       tx = begin({ kind: "restore", target: null, anchor: "none" });
       tx.intent = next;
+      // A return does not wait for its images, but pins those still cached until its views subscribed.
+      const media = options.media?.(scene, null, motion?.viewport?.() ?? null);
+      if (media) tx.media.push(media);
       // A saved scene shown as it was laid out is not laid out for this pane: the commit that replaces it completes the arrival.
       commit(tx, scene, snapshot, !layout);
     } catch (error) {
@@ -713,6 +724,7 @@ export function createSceneController(options: SceneControllerOptions) {
       shownInputs = null;
       if (published) { published = null; expose(); }
       const failed = tx ?? begin({ kind: "restore", target: null, anchor: "none" });
+      dropMedia(failed);
       finish(failed, "failed", message(error));
       sceneInstrumentation.failure({ ...event(failed), message: message(error) });
       return false;
@@ -797,7 +809,7 @@ export function createSceneController(options: SceneControllerOptions) {
     committed = snapshot;
     shownInputs = geometryInputsOf(scene, snapshot.intent, snapshot.data.index.token, blocked(snapshot.data.index), !provisional, shown);
     restorable = false;
-    if (!differs(previous, scene, diff)) { finish(tx, "committed"); reconcileCovers(); remember(); return; }
+    if (!differs(previous, scene, diff)) { releaseMedia(tx.media.splice(0), tick()); finish(tx, "committed"); reconcileCovers(); remember(); return; }
     const geometry = diff.policy.reset || diff.enter.size > 0 || diff.exit.size > 0 || [...diff.policy.records.values()].some((policy) => policy !== "carry");
     // A restyle keeps the running epoch (tracks and retirees). Geometry moves only when the user's
     // own inputs are all that changed since the scene on screen (`geometryMotion`), continuing from
@@ -807,6 +819,9 @@ export function createSceneController(options: SceneControllerOptions) {
       : !previous || !motion || geometryMotion(shown, shownInputs) === "snap" ? staticPresentation(scene, ++epochs)
       : retarget(motion, previous.presentation, scene, diff, tx.id);
     const publication: Publication = { transactionId: tx.id, geometryVersion: geometry ? ++geometryVersion : previous?.geometryVersion ?? geometryVersion, scene, presentation };
+    // The scene's media stays pinned until its views have subscribed: after its first render and
+    // the motion it runs (records mount as they move into the window), then one more flush.
+    const media = tx.media.splice(0);
     published = publication;
     expose();
     tx.publication = publication;
@@ -817,7 +832,7 @@ export function createSceneController(options: SceneControllerOptions) {
     reconcileCovers();
     const lifetime = scope;
     void tick().then(() => {
-      if (disposed || lifetime !== scope) return;
+      if (disposed || lifetime !== scope) { releaseMedia(media, Promise.resolve()); return; }
       // Still this commit's publication, though its presentation alone may have been replaced
       // meanwhile (settled): a newer commit's publication presents itself.
       const shown = published?.transactionId === publication.transactionId ? published : null;
@@ -844,6 +859,7 @@ export function createSceneController(options: SceneControllerOptions) {
       }
       if (presenting === tx.id) presenting = null;
       if (shown) for (const listener of [...presentedListeners]) listener();
+      releaseMedia(media, motionSettled.then(() => tick()));
       notify();
     });
   }

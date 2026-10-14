@@ -91,3 +91,39 @@ test("a thumbnail slower than the media deadline: the scene commits at the deadl
   for (const child of ["Blastoise", "Ash"]) expect(frames[loaded].tiles[child]!.at, `${child} stays`).toEqual(frames[revealed].tiles[child]!.at);
   expect((await uncaught(page)).filter((e) => e !== "ResizeObserver loop completed with undelivered notifications.")).toEqual([]);
 });
+
+/** Tiles intersecting the view, and those drawing a placeholder or an image not yet decoded. */
+function visibleMedia() {
+  const view = document.querySelector('[data-testid="trace-view"]')!.getBoundingClientRect();
+  let tiles = 0; const bad: string[] = [];
+  for (const tile of document.querySelectorAll<HTMLElement>("[data-tile-key]")) {
+    const box = tile.getBoundingClientRect();
+    if (box.bottom < view.top || box.top > view.bottom || !box.height) continue;
+    const image = tile.querySelector(".card .image");
+    if (!image) continue;
+    tiles++;
+    const img = image.querySelector("img") as HTMLImageElement | null;
+    if (img ? !(img.complete && img.naturalWidth > 0) : !!image.querySelector(".placeholder")) bad.push(tile.dataset.tileKey!);
+  }
+  return { t: performance.now(), tiles, bad };
+}
+
+test("collapsing a big stack brings back tiles whose thumbnails went idle: none draws a placeholder", async ({ page }) => {
+  test.setTimeout(120_000);
+  const toggle = (name: string) => page.locator(`section[data-component][aria-label="${name}"] [data-stack-toggle]`).first();
+  await page.setViewportSize({ width: 900, height: 900 });
+  await openView(page, 420, "?fanChildren=120&many=12&thumbnailDelay=150", false);
+  for (let i = 0; i < 12; i++) { await toggle(`m${i}`).click(); await settle(page); }
+  const before = await page.evaluate(visibleMedia);
+  expect(before.tiles, "the open stacks' tiles are on screen").toBeGreaterThan(0);
+  expect(before.bad, "every visible tile drew its image before").toEqual([]);
+  // The fan's 120 children mount and push the stacks' thumbnails out of view, then past the cache's idle limit.
+  await toggle("fan").click();
+  await settle(page);
+  // Collapsing brings those tiles back: their thumbnails were loaded, and the scene holds them until its views draw them.
+  const frames = await samplePaintedFrames(page, visibleMedia, 900, () => toggle("fan").click());
+  await settle(page);
+  const flagged = frames.filter((frame) => frame.bad.length);
+  expect(flagged.map((frame) => frame.bad), "frames drawing a visible tile without its image").toEqual([]);
+  expect(frames.at(-1)!.tiles).toBeGreaterThan(0);
+});

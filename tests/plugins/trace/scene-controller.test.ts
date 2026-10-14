@@ -1289,11 +1289,15 @@ describe("scene controller: media (native re-run fixes)", () => {
     };
     const consulted: number[] = [];
     const ready = await turns(() => { consulted.push(1); return null; });
+    // Cached images are pinned for the commit, still without waiting.
+    const pinned = await turns(() => ({ ready: null, release: () => {} }));
     const none = await turns();
     expect(consulted.length, "the media was asked about the scene").toBeGreaterThan(0);
     expect(ready.count).toBeLessThan(500);
     expect(ready.count).toBe(none.count);
+    expect(pinned.count).toBe(none.count);
     expect(ready.timers).toBe(0);
+    expect(pinned.timers).toBe(0);
   });
 
   it("a newer action supersedes a scene waiting for its images: it never commits, and its hold is released", async () => {
@@ -1317,5 +1321,86 @@ describe("scene controller: media (native re-run fixes)", () => {
       sample: (presentation) => ({ presentation, at: 0, poses: new Map() }), start: () => ({ started: false, settled: Promise.resolve(true) }), snap: () => undefined });
     await openA(h);
     expect(m.holds[0].viewport).toEqual({ x: 0, y: 300, width: 900, height: 500 });
+  });
+});
+
+describe("scene controller: media review fixes (ff7c027)", () => {
+  /** Media whose images are all cached: nothing to wait for, but each scene's images are pinned until released. */
+  function cachedMedia() {
+    const pins: { scene: Publication["scene"]; released: boolean }[] = [];
+    const media: SceneMedia = (scene) => {
+      const pin = { scene, released: false };
+      pins.push(pin);
+      return { ready: null, release: () => { pin.released = true; } };
+    };
+    return { media, pins, of: (scene: Publication["scene"]) => pins.filter((pin) => pin.scene === scene) };
+  }
+  /** A motion adapter whose epochs settle when the test says so. */
+  function heldMotion() {
+    const epochs: Array<(finished: boolean) => void> = [];
+    return {
+      epochs,
+      motion: { viewport: () => null, reduced: () => false, snap: () => undefined,
+        sample: (presentation: Publication["presentation"]) => ({ presentation, at: 0, poses: new Map() }),
+        start: () => ({ started: true, settled: new Promise<boolean>((resolve) => { epochs.push(resolve); }) }) },
+    };
+  }
+
+  it("a scene whose images are cached pins them until its views have subscribed: past its commit and the motion it runs", async () => {
+    const m = cachedMedia(), driver = heldMotion();
+    const h = setup({ media: m.media });
+    h.controller.attachMotion(driver.motion);
+    h.offer(); await flush();
+    h.act("expand", () => h.offer({ open: new Set(["a1"]) }));
+    await flush();
+    h.deliver("ca");
+    await flush();
+    expect(h.openGraphs()).toEqual(["a1"]);
+    const pins = m.of(h.controller.published!.scene);
+    expect(pins.length, "the committed scene's images were held").toBeGreaterThan(0);
+    expect(pins.every((pin) => !pin.released), "pinned while records still move into the window").toBe(true);
+    driver.epochs.at(-1)!(true);
+    await flush();
+    expect(pins.every((pin) => pin.released), "released once the motion settled and the views rendered").toBe(true);
+  });
+
+  it("an interrupted motion releases the scene's pins too, and a scene never committed releases at once", async () => {
+    const m = cachedMedia(), driver = heldMotion();
+    const h = setup({ media: m.media });
+    h.controller.attachMotion(driver.motion);
+    h.offer(); await flush();
+    h.act("expand", () => h.offer({ open: new Set(["a1"]) }));
+    await flush(); h.deliver("ca"); await flush();
+    const opened = m.of(h.controller.published!.scene);
+    h.act("collapse", () => h.offer({ open: new Set() }));
+    await flush();
+    // The collapse's motion interrupted the expand's: that epoch settles unfinished.
+    driver.epochs.at(-2)!(false);
+    await flush();
+    expect(opened.every((pin) => pin.released)).toBe(true);
+    expect(m.pins.filter((pin) => pin.scene !== h.controller.published!.scene && !opened.includes(pin)).every((pin) => pin.released || pin.scene.graphs.size === 0)).toBe(true);
+  });
+
+  it("a return pins the images of the scene it restores until its views have subscribed, without waiting for them", async () => {
+    const scenes = createSceneStore<SavedScene>(estimateSavedSceneBytes);
+    const first = harness({ scenes });
+    first.offer({ open: new Set(["a1"]) }); await flush();
+    first.deliver("ca"); await flush();
+    const data = { index: first.fake.source.index, components: first.fake.source.components };
+    first.controller.dispose(); first.restore();
+    // Images still loading: the return draws without them (it does not wait), but pins what it draws.
+    const m = cachedMedia();
+    const media: SceneMedia = (scene, previous, viewport) => ({ ...m.media(scene, previous, viewport)!, ready: new Promise<void>(() => {}) });
+    const h = setup({ scenes, media });
+    h.fake.source.index = data.index; h.fake.source.components = data.components;
+    h.offer({ open: new Set(["a1"]) });
+    // Synchronously, from the saved scene: a return never waits for its images.
+    const restored = h.controller.published!;
+    expect(restored.scene.graphs.has("a1")).toBe(true);
+    const pins = m.of(restored.scene);
+    expect(pins).toHaveLength(1);
+    expect(pins[0].released).toBe(false);
+    await flush();
+    expect(pins[0].released, "released once the restored scene rendered").toBe(true);
   });
 });

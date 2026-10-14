@@ -22,9 +22,12 @@ function signal(): { promise: Promise<void>; resolve: () => void } {
   return { promise, resolve };
 }
 
-/** A preparation's interest in images: `ready` settles once each one is drawable or has failed. */
+/**
+ * A preparation's interest in images: each one is pinned (not evicted) until `release`. `ready`
+ * settles once each one is drawable or has failed; it is null when they all already are.
+ */
 export interface ThumbnailHold {
-  readonly ready: Promise<void>;
+  readonly ready: Promise<void> | null;
   release(): void;
 }
 
@@ -116,32 +119,32 @@ export function createThumbnailCache(
   }
 
   /**
-   * Prepares `paths` for a scene about to draw them. Null when every one already has an image (a
-   * newer revision still loading keeps the previous one, as views do), so a ready scene waits for
-   * nothing, and so does an image whose load for `revision` already failed. Otherwise their loads
-   * start, or are joined, and `ready` settles once each has its image or has failed (a view then
-   * draws its placeholder, which is final). Held entries are not evicted until `release`; views
-   * that subscribe meanwhile keep them.
+   * Prepares `paths` for a scene about to draw them, and pins every one of them, drawable or not,
+   * until `release`: a scene's images are not evicted between its commit and its views subscribing
+   * (views unmounting at the commit trim the cache). `ready` is null when every one already has an
+   * image (a newer revision still loading keeps the previous one, as views do), so a ready scene
+   * waits for nothing, and so does an image whose load for `revision` already failed. Otherwise
+   * their loads start, or are joined, and `ready` settles once each has its image or has failed (a
+   * view then draws its placeholder, which is final).
    */
-  function hold(paths: Iterable<string>, revision: number): ThumbnailHold | null {
-    const waiting: Entry[] = [];
+  function hold(paths: Iterable<string>, revision: number): ThumbnailHold {
+    const held: Entry[] = [], waiting: Entry[] = [];
     for (const path of new Set(paths)) {
-      const known = entries.get(path);
-      if (known && (known.url || known.failed === revision)) continue;
       const entry = touch(path);
-      request(path, entry, revision);
       entry.holds += 1;
+      held.push(entry);
+      if (entry.url || entry.failed === revision) continue;
+      request(path, entry, revision);
       waiting.push(entry);
     }
     trim();
-    if (!waiting.length) return null;
     let released = false;
     return {
-      ready: Promise.race([Promise.all(waiting.map(settled)).then(() => undefined), cleared.promise]),
+      ready: waiting.length ? Promise.race([Promise.all(waiting.map(settled)).then(() => undefined), cleared.promise]) : null,
       release() {
         if (released) return;
         released = true;
-        for (const entry of waiting) entry.holds -= 1;
+        for (const entry of held) entry.holds -= 1;
         trim();
       },
     };
