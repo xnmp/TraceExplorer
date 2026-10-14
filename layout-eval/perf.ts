@@ -1,6 +1,7 @@
 /** Dedicated warmed timings. Run after geometry evaluation, without browser/diagnostic jobs. */
 delete process.env.OPENAI_API_KEY;
 import { writeFile, mkdir } from 'node:fs/promises';
+import { loadavg, cpus } from 'node:os';
 import { layoutGraph } from './baseline/layout';
 import { corpus, requestFor } from './corpus';
 import { layoutGraph as productionLayout, type LayoutRequest } from '../src/lib/domain/trace-graph/layout';
@@ -26,14 +27,17 @@ for (const original of corpus()) {
     proposed: { ...next, hint: previous.readingOrder, anchorKey: click.key,
       history: { signature: bandHistorySignature(before), layout: previous, placed: attachSingleBand(previous, before) } } });
 }
+// Machine load affects both engines equally (pairs alternate), but heavy load still widens
+// tails; it is recorded with the results so a run can be judged.
+const loadBefore = loadavg();
 for (const workload of workloads) {
   for (let i = 0; i < 12; i++) { layoutGraph(workload.baseline); productionLayout(workload.proposed); }
   const baseline: number[] = [], proposed: number[] = [];
   // Alternating first engine controls drift; neither diagnostics nor file IO is timed.
-  // At least 40 paired samples, and more for fast cases (up to 400, or ~0.4 s per engine),
+  // At least 40 paired samples, and more for fast cases (up to 400, or ~1 s per engine),
   // so a tail percentile of a sub-millisecond case is not two samples' worth of scheduler noise.
   const total = (xs: number[]) => xs.reduce((a, b) => a + b, 0);
-  for (let i = 0; i < 400 && (i < 40 || total(baseline) + total(proposed) < 800); i++) {
+  for (let i = 0; i < 400 && (i < 40 || total(baseline) + total(proposed) < 2000); i++) {
     const run = (engine: 'baseline' | 'proposed') => {
       const start = performance.now();
       if (engine === 'baseline') layoutGraph(workload.baseline); else productionLayout(workload.proposed);
@@ -46,5 +50,8 @@ for (const workload of workloads) {
     proposed: { p50: quantile(proposed, .5), p95: quantile(proposed, .95), max: Math.max(...proposed) } });
 }
 await mkdir('layout-eval/out', { recursive: true });
-await writeFile('layout-eval/out/perf.json', JSON.stringify({ bun: Bun.version, iterations: '40-400 paired, ~0.8 s per case', warmup: 12, rows }, null, 2));
+const load = { cpus: cpus().length, before: loadBefore, after: loadavg() };
+await writeFile('layout-eval/out/perf.json', JSON.stringify({ bun: Bun.version, iterations: '40-400 paired, ~2 s per case', warmup: 12, load, rows }, null, 2));
+const fmt = (xs: number[]) => xs.map(x => x.toFixed(2)).join(' / ');
+console.log(`Load average (1 / 5 / 15 min) on ${load.cpus} CPUs: before ${fmt(load.before)}, after ${fmt(load.after)}\n`);
 console.log(['| Case | Visible | Baseline p50 / p95 ms | New p50 / p95 ms |', '|---|---:|---:|---:|', ...rows.map(r => `| ${r.case} | ${r.visible} | ${r.baseline.p50.toFixed(3)} / ${r.baseline.p95.toFixed(3)} | ${r.proposed.p50.toFixed(3)} / ${r.proposed.p95.toFixed(3)} |`)].join('\n'));

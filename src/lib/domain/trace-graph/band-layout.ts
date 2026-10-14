@@ -1,11 +1,11 @@
 /** Visible-first, bounded band optimisation. Geometry and history are immutable inputs. */
-import { layoutLayered, type GraphLayout, type LayoutItem, type LayoutRequest, type PlacedNode } from "./layout";
+import { downwardBandBound, layoutLayered, type GraphLayout, type LayoutItem, type LayoutRequest, type PlacedNode } from "./layout";
 import { spacingFor, STACK_STEM_ROOM } from "./metrics";
 import { bandWidthBudget, columnsFor, partitions, buildShelves, validate } from "./band-shelves";
 import { attachSingleBand, attachPackedBand, localBandPlacement, bandExtent, withBandBounds, singleBandSkeleton } from "./band-geometry";
-import { measure, validateLayout, cost, type Measures } from "./layout-quality";
+import { measure, validateLayout, cost, routePlan, type Measures } from "./layout-quality";
 import { incrementalTree } from "./band-incremental";
-import { isPlainPathData, mapPathNumbers, pathNumbers } from "./path-data";
+import { forEachPathNumber, isPlainPathData, mapPathNumbers, pathNumbers } from "./path-data";
 import { extentCost, optimisticCost, rectangleCost } from "./layout-cost-bound";
 
 export { bandWidthBudget };
@@ -113,9 +113,32 @@ function anchorShift(candidate: GraphLayout, request: LayoutRequest, previous: G
     bandBounds: { left: Number.isFinite(left) ? left - 8 : cover.x, width: Number.isFinite(left) ? right - left + 16 : 0, top } } };
 }
 
+/**
+ * Whether part of the anchored translation's connector envelope already leaves the pane: tiles,
+ * and connectors not leaving the cover, which attachment and the anchor shift both translate in x
+ * (monotone under rounding, so their extremes map to extremes). A subset of the coordinates
+ * {@link anchoredLayout} checks, with a margin far above rounding, so it rules out only what that check would.
+ */
+function leavesPane(candidate: GraphLayout, shift: AnchorShift, key: string, limit: number): boolean {
+  let left = Infinity, right = -Infinity, offset = NaN;
+  const nudge = candidate.orientation === "right" ? 16 : 0;
+  for (const [id, n] of shift.skeleton.nodes) {
+    if (id === key) continue;
+    left = Math.min(left, n.x - nudge); right = Math.max(right, n.x + n.width);
+    if (offset !== offset) offset = n.x - shift.dx - candidate.nodes.get(id)!.x;
+  }
+  if (offset === offset) for (const route of candidate.routes) {
+    if (route.from.kind === "node" && route.from.id === key) continue;
+    let index = 0;
+    forEachPathNumber(route.path, value => { if (!(index++ % 2)) { const x = value + offset + shift.dx; left = Math.min(left, x); right = Math.max(right, x); } });
+  }
+  return left - 8 < -1e-6 || right + 8 > limit + 1e-6;
+}
+
 /** The anchored translation with its connectors; null when its connector envelope leaves the pane. */
 function anchoredLayout(candidate: GraphLayout, request: LayoutRequest, shift: AnchorShift): GraphLayout | null {
-  const key = request.band!.key, { dx, dy } = shift;
+  const key = request.band!.key, { dx, dy } = shift, limit = Math.max(request.maxWidth, candidate.width) + .01;
+  if (leavesPane(candidate, shift, key, limit)) return null;
   const placed = attachSingleBand(candidate, request);
   const cover = placed.nodes.get(key)!, coverX = cover.x + cover.width / 2;
   const routes = placed.routes.map(r => {
@@ -127,25 +150,56 @@ function anchoredLayout(candidate: GraphLayout, request: LayoutRequest, shift: A
   const provisional = { ...placed, bandBounds: undefined, nodes: shift.skeleton.nodes, routes,
     junctions: new Map([...placed.junctions].map(([id, j]) => [id, { ...j, x: j.x + dx, y: j.y + dy }])), height: shift.skeleton.height };
   const extent = bandExtent(provisional, key);
-  if (extent.left < 0 || extent.left + extent.width > Math.max(request.maxWidth, candidate.width) + .01) return null;
+  if (extent.left < 0 || extent.left + extent.width > limit) return null;
   return { ...provisional, bandBounds: { left: extent.left, width: extent.width, top: shift.skeleton.bandBounds!.top }, preferredX: extent.left };
 }
 
 /** Lower bound of a downward embedding's band height: every child lies below its parent. */
 function downwardHeightFloor(items: readonly LayoutItem[], key: string): number {
-  const byKey = new Map(items.map(n => [n.key, n]));
-  const below = new Map<string, number>(), pending = new Map(items.map(n => [n.key, n.parents.filter(p => byKey.has(p)).length]));
-  const children = new Map<string, string[]>();
-  for (const n of items) for (const p of n.parents) if (byKey.has(p)) children.set(p, [...(children.get(p) ?? []), n.key]);
-  const ready = items.filter(n => !pending.get(n.key)).map(n => n.key);
+  const byKey = new Map<string, LayoutItem>();
+  for (const n of items) byKey.set(n.key, n);
+  const below = new Map<string, number>(), pending = new Map<string, number>(), children = new Map<string, string[]>(), ready: string[] = [];
+  for (const n of items) {
+    let count = 0;
+    for (const p of n.parents) if (byKey.has(p)) { count++; const list = children.get(p); if (list) list.push(n.key); else children.set(p, [n.key]); }
+    pending.set(n.key, count);
+    if (!count) ready.push(n.key);
+  }
   let best = 0;
   for (let i = 0; i < ready.length; i++) {
     const id = ready[i], n = byKey.get(id)!;
-    const chain = (id === key ? 0 : n.height) + Math.max(0, ...n.parents.filter(p => p !== key && byKey.has(p)).map(p => below.get(p) ?? 0));
+    let deepest = 0;
+    for (const p of n.parents) if (p !== key && byKey.has(p)) deepest = Math.max(deepest, below.get(p) ?? 0);
+    const chain = (id === key ? 0 : n.height) + deepest;
     below.set(id, chain); best = Math.max(best, chain);
-    for (const child of children.get(id) ?? []) { pending.set(child, pending.get(child)! - 1); if (!pending.get(child)) ready.push(child); }
+    for (const child of children.get(id) ?? []) { const left = pending.get(child)! - 1; pending.set(child, left); if (!left) ready.push(child); }
   }
   return best;
+}
+
+const NO_COST: Measures = { height: 0, width: 0, area: 0, tileArea: 0, whitespace: 0, paneWhitespace: 0, length: 0, bends: 0, crossings: 0, sharedLanePx: 0,
+  tileIntersections: 0, overlaps: 0, directionViolations: 0, mixedDirections: 0, siblingInversions: 0, unaligned: 0, overflow: 0, displacement: 0,
+  maxDisplacement: 0, movedFraction: 0, anchorDisplacement: 0, missingEdges: 0, extraEdges: 0, missingNodes: 0, extraNodes: 0, invalidGeometry: 0,
+  invalidPaths: 0, terminalViolations: 0, disconnectedEdges: 0 };
+
+/**
+ * Objective share of the connectors attachment moves rigidly: routes not leaving the
+ * cover whose every point lies below it are only translated, so their ink and turning
+ * survive attachment (to float rounding). Lets a candidate be pruned before it is attached.
+ * Zero when a route is unparsable (the attached bound then certifies nothing either).
+ */
+function rigidConnectorCost(layout: GraphLayout, key: string, tileWidth: number): number {
+  const cover = layout.nodes.get(key);
+  if (!cover || !layout.bandBounds) return 0;
+  const bottom = cover.y + cover.height;
+  let length = 0, bends = 0;
+  for (const route of layout.routes) {
+    const plan = routePlan(route);
+    if (!Number.isFinite(plan.length) || !Number.isFinite(plan.bends)) return 0;
+    if ((route.from.kind === "node" && route.from.id === key) || !(plan.bounds.minY > bottom)) continue;
+    length += plan.length; bends += plan.bends;
+  }
+  return cost({ ...NO_COST, length, bends }, tileWidth);
 }
 
 /** History is plain committed geometry; anything non-finite or unparsable is treated as no history. */
@@ -228,6 +282,12 @@ export function layoutBand(input: LayoutRequest): GraphLayout {
   // Keep downward routing when shelves cannot fit, or anchors need another embedding.
   const wantsDown = !chain || !shelves.length || !!previous;
   const downFloor = wantsDown ? downwardHeightFloor(request.items, key) : Infinity;
+  // The downward layout's display rows bound its height, width and tree ink before it is
+  // routed. An anchored translation keeps width and ink; its first row can rise only into
+  // stem room beyond the default, so its height bound gives up exactly that.
+  const rows = wantsDown ? downwardBandBound(request, key, STACK_STEM_ROOM) : null;
+  const rowsHeight = rows ? Math.max(downFloor, rows.height) : downFloor;
+  const shiftedRowsHeight = rows ? Math.max(downFloor, rows.height - Math.max(0, (request.history?.attachment?.placement.stemRoom ?? STACK_STEM_ROOM) - STACK_STEM_ROOM) - .01) : downFloor;
   let down: Candidate | undefined;
   const visibleDown = (): Candidate => down ??= (() => {
     const half = (request.items.find(n => n.key === request.pinned?.key)?.width ?? 0) / 2;
@@ -247,7 +307,7 @@ export function layoutBand(input: LayoutRequest): GraphLayout {
       const compactShelf = Math.min(...shelves.map(c => bandExtent(c.layout, key).height));
       const height = incremental ? bandExtent(incremental, key).height : Infinity;
       const repack = !incremental || height > compactShelf * 1.1
-        || (wantsDown && height > downFloor * 1.1 && height > bandExtent(visibleDown().layout, key).height * 1.1);
+        || (wantsDown && height > rowsHeight * 1.1 && height > bandExtent(visibleDown().layout, key).height * 1.1);
       const subset = repack ? projected(previous, { ...request, items: request.items.filter(n => fixed.has(n.key)) }) : null;
       const compact = subset && incrementalTree(request, { ...subset, bandBounds: undefined, anchorX: undefined, anchorY: undefined });
       if (compact) history.push({ name: "anchored-repack", layout: compact });
@@ -277,8 +337,9 @@ export function layoutBand(input: LayoutRequest): GraphLayout {
   const prepared: Prepared[] = [...shelves, ...history].map(prepare);
   const lazy: Pending[] = [];
   /** The downward layout before it is built: a height lower bound and the objective bound it implies. */
-  const downPending = (): Pending => ({ name: "visible-down", orientation: "down", height: downFloor,
-    floor: extentCost(downFloor, Math.max(0, ...request.items.filter(n => n.key !== key).map(n => n.width)), request.maxWidth, tileWidth), build: visibleDown });
+  /** The downward layout before it is built: lower bounds of its (and, with anchors, its translations') height and objective. */
+  const downPending = (height: number): Pending => ({ name: "visible-down", orientation: "down", height,
+    floor: extentCost(height, Math.max(rows?.width ?? 0, ...request.items.filter(n => n.key !== key).map(n => n.width)), request.maxWidth, tileWidth, rows?.length), build: visibleDown });
   let minimumFeasibleHeight = Infinity;
   if (!anchors.length) {
     // Exact cold semantics: the shortest feasible embedding sets the compact
@@ -290,20 +351,20 @@ export function layoutBand(input: LayoutRequest): GraphLayout {
     };
     // Build the downward layout up front when it may be the shortest: it then sets the budget.
     const shortest = Math.min(...prepared.map(c => c.height));
-    if (wantsDown && downFloor < shortest) prepared.unshift(prepare(visibleDown()));
+    if (wantsDown && rowsHeight < shortest) prepared.unshift(prepare(visibleDown()));
     minimumFeasibleHeight = firstFeasible(prepared);
     if (wantsDown && !down) {
-      if (downFloor < minimumFeasibleHeight) {
+      if (rowsHeight < minimumFeasibleHeight) {
         prepared.unshift(prepare(visibleDown()));
         minimumFeasibleHeight = firstFeasible(prepared);
       // Otherwise it cannot lower the budget; it matters only if eligible and able to beat the ranked scores.
-      } else if (!(downFloor > minimumFeasibleHeight * 1.1 + .01)) lazy.push(downPending());
+      } else if (!(rowsHeight > minimumFeasibleHeight * 1.1 + .01)) lazy.push(downPending(rowsHeight));
     }
   } else {
     // Translations onto the click anchor, and the downward family, stay rectangles until needed.
     if (wantsDown) {
       if (down) prepared.unshift(prepare(down));
-      else lazy.push(downPending());
+      else lazy.push(downPending(shiftedRowsHeight));
     }
     for (const c of prepared) lazy.push(...anchoredPending(c));
   }
@@ -312,8 +373,10 @@ export function layoutBand(input: LayoutRequest): GraphLayout {
   function anchoredPending(c: Candidate): Pending[] {
     const shift = anchorShift(c.layout, request, previous!, anchors);
     if (!shift) return [];
+    // The translation moves the candidate's connectors below the cover rigidly, so their cost bounds it too.
+    const rectangles = rectangleCost(shift.skeleton, key, request.maxWidth, tileWidth, request.items, previous, request.anchorKey);
     return [{ name: `anchored-${c.name}`, partition: c.partition, orientation: c.layout.orientation, height: bandExtent(shift.skeleton, key).height,
-      floor: rectangleCost(shift.skeleton, key, request.maxWidth, tileWidth, request.items, previous, request.anchorKey),
+      floor: rectangles && (rectangles + rigidConnectorCost(c.layout, key, tileWidth)) * (1 - 1e-9),
       build: () => { const layout = anchoredLayout(c.layout, request, shift); return layout ? { name: `anchored-${c.name}`, layout, partition: c.partition } : null; } }];
   }
   /** Build a pending candidate once, adding it (and, for a fresh embedding, its anchored translation) to the known set. */
@@ -342,6 +405,9 @@ export function layoutBand(input: LayoutRequest): GraphLayout {
   const beaten = (floor: number, orientation: GraphLayout["orientation"]) => floor > threshold(orientation) + 1e-7;
   const consider = (c: Prepared) => {
     if (!eligible(c) || beaten(c.floor, c.layout.orientation)) return;
+    // Rectangles plus rigidly moved connectors, slightly shaded for rounding: attach only if it may still win.
+    if (Number.isFinite(bestAnchored) && !placements.has(c.layout)
+      && beaten((c.floor + rigidConnectorCost(c.layout, key, tileWidth)) * (1 - 1e-9), c.layout.orientation)) return;
     const placed = placementFor(c);
     if (Number.isFinite(bestAnchored) && beaten(optimisticCost(placed, key, request.maxWidth, tileWidth, request.items, previous, request.anchorKey), c.layout.orientation)) return;
     const known = gates.get(c.layout);
@@ -358,17 +424,22 @@ export function layoutBand(input: LayoutRequest): GraphLayout {
   // Anchor-preserving embeddings win whenever one is feasible, so the others are
   // evaluated only when none is. Without anchors every candidate preserves them.
   // Pending candidates are anchored translations or the downward layout, assumed to hold until built.
+  // Candidates are taken in order of their lower bounds, except that anchored translations
+  // wait for a first score: building one costs an attachment, and that score usually prunes them.
+  // In a downward layout every tile lies below its ancestors (the cover alone heads it when
+  // `rows` exists). The click anchor's anchored ancestors are its ancestors, so if one of them was
+  // not above it, the downward layout can neither hold the anchors nor be translated onto them:
+  // it then matters only when nothing holds, and is built only in that case.
+  const focusAt = request.anchorKey ? previous?.nodes.get(request.anchorKey) : undefined;
+  const downAnchors = !(rows && focusAt && anchors.some(id => id !== key && id !== request.anchorKey && !((previous!.nodes.get(id)?.y ?? Infinity) < focusAt.y)));
   const done = new Set<Prepared | Pending>();
-  // Score the most promising constructed candidate first: its score is the
-  // incumbent that lets the bounds skip building pending candidates at all.
-  const incumbent = prepared.filter(c => c.holds).sort(byFloor)[0];
-  if (incumbent) { done.add(incumbent); consider(incumbent); }
+  const open = (c: Prepared | Pending) => !done.has(c) && ("build" in c ? Number.isFinite(bestAnchored) || c.name === "visible-down" && downAnchors : c.holds);
   for (;;) {
-    const next = [...prepared.filter(c => c.holds), ...lazy].filter(c => !done.has(c)).sort(byFloor)[0];
+    const next = [...prepared, ...lazy].filter(open).sort(byFloor)[0] ?? lazy.filter(c => !done.has(c)).sort(byFloor)[0];
     if (!next) break;
     done.add(next);
     if (!("build" in next)) consider(next);
-    else if (!beaten(next.floor, next.orientation)) realise(next);
+    else if (!beaten(next.floor, next.orientation) && (downAnchors || next.name !== "visible-down" || !Number.isFinite(bestAnchored))) realise(next);
   }
   if (!Number.isFinite(bestAnchored)) {
     for (let i = 0; i < lazy.length; i++) realise(lazy[i]);

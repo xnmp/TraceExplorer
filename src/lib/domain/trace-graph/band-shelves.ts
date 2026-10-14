@@ -107,20 +107,27 @@ function channelFor(items: readonly LayoutItem[], next: readonly LayoutItem[], c
     }
     return { lanes, count: occupiedUntil.length };
 }
-function shelfFor(columns: readonly Column[], start: number, end: number, request: LayoutRequest): Shelf {
-    const s = spacingFor(request.tileWidth), exits = end < columns.length ? columns[end - 1].items.filter(n => columns[end - 1].channel.lanes.has(n.key)).map(n => n.key) : [];
-    const incoming = start ? new Set(columns[start].items.flatMap(n => n.parents)).size : 1;
+function shelfFor(columns: readonly Column[], start: number, end: number, request: LayoutRequest, s = spacingFor(request.tileWidth)): Shelf {
+    // Callers guarantee 0 <= start < end <= columns.length.
+    const exits: string[] = [];
+    if (end < columns.length) { const last = columns[end - 1]; for (const n of last.items) if (last.channel.lanes.has(n.key)) exits.push(n.key); }
+    let incoming = 1;
+    if (start) { const parents = new Set<string>(); for (const n of columns[start].items) for (const p of n.parents) parents.add(p); incoming = parents.size; }
     const left = Math.max(s.top, s.approach + s.clearance + Math.max(0, incoming - 1) * s.lane), right = Math.max(s.bottom, 2 * s.clearance + exits.length * s.lane);
-    const gaps = columns.slice(start, end - 1).map(c => Math.max(s.bandChannel, s.approach + 2 * s.clearance + Math.max(0, c.channel.count - 1) * s.lane));
-    return { start, end, left, right, gaps, exits, width: left + right + columns.slice(start, end).reduce((sum, c) => sum + c.width, 0) + gaps.reduce((a, b) => a + b, 0), height: Math.max(...columns.slice(start, end).map(c => c.height)) };
+    const gaps: number[] = [], heights: number[] = [];
+    let widths = 0, gapSum = 0;
+    for (let c = start; c < end - 1; c++) gaps.push(Math.max(s.bandChannel, s.approach + 2 * s.clearance + Math.max(0, columns[c].channel.count - 1) * s.lane));
+    for (let c = start; c < end; c++) { widths += columns[c].width; heights.push(columns[c].height); }
+    for (const gap of gaps) gapSum += gap;
+    return { start, end, left, right, gaps, exits, width: left + right + widths + gapSum, height: Math.max(...heights) };
 }
 export function partitions(columns: readonly Column[], request: LayoutRequest): readonly number[][] {
     const budget = bandWidthBudget(request.maxWidth, request.tileWidth), n = columns.length;
-    const cache = new Map<string, Shelf>();
+    const cache = new Map<number, Shelf>(), spacing = spacingFor(request.tileWidth);
     const shelf = (a: number, b: number) => {
-      const key = `${a}:${b}`, found = cache.get(key);
+      const key = a * (n + 1) + b, found = cache.get(key);
       if (found) return found;
-      const built = shelfFor(columns, a, b, request); cache.set(key, built); return built;
+      const built = shelfFor(columns, a, b, request, spacing); cache.set(key, built); return built;
     };
     const feasible = (a: number, b: number) => shelf(a, b).width <= budget;
     const best = Array(n + 1).fill(Infinity), next = Array(n).fill(0);
@@ -130,7 +137,7 @@ export function partitions(columns: readonly Column[], request: LayoutRequest): 
         for (let b = a + 1; b <= Math.min(n, a + 32); b++) {
             if (!feasible(a, b))
                 break;
-            const s = shelf(a, b), value = s.height + s.exits.length * TRACK_HEIGHT + spacingFor(request.tileWidth).approach + best[b] + .0001 * s.width;
+            const s = shelf(a, b), value = s.height + s.exits.length * TRACK_HEIGHT + spacing.approach + best[b] + .0001 * s.width;
             if (value < best[a]) {
                 best[a] = value;
                 next[a] = b;
@@ -162,13 +169,20 @@ export function partitions(columns: readonly Column[], request: LayoutRequest): 
     }
     return [...new Map(plans.map(p => [p.join(','), p])).values()];
 }
+/** An orthogonal polyline as path data: repeated points and collinear interior points are dropped. */
 const path = (ps: readonly (readonly [
     number,
     number
 ])[]): string => {
-    const distinct = ps.filter((p, i) => !i || p[0] !== ps[i - 1][0] || p[1] !== ps[i - 1][1]);
-    const compact = distinct.filter((p, i) => !i || i === distinct.length - 1 || !((distinct[i - 1][0] === p[0] && p[0] === distinct[i + 1][0]) || (distinct[i - 1][1] === p[1] && p[1] === distinct[i + 1][1])));
-    return compact.map((p, i) => `${i ? 'L' : 'M'}${p[0]} ${p[1]}`).join(' ');
+    const distinct: (readonly [number, number])[] = [];
+    for (let i = 0; i < ps.length; i++) if (!i || ps[i][0] !== ps[i - 1][0] || ps[i][1] !== ps[i - 1][1]) distinct.push(ps[i]);
+    let d = '';
+    for (let i = 0, kept = 0; i < distinct.length; i++) {
+        const p = distinct[i];
+        if (i && i !== distinct.length - 1 && ((distinct[i - 1][0] === p[0] && p[0] === distinct[i + 1][0]) || (distinct[i - 1][1] === p[1] && p[1] === distinct[i + 1][1]))) continue;
+        d += `${kept++ ? ' L' : 'M'}${p[0]} ${p[1]}`;
+    }
+    return d;
 };
 export function buildShelves(request: LayoutRequest, columns: readonly Column[], ends: readonly number[]): GraphLayout | null {
     const key = request.band!.key, root = request.items.find(i => i.key === key)!, s = spacingFor(request.tileWidth), budget = bandWidthBudget(request.maxWidth, request.tileWidth);
@@ -178,7 +192,8 @@ export function buildShelves(request: LayoutRequest, columns: readonly Column[],
     readingOrder.set(key, 0);
     const shelves: Shelf[] = [], bottoms: number[] = [], top = root.height + STACK_STEM_ROOM;
     let start = 0, y = top;
-    for (const [row, end] of ends.entries()) {
+    for (let row = 0; row < ends.length; row++) {
+        const end = ends[row];
         if (end <= start || end > columns.length)
             return null;
         const shelf = shelfFor(columns, start, end, request);

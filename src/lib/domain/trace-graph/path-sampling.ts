@@ -4,7 +4,7 @@
  * `d`) resampled to a fixed number of points spaced evenly along the path, so
  * any two connectors can be morphed point for point without layout queries.
  */
-import { pathTokens } from "./path-data";
+import { isLetter, isSpace, scanNumber, scanned } from "./path-data";
 
 export interface Point { readonly x: number; readonly y: number }
 
@@ -12,41 +12,102 @@ const CURVE_STEPS = 12;
 
 /** Parses `M x y L x y C x1 y1 x2 y2 x y` (optionally wrapped in `path("…")`) into a polyline; null if unsupported. */
 export function flattenPath(d: string): Point[] | null {
-  const body = d.trim().replace(/^path\(\s*["']?|["']?\s*\)$/g, "");
-  const tokens = pathTokens(body);
-  if (!tokens.length) return null;
-  const points: Point[] = [];
-  let index = 0;
-  let command = "";
-  const number = () => {
-    const value = tokens[index++];
-    if (typeof value !== "number" || !Number.isFinite(value)) throw new Error("not a number");
-    return value;
-  };
-  try {
-    while (index < tokens.length) {
-      const token = tokens[index];
-      if (typeof token === "string") { command = token; index++; }
-      if (command === "M" || command === "L") {
-        points.push({ x: number(), y: number() });
-        if (command === "M") command = "L";
-      } else if (command === "C") {
-        const start = points.at(-1);
-        if (!start) return null;
-        const c1 = { x: number(), y: number() }, c2 = { x: number(), y: number() }, end = { x: number(), y: number() };
-        for (let step = 1; step <= CURVE_STEPS; step++) {
-          const t = step / CURVE_STEPS, u = 1 - t;
-          points.push({
-            x: u * u * u * start.x + 3 * u * u * t * c1.x + 3 * u * t * t * c2.x + t * t * t * end.x,
-            y: u * u * u * start.y + 3 * u * u * t * c1.y + 3 * u * t * t * c2.y + t * t * t * end.y,
-          });
-        }
-      } else return null;
+  return flattenBody(plainBody(d) ? d : d.trim().replace(/^path\(\s*["']?|["']?\s*\)$/g, ""), false);
+}
+
+/** Whether trimming and unwrapping `path(…)` would leave `d` unchanged, decided from its ends alone. */
+function plainBody(d: string): boolean {
+  const last = d.charCodeAt(d.length - 1);
+  return d.length > 0 && !isSpace(d.charCodeAt(0)) && !isSpace(last) && last !== 41 && !d.startsWith("path(");
+}
+
+const M = 77, L = 76, C = 67;
+
+/** Polyline coordinates of the last {@link flattenInto}: x, y per point. Grows as needed; never shrinks. */
+let flat = new Float64Array(256);
+
+/** The scratch coordinates {@link flattenInto} last wrote (valid until the next call). */
+export const flattened = (): Float64Array => flat;
+
+/**
+ * One pass over an unwrapped path body, equal to tokenising it with `pathTokens` and
+ * running the command machine below: a command letter reads one full group of finite
+ * numbers (M and L two, C six), further numbers repeat the command (M continues as L),
+ * any other letter or an incomplete group rejects the path, other characters are skipped.
+ * `strict` additionally rejects what the layout evaluator's plain-data rule does: a body
+ * not led by its only `M`, or any character other than M/L/C (either case), commas,
+ * white space and (optionally `+`-signed) numbers. Lowercase commands are rejected either way.
+ *
+ * Writes the polyline to the shared scratch ({@link flattened}: x, y per point) and returns its
+ * point count, or -1 where {@link flattenBody} returns null. Coordinates are stored as the same
+ * doubles a point object would hold, so callers can read them without allocating points.
+ * @internal shared with the layout evaluator; use {@link flattenPath}.
+ */
+export function flattenInto(body: string, strict: boolean): number {
+  if (strict && body.charCodeAt(0) !== M) return -1;
+  let out = flat, n = 0;
+  let command = 0, open = false, need = 0, count = 0;
+  let a0 = 0, a1 = 0, a2 = 0, a3 = 0, a4 = 0;
+  for (let i = 0; i < body.length;) {
+    const code = body.charCodeAt(i);
+    let end = (code >= 48 && code <= 57) || code === 45 || code === 46 ? scanNumber(body, i) : -1;
+    if (end < 0 && strict && code === 43) {
+      // A `+`-signed number is plain; the tokeniser skips the sign and reads the same digits.
+      if (body.charCodeAt(i + 1) === 45 || (end = scanNumber(body, i + 1)) < 0) return -1;
     }
-  } catch {
-    return null;
+    if (end < 0) {
+      i++;
+      if (isLetter(code)) {
+        // The pending group would read this letter as a number.
+        if (open || (code !== M && code !== L && code !== C) || (strict && code === M && i !== 1)) return -1;
+        command = code; open = true; count = 0; need = code === C ? 6 : 2;
+        if (code === C && !n) return -1;
+      } else if (strict && code !== 44 && !isSpace(code)) return -1;
+      continue;
+    }
+    i = end;
+    const value = scanned[0];
+    if (!open) {
+      // A number after a complete group repeats the current command.
+      if (command === L) need = 2;
+      else if (command === C) { if (!n) return -1; need = 6; }
+      else return -1;
+      open = true; count = 0;
+    }
+    if (!Number.isFinite(value)) return -1;
+    switch (count++) {
+      case 0: a0 = value; break;
+      case 1: a1 = value; break;
+      case 2: a2 = value; break;
+      case 3: a3 = value; break;
+      case 4: a4 = value; break;
+    }
+    if (count < need) continue;
+    open = false;
+    const room = command !== C ? 2 : 2 * CURVE_STEPS;
+    if (2 * n + room > out.length) { const grown = new Float64Array(Math.max(2 * out.length, 2 * n + room)); grown.set(out); flat = out = grown; }
+    if (command !== C) {
+      out[2 * n] = a0; out[2 * n + 1] = a1; n++;
+      command = L;
+      continue;
+    }
+    const startX = out[2 * n - 2], startY = out[2 * n - 1], a5 = value;
+    for (let step = 1; step <= CURVE_STEPS; step++, n++) {
+      const t = step / CURVE_STEPS, u = 1 - t;
+      out[2 * n] = u * u * u * startX + 3 * u * u * t * a0 + 3 * u * t * t * a2 + t * t * t * a4;
+      out[2 * n + 1] = u * u * u * startY + 3 * u * u * t * a1 + 3 * u * t * t * a3 + t * t * t * a5;
+    }
   }
-  return points.length ? points : null;
+  return open || !n ? -1 : n;
+}
+
+/** {@link flattenInto} as point objects; null where it rejects the body. */
+export function flattenBody(body: string, strict: boolean): Point[] | null {
+  const n = flattenInto(body, strict);
+  if (n < 0) return null;
+  const xy = flat, points: Point[] = [];
+  for (let k = 0; k < n; k++) points.push({ x: xy[2 * k], y: xy[2 * k + 1] });
+  return points;
 }
 
 /** `count + 1` points evenly spaced along a polyline (first and last included). */

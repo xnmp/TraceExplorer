@@ -18,11 +18,15 @@ pipeline, including history on a later packed line.
 Timings (`perf.ts`) run every corpus case at 454 px / preset 96, plus its first legal
 committed reveal where one exists, after twelve warm-up calls per engine. The engines
 alternate which runs first in each pair; at least 40 pairs are taken, and fast cases take
-more (up to 400 pairs, about 0.8 s per case) so a tail percentile is not decided by one or
+more (up to 400 pairs, about 2 s per case) so a tail percentile is not decided by one or
 two scheduler interruptions. Prior layouts and attachment are prepared before timing; the
 public layout call includes history validation and candidate evaluation. Run timings
 without other benchmark or browser jobs on the machine: p95 comparisons of sub-millisecond
-cases are sensitive to load.
+cases are sensitive to load. The report records the load average before and after the run.
+
+`fingerprint.ts` hashes every production layout the evaluation produces, per case. Run it
+with `--out=before.json` before a performance-only change and `--compare=before.json`
+after: any differing case means the change altered geometry or decisions.
 
 The 5 ms target is reported twice. "Main-thread" requests follow the view's dispatch rule
 (`canLayoutInline`: at most 30 current plus committed-history tiles, and 40 current input

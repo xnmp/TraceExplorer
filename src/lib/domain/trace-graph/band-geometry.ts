@@ -1,9 +1,9 @@
 /** Pure band allocation, ordered grid packing and exact cover attachment. */
 import { gridFlow, type GridFlow, type GridItem, type GridMetrics, type GridBand, type GridCell } from "./grid-flow";
-import { nearestFree, type GraphLayout } from "./layout";
+import { nearestFree, type GraphLayout, type PlacedNode } from "./layout";
 import { packStackGroups, coverGutters } from "./stack-packing";
 import { pathTailAtY } from "./path-geometry";
-import { mapPathNumbers, pathNumbers } from "./path-data";
+import { numberStart, pathNumbers, scanNumber, scanned } from "./path-data";
 import { ARROW, STACK_STEM_ROOM, TRACK_HEIGHT, tileSize, spacingFor, type TileMetrics } from "./metrics";
 /** Reserve one child generation until a committed layout supplies the actual footprint.
  * Counts include hidden descendants/references, so they cannot predict the number of visible rows.
@@ -19,8 +19,14 @@ export function bandExtent(layout: GraphLayout, key: string, padding = 8) {
   const cover = layout.nodes.get(key);
   if (layout.bandBounds) return { anchorY: layout.anchorY, anchorX: layout.anchorX, preferredX: layout.preferredX,
     ...layout.bandBounds, height: layout.nodes.size > Number(!!cover) ? Math.max(0, layout.height - layout.bandBounds.top + STACK_STEM_ROOM) : 0 };
+  // The first child row: `Math.min` of the other nodes' y (a fold equals the spread, NaN and signed zeros included).
+  let first = Infinity, children = 0;
+  layout.nodes.forEach((node, id) => { if (id !== key) { first = Math.min(first, node.y); children++; } });
+  const scanned = children <= SCANNED_COORDINATES ? scannedExtent(layout, key, first, padding) : null;
+  if (scanned) return { anchorY: layout.anchorY, anchorX: layout.anchorX, preferredX: layout.preferredX, ...scanned };
+  // The reference, whose spread `Math.min`/`Math.max` may throw on very long lists.
   const nodes = [...layout.nodes].filter(([id]) => id !== key).map(([, node]) => node);
-  const first = Math.min(...nodes.map((node) => node.y));
+  first = Math.min(...nodes.map((node) => node.y));
   const xs = nodes.flatMap((node) => [node.x - (layout.orientation === "right" ? 16 : 0), node.x + node.width]);
   for (const route of layout.routes) {
     const coordinates = pathNumbers(route.path);
@@ -31,12 +37,106 @@ export function bandExtent(layout: GraphLayout, key: string, padding = 8) {
   return { anchorY: layout.anchorY, anchorX: layout.anchorX, preferredX: layout.preferredX, left, width: xs.length ? Math.max(...xs) + padding - left : 0, height: nodes.length ? Math.max(0, layout.height - first + STACK_STEM_ROOM) : 0 };
 }
 
+/** Coordinates beyond which {@link bandExtent} keeps its spread `Math.min`/`Math.max`, whose argument limit can throw. */
+const SCANNED_COORDINATES = 32768;
+
+/**
+ * {@link bandExtent}'s envelope without materialising the x list: min and max do not depend on
+ * order (NaN and signed zeros included). Null when the list is long enough that the reference
+ * spread calls might throw, so the reference path then runs and throws exactly as before.
+ */
+function scannedExtent(layout: GraphLayout, key: string, first: number, padding: number) {
+  let left = Infinity, right = -Infinity, count = 0, children = 0;
+  const shift = layout.orientation === "right" ? 16 : 0;
+  layout.nodes.forEach((node, id) => {
+    if (id === key) return;
+    left = Math.min(left, node.x - shift, node.x + node.width); right = Math.max(right, node.x - shift, node.x + node.width); count += 2; children++;
+  });
+  for (const route of layout.routes) {
+    // Even values are x; a cover route keeps an x only when its y lies at or below the child rows' stem room.
+    if (!(route.from.kind === "node" && route.from.id === key)) {
+      // Min and max of all the x at once: folding them in another grouping gives the same value.
+      const xs = routeXs(route);
+      if (xs.count) { left = Math.min(left, xs.min); right = Math.max(right, xs.max); count += xs.count; }
+      continue;
+    }
+    const d = route.path;
+    let x = 0, index = 0;
+    for (let i = 0; i < d.length;) {
+      const end = numberStart(d.charCodeAt(i)) ? scanNumber(d, i) : -1;
+      if (end < 0) { i++; continue; }
+      i = end;
+      if (index++ % 2 === 0) x = scanned[0];
+      else if (scanned[0] >= first - 16) { left = Math.min(left, x); right = Math.max(right, x); count++; }
+    }
+  }
+  for (const dot of layout.junctions.values()) { left = Math.min(left, dot.x); right = Math.max(right, dot.x); count++; }
+  if (count > SCANNED_COORDINATES) return null;
+  if (!count) left = layout.nodes.get(key)?.x ?? 0;
+  else left -= padding;
+  return { left, width: count ? right + padding - left : 0, height: children ? Math.max(0, layout.height - first + STACK_STEM_ROOM) : 0 };
+}
+
+/** The x (even-indexed) values among a route path's numbers (as `pathNumbers` reads them): how many, and their min and max. */
+interface PathXs {
+  readonly path: string;
+  readonly count: number;
+  readonly min: number;
+  readonly max: number;
+}
+/**
+ * Per route object, checked against its path: retained routes are measured again on later
+ * layouts. Only the summary is kept, so a route measured once costs one small object.
+ */
+const pathXs = new WeakMap<import("./layout").PlacedRoute, PathXs>();
+
+function routeXs(route: import("./layout").PlacedRoute): PathXs {
+  const cached = pathXs.get(route), d = route.path;
+  if (cached && cached.path === d) return cached;
+  let index = 0, min = Infinity, max = -Infinity;
+  for (let i = 0; i < d.length;) {
+    const end = numberStart(d.charCodeAt(i)) ? scanNumber(d, i) : -1;
+    if (end < 0) { i++; continue; }
+    i = end;
+    if (index++ % 2 === 0) { min = Math.min(min, scanned[0]); max = Math.max(max, scanned[0]); }
+  }
+  const xs: PathXs = { path: d, count: (index + 1) >> 1, min, max };
+  pathXs.set(route, xs);
+  return xs;
+}
+
+/** `Math.min` of the y of the nodes other than `key` (by node key or by map id), as the reference spread computes it. */
+function firstRow(layout: GraphLayout, key: string, byId: boolean): number {
+  let first = Infinity, count = 0;
+  layout.nodes.forEach((node, id) => { if ((byId ? id : node.key) !== key) { first = Math.min(first, node.y); count++; } });
+  if (count > SCANNED_COORDINATES) first = byId ? Math.min(...[...layout.nodes].filter(([id]) => id !== key).map(([, node]) => node.y))
+    : Math.min(...[...layout.nodes.values()].filter(n => n.key !== key).map(n => n.y));
+  return first;
+}
+
 /** Capture an immutable candidate's envelope once; attachment only translates it. */
 export function withBandBounds(layout: GraphLayout, key: string): GraphLayout {
   if (layout.bandBounds) return layout;
   const extent = bandExtent(layout, key);
-  const top = Math.min(...[...layout.nodes.values()].filter(n => n.key !== key).map(n => n.y));
+  const top = firstRow(layout, key, false);
   return { ...layout, bandBounds: { left: extent.left, width: extent.width, top: Number.isFinite(top) ? top : 0 } };
+}
+
+/** A field of the bounds as `{ ...bandBounds }` copies it: own enumerable properties only. */
+const boundsField = (bounds: object, field: "left" | "width"): number | undefined =>
+  Object.prototype.propertyIsEnumerable.call(bounds, field) ? (bounds as Record<string, number>)[field] : undefined;
+
+/** `bandExtent(layout, key).left` without building the extent when the bounds are captured. */
+const extentLeft = (layout: GraphLayout, key: string) => layout.bandBounds ? boundsField(layout.bandBounds, "left")! : bandExtent(layout, key).left;
+/** `bandExtent(layout, key).width` without building the extent when the bounds are captured. */
+const extentWidth = (layout: GraphLayout, key: string) => layout.bandBounds ? boundsField(layout.bandBounds, "width")! : bandExtent(layout, key).width;
+
+/** `bandExtent(layout, key)`'s `height` and `width`, without building the extent when the bounds are captured. */
+export function extentSize(layout: GraphLayout, key: string): { readonly height: number; readonly width: number } {
+  const bounds = layout.bandBounds;
+  if (!bounds) return bandExtent(layout, key);
+  const cover = layout.nodes.get(key);
+  return { height: layout.nodes.size > Number(!!cover) ? Math.max(0, layout.height - bounds.top + STACK_STEM_ROOM) : 0, width: boundsField(bounds, "width")! };
 }
 
 export interface StackGridFlow extends GridFlow { readonly rowBands: readonly GridBand[] }
@@ -117,6 +217,8 @@ interface BandTransform {
   readonly bottom: number;
   readonly dx: number;
   readonly stemRoom: number;
+  /** Child rows move by this; the cover row keeps its offset from the cover. */
+  readonly childOffset: number;
   readonly mapY: (y: number) => number;
 }
 
@@ -124,18 +226,50 @@ interface BandTransform {
 function bandTransform(layout: GraphLayout, key: string, bandTop: number, placement: BandPlacement): BandTransform | null {
   const root = layout.nodes.get(key);
   if (!root) return null;
-  const first = layout.bandBounds?.top ?? Math.min(...[...layout.nodes].filter(([id]) => id !== key).map(([, node]) => node.y));
+  const first = layout.bandBounds?.top ?? firstRow(layout, key, true);
   const stemRoom = placement.stemRoom ?? STACK_STEM_ROOM;
   const bottom = root.y + root.height;
   const childOffset = bandTop + stemRoom - (Number.isFinite(first) ? first : bottom);
-  return { root, bottom, stemRoom, dx: placement.x - bandExtent(layout, key).left, mapY: (y: number) => y <= bottom ? y - root.y : y + childOffset };
+  return { root, bottom, stemRoom, dx: placement.x - extentLeft(layout, key), childOffset, mapY: (y: number) => y <= bottom ? y - root.y : y + childOffset };
 }
 
 function attachedNodes(layout: GraphLayout, key: string, placement: BandPlacement, t: BandTransform): GraphLayout["nodes"] {
-  return new Map([...layout.nodes].map(([id, node]) => [id, id === key
+  const nodes = new Map<string, import("./layout").PlacedNode>();
+  layout.nodes.forEach((node, id) => nodes.set(id, id === key
     ? { ...node, x: placement.coverX - node.width / 2, y: t.mapY(node.y), height: placement.coverHeight }
-    : { ...node, x: node.x + t.dx, y: t.mapY(node.y) }]));
+    : { ...node, x: node.x + t.dx, y: t.mapY(node.y) }));
+  return nodes;
 }
+
+/**
+ * `mapPathNumbers(path, (value, index) => index % 2 ? mapY(value) : value + dx)` for the attach
+ * transform, also reporting the path's second number (its start y) in `translatedStart[0]`
+ * (NaN when it has fewer than two numbers).
+ */
+function translatePath(d: string, t: BandTransform): string {
+  const { dx, bottom, childOffset } = t, top = t.root.y;
+  let out = "", copied = 0, index = 0;
+  translatedStart[0] = NaN;
+  for (let i = 0; i < d.length;) {
+    const end = numberStart(d.charCodeAt(i)) ? scanNumber(d, i) : -1;
+    if (end < 0) { i++; continue; }
+    const value = scanned[0];
+    if (index === 1) translatedStart[0] = value;
+    out += d.slice(copied, i) + String(index++ % 2 ? (value <= bottom ? value - top : value + childOffset) : value + dx);
+    copied = i = end;
+  }
+  return out + d.slice(copied);
+}
+const translatedStart = new Float64Array(1);
+
+function translatedJunctions(layout: GraphLayout, dx: number, mapY: (y: number) => number): GraphLayout["junctions"] {
+  const junctions = new Map<string, import("./layout").PlacedJunction>();
+  layout.junctions.forEach((dot, id) => junctions.set(id, { ...dot, x: dot.x + dx, y: mapY(dot.y) }));
+  return junctions;
+}
+
+/** `Math.hypot(dx, dy)`; on an axis (every stem run) exactly the other leg's magnitude, without the call. */
+const runLength = (dx: number, dy: number): number => dx === 0 ? Math.abs(dy) : dy === 0 ? Math.abs(dx) : Math.hypot(dx, dy);
 
 /**
  * Attached tile rectangles, canvas size and allocation without connector geometry.
@@ -155,19 +289,19 @@ export function attachPackedBand(layout: GraphLayout, key: string, bandTop: numb
   const t = bandTransform(layout, key, bandTop, placement);
   if (!t) return layout;
   const { root, dx, mapY, stemRoom } = t;
-  const translate = (path: string) => mapPathNumbers(path, (value, index) => index % 2 ? mapY(value) : value + dx);
   return { ...layout, width: placement.width, height: mapY(layout.height),
     ...(layout.bandBounds ? { bandBounds: { ...layout.bandBounds, left: layout.bandBounds.left + dx, top: mapY(layout.bandBounds.top) } } : {}),
     ...(((layout.anchorX ?? layout.preferredX) !== undefined && Math.abs(placement.x - (layout.anchorX ?? layout.preferredX)!) > .01
       || layout.anchorY !== undefined && Math.abs(bandTop - placement.coverHeight - layout.anchorY) > .01) && layout.decision
       ? { decision: { ...layout.decision, fallback: "packing-infeasible" as const } } : {}),
     nodes: attachedNodes(layout, key, placement, t),
-    junctions: new Map([...layout.junctions].map(([id, dot]) => [id, { ...dot, x: dot.x + dx, y: mapY(dot.y) }])),
+    junctions: translatedJunctions(layout, dx, mapY),
     rows: layout.rows.map(row => ({ ...row, top: mapY(row.top), bottom: mapY(row.bottom) })),
     routes: layout.routes.map(route => {
-      const path = translate(route.path);
+      const path = translatePath(route.path, t);
       if (route.from.kind !== "node" || route.from.id !== key) return { ...route, path };
-      const startY = pathNumbers(route.path, 2)[1];
+      // The untranslated start y (NaN, never near, when the path has no second number).
+      const startY = translatedStart[0];
       if (!(Math.abs(mapY(startY) - root.height) <= .1)) return { ...route, path };
       // Only the outgoing stem changes. Branches, junctions and descendant routes keep their
       // graph-engine geometry. Its bend is entirely above this group's first child row.
@@ -185,22 +319,26 @@ export function attachPackedBand(layout: GraphLayout, key: string, bandTop: numb
 
 /** Round orthogonal stem corners, clamping the radius for short runs. */
 function roundedStem(points: readonly { readonly x: number; readonly y: number }[]): string {
-  const distinct = points.filter((point, i) => !i || point.x !== points[i - 1].x || point.y !== points[i - 1].y);
-  const corners = distinct.filter((point, i) => !i || i === distinct.length - 1
-    || !((distinct[i - 1].x === point.x && point.x === distinct[i + 1].x)
-      || (distinct[i - 1].y === point.y && point.y === distinct[i + 1].y)));
+  // Drop repeated points, then points inside straight runs.
+  const distinct: { readonly x: number; readonly y: number }[] = [];
+  for (let i = 0; i < points.length; i++) if (!i || points[i].x !== points[i - 1].x || points[i].y !== points[i - 1].y) distinct.push(points[i]);
+  const corners: { readonly x: number; readonly y: number }[] = [];
+  for (let i = 0; i < distinct.length; i++) {
+    const point = distinct[i];
+    if (!i || i === distinct.length - 1 || !((distinct[i - 1].x === point.x && point.x === distinct[i + 1].x) || (distinct[i - 1].y === point.y && point.y === distinct[i + 1].y))) corners.push(point);
+  }
   let path = `M${corners[0].x} ${corners[0].y}`;
   for (let i = 1; i < corners.length - 1; i++) {
     const before = corners[i - 1], corner = corners[i], after = corners[i + 1];
-    const incoming = Math.hypot(corner.x - before.x, corner.y - before.y), outgoing = Math.hypot(after.x - corner.x, after.y - corner.y);
+    const incoming = runLength(corner.x - before.x, corner.y - before.y), outgoing = runLength(after.x - corner.x, after.y - corner.y);
     const radius = Math.min(6, incoming / 2, outgoing / 2), k = .5522847498;
     const ux = (corner.x - before.x) / incoming, uy = (corner.y - before.y) / incoming;
     const vx = (after.x - corner.x) / outgoing, vy = (after.y - corner.y) / outgoing;
-    const a = { x: corner.x - ux * radius, y: corner.y - uy * radius };
-    const b = { x: corner.x + vx * radius, y: corner.y + vy * radius };
-    path += ` L${a.x} ${a.y} C${a.x + ux * radius * k} ${a.y + uy * radius * k} ${b.x - vx * radius * k} ${b.y - vy * radius * k} ${b.x} ${b.y}`;
+    const ax = corner.x - ux * radius, ay = corner.y - uy * radius;
+    const bx = corner.x + vx * radius, by = corner.y + vy * radius;
+    path += ` L${ax} ${ay} C${ax + ux * radius * k} ${ay + uy * radius * k} ${bx - vx * radius * k} ${by - vy * radius * k} ${bx} ${by}`;
   }
-  const end = corners.at(-1)!;
+  const end = corners[corners.length - 1];
   return `${path} L${end.x} ${end.y}`;
 }
 
@@ -232,10 +370,10 @@ export function localBandPlacement(placement: BandPlacement, coverHeight: number
 function singleBandPlacement(layout: GraphLayout, request: import("./layout").LayoutRequest): BandPlacement | null {
   const key = request.band!.key, cover = layout.nodes.get(key);
   if (!cover) return null;
-  const extent = bandExtent(layout, key);
-  const width = Math.max(request.maxWidth, extent.width, cover.width);
-  const x = Number.isFinite(layout.preferredX) && layout.preferredX! >= 0 && layout.preferredX! + extent.width <= width
-    ? layout.preferredX! : Math.max(0, Math.min(width - extent.width, (request.pinned?.x ?? width / 2) - extent.width / 2));
+  const extentWidth_ = extentWidth(layout, key);
+  const width = Math.max(request.maxWidth, extentWidth_, cover.width);
+  const x = Number.isFinite(layout.preferredX) && layout.preferredX! >= 0 && layout.preferredX! + extentWidth_ <= width
+    ? layout.preferredX! : Math.max(0, Math.min(width - extentWidth_, (request.pinned?.x ?? width / 2) - extentWidth_ / 2));
   const context = request.history?.attachment?.placement;
   return { ...(context ? localBandPlacement(context, cover.height) : {}), x, coverX: request.pinned?.x ?? width / 2, coverHeight: cover.height, width, left: 0, right: width };
 }

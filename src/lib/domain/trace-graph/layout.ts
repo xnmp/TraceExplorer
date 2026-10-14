@@ -163,41 +163,68 @@ const insertSorted = <K>(map: Map<K, number[]>, key: K, value: number) => {
   list.splice(low, 0, value);
   map.set(key, list);
 };
-const append = <K, V>(map: Map<K, V[]>, key: K, ...values: V[]) => { const list = map.get(key); if (list) list.push(...values); else map.set(key, [...values]); };
+const append = <K, V>(map: Map<K, V[]>, key: K, value: V) => { const list = map.get(key); if (list) list.push(value); else map.set(key, [value]); };
+/** Turn order within a zone: leftward bends by where they end, then where they start; rightward ones reversed. */
+const leftwardFirst = (a: { readonly x1: number; readonly x2: number }, b: { readonly x1: number; readonly x2: number }) => a.x2 - b.x2 || a.x1 - b.x1;
+const rightwardFirst = (a: { readonly x1: number; readonly x2: number }, b: { readonly x1: number; readonly x2: number }) => b.x2 - a.x2 || b.x1 - a.x1;
+/** The root of `index` in a union-find array, compressing the path walked. */
+const unitRoot = (unit: number[], index: number): number => unit[index] === index ? index : (unit[index] = unitRoot(unit, unit[index]));
+/** The junctions a route from a tile belongs to: none. Shared, as it is never modified. */
+const NO_JUNCTIONS: ReadonlySet<string> = new Set();
 /** Narrowest separation between lanes sharing a gap. */
 const MIN_LANE = 3;
 /** Distance kept outside a forbidden interval when stepping past it. */
 const FREE_STEP = 0.5;
 /** No tile is anywhere near this big; larger sizes are clamped so coordinates stay exact. */
 const MAX_TILE = 100_000;
+/** A tile size as geometry uses it: not a finite, positive number counts as zero; capped at MAX_TILE. */
+const boundSize = (value: number) => Number.isFinite(value) && value > 0 ? Math.min(value, MAX_TILE) : 0;
 export { TRACK_HEIGHT };
 
 /** Splits an ordered sequence into the fewest rows, then balances row widths. */
 export function wrapRow(widths: readonly number[], limit: number, gap: number): number[][] {
   if (!widths.length) return [];
-  const greedy = (bound: number): number[][] => {
-    const rows: number[][] = [];
-    let current: number[] = [];
-    let used = 0;
-    widths.forEach((width, index) => {
-      const next = current.length ? used + gap + width : width;
-      if (current.length && next > bound) { rows.push(current); current = [index]; used = width; }
-      else { current.push(index); used = next; }
-    });
-    rows.push(current);
-    return rows;
-  };
-  const widest = widths.reduce((most, value) => Math.max(most, value), 0);
-  const target = greedy(Math.max(limit, widest)).length;
-  if (target === 1) return greedy(Math.max(limit, widest));
+  let widest = 0;
+  for (let index = 0; index < widths.length; index++) if (index in widths) widest = Math.max(widest, widths[index]);
+  const target = countWrapped(widths, Math.max(limit, widest), gap);
+  if (target === 1) return greedyRows(widths, Math.max(limit, widest), gap);
   // Smallest bound that still needs no more rows: evens out the last row.
   let low = widest;
   let high = Math.max(limit, widest);
   while (high - low > 1) {
     const middle = Math.floor((low + high) / 2);
-    if (greedy(middle).length <= target) high = middle; else low = middle;
+    if (countWrapped(widths, middle, gap) <= target) high = middle; else low = middle;
   }
-  return greedy(greedy(low).length <= target ? low : high);
+  return greedyRows(widths, countWrapped(widths, low, gap) <= target ? low : high, gap);
+}
+
+/** {@link wrapRow}'s rows at one bound: each takes tiles while they fit (holes in `widths` are skipped). */
+function greedyRows(widths: readonly number[], bound: number, gap: number): number[][] {
+  const rows: number[][] = [];
+  let current: number[] = [];
+  let used = 0;
+  for (let index = 0; index < widths.length; index++) {
+    if (!(index in widths)) continue;
+    const width = widths[index];
+    const next = current.length ? used + gap + width : width;
+    if (current.length && next > bound) { rows.push(current); current = [index]; used = width; }
+    else { current.push(index); used = next; }
+  }
+  rows.push(current);
+  return rows;
+}
+
+/** `greedyRows(widths, bound, gap).length`, without building the rows. */
+function countWrapped(widths: readonly number[], bound: number, gap: number): number {
+  let rows = 1, filled = 0, used = 0;
+  for (let index = 0; index < widths.length; index++) {
+    if (!(index in widths)) continue;
+    const width = widths[index];
+    const next = filled ? used + gap + width : width;
+    if (filled && next > bound) { rows++; filled = 1; used = width; }
+    else { filled++; used = next; }
+  }
+  return rows;
 }
 
 type Interval = readonly [number, number];
@@ -276,15 +303,47 @@ export function layoutLayered(request: LayoutRequest): GraphLayout {
   return extent > turned.width ? { ...turned, width: extent } : turned;
 }
 
+const isDigitCode = (code: number) => code >= 48 && code <= 57;
+/** End of the longest `-?\d+(?:\.\d+)?` at `i`, or -1: the only way that pattern can match there. */
+function plainNumberEnd(text: string, i: number): number {
+  let j = text.charCodeAt(i) === 45 ? i + 1 : i;
+  if (!isDigitCode(text.charCodeAt(j))) return -1;
+  while (isDigitCode(text.charCodeAt(j))) j++;
+  if (text.charCodeAt(j) === 46 && isDigitCode(text.charCodeAt(j + 1))) { j += 2; while (isDigitCode(text.charCodeAt(j))) j++; }
+  return j;
+}
+
+/**
+ * `text.replace(/(-?\d+(?:\.\d+)?) (-?\d+(?:\.\d+)?)/g, "$2 $1")` without a regular expression.
+ * A shorter first number is always followed by a digit or ".", never the space, so the
+ * pattern matches at a position exactly when the longest first number is followed by a space
+ * and a second number, which it then takes whole; the search resumes after the match, or one
+ * character on.
+ */
+function swapPairs(text: string): string {
+  let out = "", copied = 0;
+  for (let i = 0; i < text.length;) {
+    const first = plainNumberEnd(text, i);
+    const second = first >= 0 && text.charCodeAt(first) === 32 ? plainNumberEnd(text, first + 1) : -1;
+    if (second < 0) { i++; continue; }
+    out += text.slice(copied, i) + text.slice(first + 1, second) + " " + text.slice(i, first);
+    copied = i = second;
+  }
+  return copied ? out + text.slice(copied) : text;
+}
+
 /** Mirrors a layout across its diagonal: x and y (and widths and heights) trade places. */
 export function transposeLayout(layout: GraphLayout): GraphLayout {
-  const swapPairs = (path: string) => path.replace(/(-?\d+(?:\.\d+)?) (-?\d+(?:\.\d+)?)/g, "$2 $1");
+  const nodes = new Map<NodeKey, PlacedNode>();
+  layout.nodes.forEach((node, key) => nodes.set(key, { ...node, x: node.y, y: node.x, width: node.height, height: node.width }));
+  const junctions = new Map<string, PlacedJunction>();
+  layout.junctions.forEach((junction, id) => junctions.set(id, { ...junction, x: junction.y, y: junction.x }));
   return {
     orientation: layout.orientation === "down" ? "right" : "down",
     width: layout.height,
     height: layout.width,
-    nodes: new Map([...layout.nodes].map(([key, node]) => [key, { ...node, x: node.y, y: node.x, width: node.height, height: node.width }])),
-    junctions: new Map([...layout.junctions].map(([id, junction]) => [id, { ...junction, x: junction.y, y: junction.x }])),
+    nodes,
+    junctions,
     routes: layout.routes.map((route) => ({ ...route, path: swapPairs(route.path) })),
     rows: layout.rows,
     readingOrder: layout.readingOrder,
@@ -299,40 +358,172 @@ function layoutDown(request: LayoutRequest, minWidth: number): GraphLayout {
   // dots stack. Legacy placement needs two retries. A pinned band can first
   // consume spare pane width; moving rows within that width changes gap slots,
   // so allow two further routing passes to settle the new slot choices.
+  const prepared = prepare(request);
   let extra = { left: 0, right: 0 };
+  const attempts = prepared.pinned ? 4 : 2;
   for (let attempt = 0; ; attempt++) {
-    const { layout, shortfall, pinned } = layoutPass(request, extra, minWidth);
-    if ((shortfall.left <= 0 && shortfall.right <= 0) || attempt === (pinned ? 4 : 2)) return layout;
+    const { layout, shortfall } = layoutPass(prepared, extra, minWidth, attempt === attempts);
+    if (layout) return layout;
     extra = { left: extra.left + Math.max(0, Math.ceil(shortfall.left)), right: extra.right + Math.max(0, Math.ceil(shortfall.right)) };
   }
 }
 
-function layoutPass(request: LayoutRequest, extra: { readonly left: number; readonly right: number }, minWidth: number): { layout: GraphLayout; shortfall: { left: number; right: number }; pinned: boolean } {
+/**
+ * Lower bounds for the child band of the pinned downward layout of `request`
+ * (as built by {@link layoutLayered} with `orientation: "down"`), computed from
+ * its display rows alone, before any routing: the band's height (from the first
+ * child row to the last row's bottom, plus the bottom margin and `stemRoom`), its
+ * child allocation width (tile span plus 8 px padding each side) and the connector
+ * ink of a tree (each non-cover source's routes reach a child at least one
+ * generation channel below it). Mirrors {@link layoutPass}: longest-path
+ * generations wrap greedily onto rows of the content width, a row is as tall as
+ * its tallest tile, and the channel below a row is at least `rowChannel` inside a
+ * generation and `bandChannel` below its last row. Null unless the cover is
+ * generation 0's only tile (otherwise its first child row is not known here).
+ */
+export function downwardBandBound(request: LayoutRequest, coverKey: NodeKey, stemRoom: number): { readonly height: number; readonly width: number; readonly length: number } | null {
+  const space = spacingFor(request.tileWidth), gap = space.column;
+  // Index-based throughout (this runs on every band layout, mostly tiny ones):
+  // item i's parents, children and generation live in arrays indexed by i.
+  const list = request.items, count = list.length;
+  const indexOf = new Map<NodeKey, number>();
+  for (let i = 0; i < count; i++) indexOf.set(list[i].key, i);
+  if (indexOf.size !== count || !indexOf.has(coverKey)) return null;
+  const cover = indexOf.get(coverKey)!;
+  const parents: number[][] = [], children: number[][] = [];
+  for (let i = 0; i < count; i++) children.push([]);
+  for (let i = 0; i < count; i++) {
+    const key = list[i].key, own: number[] = [];
+    // Distinct present parents other than the item itself, in first-seen order
+    // (what spreading a Set of them, then filtering, gives).
+    const given = list[i].parents;
+    const distinct: readonly NodeKey[] = Array.isArray(given) ? given : [...new Set(given)];
+    for (let p = 0; p < distinct.length; p++) {
+      const parent = distinct[p];
+      if (parent === key) continue;
+      const at = indexOf.get(parent);
+      if (at === undefined || own.includes(at)) continue;
+      own.push(at);
+    }
+    parents.push(own);
+    for (const at of own) children[at].push(i);
+  }
+  // Longest-path generations; a cycle has no defined generations here.
+  const band = new Array<number>(count).fill(-1), waiting = new Array<number>(count);
+  const ready: number[] = [];
+  for (let i = 0; i < count; i++) { waiting[i] = parents[i].length; if (!waiting[i]) ready.push(i); }
+  for (let r = 0; r < ready.length; r++) {
+    const at = ready[r];
+    let most = 0;
+    for (const parent of parents[at]) if (band[parent] + 1 > most) most = band[parent] + 1;
+    band[at] = most;
+    for (const child of children[at]) if (!--waiting[child]) ready.push(child);
+  }
+  if (ready.length !== count || band[cover] !== 0) return null;
+  // Generations' members in the order they became ready.
+  const byBand: number[][] = [];
+  for (const at of ready) (byBand[band[at]] ??= []).push(at);
+  if (byBand[0].length !== 1 || byBand.length < 2) return null;
+  const widths = new Array<number>(count), heights = new Array<number>(count);
+  let widest = 0;
+  for (let i = 0; i < count; i++) {
+    widths[i] = boundSize(list[i].width); heights[i] = boundSize(list[i].height);
+    if (widths[i] > widest) widest = widths[i];
+  }
+  let natural = 0;
+  for (const members of byBand) {
+    let sum = 0;
+    for (const at of members) sum += widths[at];
+    natural = Math.max(natural, sum + Math.max(0, members.length - 1) * gap);
+  }
+  const budget = Number.isFinite(request.maxWidth) && request.maxWidth > 0 ? Math.floor(request.maxWidth) : Infinity;
+  const limit = Math.max(widest, Math.min(natural, Math.max(widest, budget - 2 * space.margin)));
+  let height = 0, width = 0;
+  for (let b = 1; b < byBand.length; b++) {
+    const members = byBand[b], size = members.length, first = widths[members[0]];
+    // Uniform widths wrap into exactly `perRow` tiles per full row whatever their order;
+    // otherwise every row's tiles and gaps fit the content width.
+    let uniform = true, tallest = 0, shortest = Infinity;
+    for (const at of members) {
+      if (widths[at] !== first) uniform = false;
+      if (heights[at] > tallest) tallest = heights[at];
+      if (heights[at] < shortest) shortest = heights[at];
+    }
+    let perRow = 1;
+    if (uniform) for (let used = first; perRow < size && used + gap + first <= limit; perRow++) used += gap + first;
+    let rows: number;
+    if (uniform) rows = Math.ceil(size / perRow);
+    else {
+      let sum = 0;
+      for (const at of members) sum = sum + widths[at] + gap;
+      rows = Math.max(1, Math.ceil(sum / (limit + gap)));
+    }
+    // The i-th tallest row is at least as tall as the (i·perRow+1)-th tallest tile.
+    if (uniform && rows > 1) {
+      const sorted = members.map((at) => heights[at]).sort((x, y) => y - x);
+      for (let row = 0; row < rows; row++) height += sorted[row * perRow];
+    } else for (let row = 0; row < rows; row++) height += row ? shortest : tallest;
+    height += (rows - 1) * space.rowChannel + (b < byBand.length - 1 ? space.bandChannel : 0);
+    // Balanced or not, some row holds at least the average number of tiles.
+    const fullest = uniform ? Math.ceil(size / rows) : 1;
+    width = Math.max(width, uniform ? fullest * first + (fullest - 1) * gap : widest);
+  }
+  let tree = true, sources = 0;
+  for (let i = 0; i < count; i++) {
+    if (i !== cover && parents[i].length !== 1) tree = false;
+    if (i !== cover && children[i].length) sources++;
+  }
+  if (!tree) sources = 0;
+  // Tile x is rounded to 0.01 px and attachment reassociates sums: stay strictly below.
+  return { height: height + space.bottom + stemRoom - 1e-6, width: Math.max(0, width + 16 - .02 - 1e-6),
+    length: Math.max(0, sources * (space.bandChannel - ARROW.length) - 1e-6) };
+}
+
+/**
+ * Everything about a request that does not depend on a pass's extra margins:
+ * computed once and shared by every pass of {@link layoutDown}.
+ */
+function prepare(request: LayoutRequest) {
   // Malformed input never spreads through the geometry: a size that is not a
   // finite, non-negative number counts as zero, sizes are capped far above
   // any tile, and an order that is not a number sorts first (ties by key).
-  const size = (value: number) => Number.isFinite(value) && value > 0 ? Math.min(value, MAX_TILE) : 0;
   const space = spacingFor(request.tileWidth);
-  const items = new Map(request.items.map((item) => [item.key, { ...item, width: size(item.width), height: size(item.height), order: Number.isFinite(item.order) ? item.order : 0 }]));
+  // Only these fields of an item are read here (a later duplicate key replaces the
+  // earlier item but keeps its position, as a Map built from the list does).
+  const items = new Map<NodeKey, { readonly width: number; readonly height: number; readonly order: number; readonly parents: readonly NodeKey[] }>();
+  for (const item of request.items) items.set(item.key, { width: boundSize(item.width), height: boundSize(item.height), order: Number.isFinite(item.order) ? item.order : 0, parents: item.parents });
   const keys = [...items.keys()];
-  const parentsByKey = new Map(keys.map(key => [key, [...new Set(items.get(key)!.parents)].filter(parent => parent !== key && items.has(parent))]));
+  // Distinct present parents other than the key itself, in first-seen order.
+  const parentsByKey = new Map<NodeKey, NodeKey[]>();
+  for (const key of keys) {
+    const given = items.get(key)!.parents;
+    const list: NodeKey[] = [];
+    if (Array.isArray(given)) {
+      // Distinct by SameValueZero, as a Set is; a duplicate passes the filter exactly when its first copy did.
+      for (let i = 0; i < given.length; i++) { const parent = given[i]; if (parent !== key && items.has(parent) && !list.includes(parent)) list.push(parent); }
+    } else for (const parent of new Set(given)) if (parent !== key && items.has(parent)) list.push(parent);
+    parentsByKey.set(key, list);
+  }
   const parentsOf = (key: NodeKey) => parentsByKey.get(key)!;
 
   // Longest-path bands, computed iteratively so deep edit chains cannot
   // exhaust the stack. Cycles (already rejected upstream) are cut at the back edge.
   const bands = new Map<NodeKey, number>();
   const visiting = new Set<NodeKey>();
+  const stack: NodeKey[] = [];
   for (const start of keys) {
     if (bands.has(start)) continue;
-    const stack: NodeKey[] = [start];
+    stack.push(start);
     while (stack.length) {
       const key = stack[stack.length - 1];
       if (bands.has(key)) { stack.pop(); continue; }
       visiting.add(key);
-      const pending = parentsOf(key).filter((parent) => !bands.has(parent) && !visiting.has(parent));
-      if (pending.length) { stack.push(...pending); continue; }
+      // Parents still to visit go on the stack in order; the key is revisited after them.
+      const parents = parentsOf(key), height = stack.length;
+      for (const parent of parents) if (!bands.has(parent) && !visiting.has(parent)) stack.push(parent);
+      if (stack.length > height) continue;
       let value = 0;
-      for (const parent of parentsOf(key)) { const known = bands.get(parent); if (known !== undefined && known + 1 > value) value = known + 1; }
+      for (const parent of parents) { const known = bands.get(parent); if (known !== undefined && known + 1 > value) value = known + 1; }
       bands.set(key, value);
       visiting.delete(key);
       stack.pop();
@@ -342,20 +533,9 @@ function layoutPass(request: LayoutRequest, extra: { readonly left: number; read
   for (const value of bands.values()) if (value + 1 > bandCount) bandCount = value + 1;
   const pinnedViolation = request.pinned && bands.has(request.pinned.key) && bands.get(request.pinned.key) !== 0 ? "not-a-root" as const : undefined;
 
-  const plan = buildInputJunctions(keys.map((child) => ({ child, parents: parentsOf(child) })));
-  const joins = new Map(plan.joins.map((join) => [join.id, join]));
-  const joinBand = (join: Junction) => join.parents.reduce((most, id) => Math.max(most, bands.get(id)!), 0);
-  const depths = new Map<string, number>();
-  const joinDepth = (id: string): number => {
-    const known = depths.get(id);
-    if (known !== undefined) return known;
-    const join = joins.get(id)!;
-    const nested = join.inputs.filter((input) => input.kind === "junction" && joinBand(joins.get(input.id)!) === joinBand(join));
-    const depth = 1 + Math.max(0, ...nested.map((input) => joinDepth(input.id)));
-    depths.set(id, depth);
-    return depth;
-  };
-  plan.joins.forEach((join) => joinDepth(join.id));
+  const relationships: { child: NodeKey; parents: NodeKey[] }[] = [];
+  for (const child of keys) relationships.push({ child, parents: parentsOf(child) });
+  const plan = buildInputJunctions(relationships);
   const gap = space.column;
   const margin = space.margin;
   const widest = keys.reduce((most, key) => Math.max(most, items.get(key)!.width), 0);
@@ -373,6 +553,99 @@ function layoutPass(request: LayoutRequest, extra: { readonly left: number; read
     && budget <= MAX_TILE && pin.x >= pinHalf && pin.x <= budget - pinHalf ? pin : undefined;
   const contentLimit = Math.max(widest, budget - 2 * margin);
   const contentWidth = Math.max(widest, Math.min(natural, contentLimit));
+
+  // One total order for ties: hinted keys keep their previous relative order
+  // and new keys merge in by creation order. A pairwise comparator mixing the
+  // two criteria would not be transitive.
+  const byOrder = (a: NodeKey, b: NodeKey) => items.get(a)!.order - items.get(b)!.order || a.localeCompare(b);
+  const hint = request.hint;
+  const hinted = keys.filter((key) => hint?.has(key)).sort((a, b) => hint!.get(a)! - hint!.get(b)! || byOrder(a, b));
+  const fresh = keys.filter((key) => !hint?.has(key)).sort(byOrder);
+  const rank = new Map<NodeKey, number>();
+  for (let i = 0, j = 0; i < hinted.length || j < fresh.length;) {
+    const next = j >= fresh.length || (i < hinted.length && byOrder(hinted[i], fresh[j]) <= 0) ? hinted[i++] : fresh[j++];
+    rank.set(next, rank.size);
+  }
+  // Generation 0 has no parents to follow, so its order (rank alone) is the same every pass.
+  const firstBand = byBand.length ? byBand[0].filter((key) => !pinned || key !== pinned.key).sort((a, b) => rank.get(a)! - rank.get(b)!) : [];
+
+  const { joinFacts, ordered, targetsOf } = plan.joins.length ? junctionFacts(plan, bands) : NO_JOINS;
+  // Route ids join endpoint keys with ">" (and trunk ids with "~"); while no key holds
+  // either, the plan's routes (distinct by their ends) have ids distinct from each other and
+  // from every trunk id, so they need no collision check.
+  let plainKeys = true;
+  for (const key of keys) if (typeof key !== "string" || key.includes(">") || key.includes("~")) { plainKeys = false; break; }
+  return {
+    space, items, keys, parentsOf, bandCount, byBand, pinnedViolation, plan, joinFacts, ordered, targetsOf, plainKeys,
+    gap, margin, budget, pinned, contentWidth, rank, firstBand, firstRows: wrapRow(firstBand.map((key) => items.get(key)!.width), contentWidth, gap),
+  };
+}
+type Prepared = ReturnType<typeof prepare>;
+
+/** What does not move between passes about where a junction goes: its band, consumers, what it may sit on, and its nested junctions. */
+interface JoinFacts { readonly bandIndex: number; readonly consumers: NodeKey[]; readonly own: ReadonlySet<NodeKey>; readonly nestedJoins: string[] }
+interface JunctionFacts {
+  readonly joinFacts: ReadonlyMap<string, JoinFacts>;
+  /** Junctions in placement order: shallowest nesting first, then by id. */
+  readonly ordered: readonly Junction[];
+  /** What each source (an endpoint key) feeds directly, by endpoint key. */
+  readonly targetsOf: ReadonlyMap<string, ReadonlySet<string>>;
+}
+/** A plan without junctions: nothing to place, and no pass reads the targets (only deferred junctions do). */
+const NO_JOINS: JunctionFacts = { joinFacts: new Map(), ordered: [], targetsOf: new Map() };
+
+/** The pass-invariant facts about a plan's junctions, given each tile's generation. */
+function junctionFacts(plan: ReturnType<typeof buildInputJunctions>, bands: ReadonlyMap<NodeKey, number>): JunctionFacts {
+  const joins = new Map(plan.joins.map((join) => [join.id, join]));
+  const joinBands = new Map(plan.joins.map((join) => [join.id, join.parents.reduce((most, id) => Math.max(most, bands.get(id)!), 0)]));
+  const depths = new Map<string, number>();
+  const joinDepth = (id: string): number => {
+    const known = depths.get(id);
+    if (known !== undefined) return known;
+    const join = joins.get(id)!;
+    const nested = join.inputs.filter((input) => input.kind === "junction" && joinBands.get(input.id) === joinBands.get(id));
+    const depth = 1 + Math.max(0, ...nested.map((input) => joinDepth(input.id)));
+    depths.set(id, depth);
+    return depth;
+  };
+  plan.joins.forEach((join) => joinDepth(join.id));
+  const consumersOf = new Map<string, Set<NodeKey>>();
+  for (const route of plan.routes) {
+    if (route.from.kind !== "junction") continue;
+    const set = consumersOf.get(route.from.id) ?? new Set<NodeKey>();
+    for (const item of route.consumers) set.add(item.child);
+    consumersOf.set(route.from.id, set);
+  }
+  // What each source feeds directly: a junction may sit on a parent's exit
+  // only if nothing else leaves that parent, or the other routes would run
+  // straight through the dot.
+  const targetsOf = new Map<string, Set<string>>();
+  for (const route of plan.routes) {
+    const source = endpointKey(route.from);
+    const set = targetsOf.get(source) ?? new Set<string>();
+    set.add(endpointKey(route.to));
+    targetsOf.set(source, set);
+  }
+  const joinFacts = new Map(plan.joins.map((join) => {
+    const consumers = [...consumersOf.get(join.id) ?? []];
+    const self = endpointKey({ kind: "junction", id: join.id });
+    const solelyHere = (parent: NodeKey) => [...targetsOf.get(endpointKey({ kind: "node", id: parent })) ?? []].every((target) => target === self);
+    const own: ReadonlySet<NodeKey> = new Set<NodeKey>([...join.parents.filter(solelyHere), ...consumers]);
+    const nestedJoins = join.inputs.filter((input) => input.kind === "junction").map((input) => input.id);
+    return [join.id, { bandIndex: joinBands.get(join.id)!, consumers, own, nestedJoins }] as const;
+  }));
+  const ordered = [...plan.joins].sort((a, b) => depths.get(a.id)! - depths.get(b.id)! || a.id.localeCompare(b.id));
+  return { joinFacts, ordered, targetsOf };
+}
+
+/**
+ * One routing pass with `extra` room in the margins. Its layout is null when
+ * the margins fall short and a further pass (not the `last`) will widen them:
+ * the shortfall is known once lanes and junctions are placed, so such a pass
+ * stops there instead of drawing what would be thrown away.
+ */
+function layoutPass(prepared: Prepared, extra: { readonly left: number; readonly right: number }, minWidth: number, last: boolean): { layout: GraphLayout | null; shortfall: { left: number; right: number } } {
+  const { space, items, parentsOf, bandCount, byBand, pinnedViolation, plan, joinFacts, ordered, targetsOf, plainKeys, gap, margin, budget, pinned, contentWidth, rank } = prepared;
   // A pinned band already spans the pane. Spend its unused horizontal room
   // on extra routing margins before widening it; centred legacy canvases
   // start tightly around their content and still widen by the full shortfall.
@@ -387,38 +660,37 @@ function layoutPass(request: LayoutRequest, extra: { readonly left: number; read
   const rowKeys: { band: number; keys: NodeKey[] }[] = [];
   const reading = new Map<NodeKey, number>();
   const lastRowOfBand = new Map<number, number>();
-  // One total order for ties: hinted keys keep their previous relative order
-  // and new keys merge in by creation order. A pairwise comparator mixing the
-  // two criteria would not be transitive.
-  const byOrder = (a: NodeKey, b: NodeKey) => items.get(a)!.order - items.get(b)!.order || a.localeCompare(b);
-  const hint = request.hint;
-  const hinted = keys.filter((key) => hint?.has(key)).sort((a, b) => hint!.get(a)! - hint!.get(b)! || byOrder(a, b));
-  const fresh = keys.filter((key) => !hint?.has(key)).sort(byOrder);
-  const rank = new Map<NodeKey, number>();
-  for (let i = 0, j = 0; i < hinted.length || j < fresh.length;) {
-    const next = j >= fresh.length || (i < hinted.length && byOrder(hinted[i], fresh[j]) <= 0) ? hinted[i++] : fresh[j++];
-    rank.set(next, rank.size);
-  }
-  const tieBreak = (a: NodeKey, b: NodeKey) => rank.get(a)! - rank.get(b)!;
   const center = (key: NodeKey) => columns.get(key)!.x + items.get(key)!.width / 2;
   for (let bandIndex = 0; bandIndex < bandCount; bandIndex++) {
-    // Barycenter of parents in reading order (row first, then x) keeps
-    // children near their parents even when parent rows wrapped.
-    const score = (key: NodeKey) => {
-      const parents = parentsOf(key);
-      return parents.reduce((sum, parent) => sum + columns.get(parent)!.row * 1e6 + center(parent), 0) / parents.length;
-    };
     if (bandIndex === 0 && pinned) {
       columns.set(pinned.key, { x: pinned.x - items.get(pinned.key)!.width / 2, row: 0, band: 0 });
       reading.set(pinned.key, reading.size);
       rowKeys.push({ band: 0, keys: [pinned.key] });
       lastRowOfBand.set(0, 0);
     }
-    const members = [...byBand[bandIndex]].filter((key) => !pinned || key !== pinned.key).sort((a, b) => bandIndex === 0 ? tieBreak(a, b) : score(a) - score(b) || tieBreak(a, b));
-    const wrapped = wrapRow(members.map((key) => items.get(key)!.width), contentWidth, gap);
-    wrapped.forEach((indices) => {
-      const keysInRow = indices.map((index) => members[index]);
-      const rowWidth = keysInRow.reduce((sum, key) => sum + items.get(key)!.width, 0) + (keysInRow.length - 1) * gap;
+    let members: NodeKey[], wrapped: number[][];
+    if (bandIndex === 0) ({ firstBand: members, firstRows: wrapped } = prepared);
+    else {
+      // Barycenter of parents in reading order (row first, then x) keeps
+      // children near their parents even when parent rows wrapped. Parents
+      // lie in earlier bands, already placed, so each score is computed once.
+      const score = new Map<NodeKey, number>();
+      for (const key of byBand[bandIndex]) {
+        const parents = parentsOf(key);
+        let sum = 0;
+        for (const parent of parents) sum = sum + columns.get(parent)!.row * 1e6 + center(parent);
+        score.set(key, sum / parents.length);
+      }
+      members = byBand[bandIndex].filter((key) => !pinned || key !== pinned.key).sort((a, b) => score.get(a)! - score.get(b)! || rank.get(a)! - rank.get(b)!);
+      const widths: number[] = [];
+      for (const key of members) widths.push(items.get(key)!.width);
+      wrapped = wrapRow(widths, contentWidth, gap);
+    }
+    for (const indices of wrapped) {
+      const keysInRow: NodeKey[] = [];
+      let rowWidth = 0;
+      for (const index of indices) { keysInRow.push(members[index]); rowWidth += items.get(members[index])!.width; }
+      rowWidth += (keysInRow.length - 1) * gap;
       if (pinned) width = Math.max(width, rowWidth + 2 * margin + extra.left + extra.right);
       const left = extra.left + margin;
       const right = width - extra.right - margin - rowWidth;
@@ -433,7 +705,7 @@ function layoutPass(request: LayoutRequest, extra: { readonly left: number; read
       }
       rowKeys.push({ band: bandIndex, keys: keysInRow });
       lastRowOfBand.set(bandIndex, row);
-    });
+    }
   }
   const spanCache = new Map<number, { key: NodeKey; x: number; width: number }[]>();
   const spans = (row: number) => {
@@ -460,23 +732,6 @@ function layoutPass(request: LayoutRequest, extra: { readonly left: number; read
   // use). A full level opens a deeper one. A junction finding no such x is
   // placed after lanes (step 3b), against the runs routes actually take; and
   // junctions on one level never overlap.
-  const consumersOf = new Map<string, Set<NodeKey>>();
-  for (const route of plan.routes) {
-    if (route.from.kind !== "junction") continue;
-    const set = consumersOf.get(route.from.id) ?? new Set<NodeKey>();
-    for (const item of route.consumers) set.add(item.child);
-    consumersOf.set(route.from.id, set);
-  }
-  // What each source feeds directly: a junction may sit on a parent's exit
-  // only if nothing else leaves that parent, or the other routes would run
-  // straight through the dot.
-  const targetsOf = new Map<string, Set<string>>();
-  for (const route of plan.routes) {
-    const source = endpointKey(route.from);
-    const set = targetsOf.get(source) ?? new Set<string>();
-    set.add(endpointKey(route.to));
-    targetsOf.set(source, set);
-  }
   type Keepout = { readonly low: number; readonly high: number; readonly key: NodeKey | null };
   const berth = JUNCTION_BERTH + 2;
   const runs = (row: number): Keepout[] => {
@@ -498,16 +753,13 @@ function layoutPass(request: LayoutRequest, extra: { readonly left: number; read
   const bandLevels = new Map<number, number>();
   /** Where a junction wants to be, and what it may sit on. */
   const situate = (join: Junction) => {
-    const consumers = [...consumersOf.get(join.id) ?? []];
+    const { bandIndex, consumers, own, nestedJoins } = joinFacts.get(join.id)!;
     const parentX = join.parents.reduce((sum, id) => sum + center(id), 0) / join.parents.length;
     const targetX = consumers.length ? consumers.reduce((sum, id) => sum + center(id), 0) / consumers.length : parentX;
-    const bandIndex = joinBand(join);
     const channel = lastRowOfBand.get(bandIndex)!;
-    const self = endpointKey({ kind: "junction", id: join.id });
-    const solelyHere = (parent: NodeKey) => [...targetsOf.get(endpointKey({ kind: "node", id: parent })) ?? []].every((target) => target === self);
-    const own = new Set<NodeKey>([...join.parents.filter(solelyHere), ...consumers]);
-    const nested = join.inputs.filter((input) => input.kind === "junction" && placed.get(input.id)?.channel === channel);
-    const minLevel = 1 + nested.reduce((most, input) => Math.max(most, placed.get(input.id)!.level), 0);
+    let deepestNested = 0;
+    for (const id of nestedJoins) { const spot = placed.get(id); if (spot?.channel === channel) deepestNested = Math.max(deepestNested, spot.level); }
+    const minLevel = 1 + deepestNested;
     const preferred = Math.min(width - 14, Math.max(14, parentX * 0.6 + targetX * 0.4));
     return { bandIndex, channel, own, minLevel, preferred };
   };
@@ -544,7 +796,6 @@ function layoutPass(request: LayoutRequest, extra: { readonly left: number; read
   // or nesting one that did not, is deferred until lanes are known; it holds
   // a provisional spot meanwhile, which only steers lane choice.
   const deferred: { join: Junction }[] = [];
-  const ordered = [...plan.joins].sort((a, b) => depths.get(a.id)! - depths.get(b.id)! || a.id.localeCompare(b.id));
   const isDeferred = new Set<string>();
   for (const join of ordered) {
     const situation = situate(join);
@@ -566,14 +817,14 @@ function layoutPass(request: LayoutRequest, extra: { readonly left: number; read
   // share a lane, so a fan-out reads as one trunk that branches; different
   // sources get distinct lanes spread evenly across the gap. A full gap sends
   // further sources elsewhere.
-  interface Slot { readonly id: string; readonly x: number; readonly low: number; readonly high: number; readonly margin: boolean; readonly cost: number }
-  const slotCache = new Map<number, Omit<Slot, "cost">[]>();
+  interface Slot { readonly id: string; readonly x: number; readonly low: number; readonly high: number; readonly margin: boolean }
+  const slotCache = new Map<number, Slot[]>();
   const gapsOf = (row: number) => {
     const cached = slotCache.get(row);
     if (cached) return cached;
     const boxes = spans(row);
     const clear = space.clearance;
-    const options: Omit<Slot, "cost">[] = [];
+    const options: Slot[] = [];
     const first = boxes[0];
     const last = boxes.at(-1)!;
     // Each outer margin is one slot for the whole graph: a source keeps one
@@ -588,34 +839,66 @@ function layoutPass(request: LayoutRequest, extra: { readonly left: number; read
     slotCache.set(row, options);
     return options;
   };
-  // Outer margins cost a little extra: a gap between tiles keeps the route nearer the graph.
-  const slotsFor = (row: number, desired: number): Slot[] => gapsOf(row)
-    .map((slot) => ({ ...slot, cost: Math.abs(slot.x - desired) + (slot.margin ? 8 : 0) }))
-    .sort((a, b) => a.cost - b.cost || a.x - b.x);
-  const lanes = new Map<string, { slot: Slot; sources: Map<string, number> }>();
+  interface Lane { readonly slot: Slot; readonly sources: Map<string, number>; readonly xs: Map<string, number> }
+  const lanes = new Map<string, Lane>();
+  /** A source's x in a lane, once lanes are placed. */
+  const laneX = (slot: string, source: string) => lanes.get(slot)!.xs.get(source);
   // Margins take any number of lanes; they widen on the next pass if needed.
   const capacity = (slot: Slot) => slot.margin ? Infinity : Math.floor((slot.high - slot.low) / MIN_LANE) + 1;
   // Room the outer margins lack: for their lanes, and for junctions that
   // found no column of their own. The next pass widens them by this much.
   const shortfall = { left: 0, right: 0 };
   const slotsInRow = new Map<number, Set<string>>();
-  /** The rows each source passes through in each outer margin. */
-  const marginRows = new Map<string, number[]>();
+  /** The rows each source passes through in each outer margin, by margin. */
+  const marginRows = new Map<string, Map<string, number[]>>();
   const claim = (row: number, desired: number, source: string, sourceX: number): string | null => {
-    const options = slotsFor(row, desired);
-    if (!options.length) return null;
+    const slots = gapsOf(row);
+    if (!slots.length) return null;
+    // Slots are tried by cost, then x, then row order (a stable sort); the
+    // first with room takes the source, else the least loaded. With finite
+    // keys that order is total, so the first is a minimum and needs no sort.
+    // Outer margins cost a little extra: a gap between tiles keeps the route nearer the graph.
+    const cost = (slot: Slot) => Math.abs(slot.x - desired) + (slot.margin ? 8 : 0);
     const load = (slot: Slot) => (lanes.get(slot.id)?.sources.size ?? 0) / capacity(slot);
-    const open = options.find((slot) => {
+    const hasRoom = (slot: Slot) => {
       const lane = lanes.get(slot.id);
       return !lane || lane.sources.has(source) || lane.sources.size < capacity(slot);
-    }) ?? options.reduce((best, slot) => load(slot) < load(best) ? slot : best);
-    const lane = lanes.get(open.id) ?? { slot: open, sources: new Map<string, number>() };
-    lanes.set(open.id, lane);
+    };
+    let open: Slot | undefined, finite = true, openCost = 0;
+    for (const slot of slots) {
+      const value = cost(slot);
+      if (!Number.isFinite(value) || !Number.isFinite(slot.x)) { finite = false; break; }
+      if (open && (value > openCost || (value === openCost && !(slot.x < open.x)))) continue;
+      const lane = lanes.get(slot.id);
+      if (!lane || lane.sources.has(source) || lane.sources.size < capacity(slot)) { open = slot; openCost = value; }
+    }
+    if (!finite) {
+      const costs = slots.map(cost);
+      const options = slots.map((_, index) => index).sort((a, b) => costs[a] - costs[b] || slots[a].x - slots[b].x).map((index) => slots[index]);
+      open = options.find(hasRoom) ?? options.reduce((best, slot) => load(slot) < load(best) ? slot : best);
+    } else if (!open) {
+      let bestLoad = 0, bestCost = 0;
+      for (const slot of slots) {
+        const value = cost(slot), used = load(slot);
+        if (!open || used < bestLoad || (used === bestLoad && (value < bestCost || (value === bestCost && slot.x < open.x)))) { open = slot; bestLoad = used; bestCost = value; }
+      }
+    }
+    open = open!;
+    let lane = lanes.get(open.id);
+    if (!lane) lanes.set(open.id, lane = { slot: open, sources: new Map<string, number>(), xs: new Map<string, number>() });
     if (!lane.sources.has(source)) lane.sources.set(source, sourceX);
-    let used = slotsInRow.get(row);
-    if (!used) slotsInRow.set(row, used = new Set());
-    used.add(open.id);
-    if (open.margin) append(marginRows, `${open.id}|${source}`, row);
+    // Only deferred junctions read which lanes each row uses.
+    if (deferred.length) {
+      let used = slotsInRow.get(row);
+      if (!used) slotsInRow.set(row, used = new Set());
+      used.add(open.id);
+    }
+    if (open.margin) {
+      let bySource = marginRows.get(open.id);
+      if (!bySource) marginRows.set(open.id, bySource = new Map());
+      const rowsUsed = bySource.get(source);
+      if (rowsUsed) rowsUsed.push(row); else bySource.set(source, [row]);
+    }
     return open.id;
   };
 
@@ -624,18 +907,33 @@ function layoutPass(request: LayoutRequest, extra: { readonly left: number; read
   // one row crossing, computed (and later drawn) once however many routes
   // run through it. Work then grows with each source's trunk, not with
   // routes × rows.
-  interface PassNode { readonly parent: number; readonly source: string; readonly row: number; readonly x: number; readonly from: Anchor; readonly own: ReadonlySet<string> }
+  /** `tile`: a tile root's key as its source names it (`source` without "node:"). */
+  interface PassNode { readonly parent: number; readonly source: string; readonly row: number; x: number; readonly from: Anchor; readonly own: ReadonlySet<string>; readonly tile?: string }
   const trie: PassNode[] = [];
-  const trieIndex = new Map<string, number>();
+  // Each node's children by lane id, or by end x (a number) where the row has
+  // no lane; a child is always one row down. Most nodes have one child, kept
+  // inline; further ones go in a map (keys compare as map keys do).
+  const firstKey: (string | number)[] = [], firstChild: number[] = [];
+  const moreChildren = new Map<number, Map<string | number, number>>();
+  const sameKey = (a: string | number, b: string | number) => a === b || (a !== a && b !== b);
+  const childOf = (node: number, key: string | number): number | undefined =>
+    firstChild[node] === undefined ? undefined : sameKey(firstKey[node], key) ? firstChild[node] : moreChildren.get(node)?.get(key);
+  const addChild = (node: number, key: string | number, child: number) => {
+    if (firstChild[node] === undefined) { firstKey[node] = key; firstChild[node] = child; return; }
+    let more = moreChildren.get(node);
+    if (!more) moreChildren.set(node, more = new Map());
+    more.set(key, child);
+  };
   const sourceRoot = new Map<string, number>();
-  const claimed = new Map<string, string | null>();
+  /** Lane claims by source, then rounded end x, then row. */
+  const claimed = new Map<string, Map<number, Map<number, string | null>>>();
   const pending: { node: number; slot: string | null; desired: number }[] = [];
-  const rootOf = (endpoint: Endpoint): number => {
-    const source = endpointKey(endpoint);
+  /** The trie root for a route's start; `source` is its endpoint key. */
+  const rootOf = (endpoint: Endpoint, source: string): number => {
     const known = sourceRoot.get(source);
     if (known !== undefined) return known;
     const node: PassNode = endpoint.kind === "node"
-      ? { parent: -1, source, row: columns.get(endpoint.id)!.row, x: center(endpoint.id), from: { row: columns.get(endpoint.id)!.row, edge: "bottom" }, own: new Set() }
+      ? { parent: -1, source, row: columns.get(endpoint.id)!.row, x: center(endpoint.id), from: { row: columns.get(endpoint.id)!.row, edge: "bottom" }, own: NO_JUNCTIONS, tile: `${endpoint.id}` }
       : { parent: -1, source, row: placed.get(endpoint.id)!.channel, x: placed.get(endpoint.id)!.x, from: { junction: endpoint.id }, own: new Set([endpoint.id]) };
     trie.push(node);
     sourceRoot.set(source, trie.length - 1);
@@ -643,7 +941,7 @@ function layoutPass(request: LayoutRequest, extra: { readonly left: number; read
   };
   const courses = plan.routes.map((route) => {
     const source = endpointKey(route.from);
-    let node = rootOf(route.from);
+    let node = rootOf(route.from, source);
     const sourceX = trie[node].x;
     let endX: number; let endChannel: number; let to: Anchor;
     if (route.to.kind === "node") {
@@ -653,19 +951,25 @@ function layoutPass(request: LayoutRequest, extra: { readonly left: number; read
       const join = placed.get(route.to.id)!;
       endX = join.x; endChannel = join.channel; to = { junction: route.to.id };
     }
-    for (let row = trie[node].row + 1; row <= endChannel; row++) {
-      const memo = `${row}|${source}|${round(endX)}`;
-      let slot = claimed.get(memo);
-      if (slot === undefined) claimed.set(memo, slot = claim(row, endX, source, sourceX));
-      const key = `${node}|${row}|${slot ?? `@${round(endX)}`}`;
-      let child = trieIndex.get(key);
-      if (child === undefined) {
-        child = trie.length;
-        trie.push({ parent: node, source, row, x: 0, from: { row, edge: "bottom" }, own: trie[node].own });
-        trieIndex.set(key, child);
-        pending.push({ node: child, slot, desired: endX });
+    if (trie[node].row + 1 <= endChannel) {
+      const endKey = round(endX);
+      let byEnd = claimed.get(source);
+      if (!byEnd) claimed.set(source, byEnd = new Map());
+      let byRow = byEnd.get(endKey);
+      if (!byRow) byEnd.set(endKey, byRow = new Map());
+      for (let row = trie[node].row + 1; row <= endChannel; row++) {
+        let slot = byRow.get(row);
+        if (slot === undefined) byRow.set(row, slot = claim(row, endX, source, sourceX));
+        const key = slot ?? endKey;
+        let child = childOf(node, key);
+        if (child === undefined) {
+          child = trie.length;
+          trie.push({ parent: node, source, row, x: 0, from: { row, edge: "bottom" }, own: trie[node].own });
+          addChild(node, key, child);
+          pending.push({ node: child, slot, desired: endX });
+        }
+        node = child;
       }
-      node = child;
     }
     const own = route.to.kind === "junction" ? new Set([...trie[node].own, route.to.id]) : trie[node].own;
     return { route, source, last: node, end: { x: endX, to }, own };
@@ -679,58 +983,73 @@ function layoutPass(request: LayoutRequest, extra: { readonly left: number; read
   // the canvas; otherwise the minimum, overflowing it by exactly what the
   // next pass widens the margin by (placement is relative to the tiles, so
   // that pass fits).
-  const laneX = new Map<string, number>();
   for (const side of ["L", "R"] as const) {
-    const sources = lanes.get(side)?.sources;
-    if (!sources) continue;
+    const lane = lanes.get(side);
+    if (!lane) continue;
     const left = side === "L";
-    const entries = [...sources].map(([source, sourceX]) => {
-      const used = marginRows.get(`${side}|${source}`)!;
-      const edges = used.map((row) => spans(row)).filter((boxes) => boxes.length)
-        .map((boxes) => left ? boxes[0].x - space.clearance : boxes.at(-1)!.x + boxes.at(-1)!.width + space.clearance);
-      const edge = left ? Math.min(...edges) : Math.max(...edges);
-      return { source, sourceX, lo: Math.min(...used) - 1, hi: Math.max(...used) + 1, edge, anchor: left ? edge - space.column / 2 + space.clearance : edge + space.column / 2 - space.clearance };
+    const entries = [...lane.sources].map(([source, sourceX]) => {
+      const used = marginRows.get(side)!.get(source)!;
+      // Math.min and Math.max do not depend on argument order, so folds match the spreads.
+      let edge = left ? Infinity : -Infinity, lo = Infinity, hi = -Infinity;
+      for (const row of used) {
+        lo = Math.min(lo, row); hi = Math.max(hi, row);
+        const boxes = spans(row);
+        if (!boxes.length) continue;
+        const last = boxes[boxes.length - 1];
+        edge = left ? Math.min(edge, boxes[0].x - space.clearance) : Math.max(edge, last.x + last.width + space.clearance);
+      }
+      return { source, sourceX, lo: lo - 1, hi: hi + 1, edge, anchor: left ? edge - space.column / 2 + space.clearance : edge + space.column / 2 - space.clearance };
     }).sort((a, b) => (left ? b.sourceX - a.sourceX : a.sourceX - b.sourceX) || a.source.localeCompare(b.source));
     const bound = left ? space.clearance : width - space.clearance;
     /** Every entry's x at one separation; the outer side is unbounded, so each always finds one. */
     const place = (separation: number) => {
-      const placedLanes: { x: number; lo: number; hi: number }[] = [];
+      const xs: number[] = [];
+      // Placed lanes kept sorted by x, so the intervals around an entry come
+      // out sorted by start and merge in one sweep (as `nearestFree` would).
+      const byX: { x: number; lo: number; hi: number }[] = [];
+      let overflow = 0;
       for (const entry of entries) {
-        const around = placedLanes.filter((other) => other.lo <= entry.hi && entry.lo <= other.hi)
-          .map((other) => [other.x - separation + FREE_STEP, other.x + separation - FREE_STEP] as const);
-        const x = nearestFree(entry.anchor, around, left ? -Infinity : entry.edge, left ? entry.edge : Infinity)!;
-        placedLanes.push({ x, lo: entry.lo, hi: entry.hi });
+        const around: [number, number][] = [];
+        for (const other of byX) {
+          if (!(other.lo <= entry.hi && entry.lo <= other.hi)) continue;
+          const start = other.x - separation + FREE_STEP, end = other.x + separation - FREE_STEP;
+          const last = around.at(-1);
+          if (last && start <= last[1] + FREE_STEP) last[1] = Math.max(last[1], end);
+          else around.push([start, end]);
+        }
+        const x = nearestOutside(entry.anchor, around, left ? -Infinity : entry.edge, left ? entry.edge : Infinity)!;
+        let at = byX.length;
+        while (at > 0 && byX[at - 1].x > x) at--;
+        byX.splice(at, 0, { x, lo: entry.lo, hi: entry.hi });
+        xs.push(x);
+        overflow = Math.max(overflow, left ? bound - x : x - bound);
       }
-      const overflow = Math.max(0, ...placedLanes.map(({ x }) => left ? bound - x : x - bound));
-      return { xs: placedLanes.map(({ x }) => x), overflow };
+      return { xs, overflow };
     };
     const roomy = place(space.lane);
     const chosen = roomy.overflow <= 0 ? roomy : place(MIN_LANE);
     shortfall[left ? "left" : "right"] = Math.max(shortfall[left ? "left" : "right"], chosen.overflow);
-    entries.forEach((entry, index) => laneX.set(`${side}|${entry.source}`, chosen.xs[index]));
+    entries.forEach((entry, index) => lane.xs.set(entry.source, chosen.xs[index]));
   }
 
   // Lane positions, once every source in a gap is known: ordered by where the
   // sources sit (fewer crossings), centered on the gap and kept inside it.
-  for (const [id, { slot, sources }] of lanes) {
+  for (const { slot, sources, xs } of lanes.values()) {
     if (slot.margin) continue;
     const order = [...sources].sort((a, b) => a[1] - b[1] || a[0].localeCompare(b[0]));
     const spacing = order.length > 1 ? Math.min(space.lane, (slot.high - slot.low) / (order.length - 1)) : 0;
     const span = spacing * (order.length - 1);
     const first = Math.min(slot.high - span, Math.max(slot.low, slot.x - span / 2));
-    order.forEach(([source], index) => laneX.set(`${id}|${source}`, first + index * spacing));
+    order.forEach(([source], index) => xs.set(source, first + index * spacing));
   }
-  for (const { node, slot, desired } of pending) {
-    const item = trie[node];
-    trie[node] = { ...item, x: slot ? laneX.get(`${slot}|${item.source}`)! : desired };
-  }
+  for (const { node, slot, desired } of pending) trie[node].x = slot ? laneX(slot, trie[node].source)! : desired;
 
   // 3b. Deferred junctions, now kept off the columns routes actually
   // use (lanes, tile exits and arrow entries) rather than whole gaps and
   // margins. If even that is full, a dot may sit above another; at worst only
   // same-level spacing holds.
   if (deferred.length) {
-    const laneColumns = (row: number) => [...slotsInRow.get(row) ?? []].flatMap((slot) => [...lanes.get(slot)!.sources.keys()].map((source) => laneX.get(`${slot}|${source}`)!));
+    const laneColumns = (row: number) => [...slotsInRow.get(row) ?? []].flatMap((slot) => [...lanes.get(slot)!.sources.keys()].map((source) => laneX(slot, source)!));
     const columnsNear = new Map<number, { x: number; key: NodeKey | null }[]>();
     const columnsOf = (channel: number) => {
       let cached = columnsNear.get(channel);
@@ -767,10 +1086,12 @@ function layoutPass(request: LayoutRequest, extra: { readonly left: number; read
     // Routes from and to moved junctions start and end at their final spots.
     for (const [id, x] of moved) {
       const root = sourceRoot.get(endpointKey({ kind: "junction", id }));
-      if (root !== undefined) trie[root] = { ...trie[root], x };
+      if (root !== undefined) trie[root].x = x;
     }
     for (const course of courses) if (course.end.to && "junction" in course.end.to && moved.has(course.end.to.junction)) course.end.x = moved.get(course.end.to.junction)!;
   }
+
+  if (!last && !(shortfall.left <= 0 && shortfall.right <= 0)) return { layout: null, shortfall };
 
   // Channels in level space. The channel below row c holds levelCount(c)
   // junction levels; bend zone i lies between level i and level i + 1
@@ -799,7 +1120,9 @@ function layoutPass(request: LayoutRequest, extra: { readonly left: number; read
     const from = trie[last];
     return leg(from.row, source, endpointKey(route.to), from.x, end.x, from.from, end.to, own);
   });
-  const allLegs = [...nodeLegs.filter((item): item is Leg => item !== null), ...finalLegs];
+  const allLegs: Leg[] = [];
+  for (const item of nodeLegs) if (item !== null) allLegs.push(item);
+  for (const item of finalLegs) allLegs.push(item);
   const bends = (item: Leg) => Math.abs(item.x1 - item.x2) >= 0.5;
   const near = (a: number, b: number) => Math.abs(a - b) < MIN_LANE;
   // Routes from one source (a branching trunk) or into one junction may meet.
@@ -809,8 +1132,6 @@ function layoutPass(request: LayoutRequest, extra: { readonly left: number; read
   // junctions it does not belong to (touching one would read as one more
   // input combined there) and of other routes' vertical runs; among equally
   // clear zones, the roomiest.
-  const legsIn = new Map<number, Leg[]>();
-  for (const item of allLegs) append(legsIn, item.channel, item);
   // Default zone heights (`bendZones`); the orientation estimate sizes channels from the same.
   const zoneDefaults = new Map<number, readonly number[]>();
   const defaultZone = (channel: number, zone: number) => {
@@ -818,46 +1139,63 @@ function layoutPass(request: LayoutRequest, extra: { readonly left: number; read
     if (!heights) zoneDefaults.set(channel, heights = bendZones(space, levelCount(channel), lastRowOfBand.get(rowKeys[channel].band) === channel));
     return heights[zone];
   };
+  // Channels choose zones independently, and only for a bend with more than one
+  // zone (none without junction levels, as in any tree): with none, skip the step.
+  let choosing = false;
+  for (const item of allLegs) if (item.lo !== item.hi && bends(item)) { choosing = true; break; }
+  const legsIn = new Map<number, Leg[]>();
+  if (choosing) for (const item of allLegs) append(legsIn, item.channel, item);
   type Run = { readonly x: number; readonly from: number; readonly to: number; readonly bend: number | null; readonly leg: Leg };
   const bucket = (x: number) => Math.floor(x / MIN_LANE);
   const junctionsByChannel = new Map<number, { id: string; x: number; level: number }[]>();
-  for (const [id, join] of placed) append(junctionsByChannel, join.channel, { id, x: join.x, level: join.level });
+  if (choosing) for (const [id, join] of placed) append(junctionsByChannel, join.channel, { id, x: join.x, level: join.level });
   for (const [channel, legs] of legsIn) {
+    // A bend with a single zone (most channels have no junction levels) has
+    // no choice to make: it keeps that zone, its initial one. Runs are only
+    // read to choose, so a channel with no choice to make needs none.
+    const bending = legs.filter(bends);
+    if (bending.every((item) => item.lo === item.hi)) continue;
     // Foreign junctions by x, to find those on a bend's columns.
     const junctionAt = new Map<number, { id: string; x: number; level: number }[]>();
     for (const join of junctionsByChannel.get(channel) ?? []) append(junctionAt, Math.floor(join.x / JUNCTION_BERTH), join);
     const levelsNear = (item: Leg, x: number) => {
       const found: number[] = [];
-      for (let key = Math.floor(x / JUNCTION_BERTH) - 1; key <= Math.floor(x / JUNCTION_BERTH) + 1; key++) {
-        for (const join of junctionAt.get(key) ?? []) if (!item.own.has(join.id) && Math.abs(join.x - x) < JUNCTION_BERTH) found.push(join.level);
+      const home = Math.floor(x / JUNCTION_BERTH);
+      for (let key = home - 1; key <= home + 1; key++) {
+        const list = junctionAt.get(key);
+        if (list) for (const join of list) if (!item.own.has(join.id) && Math.abs(join.x - x) < JUNCTION_BERTH) found.push(join.level);
       }
       return found;
     };
-    // Vertical runs by x bucket and source; a bend's runs are replaced when it moves zone.
-    const runsAt = new Map<number, Map<string, Set<Run>>>();
+    // Vertical runs by x bucket; a bend's runs are replaced when it moves zone.
+    // Only counts are read from these, so the order within a bucket is free.
+    const runsAt = new Map<number, Run[]>();
     const runsOf = new Map<Leg, Run[]>();
     const register = (item: Leg, list: Run[]) => {
       runsOf.set(item, list);
       for (const run of list) {
-        let bySource = runsAt.get(bucket(run.x));
-        if (!bySource) runsAt.set(bucket(run.x), bySource = new Map());
-        let set = bySource.get(item.source);
-        if (!set) bySource.set(item.source, set = new Set());
-        set.add(run);
+        const key = bucket(run.x), at = runsAt.get(key);
+        if (at) at.push(run); else runsAt.set(key, [run]);
       }
     };
     const unregister = (item: Leg) => {
-      for (const run of runsOf.get(item) ?? []) runsAt.get(bucket(run.x))?.get(item.source)?.delete(run);
+      for (const run of runsOf.get(item) ?? []) {
+        const at = runsAt.get(bucket(run.x));
+        const index = at ? at.indexOf(run) : -1;
+        if (index >= 0) { at![index] = at![at!.length - 1]; at!.pop(); }
+      }
       runsOf.delete(item);
     };
-    const clashes = (run: Run) => {
+    /** Other routes' runs that a run at `x` from level `from` to `to`, bending at `bend`, would touch. */
+    const clashes = (item: Leg, x: number, from: number, to: number, bend: number | null) => {
       let count = 0;
-      for (let key = bucket(run.x) - 1; key <= bucket(run.x) + 1; key++) for (const [source, set] of runsAt.get(key) ?? []) {
-        if (source === run.leg.source) continue;
-        for (const other of set) {
-          if (!near(other.x, run.x) || compatible(other.leg, run.leg)) continue;
-          const top = Math.max(other.from, run.from), bottom = Math.min(other.to, run.to);
-          if (top > bottom || (other.bend !== null && other.bend === run.bend && top === bottom)) continue;
+      const home = bucket(x), source = item.source;
+      for (let key = home - 1; key <= home + 1; key++) {
+        const list = runsAt.get(key);
+        if (list) for (const other of list) {
+          if (other.leg.source === source || !near(other.x, x) || compatible(other.leg, item)) continue;
+          const top = Math.max(other.from, from), bottom = Math.min(other.to, to);
+          if (top > bottom || (other.bend !== null && other.bend === bend && top === bottom)) continue;
           count++;
         }
       }
@@ -871,25 +1209,28 @@ function layoutPass(request: LayoutRequest, extra: { readonly left: number; read
       const above = levelsNear(item, item.x1), beneath = levelsNear(item, item.x2);
       const options: { zone: number; touches: number; room: number }[] = [];
       for (let zone = item.lo; zone <= item.hi; zone++) {
-        const touches = above.filter((level) => level > item.lo && level <= zone).length + beneath.filter((level) => level > zone && level <= item.hi).length;
+        let touches = 0;
+        for (const level of above) if (level > item.lo && level <= zone) touches++;
+        for (const level of beneath) if (level > zone && level <= item.hi) touches++;
         options.push({ zone, touches, room: defaultZone(channel, zone) });
       }
       options.sort((a, b) => a.touches - b.touches || b.room - a.room || a.zone - b.zone);
       let best: { zone: number; cost: number } | null = null;
       for (const option of options) {
         if (best && option.touches * 1000 > best.cost) break;
-        const crowding = runsFor(item, option.zone).reduce((sum, run) => sum + clashes(run), 0);
+        const zone = option.zone;
+        const crowding = clashes(item, item.x1, item.lo, zone, zone) + clashes(item, item.x2, zone, item.hi, zone);
         const cost = option.touches * 1000 + crowding * 10 - option.room / 100;
-        if (!best || cost < best.cost) best = { zone: option.zone, cost };
+        if (!best || cost < best.cost) best = { zone, cost };
         if (!crowding) break;
       }
       item.zone = best!.zone;
       register(item, runsFor(item, item.zone));
     };
-    const bending = legs.filter(bends);
-    for (const item of bending) choose(item);
+    // Single-zone bends still register their runs, which others' choices see.
+    for (const item of bending) if (item.lo === item.hi) register(item, runsFor(item, item.lo)); else choose(item);
     // A second pass lets earlier bends react to later ones.
-    for (const item of bending) { unregister(item); choose(item); }
+    for (const item of bending) if (item.lo !== item.hi) { unregister(item); choose(item); }
   }
 
   // 5. Tracks. Bends in one zone whose spans overlap bend in separate
@@ -898,70 +1239,88 @@ function layoutPass(request: LayoutRequest, extra: { readonly left: number; read
   // vertically. Within a direction the bend reaching furthest turns first, so
   // parallel routes never cross; and a route leaving a column bends before
   // another route arriving in it, so their vertical runs never overlap.
-  const trackCount = new Map<string, number>();
-  const zoneGroups = new Map<string, Leg[]>();
-  for (const item of allLegs) if (bends(item)) {
-    const id = `${item.channel}:${item.zone}`;
-    append(zoneGroups, id, item);
+  // Track counts and zone boxes by channel, then zone.
+  const trackCount: number[][] = [];
+  // Bends by channel, then zone (both small non-negative integers), in leg order.
+  // Groups are independent (each sets only its own bends' tracks and count), so
+  // the order they are visited in is free.
+  const zoneGroups: Leg[][][] = [];
+  for (const item of allLegs) if (bends(item)) ((zoneGroups[item.channel] ??= [])[item.zone] ??= []).push(item);
+  for (let channel = 0; channel < zoneGroups.length; channel++) {
+    const byZone = zoneGroups[channel];
+    if (byZone) for (let zone = 0; zone < byZone.length; zone++) if (byZone[zone]) assignTracks(channel, zone, byZone[zone]);
   }
-  for (const [id, legs] of zoneGroups) {
-    const leftward = legs.filter((item) => item.x2 < item.x1).sort((a, b) => a.x2 - b.x2 || a.x1 - b.x1);
-    const rightward = legs.filter((item) => item.x2 > item.x1).sort((a, b) => b.x2 - a.x2 || b.x1 - a.x1);
-    const ordered = [...leftward, ...rightward];
-    if (ordered.every((item) => item.source === ordered[0].source)) continue;
-    const reach = ordered.map((item) => [Math.min(item.x1, item.x2) - MIN_LANE, Math.max(item.x1, item.x2) + MIN_LANE]);
-    // Two bends trading columns (a swap) form one unit, below.
-    const swap = (a: Leg, b: Leg) => near(a.x1, b.x2) && near(b.x1, a.x2);
-    const conflict = (i: number, j: number) => reach[i][0] < reach[j][1] && reach[j][0] < reach[i][1] && !compatible(ordered[i], ordered[j]);
-    // Swapping bends move as one unit; forced order: a bend leaving a column
-    // turns before one arriving in it.
-    const unit = ordered.map((_, index) => index);
-    const root = (index: number): number => unit[index] === index ? index : (unit[index] = root(unit[index]));
-    for (let i = 0; i < ordered.length; i++) for (let j = i + 1; j < ordered.length; j++) {
-      if (swap(ordered[i], ordered[j]) && !compatible(ordered[i], ordered[j])) unit[root(j)] = root(i);
+  function assignTracks(channel: number, zone: number, legs: readonly Leg[]) {
+    // Bends from one source never conflict: all keep track 0.
+    let mixed = false;
+    for (const item of legs) if (item.source !== legs[0].source) { mixed = true; break; }
+    if (!mixed) return;
+    // Every bend runs left or right (it moves at least half a pixel).
+    const ordered = legs.filter((item) => item.x2 < item.x1).sort(leftwardFirst);
+    for (const item of legs.filter((item) => item.x2 > item.x1).sort(rightwardFirst)) ordered.push(item);
+    const count = ordered.length;
+    const reachLow: number[] = [], reachHigh: number[] = [];
+    for (const item of ordered) { reachLow.push(Math.min(item.x1, item.x2) - MIN_LANE); reachHigh.push(Math.max(item.x1, item.x2) + MIN_LANE); }
+    const conflict = (i: number, j: number) => reachLow[i] < reachHigh[j] && reachLow[j] < reachHigh[i] && !compatible(ordered[i], ordered[j]);
+    // Two bends trading columns (a swap) form one unit: swapping bends move as
+    // one unit; forced order: a bend leaving a column turns before one arriving in it.
+    const unit: number[] = [];
+    for (let i = 0; i < count; i++) unit.push(i);
+    for (let i = 0; i < count; i++) for (let j = i + 1; j < count; j++) {
+      const a = ordered[i], b = ordered[j];
+      if (near(a.x1, b.x2) && near(b.x1, a.x2) && !compatible(a, b)) unit[unitRoot(unit, j)] = unitRoot(unit, i);
     }
-    const units = [...new Set(ordered.map((_, index) => root(index)))];
-    const members = new Map<number, number[]>();
-    ordered.forEach((_, index) => append(members, root(index), index));
-    const forced = new Map(units.map((id) => [id, new Set<number>()]));
-    const pending = new Map(units.map((id) => [id, 0]));
-    for (let i = 0; i < ordered.length; i++) for (let j = 0; j < ordered.length; j++) {
-      if (root(i) === root(j) || !conflict(i, j) || !near(ordered[i].x1, ordered[j].x2) || near(ordered[j].x1, ordered[i].x2)) continue;
-      if (forced.get(root(i))!.has(root(j))) continue;
-      forced.get(root(i))!.add(root(j));
-      pending.set(root(j), pending.get(root(j))! + 1);
+    // Units are named by their root bend and listed by first member.
+    const unitOf: number[] = [], units: number[] = [], members: number[][] = [];
+    for (let i = 0; i < count; i++) {
+      const id = unitRoot(unit, i);
+      unitOf.push(id);
+      if (members[id]) members[id].push(i); else { members[id] = [i]; units.push(id); }
+    }
+    const forced: (Set<number> | undefined)[] = [];
+    const pending = new Array<number>(count).fill(0);
+    for (let i = 0; i < count; i++) for (let j = 0; j < count; j++) {
+      if (!near(ordered[i].x1, ordered[j].x2) || near(ordered[j].x1, ordered[i].x2) || unitOf[i] === unitOf[j] || !conflict(i, j)) continue;
+      const later = (forced[unitOf[i]] ??= new Set());
+      if (later.has(unitOf[j])) continue;
+      later.add(unitOf[j]);
+      pending[unitOf[j]]++;
     }
     // Turn order: the forced constraints, otherwise the sort order above (a
     // cycle of forced constraints is broken in sort order).
-    const sequence: number[] = [];
-    const sequenced = new Set<number>();
-    while (sequence.length < units.length) {
-      const next = units.find((id) => !sequenced.has(id) && pending.get(id) === 0) ?? units.find((id) => !sequenced.has(id))!;
-      sequenced.add(next);
-      sequence.push(next);
-      for (const later of forced.get(next)!) pending.set(later, pending.get(later)! - 1);
-    }
-    for (let position = 0; position < sequence.length; position++) {
-      const group = members.get(sequence[position])!;
+    const sequenced: boolean[] = [];
+    // Bends already given a track, in turn order.
+    const done: number[] = [];
+    for (let step = 0; step < units.length; step++) {
+      let next = -1;
+      for (const id of units) if (!sequenced[id] && pending[id] === 0) { next = id; break; }
+      if (next < 0) for (const id of units) if (!sequenced[id]) { next = id; break; }
+      sequenced[next] = true;
+      const later = forced[next];
+      if (later) for (const id of later) pending[id]--;
+      const group = members[next];
       let track = 0;
-      for (let before = 0; before < position; before++) {
-        for (const earlier of members.get(sequence[before])!) {
-          if (group.some((index) => conflict(earlier, index))) track = Math.max(track, ordered[earlier].track + 1);
-        }
+      for (const earlier of done) {
+        if (!(ordered[earlier].track + 1 > track)) continue;
+        for (const index of group) if (conflict(earlier, index)) { track = ordered[earlier].track + 1; break; }
       }
       // Swapping bends take consecutive slices: each leaves its column just
       // as the other arrives, so they neither overlap nor cross at a shallow angle.
-      group.forEach((index, offset) => { ordered[index].track = track + offset; });
+      for (let offset = 0; offset < group.length; offset++) { ordered[group[offset]].track = track + offset; done.push(group[offset]); }
     }
-    trackCount.set(id, ordered.reduce((most, item) => Math.max(most, item.track + 1), 1));
+    let most = 1;
+    for (const item of ordered) most = Math.max(most, item.track + 1);
+    (trackCount[channel] ??= [])[zone] = most;
   }
+  const tracksIn = (channel: number, zone: number) => trackCount[channel]?.[zone] ?? 1;
 
   // 6. Vertical placement. Each zone is as tall as its tracks need (crowded
   // channels grow instead of squeezing bends), and junction levels sit
   // between zones.
   const nodes = new Map<NodeKey, PlacedNode>();
   const rows: RowBox[] = [];
-  const zoneBox = new Map<string, { top: number; bottom: number }>();
+  /** Zone boxes by channel, then zone. */
+  const zoneBoxes: { top: number; bottom: number }[][] = [];
   let y: number = space.top;
   rowKeys.forEach(({ band, keys: keysInRow }, index) => {
     for (const key of keysInRow) {
@@ -972,19 +1331,20 @@ function layoutPass(request: LayoutRequest, extra: { readonly left: number; read
     rows.push({ index, band, top: y, bottom, keys: keysInRow });
     y = bottom;
     const count = levelCount(index);
+    const boxes: { top: number; bottom: number }[] = zoneBoxes[index] = [];
     for (let zone = 0; zone <= count; zone++) {
-      const tall = Math.max(defaultZone(index, zone), (trackCount.get(`${index}:${zone}`) ?? 1) * TRACK_HEIGHT);
-      zoneBox.set(`${index}:${zone}`, { top: y, bottom: y + tall });
+      const tall = Math.max(defaultZone(index, zone), tracksIn(index, zone) * TRACK_HEIGHT);
+      boxes[zone] = { top: y, bottom: y + tall };
       y += tall + (zone < count ? 2 * JUNCTION_BERTH : 0);
     }
     // No bend below the last zone: routes into the next row run straight.
     y += space.approach;
   });
   const height = rows.length ? rows.at(-1)!.bottom + space.bottom : 0;
-  const junctions = new Map<string, PlacedJunction & { channel: number }>();
+  const junctions = new Map<string, PlacedJunction>();
   for (const join of plan.joins) {
     const { x, level, channel } = placed.get(join.id)!;
-    junctions.set(join.id, { id: join.id, parents: join.parents, channel, x, y: round(zoneBox.get(`${channel}:${level - 1}`)!.bottom + JUNCTION_BERTH) });
+    junctions.set(join.id, { id: join.id, parents: join.parents, x, y: round(zoneBoxes[channel][level - 1].bottom + JUNCTION_BERTH) });
   }
   const at = (anchor: Anchor): number => {
     if ("junction" in anchor) return junctions.get(anchor.junction)!.y;
@@ -999,17 +1359,19 @@ function layoutPass(request: LayoutRequest, extra: { readonly left: number; read
   const draw = (item: Leg): string => {
     const y1 = at(item.from), y2 = at(item.to);
     const { x1, x2 } = item;
+    // Each coordinate is formatted once, however often the path repeats it.
+    const right = `${round(x2)}`;
     if (!bends(item)) {
       // Too slight an offset to bend; the stem into an arrowhead is still exactly vertical.
-      const stem = "edge" in item.to && item.to.edge === "arrow" && round(x1) !== round(x2) ? ` L${round(x2)} ${round(y2 - ARROW.length)}` : "";
-      return `${stem} L${round(x2)} ${round(y2)}`;
+      const stem = "edge" in item.to && item.to.edge === "arrow" && round(x1) !== round(x2) ? ` L${right} ${round(y2 - ARROW.length)}` : "";
+      return `${stem} L${right} ${round(y2)}`;
     }
-    const box = zoneBox.get(`${item.channel}:${item.zone}`)!;
+    const box = zoneBoxes[item.channel][item.zone];
     const top = Math.max(box.top, y1), bottom = Math.min(box.bottom, y2);
-    const slice = (bottom - top) / (trackCount.get(`${item.channel}:${item.zone}`) ?? 1);
+    const slice = (bottom - top) / tracksIn(item.channel, item.zone);
     const start = top + slice * item.track, end = start + slice;
-    const middle = round((start + end) / 2);
-    return `${start > y1 ? ` L${round(x1)} ${round(start)}` : ""} C${round(x1)} ${middle},${round(x2)} ${middle},${round(x2)} ${round(end)}${end < y2 ? ` L${round(x2)} ${round(y2)}` : ""}`;
+    const left = `${round(x1)}`, middle = `${round((start + end) / 2)}`;
+    return `${start > y1 ? ` L${left} ${round(start)}` : ""} C${left} ${middle},${right} ${middle},${right} ${round(end)}${end < y2 ? ` L${right} ${round(y2)}` : ""}`;
   };
   // Shared stretches are drawn once, as trunks carrying the consumers of
   // every route through them; each route draws only from where it branches
@@ -1018,13 +1380,13 @@ function layoutPass(request: LayoutRequest, extra: { readonly left: number; read
   for (const { last } of courses) usage[last] += 1;
   for (let node = trie.length - 1; node >= 0; node--) if (trie[node].parent >= 0) usage[trie[node].parent] += usage[node];
   // A node's continuation is the child every route through it continues to.
-  const continuation = new Map<number, number>();
-  trie.forEach((item, node) => { if (item.parent >= 0 && usage[node] === usage[item.parent]) continuation.set(item.parent, node); });
+  const continuation: (number | undefined)[] = [];
+  trie.forEach((item, node) => { if (item.parent >= 0 && usage[node] === usage[item.parent]) continuation[item.parent] = node; });
   const startOf = (node: number): string => {
     const item = trie[node];
     if (item.parent >= 0) { const into = nodeLegs[node]!; return `M${round(into.x1)} ${round(at(into.from))}`; }
     if ("junction" in item.from) return `M${round(item.x)} ${round(at(item.from))}`;
-    const tile = nodes.get(item.source.slice(5))!;
+    const tile = nodes.get(item.tile!)!;
     const bottom = rows[tile.row].bottom, x = round(item.x);
     return `M${x} ${round(tile.y + tile.height)}${tile.y + tile.height < bottom ? ` L${x} ${round(bottom)}` : ""}`;
   };
@@ -1035,51 +1397,64 @@ function layoutPass(request: LayoutRequest, extra: { readonly left: number; read
   };
   const shared = (node: number) => usage[node] >= 2;
   const chainStart = (node: number) => shared(node) && (trie[node].parent < 0 || usage[trie[node].parent] !== usage[node]);
+  // Usage never grows down the trie, so the shared nodes of a route's trail
+  // (root to end) are a prefix of it: the route draws from the first unshared.
+  // Each trunk's consumers are listed by route, whatever the walk's direction.
   const trunkConsumers = new Map<number, Consumer[]>();
-  const trails = courses.map(({ route, last }) => {
-    const trail: number[] = [];
-    for (let node = last; node >= 0; node = trie[node].parent) trail.push(node);
-    trail.reverse();
-    for (const node of trail) if (chainStart(node)) append(trunkConsumers, node, ...route.consumers);
-    return trail;
-  });
+  for (const { route, last } of courses) {
+    for (let node = last; node >= 0; node = trie[node].parent) if (chainStart(node)) {
+      const list = trunkConsumers.get(node);
+      if (list) for (const entry of route.consumers) list.push(entry); else trunkConsumers.set(node, [...route.consumers]);
+    }
+  }
   const routes: PlacedRoute[] = [];
   // Ids key the rendered connectors, so they must be unique; a hash collision
   // in trunk names (vanishingly rare) is resolved here deterministically.
   const ids = new Set<string>();
   const unique = (id: string) => { let result = id; for (let n = 2; ids.has(result); n++) result = `${id}#${n}`; ids.add(result); return result; };
-  const endpointOf = new Map(courses.map(({ route, source }) => [source, route.from]));
+  /** Each source's endpoint, as the last route from it gives it; only trunks need it. */
+  let endpointOf: Map<string, Endpoint> | undefined;
   trie.forEach((item, node) => {
     if (!chainStart(node)) return;
     let path = startOf(node);
     // Follow the single continuation that keeps every route of this trunk.
-    for (let current: number | undefined = node; current !== undefined; current = continuation.get(current)) path += piece(current);
-    if (/[LC]/.test(path)) {
-      const consumers = [...new Map(trunkConsumers.get(node)!.map((entry) => [`${entry.parent}>${entry.child}`, entry])).values()];
+    for (let current: number | undefined = node; current !== undefined; current = continuation[current]) path += piece(current);
+    if (path.includes("L") || path.includes("C")) {
+      const distinct = new Map<string, Consumer>();
+      for (const entry of trunkConsumers.get(node)!) distinct.set(`${entry.parent}>${entry.child}`, entry);
+      const consumers = [...distinct.values()];
+      if (!endpointOf) { endpointOf = new Map(); for (const { route, source } of courses) endpointOf.set(source, route.from); }
       const from = endpointOf.get(item.source)!;
       // Named by what it carries, not where it runs, so a trunk keeps its id
       // (and morphs) across relayouts that move it.
-      const carried = hashOf(consumers.map((entry) => `${entry.parent}>${entry.child}`).sort().join("|"));
+      const carried = hashOf([...distinct.keys()].sort().join("|"));
       routes.push({ id: unique(`${item.source}~${carried}`), from, to: from, consumers, path, terminal: false });
     }
   });
-  courses.forEach(({ route, source }, index) => {
-    const trail = trails[index];
-    const branch = trail.findIndex((node) => !shared(node));
+  const unsharedTrail: number[] = [];
+  courses.forEach(({ route, source, last }, index) => {
+    const final = finalLegs[index];
     let path: string;
-    if (branch === -1) { const final = finalLegs[index]; path = `M${round(final.x1)} ${round(at(final.from))}`; }
-    else { path = startOf(trail[branch]); for (const node of trail.slice(branch)) path += piece(node); }
-    path += draw(finalLegs[index]);
-    routes.push({ id: unique(`${source}>${endpointKey(route.to)}`), from: route.from, to: route.to, consumers: route.consumers, path, terminal: route.to.kind === "node" });
+    if (shared(last)) path = `M${round(final.x1)} ${round(at(final.from))}`;
+    else {
+      // The unshared end of the trail, gathered upwards, drawn downwards.
+      unsharedTrail.length = 0;
+      for (let node = last; node >= 0 && !shared(node); node = trie[node].parent) unsharedTrail.push(node);
+      path = startOf(unsharedTrail[unsharedTrail.length - 1]);
+      for (let at = unsharedTrail.length - 1; at >= 0; at--) path += piece(unsharedTrail[at]);
+    }
+    path += draw(final);
+    // The final leg's target is the route's end, as an endpoint key.
+    const id = `${source}>${final.target}`;
+    routes.push({ id: plainKeys ? id : unique(id), from: route.from, to: route.to, consumers: route.consumers, path, terminal: route.to.kind === "node" });
   });
 
   return {
-    pinned: pinned !== undefined,
     shortfall,
     layout: {
       orientation: "down", width, height, nodes, rows, routes, readingOrder: reading,
       ...(pinnedViolation ? { pinnedViolation } : {}),
-      junctions: new Map([...junctions].map(([id, { channel: _channel, ...join }]) => [id, join])),
+      junctions,
     },
   };
 }
