@@ -74,7 +74,10 @@ Entry points:
 - `run.ts`: sequential evaluation, acceptance table and exit status.
 - `bench.ts --quick`: small diagnostic sweep; full run without flags.
 - `reveals.ts`: legal click tours with anchor diagnostics.
-- `packing.ts`: static and history-sensitive actual grid composition.
+- `packing.ts`: static and history-sensitive actual grid composition. The candidate runs a
+  registered folder layout engine through the `FolderLayoutEngine` seam
+  (`src/lib/domain/trace-graph/folder-layout/`), feeding each output back as the previous
+  layout; pick one with `bun run layout:eval --engine=<name>` (default `default`).
 - `perf.ts`: isolated per-case timings.
 - `regressions.ts`: reproduce the worst height regressions from saved sequences.
 - `png.ts`: optional local headless Chromium rasterisation of SVG outputs.

@@ -7,11 +7,13 @@ import { measure } from './geometry';
 import { layoutGraph as baselineLayout } from './baseline/layout';
 import { attached as baselineAttached } from './baseline/placement';
 const out = 'layout-eval/out';
+// `--engine=<name>` picks the registered folder layout engine the packing cases run through the seam.
+const engineArgs = process.argv.slice(2).filter(a => a.startsWith('--engine='));
 await mkdir(out, { recursive: true });
 for (const name of ['bench', 'reveals', 'packing', 'perf']) {
   console.log(`Running ${name}...`);
   const file = Bun.file(`${out}/${name}.log`);
-  const child = Bun.spawn([process.execPath, `layout-eval/${name}.ts`], { stdout: file, stderr: 'inherit', env: process.env });
+  const child = Bun.spawn([process.execPath, `layout-eval/${name}.ts`, ...(name === 'packing' ? engineArgs : [])], { stdout: file, stderr: 'inherit', env: process.env });
   const status = await child.exited;
   if (status) { console.error(`${name} failed with exit ${status}; see ${out}/${name}.log`); process.exit(status); }
 }

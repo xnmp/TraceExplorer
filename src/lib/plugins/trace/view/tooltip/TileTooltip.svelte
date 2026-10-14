@@ -7,7 +7,7 @@
    */
   import { tooltipView, TOOLTIP_ID } from "./controller.svelte";
   import { intersect, placeTooltip, PLACEMENT, type Rect } from "./placement";
-  import { zoomOf } from "../motion";
+  import { activityOf, zoomOf } from "../motion";
 
   /** Widest the bubble gets, in CSS pixels (narrower when the window is). */
   const MAX_WIDTH = 380;
@@ -49,12 +49,11 @@
         node.dataset.side = spot.side;
         node.style.visibility = "";
       };
-      // A tile still moving (graph motion) is placed where it comes to rest.
-      const tile = anchor.closest<HTMLElement>("[data-tile-key]") ?? anchor;
-      const moving = tile.getAnimations().filter((animation) => animation.playState === "running");
-      if (moving.length) {
+      // A tile still moving (the presentation's motion, as its scene controller reports it) is placed where it comes to rest.
+      const activity = activityOf(anchor);
+      if (activity?.moving) {
         node.style.visibility = "hidden";
-        void Promise.allSettled(moving.map((animation) => animation.finished)).then(position);
+        void activity.whenIdle().then(position);
       } else position();
       // The scroll anchor's corrections keep the tooltip open (controller.svelte.ts) but can move its tile.
       let frame = 0;

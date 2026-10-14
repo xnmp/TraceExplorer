@@ -1,26 +1,35 @@
 /**
- * Layout scheduling. Layouts run in a blob worker when the host permits it
- * (SDK 2 hosts announce "blobWorkers"; older CSPs reject blob workers), and
- * otherwise on the main thread after yielding a frame. Results are cached by
- * their exact request, so metadata-only updates never relayout a component.
- * The worker gets one job at a time, so a request aborted while it waits (its
- * view moved on) is dropped instead of computed.
+ * Folder layout scheduling. Whole-folder engine runs go to a blob worker when the host permits it
+ * (SDK 2 hosts announce "blobWorkers"; older CSPs reject blob workers), and otherwise run on the
+ * main thread after yielding a frame. The worker gets one job at a time, so a request aborted
+ * while it waits (its view moved on) is dropped instead of computed.
+ *
+ * A computation cannot be stopped inside the worker, so a watchdog bounds each one: a worker
+ * still computing after `WORKER_WATCHDOG_MS` (its caller aborted or not) is terminated and
+ * replaced, and the queue continues on the replacement. A live job is retried once there, then
+ * fails. Callbacks of a retired worker are ignored.
  */
-import { layoutGraph, type GraphLayout, type LayoutRequest } from "$lib/domain/trace-graph/layout";
+import type { FolderLayout, FolderLayoutEngine, FolderLayoutInput } from "$lib/domain/trace-graph/folder-layout";
 import { hostAllowsBlobWorkers } from "../../../../sdk";
-import LayoutWorker from "./layout.worker.ts?worker&inline";
-export { canLayoutInline } from "$lib/domain/trace-graph/layout-workload";
+import { createLayoutWorker } from "./layout-worker-factory";
 
-const CACHE_LIMIT = 48;
-const cache = new Map<string, GraphLayout>();
+/** How long the worker may compute one job before it is considered wedged (docs/scene-transactions.md §9). */
+export const WORKER_WATCHDOG_MS = 5000;
+
 let worker: Worker | null | undefined;
 let sequence = 0;
-interface Job { readonly id: number; readonly signature: string; readonly request: LayoutRequest; readonly signal?: AbortSignal; resolve(layout: GraphLayout): void; reject(error: Error): void }
+/** A whole-folder engine run: rejected as soon as it is aborted, even while the worker computes it (the reply is then dropped). */
+interface FolderJob {
+  readonly id: number; readonly input: FolderLayoutInput; readonly fallback: FolderLayoutEngine; readonly signal?: AbortSignal;
+  /** Already requeued once after a wedged worker. */
+  retried: boolean;
+  resolve(layout: FolderLayout): void; reject(error: Error): void;
+}
 /** Jobs waiting for the worker, oldest first, and the one it is computing. */
-let queue: Job[] = [];
-let running: Job | null = null;
-/** Bumped by `disposeLayouts`, so results arriving afterwards are not cached. */
-let generation = 0;
+let queue: FolderJob[] = [];
+let running: FolderJob | null = null;
+/** Cancels the running job's watchdog. */
+let stopWatchdog = () => {};
 /** Layouts requested and not yet delivered (queued, computing or yielding); lets tests wait for the view to be quiescent. */
 let outstanding = 0;
 export const layoutsPending = (): number => outstanding;
@@ -28,17 +37,25 @@ export const layoutsPending = (): number => outstanding;
 const aborted = () => new DOMException("Trace layout was superseded", "AbortError");
 const asError = (error: unknown) => error instanceof Error ? error : new Error(String(error));
 
-/** Starts the next job: aborted ones are dropped, ones cached meanwhile resolve at once. */
+/** Runs a job on the main thread after yielding a frame; one aborted by then is skipped. */
+function runOnMainThread(job: FolderJob): void {
+  requestAnimationFrame(() => {
+    if (job.signal?.aborted) { job.reject(aborted()); return; }
+    try { job.resolve(job.fallback(job.input)); } catch (error) { job.reject(asError(error)); }
+  });
+}
+
+/** Starts the next job: aborted ones are dropped. */
 function pump(): void {
   while (!running && worker) {
     const next = queue.shift();
     if (!next) return;
     if (next.signal?.aborted) { next.reject(aborted()); continue; }
-    const known = cache.get(next.signature);
-    if (known) { next.resolve(known); continue; }
     running = next;
     try {
-      worker.postMessage({ id: next.id, request: next.request });
+      worker.postMessage({ id: next.id, folder: next.input });
+      const computing = worker, handle = setTimeout(() => wedged(computing), WORKER_WATCHDOG_MS);
+      stopWatchdog = () => clearTimeout(handle);
     } catch (error) {
       running = null;
       next.reject(asError(error));
@@ -46,59 +63,53 @@ function pump(): void {
   }
 }
 
-/** Ends the running job and moves on. */
-function finish(outcome: { layout: GraphLayout } | { error: Error }): void {
+/** Ends the running job and moves on. An aborted job has already been rejected; settling it again is a no-op. */
+function finish(outcome: { folder: FolderLayout } | { error: Error }): void {
   const job = running;
   running = null;
-  // Cached before the next job starts, so a queued duplicate is answered from it.
-  if (job) { if ("layout" in outcome) job.resolve(remember(job.signature, outcome.layout)); else job.reject(outcome.error); }
+  stopWatchdog();
+  if ("folder" in outcome) job?.resolve(outcome.folder); else job?.reject(outcome.error);
   pump();
-}
-
-const geometrySignature = (layout: GraphLayout) => [layout.orientation, layout.width, layout.height, layout.bandBounds, layout.preferredX, layout.anchorX, layout.anchorY, layout.decision,
-  [...layout.nodes], [...layout.junctions], layout.routes, layout.rows, [...layout.readingOrder]];
-
-export function layoutSignature(request: LayoutRequest): string {
-  // Width is normalised exactly as the engine does, so equal keys mean equal
-  // layouts. Running right the engine ignores the width (generations never
-  // wrap), so resizing must not recompute an identical layout.
-  const width = request.band ? request.maxWidth : request.orientation !== "right" && Number.isFinite(request.maxWidth) && request.maxWidth > 0 ? Math.floor(request.maxWidth) : null;
-  return JSON.stringify([width, request.items.map((item) => [item.key, item.width, item.height, item.order, item.parents]), request.hint ? [...request.hint] : null, request.orientation ?? "down", request.orientation === "right" ? request.extent ?? null : null, request.tileWidth ?? null, request.pinned ? [request.pinned.key, request.pinned.x, request.pinned.obstacles ?? []] : null, request.band ? [request.band.key, request.band.items] : null, request.anchorKey ?? null,
-    request.history ? [request.history.signature, geometrySignature(request.history.layout), geometrySignature(request.history.placed), request.history.attachment] : null]);
-}
-
-function remember(signature: string, layout: GraphLayout): GraphLayout {
-  cache.delete(signature);
-  cache.set(signature, layout);
-  while (cache.size > CACHE_LIMIT) cache.delete(cache.keys().next().value!);
-  return layout;
 }
 
 function fallBack(): void {
   // A worker that fails to load (for example under an older host CSP) is
-  // retired; queued requests complete on the main thread instead.
+  // retired; queued requests complete on the main thread instead, one per frame.
+  stopWatchdog();
   worker?.terminate();
   worker = null;
   const jobs = [...(running ? [running] : []), ...queue];
   running = null;
   queue = [];
-  for (const job of jobs) {
-    if (job.signal?.aborted) { job.reject(aborted()); continue; }
-    try { job.resolve(layoutGraph(job.request)); } catch (error) { job.reject(asError(error)); }
+  for (const job of jobs) runOnMainThread(job);
+}
+
+/** The watchdog: `stuck` is still computing its job. Replace it, requeue the job once if its caller still wants it, and continue. */
+function wedged(stuck: Worker): void {
+  if (worker !== stuck) return;
+  const job = running;
+  running = null;
+  stuck.terminate();
+  worker = undefined;
+  if (job && !job.signal?.aborted) {
+    if (job.retried) job.reject(new Error("Trace layout took too long"));
+    else { job.retried = true; queue.unshift(job); }
   }
+  if (workerInstance()) pump(); else fallBack();
 }
 
 function workerInstance(): Worker | null {
   if (worker !== undefined) return worker;
   if (typeof Worker === "undefined" || !hostAllowsBlobWorkers()) return (worker = null);
   try {
-    const created: Worker = new LayoutWorker();
-    created.onmessage = (event: MessageEvent<{ id: number; layout?: GraphLayout; error?: string }>) => {
-      if (running?.id !== event.data.id) return;
-      finish(event.data.layout ? { layout: event.data.layout } : { error: new Error(event.data.error ?? "Layout failed") });
+    const created: Worker = createLayoutWorker();
+    // Only the current worker's callbacks count: a retired (wedged) worker's late replies are ignored.
+    created.onmessage = (event: MessageEvent<{ id: number; folder?: FolderLayout; error?: string }>) => {
+      if (worker !== created || running?.id !== event.data.id) return;
+      finish(event.data.folder ? { folder: event.data.folder } : { error: new Error(event.data.error ?? "Layout failed") });
     };
-    created.onmessageerror = () => finish({ error: new Error("Trace layout reply could not be read") });
-    created.onerror = (event) => { event.preventDefault(); fallBack(); };
+    created.onmessageerror = () => { if (worker === created) finish({ error: new Error("Trace layout reply could not be read") }); };
+    created.onerror = (event) => { event.preventDefault(); if (worker === created) fallBack(); };
     worker = created;
   } catch {
     worker = null;
@@ -107,65 +118,45 @@ function workerInstance(): Worker | null {
 }
 
 /**
- * Computes (or reuses) a layout. Aborting `signal` drops the request if it is
- * still waiting (the promise rejects with an AbortError); one already being
- * computed finishes and is cached.
+ * Runs a folder layout engine off the main thread (the worker runs the registered default
+ * engine; `fallback` must be that engine, used on the main thread after yielding a frame when no
+ * worker is available). Aborting `signal` rejects at once with an AbortError, whether the job is
+ * waiting or already computing; a computation already running finishes and its reply is dropped.
  */
-export function computeLayout(request: LayoutRequest, signal?: AbortSignal): Promise<GraphLayout> {
-  const pending = computeLayoutNow(request, signal);
-  outstanding++;
-  const done = () => { outstanding--; };
-  pending.then(done, done);
-  return pending;
-}
-
-function computeLayoutNow(request: LayoutRequest, signal?: AbortSignal): Promise<GraphLayout> {
-  const signature = layoutSignature(request);
-  const cached = cache.get(signature);
-  if (cached) return Promise.resolve(remember(signature, cached));
+export function computeFolderLayout(input: FolderLayoutInput, fallback: FolderLayoutEngine, signal?: AbortSignal): Promise<FolderLayout> {
   if (signal?.aborted) return Promise.reject(aborted());
-  const born = generation;
-  const keep = (layout: GraphLayout) => born === generation ? remember(signature, layout) : layout;
-  const target = workerInstance();
-  if (!target) {
-    // On the main thread, after yielding a frame; a request aborted by then is skipped.
-    return new Promise<GraphLayout>((resolve, reject) => requestAnimationFrame(() => {
-      if (signal?.aborted) { reject(aborted()); return; }
-      try { resolve(layoutGraph(request)); } catch (error) { reject(asError(error)); }
-    })).then(keep);
-  }
-  const id = ++sequence;
-  return new Promise<GraphLayout>((resolve, reject) => {
-    const job: Job = { id, signature, request, signal, resolve, reject };
-    // A waiting job settles as soon as it is aborted, not when its turn comes.
+  outstanding++;
+  const pending = new Promise<FolderLayout>((resolve, reject) => {
+    const job: FolderJob = { id: ++sequence, input, fallback, signal, retried: false, resolve, reject };
+    if (!workerInstance()) { runOnMainThread(job); return; }
     signal?.addEventListener("abort", () => {
-      if (!queue.includes(job)) return;
       queue = queue.filter((other) => other !== job);
       reject(aborted());
     }, { once: true });
     queue.push(job);
     pump();
-  }).then(keep);
+  });
+  const done = () => { outstanding--; };
+  pending.then(done, done);
+  return pending;
 }
 
-/** Computes small layouts synchronously (and caches them) so they never flash. */
-export function layoutNow(request: LayoutRequest): GraphLayout {
-  const signature = layoutSignature(request);
-  return remember(signature, cache.get(signature) ?? layoutGraph(request));
+/**
+ * Counts work the view is still preparing (data reads and layout for a scene) as pending layout,
+ * so `layoutsPending` reports a view that will still publish. Returns the release function.
+ */
+export function holdLayoutWork(): () => void {
+  outstanding++;
+  let held = true;
+  return () => { if (held) { held = false; outstanding--; } };
 }
 
-/** Synchronous cache lookup, so remounts can render settled geometry at once. */
-export function cachedLayout(request: LayoutRequest): GraphLayout | null {
-  return cache.get(layoutSignature(request)) ?? null;
-}
-
-/** Releases the worker and cached geometry (plugin disable/removal). */
+/** Releases the worker (plugin disable/removal). */
 export function disposeLayouts(): void {
+  stopWatchdog();
   worker?.terminate();
   worker = undefined;
   for (const job of [...(running ? [running] : []), ...queue]) job.reject(new Error("Trace layout was disposed"));
   running = null;
   queue = [];
-  generation++;
-  cache.clear();
 }

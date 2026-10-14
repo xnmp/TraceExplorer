@@ -17,6 +17,7 @@ import { folderCandidates, folderComponents, folderPage, isDirectFolderSeed, nat
 import { isLocalAbsolutePath } from "$lib/domain/target-location";
 import { canonicalFixtureImagePath, fixtureImageEntries } from "./image-input-files";
 import { withNativeRequestCapacity } from "./request-capacity";
+import { createReadGate, readInfo, type ReadPredicate } from "./read-gate";
 
 export const eligibilityPending = new URLSearchParams(location.search).get("eligibilityPending") !== "0";
 
@@ -208,13 +209,11 @@ const inputDirectories = new Set<string>();
 let previewLatency = 0;
 // Delay of the folder index and component reads, in ms, like a native backend's IPC round trip.
 let folderLatency = 0;
-let folderReadsHeld = false;
+const folderGate = createReadGate();
 /** How many of the next `trace_component_nodes` reads fail. */
 let nodeReadFailures = 0;
-let heldFolderReads: Array<() => void> = [];
 /** Hold node replies independently, so an index refresh can overtake a cold activation. */
-let nodeReadsHeld = false;
-let heldNodeReads: Array<() => void> = [];
+const nodeGate = createReadGate();
 const titleCalls: number[] = [];
 const titleWaiters = new Map<number, (title: string) => void>();
 
@@ -280,11 +279,11 @@ configureBackend(withNativeRequestCapacity({
     calls.push({ method, params: structuredClone(params) });
     const reply = (value: unknown) => Promise.resolve(value as T);
     const later = (value: unknown) => previewLatency ? new Promise<T>((resolve) => setTimeout(() => resolve(value as T), previewLatency)) : reply(value);
-    const folderReply = (value: unknown) => folderReadsHeld
-      ? new Promise<T>((resolve) => heldFolderReads.push(() => resolve(value as T)))
+    const info = readInfo(method, params);
+    const folderReply = (value: unknown) => folderGate.holds(info)
+      ? folderGate.delay(info, value as T)
       : folderLatency ? new Promise<T>((resolve) => setTimeout(() => resolve(value as T), folderLatency)) : reply(value);
-    const nodeReply = (value: unknown) => nodeReadsHeld
-      ? new Promise<T>((resolve) => heldNodeReads.push(() => resolve(value as T))) : folderReply(value);
+    const nodeReply = (value: unknown) => nodeGate.holds(info) ? nodeGate.delay(info, value as T) : folderReply(value);
     const token = String(version);
     switch (method) {
       // MIRROR answers with the same Trace: another folder whose components reuse the same ids.
@@ -453,6 +452,35 @@ export const fileDropTargets = new URLSearchParams(globalThis.location?.search ?
 /** `fileDropTargets=refuse`: the host announces the capability but refuses the element, as it does for elements outside plugin-owned content. */
 export const fileDropTargetsRefused = new URLSearchParams(globalThis.location?.search ?? "").get("fileDropTargets") === "refuse";
 const color = (path: string) => `hsl(${[...path].reduce((sum, char) => (sum * 31 + char.charCodeAt(0)) % 360, 7)} 45% 55%)`;
+/**
+ * `?thumbnailDelay=<ms>`: how long the host takes to answer a thumbnail (default 0). Like the host's
+ * `thumbnailData` (`get_thumbnail_data` over IPC, then `dataUriToBlobUrl`), every call answers in a
+ * later task, never within the caller's microtasks, with a new JPEG blob URL.
+ */
+const thumbnailDelay = Math.max(0, Number(new URLSearchParams(globalThis.location?.search ?? "").get("thumbnailDelay") ?? 0) || 0);
+/**
+ * `?thumbnailFail=<substring>`: thumbnails of paths containing it fail, after the same delay, as
+ * the host's do (`getThumbnailData` resolves `{ ok: false, error }` for a missing file, an image
+ * over the decode limit or an IPC error; it never rejects).
+ */
+const thumbnailFail = new URLSearchParams(globalThis.location?.search ?? "").get("thumbnailFail") || null;
+const thumbnailRequests: string[] = [];
+async function thumbnailData(path: string): Promise<{ ok: true; data: string } | { ok: false; error: string }> {
+  thumbnailRequests.push(path);
+  // A message task, not a timer, when there is no delay: specs that fake the clock still get answers.
+  await new Promise<void>((resolve) => {
+    if (thumbnailDelay > 0) { setTimeout(resolve, thumbnailDelay); return; }
+    const channel = new MessageChannel();
+    channel.port1.onmessage = () => { channel.port1.close(); resolve(); };
+    channel.port2.postMessage(null);
+  });
+  if (thumbnailFail !== null && path.includes(thumbnailFail)) return { ok: false, error: `Failed to load thumbnail: ${path}` };
+  const canvas = new OffscreenCanvas(160, 96);
+  const context = canvas.getContext("2d")!;
+  context.fillStyle = color(path);
+  context.fillRect(0, 0, 160, 96);
+  return { ok: true, data: URL.createObjectURL(await canvas.convertToBlob({ type: "image/jpeg", quality: 0.8 })) };
+}
 (globalThis as any).__TAURI_EXPLORER_PLUGIN_SDK__ = {
   sdkVersion: 1, apiVersion: 2, svelteVersion: "5.56.3",
   capabilities: [...(eligibilityPending ? ["fileViewEligibilityPending"] : []), "fileViews", "previewInfo", "previewTargets", "blobWorkers", "jobReveal", "jobCost", "fileViewReveal", ...(selectionAnchor ? ["selectionAnchor"] : []), ...(fileTile ? ["fileTile"] : []), ...(fileTiles ? ["fileTiles"] : []), ...(initialTileSize ? ["tileSize"] : []), ...(paneDialogs ? ["paneDialogs"] : []), ...(fileDropTargets ? ["fileDropTargets"] : [])],
@@ -464,9 +492,7 @@ const color = (path: string) => `hsl(${[...path].reduce((sum, char) => (sum * 31
     } } } : {}),
   },
   pickSaveFile: async () => pickerResult === undefined ? `${DIRECTORY}/picked.png` : pickerResult,
-  thumbnailData: async (path: string) => ({ ok: true, data: URL.createObjectURL(new Blob([
-    `<svg xmlns="http://www.w3.org/2000/svg" width="160" height="96"><rect width="160" height="96" fill="${color(path)}"/></svg>`,
-  ], { type: "image/svg+xml" })) }),
+  thumbnailData,
 };
 
 let imageService = imageAvailability();
@@ -474,6 +500,8 @@ let imageDescriptionsHeld = false;
 let imageDescriptionWaiters: Array<() => void> = [];
 
 export const backend = {
+  /** Every thumbnail the view asked the host for, in order (paths). */
+  thumbnailRequests: () => [...thumbnailRequests],
   /** A journal notification with unchanged visible content still re-reads index, members and nodes. */
   refresh() { changed(); },
   jobStatus: (jobId: number) => invoke<ReturnType<typeof jobSnapshot>>("jobs.status", { operationId: imageOperations.get(jobId) ?? operationIdFor(jobId) }),
@@ -596,10 +624,20 @@ export const backend = {
   dropInput(child: string, parent: string) { const parentKey = state.names.get(parent)!; update(state.names.get(child)!, { parents: state.nodes.find((node) => node.key === state.names.get(child))!.parents.filter((key) => key !== parentKey) }); changed(); },
   addInput(child: string, parent: string) { const node = state.nodes.find((candidate) => candidate.key === state.names.get(child))!; update(node.key, { parents: [...node.parents, state.names.get(parent)!] }); changed(); },
   failNodeReads(count: number) { nodeReadFailures = count; },
-  holdFolderReads() { folderReadsHeld = true; },
-  releaseFolderReads() { folderReadsHeld = false; const pending = heldFolderReads; heldFolderReads = []; pending.forEach((release) => release()); },
-  holdNodeReads() { nodeReadsHeld = true; },
-  releaseNodeReads() { nodeReadsHeld = false; const pending = heldNodeReads; heldNodeReads = []; pending.forEach((release) => release()); },
+  /** Holds folder replies (`folder_has_trace`, components, members, and node pages the node gate lets through); `match` limits it to some requests. */
+  holdFolderReads(match?: ReadPredicate) { folderGate.hold(match); },
+  heldFolderReads: () => folderGate.held(),
+  releaseNextFolderRead: () => folderGate.releaseNext(),
+  rejectNextFolderRead: (error?: unknown) => folderGate.rejectNext(error),
+  releaseFolderReads() { folderGate.releaseAll(); },
+  /** Holds `trace_component_nodes` replies independently of the folder gate; `match` limits it (directory, componentId, offset). */
+  holdNodeReads(match?: ReadPredicate) { nodeGate.hold(match); },
+  heldNodeReads: () => nodeGate.held(),
+  releaseNextNodeRead: () => nodeGate.releaseNext(),
+  rejectNextNodeRead: (error?: unknown) => nodeGate.rejectNext(error),
+  releaseNodeReads() { nodeGate.releaseAll(); },
   releaseSaves() { holdSaves = false; const pending = heldSaves; heldSaves = []; pending.forEach((run) => run()); },
-  reset() { nodeReadFailures = 0; previewLatency = 0; folderLatency = 0; pickerResult = undefined; nextSaveFailure = null; inputFailures = 0; inputsHeld = false; heldInputs = []; inputSymlinks.clear(); inputDirectories.clear(); imageRuns.clear(); imageJobs.clear(); imageOperations.clear(); billing.clear(); state = scenario(); version += 1; calls.length = 0; },
+  /** Stops both read gates and drops what they hold. */
+  resetGates() { folderGate.reset(); nodeGate.reset(); },
+  reset() { folderGate.reset(); nodeGate.reset(); nodeReadFailures = 0; previewLatency = 0; folderLatency = 0; pickerResult = undefined; nextSaveFailure = null; inputFailures = 0; inputsHeld = false; heldInputs = []; inputSymlinks.clear(); inputDirectories.clear(); imageRuns.clear(); imageJobs.clear(); imageOperations.clear(); billing.clear(); state = scenario(); version += 1; calls.length = 0; },
 };

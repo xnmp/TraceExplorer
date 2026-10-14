@@ -2,8 +2,8 @@
   import type { FileTileProps } from "../../../../../integration/plugin-sdk";
   import type { TileMetrics } from "$lib/domain/trace-graph/metrics";
   import TraceThumbnail from "../TraceThumbnail.svelte";
+  import { entryThumbnail } from "./scene-media";
   let { entry, selected, focused, column, onfocus, onkeydown, onselect, onopen, onmenu, tile, revision }: FileTileProps & { tile: TileMetrics; revision: number } = $props();
-  const IMAGE = /\.(png|jpe?g|webp|gif|bmp|avif|tiff?)$/i;
 </script>
 
 <div style:--entry-image="{tile.image}px" style:width="{tile.width}px" style:margin="0 auto">
@@ -13,7 +13,7 @@
           <span class="icon">
             {#if entry.kind === "directory"}
               <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h6l2 2h10v11H3z" /></svg>
-            {:else if IMAGE.test(entry.name)}
+            {:else if entryThumbnail(entry)}
               <TraceThumbnail path={entry.path} present={true} {revision} label="" />
             {:else}
               <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3h8l4 4v14H6zM14 3v4h4" /></svg>

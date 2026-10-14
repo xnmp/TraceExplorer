@@ -1,6 +1,6 @@
 import { test, expect } from '@playwright/test';
 import { card, key, openView, settle, uncaught } from './support';
-import { holdScriptedAnimations, awaitAnimationsCreated, releaseScriptedAnimations } from './animation-control';
+import { holdMotion, awaitMotionStarted, releaseMotion, motionState } from './animation-control';
 
 /** Sample after all frame callbacks, beginning with the click's first presented frame. */
 test('selection reveals tiles and connectors instantly without disturbing retained cards', async ({ page }, info) => {
@@ -53,15 +53,20 @@ test('selection reveals tiles and connectors instantly without disturbing retain
     await info.attach(`${name} frames`, { body: JSON.stringify(frames), contentType: 'application/json' });
     const children = name === 'Cerulean' ? ["Pikachu's Ball"] : ['Blastoise', 'Ash'];
     expect(frames.length).toBeGreaterThan(3);
-    expect(frames[0].styling, 'selection CSS transitions remain running').toBe(true);
-    for (const frame of frames) {
+    // Selection styling is part of the scene: it changes in the commit's frame, with no transition ("Native re-run fixes").
+    for (const frame of frames) expect(frame.styling, 'no selection CSS transition').toBe(false);
+    // The scene commits once its images are drawable: until then, frames show the previous scene, none of its new children.
+    const revealed = frames.findIndex((frame: any) => children.some((child) => frame.tiles[child] !== null));
+    expect(revealed, `${name}: its children appear`).toBeGreaterThan(-1);
+    for (const [index, frame] of frames.entries()) {
       expect(frame.ghosts, `${name}: no retiring copies`).toBe(0);
       for (const retained of ['Cerulean', 'Saffron']) {
         expect(frame.retained[retained].x).toBeCloseTo(before[retained].x, 1);
         expect(frame.retained[retained].y).toBeCloseTo(before[retained].y, 1);
       }
+      if (index < revealed) continue;
       for (const child of children) {
-        expect(frame.tiles[child], `${name}: ${child} fully visible from first frame`).toBe(1);
+        expect(frame.tiles[child], `${name}: ${child} fully visible from its first frame`).toBe(1);
         expect(frame.cards[child], `${child}: effective card opacity`).toBe(1);
         expect(frame.connectors[child], `${child}: one live opaque connector`).toEqual([1]);
       }
@@ -70,7 +75,7 @@ test('selection reveals tiles and connectors instantly without disturbing retain
     for (let i = 1; i < frames.length; i++) {
       for (const n of names) if (frames[i - 1].tiles[n] !== null && frames[i].tiles[n] !== null)
         expect(frames[i].tiles[n]).toBeGreaterThanOrEqual(frames[i - 1].tiles[n]);
-      for (const child of children) expect(Math.max(...frames[i].connectors[child])).toBeGreaterThanOrEqual(Math.max(...frames[i - 1].connectors[child]));
+      if (i > revealed) for (const child of children) expect(Math.max(...frames[i].connectors[child])).toBeGreaterThanOrEqual(Math.max(...frames[i - 1].connectors[child]));
     }
     await settle(page);
     expect(await page.locator('.graph').getAttribute('data-orientation'), `${name}: orientation kept`).toBe(orientation);
@@ -78,30 +83,37 @@ test('selection reveals tiles and connectors instantly without disturbing retain
   expect((await uncaught(page)).filter(e => e !== 'ResizeObserver loop completed with undelivered notifications.')).toEqual([]);
 });
 
-for (const interrupt of [false, true]) test(`reflow entrances keep tile and connector opacity together (${interrupt ? 'interrupted while hidden' : 'initial'})`, async ({ page }) => {
+for (const interrupt of [false, true]) test(`reflow entrances keep tile and connector opacity together (${interrupt ? 'a resize while hidden snaps them' : 'initial'})`, async ({ page }) => {
   await openView(page, 454, '?selectionBlink=1', false);
   const parent = await key(page, 'stack'), child = await key(page, 'Cerulean');
-  await holdScriptedAnimations(page);
+  await holdMotion(page);
   try {
     await page.locator('[data-stack-toggle]').click();
-    await awaitAnimationsCreated(page);
+    await awaitMotionStarted(page);
     if (interrupt) {
-      await page.evaluate(async () => {
-        for (const a of (window as any).__heldAnimations as Animation[]) if (a.playState === 'running') a.currentTime = 40;
+      // A resize snaps (it is not a change the user made in the view): the entrance ends at once,
+      // tile and connector together fully shown on the next frame, with no motion left.
+      const shown = await page.evaluate(async ({ parent, child }) => {
+        (window as any).trace.motion.seek(40);
         await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
         (window as any).trace.setWidth(500);
-      });
-      await awaitAnimationsCreated(page);
+        await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+        const opacity = (el: Element) => { let value = 1; for (let at: Element | null = el; at; at = at.parentElement) value *= Number(getComputedStyle(at).opacity); return value; };
+        const routes = [...document.querySelectorAll(`path[data-from="node:${parent}"][data-to="node:${child}"], path[data-motion-from="node:${parent}"][data-motion-to="node:${child}"]`)];
+        return { tile: opacity(document.querySelector(`[data-tile-key="${child}"]`)!), connector: Math.max(0, ...routes.map(opacity)),
+          running: (window as any).trace.motion.state().running.length + document.getAnimations().filter(a => !(a instanceof CSSTransition) && !(a instanceof CSSAnimation) && a.playState === 'running').length };
+      }, { parent, child });
+      expect(shown).toEqual({ tile: 1, connector: 1, running: 0 });
+      return;
     }
     const samples = await page.evaluate(async ({ parent, child }) => {
       const frames = [];
       const opacity = (el: Element) => { let value = 1; for (let at: Element | null = el; at; at = at.parentElement) value *= Number(getComputedStyle(at).opacity); return value; };
-      const held = (window as any).__heldAnimations as Animation[];
-      await Promise.all(held.filter(a => a.playState === 'running').map(a => a.ready));
-      // All effects in this pass, including tile and HTML connector entrances, share the native start.
-      const clocks = held.filter(a => a.playState === 'running').map(a => a.startTime);
+      const motion = (window as any).trace.motion;
+      // All effects in this pass, including tile and HTML connector entrances, run on one epoch clock.
+      const clocks = motion.state().running.map((epoch: { epoch: number }) => epoch.epoch);
       for (const time of [0, 40, 80, 100, 120, 159]) {
-        for (const a of held) if (a.playState === 'running') a.currentTime = time;
+        motion.seek(time);
         await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
         const tile = document.querySelector(`[data-tile-key="${child}"]`)!;
         const routes = [...document.querySelectorAll(`path[data-from="node:${parent}"][data-to="node:${child}"], path[data-motion-from="node:${parent}"][data-motion-to="node:${child}"]`)];
@@ -109,54 +121,47 @@ for (const interrupt of [false, true]) test(`reflow entrances keep tile and conn
       }
       return { frames, clocks };
     }, { parent, child });
-    expect(samples.clocks.length).toBeGreaterThan(0);
-    expect(samples.clocks).not.toContain(null);
-    expect(new Set(samples.clocks).size).toBe(1);
+    expect(samples.clocks).toHaveLength(1);
     for (const frame of samples.frames) expect(frame.connector).toBeCloseTo(frame.tile, 2);
     expect(samples.frames.at(-1)!.tile).toBeGreaterThan(.9);
-  } finally { await releaseScriptedAnimations(page); }
+  } finally { await releaseMotion(page); }
   await settle(page);
 });
 
-for (const resize of [false, true]) test(`reflow clocks and source restoration at native playback rate (${resize ? 'tile size' : 'entrance'})`, async ({ page }) => {
+for (const resize of [false, true]) test(`reflow clocks and source restoration on the running frame clock (${resize ? 'tile size, which snaps' : 'entrance'})`, async ({ page }) => {
   await openView(page, 454, '?selectionBlink=1&fileTile=1&tileSize=small', resize);
   const parent = await key(page, 'stack'), child = await key(page, 'Cerulean');
-  await page.evaluate(() => {
-    const w = window as any, original = Element.prototype.animate;
-    w.__heldAnimations = [] as Animation[];
-    w.__originalAnimate = original;
-    // Extend the active interval under CPU load, retaining native playback and
-    // compositor start-time resolution. No test clock is assigned or held.
-    Element.prototype.animate = function (frames, options) {
-      const timing = typeof options === 'number' ? options * 20
-        : { ...options, duration: Number(options?.duration ?? 0) * 20 };
-      const animation = original.call(this, frames, timing);
-      w.__heldAnimations.push(animation);
-      return animation;
-    };
-  });
+  // Extend the active interval under CPU load (the epoch clock runs 20 times slower than frame
+  // time), retaining the driver's own frame loop. The clock is not held.
+  await page.evaluate(() => (window as any).trace.motion.setRate(1 / 20));
+  const startedBefore = (await motionState(page)).started;
   try {
-    if (resize) await page.evaluate(() => (window as any).trace.setTileSize('large'));
-    else await page.locator('[data-stack-toggle]').click();
-    await awaitAnimationsCreated(page);
-    const clocks = await page.evaluate(async () => {
-      const running = ((window as any).__heldAnimations as Animation[]).filter(a => a.playState === 'running');
-      await Promise.all(running.map(a => a.ready));
-      return running.map(a => a.startTime);
-    });
-    expect(clocks.length).toBeGreaterThan(0);
-    expect(clocks).not.toContain(null);
-    expect(new Set(clocks).size).toBe(1);
+    if (resize) {
+      // A tile size change snaps: no effect is created, and the live connector shows at once.
+      await page.evaluate(() => (window as any).trace.setTileSize('large'));
+      await settle(page);
+      expect((await motionState(page)).started).toBe(startedBefore);
+      await expect(page.locator(`path[data-from="node:${parent}"][data-to="node:${child}"]`)).toHaveCount(1);
+      expect(await page.locator(`path[data-from="node:${parent}"][data-to="node:${child}"]`).evaluate(el => Number(getComputedStyle(el).opacity))).toBe(1);
+      await expect(page.locator('[data-motion-route-layer], [data-motion-ghost]')).toHaveCount(0);
+      return;
+    }
+    await page.locator('[data-stack-toggle]').click();
+    await awaitMotionStarted(page);
+    // One epoch clock drives every effect of the entrance.
+    const { running } = await motionState(page);
+    expect(running).toHaveLength(1);
+    expect(running[0].held).toBe(false);
     const source = page.locator(`path[data-from="node:${parent}"][data-to="node:${child}"]`);
     await expect(source).toHaveCount(1);
     expect(await source.evaluate(el => Number(getComputedStyle(el).opacity))).toBe(0);
     await page.evaluate(async () => {
-      for (const a of (window as any).__heldAnimations as Animation[]) if (a.playState === 'running') a.finish();
+      (window as any).trace.motion.finish();
       await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
     });
-    // Native completion hands the visible connector back to the live SVG.
+    // Completion hands the visible connector back to the live SVG.
     expect(await source.evaluate(el => Number(getComputedStyle(el).opacity))).toBe(1);
     await expect(page.locator('[data-motion-route-layer], [data-motion-ghost]')).toHaveCount(0);
-  } finally { await releaseScriptedAnimations(page); }
+  } finally { await releaseMotion(page); }
   await settle(page);
 });

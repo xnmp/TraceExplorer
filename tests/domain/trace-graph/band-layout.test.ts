@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { bandWidthBudget, bandHistorySignature } from "$lib/domain/trace-graph/band-layout";
 import { layoutGraph, type LayoutItem, type GraphLayout } from "$lib/domain/trace-graph/layout";
 import { bandExtent, attachPackedBand } from "$lib/plugins/trace/view/stack-grid";
-import { samplePathString } from "$lib/plugins/trace/view/path-sampling";
+import { samplePathString } from "$lib/domain/trace-graph/path-sampling";
 
 const item = (key: string, parents: string[] = [], order = 0): LayoutItem => ({ key, parents, order, width: 92, height: 97 });
 const deep = [item("root"), item("Cerulean", ["root"], 1), item("Saffron", ["root"], 2), item("Blastoise", ["Saffron"], 3), item("Ash", ["Saffron"], 4), item("Charizard", ["Ash"], 5)];

@@ -1,6 +1,6 @@
 import { test, expect, type Page } from "@playwright/test";
 import { openView, key, state, settle, uncaught, rendered } from "./support";
-import { awaitAnimationsCreated, holdScriptedAnimations, releaseScriptedAnimations } from "./animation-control";
+import { awaitMotionStarted, holdMotion, motionState, releaseMotion } from "./animation-control";
 
 const stack = (page: Page, name: string) => page.locator(`section[data-component][aria-label="${name}"]`);
 const gridBoxes = (page: Page) => page.evaluate(() => {
@@ -266,33 +266,36 @@ test("#56 opening settles once and unchanged journal refresh preserves children 
 
 test("#56 unchanged refresh does not restart an expansion in progress", async ({ page }) => {
   await openView(page, 220, "?grouping=two-chains", false);
-  await holdScriptedAnimations(page);
+  await holdMotion(page);
   try {
     await stack(page, "photo-a").locator("[data-stack-toggle]").click();
-    await awaitAnimationsCreated(page);
+    await awaitMotionStarted(page);
     const child = await key(page, "photo-a-edit");
     const result = await page.evaluate(async (child) => {
       const w = window as any;
-      const original = [...w.__heldAnimations] as Animation[];
-      for (const animation of original) if (animation.playState === "running") animation.currentTime = 80;
+      w.trace.motion.seek(80);
       await new Promise(requestAnimationFrame);
+      const original = JSON.stringify(w.trace.motion.state().running);
       w.trace.backend.refresh();
       for (let i = 0; i < 12; i++) await new Promise(requestAnimationFrame);
+      // The expansion's epoch still runs where it was: the refresh started no motion.
+      const restarted = JSON.stringify(w.trace.motion.state().running) !== original;
       const box = () => {
         const element = document.querySelector<HTMLElement>(`[data-tile-key="${child}"]`)!;
         return { y: element.getBoundingClientRect().y, opacity: Number(getComputedStyle(element).opacity), following: document.querySelector('section[aria-label="photo-b"]')!.getBoundingClientRect().y };
       };
-      for (const animation of original) if (animation.playState === "running") animation.currentTime = 160;
+      w.trace.motion.seek(160);
       await new Promise(requestAnimationFrame);
       const atOriginalEnd = box();
-      for (const animation of w.__heldAnimations as Animation[]) if (animation.playState === "running") animation.currentTime = 160;
+      w.trace.motion.finish();
       await new Promise(requestAnimationFrame);
-      return { atOriginalEnd, settled: box() };
+      return { restarted, atOriginalEnd, settled: box() };
     }, child);
+    expect(result.restarted, "the refresh restarted the expansion").toBe(false);
     expect(result.atOriginalEnd.opacity).toBe(1);
     expect(result.atOriginalEnd.y).toBeCloseTo(result.settled.y, 1);
     expect(result.atOriginalEnd.following).toBeCloseTo(result.settled.following, 1);
-  } finally { await releaseScriptedAnimations(page); }
+  } finally { await releaseMotion(page); }
 });
 
 for (const host of ["", "&fileTile=1&tileSize=medium"]) {
@@ -322,7 +325,7 @@ test("selection inside a band snaps only rows below vertically, including anothe
   const before = await gridBoxes(page);
   const forestChild = page.locator(`[data-tile-key="${await key(page, "forest-mist")}"]`);
   const childBefore = await forestChild.evaluate((element) => element.getBoundingClientRect().y + document.querySelector<HTMLElement>('[data-testid="trace-view"]')!.scrollTop);
-  await holdScriptedAnimations(page);
+  await holdMotion(page);
   let samples: Awaited<ReturnType<typeof gridBoxes>>[];
   try {
     await stack(page, "village").locator(`[data-node-key="${await key(page, "rain")}"]`).click();
@@ -330,11 +333,10 @@ test("selection inside a band snaps only rows below vertically, including anothe
     samples = await page.evaluate(async () => {
       const frame = () => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
       await frame();
-      const animations = ((window as any).__heldAnimations as Animation[]).filter((animation) => animation.playState === "running");
       const view = document.querySelector<HTMLElement>('[data-testid="trace-view"]')!;
       const samples = [];
       for (const time of [0, 40, 80, 120, 160]) {
-        for (const animation of animations) animation.currentTime = time;
+        (window as any).trace.motion.seek(time);
         await frame();
         samples.push(Object.fromEntries([...document.querySelectorAll<HTMLElement>("[data-grid-cell]")].map((element) => {
           const box = element.getBoundingClientRect();
@@ -343,7 +345,7 @@ test("selection inside a band snaps only rows below vertically, including anothe
       }
       return samples;
     });
-  } finally { await releaseScriptedAnimations(page); }
+  } finally { await releaseMotion(page); }
   await settle(page);
   const after = await gridBoxes(page); sameColumns(before, after);
   // The village band grows under the village cover, so the cover stays put while every row below it,
@@ -481,14 +483,14 @@ test("closing during emergence reclaims rows without overlapping the remaining b
   await page.setViewportSize({ width: 800, height: 1600 });
   await openView(page, 220, "?grouping=two-chains", false);
   await stack(page, "photo-b").locator("[data-stack-toggle]").click(); await settle(page);
-  await holdScriptedAnimations(page);
+  await holdMotion(page);
   try {
     await stack(page, "photo-a").locator("[data-stack-toggle]").click();
-    await awaitAnimationsCreated(page);
+    await awaitMotionStarted(page);
     const child = await key(page, "photo-a-edit");
     const samples = await page.evaluate(async () => {
       const w = window as any;
-      for (const animation of w.__heldAnimations as Animation[]) if (animation.playState === "running") animation.currentTime = 40;
+      (window as any).trace.motion.seek(40);
       await new Promise(requestAnimationFrame);
       document.querySelector<HTMLElement>('section[aria-label="photo-a"] [aria-label="Collapse stack"]')!.click();
       const samples = [];
@@ -509,9 +511,11 @@ test("closing during emergence reclaims rows without overlapping the remaining b
       expect(cell.bottom).toBeLessThanOrEqual(cell.ownTop + .5);
     }
     await expect(stack(page, "photo-a").locator(`[data-tile-key="${child}"]`)).toHaveCount(0);
-    await expect(page.locator('[data-grid-exit]')).toHaveAttribute('inert', '');
+    // Whatever retires is passive: inert and hidden from assistive technology.
+    expect(await page.locator('[data-grid-exit], [data-ghost-tile-key], [data-motion-route-layer]').evaluateAll((elements) =>
+      elements.every((element) => !!element.closest('[inert]') && !!element.closest('[aria-hidden="true"]')))).toBe(true);
     await expect(stack(page, "photo-b").locator("[data-grid-band] [data-tile-key]").first()).toBeVisible();
-  } finally { await releaseScriptedAnimations(page); }
+  } finally { await releaseMotion(page); }
   await settle(page);
   await expect(stack(page, "photo-a").locator("[data-grid-band]")).toHaveCount(0);
   expect(await uncaught(page)).toEqual([]);
@@ -521,39 +525,37 @@ test("selecting in another band after a reveal snaps each neighborhood without s
   // Both focus changes reveal new neighborhoods and snap their footprints.
   await openView(page, 420, "?deeper=1", false);
   for (const name of ["village", "forest"]) { await stack(page, name).locator("[data-stack-toggle]").click(); await settle(page); }
-  await holdScriptedAnimations(page);
+  await holdMotion(page);
   try {
     const warm = await key(page, "warm"), mist = await key(page, "forest-mist");
     const positions = () => page.evaluate(() => Object.fromEntries([...document.querySelectorAll<HTMLElement>("[data-tile-key]")].map((tile) => {
       const box = tile.getBoundingClientRect(); return [tile.dataset.tileKey!, [box.x, box.y]];
     })));
-    // Seeks the animations created since `from` (earlier ones were cancelled by the interruption).
-    const seek = (time: number, from: number) => page.evaluate(async ([time, from]) => {
-      const held = (window as any).__heldAnimations as Animation[];
-      for (const animation of held.slice(from)) if (animation.playState === "running") animation.currentTime = time;
+    // Seeks the running epoch (an interrupted one has ended).
+    const seek = (time: number) => page.evaluate(async (time) => {
+      (window as any).trace.motion.seek(time);
       await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
-    }, [time, from]);
+    }, time);
     const start = await positions();
     await page.locator(`[data-node-key="${warm}"]`).click();
-    await awaitAnimationsCreated(page);
-    await seek(40, 0);
+    await awaitMotionStarted(page);
+    await seek(40);
     const displayed = await positions();
     expect(displayed[mist][1], "the first selection is under way").toBeGreaterThan(start[mist][1] + 20);
-    const created = await page.evaluate(() => (window as any).__heldAnimations.length as number);
     await page.locator(`[data-node-key="${mist}"]`).click();
-    await awaitAnimationsCreated(page);
-    await seek(0, created);
+    await awaitMotionStarted(page);
+    await seek(0);
     const resumed = await positions();
-    expect(await page.evaluate(() => ((window as any).__heldAnimations as Animation[]).filter(a => a.playState === 'running').length)).toBe(0);
+    expect((await motionState(page)).running, "the reveal snaps: nothing moves").toEqual([]);
     // The newly committed positions remain fixed, even when test clocks seek.
     let previous = resumed[mist][1];
     for (const time of [20, 40, 80, 120, 160]) {
-      await seek(time, created);
+      await seek(time);
       const now = (await positions())[mist][1];
       expect(now, `forest-mist at ${time}ms`).toBeCloseTo(previous, 1);
       previous = now;
     }
-  } finally { await releaseScriptedAnimations(page); }
+  } finally { await releaseMotion(page); }
   await settle(page);
   expect(await uncaught(page)).toEqual([]);
 });
@@ -639,12 +641,14 @@ test("double-clicking a closed stack opens the cover file", async ({ page }) => 
 test("reduced motion opens and closes bands without animations", async ({ page }) => {
   await page.emulateMedia({ reducedMotion: "reduce" });
   await openView(page, 420, "?grouping=two-chains", false);
+  const { started } = await motionState(page);
   await stack(page, "photo-a").locator("[data-stack-toggle]").click(); await settle(page);
   await expect(stack(page, "photo-a").locator("[data-grid-band]")).toHaveCount(1);
   expect(await page.evaluate(() => document.getAnimations().length)).toBe(0);
   await stack(page, "photo-a").getByRole("button", { name: "Collapse stack" }).click(); await settle(page);
   await expect(stack(page, "photo-a").locator("[data-grid-band]")).toHaveCount(0);
   expect(await page.evaluate(() => document.getAnimations().length)).toBe(0);
+  expect((await motionState(page)).started, "motion started").toBe(started);
 });
 
 test("clicking a closed in-place-edit stack selects its cover revision, as clicking the open cover does", async ({ page }) => {
@@ -804,15 +808,18 @@ test("#51 a cold activation follows its revision after merging into an older lin
   await page.evaluate(() => (window as any).trace.backend.holdNodeReads());
   await stack(page, "draft").locator("[data-stack-toggle]").click();
   await expect.poll(() => page.evaluate((id) => (window as any).trace.backend.calls("trace_component_nodes").some((call: { params: { componentId: string } }) => call.params.componentId === id), oldId)).toBe(true);
-  // Only nodes are held: the new index overtakes the clicked stack's node load.
+  // Only nodes are held: the new index overtakes the clicked stack's node load. The requested open
+  // is a dependency of the refresh, so the committed scene stays until its data is complete.
   await page.evaluate(() => (window as any).trace.backend.joinGeneration(["village", "draft"], "joined"));
+  await expect.poll(() => page.evaluate(() => (window as any).trace.backend.heldNodeReads().length)).toBeGreaterThan(1);
+  await expect(page.locator(`section[data-component="${oldId}"]`)).toHaveCount(1);
+  await page.evaluate(() => (window as any).trace.backend.releaseNodeReads());
+  await expect.poll(async () => (await state(page)).target).toMatchObject({ id: `trace:${clicked}` });
+  await settle(page);
   await expect(page.locator(`section[data-component="${oldId}"]`)).toHaveCount(0);
   await expect(stack(page, "village")).toBeVisible();
   // The clicked unsaved image is now neither a cover nor a folder member.
   expect(await stack(page, "village").locator(".cover-press").getAttribute("data-node-key")).toBe(await key(page, "village"));
-  await page.evaluate(() => (window as any).trace.backend.releaseNodeReads());
-  await expect.poll(async () => (await state(page)).target).toMatchObject({ id: `trace:${clicked}` });
-  await settle(page);
   const after = await state(page);
   expect(after.selected).toEqual([]);
   expect(after.inputs).toEqual(["/managed/draft.png"]);
@@ -854,12 +861,18 @@ for (const outcome of ["delayed", "failed"] as const) {
   test(`a stack whose data is ${outcome} can be closed again`, async ({ page }) => {
     await openView(page, 420, "?grouping=two-chains", false);
     const backend = (fn: string, ...args: unknown[]) => page.evaluate(([fn, args]) => (window as any).trace.backend[fn as string](...(args as unknown[])), [fn, args] as const);
-    await backend(outcome === "delayed" ? "holdFolderReads" : "failNodeReads", 1);
+    if (outcome === "delayed") await backend("holdFolderReads"); else await backend("failNodeReads", 1);
     const heading = stack(page, "photo-a").locator("[data-stack-toggle]");
     await heading.click();
-    await expect(heading).toHaveAttribute("aria-expanded", "true");
-    await heading.click();
+    // Nothing is committed while the open is pending or after it failed: the disclosure reports the
+    // committed scene and cancels the pending open, or dismisses the failure.
+    if (outcome === "delayed") await expect(heading).toHaveAttribute("aria-label", "Cancel opening stack");
+    else await expect(stack(page, "photo-a").locator("[data-cover-error]")).toBeVisible();
     await expect(heading).toHaveAttribute("aria-expanded", "false");
+    await heading.click();
+    await expect(heading).toHaveAttribute("aria-label", "Expand stack");
+    await expect(heading).toHaveAttribute("aria-expanded", "false");
+    await expect(stack(page, "photo-a").locator("[data-cover-progress], [data-cover-error]")).toHaveCount(0);
     await expect(stack(page, "photo-a").locator("[data-grid-band]")).toHaveCount(0);
     if (outcome === "delayed") await backend("releaseFolderReads");
     await settle(page);
@@ -878,8 +891,9 @@ test("a delayed activation does not undo an explicit close", async ({ page }) =>
   // An unsaved cover is not a listed file: pressing it loads its component before selecting it.
   const heading = stack(page, "out").locator("[data-stack-toggle]");
   await heading.click();
-  await expect(heading).toHaveAttribute("aria-expanded", "true");
+  await expect(heading).toHaveAttribute("aria-label", "Cancel opening stack");
   await heading.click();
+  await expect(heading).toHaveAttribute("aria-label", "Expand stack");
   await expect(heading).toHaveAttribute("aria-expanded", "false");
   await backend("releaseFolderReads"); await settle(page);
   await expect(stack(page, "out").locator("[data-grid-band]")).toHaveCount(0);
@@ -1008,25 +1022,23 @@ test("merging the focused child's stack into another keeps one tab stop and focu
   expect(await uncaught(page)).toEqual([]);
 });
 
-for (const worker of [false, true]) test(`#56 cold open holds the band and following row through ${worker ? "node reads and worker layout" : "node reads"}`, async ({ page }) => {
+for (const worker of [false, true]) test(`#56 cold open keeps the committed grid through ${worker ? "node reads and worker layout" : "node reads"}, then commits the band and following row together`, async ({ page }) => {
   await page.setViewportSize({ width: 800, height: 4000 });
   await openView(page, 420, worker ? "?fanChildren=45" : "?gym=1&fileTile=1&tileSize=small", false);
   const samples = await page.evaluate(async ({ name, worker }) => {
     const w = window as any, backend = w.trace.backend;
     backend.holdNodeReads();
-    const original = Worker.prototype.postMessage, held: Array<() => void> = [];
-    if (worker) Worker.prototype.postMessage = function (message, options) {
-      held.push(() => original.call(this, message, options as any));
-    };
+    if (worker) w.trace.holdLayoutReplies();
+    const heldReplies = (): number => worker ? w.trace.heldLayoutReplies().length : 0;
     const section = document.querySelector<HTMLElement>(`section[aria-label="${name}"]`)!;
     const cover = section.querySelector<HTMLElement>("[data-grid-cell]")!;
-    const row = Number(cover.getAttribute("aria-rowindex")) - 1;
     // A real following cell receives grid motion; measuring grid height alone misses a row reversal.
     const following = [...document.querySelectorAll<HTMLElement>("[data-grid-motion]")]
       .find((cell) => cell.getBoundingClientRect().top > cover.getBoundingClientRect().top + 2)!;
     const view = document.querySelector<HTMLElement>('[data-testid="trace-view"]')!;
     const baseline = following.getBoundingClientRect().top + view.scrollTop;
-    const samples: Array<{ time: number; top: number; computedTop: number; bandBottom: number; height: number; content: boolean; loading: boolean; statusInBand: boolean; workerHeld: boolean }> = [];
+    const coverBefore = JSON.stringify(cover.getBoundingClientRect());
+    const samples: Array<{ time: number; top: number; computedTop: number; band: boolean; bandBottom: number; content: boolean; progress: boolean; busy: boolean; coverMoved: boolean; workerHeld: boolean }> = [];
     const start = performance.now();
     let readsReleased = false, workerReleased = !worker, workerAt: number | null = null, stable = 0;
     try {
@@ -1034,74 +1046,52 @@ for (const worker of [false, true]) test(`#56 cold open holds the band and follo
       while (stable < 4 && performance.now() - start < 10_000) {
         await new Promise(requestAnimationFrame);
         const time = performance.now() - start;
-        const band = section.querySelector<HTMLElement>("[data-grid-band]")!;
-        const background = document.querySelector<HTMLElement>(`[data-grid-row-band="${row}"]`)!;
-        const bounds = background.getBoundingClientRect();
-        const status = band.querySelector<HTMLElement>('[role="status"]');
-        const statusBounds = status?.getBoundingClientRect();
-        const content = band.querySelectorAll("[data-tile-key]").length > 0;
+        const band = section.querySelector<HTMLElement>("[data-grid-band]");
+        const background = band && document.querySelector<HTMLElement>(`[data-grid-row-band="${band.dataset.gridBandRow}"]`);
         const grid = following.closest<HTMLElement>('[role="grid"]')!;
         samples.push({ time, top: following.getBoundingClientRect().top + view.scrollTop,
           computedTop: parseFloat(getComputedStyle(following).top) + grid.getBoundingClientRect().top + view.scrollTop,
-          bandBottom: bounds.bottom + view.scrollTop, height: bounds.height, content,
-          loading: !!status?.textContent?.trim(), workerHeld: held.length > 0,
-          statusInBand: !!statusBounds && statusBounds.top >= bounds.top && statusBounds.bottom <= bounds.bottom });
+          band: !!band, bandBottom: background ? background.getBoundingClientRect().bottom + view.scrollTop : 0,
+          content: !!band && band.querySelectorAll("[data-tile-key]").length > 0,
+          progress: !!section.querySelector("[data-cover-progress]"), busy: !!section.querySelector('[aria-busy="true"]'),
+          coverMoved: JSON.stringify(cover.getBoundingClientRect()) !== coverBefore, workerHeld: heldReplies() > 0 });
         if (!readsReleased && time >= 500) { backend.releaseNodeReads(); readsReleased = true; }
-        if (held.length && workerAt === null) workerAt = time;
+        if (heldReplies() && workerAt === null) workerAt = time;
         if (workerAt !== null && time - workerAt >= 500 && !workerReleased) {
-          Worker.prototype.postMessage = original;
-          held.splice(0).forEach((release) => release()); workerReleased = true;
+          w.trace.releaseLayoutReplies(); workerReleased = true;
         }
-        const moving = document.getAnimations().some((animation) => animation.playState === "running");
-        stable = content && readsReleased && workerReleased && !moving && !w.trace.layoutsPending() ? stable + 1 : 0;
+        const moving = w.trace.motion.state().running.length > 0 || document.getAnimations().some((animation) => animation.playState === "running");
+        stable = samples.at(-1)!.content && readsReleased && workerReleased && !moving && !w.trace.layoutsPending() ? stable + 1 : 0;
       }
       return { baseline, samples, settled: stable >= 4 };
     } finally {
-      backend.releaseNodeReads(); Worker.prototype.postMessage = original;
-      held.splice(0).forEach((release) => release());
+      backend.releaseNodeReads(); w.trace.releaseLayoutReplies();
     }
   }, { name: worker ? "fan" : "gym", worker });
   await test.info().attach('cold-opening-frames', { body: JSON.stringify(samples), contentType: 'application/json' });
   expect(samples.settled).toBe(true);
-  // The first frame showing the reserved background must already place the next row
-  // outside it. A delayed top animation can freeze under a cold native graph mount.
-  for (const sample of samples.samples) {
-    expect(sample.top, JSON.stringify(sample)).toBeGreaterThanOrEqual(sample.bandBottom - .5);
-    expect(sample.computedTop, JSON.stringify(sample)).toBeGreaterThanOrEqual(sample.bandBottom - .5);
+  // Until the complete commit, the committed grid stays exactly as it was: no band, no reserved
+  // space, the cover and the following row in place. Progress is on the cover, busy at once.
+  const pending = samples.samples.filter((sample) => !sample.band);
+  expect(pending.length).toBeGreaterThan(5);
+  expect(pending.at(-1)!.time).toBeGreaterThanOrEqual(500);
+  if (worker) expect(pending.filter((sample) => sample.workerHeld).at(-1)!.time).toBeGreaterThan(900);
+  for (const sample of pending) {
+    expect(Math.abs(sample.top - samples.baseline), JSON.stringify(sample)).toBeLessThan(.5);
+    expect(sample.coverMoved, JSON.stringify(sample)).toBe(false);
+    expect(sample.progress && sample.busy, JSON.stringify(sample)).toBe(true);
   }
-  // Intermediate positions belong to one coordinated resize, rather than a
-  // sequence of jumps. Once settled, the following row stays at its final y.
-  const end = samples.samples.at(-1)!;
-  for (const sample of samples.samples.filter(sample => sample.time >= end.time - 40)) expect(sample.top).toBeCloseTo(end.top, 0);
-  const loading = samples.samples.filter((sample) => !sample.content);
-  expect(loading.length).toBeGreaterThan(5);
-  expect(loading.at(-1)!.time).toBeGreaterThanOrEqual(500);
-  // Pending native effects start at zero on their first presented frame,
-  // without back-dating; samples taken before that frame read zero too.
-  // Zero height is only ever a short leading prefix and never returns.
-  expect(loading.every(sample => sample.loading)).toBe(true);
-  const opened = loading.findIndex(sample => sample.height > 0);
-  expect(opened).toBeGreaterThan(-1);
-  expect(loading[opened].time - loading[0].time).toBeLessThan(100);
-  expect(loading.slice(opened).every(sample => sample.height > 0)).toBe(true);
-  expect(loading.filter(sample => sample.time > 200).every(sample => sample.statusInBand)).toBe(true);
-  if (worker) expect(loading.filter((sample) => sample.workerHeld).at(-1)!.time).toBeGreaterThan(900);
-  // Before content arrives, neither reservation nor following row may reverse upward after opening.
-  let peak = samples.baseline, height = 0;
-  for (const sample of loading) {
-    peak = Math.max(peak, sample.top); height = Math.max(height, sample.height);
-    expect(sample.top, JSON.stringify(sample)).toBeGreaterThanOrEqual(peak - 2);
-    expect(sample.height, JSON.stringify(sample)).toBeGreaterThanOrEqual(height - 2);
-  }
-  expect(peak - samples.baseline).toBeGreaterThan(40);
-  // Content can settle an overestimate upward once, but cannot then push the row down again.
-  peak = samples.baseline;
-  let settlingUp = false, trough = Infinity;
-  for (const sample of samples.samples) {
-    if (sample.top < peak - 2) settlingUp = true;
-    if (settlingUp) { trough = Math.min(trough, sample.top); expect(sample.top).toBeLessThanOrEqual(trough + 2); }
-    else peak = Math.max(peak, sample.top);
-  }
+  // The band commits complete, in one frame with its content and the following row's new place.
+  const committed = samples.samples.slice(pending.length);
+  expect(committed.length).toBeGreaterThan(0);
+  expect(committed.every((sample) => sample.band && sample.content && !sample.progress && !sample.busy)).toBe(true);
+  for (const sample of committed) expect(sample.computedTop, JSON.stringify(sample)).toBeGreaterThanOrEqual(sample.bandBottom - .5);
+  // One coordinated move down to the final row: never back up, then steady.
+  let previous = samples.baseline;
+  for (const sample of committed) { expect(sample.top, JSON.stringify(sample)).toBeGreaterThanOrEqual(previous - .5); previous = sample.top; }
+  const end = committed.at(-1)!;
+  expect(end.top - samples.baseline).toBeGreaterThan(40);
+  for (const sample of committed.filter((sample) => sample.time >= end.time - 40)) expect(sample.top).toBeCloseTo(end.top, 0);
   await expect(stack(page, worker ? "fan" : "gym").locator("[data-grid-band] [data-tile-key]").first()).toBeVisible();
   expect(await uncaught(page)).toEqual([]);
 });
@@ -1110,18 +1100,14 @@ for (const worker of [false, true]) test(`cold children reveal from their accept
   await openView(page, 840, worker ? "?fanChildren=45" : "?gym=1&fileTile=1&tileSize=small", false);
   const result = await page.evaluate(async ({ worker }) => {
     const section = document.querySelector<HTMLElement>(`section[aria-label="${worker ? "fan" : "gym"}"]`)!;
-    const originalPost = Worker.prototype.postMessage, originalAnimate = Element.prototype.animate;
+    const originalPost = Worker.prototype.postMessage, motion = (window as any).trace.motion, started = motion.state().started;
     let requests = 0, frame = 0, arrived: number | null = null, mounted: number | null = null, visible: number | null = null;
-    const entrances: Animation[] = [];
+    // Band tiles shown fading in by the motion driver (an opacity it wrote below one).
+    const entrances = new Set<string>();
     Worker.prototype.postMessage = function (message, options) {
       requests++;
       this.addEventListener("message", () => { arrived ??= frame; }, { once: true });
       return originalPost.call(this, message, options as any);
-    };
-    Element.prototype.animate = function (frames, options) {
-      const animation = originalAnimate.call(this, frames, options);
-      if (this.matches("[data-grid-band] [data-tile-key]") && Array.isArray(frames) && frames[0]?.opacity === 0) entrances.push(animation);
-      return animation;
     };
     try {
       section.querySelector<HTMLElement>("[data-stack-toggle]")!.click();
@@ -1129,6 +1115,7 @@ for (const worker of [false, true]) test(`cold children reveal from their accept
         await new Promise(requestAnimationFrame);
         const children = [...section.querySelectorAll<HTMLElement>("[data-grid-band] [data-tile-key]")];
         if (children.length) mounted ??= frame;
+        for (const child of children) if (motion.owns(child) && child.style.opacity !== "" && Number(child.style.opacity) < 1) entrances.add(child.dataset.tileKey!);
         const band = section.querySelector<HTMLElement>("[data-grid-band]");
         const view = document.querySelector<HTMLElement>('[data-testid="trace-view"]')!.getBoundingClientRect();
         const background = band && document.querySelector(`[data-grid-row-band="${band.dataset.gridBandRow}"]`)!.getBoundingClientRect();
@@ -1144,17 +1131,21 @@ for (const worker of [false, true]) test(`cold children reveal from their accept
         if (visible !== null && frame - visible >= 12 && !(window as any).trace.layoutsPending()) break;
       }
       const children = section.querySelectorAll("[data-grid-band] [data-tile-key]").length;
-      return { requests, arrived, mounted, visible, children, entrances: entrances.length, cancelledEntrances: entrances.filter((animation) => animation.playState === "idle").length };
-    } finally { Worker.prototype.postMessage = originalPost; Element.prototype.animate = originalAnimate; }
+      // Every epoch started meanwhile: one entrance, never replaced by another.
+      return { requests, arrived, mounted, visible, children, entrances: entrances.size, epochs: motion.state().started - started };
+    } finally { Worker.prototype.postMessage = originalPost; }
   }, { worker });
   expect(result.children).toBeGreaterThan(0);
   expect(result.mounted).not.toBeNull(); expect(result.visible).not.toBeNull();
   if (worker) expect(result.arrived).not.toBeNull();
-  // Presence now waits for tile/connector attachment within the 160 ms reflow.
-  // Twelve frames allow that arrival and scheduling slack; the #63 regression replayed ~20 frames.
-  expect(result.visible! - (worker ? result.arrived! : result.mounted!)).toBeLessThanOrEqual(12);
+  // The scene commits once its layout and its thumbnails are ready (media deadline), so count from the
+  // commit that mounts the band, never from the worker reply. Presence waits for tile/connector
+  // attachment within the 160 ms reflow; twelve frames allow scheduling slack, and the #63 regression
+  // replayed ~20 frames.
+  if (worker) expect(result.mounted!).toBeGreaterThanOrEqual(result.arrived!);
+  expect(result.visible! - result.mounted!).toBeLessThanOrEqual(12);
   expect(result.entrances).toBe(result.children);
-  expect(result.cancelledEntrances).toBe(0);
+  expect(result.epochs, "a second entrance started").toBe(1);
   expect(result.requests).toBe(worker ? 1 : 0);
   await settle(page);
   await expect(stack(page, worker ? "fan" : "gym").locator("[data-grid-band] [data-tile-key]").first()).toBeVisible();
@@ -1178,45 +1169,44 @@ test("opening a later row preserves an unchanged band's attachment motion", asyn
   await page.setViewportSize({ width: 800, height: 1600 });
   await openView(page, 420, "?deeper=1&fanChildren=2", false);
   for (const name of ["village", "forest"]) { await stack(page, name).locator("[data-stack-toggle]").click(); await settle(page); }
-  const warm = await key(page, "warm"), mist = await key(page, "forest-mist");
-  await page.locator(`[data-node-key="${warm}"]`).click(); await settle(page);
-  await holdScriptedAnimations(page);
+  const mist = await key(page, "forest-mist");
+  await holdMotion(page);
+  let result: { before: number; at80: number; after: number; continued: number; end: number };
   try {
-    // A data change is a reflow; focus-only selection would now snap.
-    await page.evaluate(() => (window as any).trace.backend.startGeneration("warm", "carry-new")); await awaitAnimationsCreated(page);
-    const result = await page.evaluate(async (mist) => {
-      const w = window as any, originals = [...w.__heldAnimations] as Animation[];
+    // Closing village moves forest's band (a collapse the user makes moves; a data change or a
+    // focus-only selection would snap).
+    await stack(page, "village").locator("[data-stack-toggle]").evaluate((element: HTMLElement) => element.click()); await awaitMotionStarted(page);
+    result = await page.evaluate(async (mist) => {
+      const w = window as any;
       const frame = () => new Promise(requestAnimationFrame);
-      for (const animation of originals) if (animation.playState === "running") animation.currentTime = 40;
-      await frame();
-      const child = document.querySelector<HTMLElement>(`[data-tile-key="${mist}"]`)!;
-      const before = child.getBoundingClientRect().y;
-      const attachment = child.closest<HTMLElement>(".graph")!.dataset.attachment;
-      const owned = originals.filter((animation) => animation.playState === "running"
-        && (animation.effect as KeyframeEffect | null)?.target === child);
-      w.trace.setSelection([...w.trace.state().selected, "/pictures/fan.png"], "/pictures/warm.png");
+      const y = () => document.querySelector<HTMLElement>(`[data-tile-key="${mist}"]`)!.getBoundingClientRect().y;
+      // Seeks the running epoch (the interruption ends the original one).
+      const seek = async (time: number) => { w.trace.motion.seek(time); await frame(); };
+      const original = w.trace.motion.state().running[0].epoch;
+      // The original trajectory ahead of the interruption, then back to where it is interrupted.
+      await seek(80);
+      const at80 = y();
+      await seek(40);
+      const before = y();
+      w.trace.setSelection(["/pictures/fan.png"], "/pictures/fan.png");
       for (let i = 0; i < 12; i++) await frame();
-      const after = child.getBoundingClientRect().y;
-      const cancelled = owned.filter((animation) => animation.playState !== "running").length;
-      const replacements = (w.__heldAnimations as Animation[]).filter((animation) => !originals.includes(animation)
-        && (animation.effect as KeyframeEffect | null)?.target === child).length;
-      for (const animation of w.__heldAnimations as Animation[]) if (animation.playState === "running") animation.currentTime = 80;
-      await frame();
-      const continued = child.getBoundingClientRect().y;
-      for (const animation of w.__heldAnimations as Animation[]) if (animation.playState === "running") animation.currentTime = 160;
-      await frame();
-      return { attachment, nextAttachment: child.closest<HTMLElement>(".graph")!.dataset.attachment,
-        owned: owned.length, cancelled, replacements, before, after, continued, end: child.getBoundingClientRect().y };
+      const after = y();
+      // The interruption's epoch restarts the clock where the original motion was (40 ms in).
+      if (w.trace.motion.state().running[0]?.epoch === original) throw new Error("the interruption started no epoch");
+      await seek(40);
+      const continued = y();
+      await seek(120);
+      return { before, at80, after, continued, end: y() };
     }, mist);
-    expect(result.nextAttachment).toBe(result.attachment);
-    expect(result.owned).toBeGreaterThan(0);
-    expect(result.cancelled).toBe(0);
-    expect(result.replacements).toBe(0);
-    expect(result.after).toBeCloseTo(result.before, 1);
-    expect(Math.abs(result.end - result.before)).toBeGreaterThan(2);
-    expect(Math.abs(result.continued - result.end)).toBeLessThan(Math.abs(result.before - result.end));
-  } finally { await releaseScriptedAnimations(page); }
+  } finally { await releaseMotion(page); }
   await settle(page);
+  const settled = await page.locator(`[data-tile-key="${mist}"]`).evaluate((element) => element.getBoundingClientRect().y);
+  // The unchanged band keeps travelling exactly as before: no jump at the interruption, the same
+  // position 40 ms later as the original motion would have shown, and the original destination.
+  expect(result.after).toBeCloseTo(result.before, 1);
+  expect(Math.abs(settled - result.before)).toBeGreaterThan(2);
+  expect(Math.abs(result.continued - result.at80)).toBeLessThanOrEqual(.5);
+  expect(Math.abs(result.end - settled)).toBeLessThanOrEqual(.5);
   expect(await uncaught(page)).toEqual([]);
 });
 

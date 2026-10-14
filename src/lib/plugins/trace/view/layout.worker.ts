@@ -1,13 +1,18 @@
 /// <reference lib="webworker" />
-/** Off-thread layout: pure computation only, no host or DOM access. */
-import { layoutGraph, type LayoutRequest } from "$lib/domain/trace-graph/layout";
+/**
+ * Off-thread layout: pure computation only, no host or DOM access. One message kind: a whole
+ * folder (`folder` → `folder`), run by the registered default engine, memoised, on a complete input.
+ */
+import { engines, memoizeEngine, type FolderLayoutInput } from "$lib/domain/trace-graph/folder-layout";
 
-interface Message { readonly id: number; readonly request: LayoutRequest }
+type Message = { readonly id: number; readonly folder: FolderLayoutInput };
+
+const folderEngine = memoizeEngine(engines.default);
 
 self.onmessage = (event: MessageEvent<Message>) => {
-  const { id, request } = event.data;
+  const { id, folder } = event.data;
   try {
-    (self as unknown as Worker).postMessage({ id, layout: layoutGraph(request) });
+    (self as unknown as Worker).postMessage({ id, folder: folderEngine(folder) });
   } catch (error) {
     (self as unknown as Worker).postMessage({ id, error: error instanceof Error ? error.message : String(error) });
   }

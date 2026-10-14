@@ -1,5 +1,6 @@
 import { deselectGesture, inClientArea, scaledClientArea, type DeselectEvent, type DeselectGesture, type DeselectPointer, type PointerPosition } from "$lib/domain/deselect-click";
-import { viewMoving, zoomOf } from "./motion";
+import { zoomOf } from "./motion";
+import { onFrame } from "./frame-loop";
 import { SELECTABLE_TILES } from "./selectable";
 import { clampPoint, intersectedTiles, normalizeRect, sameSelection, marqueeSelection, type MarqueeRect } from "./marquee-selection";
 
@@ -10,6 +11,11 @@ interface Options {
   end(commit: boolean): void;
   select(keys: readonly string[], additive: boolean): void;
   draw(rect: MarqueeRect | null): void;
+  /**
+   * Subscribes to the frames presentation motion runs in, once their poses are written (default:
+   * the motion frame loop's `read` phase): a drag re-reads its hits in each.
+   */
+  frames?(listener: () => void): () => void;
 }
 
 /** Host semantics: immediate start, window listeners (no capture), no edge auto-scroll, rAF moves. */
@@ -63,7 +69,6 @@ export function attachMarqueeSelection(element: HTMLElement, options: Options) {
       options.select(drag.visited, drag.additive);
       drag.ownsSelection = options.captureSelection();
     }
-    if (viewMoving(element)) schedule(false);
   };
   const schedule = (fromPointer = true) => {
     pending = true;
@@ -126,6 +131,8 @@ export function attachMarqueeSelection(element: HTMLElement, options: Options) {
   window.addEventListener("pointercancel", cancel, true);
   window.addEventListener("blur", cancel);
   window.addEventListener("dragstart", cancel);
+  // Tiles move under a drag: its hits follow every motion frame, read after the frame's poses are written.
+  const stopFrames = (options.frames ?? ((listener) => onFrame("read", listener)))(() => { if (drag?.moved) { pending = true; flush(); } });
   return {
     // Resolving a cold cover is this drag's own selection, not a newer command.
     selectionApplied() {
@@ -134,6 +141,7 @@ export function attachMarqueeSelection(element: HTMLElement, options: Options) {
     },
     layoutChanged() { if (drag?.moved) schedule(false); }, destroy() {
     cancel();
+    stopFrames();
     element.removeEventListener("pointerdown", down, true);
     element.removeEventListener("click", click, true);
     element.removeEventListener("contextmenu", contextMenu);

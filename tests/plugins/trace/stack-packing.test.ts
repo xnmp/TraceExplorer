@@ -3,7 +3,7 @@ import { packStackGroups } from "$lib/plugins/trace/view/stack-packing";
 import { packedGridFlow, bandPlacements, attachPackedBand, bandExtent } from "$lib/plugins/trace/view/stack-grid";
 import { layoutGraph } from "$lib/domain/trace-graph/layout";
 import { STACK_STEM_ROOM } from "$lib/domain/trace-graph/metrics";
-import { samplePathString } from "$lib/plugins/trace/view/path-sampling";
+import { samplePathString } from "$lib/domain/trace-graph/path-sampling";
 
 const group = (id: string, center: number, width = 100, height = 80) => ({ id, center, width, height });
 describe("stack group packing", () => {

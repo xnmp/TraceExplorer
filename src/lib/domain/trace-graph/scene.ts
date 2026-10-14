@@ -97,16 +97,32 @@ export interface BandScenePlan extends ScenePlan {
  * before computing drawable components. Members contain drawable keys only.
  * Band geometry uses visible nodes. Complete lineage supplies stable sizes and parentage.
  */
-export function planBandScene(graph: BadgeProjection, members: readonly NodeKey[], focus: NodeKey | null, maxWidth: number, options: BandSceneOptions): BandScenePlan {
-  const { dag } = graph;
+/** How a band's focus applies to it: the lineage its tiles and routes are toned by, and whether the focus is its own. */
+export interface BandFocus {
+  readonly membership: ReadonlySet<NodeKey>;
+  /** Members consuming the focus when it is one of the band's reference badges. */
+  readonly badgeConsumers: readonly NodeKey[];
+  /** The focus is a member, or a badge some member consumes. */
+  readonly inComponent: boolean;
+  /** Focus lineage (dimming everything for another stack's focus), widened by a hovered badge's consumers. */
+  readonly lineage: Lineage;
+}
+
+export function bandFocus(graph: BadgeProjection, members: readonly NodeKey[], focus: NodeKey | null, badgeHighlight: NodeKey | null = null): BandFocus {
   const membership = new Set(members);
   const badgeConsumers = focus !== null && graph.badges.has(focus)
     ? members.filter((key) => graph.byConsumer.get(key)?.some((badge) => badge.key === focus)) : [];
   const inComponent = focus !== null && (membership.has(focus) || badgeConsumers.length > 0);
   const context = lineageWithBadges(graph, inComponent ? focus : null, membership);
   const selected: Lineage = focus !== null && !inComponent ? { focus, related: new Set() } : context;
-  const highlight = options.badgeHighlight && graph.badges.has(options.badgeHighlight) ? lineageWithBadges(graph, options.badgeHighlight, membership) : null;
-  const effective: Lineage = highlight ? { focus: selected.focus ?? highlight.focus, related: new Set([...selected.related, ...highlight.related]) } : selected;
+  const highlight = badgeHighlight && graph.badges.has(badgeHighlight) ? lineageWithBadges(graph, badgeHighlight, membership) : null;
+  const lineage: Lineage = highlight ? { focus: selected.focus ?? highlight.focus, related: new Set([...selected.related, ...highlight.related]) } : selected;
+  return { membership, badgeConsumers, inComponent, lineage };
+}
+
+export function planBandScene(graph: BadgeProjection, members: readonly NodeKey[], focus: NodeKey | null, maxWidth: number, options: BandSceneOptions): BandScenePlan {
+  const { dag } = graph;
+  const { membership, badgeConsumers, inComponent, lineage: effective } = bandFocus(graph, members, focus, options.badgeHighlight ?? null);
   const tile = options.tile ?? tileMetrics();
   const { tiles, items } = sceneTiles(dag, members, inComponent && badgeConsumers.length === 0 ? focus : null, effective, tile, { roots: "in-folder", include: badgeConsumers });
   const badges = new Map([...tiles.keys()].flatMap((key) => {

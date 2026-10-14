@@ -7,28 +7,43 @@
  * another session already loaded starts from that data and revalidates it, so
  * returning to a Trace tab never shows "Loading Trace…" again.
  */
-import type { ComponentSummary, NodeKey, TraceNode } from "$lib/domain/trace-graph/model";
+import type { ComponentSummary, TraceNode } from "$lib/domain/trace-graph/model";
+import { matchesIndex, type ComponentData, type FolderIndex, type Member } from "$lib/domain/trace-graph/folder-data";
 import type { OrientationHistory } from "$lib/domain/trace-graph/orientation";
-import { projectDag, type TraceDag } from "$lib/domain/trace-graph/projection";
+import { projectDag } from "$lib/domain/trace-graph/projection";
 import { traceBackend, type TraceBackend } from "./backend";
 import { createSnapshotCache, type SnapshotCache } from "./folder-snapshots";
+import { sceneSnapshots } from "./scene-snapshots";
 import { componentRequest } from "./component-requests";
 import { parentDir, samePath } from "$lib/domain/path";
 import { coverAliases, coverIdentity, forgetOpenStack, stackIdentity, pathIdentity, revisionIdentity, resolveOpenStacks } from "./open-stacks";
 
-export interface ComponentData {
-  readonly nodes: readonly TraceNode[];
-  readonly dag: TraceDag;
-  readonly members: readonly NodeKey[];
+export type { ComponentData, FolderIndex, Member };
+
+/** The session's index no longer carries the token a read was requested under. */
+export class StaleComponentsError extends Error {
+  constructor(message = "Trace changed while its components were loading") { super(message); this.name = "StaleComponentsError"; }
 }
 
-export interface Member { readonly componentId: string; readonly key: NodeKey }
+/** A cancellable claim on complete component data; see `acquireComponents`. */
+export interface ComponentLease {
+  /** Fresh, complete data for every requested id (in request order, duplicates collapsed), all read under the requested token. */
+  readonly results: Promise<ReadonlyMap<string, ComponentData>>;
+  /** Withdraws interest. Reads nobody else wants are aborted; pending `results` reject. Idempotent. */
+  release(): void;
+}
 
-export interface FolderIndex {
-  readonly directory: string;
-  readonly token: string;
-  readonly components: readonly ComponentSummary[];
-  readonly members: ReadonlyMap<string, Member>;
+/** Strictly increasing across every session, so a version identifies one replacement of one component. */
+let componentVersion = 0;
+
+/** Rejects with the signal's reason as soon as it aborts, without waiting for `promise`. */
+function abortable<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    if (signal.aborted) { reject(signal.reason); return; }
+    const abort = () => reject(signal.reason);
+    signal.addEventListener("abort", abort, { once: true });
+    promise.then(resolve, reject).finally(() => signal.removeEventListener("abort", abort));
+  });
 }
 
 /** Restarts tolerated while the journal keeps changing under a paged load. */
@@ -58,7 +73,7 @@ export const snapshotWeight = (snapshot: FolderSnapshot): number =>
 /** Shared by every session, so a remounted view finds what the previous one loaded. */
 const folderSnapshots = createSnapshotCache<FolderSnapshot>({ limit: 8, budget: 200_000, weigh: snapshotWeight });
 /** Forgets every folder's data, when the plugin is disabled. */
-export function forgetFolderSnapshots(): void { folderSnapshots.clear(); }
+export function forgetFolderSnapshots(): void { folderSnapshots.clear(); sceneSnapshots.clear(); }
 
 export function createFolderSession(backend: TraceBackend = traceBackend, snapshots: SnapshotCache<FolderSnapshot> = folderSnapshots, paneId = "") {
   let index = $state.raw<FolderIndex | null>(null);
@@ -71,11 +86,22 @@ export function createFolderSession(backend: TraceBackend = traceBackend, snapsh
   let started = false;
   let generation = 0;
   let disposed = false;
-  const loading = new Map<string, Promise<void>>();
-  const loadControllers = new Map<string, AbortController>();
+  const loading = new Map<string, Promise<ComponentData | null>>();
+  const loadControllers = new Map<string, { id: string; controller: AbortController }>();
   /** Reveals survive index refreshes, but never a directory change or disposal. */
   let lifetime = new AbortController();
-  let wanted = new Set<string>();
+  /** Who wants which components: the view's own (ensure/release, per id) and leases (one per acquireComponents). */
+  let viewInterest = new Set<string>();
+  const leaseInterests = new Set<ReadonlySet<string>>();
+  const isWanted = (id: string) => viewInterest.has(id) || [...leaseInterests].some((ids) => ids.has(id));
+  const wantedIds = (): Set<string> => new Set([...viewInterest, ...[...leaseInterests].flatMap((ids) => [...ids])]);
+  /** Aborts reads nobody wants any more; a replacement request for the same id starts a fresh read. */
+  function dropUnwanted(ids: Iterable<string>): void {
+    for (const id of ids) {
+      if (isWanted(id)) continue;
+      for (const [key, read] of loadControllers) if (read.id === id) { read.controller.abort(); loadControllers.delete(key); loading.delete(key); }
+    }
+  }
   /** Loaded data predating the index: stays visible until its fresh load completes. */
   let stale = $state.raw<ReadonlySet<string>>(new Set());
   /** Displayed orientations by component and tile width: hysteresis that survives collapse and remount. */
@@ -116,7 +142,7 @@ export function createFolderSession(backend: TraceBackend = traceBackend, snapsh
   const epoch = snapshots.epoch;
 
   function cancelLoads(): void {
-    for (const controller of loadControllers.values()) controller.abort();
+    for (const { controller } of loadControllers.values()) controller.abort();
     loadControllers.clear();
     loading.clear();
   }
@@ -188,25 +214,30 @@ export function createFolderSession(backend: TraceBackend = traceBackend, snapsh
     return { directory: dir, token, components: summaries, members };
   }
 
-  async function loadComponent(id: string, current: number, folder: FolderIndex, signal: AbortSignal): Promise<void> {
+  /** The component's complete data, or null when the read was abandoned (cancelled, superseded, or the journal moved on). */
+  async function loadComponent(id: string, current: number, folder: FolderIndex, signal: AbortSignal): Promise<ComponentData | null> {
     const nodes: TraceNode[] = [];
     for (let offset = 0; ;) {
-      const page = await componentRequest(() => current !== generation || disposed || !wanted.has(id)
+      const page = await componentRequest(() => current !== generation || disposed || !isWanted(id)
         ? Promise.resolve(null) : backend.nodes(folder.directory, folder.token, id, offset), signal);
-      if (current !== generation || disposed || !wanted.has(id) || signal.aborted) return;
-      if (!page) return;
-      if (page.stale) { void refresh(); return; }
+      if (current !== generation || disposed || !isWanted(id) || signal.aborted) return null;
+      if (!page) return null;
+      if (page.stale) { void refresh(); return null; }
       nodes.push(...page.nodes);
       offset += page.nodes.length;
       if (!page.nodes.length || offset >= page.total) break;
     }
+    // A newer index arrived while the last page was in flight: this data belongs to the old one.
+    if (index?.token !== folder.token) return null;
     const dag = projectDag(nodes);
+    const data: ComponentData = { directory: folder.directory, token: folder.token, version: ++componentVersion, nodes, dag, members: dag.order };
     const next = new Map(components);
-    next.set(id, { nodes, dag, members: dag.order });
+    next.set(id, data);
     components = next;
     if (stale.has(id)) stale = new Set([...stale].filter((other) => other !== id));
     componentErrors = new Map([...componentErrors].filter(([other]) => other !== id));
     reconcileOpenStacks();
+    return data;
   }
 
   /** The latest index read; `settled` waits for it, since a read replaces component ids and cancels loads. */
@@ -238,7 +269,7 @@ export function createFolderSession(backend: TraceBackend = traceBackend, snapsh
       // Every kept component may be out of date: wanted ones reload now, the others when wanted again.
       stale = new Set(components.keys());
       reconcileOpenStacks();
-      for (const id of wanted) if (keep.has(id)) void ensure(id, true);
+      for (const id of wantedIds()) if (keep.has(id)) void read(id, true).catch(() => undefined);
     } catch (cause) {
       if (current !== generation || disposed) return;
       indexError = cause instanceof Error ? cause.message : String(cause);
@@ -246,29 +277,104 @@ export function createFolderSession(backend: TraceBackend = traceBackend, snapsh
     }
   }
 
-  function ensure(id: string, force = false): Promise<void> {
-    if (disposed) return Promise.resolve();
-    wanted.add(id);
+  /**
+   * The shared read of one component: every interest in it awaits the same task, which rejects with the
+   * real error (recorded once in `componentErrors`) and resolves null when abandoned.
+   */
+  function read(id: string, force: boolean): Promise<ComponentData | null> {
     const folder = index;
-    if (!folder || (!force && components.has(id) && !stale.has(id))) return Promise.resolve();
+    if (disposed || !folder) return Promise.resolve(null);
+    const have = components.get(id);
+    if (!force && have && !stale.has(id)) return Promise.resolve(have);
     const key = `${folder.token}:${id}`;
     const pending = loading.get(key);
     if (pending) return pending;
     const current = generation;
     const controller = new AbortController();
-    loadControllers.set(key, controller);
-    const task = loadComponent(id, current, folder, controller.signal)
+    loadControllers.set(key, { id, controller });
+    const task: Promise<ComponentData | null> = loadComponent(id, current, folder, controller.signal)
       .catch((cause) => {
-        if (current === generation && !disposed && !controller.signal.aborted) {
-          componentErrors = new Map(componentErrors).set(id, cause instanceof Error ? cause.message : String(cause));
-        }
+        if (current !== generation || disposed || controller.signal.aborted) return null;
+        componentErrors = new Map(componentErrors).set(id, cause instanceof Error ? cause.message : String(cause));
+        throw cause;
       })
       .finally(() => {
         if (loading.get(key) === task) loading.delete(key);
-        if (loadControllers.get(key) === controller) loadControllers.delete(key);
+        if (loadControllers.get(key)?.controller === controller) loadControllers.delete(key);
       });
     loading.set(key, task);
     return task;
+  }
+
+  const facades = new WeakMap<Promise<ComponentData | null>, Promise<void>>();
+  /** Facade over the shared read for the view: wants `id` until `release(id)`, and never rejects (errors land in `error`). */
+  function ensure(id: string, force = false): Promise<void> {
+    if (disposed) return Promise.resolve();
+    viewInterest.add(id);
+    const task = read(id, force);
+    let settledTask = facades.get(task);
+    if (!settledTask) facades.set(task, settledTask = task.then(() => undefined, () => undefined));
+    return settledTask;
+  }
+
+  /**
+   * One id's fresh data under `token`. A read abandoned because a refresh replaced the index object
+   * (same token) is simply reissued; only reads that fail to settle for other reasons use up attempts.
+   */
+  async function acquireOne(id: string, token: string, signal: AbortSignal): Promise<ComponentData> {
+    for (let attempt = 0; attempt <= MAX_RETRIES;) {
+      signal.throwIfAborted();
+      const folder = index;
+      if (!folder || folder.token !== token) throw new StaleComponentsError();
+      const have = components.get(id);
+      if (have && !stale.has(id) && matchesIndex(have, folder)) return have;
+      const seen = generation;
+      if (await abortable(read(id, false), signal) !== null) continue;
+      await abortable(settled(), signal);
+      if (generation === seen || index?.token !== token) attempt++;
+    }
+    throw new Error("Trace kept changing while its components were loading");
+  }
+
+  /**
+   * Claims complete components under one index token. The claim keeps their reads wanted (shared with
+   * every other interest, aborted only when the last one withdraws) until `release()`, the signal
+   * aborts, the directory changes, or `results` fails. `results` rejects with the read's real error,
+   * or `StaleComponentsError` once the index no longer carries `token`; it never yields partial pages.
+   */
+  function acquireComponents(ids: readonly string[], token: string, signal?: AbortSignal): ComponentLease {
+    const wanted: ReadonlySet<string> = new Set(ids);
+    const own = new AbortController();
+    const joined = AbortSignal.any(signal ? [own.signal, lifetime.signal, signal] : [own.signal, lifetime.signal]);
+    const release = () => {
+      leaseInterests.delete(wanted);
+      own.abort();
+      dropUnwanted(wanted);
+    };
+    joined.addEventListener("abort", release, { once: true });
+    const gather = async (): Promise<ReadonlyMap<string, ComponentData>> => {
+      joined.throwIfAborted();
+      if (disposed) throw new Error("Trace view is no longer available");
+      if (!wanted.size) return new Map();
+      const known = new Set(index?.components.map((summary) => summary.id));
+      const missing = [...wanted].find((id) => index?.token === token && !known.has(id));
+      if (missing !== undefined) throw new Error(`Unknown Trace component ${missing}`);
+      leaseInterests.add(wanted);
+      // Every id must be fresh together: a refresh during a later read can outdate an earlier one (same
+      // token, new index object), so re-acquire until one pass finds them all current.
+      for (let pass = 0; pass <= MAX_RETRIES; pass++) {
+        await Promise.all([...wanted].map((id) => acquireOne(id, token, joined)));
+        const folder = index;
+        if (!folder || folder.token !== token) throw new StaleComponentsError();
+        const current = [...wanted].map((id) => [id, components.get(id)] as const);
+        if (current.every(([id, data]) => data && !stale.has(id) && matchesIndex(data, folder))) return new Map(current as [string, ComponentData][]);
+      }
+      throw new Error("Trace kept changing while its components were loading");
+    };
+    const results = gather().catch((cause) => { release(); throw cause; });
+    // A caller that drops a released lease never sees its rejection; that must not be unhandled.
+    results.catch(() => undefined);
+    return { results, release };
   }
 
   function refresh(): Promise<void> {
@@ -315,12 +421,12 @@ export function createFolderSession(backend: TraceBackend = traceBackend, snapsh
         retainErrors(new Set([...ids].filter((id) => id !== summary.id)));
         components = new Map([...components].filter(([id]) => ids.has(id)));
         stale = index?.token === folder.token ? new Set([...stale].filter((id) => ids.has(id))) : new Set(components.keys());
-        components = new Map(components).set(summary.id, { nodes, dag: projectDag(nodes), members: nodes.map((node) => node.key) });
+        components = new Map(components).set(summary.id, { directory: folder.directory, token: folder.token, version: ++componentVersion, nodes, dag: projectDag(nodes), members: nodes.map((node) => node.key) });
         stale = new Set([...stale].filter((id) => id !== summary.id));
         index = folder;
         status = "ready";
         indexError = "";
-        wanted.add(summary.id);
+        viewInterest.add(summary.id);
         reconcileOpenStacks();
         return { node, componentId: summary.id };
       }
@@ -374,7 +480,8 @@ export function createFolderSession(backend: TraceBackend = traceBackend, snapsh
       lifetime = new AbortController();
       indexError = "";
       componentErrors = new Map();
-      wanted = new Set();
+      viewInterest = new Set();
+      leaseInterests.clear();
       const known = dir ? snapshots.recall(dir) : undefined;
       paneState = (!started && known?.panes?.get(paneId)) || emptyPaneSnapshot();
       started = true;
@@ -388,14 +495,11 @@ export function createFolderSession(backend: TraceBackend = traceBackend, snapsh
     refresh,
     resolveArtifact,
     ensure,
+    acquireComponents,
     settled,
     release(id: string) {
-      wanted.delete(id);
-      const key = index ? `${index.token}:${id}` : null;
-      if (!key) return;
-      loadControllers.get(key)?.abort();
-      loadControllers.delete(key);
-      loading.delete(key);
+      viewInterest.delete(id);
+      dropUnwanted([id]);
     },
     componentOf(path: string): Member | null { return index?.members.get(path) ?? null; },
     /** Whether a loaded component's data predates the current index (a refresh skipped it). Reactive. */

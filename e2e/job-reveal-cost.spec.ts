@@ -1,5 +1,7 @@
 import { test, expect } from "@playwright/test";
+import { awaitMotionStarted, holdMotion, motionState, releaseMotion } from "./animation-control";
 import { openView, state, tile, card, settle, click } from "./support";
+import { sampleFrames } from "./helpers/scene-events";
 
 const estimated = { amount: "0.04", currency: "USD", estimated: true, source: "ratecard:fixture" };
 
@@ -44,25 +46,15 @@ test("revealing the already focused image keeps displayed band tiles still", asy
   await generated(page);
   await page.evaluate(() => (window as any).trace.showJob(71)); await settle(page);
   const image = await tile(page, "revealed"), before = (await image.boundingBox())!;
-  const original = await page.evaluate(() => {
-    const w = window as any, original = Element.prototype.animate;
-    w.revealAnimations = [];
-    Element.prototype.animate = function (...args: Parameters<Element["animate"]>) {
-      w.revealAnimations.push({ target: this, frames: args[0] });
-      return original.apply(this, args);
-    };
-    w.restoreRevealAnimate = () => Element.prototype.animate = original;
-    return true;
-  });
-  expect(original).toBe(true);
-  try {
-    await page.evaluate(() => (window as any).trace.showJob(71)); await settle(page);
-    const after = (await image.boundingBox())!;
-    expect(after.x).toBeCloseTo(before.x, 1); expect(after.y).toBeCloseTo(before.y, 1);
-    expect(await page.evaluate(() => (window as any).revealAnimations.filter((call: { target: Element; frames: Keyframe[] }) =>
-      call.target.matches('[data-tile-key]') && Array.isArray(call.frames) && call.frames.some((frame) => "transform" in frame)).length)).toBe(0);
-    await expect(await card(page, "revealed")).toBeFocused();
-  } finally { await page.evaluate(() => (window as any).restoreRevealAnimate()); }
+  // Every frame from the reveal until it settles: band tiles the motion driver moves (a transform it wrote).
+  const moved = await sampleFrames(page, () => [...document.querySelectorAll<HTMLElement>("[data-tile-key]")]
+    .filter((tile) => (window as any).trace.motion.owns(tile) && tile.style.transform !== "").map((tile) => tile.dataset.tileKey), 600,
+  async () => { await page.evaluate(() => (window as any).trace.showJob(71)); });
+  await settle(page);
+  const after = (await image.boundingBox())!;
+  expect(after.x).toBeCloseTo(before.x, 1); expect(after.y).toBeCloseTo(before.y, 1);
+  expect(moved.flat(), "band tiles moved by the reveal").toEqual([]);
+  await expect(await card(page, "revealed")).toBeFocused();
 });
 
 test("Show image loads an offscreen component and omits cost when unavailable", async ({ page }) => {
@@ -328,11 +320,83 @@ test("collapsing the target cancels a reveal waiting for worker layout", async (
     w.revealResult = w.trace.showJob(71).then(() => "completed", (error: Error) => error.message);
   });
   await expect.poll(() => page.evaluate(() => (window as any).heldLayouts.length)).toBeGreaterThan(0);
-  await expect(section.locator("[data-stack-toggle]")).toHaveAttribute("aria-expanded", "true");
+  // The open is pending: nothing is committed, and the disclosure cancels it.
+  await expect(section.locator("[data-stack-toggle]")).toHaveAttribute("aria-label", "Cancel opening stack");
+  await expect(section.locator("[data-stack-toggle]")).toHaveAttribute("aria-expanded", "false");
   await section.locator("[data-stack-toggle]").click();
   expect(await page.evaluate(() => (window as any).revealResult)).toContain("superseded");
   await page.evaluate(() => { for (const release of (window as any).heldLayouts) release(); });
   await settle(page);
   await expect(section.locator("[data-stack-toggle]")).toHaveAttribute("aria-expanded", "false");
   await expect(await tile(page, "revealed")).toHaveCount(0);
+});
+
+/** Village collapsed, then Show image opens it: the opening's motion is held at its start. */
+async function revealDuringHeldMotion(page: import("@playwright/test").Page) {
+  await openView(page);
+  await generated(page);
+  const section = page.locator('section.component[aria-label="village"]');
+  await section.locator("[data-stack-toggle]").click();
+  await settle(page);
+  await holdMotion(page);
+  await page.evaluate(() => {
+    const w = window as any;
+    w.revealController = new AbortController();
+    w.revealOutcome = "pending";
+    w.trace.showJob(71, w.revealController.signal).then(() => w.revealOutcome = "completed", (error: Error) => w.revealOutcome = error.name);
+  });
+  await expect(section.locator("[data-stack-toggle]")).toHaveAttribute("aria-expanded", "true");
+  await awaitMotionStarted(page);
+  expect((await motionState(page)).running, "the opening's motion is held").toHaveLength(1);
+  return section;
+}
+
+test("a reveal waits for the controller's motion to settle, not for frames or CSS", async ({ page }) => {
+  await revealDuringHeldMotion(page);
+  try {
+    // The scene is published and the tile mounted, but its motion has not settled.
+    await expect(await tile(page, "revealed")).toHaveCount(1);
+    await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => requestAnimationFrame(resolve)))));
+    expect(await page.evaluate(() => (window as any).revealOutcome)).toBe("pending");
+  } finally { await releaseMotion(page); }
+  await expect.poll(() => page.evaluate(() => (window as any).revealOutcome)).toBe("completed");
+  await expect(await card(page, "revealed")).toBeFocused();
+  await expect(await tile(page, "revealed")).toBeInViewport();
+});
+
+test("aborting a reveal while its motion runs rejects at once", async ({ page }) => {
+  await revealDuringHeldMotion(page);
+  try {
+    // Nothing advances the held motion: the rejection cannot wait for it. (The host's promise chain
+    // adds microtask hops, so the outcome is read on the next task.)
+    const outcome = await page.evaluate(async () => {
+      const w = window as any;
+      w.revealController.abort();
+      const start = performance.now();
+      while (w.revealOutcome === "pending" && performance.now() - start < 1000) await new Promise((resolve) => setTimeout(resolve, 0));
+      return { outcome: w.revealOutcome, quick: performance.now() - start < 100, moving: w.trace.motion.state().running.length > 0 };
+    });
+    expect(outcome).toEqual({ outcome: "AbortError", quick: true, moving: true });
+  } finally { await releaseMotion(page); }
+  await settle(page);
+  await expect(await card(page, "revealed")).not.toBeFocused();
+});
+
+test("an endless CSS animation or transition on tiles does not delay a reveal", async ({ page }) => {
+  await openView(page);
+  await generated(page);
+  const section = page.locator('section.component[aria-label="village"]');
+  await section.locator("[data-stack-toggle]").click();
+  await settle(page);
+  await page.addStyleTag({ content: "@keyframes reveal-pulse { from { outline-color: transparent; } to { outline-color: currentColor; } } [data-tile-key] { animation: reveal-pulse 400ms infinite alternate; outline: 1px solid transparent; transition: outline-offset 60s; outline-offset: 0; } [data-tile-key]:focus-within { outline-offset: 4px; }" });
+  expect(await page.evaluate(() => document.getAnimations().some((animation) => animation.effect?.getTiming().iterations === Infinity))).toBe(true);
+  const outcome = await page.evaluate(async () => {
+    const w = window as any;
+    return await Promise.race([
+      w.trace.showJob(71).then(() => "completed", (error: Error) => error.name),
+      new Promise((resolve) => setTimeout(() => resolve("timed out"), 5000)),
+    ]);
+  });
+  expect(outcome).toBe("completed");
+  await expect(await card(page, "revealed")).toBeFocused();
 });

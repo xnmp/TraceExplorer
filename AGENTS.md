@@ -29,7 +29,7 @@ bun install --frozen-lockfile
 bun run check                 # svelte-check; does NOT cover e2e/harness
 bun run test                  # vitest
 cargo test --locked --manifest-path src-tauri/Cargo.toml
-bun run test:browser          # Playwright on port 1541, headless
+bun run test:browser          # Playwright on port 1541, headless: Chromium, plus WebKit for the motion and frame specs
 python3 scripts/package-plugin.py   # → package/TraceExplorer-<ver>-<target>.teplugin
 scripts/host-smoke.sh <host checkout>  # native install + WebDriver smoke under xvfb
 ```

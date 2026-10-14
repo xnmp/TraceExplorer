@@ -1,23 +1,37 @@
 <script lang="ts">
-  import type { ReferenceBadge } from "$lib/domain/trace-graph/projection";
+  import { BADGES_SHOWN, visibleBadges, type ReferenceBadge } from "$lib/domain/trace-graph/projection";
   import type { TraceNode } from "$lib/domain/trace-graph/model";
   import Badge from "./ReferenceBadge.svelte";
+  import { onDestroy, tick } from "svelte";
+  import { traceThumbnails } from "../thumbnail-cache";
+  import { badgeThumbnails } from "./scene-media";
+  import { createMediaGate } from "./media-gate";
+  import { MEDIA_DEADLINE_MS } from "./scene-controller.svelte";
   let { badges, revision, selected, nodes, onactivate, onhover }: {
     nodes?: ReadonlyMap<string, TraceNode>; badges: readonly ReferenceBadge[]; revision: number; selected: ReadonlySet<string>;
     onactivate: (key: string, event: MouseEvent) => void; onhover?: (key: string | null) => void;
   } = $props();
   let expanded = $state(false);
-  // A selected reference hidden behind "+n" is shown in its place, so choosing it elsewhere (Preview) reveals it.
-  const visible = $derived(expanded ? badges : [...badges.slice(0, 3), ...badges.slice(3).filter((badge) => selected.has(badge.key))]);
+  // The scene prepares the images of the same badges (scene-media.ts).
+  const visible = $derived(visibleBadges(badges, selected, expanded));
   const hidden = $derived(badges.length - visible.length);
+  // Opening "+n" draws the hidden badges in the frame their images are decoded (media-gate.ts):
+  // until then the tile keeps its look. Closing is immediate, and a click while opening withdraws it.
+  const gate = createMediaGate({ hold: traceThumbnails.hold, rendered: tick, deadline: MEDIA_DEADLINE_MS });
+  onDestroy(() => gate.cancel());
+  function toggle(): void {
+    if (gate.cancel()) return;
+    if (expanded) { expanded = false; return; }
+    gate.request(badgeThumbnails(visibleBadges(badges, selected, true), nodes), revision, () => { expanded = true; });
+  }
 </script>
 <div class="badges">
   {#each visible as badge (badge.key)}
     <Badge {badge} node={nodes?.get(badge.key)} {revision} selected={selected.has(badge.key)} {onactivate} {onhover} />
   {/each}
-  {#if badges.length > 3 && (expanded || hidden > 0)}
+  {#if badges.length > BADGES_SHOWN && (expanded || hidden > 0)}
     <button type="button" class="more" aria-label={expanded ? "Show fewer references" : `Show ${hidden} more references`}
-      aria-expanded={expanded} onclick={() => expanded = !expanded}>{expanded ? "−" : `+${hidden}`}</button>
+      aria-expanded={expanded} onclick={toggle}>{expanded ? "−" : `+${hidden}`}</button>
   {/if}
 </div>
 <style>
