@@ -1,15 +1,21 @@
 /** Deterministic rectilinear visibility grid for a blocked incremental source port. */
 import type { PlacedNode } from "./layout";
+import { LANE_SEPARATION } from "./metrics";
 import type { Point } from "./path-sampling";
 
 /** An axis-parallel connector run: at `at` on the other axis, spanning [lo, hi]. */
 export interface AxisRun { readonly at: number; readonly lo: number; readonly hi: number }
 /** Lanes a route may cross but never run along: other sources' horizontal and vertical runs. */
 export interface ForeignLanes { readonly horizontal: readonly AxisRun[]; readonly vertical: readonly AxisRun[] }
-/** Parallel runs closer than this share a lane. */
+/** Parallel runs closer than this lie on one line. */
 export const LANE_TOLERANCE = .5;
+/**
+ * Parallel runs of two sources closer than this read as one line (`LANE_SEPARATION`, less a
+ * rounding slack so lanes exactly that far apart stay apart).
+ */
+export const NEAR_LANE = LANE_SEPARATION - .01;
 /** Offset of the alternative grid line laid beside an occupied one. */
-const LANE_OFFSET = 3;
+const LANE_OFFSET = LANE_SEPARATION;
 
 /**
  * Binary min-heap of A* entries ordered by (priority, cell index), stored in parallel typed arrays.
@@ -112,20 +118,20 @@ function f64(slot: number, length: number): Float64Array {
   return pool.f64[slot];
 }
 
-/** Whether a grid line lies within the lane tolerance of `at` (lines are sorted and distinct). */
+/** Whether a grid line lies closer than `NEAR_LANE` to `at` (lines are sorted and distinct). */
 function nearLine(values: Float64Array, length: number, at: number): boolean {
-  const i = lowerBound(values, length, at - LANE_TOLERANCE);
-  return i < length && values[i] < at + LANE_TOLERANCE;
+  const i = lowerBound(values, length, at - NEAR_LANE);
+  return i < length && values[i] < at + NEAR_LANE;
 }
 
 /**
- * Marks the grid edges along `runs` blocked: an edge on a line within the lane tolerance of a
- * run, overlapping it for a positive length. `edges[line * stride + i * step]` is the edge
- * from grid point i to i + 1 along that line.
+ * Marks the grid edges along `runs` blocked: an edge on a line closer than `NEAR_LANE` to a run
+ * (on it, or near enough to read as one line with it), overlapping it for a positive length.
+ * `edges[line * stride + i * step]` is the edge from grid point i to i + 1 along that line.
  */
 function blockLanes(runs: readonly AxisRun[], lines: Float64Array, lineCount: number, along: Float64Array, alongCount: number, edges: Uint8Array, stride: number, step: number): void {
   for (const run of runs) {
-    for (let line = lowerBound(lines, lineCount, run.at - LANE_TOLERANCE); line < lineCount && lines[line] < run.at + LANE_TOLERANCE; line++) {
+    for (let line = lowerBound(lines, lineCount, run.at - NEAR_LANE); line < lineCount && lines[line] < run.at + NEAR_LANE; line++) {
       for (let i = Math.max(0, lowerBound(along, alongCount, run.lo) - 1); i + 1 < alongCount && along[i] < run.hi; i++) {
         if (along[i + 1] > run.lo) edges[line * stride + i * step] = 1;
       }

@@ -1,5 +1,5 @@
 import type { GraphLayout, LayoutItem, PlacedNode, PlacedRoute } from "./layout";
-import { ARROW, STACK_STEM_ROOM } from "./metrics";
+import { ARROW, LANE_SEPARATION, STACK_STEM_ROOM } from "./metrics";
 import { flattenInto, flattened, flattenPath, type Point } from "./path-sampling";
 import { isSpace } from "./path-data";
 export type Segment = readonly [
@@ -431,6 +431,10 @@ export interface Measures {
     length: number;
     bends: number;
     crossings: number;
+    /**
+     * Length along which routes of different sources share a lane: run on one line, or closer
+     * than `LANE_SEPARATION` over more than an arrowhead's length (not inputs of one junction).
+     */
     sharedLanePx: number;
     tileIntersections: number;
     overlaps: number;
@@ -1354,15 +1358,74 @@ function recallGates(layout: GraphLayout, coverKey: string, paneWidth: number, i
     return sameGateInputs(layout, items, memo.inputs) ? memo : undefined;
 }
 
-/** Crossings and shared lane length between different sources' routes (none with invalid geometry). */
+/** Pieces of a run whose ends differ by less than this on its cross axis are axis-parallel. */
+const AXIS_SLACK = .01;
+/** Two parallel runs closer than this read as one line once they run together further than an arrowhead. */
+const NEAR_RUN = ARROW.length;
+
+/**
+ * Length along which axis-parallel runs of different sources lie closer than `LANE_SEPARATION`
+ * without lying on one line (`crossingJoin` measures those), for more than `NEAR_RUN` each pair:
+ * two lines that read as one. Inputs of one junction are exempt: they meet at its dot, so
+ * running together into it states their join truly. Consecutive collinear pieces of a route
+ * form one run.
+ */
+function nearLaneLength(layout: GraphLayout, routeGeometry: readonly RouteData[], of: Int32Array): number {
+    // Runs as [at, lo, hi, route] quadruples.
+    const horizontal: number[] = [], vertical: number[] = [];
+    for (let route = 0; route < routeGeometry.length; route++) {
+        const xy = routeGeometry[route].xy;
+        if (!xy) continue;
+        let axis = 0, at = 0, lo = 0, hi = 0;
+        const flush = () => { if (axis) (axis === 1 ? horizontal : vertical).push(at, lo, hi, route); axis = 0; };
+        for (let k = 0; k + 3 < xy.length; k += 2) {
+            const x0 = xy[k], y0 = xy[k + 1], x1 = xy[k + 2], y1 = xy[k + 3];
+            const along = Math.abs(y0 - y1) < AXIS_SLACK && Math.abs(x0 - x1) > 0 ? 1 : Math.abs(x0 - x1) < AXIS_SLACK && Math.abs(y0 - y1) > 0 ? 2 : 0;
+            const c = along === 1 ? (y0 + y1) / 2 : (x0 + x1) / 2, a = along === 1 ? Math.min(x0, x1) : Math.min(y0, y1), b = along === 1 ? Math.max(x0, x1) : Math.max(y0, y1);
+            if (along && along === axis && Math.abs(c - at) < AXIS_SLACK && a <= hi + AXIS_SLACK && b >= lo - AXIS_SLACK) { lo = Math.min(lo, a); hi = Math.max(hi, b); continue; }
+            flush();
+            if (along) { axis = along; at = c; lo = a; hi = b; }
+        }
+        flush();
+    }
+    return nearPairs(horizontal) + nearPairs(vertical);
+    function nearPairs(runs: number[]): number {
+        const n = runs.length / 4, order = Array.from({ length: n }, (_, i) => i).sort((a, b) => runs[4 * a] - runs[4 * b] || a - b);
+        let total = 0;
+        for (let i = 0; i < n; i++) {
+            const a = order[i];
+            for (let j = i + 1; j < n; j++) {
+                const b = order[j], d = runs[4 * b] - runs[4 * a];
+                if (!(d < LANE_SEPARATION - AXIS_SLACK)) break;
+                const ra = runs[4 * a + 3], rb = runs[4 * b + 3];
+                if (!(d > 1e-9) || of[ra] === of[rb]) continue;
+                const overlap = Math.min(runs[4 * a + 2], runs[4 * b + 2]) - Math.max(runs[4 * a + 1], runs[4 * b + 1]);
+                if (!(overlap > NEAR_RUN)) continue;
+                const ta = layout.routes[ra].to, tb = layout.routes[rb].to;
+                if (ta.kind === "junction" && tb.kind === "junction" && ta.id === tb.id) continue;
+                total += overlap;
+            }
+        }
+        return total;
+    }
+}
+
+/**
+ * Crossings between different sources' routes, and the length along which they share a lane:
+ * on one line (`crossingJoin`), or near enough to read as one ({@link nearLaneLength}). None
+ * with invalid geometry.
+ */
 function joinRoutes(layout: GraphLayout, routeGeometry: readonly RouteData[], invalidGeometry: number): { readonly crossings: number; readonly sharedLanePx: number; readonly spatial: boolean } {
     const sources = sourcesOf(layout, routeGeometry);
     let segmentCount = 0;
     for (const plan of routeGeometry) segmentCount += plan.count;
     const mayCross = sourcesMayCross(sources);
     const spatial = !invalidGeometry && mayCross && (routeGeometry.length > 64 || segmentCount > 1024);
-    if (invalidGeometry || !mayCross) return { crossings: 0, sharedLanePx: 0, spatial };
-    return { ...crossingJoin(layout, routeGeometry, sources, spatial), spatial };
+    if (invalidGeometry) return { crossings: 0, sharedLanePx: 0, spatial };
+    const near = sources.drawn.length > 1 ? nearLaneLength(layout, routeGeometry, sources.of) : 0;
+    if (!mayCross) return { crossings: 0, sharedLanePx: near, spatial };
+    const join = crossingJoin(layout, routeGeometry, sources, spatial);
+    return { crossings: join.crossings, sharedLanePx: join.sharedLanePx + near, spatial };
 }
 
 /** Shared-lane lengths already measured, per (immutable) layout object. */

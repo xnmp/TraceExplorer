@@ -5,7 +5,8 @@ import { attachSingleBand } from "$lib/domain/trace-graph/band-geometry";
 import { buildShelves, columnsFor, partitions } from "$lib/domain/trace-graph/band-shelves";
 import { cost, measure, routePlan, sharedLaneLength, validateLayout, CROSSING_HEIGHT_TILES, CROSSING_WEIGHT, HEIGHT_WEIGHT } from "$lib/domain/trace-graph/layout-quality";
 import { spacingFor } from "$lib/domain/trace-graph/metrics";
-import { corpus, requestFor, screenshot } from "../../../layout-eval/corpus";
+import { corpus, node, requestFor, rng, screenshot } from "../../../layout-eval/corpus";
+import type { TraceNode } from "$lib/domain/trace-graph/model";
 
 const route = (id: string, from: string, to: string, path: string): PlacedRoute =>
   ({ id, from: { kind: "node", id: from }, to: { kind: "node", id: to }, consumers: [{ parent: from, child: to }], terminal: true, path });
@@ -20,10 +21,24 @@ describe("shared lanes between sources", () => {
     expect(sharedLaneLength(layoutOf([route("a", "p", "x", "M10 0 L10 100"), route("b", "q", "y", "M10 40 L10 140")]))).toBeCloseTo(60, 6);
     // One source's connectors form a trunk; they may share.
     expect(sharedLaneLength(layoutOf([route("a", "p", "x", "M10 0 L10 100"), route("b", "p", "y", "M10 40 L10 140")]))).toBe(0);
-    // Meeting at a point, crossing, or running parallel a pixel apart is not a shared lane.
+    // Meeting at a point or crossing is not a shared lane.
     expect(sharedLaneLength(layoutOf([route("a", "p", "x", "M10 0 L10 100"), route("b", "q", "y", "M10 100 L10 200")]))).toBe(0);
     expect(sharedLaneLength(layoutOf([route("a", "p", "x", "M10 0 L10 100"), route("b", "q", "y", "M0 50 L20 50")]))).toBe(0);
-    expect(sharedLaneLength(layoutOf([route("a", "p", "x", "M10 0 L10 100"), route("b", "q", "y", "M11 0 L11 100")]))).toBe(0);
+  });
+
+  it("counts lines closer than LANE_SEPARATION as one lane once they run together further than an arrowhead", () => {
+    // A pixel apart, the two lines read as one for their common 100 px; so do a horizontal pair.
+    expect(sharedLaneLength(layoutOf([route("a", "p", "x", "M10 0 L10 100"), route("b", "q", "y", "M11 0 L11 100")]))).toBeCloseTo(100, 6);
+    expect(sharedLaneLength(layoutOf([route("a", "p", "x", "M0 10 L50 10 L50 30"), route("b", "q", "y", "M20 12.5 L90 12.5")]))).toBeCloseTo(30, 6);
+    // A run split into collinear pieces is one run.
+    expect(sharedLaneLength(layoutOf([route("a", "p", "x", "M10 0 L10 5 L10 12"), route("b", "q", "y", "M12 0 L12 12")]))).toBeCloseTo(12, 6);
+    // LANE_SEPARATION apart, or alongside for no more than an arrowhead, they read as two.
+    expect(sharedLaneLength(layoutOf([route("a", "p", "x", "M10 0 L10 100"), route("b", "q", "y", "M13 0 L13 100")]))).toBe(0);
+    expect(sharedLaneLength(layoutOf([route("a", "p", "x", "M10 0 L10 100"), route("b", "q", "y", "M11 92 L11 200")]))).toBe(0);
+    // One source's connectors, and inputs of one junction (which meet at its dot), may run together.
+    expect(sharedLaneLength(layoutOf([route("a", "p", "x", "M10 0 L10 100"), route("b", "p", "y", "M11 0 L11 100")]))).toBe(0);
+    const join = (id: string, parent: string, path: string) => ({ ...route(id, parent, "j", path), to: { kind: "junction" as const, id: "j" }, terminal: false });
+    expect(sharedLaneLength(layoutOf([join("a", "p", "M10 0 L10 100"), join("b", "q", "M11 0 L11 100")]))).toBe(0);
   });
 
   it("ignores empty, unparsable and degenerate routes rather than failing", () => {
@@ -116,6 +131,63 @@ describe("lane-free production layouts", () => {
     const result = layoutGraph({ ...request, anchorKey: "Saffron", history: { ...previous, layout: overlapping(previous.layout, first), placed: overlapping(previous.placed, placedFirst) } });
     expect(result.decision?.candidate).not.toBe("unchanged-visible");
     expect(measure(attachSingleBand(result, request), "root", 454, request.items).sharedLanePx).toBe(0);
+  });
+});
+
+describe("routes trading columns", () => {
+  /** Layers of two to four images, mostly from the layer above, sometimes from further up (a long edge passing rows). */
+  function layered(seed: number): TraceNode[] {
+    const random = rng(seed), layers = 3 + Math.floor(random() * 3), nodes = [node("root")];
+    let above = ["root"], i = 1;
+    for (let l = 0; l < layers; l++) {
+      const count = 2 + Math.floor(random() * 3), layer: string[] = [];
+      for (let k = 0; k < count; k++) {
+        const pick = () => random() < .6 ? above[Math.floor(random() * above.length)] : nodes[Math.floor(random() * nodes.length)].key;
+        const parents = new Set([pick()]);
+        if (random() < .4) parents.add(pick());
+        nodes.push(node(`n${i}`, [...parents], i)); layer.push(`n${i}`); i++;
+      }
+      above = layer;
+    }
+    return nodes;
+  }
+  /** Each route's vertical runs, consecutive collinear pieces merged: [x, top, bottom]. */
+  const verticals = (r: PlacedRoute) => {
+    const runs: [number, number, number][] = [];
+    for (const [a, b] of routePlan(r).segments) if (Math.abs(a.x - b.x) < .01 && Math.abs(a.y - b.y) > .01) {
+      const x = (a.x + b.x) / 2, top = Math.min(a.y, b.y), bottom = Math.max(a.y, b.y), last = runs.at(-1);
+      if (last && Math.abs(last[0] - x) < .01 && Math.abs(last[2] - top) < .01) last[2] = bottom; else runs.push([x, top, bottom]);
+    }
+    return runs;
+  };
+  /**
+   * Pairs of sources whose lines meet end to end on one column (one ends where the other starts, or
+   * they overlap by no more than an arrowhead): one line seems to continue as the other. A
+   * junction's inputs meet each other and its output at its dot by design.
+   */
+  function continuations(layout: GraphLayout): string[] {
+    const source = (r: PlacedRoute) => `${r.from.kind}:${r.from.id}`, out: string[] = [];
+    const joined = (a: PlacedRoute, b: PlacedRoute) => a.to.kind === "junction" && (b.from.kind === "junction" && b.from.id === a.to.id || b.to.kind === "junction" && b.to.id === a.to.id);
+    const runs = layout.routes.map(r => ({ r, runs: verticals(r) }));
+    for (const [i, a] of runs.entries()) for (const b of runs.slice(i + 1)) {
+      if (source(a.r) === source(b.r) || joined(a.r, b.r) || joined(b.r, a.r)) continue;
+      for (const [xa, ta, ba] of a.runs) for (const [xb, tb, bb] of b.runs) {
+        const gap = Math.max(ta, tb) - Math.min(ba, bb);
+        if (Math.abs(xa - xb) < .01 && gap < .5 && gap > -8) out.push(`${a.r.id} | ${b.r.id} at x=${xa}`);
+      }
+    }
+    return out;
+  }
+
+  // Seeds whose layered layout once had two routes trade columns in one bend zone, in slices one
+  // after the other: one left a column exactly where the other arrived, so the two lines met end to end.
+  it.each([6, 12, 23, 25, 52, 76, 81, 110, 123, 132, 135, 144])("cross rather than meet end to end (seed %i)", seed => {
+    const request = requestFor({ id: `layered-${seed}`, nodes: layered(seed), focuses: [null], full: true }, null, 454, 128);
+    const layout = layoutGraph(request), drawn = attachSingleBand(layout, request);
+    expect(continuations(drawn)).toEqual([]);
+    const gates = validateLayout(drawn, request.band!.key, 454, request.items);
+    expect([gates.tileIntersections, gates.overlaps, gates.missingEdges, gates.extraEdges, gates.invalidGeometry, gates.invalidPaths, gates.terminalViolations, gates.disconnectedEdges]).toEqual(Array(8).fill(0));
+    if (!explained(layout)) expect(gates.sharedLanePx).toBe(0);
   });
 });
 

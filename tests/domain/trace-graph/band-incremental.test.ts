@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { layoutGraph, type GraphLayout, type LayoutItem, type LayoutRequest, type PlacedRoute } from "$lib/domain/trace-graph/layout";
 import { incrementalBudget, incrementalTree, INCREMENTAL_LIMIT } from "$lib/domain/trace-graph/band-incremental";
 import { attachSingleBand, bandExtent } from "$lib/domain/trace-graph/band-geometry";
-import { measure, segments } from "$lib/domain/trace-graph/layout-quality";
+import { measure, segments, sharedLaneLength } from "$lib/domain/trace-graph/layout-quality";
 import { ARROW } from "$lib/domain/trace-graph/metrics";
 import { random } from "./fixtures";
 import secondChanceScene from "./second-chance-scene.json";
@@ -199,7 +199,9 @@ describe("incremental tree: second chance", () => {
     const result = incrementalTree(request, previous);
     expect(result).not.toBeNull();
     const m = measure(attachSingleBand(result!, request), request.band!.key, request.maxWidth, request.items);
-    expect(m.sharedLanePx).toBe(0);
+    // The recorded history runs some connectors closer than LANE_SEPARATION; the new ones share no lane.
+    const kept = new Set(previous.routes.map(r => r.path));
+    expect(m.sharedLanePx).toBeCloseTo(sharedLaneLength({ ...result!, routes: result!.routes.filter(r => kept.has(r.path)) }), 6);
     expect([m.tileIntersections, m.overlaps, m.missingEdges, m.extraEdges, m.missingNodes, m.extraNodes, m.invalidGeometry, m.invalidPaths, m.terminalViolations, m.disconnectedEdges, m.overflow]).toEqual(clean);
     // Retained tiles keep their places.
     for (const [key, node] of previous.nodes) if (result!.nodes.has(key)) expect(result!.nodes.get(key)).toMatchObject({ x: node.x, y: node.y });

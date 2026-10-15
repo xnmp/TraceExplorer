@@ -72,6 +72,16 @@ export function tileSize(shape: TileShape, metrics: TileMetrics = tileMetrics())
  */
 export const ARROW = { length: 8, width: 7 } as const;
 
+/**
+ * The closest centre distance at which parallel lines of two sources still read as two lines:
+ * with the drawn strokes (1.35 px plain, 2.3 px highlighted) 3 px leaves a 0.7–1.65 px gap.
+ * Closer, two lines running together further than an arrowhead's length read as one, a join
+ * that is not there: they share a lane (`sharedLanePx`). Orthogonal routers keep such a minimum
+ * edge-to-edge spacing (ELK's `spacing.edgeEdge`; libavoid's nudging, Wybrow, Marriott and
+ * Stuckey 2009).
+ */
+export const LANE_SEPARATION = 3;
+
 /** The stack disclosure hit target; its rendering does not own band geometry. */
 export const STACK_CARET_SIZE = 24;
 /** Cover stems need three bend tracks and a straight arrow approach, at every tile size. */
@@ -142,6 +152,13 @@ export const SPACING: Spacing = spacingFor();
 
 /** A route this close to a junction it does not belong to reads as passing through it; dots keep this berth above and below. */
 export const JUNCTION_BERTH = 6;
+
+/**
+ * A port is where a route meets a tile: a stem leaving it, an arrowhead arriving. Another
+ * source's line crossing or passing a stem this close to its tile makes the stem seem to branch
+ * off that line, as a line passing a junction's dot seems to join it: ports keep a dot's berth.
+ */
+export const PORT_BERTH = JUNCTION_BERTH;
 
 /**
  * Default heights of a channel's bend zones, top to bottom, for `levels`

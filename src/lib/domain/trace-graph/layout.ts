@@ -17,7 +17,7 @@
 import { layoutBand, type BandOptions } from "./band-layout";
 import type { NodeKey } from "./model";
 import { buildInputJunctions, endpointKey, type Consumer, type Endpoint, type Junction } from "./junctions";
-import { ARROW, bendZones, JUNCTION_BERTH, spacingFor, TRACK_HEIGHT } from "./metrics";
+import { ARROW, bendZones, JUNCTION_BERTH, LANE_SEPARATION, PORT_BERTH, spacingFor, TRACK_HEIGHT } from "./metrics";
 import { orderLayers } from "./layer-order";
 
 export interface LayoutItem {
@@ -178,6 +178,11 @@ const unitRoot = (unit: number[], index: number): number => unit[index] === inde
 const NO_JUNCTIONS: ReadonlySet<string> = new Set();
 /** Narrowest separation between lanes sharing a gap. */
 const MIN_LANE = 3;
+/**
+ * Widest column swap whose two bends cross in one shared slice: two minimal slices, less the
+ * insets, 9 px tall, which S-curves 9 px wide cross at about 53°. Wider swaps take a dogleg.
+ */
+const CROSSING_SWAP = 2 * TRACK_HEIGHT - LANE_SEPARATION;
 /** Widest offset, from its junction's column, at which an input ends its bend (see the fan-in step). */
 const FAN_IN = 3;
 /** Distance kept outside a forbidden interval when stepping past it. */
@@ -1218,7 +1223,12 @@ function layoutPass(prepared: Prepared, extra: { readonly left: number; readonly
     readonly channel: number; readonly source: string; readonly target: string | null;
     readonly x1: number; readonly x2: number; readonly from: Anchor; readonly to: Anchor;
     readonly own: ReadonlySet<string>; readonly lo: number; readonly hi: number;
+    /** The bend's zone and its (lowest) track. */
     zone: number; track: number;
+    /** Tracks its curve spans, up to and including `track` (one unless it crosses a swapping partner). */
+    span?: number;
+    /** A swap's dogleg: the bend first curves to column `x` in track `track`, then on in its own. */
+    dogleg?: { readonly track: number; readonly x: number };
   }
   const leg = (channel: number, source: string, target: string | null, x1: number, x2: number, from: Anchor, to: Anchor, own: ReadonlySet<string>): Leg => {
     const lo = "junction" in from ? placed.get(from.junction)!.level : 0;
@@ -1359,8 +1369,38 @@ function layoutPass(prepared: Prepared, extra: { readonly left: number; readonly
   // vertically. Within a direction the bend reaching furthest turns first, so
   // parallel routes never cross; and a route leaving a column bends before
   // another route arriving in it, so their vertical runs never overlap.
+  // Two bends trading columns (a swap) are a cycle of that rule: in slices one after the other,
+  // one would leave a column exactly where the other arrives, the two lines meeting end to end
+  // there, so each would seem to continue as the other. Channel routers break such a cycle with
+  // a dogleg (Deutsch 1976; Yoshimura and Kuh 1982): one bend first curves to a free column
+  // between the two in a slice of its own, runs down it across the other's curve, and curves on
+  // in a third. Bends trading columns closer than `CROSSING_SWAP` instead cross in one shared
+  // slice twice as tall, steeply enough to read as a crossing.
   // Track counts and zone boxes by channel, then zone.
   const trackCount: number[][] = [];
+  // Every column a vertical run of the channel occupies, for choosing dogleg columns.
+  const columnsIn: number[][] = [];
+  for (const item of allLegs) (columnsIn[item.channel] ??= []).push(item.x1, item.x2);
+  /**
+   * How two swapping bends cross: in one shared slice ("cross"), with a dogleg of one of them
+   * (the bend, and the free column between the two it doglegs through), or not at all (null:
+   * no free column, or both end in a junction's fan-in, whose bends keep their own shape).
+   */
+  const swapCrossing = (channel: number, first: Leg, second: Leg): "cross" | { leg: Leg; x: number } | null => {
+    const lo = Math.max(Math.min(first.x1, first.x2), Math.min(second.x1, second.x2)), hi = Math.min(Math.max(first.x1, first.x2), Math.max(second.x1, second.x2));
+    // Columns other runs occupy between the two: the crossing (or the dogleg's run) keeps off them.
+    const busy: [number, number][] = [];
+    for (const x of columnsIn[channel] ?? []) if (x > lo && x < hi) busy.push([x - MIN_LANE, x + MIN_LANE]);
+    if (Math.max(Math.abs(first.x1 - first.x2), Math.abs(second.x1 - second.x2)) <= CROSSING_SWAP) {
+      // They cross midway; a run of another source there would meet both at one point.
+      const middle = (lo + hi) / 2;
+      return busy.some(([low, high]) => middle > low && middle < high) ? null : "cross";
+    }
+    const leg = [first, second].find((item) => !("junction" in item.to));
+    if (!leg || !(lo + MIN_LANE <= hi - MIN_LANE)) return null;
+    const x = nearestFree((lo + hi) / 2, busy, lo + MIN_LANE, hi - MIN_LANE);
+    return x === null ? null : { leg, x };
+  };
   // Bends by channel, then zone (both small non-negative integers), in leg order.
   // Groups are independent (each sets only its own bends' tracks and count), so
   // the order they are visited in is free.
@@ -1436,8 +1476,23 @@ function layoutPass(prepared: Prepared, extra: { readonly left: number; readonly
         if (!(ordered[earlier].track + 1 > track)) continue;
         for (const index of group) if (conflict(earlier, index)) { track = ordered[earlier].track + 1; break; }
       }
-      // Swapping bends take consecutive slices: each leaves its column just
-      // as the other arrives, so they neither overlap nor cross at a shallow angle.
+      const crossing = group.length === 2 ? swapCrossing(channel, ordered[group[0]], ordered[group[1]]) : null;
+      if (crossing === "cross") {
+        for (const index of group) { ordered[index].track = track + 1; ordered[index].span = 2; done.push(index); }
+        continue;
+      }
+      if (crossing) {
+        // The dogleg leaves its column before the other bend arrives there and reaches the
+        // other's column after that one has left it: first slice, third slice; the other between.
+        for (const index of group) {
+          const item = ordered[index];
+          if (item === crossing.leg) { item.dogleg = { track, x: crossing.x }; item.track = track + 2; } else item.track = track + 1;
+          done.push(index);
+        }
+        continue;
+      }
+      // Otherwise swapping bends take consecutive slices: each leaves its column just as the
+      // other arrives, so they do not cross at a shallow angle (but meet end to end there).
       for (let offset = 0; offset < group.length; offset++) { ordered[group[offset]].track = track + offset; done.push(group[offset]); }
     }
     let most = 1;
@@ -1450,15 +1505,43 @@ function layoutPass(prepared: Prepared, extra: { readonly left: number; readonly
   // little to its own side of the junction's column and reaches the dot along its own slope,
   // so no two share a final stretch (a lane shared between sources). Nearer inputs keep closer
   // to the column, so inputs from one side do not cross before the dot. Offsets stay within
-  // the berth other routes and junctions keep from the column.
+  // the berth other routes and junctions keep from the column, and within half of what the
+  // nearest other dot's column on that side leaves beyond LANE_SEPARATION: that dot's inputs
+  // may fan out towards this one, and the two must not read as one line.
   const fanIn = new Map<Leg, number>();
   const intoJunction = new Map<string, Leg[]>();
   for (const item of finalLegs) if ("junction" in item.to && bends(item)) append(intoJunction, item.to.junction, item);
-  for (const inputs of intoJunction.values()) for (const side of [-1, 1]) {
+  const columnsByChannel = new Map<number, number[]>();
+  for (const id of intoJunction.keys()) { const spot = placed.get(id)!; append(columnsByChannel, spot.channel, spot.x); }
+  const fanWidth = (id: string, side: number) => {
+    const { x, channel } = placed.get(id)!;
+    let room = Infinity;
+    for (const other of columnsByChannel.get(channel)!) if (Math.sign(other - x) === side) room = Math.min(room, Math.abs(other - x));
+    return Math.min(FAN_IN, Math.max(0, (room - LANE_SEPARATION) / 2));
+  };
+  for (const [id, inputs] of intoJunction) for (const side of [-1, 1]) {
     const group = inputs.filter((item) => Math.sign(item.x1 - item.x2) === side)
       .sort((a, b) => Math.abs(a.x1 - a.x2) - Math.abs(b.x1 - b.x2) || (a.source < b.source ? -1 : a.source > b.source ? 1 : 0));
-    group.forEach((item, rank) => fanIn.set(item, side * FAN_IN * (rank + 1) / group.length));
+    if (!group.length) continue;
+    const widest = fanWidth(id, side);
+    group.forEach((item, rank) => fanIn.set(item, side * widest * (rank + 1) / group.length));
   }
+
+  // Port berths. A tile's outputs leave its bottom edge at its centre; another source bending
+  // under that port within the stem's first PORT_BERTH crosses the stem so close to the tile that
+  // the stem seems to branch off the passing line. A channel whose first zone holds a bend passing
+  // under another source's port (strictly between the bend's ends: a bend ending on a port's
+  // column is a lane matter) starts that zone's tracks a berth below the row; the zone grows only
+  // where its tracks then need more room.
+  const portBerth: number[] = [];
+  const portsByRow = new Map<number, { x: number; source: string }[]>();
+  for (const item of trie) if (item.parent < 0 && item.tile !== undefined) append(portsByRow, item.row, { x: item.x, source: item.source });
+  for (const item of allLegs) {
+    if (item.zone !== 0 || portBerth[item.channel] || !bends(item)) continue;
+    const lo = Math.min(item.x1, item.x2) + .5, hi = Math.max(item.x1, item.x2) - .5;
+    for (const port of portsByRow.get(item.channel) ?? []) if (port.source !== item.source && port.x > lo && port.x < hi) { portBerth[item.channel] = PORT_BERTH; break; }
+  }
+  const berthAt = (channel: number, zone: number) => zone === 0 ? portBerth[channel] ?? 0 : 0;
 
   // 6. Vertical placement. Each zone is as tall as its tracks need (crowded
   // channels grow instead of squeezing bends), and junction levels sit
@@ -1479,7 +1562,7 @@ function layoutPass(prepared: Prepared, extra: { readonly left: number; readonly
     const count = levelCount(index);
     const boxes: { top: number; bottom: number }[] = zoneBoxes[index] = [];
     for (let zone = 0; zone <= count; zone++) {
-      const tall = Math.max(defaultZone(index, zone), tracksIn(index, zone) * TRACK_HEIGHT);
+      const tall = Math.max(defaultZone(index, zone), berthAt(index, zone) + tracksIn(index, zone) * TRACK_HEIGHT);
       boxes[zone] = { top: y, bottom: y + tall };
       y += tall + (zone < count ? 2 * JUNCTION_BERTH : 0);
     }
@@ -1499,7 +1582,8 @@ function layoutPass(prepared: Prepared, extra: { readonly left: number; readonly
     return anchor.edge === "bottom" ? row.bottom : anchor.edge === "top" ? row.top : row.top - ARROW.length;
   };
 
-  // 7. Paths: vertical to the bend's slice, an S-curve within it, vertical on.
+  // 7. Paths: vertical to the bend's slice, an S-curve within it (inset from the slice's edges
+  // where it has neighbours), vertical on.
   // Bend zones end `approach` above the next row, so a route into a tile ends
   // in a straight, vertical stem at least as long as its arrowhead.
   const draw = (item: Leg): string => {
@@ -1513,10 +1597,19 @@ function layoutPass(prepared: Prepared, extra: { readonly left: number; readonly
       return `${stem} L${right} ${round(y2)}`;
     }
     const box = zoneBoxes[item.channel][item.zone];
-    const top = Math.max(box.top, y1), bottom = Math.min(box.bottom, y2);
-    const slice = (bottom - top) / tracksIn(item.channel, item.zone);
-    const start = top + slice * item.track, end = start + slice;
+    const top = Math.max(box.top + berthAt(item.channel, item.zone), y1), bottom = Math.min(box.bottom, y2);
+    const tracks = tracksIn(item.channel, item.zone), slice = (bottom - top) / tracks;
+    // Each S-curve fills its slice diagonally, so curves in neighbouring slices would converge
+    // where one ends and the next begins and read as one line there: with neighbours, a curve
+    // keeps half of LANE_SEPARATION inside either edge of its slice, running vertically there.
+    const inset = tracks > 1 ? LANE_SEPARATION / 2 : 0;
+    const span = item.span ?? 1, start = top + slice * (item.track + 1 - span) + inset, end = top + slice * (item.track + 1) - inset;
     const left = `${round(x1)}`, middle = `${round((start + end) / 2)}`;
+    if (item.dogleg) {
+      // Curve to the dogleg's column in its first slice, down that column, then on in its own.
+      const first = top + slice * item.dogleg.track + inset, last = first + slice - 2 * inset, column = `${round(item.dogleg.x)}`, upper = `${round((first + last) / 2)}`;
+      return `${first > y1 ? ` L${left} ${round(first)}` : ""} C${left} ${upper},${column} ${upper},${column} ${round(last)} L${column} ${round(start)} C${column} ${middle},${right} ${middle},${right} ${round(end)}${end < y2 ? ` L${right} ${round(y2)}` : ""}`;
+    }
     const fan = fanIn.get(item);
     if (fan) {
       // Into a junction: down its own side of the column to the berth, then a short S-curve

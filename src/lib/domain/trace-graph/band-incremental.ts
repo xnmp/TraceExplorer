@@ -2,17 +2,25 @@
  * Incremental tree embedding: retained rectangles and routes are fixed obstacles.
  *
  * New connectors are lane-free: no new route runs along a connector of another source (a
- * route's source is its `from` endpoint) for any length; it may cross one, and it may share
- * its own source's earlier trunk. A tile with several parents gets a junction its inputs reach
+ * route's source is its `from` endpoint) for any length, nor closer than `LANE_SEPARATION`
+ * beside one for more than an arrowhead's length; it may cross one, and it may share its own
+ * source's earlier trunk. No new route passes within `JUNCTION_BERTH` of a junction dot, and no
+ * new dot lies that close to a connector: a line through a dot reads as joining it, and a trunk
+ * branching at a merge's dot would make its other branches read as that merge's outputs. Nor does
+ * a new route touch another source's line anywhere else (`route-contacts`): it keeps `PORT_BERTH`
+ * from other sources' ports and `CORNER_BERTH` from their corners and forks, its own ports and
+ * corners keep the same from their lines, and it never runs alongside their curves at a shallow
+ * angle. A tile with several parents gets a junction its inputs reach
  * from distinct directions (above, the left and the right along the junction's row) while its
  * tail leaves downward; more parents nest further junctions on a spine above it. Where no
  * lane-free placement exists the candidate is withheld (null) rather than drawn with a shared lane.
  */
 import { nearestFree, type GraphLayout, type LayoutRequest, type PlacedNode, type PlacedRoute, type PlacedJunction } from "./layout";
-import { ARROW, spacingFor, STACK_STEM_ROOM } from "./metrics";
+import { ARROW, JUNCTION_BERTH, LANE_SEPARATION, PORT_BERTH, spacingFor, STACK_STEM_ROOM } from "./metrics";
+import { axisOf, berthsOf, entersBerth, grazesTile, INTO_JUNCTION, INTO_TILE, routeEnds, shallowRun, SHALLOW_RUN, TILE_GRAZE, type Berth, type Ends } from "./route-contacts";
 import { bandExtent } from "./band-geometry";
 import { intersectsTile, overlapLength, segments, type Segment } from "./layout-quality";
-import { orthogonalRoute, LANE_TOLERANCE, type AxisRun, type ForeignLanes } from "./orthogonal-route";
+import { orthogonalRoute, LANE_TOLERANCE, NEAR_LANE, type AxisRun, type ForeignLanes } from "./orthogonal-route";
 import type { Point } from "./path-sampling";
 
 /** Distance between neighbouring parallel lanes a route family may take. */
@@ -170,7 +178,36 @@ class TileIndex {
     }
     return false;
   }
+  /**
+   * Whether a route through `ss` from `source`'s port comes within `TILE_GRAZE` of a tile here or
+   * `extra`, other than where it leaves `source` (`grazesTile`).
+   */
+  grazes(ss: readonly Segment[], source: PlacedNode, extra?: PlacedNode): boolean {
+    if (!ss.length) return false;
+    const start = ss[0][0], leaves = onOutline(source, start);
+    const near = (t: PlacedNode, segment: Segment, first: boolean) => !(first && leaves && t.key === source.key) && grazesTile([segment], t);
+    for (let i = 0; i < ss.length; i++) {
+      const segment = ss[i], a = segment[0], b = segment[1], first = i === 0;
+      if (extra && near(extra, segment, first)) return true;
+      const minX = Math.min(a.x, b.x) - TILE_GRAZE, maxX = Math.max(a.x, b.x) + TILE_GRAZE, minY = Math.min(a.y, b.y) - TILE_GRAZE, maxY = Math.max(a.y, b.y) + TILE_GRAZE;
+      if (!Number.isFinite(minX + maxX + minY + maxY)) continue;
+      for (const t of this.loose) if (near(t, segment, first)) return true;
+      const tops = this.tops, sorted = this.sorted;
+      let lo = 0, hi = tops.length;
+      const from = minY - this.tallest;
+      while (lo < hi) { const mid = (lo + hi) >>> 1; if (tops[mid] <= from) lo = mid + 1; else hi = mid; }
+      for (let k = lo; k < tops.length && tops[k] < maxY; k++) {
+        const t = sorted[k];
+        if (t.y + t.height > minY && t.x < maxX && t.x + t.width > minX && near(t, segment, first)) return true;
+      }
+    }
+    return false;
+  }
 }
+
+/** Whether `p` lies on the tile's outline. */
+const onOutline = (t: PlacedNode, p: Point) => p.x >= t.x - .01 && p.x <= t.x + t.width + .01 && p.y >= t.y - .01 && p.y <= t.y + t.height + .01
+  && (Math.abs(p.x - t.x) <= .01 || Math.abs(p.x - t.x - t.width) <= .01 || Math.abs(p.y - t.y) <= .01 || Math.abs(p.y - t.y - t.height) <= .01);
 
 /** A run of `source`; a speck is a near-zero-length piece, held as the point it sits at. */
 interface Run extends AxisRun { readonly source: string; readonly segment: Segment; readonly speck?: true }
@@ -180,7 +217,54 @@ interface Run extends AxisRun { readonly source: string; readonly segment: Segme
  * on a route's line as shared lane, so a route must not pass through one of another source.
  */
 const SPECK = 1e-3;
+/** Parallel runs of two sources closer than `LANE_SEPARATION` over more than this share a lane (`sharedLanePx`). */
+const NEAR_RUN = ARROW.length;
 const sourceKey = (kind: string, id: string) => `${kind}\u0000${id}`;
+/** A junction's spine as wired: from its top dot down to the arrowhead above its tile. */
+const SPINE: Ends = Object.freeze({ start: 0, end: PORT_BERTH, arrow: true });
+/** A spine piece from one dot to the next. */
+const DOT_TO_DOT: Ends = Object.freeze({ start: 0, end: 0 });
+/** A route's ends without berths: its corners alone keep other sources off. */
+const NO_ENDS: Ends = DOT_TO_DOT;
+
+/** Side of a `Cells` cell, px. */
+const CELL = 64;
+/** Cells a segment may span before `Cells` files it by row instead (long runs). */
+const WIDE = 16;
+
+/**
+ * Segment indices by 64 px square cell, for the contact checks' small box queries; a segment
+ * spanning more than `WIDE` cells (a long run) is filed by row instead. Every list a filing
+ * pushes onto goes to `log`, as `LaneIndex` withdraws additions.
+ */
+class Cells {
+  private readonly cells = new Map<number, number[]>();
+  private readonly wide: number[][] = [];
+  file(index: number, minX: number, minY: number, maxX: number, maxY: number, log: unknown[][]): void {
+    const r0 = Math.floor(minY / CELL), r1 = Math.floor(maxY / CELL), c0 = Math.floor(minX / CELL), c1 = Math.floor(maxX / CELL);
+    if (!(r1 - r0 <= MAX_INDEX_ROWS) || !Number.isFinite(c0 + c1)) return;
+    if ((r1 - r0 + 1) * (c1 - c0 + 1) <= WIDE) {
+      for (let r = r0; r <= r1; r++) for (let c = c0; c <= c1; c++) {
+        const key = r * 2 ** 20 + c, list = this.cells.get(key);
+        if (list) { list.push(index); log.push(list); } else { const fresh = [index]; this.cells.set(key, fresh); log.push(fresh); }
+      }
+    } else for (let r = r0; r <= r1; r++) log.push(push(this.wide, r, index));
+  }
+  /** Calls `visit` with each segment filed in a cell the box meets (a segment may come more than once); stops when it returns true. */
+  some(minX: number, minY: number, maxX: number, maxY: number, visit: (index: number) => boolean): boolean {
+    const r0 = Math.floor(minY / CELL), r1 = Math.floor(maxY / CELL), c0 = Math.floor(minX / CELL), c1 = Math.floor(maxX / CELL);
+    if (!(r1 - r0 <= MAX_INDEX_ROWS) || !(c1 - c0 <= MAX_INDEX_ROWS)) return false;
+    for (let r = r0; r <= r1; r++) {
+      const wide = this.wide[r];
+      if (wide) for (const index of wide) if (visit(index)) return true;
+      for (let c = c0; c <= c1; c++) {
+        const list = this.cells.get(r * 2 ** 20 + c);
+        if (list) for (const index of list) if (visit(index)) return true;
+      }
+    }
+    return false;
+  }
+}
 
 /**
  * Placed connector segments with their sources. Answers which tiles they cross (bucketed by
@@ -196,8 +280,20 @@ const sourceKey = (kind: string, id: string) => `${kind}\u0000${id}`;
 class LaneIndex {
   constructor(private readonly base?: LaneIndex) {}
   private readonly all: Segment[] = [];
+  /** The source of each segment in `all`. */
+  private readonly sources: string[] = [];
+  /** Junction dots, each with its `JUNCTION_BERTH`, by 64 px row of their point. */
+  private readonly dots: Berth[][] = [];
+  /** Ports, corners and forks other sources keep off (`route-contacts`), by 64 px row of their point. */
+  private readonly berths: (Berth & { readonly source: string })[][] = [];
   /** Segment indices by 64 px row (an index property for a negative row; NaN rows are never visited). */
   private readonly rows: number[][] = [];
+  /** Every segment by cell, and the slanted ones (flattened curves: neither horizontal nor vertical) apart. */
+  private readonly cells = new Cells();
+  private readonly slanted = new Cells();
+  /** Per segment, the last query that visited it (a segment filed in several cells counts once). */
+  private readonly visited: number[] = [];
+  private query = 0;
   private readonly horizontal = new Map<number, Run[]>();
   private readonly vertical = new Map<number, Run[]>();
   /** Every list an addition pushed onto, in order. */
@@ -207,14 +303,25 @@ class LaneIndex {
   /** Whether this index, or its base, met geometry too large to index; its answers are then incomplete. */
   tooLarge(): boolean { return this.oversized || !!this.base?.tooLarge(); }
 
-  add(list: readonly Segment[], source: string): void {
+  /** Adds a route's segments (consecutive, as drawn) from `source`, and its berths: its corners, and its ends as `ends` says. */
+  add(list: readonly Segment[], source: string, ends: Ends = NO_ENDS): void {
+    for (const berth of berthsOf(list, ends)) {
+      const row = Math.floor(berth.y / 64);
+      if (Number.isFinite(row) && Number.isFinite(berth.x)) this.log.push(push(this.berths, row, { ...berth, source }));
+    }
     for (const segment of list) {
       const index = this.all.push(segment) - 1;
-      this.log.push(this.all);
+      this.sources.push(source);
+      this.log.push(this.all, this.sources);
       const [a, b] = segment;
       const top = Math.floor(Math.min(a.y, b.y) / 64), bottom = Math.floor(Math.max(a.y, b.y) / 64);
       if (bottom - top > MAX_INDEX_ROWS) { this.oversized = true; continue; }
       for (let row = top; row <= bottom; row++) this.log.push(push(this.rows, row, index));
+      this.visited.push(0);
+      this.log.push(this.visited);
+      const minX = Math.min(a.x, b.x), maxX = Math.max(a.x, b.x), minY = Math.min(a.y, b.y), maxY = Math.max(a.y, b.y);
+      this.cells.file(index, minX, minY, maxX, maxY, this.log);
+      if (!axisOf(segment)) this.slanted.file(index, minX, minY, maxX, maxY, this.log);
       const dx = Math.abs(a.x - b.x), dy = Math.abs(a.y - b.y);
       if (!(dx + dy > 0) || !Number.isFinite(dx + dy)) continue;
       if (dx + dy < SPECK) {
@@ -225,6 +332,75 @@ class LaneIndex {
       else if (dx <= LANE_TOLERANCE / 8 && dx < dy) this.log.push(file(this.vertical, { at: (a.x + b.x) / 2, lo: Math.min(a.y, b.y), hi: Math.max(a.y, b.y), source, segment }));
     }
   }
+  /** Adds a junction dot: later routes keep `JUNCTION_BERTH` from it. */
+  addDot(dot: Point): void {
+    const row = Math.floor(dot.y / 64);
+    if (Number.isFinite(row) && Number.isFinite(dot.x)) this.log.push(push(this.dots, row, { x: dot.x, y: dot.y, radius: JUNCTION_BERTH }));
+  }
+
+  /** Whether a segment passes within `JUNCTION_BERTH` of `dot`. */
+  nearSegment(dot: Point): boolean {
+    if (this.base?.nearSegment(dot)) return true;
+    const berth = { x: dot.x, y: dot.y, radius: JUNCTION_BERTH };
+    const top = Math.floor((dot.y - JUNCTION_BERTH) / 64), bottom = Math.floor((dot.y + JUNCTION_BERTH) / 64);
+    for (let row = top; row <= bottom; row++) {
+      const bucket = this.rows[row];
+      if (bucket) for (const index of bucket) if (entersBerth(this.all[index], berth)) return true;
+    }
+    return false;
+  }
+
+  /** Whether any of `list` passes within `JUNCTION_BERTH` of a dot. */
+  private nearDot(list: readonly Segment[]): boolean {
+    if (this.base?.nearDot(list)) return true;
+    for (const segment of list) {
+      const [a, b] = segment, top = Math.floor((Math.min(a.y, b.y) - JUNCTION_BERTH) / 64), bottom = Math.floor((Math.max(a.y, b.y) + JUNCTION_BERTH) / 64);
+      if (!(bottom - top <= MAX_INDEX_ROWS)) continue;
+      const left = Math.min(a.x, b.x) - JUNCTION_BERTH, right = Math.max(a.x, b.x) + JUNCTION_BERTH;
+      for (let row = top; row <= bottom; row++) {
+        const dots = this.dots[row];
+        if (dots) for (const dot of dots) if (dot.x > left && dot.x < right && entersBerth(segment, dot)) return true;
+      }
+    }
+    return false;
+  }
+
+  /**
+   * The parts of `segment` that `source` has not drawn yet: an axis-parallel segment less its
+   * source's runs on the same line (a route following its source's trunk adds no ink there).
+   * Any other segment is new throughout.
+   */
+  private newInk(segment: Segment, source: string): Segment[] {
+    const axis = axisOf(segment);
+    if (!axis) return [segment];
+    const [a, b] = segment, horizontal = axis === 1, at = horizontal ? a.y : a.x;
+    const lo = horizontal ? Math.min(a.x, b.x) : Math.min(a.y, b.y), hi = horizontal ? Math.max(a.x, b.x) : Math.max(a.y, b.y);
+    const drawn: [number, number][] = [];
+    this.ownRuns(horizontal, at, source, drawn);
+    if (!drawn.length) return [segment];
+    drawn.sort((p, q) => p[0] - q[0] || p[1] - q[1]);
+    const piece = (from: number, to: number): Segment => horizontal ? [point(from, at), point(to, at)] : [point(at, from), point(at, to)];
+    const out: Segment[] = [];
+    let from = lo;
+    for (const [l, h] of drawn) {
+      if (l > from) out.push(piece(from, Math.min(l, hi)));
+      if (h > from) from = h;
+      if (!(from < hi)) break;
+    }
+    if (from < hi) out.push(piece(from, hi));
+    return out.filter(([p, q]) => Math.abs(q.x - p.x) + Math.abs(q.y - p.y) >= SPECK);
+  }
+
+  /** Adds to `into` the spans of `source`'s runs on the line at `at` (within `LANE_TOLERANCE`). */
+  private ownRuns(horizontal: boolean, at: number, source: string, into: [number, number][]): void {
+    this.base?.ownRuns(horizontal, at, source, into);
+    const map = horizontal ? this.horizontal : this.vertical;
+    for (let k = Math.round(at - LANE_TOLERANCE); k <= Math.round(at + LANE_TOLERANCE); k++) {
+      const runs = map.get(k);
+      if (runs) for (const run of runs) if (run.source === source && !run.speck && Math.abs(run.at - at) < LANE_TOLERANCE) into.push([run.lo, run.hi]);
+    }
+  }
+
   /** A point `rollback` returns to. */
   mark(): number { return this.log.length; }
   /** Withdraws every addition made since `mark`. */
@@ -241,11 +417,82 @@ class LaneIndex {
     return false;
   }
 
-  /** Whether any of `list` (axis-parallel) runs along a segment of a source other than `source`. */
-  conflicts(list: readonly Segment[], source: string): boolean {
+  /**
+   * Whether contacts conflict (`conflicts`). Clearing it lets a search take a route that touches
+   * another source's line when no route avoids every such touch.
+   */
+  contacts = true;
+
+  /**
+   * Whether any of `list` (axis-parallel, consecutive) runs along a segment of a source other than
+   * `source`, passes within `JUNCTION_BERTH` of a dot (new routes end at no dot already placed), or
+   * (while `contacts` is set) touches another source's line (`route-contacts`): passes within the
+   * berth of its ports, corners or forks, has a corner or (as `ends` says) an end within its own
+   * berth of that line, or runs alongside a curve of it at a shallow angle. Only the route's new
+   * ink counts for dots and touches: where it follows its source's earlier lines, the drawing does
+   * not change.
+   */
+  conflicts(list: readonly Segment[], source: string, ends: Ends = NO_ENDS): boolean {
     // Any order gives the same answer; a route's final approach is the likeliest to be taken.
     for (let i = list.length - 1, n = 0; n < list.length; n++, i = n - 1) if (this.runsAlong(list[i], source)) return true;
+    const ink = list.flatMap(segment => this.newInk(segment, source));
+    if (!ink.length) return false;
+    if (this.nearDot(ink)) return true;
+    if (!this.contacts) return false;
+    for (const segment of ink) if (this.nearBerth(segment, source)) return true;
+    for (const berth of berthsOf(list, ends)) if (ink.some(segment => entersBerth(segment, berth)) && this.touched(berth, source)) return true;
+    for (const segment of ink) if (axisOf(segment) && this.shallowInto(segment, source, new Map())) return true;
     return false;
+  }
+
+  /** Whether the segment passes within the berth of a port, corner or fork of a source other than `source`. */
+  private nearBerth(segment: Segment, source: string): boolean {
+    if (this.base?.nearBerth(segment, source)) return true;
+    const [a, b] = segment, top = Math.floor((Math.min(a.y, b.y) - PORT_BERTH) / 64), bottom = Math.floor((Math.max(a.y, b.y) + PORT_BERTH) / 64);
+    if (!(bottom - top <= MAX_INDEX_ROWS)) return false;
+    const left = Math.min(a.x, b.x) - PORT_BERTH, right = Math.max(a.x, b.x) + PORT_BERTH;
+    for (let row = top; row <= bottom; row++) {
+      const list = this.berths[row];
+      if (list) for (const berth of list) if (berth.source !== source && berth.x > left && berth.x < right && entersBerth(segment, berth)) return true;
+    }
+    return false;
+  }
+
+  /** Whether a segment of a source other than `source` passes within the berth's radius of its point. */
+  private touched(berth: Berth, source: string): boolean {
+    if (this.base?.touched(berth, source)) return true;
+    const r = berth.radius, query = ++this.query;
+    return this.cells.some(berth.x - r, berth.y - r, berth.x + r, berth.y + r, index => {
+      if (this.visited[index] === query) return false;
+      this.visited[index] = query;
+      return this.sources[index] !== source && entersBerth(this.all[index], berth);
+    });
+  }
+
+  /**
+   * Adds to `near` (per source) how far axis-parallel `segment` runs within `LANE_SEPARATION` of
+   * other sources' slanted pieces; whether any source's total exceeds `SHALLOW_RUN`.
+   */
+  private shallowInto(segment: Segment, source: string, near: Map<string, number>): boolean {
+    if (this.base?.shallowInto(segment, source, near)) return true;
+    // A piece within 45° of the segment's axis comes within LANE_SEPARATION of its line only
+    // inside this reach of it (LANE_SEPARATION / cos 45°).
+    const reach = LANE_SEPARATION * Math.SQRT2, [a, b] = segment;
+    const minX = Math.min(a.x, b.x) - reach, maxX = Math.max(a.x, b.x) + reach, minY = Math.min(a.y, b.y) - reach, maxY = Math.max(a.y, b.y) + reach;
+    const query = ++this.query;
+    return this.slanted.some(minX, minY, maxX, maxY, index => {
+      if (this.visited[index] === query) return false;
+      this.visited[index] = query;
+      const other = this.sources[index];
+      if (other === source) return false;
+      const [p, q] = this.all[index];
+      if (Math.max(p.x, q.x) < minX || Math.min(p.x, q.x) > maxX || Math.max(p.y, q.y) < minY || Math.min(p.y, q.y) > maxY) return false;
+      const run = shallowRun(segment, this.all[index]);
+      if (!(run > 0)) return false;
+      const total = (near.get(other) ?? 0) + run;
+      near.set(other, total);
+      return total > SHALLOW_RUN;
+    });
   }
 
   private runsAlong(segment: Segment, source: string): boolean {
@@ -258,17 +505,20 @@ class LaneIndex {
   private blocked(horizontal: boolean, at: number, lo: number, hi: number, source: string, segment: Segment): boolean {
     if (this.base?.blocked(horizontal, at, lo, hi, source, segment)) return true;
     const map = horizontal ? this.horizontal : this.vertical;
-    // Runs within the tolerance of `at` are filed under these rounded coordinates (a run filed
-    // under `last` lies at or beyond last - 0.5, so only within reach if that is below at + 0.5).
-    let last = Math.round(at + LANE_TOLERANCE);
-    if (!(last - .5 < at + LANE_TOLERANCE)) last--;
-    for (let k = Math.round(at - LANE_TOLERANCE); k <= last; k++) {
+    // Runs within reach of `at` are filed under these rounded coordinates (a run filed under
+    // `last` lies at or beyond last - 0.5, so only within reach if that is below at + NEAR_LANE).
+    let last = Math.round(at + NEAR_LANE);
+    if (!(last - .5 < at + NEAR_LANE)) last--;
+    for (let k = Math.round(at - NEAR_LANE); k <= last; k++) {
       const runs = map.get(k);
       if (runs) for (const run of runs) {
         if (run.source === source) continue;
         if (run.speck) { if (Math.abs(run.at - at) < SPECK && lo <= run.lo + SPECK && run.hi - SPECK <= hi) return true; continue; }
-        if (!(Math.abs(run.at - at) < LANE_TOLERANCE)) continue;
+        const apart = Math.abs(run.at - at);
+        if (!(apart < NEAR_LANE)) continue;
         const shared = Math.min(hi, run.hi) - Math.max(lo, run.lo);
+        // Closer than LANE_SEPARATION, two lines running together further than an arrowhead read as one.
+        if (!(apart < LANE_TOLERANCE)) { if (shared > NEAR_RUN) return true; continue; }
         // Runs meeting end to end: the metric's projection can leave a rounding-sized overlap.
         if (shared > 0 || (shared > -SPECK && (overlapLength(segment, run.segment) > 0 || overlapLength(run.segment, segment) > 0))) return true;
       }
@@ -276,7 +526,10 @@ class LaneIndex {
     return false;
   }
 
-  /** Every run of a source other than `source`: the lanes a grid route from it must not follow. */
+  /**
+   * Every run of a source other than `source`: the lanes a grid route from it must not follow.
+   * Berths and curves are left to the check of the finished route (`conflicts`).
+   */
   foreign(source: string, into: { horizontal: Run[]; vertical: Run[] } = { horizontal: [], vertical: [] }): ForeignLanes {
     this.base?.foreign(source, into);
     // Specks are left to the check of the finished route.
@@ -324,7 +577,11 @@ function retainedIndex(previous: GraphLayout, kept: readonly PlacedRoute[]): Lan
   const cached = retainedIndexes.get(previous);
   if (cached && cached.routes.length === kept.length && kept.every((r, i) => r === cached.routes[i] && keys[i] === cached.keys[i])) return cached.index;
   const index = new LaneIndex();
-  for (const r of kept) index.add(retainedSegments(r), sourceKey(r.from.kind, r.from.id));
+  for (const r of kept) { const ss = retainedSegments(r); index.add(ss, sourceKey(r.from.kind, r.from.id), routeEnds(r, ss, previous.nodes)); }
+  // The dots the kept routes reach.
+  const dots = new Set<string>();
+  for (const r of kept) for (const end of [r.from, r.to]) if (end.kind === "junction") dots.add(end.id);
+  for (const id of dots) { const j = previous.junctions.get(id); if (j && Number.isFinite(j.x) && Number.isFinite(j.y)) index.addDot(point(j.x, j.y)); }
   retainedIndexes.set(previous, { routes: kept, keys, index });
   return index;
 }
@@ -516,6 +773,8 @@ function plans(p: PlacedNode, arrival: Arrival, s: Scene, bottomOnly: boolean, d
 }
 
 interface Route { readonly points: readonly Point[]; readonly ss: readonly Segment[]; readonly arrival: Arrival }
+/** A route's ends by where it arrives: a tile's port (an arrowhead) or a junction's dot. */
+const endsInto = (arrival: Arrival): Ends => arrival.level < 0 ? INTO_TILE : INTO_JUNCTION;
 
 /** A planned route with its segments, as drawn and as lane-checked, and whether it keeps clear of every tile. */
 /** A planned route. Its segments, lane segments and tile test are computed on first need. */
@@ -568,7 +827,7 @@ class RouteSearch {
   private clear(points: readonly Point[], ss: readonly Segment[]): boolean {
     const s = this.s, last = ss.at(-1);
     for (const q of points) if (!(q.x >= 8 && q.x <= s.width - 8)) return false;
-    if (!last || s.tiles.crosses(ss, s.extra)) return false;
+    if (!last || s.tiles.crosses(ss, s.extra) || s.tiles.grazes(ss, this.p, s.extra)) return false;
     if (this.terminal) {
       const [a, b] = last, length = Math.hypot(b.x - a.x, b.y - a.y);
       const tip = point(b.x + (b.x - a.x) / length * ARROW.length, b.y + (b.y - a.y) / length * ARROW.length);
@@ -598,7 +857,7 @@ class RouteSearch {
         const c = bases[f] ??= this.candidate(families[f].base);
         if (!this.isClear(c)) continue;
         if (!c.crowded) {
-          if (!lanes.conflicts(c.lanes, this.source)) return { points: c.points, ss: c.ss, arrival: owner[f] };
+          if (!lanes.conflicts(c.lanes, this.source, endsInto(owner[f]))) return { points: c.points, ss: c.ss, arrival: owner[f] };
           if (record) c.crowded = true;
         }
         crowded.push(f);
@@ -613,7 +872,7 @@ class RouteSearch {
       for (const i of ranked) {
         const c = options[i];
         if (c.crowded) continue;
-        if (!lanes.conflicts(c.lanes, this.source)) { if (this.isClear(c)) return { points: c.points, ss: c.ss, arrival: owner[from[i]] }; }
+        if (!lanes.conflicts(c.lanes, this.source, endsInto(owner[from[i]]))) { if (this.isClear(c)) return { points: c.points, ss: c.ss, arrival: owner[from[i]] }; }
         else if (record) c.crowded = true;
       }
     }
@@ -660,10 +919,10 @@ function wire(parents: readonly PlacedNode[], n: PlacedNode, s: Scene, lanes: La
   const laneSegments = (p: PlacedNode, route: Route) => p.key === s.cover ? pathSegments(s.coverStem(route.points)) : route.ss;
   for (const shift of JOIN_SHIFTS) {
     const levels = joinLevels(n, parents.length, shift), spine = pathSegments(spinePoints(levels, n));
-    if (lanes.conflicts(spine, junction) || s.tiles.crosses(spine, s.extra)) continue;
+    if (levels.some(level => lanes.nearSegment(level)) || lanes.conflicts(spine, junction, SPINE) || s.tiles.crosses(spine, s.extra)) continue;
     // The spine's levels are distinct sources; no parent may run along any of it.
     const before = lanes.mark();
-    lanes.add(spine, junction);
+    lanes.add(spine, junction, SPINE);
     const arrivals = joinArrivals(levels), searches: RouteSearch[] = [];
     const search = (i: number) => searches[i] ??= new RouteSearch(parents[i], arrivals, s, false);
     // Each parent's best route with the spine alone. Other parents' routes only add lanes to
@@ -687,11 +946,11 @@ function wire(parents: readonly PlacedNode[], n: PlacedNode, s: Scene, lanes: La
       let stuck = -1;
       for (const i of order) {
         const p = parents[i], source = sourceKey("node", p.key);
-        const route = !lanes.conflicts(laneSegments(p, alone[i]), source) ? alone[i] : search(i).find(lanes, false, taken);
+        const route = !lanes.conflicts(laneSegments(p, alone[i]), source, INTO_JUNCTION) ? alone[i] : search(i).find(lanes, false, taken);
         if (!route) { stuck = i; break; }
         routes[i] = route;
         taken.add(route.arrival);
-        lanes.add(laneSegments(p, route), source);
+        lanes.add(laneSegments(p, route), source, INTO_JUNCTION);
       }
       lanes.rollback(withSpine);
       if (stuck < 0) { lanes.rollback(before); return { routes, levels }; }
@@ -714,8 +973,8 @@ function gridWire(parents: readonly PlacedNode[], n: PlacedNode, s: Scene, lanes
   const before = lanes.mark();
   if (levels) {
     const spine = pathSegments(spinePoints(levels, n));
-    if (lanes.conflicts(spine, sourceKey("junction", `incremental-join:${item}`)) || s.tiles.crosses(spine, s.extra)) return undefined;
-    lanes.add(spine, sourceKey("junction", `incremental-join:${item}`));
+    if (levels.some(level => lanes.nearSegment(level)) || lanes.conflicts(spine, sourceKey("junction", `incremental-join:${item}`), SPINE) || s.tiles.crosses(spine, s.extra)) return undefined;
+    lanes.add(spine, sourceKey("junction", `incremental-join:${item}`), SPINE);
   }
   const routes: Route[] = [];
   for (const p of parents) {
@@ -733,13 +992,13 @@ function gridWire(parents: readonly PlacedNode[], n: PlacedNode, s: Scene, lanes
       if (!grid) continue;
       const points = [port, ...grid, ...(levels ? [] : [point(arrival.end.x, n.y - ARROW.length)])];
       const ss = pathSegments(points);
-      if (!ss.length || lanes.conflicts(p.key === s.cover ? pathSegments(s.coverStem(points)) : ss, source)) continue;
+      if (!ss.length || lanes.conflicts(p.key === s.cover ? pathSegments(s.coverStem(points)) : ss, source, levels ? INTO_JUNCTION : INTO_TILE)) continue;
       found = { points, ss, arrival };
       break search;
     }
     if (!found) { lanes.rollback(before); return undefined; }
     routes.push(found);
-    lanes.add(p.key === s.cover ? pathSegments(s.coverStem(found.points)) : found.ss, source);
+    lanes.add(p.key === s.cover ? pathSegments(s.coverStem(found.points)) : found.ss, source, levels ? INTO_JUNCTION : INTO_TILE);
   }
   lanes.rollback(before);
   return { routes, levels };
@@ -755,10 +1014,10 @@ function gridWireAll(parents: readonly PlacedNode[], n: PlacedNode, s: Scene, la
   const levels = multi ? joinLevels(n, parents.length, 0) : undefined;
   if (levels) {
     const spine = pathSegments(spinePoints(levels, n));
-    if (lanes.conflicts(spine, junction) || s.tiles.crosses(spine, s.extra)) return undefined;
+    if (levels.some(level => lanes.nearSegment(level)) || lanes.conflicts(spine, junction, SPINE) || s.tiles.crosses(spine, s.extra)) return undefined;
   }
   const before = lanes.mark();
-  if (levels) lanes.add(pathSegments(spinePoints(levels, n)), junction);
+  if (levels) lanes.add(pathSegments(spinePoints(levels, n)), junction, SPINE);
   const first = parents.findIndex(p => p.key === effort.hardest);
   const order = parents.map((_, i) => i);
   if (first > 0) order.unshift(...order.splice(first, 1));
@@ -778,13 +1037,13 @@ function gridWireAll(parents: readonly PlacedNode[], n: PlacedNode, s: Scene, la
       const end = grid[grid.length - 1], level = levels ? levels.findIndex(l => l.y === end.y) : -1;
       const points = [port, ...grid, ...(levels ? [] : [point(goal.x, n.y - ARROW.length)])];
       const ss = pathSegments(points);
-      if (!ss.length || lanes.conflicts(cover ? pathSegments(s.coverStem(points)) : ss, source)) continue;
+      if (!ss.length || lanes.conflicts(cover ? pathSegments(s.coverStem(points)) : ss, source, levels ? INTO_JUNCTION : INTO_TILE)) continue;
       found = { points, ss, arrival: { end, heading: "down", level } };
       break;
     }
     if (!found) { effort.hardest = p.key; lanes.rollback(before); return undefined; }
     routes[i] = found;
-    lanes.add(cover ? pathSegments(s.coverStem(found.points)) : found.ss, source);
+    lanes.add(cover ? pathSegments(s.coverStem(found.points)) : found.ss, source, levels ? INTO_JUNCTION : INTO_TILE);
   }
   lanes.rollback(before);
   return { routes, levels };
@@ -902,7 +1161,11 @@ export function incrementalTree(request: LayoutRequest, previous: GraphLayout, b
       }
       return undefined;
     };
-    let best = probes();
+    // Placements whose routes touch no other source's line come first; failing those, the
+    // probes again with touches allowed (contacts are a cost, not a reason to lay out afresh).
+    // The grid fallbacks take the first route that keeps lanes and dots alone.
+    const touching = <T>(search: () => T): T => { lanes.contacts = false; try { return search(); } finally { lanes.contacts = true; } };
+    let best = probes() ?? touching(probes);
     if (!best) {
       const rowYs = [...new Set([Math.max(baseBottom, ...parents.map(p => p.y + p.height)) + arrivalGap,
         ...boxes.filter(n => n.y > baseBottom).map(n => n.y), Math.max(bottom, previous.height) + arrivalGap])].sort((a, b) => a - b);
@@ -920,12 +1183,12 @@ export function incrementalTree(request: LayoutRequest, previous: GraphLayout, b
       };
       // Once a tile needed the second chance, later tiles go to it directly: the scene has proved
       // too crowded for the plain fallback, and its failures cost as much as the second chance.
-      best = second ? undefined : fallback(plain);
+      best = second ? undefined : touching(() => fallback(plain));
       if (!best) {
         // The second chance: the probes again on lanes half a step apart, then the grid router.
-        second ??= secondChance(budget);
+        const effort = second ??= secondChance(budget);
         grain = FINE_GRAIN;
-        best = probes() ?? fallback(second);
+        best = probes() ?? touching(() => probes() ?? fallback(effort));
         grain = GRAIN;
       }
       if (!best) return null;
@@ -943,7 +1206,7 @@ export function incrementalTree(request: LayoutRequest, previous: GraphLayout, b
       const p = parents[0], route = wiring.routes[0];
       routes.push({ id: `incremental:${p.key}:${child}`, from: { kind: "node", id: p.key }, to: { kind: "node", id: child },
         consumers: [{ parent: p.key, child }], terminal: true, path: path(route.points) });
-      lanes.add(pathSegments(lanePoints(p, route.points)), sourceKey("node", p.key));
+      lanes.add(pathSegments(lanePoints(p, route.points)), sourceKey("node", p.key), INTO_TILE);
       return;
     }
     // Levels no parent reached are dropped; the spine runs through their points unchanged.
@@ -956,20 +1219,20 @@ export function incrementalTree(request: LayoutRequest, previous: GraphLayout, b
       const route = wiring.routes[i];
       routes.push({ id: `incremental:${p.key}:${child}`, from: { kind: "node", id: p.key }, to: { kind: "junction", id: ids[route.arrival.level] },
         consumers: [{ parent: p.key, child }], terminal: false, path: path(route.points) });
-      lanes.add(pathSegments(lanePoints(p, route.points)), sourceKey("node", p.key));
+      lanes.add(pathSegments(lanePoints(p, route.points)), sourceKey("node", p.key), INTO_JUNCTION);
     });
-    for (const level of kept) joins.set(ids[level], { id: ids[level], x: levels[level].x, y: levels[level].y, parents: above(level) });
+    for (const level of kept) { joins.set(ids[level], { id: ids[level], x: levels[level].x, y: levels[level].y, parents: above(level) }); lanes.addDot(levels[level]); }
     // Spine routes between consecutive kept levels, top down, then the tail from the lowest.
     for (let k = kept.length - 1; k > 0; k--) {
       const upper = kept[k], lower = kept[k - 1], from = levels[upper], to = levels[lower];
       routes.push({ id: `${ids[upper]}:spine`, from: { kind: "junction", id: ids[upper] }, to: { kind: "junction", id: ids[lower] },
         consumers: above(upper).map(parent => ({ parent, child })), terminal: false, path: path([from, to]) });
-      lanes.add(pathSegments([from, to]), sourceKey("junction", ids[upper]));
+      lanes.add(pathSegments([from, to]), sourceKey("junction", ids[upper]), DOT_TO_DOT);
     }
     const low = levels[kept[0]], end = point(low.x, placed.y - ARROW.length);
     routes.push({ id: `${ids[0]}:tail`, from: { kind: "junction", id: ids[kept[0]] }, to: { kind: "node", id: child },
       consumers: parentKeys.map(parent => ({ parent, child })), terminal: true, path: path([low, end]) });
-    lanes.add(pathSegments([low, end]), sourceKey("junction", ids[kept[0]]));
+    lanes.add(pathSegments([low, end]), sourceKey("junction", ids[kept[0]]), SPINE);
   }
 
   const readingOrder = new Map<string, number>();

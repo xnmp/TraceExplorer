@@ -26,7 +26,7 @@ import type { NodeKey, TraceNode } from "./model";
 import type { TraceDag } from "./projection";
 import type { Orientation } from "./layout";
 import { buildInputJunctions, type Junction } from "./junctions";
-import { bendZones, spacingFor, tileMetrics, TRACK_HEIGHT, type Spacing, type TileMetrics } from "./metrics";
+import { bendZones, PORT_BERTH, spacingFor, tileMetrics, TRACK_HEIGHT, type Spacing, type TileMetrics } from "./metrics";
 
 /** Displayed orientations by tile width: resizing tiles must not overwrite another size's hysteresis. */
 export type OrientationHistory = ReadonlyMap<number, Orientation>;
@@ -155,13 +155,15 @@ interface ChannelLoad { readonly levels: number; readonly tracks: number }
  * estimate cannot know which zone a bend takes: it assumes every track lands
  * in the smallest. Spreading tracks over zones only leaves more of each
  * zone's default unused, so this errs on the wide side rather than letting a
- * crowded channel overflow a left-to-right canvas. The approach into the
- * next column never bends, so it never grows.
+ * crowded channel overflow a left-to-right canvas. Where two sources cross a
+ * channel, one may bend past the other's port, and the engine then starts that
+ * zone's tracks a port berth (`PORT_BERTH`) in. The approach into the next
+ * column never bends, so it never grows.
  */
 function extraWidth(channels: readonly ChannelLoad[], spacing: Spacing): number {
   return channels.reduce((sum, { levels, tracks }) => {
     const smallest = Math.min(...bendZones(spacing, levels));
-    return sum + levels * spacing.junctionLevel + Math.max(0, tracks * TRACK_HEIGHT - smallest);
+    return sum + levels * spacing.junctionLevel + Math.max(0, (tracks > 1 ? PORT_BERTH : 0) + tracks * TRACK_HEIGHT - smallest);
   }, 0);
 }
 
