@@ -10,7 +10,7 @@ const dag = projectDag([node('root'), node('a', ['root']), node('b', ['root']), 
 /** A band anchored at `anchor` with `expanded` expanded (by default the anchor: a user who expanded it). */
 const scene = (anchor: string | null = null, width = 454, expanded: readonly string[] = anchor ? [anchor] : []): CommittedGraph => {
   const tile = tileMetrics();
-  const plan = planBandScene(projectReferenceBadges(dag), dag.order, anchor, width, { pinned: { key: 'root', x: 46 }, tile, expanded: new Set(['root', ...expanded]) });
+  const plan = planBandScene(projectReferenceBadges(dag), dag.order, anchor, width, { pinned: { key: 'root', x: 46 }, tile, expanded: new Map(['root', ...expanded].map((key) => [key, true])) });
   return { plan, layout: layoutGraph(plan.request), data: dag, componentId: 'component', revision: 0, tile };
 };
 const changedGeometry = (s: CommittedGraph): CommittedGraph => ({ ...s, layout: { ...s.layout, height: s.layout.height + 1 } });

@@ -66,7 +66,7 @@ describe("reference badge projection", () => {
 describe("band scene", () => {
   /** A band whose cover (and `expanded`) the user expanded. */
   const band = (graph: ReturnType<typeof projectReferenceBadges>, members: readonly string[], expanded: readonly string[], cover = members[0], x = 80, anchor: string | null = null) =>
-    planBandScene(graph, members, anchor, 640, { pinned: { key: cover, x }, expanded: new Set([cover, ...expanded]) });
+    planBandScene(graph, members, anchor, 640, { pinned: { key: cover, x }, expanded: new Map([cover, ...expanded].map((key) => [key, true])) });
   const tones = (graph: ReturnType<typeof projectReferenceBadges>, members: readonly string[], focus: string | null, hover: string | null = null) => {
     const { lineage } = bandFocus(graph, members, focus, hover);
     return (key: string) => toneOf(lineage, key);
@@ -114,7 +114,7 @@ describe("band scene", () => {
   it("pins a reference-generated cover as a drawable root, retaining its preview badge and no reference routes", () => {
     const source = projectDag([node("ref", [], "external"), node("cover", ["ref"]), node("child", ["cover", "ref"])]);
     const graph = projectReferenceBadges(source);
-    const scene = planBandScene(graph, graph.dag.order, null, 1000, { pinned: { key: "cover", x: 800 }, expanded: new Set(["cover"]) });
+    const scene = planBandScene(graph, graph.dag.order, null, 1000, { pinned: { key: "cover", x: 800 }, expanded: new Map([["cover", true]]) });
     expect(scene.request.orientation).toBe("down");
     expect([...scene.tiles.keys()]).toEqual(["cover", "child"]);
     expect(scene.badges.get("cover")?.[0].path).toBe("/pictures/ref.png");

@@ -8,7 +8,7 @@
  * returning to a Trace tab never shows "Loading Trace…" again.
  */
 import type { ComponentSummary, TraceNode } from "$lib/domain/trace-graph/model";
-import { togglableKeys } from "$lib/domain/trace-graph/visibility";
+import { bandCarets } from "$lib/domain/trace-graph/visibility";
 import { matchesIndex, type ComponentData, type FolderIndex, type Member } from "$lib/domain/trace-graph/folder-data";
 import type { OrientationHistory } from "$lib/domain/trace-graph/orientation";
 import { projectDag } from "$lib/domain/trace-graph/projection";
@@ -18,7 +18,7 @@ import { sceneSnapshots } from "./scene-snapshots";
 import { componentRequest } from "./component-requests";
 import { parentDir, samePath } from "$lib/domain/path";
 import { coverAliases, coverIdentity, forgetOpenStack, stackIdentity, pathIdentity, revisionIdentity, resolveOpenStacks } from "./open-stacks";
-import { NO_EXPANSION, expandForOutputs, expandNode, expandedKeys, pruneExpansion, readExpansion, revealNode, toggleNode, type ChoiceStatus, type Expansion, type ExpansionScope } from "$lib/domain/trace-graph/expansion";
+import { NO_EXPANSION, expandForOutputs, expandNode, expandedKeys, isOpen, pruneExpansion, readExpansion, revealNode, toggleNode, type ChoiceStatus, type Expansion, type ExpansionScope } from "$lib/domain/trace-graph/expansion";
 import { projectionOf } from "./scene-inputs";
 
 export type { ComponentData, FolderIndex, Member };
@@ -71,15 +71,13 @@ interface PaneFolderSnapshot {
   readonly selectionFocus?: string | null;
   /** Explicit expansion inside open stacks (`expansion.ts`). */
   readonly expansion?: Expansion;
-  /** The component each chosen key was last seen in, to tell a node that is gone from one not loaded. */
-  readonly expansionOwners?: ReadonlyMap<string, string>;
 }
-const emptyPaneSnapshot = (): PaneFolderSnapshot => ({ openCovers: new Set(), openOwners: new Map(), selectionChoice: "", selectionCovers: new Set(), selectionFocus: null, expansion: NO_EXPANSION, expansionOwners: new Map() });
+const emptyPaneSnapshot = (): PaneFolderSnapshot => ({ openCovers: new Set(), openOwners: new Map(), selectionChoice: "", selectionCovers: new Set(), selectionFocus: null, expansion: NO_EXPANSION });
 /** Members and nodes a snapshot holds, which bound the cache's memory. */
 export const snapshotWeight = (snapshot: FolderSnapshot): number =>
   snapshot.index.members.size + [...snapshot.components.values()].reduce((sum, data) => sum + data.nodes.length, 0)
   + [...(snapshot.panes?.values() ?? [])].reduce((sum, pane) => sum + pane.openCovers.size + pane.openOwners.size + pane.selectionCovers.size
-    + (pane.expansion?.choices.size ?? 0) + (pane.expansionOwners?.size ?? 0), 0);
+    + (pane.expansion?.choices.size ?? 0), 0);
 /** Shared by every session, so a remounted view finds what the previous one loaded. */
 const folderSnapshots = createSnapshotCache<FolderSnapshot>({ limit: 8, budget: 200_000, weigh: snapshotWeight });
 /** Forgets every folder's data, when the plugin is disabled. */
@@ -197,8 +195,7 @@ export function createFolderSession(backend: TraceBackend = traceBackend, snapsh
   }
 
   /**
-   * Drops choices of nodes that are gone, and records where each present one is now. A node is
-   * gone only when the index cannot place it in a component that is not loaded: not a listed file
+   * Drops choices of nodes that are gone. A node is gone only when the index cannot place it in a component that is not loaded: not a listed file
    * of one (`index.members`), and every listed component is loaded and fresh without it. A node
    * that moved to a component not loaded yet (a split) is kept.
    */
@@ -206,25 +203,16 @@ export function createFolderSession(backend: TraceBackend = traceBackend, snapsh
     const current = state.expansion ?? NO_EXPANSION;
     if (!index || (!current.choices.size && !current.reveals.length)) return state;
     const listed = new Set(index.components.map((summary) => summary.id));
-    const owners = new Map(state.expansionOwners ?? []);
-    const where = (key: string): string | null => {
-      for (const [id, data] of components) {
-        if (stale.has(id) || !matchesIndex(data, index!)) continue;
-        const graph = projectionOf(data);
-        if (graph.dag.nodes.has(key) || graph.badges.has(key)) return id;
-      }
-      return null;
-    };
+    const present = (key: string): boolean => [...components].some(([id, data]) => {
+      if (stale.has(id) || !matchesIndex(data, index!)) return false;
+      const graph = projectionOf(data);
+      return graph.dag.nodes.has(key) || graph.badges.has(key);
+    });
     const listedKeys = new Set([...index.members.values()].map((member) => member.key));
     const allKnown = [...listed].every((id) => { const data = components.get(id); return !!data && !stale.has(id) && matchesIndex(data, index!); });
-    const status = (key: string): ChoiceStatus => {
-      const holder = where(key);
-      if (holder) { owners.set(key, holder); return "present"; }
-      return !listedKeys.has(key) && allKnown ? "gone" : "unknown";
-    };
+    const status = (key: string): ChoiceStatus => present(key) ? "present" : !listedKeys.has(key) && allKnown ? "gone" : "unknown";
     const pruned = pruneExpansion(current, status);
-    for (const key of [...owners.keys()]) if (!pruned.choices.has(key) && !pruned.reveals.includes(key)) owners.delete(key);
-    return { ...state, expansion: pruned, expansionOwners: owners };
+    return pruned === current ? state : { ...state, expansion: pruned };
   }
 
   /** Retain missing covers; only unlisted identities need fresh node pages to resolve. */
@@ -497,7 +485,6 @@ export function createFolderSession(backend: TraceBackend = traceBackend, snapsh
 
   /** `expansion` with `key` revealed; earlier reveals stay pending until their stacks settle them. */
   const revealed = (key: string): Expansion => revealNode(expansion, key);
-  const expandedKeysOf = (scope: ExpansionScope) => expandedKeys(expansion, scope);
 
   return {
     get index() { return index; },
@@ -563,9 +550,7 @@ export function createFolderSession(backend: TraceBackend = traceBackend, snapsh
     toggleExpansion(key: string, componentId?: string): boolean {
       const scope = (componentId ? expansionScope(componentId) : null) ?? scopeHolding(key);
       if (!scope) return false;
-      const next = toggleNode(expansion, scope, key);
-      const owner = [...components].find(([, data]) => projectionOf(data) === scope.graph)?.[0];
-      paneState = { ...paneState, expansion: next, expansionOwners: owner ? new Map(paneState.expansionOwners ?? []).set(key, owner) : paneState.expansionOwners };
+      paneState = { ...paneState, expansion: toggleNode(expansion, scope, key) };
       remember();
       return true;
     },
@@ -578,8 +563,7 @@ export function createFolderSession(backend: TraceBackend = traceBackend, snapsh
       if (!scope) return;
       const next = expandNode(expansion, scope, key);
       if (next === expansion) return;
-      const owner = [...components].find(([, data]) => projectionOf(data) === scope.graph)?.[0];
-      paneState = { ...paneState, expansion: next, expansionOwners: owner ? new Map(paneState.expansionOwners ?? []).set(key, owner) : paneState.expansionOwners };
+      paneState = { ...paneState, expansion: next };
       remember();
     },
     /**
@@ -588,33 +572,26 @@ export function createFolderSession(backend: TraceBackend = traceBackend, snapsh
      */
     expandForOutputs(keys: readonly string[]): void {
       let next = expansion;
-      const owners = new Map(paneState.expansionOwners ?? []);
       for (const key of keys) {
         const scope = scopeHolding(key);
-        if (!scope) continue;
-        next = expandForOutputs(next, scope, key);
-        const owner = [...components].find(([, data]) => projectionOf(data) === scope.graph)?.[0];
-        if (owner) owners.set(key, owner);
+        if (scope) next = expandForOutputs(next, scope, key);
       }
       if (next === expansion) return;
-      paneState = { ...paneState, expansion: next, expansionOwners: owners };
+      paneState = { ...paneState, expansion: next };
       remember();
     },
     /**
-     * Whether toggling `key` changes what its band shows (`togglableKeys`); a reference badge, whether
-     * it has consumers. False when its component is not loaded.
+     * Whether toggling `key` (a node or a reference badge) changes what its band shows: the caret
+     * rule (`bandCarets`). False when its component is not loaded.
      */
     canToggle(key: string, componentId?: string): boolean {
       const scope = (componentId ? expansionScope(componentId) : null) ?? scopeHolding(key);
-      if (!scope) return false;
-      const badge = scope.graph.badges.get(key);
-      if (badge) return badge.consumers.length > 0;
-      return togglableKeys(scope.graph, scope.members, expandedKeysOf(scope)).has(key);
+      return !!scope && bandCarets(scope.graph, scope.members, expandedKeys(expansion, scope)).togglable.has(key);
     },
-    /** Whether `key` is expanded as the view shows it (false when its component is not loaded). */
+    /** Whether `key` reads expanded as the view shows it (`isOpen`); false when its component is not loaded. */
     isExpanded(key: string, componentId?: string): boolean {
       const scope = (componentId ? expansionScope(componentId) : null) ?? scopeHolding(key);
-      return !!scope && expandedKeysOf(scope).has(key);
+      return !!scope && isOpen(expansion, scope, key);
     },
     /** Switch folders. Data for the previous folder is never shown for the new one. */
     setDirectory(dir: string | null) {
@@ -629,7 +606,7 @@ export function createFolderSession(backend: TraceBackend = traceBackend, snapsh
       leaseInterests.clear();
       const known = dir ? snapshots.recall(dir) : undefined;
       const restored = (!started && known?.panes?.get(paneId)) || emptyPaneSnapshot();
-      paneState = { ...restored, expansion: readExpansion(restored.expansion), expansionOwners: new Map(restored.expansionOwners ?? []) };
+      paneState = { ...restored, expansion: readExpansion(restored.expansion) };
       started = true;
       if (!known) { orientations = new Map(); void open(dir, false); return; }
       // Show what the folder last showed, as it was laid out, while its index is read again; open() reloads what is wanted.

@@ -2,6 +2,7 @@ import { projectDag, projectReferenceBadges } from '../src/lib/domain/trace-grap
 import { planBandScene } from '../src/lib/domain/trace-graph/scene';
 import { expandedKeys, NO_EXPANSION, type Expansion } from '../src/lib/domain/trace-graph/expansion';
 import type { BadgeProjection } from '../src/lib/domain/trace-graph/projection';
+import type { BandExpansion } from '../src/lib/domain/trace-graph/visibility';
 import { tileMetrics } from '../src/lib/domain/trace-graph/metrics';
 import type { TraceNode } from '../src/lib/domain/trace-graph/model';
 import type { LayoutRequest } from '../src/lib/domain/trace-graph/layout';
@@ -70,7 +71,7 @@ export function corpus(): readonly Case[] { return [...handCases, ...(['tree', '
  * what a band showed). The node is also the layout's anchor.
  */
 export const focusExpansion = (focus: string | null): Expansion => focus === null ? NO_EXPANSION : { choices: new Map([[focus, true]]), reveals: [focus] };
-export const focusExpanded = (graph: BadgeProjection, members: readonly string[], cover: string, focus: string | null): ReadonlySet<string> =>
+export const focusExpanded = (graph: BadgeProjection, members: readonly string[], cover: string, focus: string | null): BandExpansion =>
     expandedKeys(focusExpansion(focus), { graph, members, cover });
 export function requestFor(c: Case, focus: string | null, width: number, imagePx: number, hint?: ReadonlyMap<string, number>): LayoutRequest {
     const graph = projectReferenceBadges(projectDag(c.nodes));

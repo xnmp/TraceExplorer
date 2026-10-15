@@ -29,6 +29,7 @@ import { folderGridGeometry, gridPins, type FolderGridGeometry } from "../folder
 import { layoutGraph, type BandHistory, type GraphLayout, type LayoutRequest } from "../layout";
 import { layoutSignature } from "../layout-signature";
 import { planBandScene, type BandScenePlan } from "../scene";
+import type { BandExpansion } from "../visibility";
 import { createBoundedCache, estimateLayoutBytes, type BoundedCache } from "./bounded-cache";
 import { routeBounds, unionRect } from "./route-bounds";
 import type { FolderGraph, FolderLayout, FolderLayoutEngine, FolderLayoutInput, GraphId, OpenStack } from "./types";
@@ -98,11 +99,13 @@ function membersOf(stack: OpenStack): readonly NodeKey[] {
   return stack.members.filter((key) => typeof key === "string" && nodes.has(key) && !seen.has(key) && !!seen.add(key));
 }
 
-/** The stack's expanded keys, string keys only, with its cover (expanded while the stack is open). */
-function expandedOf(stack: OpenStack, cover: GraphId): ReadonlySet<NodeKey> {
+/** The stack's expansion, well-formed entries only, with its cover expanded and newest (expanded while the stack is open). */
+function expandedOf(stack: OpenStack, cover: GraphId): BandExpansion {
   const given: unknown = stack.expanded;
-  const keys = given instanceof Set ? [...given].filter((key): key is NodeKey => typeof key === "string") : [];
-  return new Set([...keys, cover]);
+  const entries = given instanceof Map ? [...given].filter((entry): entry is [NodeKey, boolean] => typeof entry[0] === "string" && typeof entry[1] === "boolean") : [];
+  const expansion = new Map(entries);
+  expansion.delete(cover);
+  return expansion.set(cover, true);
 }
 
 /** Open stack items in grid order whose cover is a drawable member. */

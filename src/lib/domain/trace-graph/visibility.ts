@@ -58,36 +58,136 @@ export function visibleKeys(dag: TraceDag, members: readonly NodeKey[], focus: N
 }
 
 /**
- * What an open stack's band shows under explicit expansion (docs/trace-view-layout.md, "Visible
- * nodes"): every in-folder root; the children of every visible node in `expanded`; the consumers
- * of every expanded reference badge a visible node carries; and every parent a visible node
- * needs, so each output keeps all of its inputs. A node's children are visible exactly when it is
- * expanded and visible itself. Selection plays no part. Linear in the component, keys outside
- * `members` are ignored, and the result is in `members` order.
+ * A band's expansion: whether each key (a member, or a reference badge key) is expanded, in
+ * recency order, the latest last (`expandedKeys` in `expansion.ts`). Keys absent decide nothing.
  */
-export function bandVisibleKeys(graph: BadgeProjection, members: readonly NodeKey[], expanded: ReadonlySet<NodeKey>): NodeKey[] {
+export type BandExpansion = ReadonlyMap<NodeKey, boolean>;
+
+/**
+ * Who decides each member's visibility under `expansion`. A node's deciders are its parents in the
+ * component and the reference badges it carries; the latest of them in `expansion` decides. When
+ * that is "expanded", the node's supporters are its deciders that are expanded: it is shown while
+ * one of them is. Otherwise it has none.
+ */
+interface BandRules {
+  readonly inComponent: ReadonlySet<NodeKey>;
+  /** Each badge's consumers in this component: a badge shared by other components is never traversed beyond them. */
+  readonly badgeConsumers: ReadonlyMap<NodeKey, readonly NodeKey[]>;
+  readonly supporters: ReadonlyMap<NodeKey, readonly NodeKey[]>;
+  readonly roots: readonly NodeKey[];
+}
+
+function bandRules(graph: BadgeProjection, members: readonly NodeKey[], expansion: BandExpansion): BandRules {
   const { dag } = graph;
   const inComponent = new Set(members);
-  // An expanded badge's consumers in this component, found from the members: a badge shared by
-  // other components (one style image used across a folder) is never traversed beyond them.
+  // Each entry's place in recency order, and its value.
+  const rank = new Map<NodeKey, number>(), value = new Map<NodeKey, boolean>();
+  for (const [key, expanded] of expansion) if (typeof expanded === "boolean") { rank.set(key, rank.size); value.set(key, expanded); }
   const badgeConsumers = new Map<NodeKey, NodeKey[]>();
-  for (const key of inComponent) for (const badge of graph.byConsumer.get(key) ?? []) if (expanded.has(badge.key)) {
-    const list = badgeConsumers.get(badge.key);
-    if (list) list.push(key); else badgeConsumers.set(badge.key, [key]);
+  const supporters = new Map<NodeKey, NodeKey[]>();
+  for (const key of inComponent) {
+    const badges = graph.byConsumer.get(key) ?? [];
+    for (const badge of badges) {
+      const list = badgeConsumers.get(badge.key);
+      if (list) list.push(key); else badgeConsumers.set(badge.key, [key]);
+    }
+    const deciders = [...(dag.parents.get(key) ?? []).filter((parent) => inComponent.has(parent)), ...badges.map((badge) => badge.key)];
+    let latest: NodeKey | null = null;
+    for (const decider of deciders) if (rank.has(decider) && (latest === null || rank.get(decider)! > rank.get(latest)!)) latest = decider;
+    if (latest !== null && value.get(latest)) supporters.set(key, deciders.filter((decider) => value.get(decider) === true));
   }
+  return { inComponent, badgeConsumers, supporters, roots: componentRoots(dag, members, "in-folder") };
+}
+
+/**
+ * What an open stack's band shows under explicit expansion (docs/trace-view-layout.md, "Visible
+ * nodes"): every in-folder root, every parent a shown node needs (each output keeps all of its
+ * inputs), and every node whose latest decider (`BandRules`) expanded it while an expanded decider
+ * of it is shown: a parent, or a badge some shown node carries. So the latest choice wins for a
+ * child of two parents, and a parent hidden by an unrelated collapse never takes a child shown
+ * through another one with it. Selection plays no part.
+ *
+ * The least fixpoint of a monotone rule, found by a worklist: linear in the component and
+ * independent of order. Keys outside `members` are ignored; the result is in `members` order.
+ */
+export function bandVisibleKeys(graph: BadgeProjection, members: readonly NodeKey[], expansion: BandExpansion): NodeKey[] {
+  const visible = bandVisibility(graph, bandRules(graph, members, expansion));
+  return members.filter((key) => visible.has(key));
+}
+
+/** The shown members and the shown badges (those a shown member carries), as one set. */
+function bandVisibility(graph: BadgeProjection, rules: BandRules): Set<NodeKey> {
+  const { dag } = graph, { inComponent, badgeConsumers, supporters } = rules;
   const visible = new Set<NodeKey>(), pending: NodeKey[] = [];
-  const show = (key: NodeKey) => { if (inComponent.has(key) && !visible.has(key)) { visible.add(key); pending.push(key); } };
-  for (const root of componentRoots(dag, members, "in-folder")) show(root);
+  const show = (key: NodeKey) => { if (!visible.has(key)) { visible.add(key); pending.push(key); } };
+  const offer = (from: NodeKey, child: NodeKey) => { if (supporters.get(child)?.includes(from)) show(child); };
+  for (const root of rules.roots) show(root);
   while (pending.length) {
     const key = pending.pop()!;
-    for (const parent of dag.parents.get(key) ?? []) show(parent);
-    if (expanded.has(key)) for (const child of dag.children.get(key) ?? []) show(child);
-    for (const badge of graph.byConsumer.get(key) ?? []) {
-      const consumers = badgeConsumers.get(badge.key);
-      if (consumers) { badgeConsumers.delete(badge.key); for (const consumer of consumers) show(consumer); }
-    }
+    const consumers = badgeConsumers.get(key);
+    if (consumers && !inComponent.has(key)) { for (const consumer of consumers) offer(key, consumer); continue; }
+    for (const parent of dag.parents.get(key) ?? []) if (inComponent.has(parent)) show(parent);
+    for (const badge of graph.byConsumer.get(key) ?? []) show(badge.key);
+    for (const child of dag.children.get(key) ?? []) if (inComponent.has(child)) offer(key, child);
   }
-  return members.filter((key) => visible.has(key));
+  return visible;
+}
+
+/** The children a key has in the band: a member's children in the component, a badge's consumers in it. */
+function bandChildren(graph: BadgeProjection, rules: BandRules, key: NodeKey): readonly NodeKey[] {
+  return rules.inComponent.has(key) ? (graph.dag.children.get(key) ?? []).filter((child) => rules.inComponent.has(child)) : rules.badgeConsumers.get(key) ?? [];
+}
+
+/** What a band shows and how each shown key's caret reads: open when all of its children are shown. */
+export interface BandCarets {
+  /** Shown keys (members and reference badges) whose caret changes what is shown: only these offer one. */
+  readonly togglable: ReadonlySet<NodeKey>;
+  /** Shown keys with children, all of them shown: the caret reads expanded, and pressing it collapses. */
+  readonly open: ReadonlySet<NodeKey>;
+}
+
+/**
+ * The carets of a band, so that no control ever does nothing visible. A shown key with children
+ * offers one when pressing it changes what is shown: when some child is hidden (expanding makes
+ * it the latest decider of every child, so all of them show), or when collapsing hides something.
+ * Collapsing makes it the latest decider of every child, so each child loses the support of its
+ * rule (`BandRules`), and stays only if something else holds it: a root, or an input a shown
+ * output needs. A child shown through a parent that is not otherwise shown goes with it.
+ *
+ * Exact up to one rare shape (two children that each hold the other as an input of an edit the
+ * other decides), and near-linear: visibility is reachability from the roots in a graph whose
+ * edges are "x shows its parents and badges" and "a supporter shows a node's rule, which shows
+ * the node". Collapsing hides child c exactly when c's rule dominates c: its immediate dominator
+ * (Cooper, Harvey and Kennedy, "A Simple, Fast Dominance Algorithm", 2001).
+ */
+export function bandCarets(graph: BadgeProjection, members: readonly NodeKey[], expansion: BandExpansion): BandCarets {
+  const { dag } = graph;
+  const rules = bandRules(graph, members, expansion);
+  const visible = bandVisibility(graph, rules);
+  // Vertex 0 is the source; then one per key, and one per node's rule.
+  const ids = new Map<string, number>();
+  const id = (name: string) => { let at = ids.get(name); if (at === undefined) ids.set(name, at = ids.size + 1); return at; };
+  const edges: number[][] = [[]];
+  const edge = (from: number, to: number) => { (edges[from] ??= []).push(to); edges[to] ??= []; };
+  const vertex = (key: NodeKey) => id(`k:${key}`), rule = (key: NodeKey) => id(`r:${key}`);
+  for (const root of rules.roots) edge(0, vertex(root));
+  for (const key of visible) {
+    if (!rules.inComponent.has(key)) continue;
+    for (const parent of dag.parents.get(key) ?? []) if (rules.inComponent.has(parent)) edge(vertex(key), vertex(parent));
+    for (const badge of graph.byConsumer.get(key) ?? []) edge(vertex(key), vertex(badge.key));
+    const supporters = rules.supporters.get(key);
+    if (supporters) { for (const from of supporters) if (visible.has(from)) edge(vertex(from), rule(key)); edge(rule(key), vertex(key)); }
+  }
+  const idom = dominators(edges);
+  const togglable = new Set<NodeKey>(), open = new Set<NodeKey>();
+  for (const key of visible) {
+    const children = bandChildren(graph, rules, key);
+    if (!children.length) continue;
+    if (children.some((child) => !visible.has(child))) { togglable.add(key); continue; }
+    open.add(key);
+    if (children.some((child) => { const via = ids.get(`r:${child}`); return via !== undefined && idom[ids.get(`k:${child}`)!] === via; })) togglable.add(key);
+  }
+  return { togglable, open };
 }
 
 /** Siblings shown around a focus; enough for a batch or two of variations. */
@@ -132,52 +232,6 @@ export function hiddenDescendantCount(dag: TraceDag, key: NodeKey, visible: Read
     for (const child of dag.children.get(id) ?? []) if (!visible.has(child) && !seen.has(child)) pending.push(child);
   }
   return seen.size;
-}
-
-/**
- * The visible members whose caret changes what the band shows (`bandVisibleKeys`), so that no
- * control ever does nothing visible: a collapsed node with a child not shown, and an expanded
- * node with a child that no other expansion keeps shown. A child shown through another open
- * parent (an edit with two inputs), or as an input a shown output needs, is kept by that.
- *
- * Exact and near-linear: `bandVisibleKeys` is reachability from the roots in a graph whose edges
- * are "x shows its parents", "an expanded x shows its children" (through a node standing for x's
- * expansion) and "a shown consumer shows its expanded badge's consumers". Collapsing x hides
- * something exactly when its expansion node dominates another node: the immediate dominator of
- * some node (Cooper, Harvey and Kennedy's iterative algorithm, "A Simple, Fast Dominance
- * Algorithm", 2001).
- */
-export function togglableKeys(graph: BadgeProjection, members: readonly NodeKey[], expanded: ReadonlySet<NodeKey>): ReadonlySet<NodeKey> {
-  const { dag } = graph;
-  const inComponent = new Set(members);
-  const visible = new Set(bandVisibleKeys(graph, members, expanded));
-  const result = new Set<NodeKey>();
-  // Collapsed: expanding shows something exactly when a child is hidden.
-  for (const key of visible) if (!expanded.has(key) && (dag.children.get(key) ?? []).some((child) => inComponent.has(child) && !visible.has(child))) result.add(key);
-  // Expanded: build the derivation graph over what is shown. Index 0 is the source.
-  const ids = new Map<string, number>();
-  const id = (name: string) => { let at = ids.get(name); if (at === undefined) ids.set(name, at = ids.size + 1); return at; };
-  const edges: number[][] = [[]];
-  const edge = (from: number, to: number) => { (edges[from] ??= []).push(to); edges[to] ??= []; };
-  const node = (key: NodeKey) => id(`n:${key}`), opened = (key: NodeKey) => id(`e:${key}`), badge = (key: NodeKey) => id(`b:${key}`);
-  for (const root of componentRoots(dag, members, "in-folder")) edge(0, node(root));
-  const consumers = new Map<NodeKey, NodeKey[]>();
-  for (const key of members) for (const reference of graph.byConsumer.get(key) ?? []) if (expanded.has(reference.key)) {
-    const list = consumers.get(reference.key);
-    if (list) list.push(key); else consumers.set(reference.key, [key]);
-  }
-  for (const key of visible) {
-    for (const parent of dag.parents.get(key) ?? []) if (inComponent.has(parent)) edge(node(key), node(parent));
-    const children = (dag.children.get(key) ?? []).filter((child) => inComponent.has(child));
-    if (expanded.has(key) && children.length) { edge(node(key), opened(key)); for (const child of children) edge(opened(key), node(child)); }
-    for (const reference of graph.byConsumer.get(key) ?? []) if (consumers.has(reference.key)) edge(node(key), badge(reference.key));
-  }
-  for (const [key, list] of consumers) if (ids.has(`b:${key}`)) for (const consumer of list) edge(badge(key), node(consumer));
-  const idom = dominators(edges);
-  const owner = new Map<number, NodeKey>();
-  for (const key of visible) if (ids.has(`e:${key}`)) owner.set(ids.get(`e:${key}`)!, key);
-  for (let at = 1; at < idom.length; at++) { const key = owner.get(idom[at]); if (key !== undefined) result.add(key); }
-  return result;
 }
 
 /** Immediate dominators from node 0 (-1 for unreachable nodes and for 0 itself), iteratively. */

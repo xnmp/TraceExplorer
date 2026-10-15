@@ -30,6 +30,7 @@ import type { GridBand, GridCell, GridItem, GridItemId, GridRect } from "../grid
 import type { BandPlacement } from "../band-geometry";
 import type { BandScenePlan } from "../scene";
 import type { GraphLayout } from "../layout";
+import type { BandExpansion } from "../visibility";
 
 /** A stack's stable identity: its cover node key (component ids change when components merge). */
 export type GraphId = GridItemId;
@@ -54,11 +55,12 @@ export interface OpenStack {
    */
   readonly anchor: NodeKey | null;
   /**
-   * The stack's expanded keys (`expandedKeys` in `expansion.ts`): members and reference badge keys
-   * whose children (a badge's consumers) are shown while they are visible. The cover is always one.
-   * What the band shows follows from this alone (`bandVisibleKeys`). Keys outside the stack are ignored.
+   * The stack's expansion (`expandedKeys` in `expansion.ts`): members and reference badge keys,
+   * each expanded or collapsed, oldest first. Each node follows the latest entry among its parents
+   * and badges; the cover is always expanded, newest. What the band shows follows from this alone
+   * (`bandVisibleKeys`). Keys outside the stack are ignored.
    */
-  readonly expanded: ReadonlySet<NodeKey>;
+  readonly expanded: BandExpansion;
 }
 
 export interface FolderLayoutInput {

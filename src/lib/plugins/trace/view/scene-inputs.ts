@@ -15,6 +15,7 @@ import type { FolderLayout, FolderLayoutInput, GraphId, OpenStack } from "$lib/d
 import type { FolderScene, SceneGraphSource, SceneStyling } from "$lib/domain/trace-graph/folder-scene";
 import { arrivingStacks, type GeometryInputs } from "$lib/domain/trace-graph/scene-change";
 import { expandedKeys, expansionAnchor, sameExpansion, type Expansion } from "$lib/domain/trace-graph/expansion";
+import type { BandExpansion } from "$lib/domain/trace-graph/visibility";
 
 /** What the pane wants shown, captured from host and session state (data excluded). */
 export interface SceneIntent {
@@ -186,8 +187,8 @@ export function prepareLayoutInput(intent: SceneIntent, data: SceneData, open: R
 /** An open stack's part of the layout basis: its id, data version, anchor and expanded keys (`expandedSignature`). */
 export type StackBasis = readonly [GraphId, number, NodeKey | null, string];
 
-/** Expanded keys as one order-independent string. */
-export const expandedSignature = (expanded: ReadonlySet<NodeKey>): string => JSON.stringify([...expanded].sort());
+/** A stack's expansion as one string. Its order is part of it: the latest entry decides, and the carets read it. */
+export const expandedSignature = (expanded: BandExpansion): string => JSON.stringify([...expanded]);
 
 /**
  * Everything the engine reads apart from `previous`: item identities, each open stack's data

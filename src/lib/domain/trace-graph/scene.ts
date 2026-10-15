@@ -7,7 +7,7 @@
 import type { NodeKey, TraceNode } from "./model";
 import type { BadgeProjection, ReferenceBadge, TraceDag } from "./projection";
 import { lineage, lineageWithBadges, toneOf, type Lineage, type NodeTone } from "./lineage";
-import { bandVisibleKeys, hiddenDescendantCount, togglableKeys, visibleKeys } from "./visibility";
+import { bandCarets, bandVisibleKeys, hiddenDescendantCount, visibleKeys, type BandExpansion } from "./visibility";
 import { tileMetrics, tileSize, type TileMetrics, type TileSize } from "./metrics";
 import { chooseOrientation, generationProfile, sidewaysWidth, type OrientationHistory } from "./orientation";
 import type { GraphLayout, BandHistory, LayoutItem, LayoutRequest, PinnedCover, PlacedRoute } from "./layout";
@@ -24,11 +24,11 @@ export interface SceneTile {
    * edited further): it carries the expansion hint row, so its size never depends on what is shown.
    */
   readonly expandable: boolean;
-  /** Whether the node is expanded: its children are shown (a band's explicit expansion; the legacy view's focus). */
+  /** Whether the node reads expanded: in a band, all of its children are shown (`bandCarets`); in the legacy view, the focus. */
   readonly expanded: boolean;
   /**
-   * Whether its caret changes what is shown (`togglableKeys`): only then is it offered. A child
-   * kept shown by another open parent leaves nothing for this one to show or hide.
+   * Whether its caret changes what is shown (`bandCarets`): only then is it offered. Children all
+   * shown and held by something else leave nothing for this one to show or hide.
    */
   readonly togglable: boolean;
 }
@@ -94,10 +94,10 @@ function sceneTiles(dag: TraceDag, visible: readonly NodeKey[], context: Lineage
 export interface BandSceneOptions extends Pick<SceneOptions, "hint" | "tile"> {
   readonly pinned: PinnedCover;
   /**
-   * The stack's expanded keys (`expandedKeys`): what decides the visible tiles (`bandVisibleKeys`).
+   * The stack's expansion (`expandedKeys`): what decides the visible tiles (`bandVisibleKeys`).
    * The selection never does.
    */
-  readonly expanded: ReadonlySet<NodeKey>;
+  readonly expanded: BandExpansion;
   readonly history?: BandHistory;
 }
 
@@ -144,7 +144,8 @@ export function planBandScene(graph: BadgeProjection, members: readonly NodeKey[
   const membership = new Set(members);
   const anchored = anchor !== null && (membership.has(anchor) || graph.badges.has(anchor)) ? anchor : undefined;
   const tile = options.tile ?? tileMetrics();
-  const { tiles, items } = sceneTiles(dag, bandVisibleKeys(graph, members, options.expanded), NO_LINEAGE, tile, options.expanded, togglableKeys(graph, members, options.expanded));
+  const carets = bandCarets(graph, members, options.expanded);
+  const { tiles, items } = sceneTiles(dag, bandVisibleKeys(graph, members, options.expanded), NO_LINEAGE, tile, carets.open, carets.togglable);
   const badges = new Map([...tiles.keys()].flatMap((key) => {
     const references = graph.byConsumer.get(key);
     return references ? [[key, references] as const] : [];
