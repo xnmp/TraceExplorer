@@ -10,6 +10,8 @@ import {
 import { folderInput, handCase, makeFolder, sourcesOf, type Folder } from "../../domain/trace-graph/folder-layout-fixtures";
 import { presentationView } from "$lib/plugins/trace/view/presentation-view";
 import { motionParticipants } from "$lib/plugins/trace/view/participants";
+import { toggleNode, type Expansion } from "$lib/domain/trace-graph/expansion";
+import { focusExpansion } from "../../../layout-eval/corpus";
 
 // ─── Easing ─────────────────────────────────────────────────────────────────
 
@@ -144,9 +146,9 @@ const tile = tileMetrics(96), grid = { cellWidth: tile.width, cellHeight: 0, gap
 const folder: Folder = makeFolder({ stacks: [handCase("screenshot"), handCase("merges-3")], files: 12 });
 const [A, B] = [...folder.stacks.keys()];
 
-function sceneFor(open: string[], options: { focus?: string | null; previous?: FolderLayout | null; width?: number; styling?: Partial<SceneStyling>; at?: SceneScope; of?: Folder } = {}): FolderScene {
+function sceneFor(open: string[], options: { focus?: string | null; expansion?: Expansion; previous?: FolderLayout | null; width?: number; styling?: Partial<SceneStyling>; at?: SceneScope; of?: Folder } = {}): FolderScene {
   const of = options.of ?? folder;
-  const input = folderInput(of, { open, focus: options.focus ?? null, width: options.width ?? 640, tile, grid, previous: options.previous ?? null });
+  const input = folderInput(of, { open, focus: options.focus ?? null, expansion: options.expansion, width: options.width ?? 640, tile, grid, previous: options.previous ?? null });
   return buildFolderScene({ scope: options.at ?? scope, layoutInput: input, layout: engines.default(input), sources: sourcesOf(of), styling: { ...plain, focus: options.focus ?? null, ...options.styling } });
 }
 let epochs = 0;
@@ -274,6 +276,39 @@ describe("retargetPresentation", () => {
     for (const t of [8, 16, 33, MOTION_MS / 2]) expect(tiles.some((m) => shownHeight(m, t) > 0), `${t} ms: a tile shown`).toBe(true);
     expect(samplePresentation(p, 16).poses.get(group.renderId)!.opacity).toBe(1);
     // A settled epoch shows no retirees.
+    expect(settledPresentation(p).retiring.size).toBe(0);
+  });
+
+  it("collapsing a node inside a band that holds still: its children stay shown, then fade, above the rows rising below", () => {
+    const saffron = `${A.split(":")[0]}:Saffron`;
+    const stack = folder.stacks.get(A)!, scope = { graph: stack.graph, members: stack.graph.dag.order, cover: A };
+    const expanded = focusExpansion(saffron), collapsed = toggleNode(expanded, scope, saffron);
+    const open = sceneFor([A], { expansion: expanded }), shut = sceneFor([A], { expansion: collapsed, previous: open.layout });
+    const leaving = bandTiles(open, A).filter((record) => !shut.records.has(record.id));
+    expect(leaving.length, "Saffron's children leave").toBeGreaterThan(0);
+    // Its section holds still (the cover's row); the tiles that stay may reflow beside it.
+    expect(shut.records.get(entityId("tile", A, A))!.rect).toEqual(open.records.get(entityId("tile", A, A))!.rect);
+    const { presentation: p } = step(staticPresentation(open), open, shut, Infinity);
+    const retirees = [...p.retiring.values()].filter((r) => r.group === null && r.record.kind === "tile" && leaving.some((l) => l.id === r.record.id));
+    expect(retirees).toHaveLength(leaving.length);
+    // The nearest row below rises into the band's space; nothing that leaves shows over it.
+    const below = [...p.live.values()].filter((r) => r.record.graphId === null && r.track && r.initial.rect.y >= Math.max(...leaving.map((l) => l.rect.y + l.rect.height)) - .5)
+      .sort((a, b) => a.initial.rect.y - b.initial.rect.y)[0];
+    expect(below, "a row below rises").toBeDefined();
+    const shownOf = (renderId: string, t: number) => {
+      const pose = samplePresentation(p, t).poses.get(renderId)!, clip = effectiveClip(pose);
+      return { opacity: pose.opacity, bottom: Math.min(pose.rect.y + pose.rect.height, clip ? clip.y + clip.height : Infinity), top: pose.rect.y };
+    };
+    for (const r of retirees) {
+      expect(shownOf(r.renderId, 0).opacity, "whole on the first frame").toBe(1);
+      expect(shownOf(r.renderId, 16).opacity, "still whole a frame in").toBe(1);
+      expect(shownOf(r.renderId, 40).opacity, "fading").toBeGreaterThan(PAINTED);
+      expect(shownOf(r.renderId, MOTION_MS).opacity).toBe(0);
+      for (let t = 0; t <= MOTION_MS; t += 4) {
+        const rowTop = samplePresentation(p, t).poses.get(below.renderId)!.rect.y, shown = shownOf(r.renderId, t);
+        if (shown.opacity > PAINTED && shown.bottom > shown.top) expect(shown.bottom, `${t} ms`).toBeLessThanOrEqual(rowTop + 1e-6);
+      }
+    }
     expect(settledPresentation(p).retiring.size).toBe(0);
   });
 

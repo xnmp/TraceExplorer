@@ -537,8 +537,9 @@ for (const exitAt of [.01, 40]) test(`reopening after collapse reserves space be
       const tile = document.querySelector<HTMLElement>(`[data-grid-exit] [data-ghost-tile-key="${child}"]`)!;
       return Number(getComputedStyle(tile).opacity) * Number(getComputedStyle(tile.closest('[data-grid-exit]')!).opacity);
     }, { child, exitAt });
-    if (exitAt < 1) { expect(exitOpacity).toBeGreaterThan(0); expect(exitOpacity).toBeLessThan(1); }
-    else expect(exitOpacity, 'tile and connectors have finished the shared exit fade').toBe(0);
+    // A closing band collapses like an accordion: shown whole at first, fading in its second half.
+    if (exitAt < 1) expect(exitOpacity, 'shown whole as the collapse starts').toBeCloseTo(1, 2);
+    else { expect(exitOpacity, 'fading with the end of the collapse').toBeGreaterThan(0); expect(exitOpacity).toBeLessThan(1); }
     await village.locator("[data-stack-toggle]").click();
     await awaitMotionStarted(page);
     const result = await page.evaluate(async (child) => {

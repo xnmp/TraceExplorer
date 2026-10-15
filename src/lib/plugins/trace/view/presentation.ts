@@ -169,6 +169,14 @@ const sameRect = (a: GridRect, b: GridRect, near = NEAR) =>
 const contains = (outer: GridRect, inner: GridRect) =>
   outer.x <= inner.x + NEAR && outer.y <= inner.y + NEAR && outer.x + outer.width >= inner.x + inner.width - NEAR && outer.y + outer.height >= inner.y + inner.height - NEAR;
 const translate = (rect: GridRect, by: Point): GridRect => ({ ...rect, x: rect.x + by.x, y: rect.y + by.y });
+/** The smallest rectangle containing both. */
+const union = (a: GridRect, b: GridRect): GridRect => {
+  const x = Math.min(a.x, b.x), y = Math.min(a.y, b.y);
+  return { x, y, width: Math.max(a.x + a.width, b.x + b.width) - x, height: Math.max(a.y + a.height, b.y + b.height) - y };
+};
+/** Whether the two share more than a hairline. */
+const overlapping = (a: GridRect, b: GridRect) =>
+  a.x < b.x + b.width - .5 && b.x < a.x + a.width - .5 && a.y < b.y + b.height - .5 && b.y < a.y + a.height - .5;
 function intersect(a: GridRect | null, b: GridRect | null): GridRect | null {
   if (!a || !b) return a ?? b;
   const x = Math.max(a.x, b.x), y = Math.max(a.y, b.y);
@@ -265,6 +273,19 @@ const arrival = (from: Pose, to: Pose, w: number, duration = MOTION_MS): Track |
 /** Vanishes in place in the departure window `w` at the start of a motion. */
 const departure = (from: Pose, w: number, duration = MOTION_MS): Track | null =>
   easedFrames([[0, from], [w, { ...from, opacity: 0 }], [1, { ...from, opacity: 0 }]], duration);
+/**
+ * Collapses in place over a motion: shown above a bottom edge that rises from `edge` by `rise`
+ * (the rows below taking back the band's space), fading from `COLLAPSE_FADE_FROM` to the end.
+ */
+function collapsing(from: Pose, edge: number, rise: number, duration = MOTION_MS): Track | null {
+  const { rect } = from;
+  const fade = (progress: number) => from.opacity * Math.min(1, (1 - progress) / (1 - COLLAPSE_FADE_FROM));
+  // The clip spans the record's top to the edge: empty once the edge has passed its top.
+  const at = (progress: number): Pose => ({ rect, opacity: fade(progress), clip: { ...rect, height: Math.max(0, edge - rise * progress - rect.y) } });
+  const covered = rise > 0 ? (edge - rect.y) / rise : Infinity;
+  const stops = [0, COLLAPSE_FADE_FROM, ...(covered > 0 && covered < 1 ? [covered] : []), 1].sort((a, b) => a - b);
+  return easedFrames(stops.map((progress) => [progress, at(progress)] as const), duration);
+}
 
 // ─── Presentations ──────────────────────────────────────────────────────────
 
@@ -434,9 +455,11 @@ const isBandRecord = (record: SceneRecord) => record.kind === "route" || record.
  *   between their exact displayed and new paths (a path is never interpolated).
  * - A closed stack's displayed tiles and connectors retire as one exit group that collapses like
  *   an accordion over the whole motion: it slides up under its cover, clipped between the band's
- *   top and the rising rows below, and fades in the second half. Departures inside an open band vanish in its departure
- *   window. Above `RETIREE_LIMIT` paintable retirees, this publication's departures snap. A
- *   reveal drops its graphs' retirees.
+ *   top and the rising rows below, and fades in the second half. Departures inside an open band
+ *   that holds still (a collapse inside it) collapse the same way in place: shown above the
+ *   rising rows below, fading in the second half. In a band moving rigidly they vanish in its
+ *   departure window; in one that reflows, at once. Above `RETIREE_LIMIT` paintable retirees,
+ *   this publication's departures snap. A reveal drops its graphs' retirees.
  * - No previous presentation, scope changes and reduced motion present target poses only.
  */
 export function retargetPresentation(displayed: DisplayedPresentation | null, next: FolderScene, diff: SceneDiff, participants: Participants): Presentation {
@@ -632,18 +655,29 @@ export function retargetPresentation(displayed: DisplayedPresentation | null, ne
   for (const [graphId, records] of exits) {
     const w = windowOf(graphId);
     if (next.graphs.has(graphId)) {
-      // Inside an open band: vanish in place in the departure window, when the band around them
-      // moves rigidly (a band that reflows around them drops them at once).
       const tiles = [...next.graphs.get(graphId)!.plan.tiles.keys()].flatMap((key) => {
         const tile = next.records.get(entityId("tile", graphId, key));
         return tile && tile.kind === "tile" && !tile.cover && before.live.has(tile.id) ? [tile] : [];
       });
       const [first] = tiles;
-      if (!tiles.every((tile) => parallel(tracks.get(tile.id) ?? null, tile.rect, tracks.get(first.id) ?? null, first.rect))) continue;
-      for (const record of records) {
-        const pose = shown.get(record.id);
-        if (record.kind === "band" || !pose || pose.opacity <= PAINTED) continue;
-        const track = departure(pose, w, D);
+      const rigid = tiles.every((tile) => parallel(tracks.get(tile.id) ?? null, tile.rect, tracks.get(first.id) ?? null, first.rect));
+      // Inside an open band whose section holds still (a collapse inside it): what departs
+      // collapses in place over the motion (`collapsing`) unless a tile that stays moves over it.
+      // Otherwise, in a band moving rigidly, it vanishes in the departure window; in one that
+      // reflows over it, at once.
+      const cover = next.records.get(entityId("tile", graphId, graphId));
+      const holds = !cover || parallel(tracks.get(cover.id) ?? null, cover.rect, null, cover.rect);
+      const sweeps = tiles.flatMap((tile) => {
+        const from = start.get(tile.id)?.rect ?? tile.rect;
+        return tracks.get(tile.id) && !sameRect(from, tile.rect) ? [union(from, tile.rect)] : [];
+      });
+      const leaving = records.flatMap((record) => { const pose = shown.get(record.id); return record.kind !== "band" && pose && pose.opacity > PAINTED ? [{ record, pose }] : []; });
+      const band = before.live.get(entityId("band", graphId, graphId))?.record;
+      const edge = Math.max(band ? band.rect.y + band.rect.height : -Infinity, ...leaving.map(({ pose }) => pose.rect.y + pose.rect.height));
+      const rise = holds ? risingBelow(edge) : 0;
+      for (const { record, pose } of leaving) {
+        const clear = holds && !sweeps.some((sweep) => overlapping(sweep, pose.rect));
+        const track = clear ? collapsing(pose, edge, rise, D) : rigid ? departure(pose, w, D) : null;
         if (track) fresh.push({ renderId: retireId(transaction, "exit", record.id), record: displaced(record, pose), initial: track.frames[0].pose, track,
           sourceTransaction: transaction, group: null, reason: "exit", branch: branch(graphId) });
       }
