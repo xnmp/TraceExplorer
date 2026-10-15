@@ -241,9 +241,9 @@ describe("incremental tree: second chance", () => {
 
   it("shares one budget across every embedding tried for a request", () => {
     // Enough for one embedding, not two: the second call sees what the first left.
-    const budget = { fallback: 10_000, second: 0, probes: 0 };
+    const budget = { fallback: 20_000, second: 0, probes: 0 };
     expect(incrementalTree(request, previous, budget)).not.toBeNull();
     expect(incrementalTree(request, previous, budget)).toBeNull();
-    expect(incrementalTree(request, previous, { fallback: 10_000, second: 0, probes: 0 })).not.toBeNull();
+    expect(incrementalTree(request, previous, { fallback: 20_000, second: 0, probes: 0 })).not.toBeNull();
   });
 });

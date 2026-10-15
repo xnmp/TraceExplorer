@@ -6,6 +6,8 @@ import { buildShelves, columnsFor, partitions } from "$lib/domain/trace-graph/ba
 import { cost, measure, routePlan, sharedLaneLength, validateLayout, CROSSING_HEIGHT_TILES, CROSSING_WEIGHT, HEIGHT_WEIGHT } from "$lib/domain/trace-graph/layout-quality";
 import { spacingFor } from "$lib/domain/trace-graph/metrics";
 import { corpus, node, requestFor, rng, screenshot } from "../../../layout-eval/corpus";
+import { profiles, provenanceSession, sessionComponents } from "../../../layout-eval/provenance-model";
+import { axisOf, shallowRun, SHALLOW_RUN } from "$lib/domain/trace-graph/route-contacts";
 import type { TraceNode } from "$lib/domain/trace-graph/model";
 
 const route = (id: string, from: string, to: string, path: string): PlacedRoute =>
@@ -201,6 +203,44 @@ describe("routes trading columns", () => {
     expect(gates.sharedLanePx).toBe(0);
     expect(continuations(drawn)).toEqual([]);
     expect([gates.tileIntersections, gates.overlaps, gates.missingEdges, gates.extraEdges, gates.invalidGeometry, gates.invalidPaths, gates.terminalViolations, gates.disconnectedEdges]).toEqual(Array(8).fill(0));
+  });
+});
+
+describe("lines alongside curves", () => {
+  /**
+   * Pairs of routes of different sources where an axis-parallel piece of one runs within
+   * LANE_SEPARATION of the other's curve for more than SHALLOW_RUN (`shallowRun`): the two read
+   * as one line. A junction's inputs meet at its dot by design.
+   */
+  function alongCurves(layout: GraphLayout): string[] {
+    const source = (r: PlacedRoute) => `${r.from.kind}:${r.from.id}`, out: string[] = [];
+    const pieces = layout.routes.map(r => ({ r, ss: routePlan(r).segments }));
+    for (const a of pieces) for (const b of pieces) {
+      if (a === b || source(a.r) === source(b.r) || (a.r.to.kind === "junction" && a.r.to.kind === b.r.to.kind && a.r.to.id === b.r.to.id)) continue;
+      let run = 0;
+      for (const sa of a.ss) if (axisOf(sa)) for (const sb of b.ss) if (!axisOf(sb)) run += shallowRun(sa, sb);
+      if (run > SHALLOW_RUN) out.push(`${a.r.id} along ${b.r.id}: ${run.toFixed(1)} px`);
+    }
+    return out;
+  }
+
+  // A variations session's click tour (seed 1) whose incremental embedding once drew a new route
+  // through another source's fan, along the flat middle of its curves, when no route avoided
+  // every touch: a route alongside a curve is a shared lane, never a tolerated touch.
+  it("keeps every incremental route off other sources' curves along a click tour", () => {
+    const component = sessionComponents(provenanceSession(profiles.variations, 1))[0];
+    const shown = new Set(component.flatMap(n => n.parents));
+    const focuses = [null, ...component.filter(n => n.scope === "current" && shown.has(n.key)).map(n => n.key).reverse().slice(0, 8), null];
+    for (const [width, imagePx] of [[640, 48], [454, 64]] as const) {
+      let previous: { signature: string; layout: GraphLayout; placed: GraphLayout } | undefined;
+      for (const focus of focuses) {
+        const request = requestFor({ id: "variations-1", nodes: component, focuses: [] }, focus, width, imagePx, previous?.layout.readingOrder);
+        const layout = layoutGraph({ ...request, anchorKey: focus ?? undefined, history: previous });
+        const placed = attachSingleBand(layout, request);
+        expect(alongCurves(placed).filter(pair => pair.startsWith("incremental"))).toEqual([]);
+        previous = { signature: bandHistorySignature(request), layout, placed };
+      }
+    }
   });
 });
 

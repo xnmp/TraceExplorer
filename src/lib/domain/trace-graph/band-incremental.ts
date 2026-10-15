@@ -3,14 +3,14 @@
  *
  * New connectors are lane-free: no new route runs along a connector of another source (a
  * route's source is its `from` endpoint) for any length, nor closer than `LANE_SEPARATION`
- * beside one for more than an arrowhead's length; it may cross one, and it may share its own
- * source's earlier trunk. No new route passes within `JUNCTION_BERTH` of a junction dot, and no
- * new dot lies that close to a connector: a line through a dot reads as joining it, and a trunk
- * branching at a merge's dot would make its other branches read as that merge's outputs. Nor does
- * a new route touch another source's line anywhere else (`route-contacts`): it keeps `PORT_BERTH`
- * from other sources' ports and `CORNER_BERTH` from their corners and forks, its own ports and
- * corners keep the same from their lines, and it never runs alongside their curves at a shallow
- * angle. A tile with several parents gets a junction its inputs reach
+ * beside one for more than an arrowhead's length, nor alongside its curves at a shallow angle
+ * (`SHALLOW_RUN`); it may cross one, and it may share its own source's earlier trunk. No new
+ * route passes within `JUNCTION_BERTH` of a junction dot, and no new dot lies that close to a
+ * connector: a line through a dot reads as joining it, and a trunk branching at a merge's dot
+ * would make its other branches read as that merge's outputs. Nor does a new route touch another
+ * source's line at a point if any placement avoids it (`route-contacts`): it keeps `PORT_BERTH`
+ * from other sources' ports and `CORNER_BERTH` from their corners and forks, and its own ports
+ * and corners keep the same from their lines. A tile with several parents gets a junction its inputs reach
  * from distinct directions (above, the left and the right along the junction's row) while its
  * tail leaves downward; more parents nest further junctions on a spine above it. Where no
  * lane-free placement exists the candidate is withheld (null) rather than drawn with a shared lane.
@@ -418,19 +418,19 @@ class LaneIndex {
   }
 
   /**
-   * Whether contacts conflict (`conflicts`). Clearing it lets a search take a route that touches
-   * another source's line when no route avoids every such touch.
+   * Whether touches conflict (`conflicts`). Clearing it lets a search take a route that touches
+   * another source's line at a point when no route avoids every such touch.
    */
   contacts = true;
 
   /**
    * Whether any of `list` (axis-parallel, consecutive) runs along a segment of a source other than
-   * `source`, passes within `JUNCTION_BERTH` of a dot (new routes end at no dot already placed), or
-   * (while `contacts` is set) touches another source's line (`route-contacts`): passes within the
-   * berth of its ports, corners or forks, has a corner or (as `ends` says) an end within its own
-   * berth of that line, or runs alongside a curve of it at a shallow angle. Only the route's new
-   * ink counts for dots and touches: where it follows its source's earlier lines, the drawing does
-   * not change.
+   * `source`, or alongside a curve of it at a shallow angle (the two read as one line, as near
+   * lanes do), passes within `JUNCTION_BERTH` of a dot (new routes end at no dot already placed),
+   * or (while `contacts` is set) touches another source's line (`route-contacts`): passes within
+   * the berth of its ports, corners or forks, or has a corner or (as `ends` says) an end within
+   * its own berth of that line. Only the route's new ink counts for curves, dots and touches:
+   * where it follows its source's earlier lines, the drawing does not change.
    */
   conflicts(list: readonly Segment[], source: string, ends: Ends = NO_ENDS): boolean {
     // Any order gives the same answer; a route's final approach is the likeliest to be taken.
@@ -438,10 +438,10 @@ class LaneIndex {
     const ink = list.flatMap(segment => this.newInk(segment, source));
     if (!ink.length) return false;
     if (this.nearDot(ink)) return true;
+    for (const segment of ink) if (axisOf(segment) && this.shallowInto(segment, source, new Map())) return true;
     if (!this.contacts) return false;
     for (const segment of ink) if (this.nearBerth(segment, source)) return true;
     for (const berth of berthsOf(list, ends)) if (ink.some(segment => entersBerth(segment, berth)) && this.touched(berth, source)) return true;
-    for (const segment of ink) if (axisOf(segment) && this.shallowInto(segment, source, new Map())) return true;
     return false;
   }
 
