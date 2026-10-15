@@ -1,6 +1,6 @@
 import { settledScrollTop } from "./motion-support";
 import { test, expect, type Page } from "@playwright/test";
-import { openView, click, key, tile, card, state, uncaught, settle, tileBoxes, overlaps, rendered, type Box } from "./support";
+import { openView, click, key, tile, card, caret, state, uncaught, settle, tileBoxes, overlaps, rendered, type Box } from "./support";
 import { awaitMotionStarted, holdMotion, motionState, releaseMotion } from "./animation-control";
 
 /** Rendered width and image height of every tile, keyed by node key. */
@@ -19,7 +19,7 @@ test.describe("selection neighborhood", () => {
     expect(new Set(sizes.map((size) => JSON.stringify(size))).size).toBe(1);
   });
 
-  test("selecting a node dims the rest and drops the old branch, without resizing any tile", async ({ page }) => {
+  test("selecting a node dims the rest and keeps every branch, without resizing any tile", async ({ page }) => {
     await openView(page);
     const initial = Object.values(await tileSizes(page))[0];
     const uniform = async () => {
@@ -39,10 +39,15 @@ test.describe("selection neighborhood", () => {
     for (const name of ["village", "palette"]) await expect(await tile(page, name)).toHaveAttribute("data-tone", "related");
     await expect(await tile(page, "daylight")).toHaveAttribute("data-tone", "unrelated");
 
-    // Daylight's view no longer shows warm's children: the old branch is dropped.
+    // Selection never drops a branch (explicit expansion): warm's children stay until warm's caret collapses it.
     await click(page, "daylight");
     await uniform();
+    for (const name of ["evening", "rain", "quiet"]) await expect(await tile(page, name)).toHaveCount(1);
+    await (await caret(page, "warm")).click();
+    await settle(page);
+    await uniform();
     for (const name of ["evening", "rain", "quiet"]) await expect(await tile(page, name)).toHaveCount(0);
+    expect(await rendered(page, "tone", "focus"), "the caret leaves the selection").toEqual(["daylight"]);
   });
 
   test("selecting a node shows its parents, children and siblings", async ({ page }) => {
@@ -150,7 +155,7 @@ test.describe("wide layouts", () => {
     for (const [parent, child] of edges) if (boxes[parent] && boxes[child]) expect(boxes[child].y, `${child} below ${parent}`).toBeGreaterThanOrEqual(boxes[parent].y + boxes[parent].height);
   };
 
-  test("a deep band uses sideways space and keeps its grid cover pinned while revealing generations", async ({ page }) => {
+  test("a deep band uses sideways space and keeps its grid cover pinned while opening generations", async ({ page }) => {
     await openView(page, 900, "?deeper=1");
     const names = ["forest", "forest-mist", "autumn", "mist-dawn", "mist-dusk"];
     const [forest, mist, autumn, dawn, dusk] = await Promise.all(names.map((name) => key(page, name)));
@@ -164,8 +169,13 @@ test.describe("wide layouts", () => {
       expect(overlaps(boxes)).toEqual([]);
       expect((await (await tile(page, "forest")).boundingBox())!.x).toBeCloseTo(coverX, 1);
     }
+    // Selecting autumn hides nothing; collapsing forest-mist hides its generations.
+    await expect(await tile(page, "mist-dusk")).toHaveCount(1);
+    await (await caret(page, "forest-mist")).click();
+    await settle(page);
     await expect(await tile(page, "mist-dawn")).toHaveCount(0);
     await expect(await tile(page, "mist-dusk")).toHaveCount(0);
+    expect((await (await tile(page, "forest")).boundingBox())!.x).toBeCloseTo(coverX, 1);
     expect(await uncaught(page)).toEqual([]);
   });
 
@@ -484,23 +494,25 @@ test.describe("motion", () => {
     }
   });
 
-  test("a reveal finishes an owned entrance and displays the new neighborhood immediately", async ({ page }) => {
+  // Selection alone changes no geometry (explicit expansion): it neither restarts nor finishes a
+  // running entrance. (Before, a selection revealed a neighborhood and finished the entrance.)
+  test("selecting a leaf during an entrance leaves the entrance running untouched", async ({ page }) => {
     await openView(page, undefined, "", false);
     await holdMotion(page);
     try {
       await page.locator('section[data-component]').first().locator('[data-stack-toggle]').click();
       await awaitMotionStarted(page);
-      expect((await motionState(page)).running, "the entrance is held").toHaveLength(1);
-      await (await card(page, "daylight")).evaluate((el: HTMLElement) => el.click());
+      const entrance = await motionState(page);
+      expect(entrance.running, "the entrance is held").toHaveLength(1);
+      const copies = await page.locator('[data-motion-ghost]').count();
+      await (await card(page, "cool")).evaluate((el: HTMLElement) => el.click());
       await awaitMotionStarted(page);
-      const target = await key(page, "merge");
-      const result = await page.evaluate(target => {
-        const graph = document.querySelector(`[data-tile-key="${target}"]`)!.closest('.graph')!;
-        return { opacity: Number(getComputedStyle(graph.querySelector(`[data-tile-key="${target}"]`)!).opacity),
-          active: [graph, ...graph.querySelectorAll('*')].filter(el => (window as any).trace.motion.owns(el)).length,
-          ghosts: graph.querySelectorAll('[data-motion-ghost]').length };
-      }, target);
-      expect(result).toEqual({ opacity: 1, active: 0, ghosts: 0 });
+      const after = await motionState(page);
+      expect(after.started, "no motion started").toBe(entrance.started);
+      expect(after.running.map((epoch) => epoch.epoch), "the same epoch runs on").toEqual(entrance.running.map((epoch) => epoch.epoch));
+      expect(await page.locator('[data-motion-ghost]').count(), "the entrance's own connector copies, unchanged").toBe(copies);
+      expect(await page.locator('[data-ghost-tile-key]').count(), "no tile departs").toBe(0);
+      expect(await rendered(page, "tone", "focus")).toEqual(["cool"]);
     } finally { await releaseMotion(page); }
     await settle(page);
   });
@@ -568,7 +580,9 @@ test.describe("motion", () => {
     expect(result.undimmed).toBe(0);
   });
 
-  test("a reveal removes departing tiles and connectors in its first frame", async ({ page }) => {
+  // Selection never removes a branch (explicit expansion): from the commit of daylight's first click
+  // (which opens its children) on, warm's open branch stays drawn, with no departing copy.
+  test("opening another branch keeps the open one, tiles and connectors, from its first frame", async ({ page }) => {
     await openView(page);
     await click(page, "warm");
     const evening = await key(page, "evening");
@@ -582,10 +596,11 @@ test.describe("motion", () => {
       }
       return { tiles: document.querySelectorAll(`[data-tile-key="${evening}"]`).length,
         paths: document.querySelectorAll(`path[data-to="node:${evening}"]`).length,
-        ghosts: document.querySelectorAll('[data-motion-ghost]').length };
+        ghosts: document.querySelectorAll(`[data-ghost-tile-key="${evening}"]`).length };
     }, { target: await key(page, "daylight"), evening });
-    expect(result).toEqual({ tiles: 0, paths: 0, ghosts: 0 });
+    expect(result).toEqual({ tiles: 1, paths: 1, ghosts: 0 });
     await settle(page);
+    await expect(await tile(page, "evening")).toHaveCount(1);
   });
 
   test("rapid branch swaps return one fully opaque tile without a fading copy", async ({ page }) => {
@@ -600,7 +615,8 @@ test.describe("motion", () => {
       const evening = await key(page, "evening");
       await expect(await tile(page, "evening")).toHaveCount(1);
       expect(await (await tile(page, "evening")).evaluate(el => Number(getComputedStyle(el).opacity))).toBe(1);
-      expect(await page.locator('[data-motion-ghost]').count()).toBe(0);
+      // No departing copy of it (daylight's opening branch has connector copies in motion layers).
+      expect(await page.locator(`[data-ghost-tile-key="${evening}"]`).count()).toBe(0);
     } finally { await releaseMotion(page); }
     await settle(page);
   });
@@ -703,8 +719,8 @@ test("opening and closing stacks toggles their bands while covers remain in the 
 test.describe("keyboard", () => {
   test("arrow keys move the selection to a neighbouring node and keep keyboard focus on it", async ({ page }) => {
     await openView(page);
-    await click(page, "warm");
-    // Down reaches warm's children; right reaches the next tile on its row. The mist and lantern
+    // Each round's click on warm selects it (the first one opens its children). A click on warm
+    // while it is the selection would collapse it instead (a second click toggles). Down reaches warm's children; right reaches the next tile on its row. The mist and lantern
     // references are badges, not tiles, so arrows never land on them.
     const neighbours = {
       ArrowDown: new Set(await Promise.all(["evening", "rain", "merge"].map((n) => key(page, n)))),
