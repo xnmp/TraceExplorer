@@ -1,6 +1,7 @@
 //! Saved-login CLI uses host-owned process trees and only fresh thread output.
 use super::*;
 use std::path::PathBuf;
+use te_plugin_runtime::process::OperationCustody;
 struct ProcessOutput {
     stdout: Vec<u8>,
     exit_status: i64,
@@ -55,6 +56,13 @@ fn process_failure(
         ),
     }
 }
+/// The image turn is the operation's paid work, so it carries the operation's
+/// custody: the host then retains a lost reply for that operation and releases
+/// it with the operation, never with unrelated work. The login check is not
+/// operation output and stays unbound; bound, a successful `login status`
+/// reply lost in a crash would count as retained output and keep the
+/// operation from settling. Custody is sent only to hosts that advertise
+/// `processCustody`.
 fn run(
     host: &dyn Host,
     executable: &super::codex_executable::CodexExecutable,
@@ -62,6 +70,7 @@ fn run(
     stdin: Option<String>,
     cwd: &Path,
     home: &Path,
+    custody: Option<&OperationCustody>,
     cancel: &AtomicBool,
 ) -> Result<ProcessOutput> {
     let login = args == ["login", "status"];
@@ -85,6 +94,7 @@ fn run(
         stdout_limit: 16 * 1024 * 1024,
         stderr_limit: 64 * 1024,
         stdin,
+        custody: custody.filter(|_| host.process_custody()).cloned(),
     };
     if !request.fits_frame() {
         // Never sent, so nothing ran: a definite refusal on either step.
@@ -141,6 +151,7 @@ fn resolve_home(
 }
 pub(super) fn generate(
     configured: &str,
+    operation: &OperationCustody,
     recipe: &EffectiveRecipe,
     inputs: &[Input],
     host: &dyn Host,
@@ -158,6 +169,7 @@ pub(super) fn generate(
     generate_at(
         &executable,
         &home,
+        operation,
         recipe,
         inputs,
         host,
@@ -169,6 +181,7 @@ pub(super) fn generate(
 fn generate_at(
     executable: &super::codex_executable::CodexExecutable,
     home: &Path,
+    operation: &OperationCustody,
     recipe: &EffectiveRecipe,
     inputs: &[Input],
     host: &dyn Host,
@@ -188,6 +201,7 @@ fn generate_at(
         None,
         work.path(),
         home,
+        None,
         cancel,
     );
     stage("credential_check_done");
@@ -276,7 +290,16 @@ fn generate_at(
         }
     };
     stage("process_started");
-    let process = run(host, executable, args, stdin, work.path(), home, cancel);
+    let process = run(
+        host,
+        executable,
+        args,
+        stdin,
+        work.path(),
+        home,
+        Some(operation),
+        cancel,
+    );
     stage("process_finished");
     let process = process.map_err(|failure| {
         process_failure(
@@ -458,8 +481,27 @@ mod tests {
     struct OwnedFixture {
         home: PathBuf,
         calls: AtomicUsize,
+        custody: bool,
+        requests: std::sync::Mutex<Vec<serde_json::Value>>,
+    }
+    fn fixture(home: &Path, custody: bool) -> OwnedFixture {
+        OwnedFixture {
+            home: home.into(),
+            calls: AtomicUsize::new(0),
+            custody,
+            requests: Default::default(),
+        }
+    }
+    fn operation() -> OperationCustody {
+        OperationCustody {
+            consumer_package_id: "test.consumer".into(),
+            operation_id: "checkpoint-order".into(),
+        }
     }
     impl Host for OwnedFixture {
+        fn process_custody(&self) -> bool {
+            self.custody
+        }
         fn call(
             &self,
             method: &str,
@@ -469,6 +511,7 @@ mod tests {
             match method {
                 "host.process.run" => {
                     self.calls.fetch_add(1, Ordering::SeqCst);
+                    self.requests.lock().unwrap().push(p.clone());
                     let stdout = self.home.join("stdout");
                     let stderr = self.home.join("stderr");
                     let content = if p["args"] == json!(["login", "status"]) {
@@ -561,10 +604,7 @@ mod tests {
         let journal = Journal::open(state.path()).unwrap();
         journal.activate().unwrap();
         let recipe = accepted(&journal);
-        let host = OwnedFixture {
-            home: home.path().into(),
-            calls: AtomicUsize::new(0),
-        };
+        let host = fixture(home.path(), false);
         let executable = super::super::codex_executable::CodexExecutable {
             program: "/fixture/codex".into(),
             search_path: "/fixture".into(),
@@ -595,6 +635,7 @@ mod tests {
         assert!(generate_at(
             &executable,
             home.path(),
+            &operation(),
             &recipe,
             &[],
             &host,
@@ -633,16 +674,52 @@ mod tests {
         );
     }
     #[test]
+    fn only_the_image_turn_carries_operation_custody_and_only_when_the_host_takes_it() {
+        for custody in [true, false] {
+            let state = tempfile::tempdir().unwrap();
+            let home = tempfile::tempdir().unwrap();
+            let journal = Journal::open(state.path()).unwrap();
+            journal.activate().unwrap();
+            let recipe = accepted(&journal);
+            let host = fixture(home.path(), custody);
+            let executable = super::super::codex_executable::CodexExecutable {
+                program: "/fixture/codex".into(),
+                search_path: "/fixture".into(),
+            };
+            let _ = generate_at(
+                &executable,
+                home.path(),
+                &operation(),
+                &recipe,
+                &[],
+                &host,
+                &AtomicBool::new(false),
+                &|_| Ok(()),
+                &|_| {},
+            );
+            let requests = host.requests.lock().unwrap();
+            assert_eq!(requests.len(), 2, "login check and image turn");
+            let (login, turn) = (&requests[0], &requests[1]);
+            assert_eq!(login["args"], json!(["login", "status"]));
+            assert!(login.get("consumerPackageId").is_none(), "{login}");
+            assert!(login.get("operationId").is_none(), "{login}");
+            if custody {
+                assert_eq!(turn["consumerPackageId"], "test.consumer");
+                assert_eq!(turn["operationId"], "checkpoint-order");
+            } else {
+                assert!(turn.get("consumerPackageId").is_none(), "{turn}");
+                assert!(turn.get("operationId").is_none(), "{turn}");
+            }
+        }
+    }
+    #[test]
     fn interruption_after_turn_commit_keeps_safe_identity_and_never_a_successful_transcript() {
         let state = tempfile::tempdir().unwrap();
         let home = tempfile::tempdir().unwrap();
         let journal = Journal::open(state.path()).unwrap();
         journal.activate().unwrap();
         let recipe = accepted(&journal);
-        let host = OwnedFixture {
-            home: home.path().into(),
-            calls: AtomicUsize::new(0),
-        };
+        let host = fixture(home.path(), false);
         let executable = super::super::codex_executable::CodexExecutable {
             program: "/fixture/codex".into(),
             search_path: "/fixture".into(),
@@ -660,6 +737,7 @@ mod tests {
         assert!(generate_at(
             &executable,
             home.path(),
+            &operation(),
             &recipe,
             &[],
             &host,

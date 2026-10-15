@@ -898,7 +898,12 @@ impl Service {
                 .journal
                 .record_timing(&stage_caller, &stage_operation, name)
         });
+        let operation = te_plugin_runtime::process::OperationCustody {
+            consumer_package_id: work.caller.package_id.clone(),
+            operation_id: work.request.operation_id.clone(),
+        };
         let output = match adapters::generate(
+            operation,
             work.profile,
             work.recipe,
             inputs,

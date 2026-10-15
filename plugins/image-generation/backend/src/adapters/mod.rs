@@ -146,6 +146,7 @@ pub fn validate_image(bytes: &[u8], format: image::ImageFormat) -> Result<()> {
     Ok(())
 }
 pub async fn generate(
+    operation: te_plugin_runtime::process::OperationCustody,
     profile: Profile,
     recipe: EffectiveRecipe,
     inputs: Vec<Input>,
@@ -185,6 +186,7 @@ pub async fn generate(
     tokio::task::spawn_blocking(move || {
         codex::generate(
             &executable_path,
+            &operation,
             &recipe,
             &inputs,
             host.as_ref(),

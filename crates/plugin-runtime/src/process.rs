@@ -19,6 +19,27 @@ pub fn stdin_bound(initialize: &Value) -> Option<usize> {
         .filter(|bytes| *bytes > 0)
 }
 
+/// Initialization capability for explicit operation custody: `{version: 1}`.
+/// A host that advertises it accepts `consumerPackageId`/`operationId` and
+/// never binds a run that omits them to any operation.
+pub const CUSTODY_CAPABILITY: &str = "processCustody";
+
+/// Whether the host takes explicit operation custody. Detected by capability,
+/// never by host version: older hosts refuse the fields as unknown.
+pub fn custody_supported(initialize: &Value) -> bool {
+    initialize[CUSTODY_CAPABILITY]["version"] == 1
+}
+
+/// The shared-service operation a process run is done for. The host binds the
+/// run's complete output to that operation's admission, so the output is
+/// retained for and released with the operation. Runs that are not part of an
+/// operation carry none and stay unbound.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OperationCustody {
+    pub consumer_package_id: String,
+    pub operation_id: String,
+}
+
 /// Whether a `host.process.run` error code proves the program never ran.
 /// Hosts without typed refusals report them as `service_unavailable`, which
 /// stays uncertain, as do `interrupted` and every other code.
@@ -42,11 +63,15 @@ pub struct ProcessRequest {
     /// Written to the child's stdin, which is then closed; requires the
     /// `processStdin` capability and at most its `maxBytes` UTF-8 bytes.
     pub stdin: Option<String>,
+    /// Operation the run belongs to; send only to a host that advertises
+    /// `processCustody`.
+    pub custody: Option<OperationCustody>,
 }
 
 impl ProcessRequest {
-    /// Wire params. `stdin` is omitted when absent, so hosts that predate it
-    /// (and refuse unknown fields) still accept every request without it.
+    /// Wire params. `stdin` and custody are omitted when absent, so hosts that
+    /// predate them (and refuse unknown fields) still accept every request
+    /// without them.
     pub fn params(&self) -> Value {
         let mut params = json!({
             "program": self.program,
@@ -58,6 +83,10 @@ impl ProcessRequest {
         });
         if let Some(stdin) = &self.stdin {
             params["stdin"] = json!(stdin);
+        }
+        if let Some(custody) = &self.custody {
+            params["consumerPackageId"] = json!(custody.consumer_package_id);
+            params["operationId"] = json!(custody.operation_id);
         }
         params
     }
@@ -87,6 +116,7 @@ mod tests {
             stdout_limit: 1024,
             stderr_limit: 64,
             stdin,
+            custody: None,
         }
     }
 
@@ -102,6 +132,36 @@ mod tests {
             "an old host would refuse the field"
         );
         assert_eq!(request(Some("task".into())).params()["stdin"], "task");
+    }
+
+    #[test]
+    fn custody_is_sent_as_one_pair_and_omitted_when_absent() {
+        assert!(request(None).params().get("consumerPackageId").is_none());
+        assert!(request(None).params().get("operationId").is_none());
+        let bound = ProcessRequest {
+            custody: Some(OperationCustody {
+                consumer_package_id: "xnmp.trace".into(),
+                operation_id: "op-1".into(),
+            }),
+            ..request(None)
+        };
+        let params = bound.params();
+        assert_eq!(params["consumerPackageId"], "xnmp.trace");
+        assert_eq!(params["operationId"], "op-1");
+    }
+
+    #[test]
+    fn custody_support_is_read_from_the_initialize_capability() {
+        assert!(custody_supported(&json!({"processCustody":{"version":1}})));
+        for absent in [
+            json!({"processService":true}),
+            json!({"processCustody":true}),
+            json!({"processCustody":{"version":2}}),
+            json!({"processCustody":{}}),
+            Value::Null,
+        ] {
+            assert!(!custody_supported(&absent), "{absent}");
+        }
     }
 
     #[test]
