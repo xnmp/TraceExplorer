@@ -202,6 +202,8 @@ let nextSaveFailure: string | null = null;
 /** How many of the next `openai_image_inputs` calls fail. */
 let inputFailures = 0;
 let inputsHeld = false;
+/** When set, `jobs.start` refuses every job with this reason. */
+let jobStartFailure: string | null = null;
 let heldInputs: Array<() => void> = [];
 const inputSymlinks = new Map<string, string>();
 const inputDirectories = new Set<string>();
@@ -390,6 +392,7 @@ configureBackend(withNativeRequestCapacity({
       case "jobs.start": {
         const request = params.request as Record<string, unknown>;
         const profile = imageService.description?.profiles.find((p) => p.id === request.connectionId);
+        if (jobStartFailure !== null) return Promise.reject(new Error(jobStartFailure));
         if ("apiKey" in params || "backend" in request || "codexPath" in request) return Promise.reject(new Error("Credentials are not accepted by shared image jobs"));
         if (!imageService.available || !profile) return Promise.reject(new Error("Image connection unavailable"));
         if (request.expectedConnectionRevision !== profile.recipeRevision) return Promise.reject(new Error("Image connection changed; prepare again"));
@@ -611,6 +614,8 @@ export const backend = {
   failNextSave(message: string) { nextSaveFailure = message; },
   /** The next `count` reads of AI edit inputs fail. */
   failInputs(count: number) { inputFailures = count; },
+  /** Every job start is refused with `reason` (null accepts them again). */
+  refuseJobStarts(reason: string | null) { jobStartFailure = reason; },
   holdInputs() { inputsHeld = true; },
   releaseInputs() { inputsHeld = false; const pending = heldInputs; heldInputs = []; pending.forEach((release) => release()); },
   /** Mock filesystem links; inspection traverses them before interpreting parent segments. */
@@ -639,5 +644,5 @@ export const backend = {
   releaseSaves() { holdSaves = false; const pending = heldSaves; heldSaves = []; pending.forEach((run) => run()); },
   /** Stops both read gates and drops what they hold. */
   resetGates() { folderGate.reset(); nodeGate.reset(); },
-  reset() { folderGate.reset(); nodeGate.reset(); nodeReadFailures = 0; previewLatency = 0; folderLatency = 0; pickerResult = undefined; nextSaveFailure = null; inputFailures = 0; inputsHeld = false; heldInputs = []; inputSymlinks.clear(); inputDirectories.clear(); imageRuns.clear(); imageJobs.clear(); imageOperations.clear(); billing.clear(); state = scenario(); version += 1; calls.length = 0; },
+  reset() { folderGate.reset(); nodeGate.reset(); nodeReadFailures = 0; previewLatency = 0; folderLatency = 0; pickerResult = undefined; nextSaveFailure = null; inputFailures = 0; inputsHeld = false; jobStartFailure = null; heldInputs = []; inputSymlinks.clear(); inputDirectories.clear(); imageRuns.clear(); imageJobs.clear(); imageOperations.clear(); billing.clear(); state = scenario(); version += 1; calls.length = 0; },
 };

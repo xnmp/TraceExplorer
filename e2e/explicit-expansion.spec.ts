@@ -279,30 +279,53 @@ test("an AI edit started from the view on an image in a collapsed branch reveals
   expect(await uncaught(page)).toEqual([]);
 });
 
-test("a caret is offered only where it changes what is shown: a child another open parent shows", async ({ page }) => {
+test("a child of two parents: both offer a caret, and the latest press of either wins", async ({ page }) => {
   const keys = await open(page);
   const caretOf = (name: Name) => page.locator(`[data-node-caret="${keys[name]}"]`);
   const charizard = page.locator(`[data-tile-key="${keys.Charizard}"]`);
   for (const name of ["Saffron", "Ash"] as const) { await press(page, name)(); await settle(page); }
-  // Charizard becomes an edit of Ash and Blastoise: open Ash shows it already.
+  // Charizard becomes an edit of Ash and Blastoise.
   await page.evaluate(() => (window as any).trace.backend.addInput("Charizard", "Blastoise"));
-  await expect(caretOf("Blastoise")).toHaveCount(0);
-  await expect(caretOf("Ash")).toHaveCount(1);
-  // Once Ash closes, Blastoise alone can show Charizard: its caret appears and works.
-  await caretOf("Ash").click(); await settle(page);
-  await expect(charizard).toHaveCount(0);
-  await caretOf("Blastoise").click(); await settle(page);
   await expect(charizard).toHaveCount(1);
-  // Now Ash's caret would show nothing new.
-  await expect(caretOf("Ash")).toHaveCount(0);
-  // A first click on Ash records it open (showing nothing new); then neither parent alone hides
-  // Charizard, so a slow second click on Ash does nothing at all.
-  await press(page, "Blastoise")(); await settle(page);
-  await press(page, "Ash")(); await settle(page);
-  await expect(caretOf("Blastoise")).toHaveCount(0);
-  const frames = await framesOf(page, press(page, "Ash"), DOUBLE_CLICK_MS + 400);
+  await expect(caretOf("Ash")).toHaveAttribute("aria-expanded", "true");
+  await expect(caretOf("Blastoise"), "Blastoise's only child is shown").toHaveAttribute("aria-expanded", "true");
+  // Selecting Blastoise, whose child is shown, moves nothing.
+  let frames = await framesOf(page, press(page, "Blastoise"));
   expect(frames.at(-1)!.started, "no motion").toBe(frames[0].started);
   frames.forEach((frame, index) => expect(geometry(frame), `frame ${index}`).toEqual(geometry(frames[0])));
+  // Blastoise's caret hides Charizard although Ash opened it earlier; both carets then read collapsed.
+  await caretOf("Blastoise").click(); await settle(page);
+  await expect(charizard).toHaveCount(0);
+  await expect(caretOf("Ash")).toHaveAttribute("aria-expanded", "false");
+  await expect(caretOf("Blastoise")).toHaveAttribute("aria-expanded", "false");
+  // Ash's caret shows it again; a slow second click on the selected Blastoise hides it again.
+  await caretOf("Ash").click(); await settle(page);
+  await expect(charizard).toHaveCount(1);
+  frames = await framesOf(page, press(page, "Blastoise"), DOUBLE_CLICK_MS + 400);
+  expect(frames.at(-1)!.started, "the second click moves something").toBeGreaterThan(frames[0].started);
+  await expect(charizard).toHaveCount(0);
+  // And Blastoise's caret, now collapsed, shows it.
+  await caretOf("Blastoise").click(); await settle(page);
+  await expect(charizard).toHaveCount(1);
+  expect(await uncaught(page)).toEqual([]);
+});
+
+test("an AI edit whose job is refused reveals nothing", async ({ page }) => {
+  await page.setViewportSize({ width: 1100, height: 900 });
+  await openView(page, 900, "?selectionBlink=1&ai=1", false);
+  await page.locator("[data-stack-toggle]").click(); await settle(page);
+  for (const name of ["Saffron", "Ash", "Charizard"] as const) { await press(page, name)(); await settle(page); }
+  await (await caret(page, "Saffron")).click(); await settle(page);
+  const charizard = page.locator(`[data-tile-key="${await key(page, "Charizard")}"]`);
+  await expect(charizard).toHaveCount(0);
+  await page.evaluate(() => (window as any).trace.backend.refuseJobStarts("The image service is busy"));
+  await page.evaluate(() => (window as any).trace.command("plugin.openai-image.edit"));
+  const dialog = page.getByRole("dialog");
+  await dialog.getByRole("textbox", { name: "Prompt", exact: true }).fill("Give Charizard a hat");
+  await page.keyboard.press("Control+Enter");
+  await expect(dialog.getByText("The image service is busy")).toBeVisible();
+  await settle(page);
+  await expect(charizard, "nothing was started, so nothing is revealed").toHaveCount(0);
   expect(await uncaught(page)).toEqual([]);
 });
 
@@ -347,5 +370,23 @@ test("a second click on the selected cover of a stack still opening closes it", 
   await page.evaluate(() => (window as any).trace.backend.releaseNodeReads());
   await settle(page);
   await expect(toggle).toHaveAttribute("aria-expanded", "false");
+  expect(await uncaught(page)).toEqual([]);
+});
+
+test("a second click on a stack's cover toggles its stack when the toggle fires, even after its component merged", async ({ page }) => {
+  await openView(page, 900, "?grouping=two-chains", false);
+  const coverKey = await key(page, "photo-a");
+  const cell = page.locator(`[data-grid-cell="${coverKey}"]`);
+  const cover = cell.locator(".cover-press"), toggle = cell.locator("[data-stack-toggle]");
+  await cover.click(); await settle(page);
+  await expect(toggle, "a first click opens").toHaveAttribute("aria-expanded", "true");
+  const before = await page.locator("section[data-component]").evaluateAll((sections) => sections.map((section) => (section as HTMLElement).dataset.component));
+  await cover.click();
+  // Within the double-click window, an edit of both chains merges their components (the toggle
+  // finds the stack again by its cover's key, as a merge can change a stack's id).
+  await page.evaluate(() => (window as any).trace.backend.joinGeneration(["photo-a-edit", "photo-b-edit"], "joined"));
+  await expect(page.locator("section[data-component]")).not.toHaveCount(before.length);
+  await page.waitForTimeout(DOUBLE_CLICK_MS + 200); await settle(page);
+  await expect(toggle, "the second click closes the merged stack").toHaveAttribute("aria-expanded", "false");
   expect(await uncaught(page)).toEqual([]);
 });

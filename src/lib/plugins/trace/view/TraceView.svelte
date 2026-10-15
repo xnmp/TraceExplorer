@@ -536,10 +536,14 @@
     if (isReclick(cell.id, event)) {
       // A second click toggles the stack once no double click follows: a requested stack (open, or
       // still opening) closes, as its disclosure does; a closed one opens.
-      reclick({ kind: "reclick", key: cell.id, at: performance.now() }, () => {
-        const id = cell.summary?.id ?? summary.id;
-        if (openKeys.has(cell.id)) void controller.action({ kind: "collapse", target: cell.id, anchor: "hold" }, () => setExpanded(id, false));
-        else void controller.action({ kind: "expand", target: cell.id, anchor: "hold" }, () => { supersedeReveal(); releaseAnchors(); setExpanded(id, true); });
+      // The stack is found again by its cover's key when the toggle fires: its component may have
+      // merged in the meantime, which changes its id.
+      const cover = cell.id;
+      reclick({ kind: "reclick", key: cover, at: performance.now() }, () => {
+        const id = summaries.find((candidate) => candidate.coverKey === cover)?.id;
+        if (id === undefined) return;
+        if (openKeys.has(cover)) void controller.action({ kind: "collapse", target: cover, anchor: "hold" }, () => setExpanded(id, false));
+        else void controller.action({ kind: "expand", target: cover, anchor: "hold" }, () => { supersedeReveal(); releaseAnchors(); setExpanded(id, true); });
       });
       return;
     }
