@@ -54,11 +54,12 @@ async function open(ctx: PluginContext, inputs: readonly string[], outputDir: st
   const capturePane = hostCapturePane(ctx.workspace);
   const pane = capturePane?.();
   if (capturePane && !pane) throw new Error("The dialog's pane is unavailable. Choose an open pane and try again.");
-  // The Trace view the edit was started from shows its outputs as they arrive.
-  const trace = tracePanes.active();
+  // The Trace view in the pane the dialog was opened from shows the job's outputs. It is looked up
+  // when a job is accepted: the pane's view may have remounted, or gone, since.
+  const tracePane = pane ? (tracePanes.get(pane.paneId) ? pane.paneId : null) : tracePanes.activeId();
   const props = {
     inputs: inputs.map((path) => ({ path })), outputDir,
-    onStart: trace ? (paths: readonly string[]) => trace.expandForOutputs(paths) : undefined,
+    onStart: tracePane ? (paths: readonly string[]) => tracePanes.get(tracePane)?.expandForOutputs(paths) : undefined,
     jobs: ctx.jobs, toast: ctx.toast,
     configureConnections: () => configureConnections(ctx),
     captureSelection: ctx.workspace.captureSelection,

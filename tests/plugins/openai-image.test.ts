@@ -2,8 +2,10 @@ import { afterEach,describe,it,expect,vi } from "vitest";
 vi.mock("$lib/plugins/trace/prompt-titles.svelte",()=>({promptTitles:{bind(){},unbind(){}}}));
 vi.mock("$lib/plugins/openai-image/OpenAIImageDialog.svelte",()=>({default:{}}));
 vi.mock("$lib/plugins/openai-image/OpenAIImageEditorTool.svelte",()=>({default:{}}));
-vi.mock("$lib/plugins/trace/view/pane-registry.svelte",()=>({tracePanes:{active:()=>activeTrace}}));
+vi.mock("$lib/plugins/trace/view/pane-registry.svelte",()=>({tracePanes:{active:()=>activeTrace,activeId:()=>activeTraceId,get:(paneId:string|null)=>paneId?traceViews.get(paneId)??null:null}}));
 let activeTrace:{directory:string;inputs():readonly string[];hasUnusableTarget():boolean}|null=null;
+let activeTraceId:string|null=null;
+let traceViews=new Map<string,{expandForOutputs(paths:readonly string[]):void}>();
 vi.mock("$lib/plugins/openai-image/OpenAIImageHistory.svelte",()=>({default:{}}));
 import {openAIImagePlugin} from "$lib/plugins/openai-image";
 import type {PluginContext} from "../../integration/plugin-sdk";
@@ -72,6 +74,29 @@ describe("OpenAI plugin SDK contributions",()=>{
     await openAIImagePlugin.activate(f.ctx);
     await expect(f.commands.find((c) => c.id === "plugin.openai-image.edit")!.handler()).rejects.toThrow("pane is unavailable");
     expect(f.opened).toEqual([]);
+  });
+  it("shows a job's outputs in the Trace view of the dialog's own pane, looked up when the job is accepted", async () => {
+    vi.stubGlobal("__TAURI_EXPLORER_PLUGIN_SDK__", { sdkVersion: 1, apiVersion: 2, svelteVersion: SVELTE_ABI, capabilities: ["paneDialogs"] });
+    const first = { expandForOutputs: vi.fn() }, remounted = { expandForOutputs: vi.fn() }, active = { expandForOutputs: vi.fn() };
+    traceViews = new Map([["owner", first], ["active", active]]); activeTraceId = "active";
+    const f = fixture(); f.setSelection([image]); f.ctx.workspace.capturePane = () => ({ paneId: "owner" });
+    await openAIImagePlugin.activate(f.ctx);
+    await f.commands.find((c) => c.id === "plugin.openai-image.edit")!.handler();
+    const onStart = f.opened.at(-1)!.props.onStart as (paths: readonly string[]) => void;
+    // The owner's view remounts before the job is accepted.
+    traceViews.set("owner", remounted);
+    onStart([image.path]);
+    expect(remounted.expandForOutputs).toHaveBeenCalledWith([image.path]);
+    expect(first.expandForOutputs).not.toHaveBeenCalled();
+    expect(active.expandForOutputs, "never the active pane's view").not.toHaveBeenCalled();
+    // Gone by then: nothing to show it in.
+    traceViews.delete("owner");
+    expect(() => onStart([image.path])).not.toThrow();
+    // A dialog opened from a pane that does not show Trace has none.
+    f.ctx.workspace.capturePane = () => ({ paneId: "files" });
+    await f.commands.find((c) => c.id === "plugin.openai-image.edit")!.handler();
+    expect(f.opened.at(-1)!.props.onStart).toBeUndefined();
+    traceViews = new Map(); activeTraceId = null;
   });
   it("contributes only a shared configuration action and awaits managed dialog closure",async()=>{
     const f=fixture();

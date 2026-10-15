@@ -28,7 +28,7 @@
     jobs: PluginJobs;
     toast: PluginToast;
     onClose: () => void;
-    /** Called with the input paths as jobs start, so the view they came from shows their outputs. */
+    /** Called with the input paths once the first job is accepted, so the view they came from shows its outputs. */
     onStart?: (inputs: readonly string[]) => void;
   }
   let { open, onBusyChange = () => {}, captureSelection, registerFileDropTarget, header, inputs = [], outputDir,
@@ -241,7 +241,7 @@
       const problem = capabilityProblem(connection, settings, images.length);
       if (problem) throw new Error(problem);
       const batchId = count > 1 ? crypto.randomUUID() : null;
-      onStart?.(images.map((image) => image.path));
+      const startedFrom = images.map((image) => image.path);
       for (let index = 0; index < count; index += 1) {
       if (!alive) break;
       const result = await startImageJob({ jobs },
@@ -251,6 +251,8 @@
           prompt: prompt.trim(), outputFilename, ...settings });
       if (!result.ok) throw new Error(result.error);
       accepted += 1;
+      // Its output will show where it was started from, once a job is accepted: never for a failed start.
+      if (accepted === 1) onStart?.(startedFrom);
       }
       if (alive) onClose();
     } catch (cause) {
