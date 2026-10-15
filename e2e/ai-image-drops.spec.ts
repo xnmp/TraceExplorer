@@ -128,7 +128,7 @@ test("fixed-aspect submission blocks failed input inspection and recovers with p
   await expect(dialog(page).locator(".error")).toContainText("Could not read the input images: The image service is busy");
   await dialog(page).getByRole("combobox", { name: "Aspect ratio" }).click();
   await page.getByRole("option", { name: "16:9", exact: true }).click();
-  await dialog(page).getByRole("textbox", { name: "Edit prompt", exact: true }).fill("Keep this draft through a failed inspection");
+  await dialog(page).getByRole("textbox", { name: "Prompt", exact: true }).fill("Keep this draft through a failed inspection");
   await dialog(page).getByRole("button", { name: "Generate", exact: true }).click();
   await expect(dialog(page).locator(".error")).toContainText("Could not read the input images: The image service is busy");
   await expect(dialog(page).getByRole("button", { name: "Generate", exact: true })).toBeEnabled();
@@ -140,8 +140,8 @@ test("fixed-aspect submission blocks failed input inspection and recovers with p
 
 test("two dropped images turn an empty Ctrl+E draft into an edit and submit in delivery order", async ({ page }) => {
   await openEmpty(page);
-  await expect(dialog(page).getByText("Drop PNG, JPEG or WebP images here", { exact: false })).toBeVisible();
-  await expect(dialog(page).getByText("Up to 8 inputs", { exact: true })).toBeVisible();
+  await expect(dialog(page).locator(".inputs.drop-enabled")).toHaveCount(1);
+  await expect(dialog(page).getByText("Drop PNG, JPEG or WebP images here", { exact: false })).toHaveCount(0);
   await expect(dialog(page).locator("#openai-image-inputs-label")).toContainText("0 / 8");
   await dialog(page).getByRole("combobox", { name: "Image connection" }).click();
   await page.getByRole("option", { name: "Custom images", exact: true }).click();
@@ -156,11 +156,11 @@ test("two dropped images turn an empty Ctrl+E draft into an edit and submit in d
   const delivered = await inputs(page, ["cool", "warm"]);
   expect(await drop(page, delivered)).toBe("delivered");
   await expect(cards(page)).toHaveCount(2);
-  await expect(cards(page).locator(".number")).toHaveText(["Image 1", "Image 2"]);
+  await expect(cards(page).locator(".number")).toHaveText(["1", "2"]);
   await expect(cards(page).locator(".thumb .thumbnail")).toHaveCount(2);
   await expect(dialog(page).getByRole("heading", { name: "Edit with AI", exact: true })).toBeVisible();
-  await expect(dialog(page).getByRole("textbox", { name: "Edit prompt", exact: true })).toHaveValue(prompt);
-  await expect(dialog(page).getByRole("textbox", { name: "Edit prompt", exact: true })).toBeFocused();
+  await expect(dialog(page).getByRole("textbox", { name: "Prompt", exact: true })).toHaveValue(prompt);
+  await expect(dialog(page).getByRole("textbox", { name: "Prompt", exact: true })).toBeFocused();
   await expect(dialog(page).getByRole("textbox", { name: "Image model", exact: true })).toHaveValue("custom-model-draft");
   await expect(dialog(page).getByRole("combobox", { name: "Image connection" })).toHaveAttribute("data-value", "custom-http");
   await expect(dialog(page).getByRole("combobox", { name: "Resolution" })).toHaveAttribute("data-value", "1k");
@@ -170,7 +170,7 @@ test("two dropped images turn an empty Ctrl+E draft into an edit and submit in d
   await expect(page.getByRole("option", { name: "Auto", exact: true })).toBeVisible();
   await expect(page.getByRole("option", { name: "Keep", exact: true })).toHaveCount(0);
   await page.getByRole("option", { name: "16:9", exact: true }).click();
-  await dialog(page).getByRole("textbox", { name: "Edit prompt", exact: true }).focus();
+  await dialog(page).getByRole("textbox", { name: "Prompt", exact: true }).focus();
   await page.keyboard.press("Control+Enter");
   await expect.poll(async () => (await starts(page)).length).toBe(2);
   for (const start of await starts(page)) {
@@ -214,14 +214,14 @@ for (const paneDialogs of [true, false]) {
     const [warm] = await inputs(page, ["warm"]);
     await drop(page, [warm]);
     const prompt = "Keep this prompt when the same dialog is opened again";
-    await dialog(page).getByRole("textbox", { name: "Edit prompt", exact: true }).fill(prompt);
+    await dialog(page).getByRole("textbox", { name: "Prompt", exact: true }).fill(prompt);
     await page.evaluate(() => (window as any).trace.command("plugin.openai-image.edit"));
     await expect(dialog(page)).toHaveCount(1);
-    await expect(dialog(page).getByRole("textbox", { name: "Edit prompt", exact: true })).toHaveValue(prompt);
+    await expect(dialog(page).getByRole("textbox", { name: "Prompt", exact: true })).toHaveValue(prompt);
     await expect(cards(page)).toHaveCount(1);
     expect(await cards(page).getAttribute("data-input-path")).toBe(warm);
     expect(await page.evaluate(() => (window as any).trace.registeredDropTargets())).toBe(1);
-    await dialog(page).getByRole("textbox", { name: "Edit prompt", exact: true }).focus();
+    await dialog(page).getByRole("textbox", { name: "Prompt", exact: true }).focus();
     await page.keyboard.press("Control+Enter");
     await expect.poll(async () => (await starts(page)).length).toBe(1);
     expect((await starts(page))[0].params.request).toMatchObject({ prompt, sourcePath: warm });
@@ -238,7 +238,7 @@ test("the ninth input is rejected with the limit reason and the first eight rema
   await expect(cards(page)).toHaveCount(8);
   await expect(dialog(page).locator('[aria-live="polite"]')).toContainText("morning.png: Up to 8 inputs");
   expect(await cards(page).evaluateAll((cards) => cards.map((card) => (card as HTMLElement).dataset.inputPath))).toEqual(firstEight);
-  await dialog(page).getByRole("textbox", { name: "Edit prompt", exact: true }).fill("Combine these eight inputs");
+  await dialog(page).getByRole("textbox", { name: "Prompt", exact: true }).fill("Combine these eight inputs");
   await page.keyboard.press("Control+Enter");
   await expect.poll(async () => (await starts(page)).length).toBe(1);
   expect((await starts(page))[0].params.request).toMatchObject({ sourcePath: firstEight[0], referencePaths: firstEight.slice(1) });
@@ -255,8 +255,8 @@ test("unreadable drops leave an empty form in generate mode and external valid d
   await expect(cards(page)).toHaveCount(2);
   await dialog(page).getByRole("button", { name: "Move Image 2 earlier", exact: true }).click();
   await dialog(page).getByRole("button", { name: "Remove Image 2", exact: true }).click();
-  await expect(cards(page).locator(".number")).toHaveText(["Image 1"]);
-  await expect(cards(page).locator(".name")).toHaveText(["cool.png"]);
+  await expect(cards(page).locator(".number")).toHaveText(["1"]);
+  await expect(cards(page)).toHaveAttribute("aria-label", "Image 1: cool.png");
 });
 
 for (const paneDialogs of [true, false]) for (const fileDropTargets of [true, false]) {
@@ -266,10 +266,9 @@ for (const paneDialogs of [true, false]) for (const fileDropTargets of [true, fa
     if (paneDialogs) expect(call.options).toEqual({ scope: "pane", pane: { paneId: "pane-1" } });
     else expect(call).not.toHaveProperty("options");
     if (fileDropTargets) {
-      await expect(dialog(page).getByText("Drop PNG, JPEG or WebP images here", { exact: false })).toBeVisible();
+      await expect(dialog(page).locator(".inputs.drop-enabled")).toHaveCount(1);
       expect(await page.evaluate(() => (window as any).trace.registeredDropTargets())).toBe(1);
     } else {
-      await expect(dialog(page).getByText("Drop PNG, JPEG or WebP images here", { exact: false })).toHaveCount(0);
       await expect(dialog(page).locator(".drop-enabled")).toHaveCount(0);
       expect(await page.evaluate(() => (window as any).trace.registeredDropTargets())).toBe(0);
     }
@@ -280,7 +279,6 @@ for (const paneDialogs of [true, false]) for (const fileDropTargets of [true, fa
 
 test("a host that refuses the Inputs element leaves the form usable without drops", async ({ page }) => {
   await openEmpty(page, "&fileDropTargets=refuse");
-  await expect(dialog(page).getByText("Drop PNG, JPEG or WebP images here", { exact: false })).toHaveCount(0);
   await expect(dialog(page).locator(".inputs.drop-enabled")).toHaveCount(0);
   const prompt = dialog(page).getByRole("textbox", { name: "Image prompt", exact: true });
   await prompt.fill("A lighthouse at dusk");

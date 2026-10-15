@@ -7,10 +7,10 @@ const command = (page: Page, id: string) => page.evaluate((i) => (window as any)
 const dialog = (page: Page) => page.getByRole("dialog");
 const strip = (page: Page) => dialog(page).getByRole("list", { name: /Inputs/ });
 
-/** The numbered cards in the dialog: [number, file name]. */
+/** The numbered cards in the dialog: [badge number, file name from the accessible name]. */
 async function cards(page: Page): Promise<string[][]> {
   return strip(page).locator("[data-input-path]").evaluateAll((items) => items.map((item) => [
-    item.querySelector(".number")!.textContent!.trim(), item.querySelector(".name")!.textContent!.trim(),
+    item.querySelector(".number")!.textContent!.trim(), item.getAttribute("aria-label")!.replace(/^Image \d+: /, ""),
   ]));
 }
 
@@ -23,7 +23,7 @@ test("a Trace selection of listed, subfolder and unsaved images arrives whole, i
   if (SHOTS) await page.screenshot({ path: `${SHOTS}/trace-selection-4.png` });
   await command(page, "plugin.openai-image.edit");
   await expect(strip(page).locator("[data-input-path]")).toHaveCount(4);
-  expect(await cards(page)).toEqual([["Image 1", "warm.png"], ["Image 2", "merge.png"], ["Image 3", "mist.png"], ["Image 4", "village.png"]]);
+  expect(await cards(page)).toEqual([["1", "warm.png"], ["2", "merge.png"], ["3", "mist.png"], ["4", "village.png"]]);
   await expect(dialog(page).getByText("References:")).toHaveCount(0);
   await expect(dialog(page).getByLabel("Edit target")).toHaveCount(0);
   await expect(dialog(page).getByRole("combobox", { name: "Aspect ratio" })).toHaveAttribute("data-value", "keep");
@@ -32,18 +32,18 @@ test("a Trace selection of listed, subfolder and unsaved images arrives whole, i
 
   // Removing Image 3 renumbers the rest.
   await dialog(page).getByRole("button", { name: "Remove Image 3" }).click();
-  expect(await cards(page)).toEqual([["Image 1", "warm.png"], ["Image 2", "merge.png"], ["Image 3", "village.png"]]);
+  expect(await cards(page)).toEqual([["1", "warm.png"], ["2", "merge.png"], ["3", "village.png"]]);
   // Focus moves to the image that took its place, so removing can continue from the keyboard.
   await expect(dialog(page).getByRole("button", { name: "Remove Image 3" })).toBeFocused();
   // Moving by keyboard: the moved image keeps focus, so the key can be pressed again.
   await dialog(page).getByRole("button", { name: "Move Image 3 earlier" }).focus();
   await page.keyboard.press("Enter");
   await page.keyboard.press("Enter");
-  expect(await cards(page)).toEqual([["Image 1", "village.png"], ["Image 2", "warm.png"], ["Image 3", "merge.png"]]);
+  expect(await cards(page)).toEqual([["1", "village.png"], ["2", "warm.png"], ["3", "merge.png"]]);
   await expect(dialog(page).getByRole("button", { name: "Move Image 1 earlier" })).toBeDisabled();
   if (SHOTS) await dialog(page).locator(".plugin-dialog").screenshot({ path: `${SHOTS}/edit-inputs-reordered.png` });
 
-  await dialog(page).getByRole("textbox", { name: "Edit prompt" }).fill("Put the hat in Image 3 on the man in Image 1");
+  await dialog(page).getByRole("textbox", { name: "Prompt", exact: true }).fill("Put the hat in Image 3 on the man in Image 1");
   await page.keyboard.press("Control+Enter");
   await expect.poll(() => page.evaluate(() => (window as any).trace.backend.calls("jobs.start").length)).toBe(1);
   const [start] = await page.evaluate(() => (window as any).trace.backend.calls("jobs.start"));
@@ -73,7 +73,7 @@ test("an ordinary host selection of three images arrives whole", async ({ page }
   await expect(strip(page).locator("[data-input-path]")).toHaveCount(3);
   // The host reports its selection in listing order.
   expect((await cards(page)).map(([, name]) => name).sort()).toEqual(["cool.png", "plain.png", "village.png"]);
-  expect((await cards(page)).map(([number]) => number)).toEqual(["Image 1", "Image 2", "Image 3"]);
+  expect((await cards(page)).map(([number]) => number)).toEqual(["1", "2", "3"]);
   await expect(dialog(page).getByRole("button", { name: "Remove Image 1" })).toBeEnabled();
   await dialog(page).getByRole("button", { name: "Remove Image 3" }).click();
   // After the last card, focus moves to the one before it.
@@ -100,9 +100,8 @@ test("at 1280×800 the inputs, the prompt and every setting are visible without 
   const scrolled = await dialog(page).locator(".plugin-dialog, .dialog-body").evaluateAll((elements) => elements.map((element) => element.scrollHeight - element.clientHeight));
   expect(scrolled.every((overflow) => overflow <= 1)).toBe(true);
   for (const control of [
-    strip(page), dialog(page).getByRole("textbox", { name: "Edit prompt" }),
+    strip(page), dialog(page).getByRole("textbox", { name: "Prompt", exact: true }),
     dialog(page).getByRole("combobox", { name: "Resolution" }), dialog(page).getByRole("spinbutton", { name: "Images" }),
-    dialog(page).getByRole("combobox", { name: "Quality" }), dialog(page).getByRole("combobox", { name: "Background" }),
     dialog(page).getByRole("combobox", { name: "Aspect ratio" }), dialog(page).getByRole("button", { name: "Generate" }),
   ]) {
     await expect(control).toBeInViewport({ ratio: 1 });
@@ -436,7 +435,7 @@ test.describe("when the inputs cannot be read", () => {
     await fail(page, 1);
     await command(page, "plugin.openai-image.edit");
     await expect(dialog(page).getByRole("alert")).toContainText("Could not read the input images");
-    await dialog(page).getByRole("textbox", { name: "Edit prompt" }).fill("Warmer light");
+    await dialog(page).getByRole("textbox", { name: "Prompt", exact: true }).fill("Warmer light");
     await page.keyboard.press("Control+Enter");
     await expect.poll(async () => (await starts(page)).length).toBe(1);
     const [start] = await starts(page);
@@ -452,7 +451,7 @@ test.describe("when the inputs cannot be read", () => {
     await expect(editor(page).getByRole("alert")).toContainText("Could not read the input images");
     await expect(editor(page).getByLabel("Temperature", { exact: true })).toHaveCount(0);
     await expect(editor(page).getByLabel("Seed", { exact: true })).toHaveCount(0);
-    await editor(page).getByRole("textbox", { name: "Edit prompt" }).fill("Warmer light");
+    await editor(page).getByRole("textbox", { name: "Prompt", exact: true }).fill("Warmer light");
     // Keep needs Image 1's size: neither the backend nor the editor has it yet.
     await page.keyboard.press("Control+Enter");
     await expect(editor(page).getByRole("alert")).toHaveText("Could not read the input images: The image service is busy. Try again");
@@ -542,7 +541,7 @@ test("in edit mode, a connection that does not offer Keep falls back to an offer
   const ratio = dialog(page).getByRole("combobox", { name: "Aspect ratio" });
   await expect(ratio).toHaveAttribute("data-value", "1:1");
   await expect(ratio).toHaveText("1:1");
-  await dialog(page).getByRole("textbox", { name: "Edit prompt" }).fill("Make it blue");
+  await dialog(page).getByRole("textbox", { name: "Prompt", exact: true }).fill("Make it blue");
   await page.keyboard.press("Control+Enter");
   await expect.poll(() => page.evaluate(() => (window as any).trace.backend.calls("jobs.start").length)).toBe(1);
   const [start] = await page.evaluate(() => (window as any).trace.backend.calls("jobs.start"));

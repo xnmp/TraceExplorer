@@ -29,7 +29,7 @@ for (const theme of ["light", "dark"]) {
     expect(compositedEntrances).toEqual([]);
 
     const dialog = page.getByRole("dialog", { name: "Edit with AI" });
-    await expect(dialog.getByRole("textbox", { name: "Edit prompt" })).toBeFocused();
+    await expect(dialog.getByRole("textbox", { name: "Prompt", exact: true })).toBeFocused();
     const pixels: Buffer[] = [];
     for (const time of [0, 75, 150]) {
       await page.evaluate((time) => {

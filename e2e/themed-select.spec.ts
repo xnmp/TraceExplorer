@@ -67,7 +67,7 @@ test("clicking an option selects it, closes the list and is what gets submitted"
   await expect(listbox(page)).toHaveCount(0);
   await expect(resolution(page)).toHaveText("4K");
   await expect(resolution(page)).toHaveAttribute("data-value", "4k");
-  await dialog(page).getByRole("textbox", { name: "Edit prompt" }).fill("make it larger");
+  await dialog(page).getByRole("textbox", { name: "Prompt", exact: true }).fill("make it larger");
   await dialog(page).getByRole("button", { name: "Generate", exact: true }).click();
   await expect.poll(() => startedRequests(page).then((r) => r.length)).toBeGreaterThan(0);
   expect((await startedRequests(page))[0]).toMatchObject({ resolution: "4k" });
@@ -83,7 +83,7 @@ test("ArrowDown then Enter selects with the keyboard while focus stays on the co
   await expect(listbox(page)).toHaveCount(0);
   await expect(resolution(page)).toBeFocused();
   await expect(resolution(page)).toHaveText("4K");
-  await dialog(page).getByRole("textbox", { name: "Edit prompt" }).fill("make it larger");
+  await dialog(page).getByRole("textbox", { name: "Prompt", exact: true }).fill("make it larger");
   await dialog(page).getByRole("button", { name: "Generate", exact: true }).click();
   await expect.poll(() => startedRequests(page).then((r) => r.length)).toBeGreaterThan(0);
   expect((await startedRequests(page))[0]).toMatchObject({ resolution: "4k" });
@@ -114,7 +114,7 @@ test("pressing outside closes the list without changing the value", async ({ pag
   await openEditor(page);
   await resolution(page).click();
   await expect(listbox(page)).toBeVisible();
-  await dialog(page).getByRole("textbox", { name: "Edit prompt" }).click();
+  await dialog(page).getByRole("textbox", { name: "Prompt", exact: true }).click();
   await expect(listbox(page)).toHaveCount(0);
   await expect(resolution(page)).toHaveAttribute("data-value", "2k");
 });

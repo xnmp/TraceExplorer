@@ -106,6 +106,26 @@ describe("shared image connection policy", () => {
       expect(offeredOptions(profile)).toMatchObject({ resolution: true, aspectRatio: false });
       expect(offeredOptions(imageAvailability().description!.profiles[0])).toMatchObject({ resolution: true, aspectRatio: true });
     });
+    it("offers an option only when there is more than one choice", () => {
+      const { profile } = ratioOnly();
+      Object.assign(profile.capabilities, { quality: ["auto"], background: ["auto"] });
+      expect(offeredOptions(profile)).toMatchObject({ quality: false, background: false });
+      Object.assign(profile.capabilities, { quality: ["auto", "high"], background: ["auto", "opaque"] });
+      expect(offeredOptions(profile)).toMatchObject({ quality: true, background: true });
+      Object.assign(profile.capabilities, { quality: [], background: [] });
+      expect(offeredOptions(profile)).toMatchObject({ quality: false, background: false });
+      const [codex, api] = imageAvailability().description!.profiles;
+      expect(offeredOptions(codex)).toMatchObject({ quality: false, background: false });
+      expect(offeredOptions(api)).toMatchObject({ quality: true, background: true });
+      expect(offeredOptions(null)).toEqual({ resolution: true, aspectRatio: true, quality: true, background: true });
+    });
+    it("hides a single-value resolution or aspect-ratio list, but still shows both for pixel sizes", () => {
+      const { profile } = ratioOnly();
+      Object.assign(profile.capabilities, { resolution: ["2k"], aspectRatio: ["1:1"] });
+      expect(offeredOptions(profile)).toMatchObject({ resolution: false, aspectRatio: false });
+      Object.assign(profile.capabilities, { resolution: ["1k", "2k"], aspectRatio: ["1:1", "16:9"] });
+      expect(offeredOptions(profile)).toMatchObject({ resolution: true, aspectRatio: true });
+    });
     it("takes size auto and refuses values outside its lists", () => {
       const { profile } = ratioOnly();
       const base = { model: "m", size: "auto", quality: "auto" as const, background: "auto" as const };

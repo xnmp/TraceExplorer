@@ -6,15 +6,15 @@ test("configuring shared connections retains the caller draft and submits the re
   await click(page, "warm");
   await page.evaluate(() => (window as any).trace.command("plugin.openai-image.edit"));
   const caller = page.getByRole("dialog", { name: "Edit with AI" });
-  await caller.getByRole("textbox", { name: "Edit prompt" }).fill("Keep the entire caller draft and all its images");
+  await caller.getByRole("textbox", { name: "Prompt", exact: true }).fill("Keep the entire caller draft and all its images");
   await caller.getByRole("spinbutton", { name: "Images" }).fill("2");
   // Codex picks its own model; the form shows no model field and no adapter jargon for it.
   await expect(caller.getByText(/adapter-managed|saved login/)).toHaveCount(0);
   await expect(caller.getByRole("textbox", { name: "Image model" })).toHaveCount(0);
-  await caller.getByRole("button", { name: "Configure connections" }).click();
+  await caller.getByRole("button", { name: "Configure image connections" }).click();
   await page.getByRole("dialog", { name: "Image connections", exact: true }).getByRole("button", { name: "Use custom connection" }).click();
   await expect(caller.getByRole("combobox", { name: "Image connection" })).toHaveAttribute("data-value", "saved-login");
-  await expect(caller.getByRole("textbox", { name: "Edit prompt" })).toHaveValue("Keep the entire caller draft and all its images");
+  await expect(caller.getByRole("textbox", { name: "Prompt", exact: true })).toHaveValue("Keep the entire caller draft and all its images");
   await expect(caller.getByRole("spinbutton", { name: "Images" })).toHaveValue("2");
   await pickOption(caller.getByRole("combobox", { name: "Image connection" }), "custom-http");
   await caller.getByRole("textbox", { name: "Image model" }).fill("vendor/custom-image-42");
@@ -46,12 +46,12 @@ test("a missing package blocks generation while a disabled settings contribution
   });
   const caller = page.getByRole("dialog", { name: "Edit with AI" });
   await expect(caller.getByRole("status").and(caller.locator(".error"))).toHaveText("Install the Image Generation package in Plugins.");
-  await caller.getByRole("textbox", { name: "Edit prompt" }).fill("Keep me while fixing settings");
+  await caller.getByRole("textbox", { name: "Prompt", exact: true }).fill("Keep me while fixing settings");
   await expect(caller.getByRole("button", { name: "Generate", exact: true })).toBeDisabled();
-  await caller.getByRole("button", { name: "Configure connections" }).click();
+  await caller.getByRole("button", { name: "Configure image connections" }).click();
   await expect(caller.getByRole("alert")).toHaveText("Enable the Image Generation settings contribution in Plugins.");
   await expect(caller.getByRole("status").and(caller.locator(".error"))).toHaveText("Install the Image Generation package in Plugins.");
-  await expect(caller.getByRole("textbox", { name: "Edit prompt" })).toHaveValue("Keep me while fixing settings");
+  await expect(caller.getByRole("textbox", { name: "Prompt", exact: true })).toHaveValue("Keep me while fixing settings");
   expect(await page.evaluate(() => (window as any).trace.backend.calls("jobs.start"))).toEqual([]);
 });
 
@@ -60,8 +60,8 @@ test("a disabled configuration contribution does not disable an available native
   await click(page, "warm");
   await page.evaluate(() => { (window as any).trace.setConfigureFailure("Enable the Image Generation settings contribution in Plugins."); return (window as any).trace.command("plugin.openai-image.edit"); });
   const caller = page.getByRole("dialog", { name: "Edit with AI" });
-  await caller.getByRole("textbox", { name: "Edit prompt" }).fill("The existing native connection still works");
-  await caller.getByRole("button", { name: "Configure connections" }).click();
+  await caller.getByRole("textbox", { name: "Prompt", exact: true }).fill("The existing native connection still works");
+  await caller.getByRole("button", { name: "Configure image connections" }).click();
   await expect(caller.getByRole("alert")).toContainText("settings contribution");
   await expect(caller.getByRole("button", { name: "Generate", exact: true })).toBeEnabled();
   await caller.getByRole("button", { name: "Generate", exact: true }).click();
@@ -74,13 +74,13 @@ test("a description arriving after caller disposal cannot restore its connection
   await page.evaluate(() => { (window as any).trace.backend.holdImageDescriptions(); return (window as any).trace.command("plugin.openai-image.edit"); });
   const caller = page.getByRole("dialog", { name: "Edit with AI" });
   await expect.poll(() => page.evaluate(() => (window as any).trace.backend.calls("image_service_describe").length)).toBe(1);
-  await caller.getByRole("textbox", { name: "Edit prompt" }).fill("Disposed draft");
+  await caller.getByRole("textbox", { name: "Prompt", exact: true }).fill("Disposed draft");
   await caller.getByRole("button", { name: "Close", exact: true }).click();
   await page.evaluate(() => { (window as any).trace.backend.configureImages(); return (window as any).trace.command("plugin.openai-image.edit"); });
   await expect.poll(() => page.evaluate(() => (window as any).trace.backend.calls("image_service_describe").length)).toBe(2);
   await page.evaluate(() => (window as any).trace.backend.releaseImageDescriptions());
   await expect(caller.getByRole("combobox", { name: "Image connection" })).toHaveAttribute("data-value", "custom-http");
-  await expect(caller.getByRole("textbox", { name: "Edit prompt" })).toHaveValue("");
+  await expect(caller.getByRole("textbox", { name: "Prompt", exact: true })).toHaveValue("");
   expect(await page.evaluate(() => (window as any).trace.backend.calls("jobs.start"))).toEqual([]);
   expect(await page.evaluate(() => (window as any).trace.errors)).toEqual([]);
 });
@@ -93,11 +93,11 @@ test("reloading connections preserves a custom model draft and refreshes the rev
   const caller = page.getByRole("dialog", { name: "Edit with AI" });
   await pickOption(caller.getByRole("combobox", { name: "Image connection" }), "custom-http");
   await caller.getByRole("textbox", { name: "Image model" }).fill("my-mobile-custom-model");
-  await caller.getByRole("textbox", { name: "Edit prompt" }).fill("Preserve this narrow caller draft");
+  await caller.getByRole("textbox", { name: "Prompt", exact: true }).fill("Preserve this narrow caller draft");
   await page.evaluate(() => (window as any).trace.backend.configureImages());
   await caller.getByRole("button", { name: "Reload connections" }).click();
   await expect(caller.getByRole("textbox", { name: "Image model" })).toHaveValue("my-mobile-custom-model");
-  await expect(caller.getByRole("textbox", { name: "Edit prompt" })).toHaveValue("Preserve this narrow caller draft");
+  await expect(caller.getByRole("textbox", { name: "Prompt", exact: true })).toHaveValue("Preserve this narrow caller draft");
   await expect(caller.getByRole("button", { name: "Generate", exact: true })).toBeDisabled();
   await expect(caller.getByRole("status").and(caller.locator(".error"))).toContainText("This connection changed");
   await caller.getByRole("button", { name: "Use updated connection" }).click();
@@ -114,7 +114,7 @@ test("removing a pinned connection requires an explicit choice instead of switch
   await page.evaluate(() => (window as any).trace.command("plugin.openai-image.edit"));
   const caller = page.getByRole("dialog", { name: "Edit with AI" });
   await expect(caller.getByRole("combobox", { name: "Image connection" })).toHaveAttribute("data-value", "saved-login");
-  await caller.getByRole("textbox", { name: "Edit prompt" }).fill("Keep this draft until I choose");
+  await caller.getByRole("textbox", { name: "Prompt", exact: true }).fill("Keep this draft until I choose");
   await page.evaluate(() => {
     const backend = (window as any).trace.backend;
     const value = backend.imageService();
@@ -125,7 +125,7 @@ test("removing a pinned connection requires an explicit choice instead of switch
   await caller.getByRole("button", { name: "Reload connections" }).click();
   await expect(caller.getByRole("status").and(caller.locator(".error"))).toContainText("selected connection was removed");
   await expect(caller.getByRole("button", { name: "Generate", exact: true })).toBeDisabled();
-  await expect(caller.getByRole("textbox", { name: "Edit prompt" })).toHaveValue("Keep this draft until I choose");
+  await expect(caller.getByRole("textbox", { name: "Prompt", exact: true })).toHaveValue("Keep this draft until I choose");
   expect(await page.evaluate(() => (window as any).trace.backend.calls("jobs.start"))).toEqual([]);
   await pickOption(caller.getByRole("combobox", { name: "Image connection" }), "custom-http");
   await caller.getByRole("button", { name: "Generate", exact: true }).click();
@@ -138,12 +138,12 @@ test("Ctrl+Enter cannot submit stale capabilities while Reload is pending", asyn
   await page.evaluate(() => (window as any).trace.command("plugin.openai-image.edit"));
   const caller = page.getByRole("dialog", { name: "Edit with AI" });
   await expect(caller.getByRole("combobox", { name: "Image connection" })).toHaveAttribute("data-value", "saved-login");
-  await caller.getByRole("textbox", { name: "Edit prompt" }).fill("Wait for the pending capability read");
+  await caller.getByRole("textbox", { name: "Prompt", exact: true }).fill("Wait for the pending capability read");
   await page.evaluate(() => (window as any).trace.backend.holdImageDescriptions());
   await caller.getByRole("button", { name: "Reload connections" }).click();
   await expect.poll(() => page.evaluate(() => (window as any).trace.backend.calls("image_service_describe").length)).toBe(2);
   await expect(caller.getByRole("button", { name: "Generate", exact: true })).toBeDisabled();
-  await caller.getByRole("textbox", { name: "Edit prompt" }).focus();
+  await caller.getByRole("textbox", { name: "Prompt", exact: true }).focus();
   await page.keyboard.press("Control+Enter");
   expect(await page.evaluate(() => (window as any).trace.backend.calls("jobs.start"))).toEqual([]);
   await page.evaluate(() => (window as any).trace.backend.releaseImageDescriptions());

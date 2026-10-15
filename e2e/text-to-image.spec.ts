@@ -77,13 +77,13 @@ test("Ctrl+E still edits selected Trace images in click order", async ({ page })
   await click(page, "village", { modifiers: ["Control"] });
   await page.keyboard.press("Control+e");
   const dialog = page.getByRole("dialog", { name: "Edit with AI", exact: true });
-  await expect(dialog.getByRole("textbox", { name: "Edit prompt" })).toBeFocused();
+  await expect(dialog.getByRole("textbox", { name: "Prompt", exact: true })).toBeFocused();
   const inputs = dialog.getByRole("list", { name: /Inputs/ }).locator("[data-input-path]");
   await expect(inputs).toHaveCount(2);
   expect(await inputs.evaluateAll((items) => items.map((item) => item.getAttribute("aria-label")))).toEqual(["Image 1: warm.png", "Image 2: village.png"]);
   await expect(dialog.getByLabel("Temperature", { exact: true })).toHaveCount(0);
   await expect(dialog.getByLabel("Seed", { exact: true })).toHaveCount(0);
-  await dialog.getByRole("textbox", { name: "Edit prompt" }).fill("Combine these images");
+  await dialog.getByRole("textbox", { name: "Prompt", exact: true }).fill("Combine these images");
   await expect(dialog.getByRole("button", { name: "Generate", exact: true })).toBeEnabled();
   await page.keyboard.press("Control+Enter");
   await expect(dialog).toHaveCount(0);
@@ -95,7 +95,7 @@ test("editing an external generated parent saves into the current Trace folder",
   const generate = async (prompt: string, jobId: number) => {
     await page.keyboard.press("Control+e");
     const dialog = page.getByRole("dialog");
-    await dialog.getByRole("textbox", { name: /Image prompt|Edit prompt/ }).fill(prompt);
+    await dialog.getByRole("textbox", { name: /Image prompt|^Prompt$/ }).fill(prompt);
     await expect(dialog.getByRole("button", { name: "Generate", exact: true })).toBeEnabled();
     await page.keyboard.press("Control+Enter");
     await expect(dialog).toHaveCount(0);
@@ -170,7 +170,7 @@ test("local images in a search listing edit into their own folder", async ({ pag
   await page.getByRole("list", { name: "Built-in listing" }).getByRole("button", { name: "warm.png", exact: true }).click();
   await page.keyboard.press("Control+e");
   const dialog = page.getByRole("dialog", { name: "Edit with AI", exact: true });
-  await dialog.getByRole("textbox", { name: "Edit prompt" }).fill("Add moonlight");
+  await dialog.getByRole("textbox", { name: "Prompt", exact: true }).fill("Add moonlight");
   await expect(dialog.getByRole("button", { name: "Generate", exact: true })).toBeEnabled();
   await page.keyboard.press("Control+Enter");
   await expect(dialog).toHaveCount(0);

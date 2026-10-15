@@ -38,12 +38,12 @@ export function fallbackOption<T extends string>(current: T, preferred: T, offer
   if (!offered || offered.includes(current)) return current;
   return offered.includes(preferred) ? preferred : offered[0] ?? preferred;
 }
-/** Which image controls a connection offers. Pixel sizes are chosen through Resolution and Aspect ratio. */
+/** Which image controls a connection shows: only those with a real choice. A single-value list is sent as is, unasked. */
 export function offeredOptions(profile: ImageConnection | null | undefined): { resolution: boolean; aspectRatio: boolean; quality: boolean; background: boolean } {
   const caps = profile?.capabilities;
   if (!caps) return { resolution: true, aspectRatio: true, quality: true, background: true };
-  return { resolution: !!caps.sizes || !!caps.resolution?.length, aspectRatio: !!caps.sizes || !!caps.aspectRatio?.length,
-    quality: caps.quality.length > 0, background: caps.background.length > 0 };
+  return { resolution: !!caps.sizes || (caps.resolution?.length ?? 0) > 1, aspectRatio: !!caps.sizes || (caps.aspectRatio?.length ?? 0) > 1,
+    quality: caps.quality.length > 1, background: caps.background.length > 1 };
 }
 export function capabilityProblem(profile: ImageConnection, request: Pick<OpenAIImageRequest, "model" | "size" | "quality" | "background"> & Partial<Pick<OpenAIImageRequest, "resolution" | "aspectRatio">>, inputCount: number): string | null {
   const caps = profile.capabilities;
