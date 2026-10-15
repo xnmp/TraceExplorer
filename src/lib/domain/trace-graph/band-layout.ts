@@ -1,5 +1,5 @@
 /** Visible-first, bounded band optimisation. Geometry and history are immutable inputs. */
-import { downwardBandBound, layoutLayered, type GraphLayout, type LayoutItem, type LayoutRequest, type Ordering, type PlacedNode } from "./layout";
+import { downwardBandBound, layoutLayered, type GraphLayout, type LayoutItem, type LayoutRequest, type Ordering, type Passing, type PlacedNode } from "./layout";
 import { spacingFor, STACK_STEM_ROOM } from "./metrics";
 import { bandWidthBudget, columnsFor, partitions, buildShelves, validate } from "./band-shelves";
 import { attachSingleBand, attachPackedBand, localBandPlacement, bandExtent, withBandBounds, singleBandSkeleton } from "./band-geometry";
@@ -17,16 +17,16 @@ export { bandHistorySignature };
 export interface BandOptions {
   /** Keep committed history when the component grew (`band-history.ts`); otherwise it expires on any membership change. */
   readonly growthHistory: boolean;
-  /** A cover's lone child sits below the cover; otherwise its band prefers the pane's left edge. */
-  readonly loneChildBelowCover: boolean;
   /** When the component grew, anchors yield (`anchor-yield`) if holding them makes the band this many times taller than the best unanchored layout; Infinity: never. */
   readonly anchorHeightRatio: number;
   /** How the downward layout orders each generation (`layout.ts`, `Ordering`). */
   readonly ordering: Ordering;
+  /** How the downward layout's routes pass the rows between their ends (`layout.ts`, `Passing`). */
+  readonly passing: Passing;
 }
-export const BAND_DEFAULTS: BandOptions = Object.freeze({ growthHistory: true, loneChildBelowCover: true, anchorHeightRatio: 1.5, ordering: "barycenter" as const });
+export const BAND_DEFAULTS: BandOptions = Object.freeze({ growthHistory: true, anchorHeightRatio: 1.5, ordering: "barycenter" as const, passing: "straight" as const });
 /** The engine as merged in plan phase 3 (#79), for A/B comparison. */
-export const BAND_PHASE3: BandOptions = Object.freeze({ growthHistory: false, loneChildBelowCover: false, anchorHeightRatio: Infinity, ordering: "barycenter" as const });
+export const BAND_PHASE3: BandOptions = Object.freeze({ growthHistory: false, anchorHeightRatio: Infinity, ordering: "barycenter" as const, passing: "nearest-end" as const });
 
 /**
  * The committed history this request may build on, adjusted to the request's tile sizes;
@@ -350,8 +350,8 @@ export function layoutBand(input: LayoutRequest, options: BandOptions = BAND_DEF
   const visibleDown = (): Candidate => down ??= (() => {
     const half = (request.items.find(n => n.key === request.pinned?.key)?.width ?? 0) / 2;
     const pin = request.pinned ? { ...request.pinned, x: Math.max(half, Math.min(width - half, request.pinned.x)) } : undefined;
-    const layout = layoutLayered({ ...request, pinned: pin, history: undefined, band: undefined, maxWidth: width, orientation: "down" }, options.ordering);
-    return { name: "visible-down", layout: withBandBounds(!options.loneChildBelowCover && request.items.length === 2 && request.items.some(n => n.key !== key && n.parents.length === 1 && n.parents[0] === key) ? { ...layout, preferredX: 0 } : layout, key) };
+    const layout = layoutLayered({ ...request, pinned: pin, history: undefined, band: undefined, maxWidth: width, orientation: "down" }, { ordering: options.ordering, passing: options.passing });
+    return { name: "visible-down", layout: withBandBounds(request.items.length === 2 && request.items.some(n => n.key !== key && n.parents.length === 1 && n.parents[0] === key) ? { ...layout, preferredX: 0 } : layout, key) };
   })();
   const history: Candidate[] = [];
   if (previous) {

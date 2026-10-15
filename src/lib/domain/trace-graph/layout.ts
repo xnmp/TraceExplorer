@@ -309,13 +309,26 @@ export type Ordering = "barycenter" | "median-sweep" | {
   readonly positions: ReadonlyMap<NodeKey, number>;
 };
 
+/**
+ * Which gap a route takes through each display row it passes, and its lane's place in the gap.
+ * `straight` (the default): the gap nearest the straight line from the route's source to its end,
+ * at that row, and lanes ordered by where those lines cross the row. Two straight segments cross
+ * at most once, and only where their ends are in opposite orders, so following them adds no
+ * crossings of its own; it is the usual placement of a long edge's dummy nodes (Sugiyama, Tagawa
+ * and Toda 1981; Gansner et al. 1993, §4) with tiles as the fixed obstacles. `nearest-end`, as
+ * merged in plan phase 3: the gap nearest the route's end at every row, lanes ordered by source x.
+ */
+export type Passing = "straight" | "nearest-end";
+
+export interface LayeredOptions { readonly ordering?: Ordering; readonly passing?: Passing }
+
 /** The reusable layered engine; band candidates call it without recursively planning bands. */
-export function layoutLayered(request: LayoutRequest, ordering: Ordering = "barycenter"): GraphLayout {
-  if (request.orientation !== "right") return layoutDown(request, spacingFor(request.tileWidth).minWidth, ordering);
+export function layoutLayered(request: LayoutRequest, options: LayeredOptions = {}): GraphLayout {
+  if (request.orientation !== "right") return layoutDown(request, spacingFor(request.tileWidth).minWidth, options);
   // Left to right: the same engine on transposed tiles, transposed back.
   // Generations then form columns that never wrap (no height budget), and
   // the canvas needs no minimum height.
-  const turned = transposeLayout(layoutDown({ items: request.items.map((item) => ({ ...item, width: item.height, height: item.width })), maxWidth: Infinity, hint: request.hint, tileWidth: request.tileWidth }, 0));
+  const turned = transposeLayout(layoutDown({ items: request.items.map((item) => ({ ...item, width: item.height, height: item.width })), maxWidth: Infinity, hint: request.hint, tileWidth: request.tileWidth }, 0, { passing: options.passing }));
   const extent = request.extent !== undefined && Number.isFinite(request.extent) && request.extent > 0 ? Math.ceil(request.extent) : 0;
   return extent > turned.width ? { ...turned, width: extent } : turned;
 }
@@ -368,14 +381,14 @@ export function transposeLayout(layout: GraphLayout): GraphLayout {
 }
 
 /** The top-to-bottom engine; `minWidth` is the narrowest canvas it draws (within the budget). */
-function layoutDown(request: LayoutRequest, minWidth: number, ordering: Ordering = "barycenter"): GraphLayout {
+function layoutDown(request: LayoutRequest, minWidth: number, options: LayeredOptions = {}): GraphLayout {
   // Outer margins hold every lane that does not fit between tiles, and the
   // junctions a crowded channel has no column for. When they overflow, they
   // widen (the graph scrolls horizontally) rather than letting lanes merge or
   // dots stack. Legacy placement needs two retries. A pinned band can first
   // consume spare pane width; moving rows within that width changes gap slots,
   // so allow two further routing passes to settle the new slot choices.
-  const prepared = prepare(request, ordering);
+  const prepared = prepare(request, options.ordering ?? "barycenter", options.passing ?? "straight");
   let extra = { left: 0, right: 0 };
   const attempts = prepared.pinned ? 4 : 2;
   for (let attempt = 0; ; attempt++) {
@@ -500,7 +513,7 @@ export function downwardBandBound(request: LayoutRequest, coverKey: NodeKey, ste
  * Everything about a request that does not depend on a pass's extra margins:
  * computed once and shared by every pass of {@link layoutDown}.
  */
-function prepare(request: LayoutRequest, ordering: Ordering = "barycenter") {
+function prepare(request: LayoutRequest, ordering: Ordering = "barycenter", passing: Passing = "straight") {
   // Malformed input never spreads through the geometry: a size that is not a
   // finite, non-negative number counts as zero, sizes are capped far above
   // any tile, and an order that is not a number sorts first (ties by key).
@@ -600,7 +613,7 @@ function prepare(request: LayoutRequest, ordering: Ordering = "barycenter") {
   let plainKeys = true;
   for (const key of keys) if (typeof key !== "string" || key.includes(">") || key.includes("~")) { plainKeys = false; break; }
   return {
-    space, items, keys, parentsOf, bandCount, byBand, pinnedViolation, plan, joinFacts, ordered, targetsOf, plainKeys, swept,
+    space, items, keys, parentsOf, bandCount, byBand, pinnedViolation, plan, joinFacts, ordered, targetsOf, plainKeys, swept, passing,
     gap, margin, budget, pinned, contentWidth, rank, firstBand, firstRows: wrapRow(firstBand.map((key) => items.get(key)!.width), contentWidth, gap),
   };
 }
@@ -669,7 +682,7 @@ function junctionFacts(plan: ReturnType<typeof buildInputJunctions>, bands: Read
  * stops there instead of drawing what would be thrown away.
  */
 function layoutPass(prepared: Prepared, extra: { readonly left: number; readonly right: number }, minWidth: number, last: boolean): { layout: GraphLayout | null; shortfall: { left: number; right: number } } {
-  const { space, items, parentsOf, bandCount, byBand, pinnedViolation, plan, joinFacts, ordered, targetsOf, plainKeys, gap, margin, budget, pinned, contentWidth, rank } = prepared;
+  const { space, items, parentsOf, bandCount, byBand, pinnedViolation, plan, joinFacts, ordered, targetsOf, plainKeys, gap, margin, budget, pinned, contentWidth, rank, passing } = prepared;
   // A pinned band already spans the pane. Spend its unused horizontal room
   // on extra routing margins before widening it; centred legacy canvases
   // start tightly around their content and still widen by the full shortfall.
@@ -840,7 +853,8 @@ function layoutPass(prepared: Prepared, extra: { readonly left: number; readonly
   }
 
   // 3. Lanes. A route crosses each intermediate row through a gap between
-  // tiles or an outer margin. Gaps are identified by their geometry, so rows
+  // tiles or an outer margin: the open one nearest its straight line at that
+  // row (`Passing`). Gaps are identified by their geometry, so rows
   // with the same gap share one lane assignment and a route continuing
   // through both never meets another route's lane. Routes from one source
   // share a lane, so a fan-out reads as one trunk that branches; different
@@ -878,11 +892,35 @@ function layoutPass(prepared: Prepared, extra: { readonly left: number; readonly
   // found no column of their own. The next pass widens them by this much.
   const shortfall = { left: 0, right: 0 };
   const slotsInRow = new Map<number, Set<string>>();
+  /** The rows each inner gap's lanes pass, by gap id. */
+  const rowsOfSlot = new Map<string, Set<number>>();
   /** The rows each source passes through in each outer margin, by margin. */
   const marginRows = new Map<string, Map<string, number[]>>();
+  /** Stems in the channels either side of a row: other sources' exits from the row above, entries into the row below. */
+  const stemCache = new Map<number, { readonly x: number; readonly exit?: NodeKey; readonly entry?: NodeKey }[]>();
+  const stemsAround = (row: number) => {
+    let cached = stemCache.get(row);
+    if (!cached) stemCache.set(row, cached = [
+      ...spans(row - 1).filter((box) => targetsOf.has(endpointKey({ kind: "node", id: box.key }))).map((box) => ({ x: box.x + box.width / 2, exit: box.key })),
+      ...spans(row + 1).filter((box) => parentsOf(box.key).length > 0).map((box) => ({ x: box.x + box.width / 2, entry: box.key })),
+    ]);
+    return cached;
+  };
+  /** Whether a stem belongs to `source`: its own exit, or an entry it feeds directly. */
+  const ownStem = (source: string, stem: { readonly exit?: NodeKey; readonly entry?: NodeKey }) =>
+    stem.exit !== undefined ? source === endpointKey({ kind: "node", id: stem.exit }) : !!targetsOf.get(source)?.has(endpointKey({ kind: "node", id: stem.entry! }));
+  /** An inner gap leaves `source` a lane only if some x in it keeps MIN_LANE from every other source's stem. */
+  const clearFor = (slot: Slot, row: number, source: string) => {
+    if (slot.margin) return true;
+    const blocked = stemsAround(row).filter((stem) => stem.x > slot.low - MIN_LANE && stem.x < slot.high + MIN_LANE && !ownStem(source, stem)).map((stem) => [stem.x - MIN_LANE, stem.x + MIN_LANE] as const);
+    return !blocked.length || nearestFree(slot.x, blocked, slot.low, slot.high) !== null;
+  };
   const claim = (row: number, desired: number, source: string, sourceX: number): string | null => {
-    const slots = gapsOf(row);
-    if (!slots.length) return null;
+    const all = gapsOf(row);
+    if (!all.length) return null;
+    // Straight passing skips gaps whose every x meets another source's stem, while any other is left.
+    const clear = passing === "straight" ? all.filter((slot) => clearFor(slot, row, source)) : all;
+    const slots = clear.length ? clear : all;
     // Slots are tried by cost, then x, then row order (a stable sort); the
     // first with room takes the source, else the least loaded. With finite
     // keys that order is total, so the first is a minimum and needs no sort.
@@ -916,6 +954,11 @@ function layoutPass(prepared: Prepared, extra: { readonly left: number; readonly
     let lane = lanes.get(open.id);
     if (!lane) lanes.set(open.id, lane = { slot: open, sources: new Map<string, number>(), xs: new Map<string, number>() });
     if (!lane.sources.has(source)) lane.sources.set(source, sourceX);
+    if (!open.margin) {
+      let rows = rowsOfSlot.get(open.id);
+      if (!rows) rowsOfSlot.set(open.id, rows = new Set());
+      rows.add(row);
+    }
     // Only deferred junctions read which lanes each row uses.
     if (deferred.length) {
       let used = slotsInRow.get(row);
@@ -956,6 +999,8 @@ function layoutPass(prepared: Prepared, extra: { readonly left: number; readonly
   const sourceRoot = new Map<string, number>();
   /** Lane claims by source, then rounded end x, then row. */
   const claimed = new Map<string, Map<number, Map<number, string | null>>>();
+  /** Per inner gap, per source: the sum and count of the x its routes wanted there, which orders its lanes. */
+  const wanted = new Map<string, Map<string, { sum: number; count: number }>>();
   const pending: { node: number; slot: string | null; desired: number }[] = [];
   /** The trie root for a route's start; `source` is its endpoint key. */
   const rootOf = (endpoint: Endpoint, source: string): number => {
@@ -986,9 +1031,19 @@ function layoutPass(prepared: Prepared, extra: { readonly left: number; readonly
       if (!byEnd) claimed.set(source, byEnd = new Map());
       let byRow = byEnd.get(endKey);
       if (!byRow) byEnd.set(endKey, byRow = new Map());
-      for (let row = trie[node].row + 1; row <= endChannel; row++) {
+      const startRow = trie[node].row, straight = passing === "straight" && route.to.kind === "node";
+      for (let row = startRow + 1; row <= endChannel; row++) {
         let slot = byRow.get(row);
-        if (slot === undefined) byRow.set(row, slot = claim(row, endX, source, sourceX));
+        if (slot === undefined) {
+          const want = straight ? sourceX + (endX - sourceX) * (row - startRow) / (endChannel + 1 - startRow) : endX;
+          byRow.set(row, slot = claim(row, want, source, sourceX));
+          if (slot && straight) {
+            let bySource = wanted.get(slot);
+            if (!bySource) wanted.set(slot, bySource = new Map());
+            const sum = bySource.get(source);
+            if (sum) { sum.sum += want; sum.count++; } else bySource.set(source, { sum: want, count: 1 });
+          }
+        }
         const key = slot ?? endKey;
         let child = childOf(node, key);
         if (child === undefined) {
@@ -1061,14 +1116,28 @@ function layoutPass(prepared: Prepared, extra: { readonly left: number; readonly
     entries.forEach((entry, index) => lane.xs.set(entry.source, chosen.xs[index]));
   }
 
-  // Lane positions, once every source in a gap is known: ordered by where the
-  // sources sit (fewer crossings), centered on the gap and kept inside it.
+  // Lane positions, once every source in a gap is known: ordered by where
+  // their routes' straight lines cross the row (or, `nearest-end`, by where
+  // the sources sit), centered on the gap and kept inside it.
   for (const { slot, sources, xs } of lanes.values()) {
     if (slot.margin) continue;
-    const order = [...sources].sort((a, b) => a[1] - b[1] || a[0].localeCompare(b[0]));
+    const at = (source: string, sourceX: number) => { const w = wanted.get(slot.id)?.get(source); return w ? w.sum / w.count : sourceX; };
+    const order = [...sources].map(([source, sourceX]) => [source, at(source, sourceX)] as const).sort((a, b) => a[1] - b[1] || a[0].localeCompare(b[0]));
     const spacing = order.length > 1 ? Math.min(space.lane, (slot.high - slot.low) / (order.length - 1)) : 0;
     const span = spacing * (order.length - 1);
-    const first = Math.min(slot.high - span, Math.max(slot.low, slot.x - span / 2));
+    const centred = Math.min(slot.high - span, Math.max(slot.low, slot.x - span / 2));
+    // A lane runs on through the channels above and below its row, where other
+    // sources' stems leave the tiles above (at their centres) and enter the
+    // tiles below: keep each lane MIN_LANE clear of those stems where the gap
+    // has room, else stay centred.
+    const blocked: Interval[] = [];
+    for (const row of passing === "straight" ? rowsOfSlot.get(slot.id) ?? [] : []) {
+      const stems = stemsAround(row).filter((stem) => stem.x > slot.low - MIN_LANE && stem.x < slot.high + MIN_LANE);
+      order.forEach(([source], index) => {
+        for (const stem of stems) if (!ownStem(source, stem)) blocked.push([stem.x - index * spacing - MIN_LANE, stem.x - index * spacing + MIN_LANE]);
+      });
+    }
+    const first = blocked.length ? nearestFree(centred, blocked, slot.low, slot.high - span) ?? centred : centred;
     order.forEach(([source], index) => xs.set(source, first + index * spacing));
   }
   for (const { node, slot, desired } of pending) trie[node].x = slot ? laneX(slot, trie[node].source)! : desired;
