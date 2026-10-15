@@ -98,7 +98,8 @@ describe("layout properties on seeded random DAGs", () => {
       const before: Case = { id: "p", nodes: nodes.slice(0, k), focuses: [null] }, after: Case = { id: "p", nodes: nodes.slice(0, k + 1), focuses: [null] };
       const first = requestFor(before, input, width, 96), previous = commit(first).history, next = requestFor(after, input, width, 96);
       const top = previous.placed.nodes.get(input)!.y, grew = new Map(next.items.map(n => [n.key, n.height]));
-      const pushed = first.items.reduce((sum, n) => sum + (previous.placed.nodes.get(n.key)!.y < top ? Math.max(0, grew.get(n.key)! - n.height) : 0), 0);
+      // A tile the arrival hides (its branch collapsed under explicit expansion) pushes nothing.
+      const pushed = first.items.reduce((sum, n) => sum + (previous.placed.nodes.get(n.key)!.y < top ? Math.max(0, (grew.get(n.key) ?? n.height) - n.height) : 0), 0);
       const { fallback } = check({ ...next, anchorKey: input, history: previous }, previous, input, pushed);
       steps++;
       if (fallback === "anchor-yield" || fallback === "anchor-infeasible") yielded++;
