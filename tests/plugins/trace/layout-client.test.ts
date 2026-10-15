@@ -123,6 +123,40 @@ describe("layout client (whole folder runs)", () => {
       expect(layoutsPending()).toBe(0);
     });
 
+    it("sends a previous layout the worker replied with by reference, and whole once the worker is replaced", async () => {
+      vi.useFakeTimers();
+      try {
+        const { computeFolderLayout, WORKER_WATCHDOG_MS } = await load();
+        const first = computeFolderLayout(folderInput(100), vi.fn() as never);
+        const worker = created.last!;
+        worker.onmessage!({ data: { id: worker.posted[0].id, folder: folderLayout(100) } });
+        const reply = await first;
+        const second = computeFolderLayout({ ...folderInput(200), previous: reply }, vi.fn() as never);
+        expect(worker.posted[1]).toEqual({ id: worker.posted[1].id, folder: { ...folderInput(200), previous: null }, previous: worker.posted[0].id });
+        // A wedged worker is replaced; the replacement holds nothing, so the retried job goes whole.
+        vi.advanceTimersByTime(WORKER_WATCHDOG_MS);
+        const replacement = created.last!;
+        expect(replacement).not.toBe(worker);
+        expect(replacement.posted[0]).toEqual({ id: worker.posted[1].id, folder: { ...folderInput(200), previous: reply } });
+        replacement.onmessage!({ data: { id: replacement.posted[0].id, folder: folderLayout(200) } });
+        await expect(second).resolves.toEqual({ width: 200 });
+      } finally { vi.useRealTimers(); }
+    });
+
+    it("sends a job whole again when the worker no longer holds its previous layout", async () => {
+      const { computeFolderLayout } = await load();
+      const first = computeFolderLayout(folderInput(100), vi.fn() as never);
+      const worker = created.last!;
+      worker.onmessage!({ data: { id: worker.posted[0].id, folder: folderLayout(100) } });
+      const reply = await first;
+      const second = computeFolderLayout({ ...folderInput(200), previous: reply }, vi.fn() as never);
+      const job = worker.posted[1];
+      worker.onmessage!({ data: { id: job.id, missing: true } });
+      expect(worker.posted[2]).toEqual({ id: job.id, folder: { ...folderInput(200), previous: reply } });
+      worker.onmessage!({ data: { id: job.id, folder: folderLayout(200) } });
+      await expect(second).resolves.toEqual({ width: 200 });
+    });
+
     it("rejects at once when aborted while running, drops the late reply, and serves the next job", async () => {
       const { computeFolderLayout, layoutsPending } = await load();
       const stale = new AbortController();

@@ -137,10 +137,44 @@ export function planBands(input: FolderLayoutInput, geometry: FolderGridGeometry
   return plans;
 }
 
+/**
+ * An input's geometry and band plans, planned once per input object: the runtime weighs an
+ * input's uncached bands (`uncachedBandRequests`) and then runs the engine on that same object.
+ * Plans are a pure function of the input; a reused input object whose top-level fields were
+ * replaced since is planned again.
+ */
+interface Planned {
+  readonly geometry: FolderGridGeometry;
+  readonly plans: ReadonlyMap<GraphId, BandPlan>;
+  readonly fields: readonly unknown[];
+}
+const planned = new WeakMap<FolderLayoutInput, Planned>();
+const fieldsOf = (input: FolderLayoutInput): readonly unknown[] => [input.items, input.open, input.width, input.tile, input.grid, input.previous];
+function plansOf(input: FolderLayoutInput): Planned {
+  const known = planned.get(input), fields = fieldsOf(input);
+  if (known && known.fields.every((value, index) => Object.is(value, fields[index]))) return known;
+  const geometry = folderGridGeometry(input.width, input.tile, input.grid);
+  const fresh: Planned = { geometry, plans: planBands(input, geometry), fields };
+  planned.set(input, fresh);
+  return fresh;
+}
+
+/** `layoutSignature` of a planned request, computed once per request object (requests are never mutated). */
+const signatures = new WeakMap<LayoutRequest, string>();
+function signatureOf(request: LayoutRequest): string {
+  let known = signatures.get(request);
+  if (known === undefined) signatures.set(request, known = layoutSignature(request));
+  return known;
+}
+
 /** Plans and lays out every open band (step 2). */
 export function layoutBands(input: FolderLayoutInput, geometry: FolderGridGeometry, cache: BoundedCache<GraphLayout> | null = null, options: BandOptions = BAND_DEFAULTS): ReadonlyMap<GraphId, PlannedBand> {
+  return layoutPlanned(planBands(input, geometry), cache, options);
+}
+
+function layoutPlanned(plans: ReadonlyMap<GraphId, BandPlan>, cache: BoundedCache<GraphLayout> | null, options: BandOptions = BAND_DEFAULTS): ReadonlyMap<GraphId, PlannedBand> {
   const bands = new Map<GraphId, PlannedBand>();
-  for (const [id, { plan, kept }] of planBands(input, geometry)) {
+  for (const [id, { plan, kept }] of plans) {
     const layout = kept ?? bandLayout(plan.request, cache, options);
     // A cover the band does not place cannot be attached; the stack is shown closed.
     if (layout.nodes.has(id)) bands.set(id, { plan, layout });
@@ -154,18 +188,17 @@ export function layoutBands(input: FolderLayoutInput, geometry: FolderGridGeomet
  * Throws as the engine does for invalid geometry.
  */
 export function uncachedBandRequests(input: FolderLayoutInput, cache: BoundedCache<GraphLayout>): readonly LayoutRequest[] {
-  const geometry = folderGridGeometry(input.width, input.tile, input.grid);
-  return [...planBands(input, geometry).values()].filter(({ kept, plan }) => !kept && !cache.get(layoutSignature(plan.request))).map(({ plan }) => plan.request);
+  return [...plansOf(input).plans.values()].filter(({ kept, plan }) => !kept && !cache.get(signatureOf(plan.request))).map(({ plan }) => plan.request);
 }
 
 /** Seeds `cache` with the bands of a layout computed elsewhere (a worker), keyed by their exact requests. */
 export function rememberBands(layout: FolderLayout, cache: BoundedCache<GraphLayout>): void {
-  for (const graph of layout.graphs.values()) cache.set(layoutSignature(graph.plan.request), graph.layout);
+  for (const graph of layout.graphs.values()) cache.set(signatureOf(graph.plan.request), graph.layout);
 }
 
 function bandLayout(request: LayoutRequest, cache: BoundedCache<GraphLayout> | null, options: BandOptions): GraphLayout {
   if (!cache) return layoutGraph(request, options);
-  const key = layoutSignature(request);
+  const key = signatureOf(request);
   const known = cache.get(key);
   if (known) return known;
   const layout = layoutGraph(request, options);
@@ -218,8 +251,8 @@ export interface DefaultEngineOptions {
 export function createDefaultEngine(options: DefaultEngineOptions = {}): FolderLayoutEngine {
   const cache = options.bandCache === undefined ? createBoundedCache(estimateLayoutBytes) : options.bandCache;
   return (input) => {
-    const geometry = folderGridGeometry(input.width, input.tile, input.grid);
-    return composeFolderLayout(input.items, geometry, layoutBands(input, geometry, cache, options.band));
+    const { geometry, plans } = plansOf(input);
+    return composeFolderLayout(input.items, geometry, layoutPlanned(plans, cache, options.band));
   };
 }
 

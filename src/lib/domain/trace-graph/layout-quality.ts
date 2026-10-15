@@ -1031,6 +1031,52 @@ function sourcesMayCross(sources: Sources): boolean {
     return false;
 }
 
+/** Cell side of {@link gridPairs}, and the most cells one entry or the whole grid may take before it declines. */
+const PAIR_CELL = 48, PAIR_CELLS_PER_ENTRY = 4096, PAIR_GRID_CELLS = 1 << 20;
+/** Entries from which {@link crossingJoin} pairs them through the grid rather than its sweep. */
+const GRID_ENTRIES = 256;
+
+/**
+ * Calls `meet(s, t)` once for every pair of the first `count` entries whose bounds, grown by the
+ * touch tolerance, share a grid cell: a superset of the pairs whose bounds touch, each pair once.
+ * Returns false, calling nothing, when an entry's bounds are not finite or the grid would be too
+ * large; the caller then finds the pairs another way.
+ */
+function gridPairs(count: number, minX: Float64Array, maxX: Float64Array, minY: Float64Array, maxY: Float64Array, meet: (s: number, t: number) => void): boolean {
+    if (count < 2) return true;
+    const cx0 = new Int32Array(count), cx1 = new Int32Array(count), cy0 = new Int32Array(count), cy1 = new Int32Array(count);
+    let gx0 = Infinity, gx1 = -Infinity, gy0 = Infinity, gy1 = -Infinity;
+    for (let e = 0; e < count; e++) {
+        const x0 = Math.floor((minX[e] - EPS) / PAIR_CELL), x1 = Math.floor((maxX[e] + EPS) / PAIR_CELL), y0 = Math.floor((minY[e] - EPS) / PAIR_CELL), y1 = Math.floor((maxY[e] + EPS) / PAIR_CELL);
+        if (!(x0 > -1e6 && x1 < 1e6 && y0 > -1e6 && y1 < 1e6) || (x1 - x0 + 1) * (y1 - y0 + 1) > PAIR_CELLS_PER_ENTRY) return false;
+        cx0[e] = x0; cx1[e] = x1; cy0[e] = y0; cy1[e] = y1;
+        if (x0 < gx0) gx0 = x0;
+        if (x1 > gx1) gx1 = x1;
+        if (y0 < gy0) gy0 = y0;
+        if (y1 > gy1) gy1 = y1;
+    }
+    const height = gy1 - gy0 + 1, cells = (gx1 - gx0 + 1) * height;
+    if (!(cells <= PAIR_GRID_CELLS)) return false;
+    // Cell lists in compressed rows: entries in ascending order within each cell.
+    const start = new Int32Array(cells + 1);
+    for (let e = 0; e < count; e++) for (let x = cx0[e]; x <= cx1[e]; x++) for (let y = cy0[e], cell = (x - gx0) * height + y - gy0; y <= cy1[e]; y++, cell++) start[cell + 1]++;
+    for (let cell = 0; cell < cells; cell++) start[cell + 1] += start[cell];
+    const fill = start.slice(0, cells), members = new Int32Array(start[cells]);
+    for (let e = 0; e < count; e++) for (let x = cx0[e]; x <= cx1[e]; x++) for (let y = cy0[e], cell = (x - gx0) * height + y - gy0; y <= cy1[e]; y++, cell++) members[fill[cell]++] = e;
+    // Each entry meets the earlier entries of its cells, each once (stamped with the entry).
+    const stamp = new Int32Array(count).fill(-1);
+    for (let s = 0; s < count; s++) for (let x = cx0[s]; x <= cx1[s]; x++) for (let y = cy0[s], cell = (x - gx0) * height + y - gy0; y <= cy1[s]; y++, cell++) {
+        for (let at = start[cell], end = start[cell + 1]; at < end; at++) {
+            const t = members[at];
+            if (t >= s) break;
+            if (stamp[t] === s) continue;
+            stamp[t] = s;
+            meet(s, t);
+        }
+    }
+    return true;
+}
+
 /** Sources beyond which crossingJoin's source-bounds prefilter costs more than it saves. */
 const PREFILTER_SOURCES = 16;
 
@@ -1111,28 +1157,38 @@ function crossingJoin(layout: GraphLayout, routeGeometry: readonly RouteData[], 
             routes[e] = route; id[e] = segment; order[e] = e;
         }
     }
-    // Sweep in ascending minY (stable, so ties keep route order). An earlier segment ending above
-    // this one's touch tolerance cannot touch it or any later one (minY only grows), so it leaves
-    // the active list. The test below is the reference `touches` expression on the same values.
-    sortIndices(order, entries, minY);
     const sharedFirst: number[] = [], sharedSecond: number[] = [], sharedLength: number[] = [];
-    let activeCount = 0;
-    for (let k = 0; k < entries; k++) {
-        const s = order[k], x0 = minX[s], x1 = maxX[s], y0 = minY[s], y1 = maxY[s], low = y0 - EPS;
-        let still = 0;
-        for (let a = 0; a < activeCount; a++) {
-            const t = active[a];
-            if (maxY[t] < low) continue;
-            active[still++] = t;
-            if (!(x1 >= minX[t] - EPS && maxX[t] >= x0 - EPS && y1 >= minY[t] - EPS && maxY[t] >= low)) continue;
-            // The later segment in the reference numbering comes first.
-            const i = id[s] > id[t] ? s : t, j = id[s] > id[t] ? t : s;
-            if (routes[i] === routes[j] || source[routes[i]] === source[routes[j]]) continue;
-            const shared = counter.visit(routes[i], routes[j], coordinates, i, j);
-            if (shared !== 0) { sharedFirst.push(i); sharedSecond.push(j); sharedLength.push(shared); }
+    /** Visits a pair of entries whose bounds touch (the reference `touches` expression on the same values). */
+    const meet = (s: number, t: number) => {
+        if (!(maxX[s] >= minX[t] - EPS && maxX[t] >= minX[s] - EPS && maxY[s] >= minY[t] - EPS && maxY[t] >= minY[s] - EPS)) return;
+        // The later segment in the reference numbering comes first.
+        const i = id[s] > id[t] ? s : t, j = id[s] > id[t] ? t : s;
+        if (routes[i] === routes[j] || source[routes[i]] === source[routes[j]]) return;
+        const shared = counter.visit(routes[i], routes[j], coordinates, i, j);
+        if (shared !== 0) { sharedFirst.push(i); sharedSecond.push(j); sharedLength.push(shared); }
+    };
+    // Every pair of entries whose bounds touch is visited once, in either of two ways that find the
+    // same pairs: a uniform grid, each entry in every cell its bounds (grown by the touch tolerance)
+    // meet, so touching entries share a cell; or a sweep, cheaper for few entries and used where the
+    // grid would be unbounded.
+    if (entries < GRID_ENTRIES || !gridPairs(entries, minX, maxX, minY, maxY, meet)) {
+        // Sweep in ascending minY (stable, so ties keep route order). An earlier segment ending above
+        // this one's touch tolerance cannot touch it or any later one (minY only grows), so it leaves
+        // the active list.
+        sortIndices(order, entries, minY);
+        let activeCount = 0;
+        for (let k = 0; k < entries; k++) {
+            const s = order[k], low = minY[s] - EPS;
+            let still = 0;
+            for (let a = 0; a < activeCount; a++) {
+                const t = active[a];
+                if (maxY[t] < low) continue;
+                active[still++] = t;
+                meet(s, t);
+            }
+            active[still++] = s;
+            activeCount = still;
         }
-        active[still++] = s;
-        activeCount = still;
     }
     if (sharedLength.length) {
         // Reference order of each shared length: [later, a, b, earlier] compared lexicographically.

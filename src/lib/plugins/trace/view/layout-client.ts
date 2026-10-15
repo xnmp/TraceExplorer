@@ -12,12 +12,15 @@
 import type { FolderLayout, FolderLayoutEngine, FolderLayoutInput } from "$lib/domain/trace-graph/folder-layout";
 import { hostAllowsBlobWorkers } from "../../../../sdk";
 import { createLayoutWorker } from "./layout-worker-factory";
+import { createReplyLedger, type LayoutReplyMessage } from "./layout-protocol";
 
 /** How long the worker may compute one job before it is considered wedged (docs/scene-transactions.md §9). */
 export const WORKER_WATCHDOG_MS = 5000;
 
 let worker: Worker | null | undefined;
 let sequence = 0;
+/** What the current worker still holds of its replies, so a job's `previous` can go by reference. */
+const ledger = createReplyLedger();
 /** A whole-folder engine run: rejected as soon as it is aborted, even while the worker computes it (the reply is then dropped). */
 interface FolderJob {
   readonly id: number; readonly input: FolderLayoutInput; readonly fallback: FolderLayoutEngine; readonly signal?: AbortSignal;
@@ -53,7 +56,7 @@ function pump(): void {
     if (next.signal?.aborted) { next.reject(aborted()); continue; }
     running = next;
     try {
-      worker.postMessage({ id: next.id, folder: next.input });
+      worker.postMessage(ledger.message(next.id, next.input));
       const computing = worker, handle = setTimeout(() => wedged(computing), WORKER_WATCHDOG_MS);
       stopWatchdog = () => clearTimeout(handle);
     } catch (error) {
@@ -104,13 +107,23 @@ function workerInstance(): Worker | null {
   try {
     const created: Worker = createLayoutWorker();
     // Only the current worker's callbacks count: a retired (wedged) worker's late replies are ignored.
-    created.onmessage = (event: MessageEvent<{ id: number; folder?: FolderLayout; error?: string }>) => {
-      if (worker !== created || running?.id !== event.data.id) return;
-      finish(event.data.folder ? { folder: event.data.folder } : { error: new Error(event.data.error ?? "Layout failed") });
+    created.onmessage = (event: MessageEvent<LayoutReplyMessage>) => {
+      const data = event.data;
+      if (worker !== created || running?.id !== data.id) return;
+      if ("missing" in data) {
+        // The worker no longer holds the reply the job referred to: forget what it holds and send the job in full.
+        ledger.reset();
+        try { created.postMessage(ledger.message(running.id, running.input)); } catch (error) { finish({ error: asError(error) }); }
+        return;
+      }
+      if ("folder" in data) ledger.replied(data.id, data.folder);
+      finish("folder" in data ? { folder: data.folder } : { error: new Error(data.error ?? "Layout failed") });
     };
-    created.onmessageerror = () => { if (worker === created) finish({ error: new Error("Trace layout reply could not be read") }); };
+    // The worker kept the reply it sent; only this copy of it is lost.
+    created.onmessageerror = () => { if (worker === created) { if (running) ledger.replied(running.id, null); finish({ error: new Error("Trace layout reply could not be read") }); } };
     created.onerror = (event) => { event.preventDefault(); if (worker === created) fallBack(); };
     worker = created;
+    ledger.reset();
   } catch {
     worker = null;
   }

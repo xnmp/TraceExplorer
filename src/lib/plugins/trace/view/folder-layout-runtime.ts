@@ -1,12 +1,18 @@
 /**
- * Where the Trace view runs the folder layout engine: the registered default engine, memoised,
- * with one band cache shared by every pane. Inline runs are decided by Phase 2's workload rule
+ * Where the Trace view runs the folder layout engine: the registered default engine, with one
+ * band cache shared by every pane. Inline runs are decided by Phase 2's workload rule
  * (`canLayoutInline`) applied to each band request the run would actually compute (bands the
  * cache holds cost nothing); heavier runs go to the layout worker, whose bands are then
  * remembered here so the next inline run reuses them.
+ *
+ * The engine is not wrapped in a whole-input cache (`memoizeEngine`): the scene controller
+ * reuses a committed or recent layout whose basis is unchanged, and a repeated input finds
+ * every band in the band cache, so a whole-input key would only add a walk of the input and
+ * its previous layout to every request (a quarter to a third of a typical one). The inline
+ * check and the run that follows it plan the input once.
  */
 import { canLayoutInline } from "$lib/domain/trace-graph/layout-workload";
-import { createBoundedCache, createDefaultEngine, estimateLayoutBytes, memoizeEngine, rememberBands, uncachedBandRequests,
+import { createBoundedCache, createDefaultEngine, estimateLayoutBytes, rememberBands, uncachedBandRequests,
   type FolderLayout, type FolderLayoutEngine, type FolderLayoutInput } from "$lib/domain/trace-graph/folder-layout";
 
 export interface FolderLayoutRuntime {
@@ -19,7 +25,7 @@ export interface FolderLayoutRuntime {
 
 export function createFolderLayoutRuntime(): FolderLayoutRuntime {
   const bands = createBoundedCache(estimateLayoutBytes);
-  const engine = memoizeEngine(createDefaultEngine({ bandCache: bands }));
+  const engine = createDefaultEngine({ bandCache: bands });
   return {
     engine,
     inline(input) {
