@@ -101,6 +101,23 @@ export function keyAction(open: boolean, input: KeyInput): KeyAction | null {
   return null;
 }
 
+export interface Press { pointerType: string; button: number; ctrlKey?: boolean }
+
+/**
+ * Whether pressing the trigger toggles the list at once. A primary mouse button does, the way a
+ * native select opens on mousedown: waiting for the click means waiting for the release, and the
+ * outside press that closes another open list has already landed, so the switch shows an empty gap.
+ * Touch and pen wait for the click so a scroll gesture that starts on the trigger does not open it.
+ * Ctrl+press is a secondary click on macOS.
+ */
+export const pressToggles = (press: Press): boolean => press.pointerType === "mouse" && press.button === 0 && !press.ctrlKey;
+
+/**
+ * Whether a click on the trigger toggles the list: not when it ends a press that already toggled.
+ * A click with no pointer behind it (`detail` 0: assistive technology or a script) always does.
+ */
+export const clickToggles = (detail: number, pressToggled: boolean): boolean => detail === 0 || !pressToggled;
+
 export interface Rect { top: number; bottom: number; left: number; width: number }
 export interface Placement { top: number; left: number; minWidth: number; maxHeight: number; side: "below" | "above" }
 

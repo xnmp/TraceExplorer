@@ -171,3 +171,86 @@ test("Enter and Space each toggle once", async ({ page }) => {
   await page.keyboard.press("Space"); // selects the active option and closes
   await expect(listbox(page)).toHaveCount(0);
 });
+
+/**
+ * Records, per animation frame from the press on, which lists are drawn. rAF callbacks run just
+ * before the frame paints, so the state a callback sees is the state that frame shows.
+ */
+async function recordFrames(page: Page): Promise<void> {
+  await page.evaluate(() => {
+    const w = window as any;
+    w.__selectFrames = null;
+    const shown = () => [...document.querySelectorAll<HTMLElement>("[role=listbox]")]
+      .filter((list) => getComputedStyle(list).visibility === "visible" && list.getBoundingClientRect().height > 0)
+      .map((list) => list.getAttribute("aria-label"));
+    addEventListener("pointerdown", () => {
+      const frames: Array<Array<string | null>> = w.__selectFrames = [];
+      const sample = () => { frames.push(shown()); if (frames.length < 6) requestAnimationFrame(sample); };
+      requestAnimationFrame(sample);
+    }, { capture: true, once: true });
+  });
+}
+const framesSincePress = (page: Page) => page.waitForFunction(() => {
+  const frames = (window as any).__selectFrames;
+  return frames?.length >= 6 ? frames : null;
+}).then((handle) => handle.jsonValue() as Promise<Array<Array<string | null>>>);
+
+test("one click on another control closes the open list and opens its own in the same frame", async ({ page }) => {
+  await openEditor(page);
+  const ratio = dialog(page).getByRole("combobox", { name: "Aspect ratio" });
+  await ratio.click();
+  await expect(listbox(page)).toHaveAttribute("aria-label", "Aspect ratio");
+  await recordFrames(page);
+  // One click, held as a person holds it: frames are drawn between the press and the release.
+  const box = (await resolution(page).boundingBox())!;
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  await page.mouse.down();
+  const frames = await framesSincePress(page);
+  await page.mouse.up();
+  // The first frame after the press already shows the new list alone: no frame with both, none with neither.
+  expect(frames).toEqual(Array(frames.length).fill(["Resolution"]));
+  await expect(listbox(page)).toHaveCount(1);
+  await expect(resolution(page)).toHaveAttribute("aria-expanded", "true");
+  await expect(ratio).toHaveAttribute("aria-expanded", "false");
+  await expect(resolution(page)).toBeFocused();
+  // And it is the live list: a click on an option selects it.
+  await listbox(page).getByRole("option", { name: "4K" }).click();
+  await expect(resolution(page)).toHaveAttribute("data-value", "4k");
+});
+
+test("a mouse press draws the list in the next frame, without waiting for the release", async ({ page }) => {
+  await openEditor(page);
+  const box = (await resolution(page).boundingBox())!;
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  await recordFrames(page);
+  await page.mouse.down();
+  // Counted in frames, not milliseconds, so a loaded machine does not make it flaky.
+  const frames = await framesSincePress(page);
+  expect(frames[0]).toEqual(["Resolution"]);
+  // The release that completes the press is not a second toggle.
+  await page.mouse.up();
+  await expect(listbox(page)).toBeVisible();
+  await expect(resolution(page)).toHaveAttribute("aria-expanded", "true");
+  // A second press on the open control closes it, also on the press.
+  await recordFrames(page);
+  await page.mouse.down();
+  expect((await framesSincePress(page))[0]).toEqual([]);
+  await page.mouse.up();
+  await expect(listbox(page)).toHaveCount(0);
+});
+
+test("touch opens on the tap and assistive-technology clicks still toggle", async ({ browser }) => {
+  const context = await browser.newContext({ hasTouch: true });
+  const page = await context.newPage();
+  await openEditor(page);
+  await resolution(page).tap();
+  await expect(listbox(page)).toBeVisible();
+  await resolution(page).tap();
+  await expect(listbox(page)).toHaveCount(0);
+  // A click with no pointer behind it (detail 0), as a screen reader's activation sends.
+  await resolution(page).evaluate((el) => (el as HTMLElement).click());
+  await expect(listbox(page)).toBeVisible();
+  await resolution(page).evaluate((el) => (el as HTMLElement).click());
+  await expect(listbox(page)).toHaveCount(0);
+  await context.close();
+});

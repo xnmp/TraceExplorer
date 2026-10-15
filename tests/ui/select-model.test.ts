@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { NONE, emptyTypeahead, initialActive, keyAction, move, place, typeahead, typeaheadMatch, type SelectOption } from "../../integration/ui/select-model";
+import { NONE, clickToggles, emptyTypeahead, initialActive, keyAction, move, place, pressToggles, typeahead, typeaheadMatch, type SelectOption } from "../../integration/ui/select-model";
 
 const opts = (...labels: string[]): SelectOption[] => labels.map((l) => (l.startsWith("!") ? { value: l.slice(1), label: l.slice(1), disabled: true } : { value: l, label: l }));
 const fruit = opts("Apple", "Apricot", "Banana", "Blueberry", "Cherry");
@@ -92,6 +92,25 @@ describe("keyAction", () => {
     expect(keyAction(false, { key: "a", ctrlKey: true })).toBeNull();
     expect(keyAction(false, { key: "Shift" })).toBeNull();
     expect(keyAction(false, { key: "Escape" })).toBeNull();
+  });
+});
+
+describe("pressToggles", () => {
+  it("a primary mouse press toggles at once, like a native select", () => expect(pressToggles({ pointerType: "mouse", button: 0 })).toBe(true));
+  it.each(["touch", "pen", ""])("a %s press waits for the click", (pointerType) => expect(pressToggles({ pointerType, button: 0 })).toBe(false));
+  it("secondary, middle and Ctrl presses do not toggle", () => {
+    expect(pressToggles({ pointerType: "mouse", button: 2 })).toBe(false);
+    expect(pressToggles({ pointerType: "mouse", button: 1 })).toBe(false);
+    expect(pressToggles({ pointerType: "mouse", button: 0, ctrlKey: true })).toBe(false);
+  });
+});
+
+describe("clickToggles", () => {
+  it("ignores the click that ends a press which already toggled", () => expect(clickToggles(1, true)).toBe(false));
+  it("toggles on a click whose press did not (touch, pen)", () => expect(clickToggles(1, false)).toBe(true));
+  it("always toggles on a click with no pointer behind it (assistive technology)", () => {
+    expect(clickToggles(0, false)).toBe(true);
+    expect(clickToggles(0, true)).toBe(true);
   });
 });
 
