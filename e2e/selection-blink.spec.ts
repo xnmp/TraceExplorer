@@ -1,83 +1,65 @@
 import { test, expect } from '@playwright/test';
-import { card, key, openView, settle, uncaught } from './support';
+import { card, key, openView, rendered, settle, uncaught } from './support';
 import { holdMotion, awaitMotionStarted, releaseMotion, motionState } from './animation-control';
 
-/** Sample after all frame callbacks, beginning with the click's first presented frame. */
-test('selection reveals tiles and connectors instantly without disturbing retained cards', async ({ page }, info) => {
+/**
+ * Sample after all frame callbacks, beginning with the click's first presented frame. With both
+ * branches open, selection only restyles (explicit expansion): no tile or connector moves, appears
+ * or retires on any frame, and the selection styling changes in one frame, with no transition.
+ * (Before, a selection revealed its own neighborhood and hid the other branch.)
+ */
+test('alternating selection between open branches moves nothing and draws no retiring copy', async ({ page }, info) => {
   await page.setViewportSize({ width: 1100, height: 720 });
   await openView(page, 454, '?selectionBlink=1&scrollbars=host', false);
   await page.locator('[data-stack-toggle]').click();
   await settle(page);
-  await (await card(page, 'Saffron')).click();
-  await settle(page);
-  // A reveal keeps the band's orientation; the swaps below must stay reveals.
+  // First clicks open each branch.
+  for (const name of ['Saffron', 'Cerulean']) { await (await card(page, name)).click(); await settle(page); }
   const orientation = await page.locator('.graph').getAttribute('data-orientation');
   expect(orientation).toMatch(/^(right|down)$/);
-  const names = ['Cerulean', 'Saffron', "Pikachu's Ball", 'Blastoise', 'Ash'];
+  const names = ['stack', 'Cerulean', 'Saffron', "Pikachu's Ball", 'Blastoise', 'Ash'];
   const keys = Object.fromEntries(await Promise.all(names.map(async name => [name, await key(page, name)])));
-  for (const name of ['Cerulean', 'Saffron', 'Cerulean', 'Saffron']) {
-    await page.evaluate(({ keys, name }) => {
+  const edges = [['stack', 'Cerulean'], ['stack', 'Saffron'], ['Cerulean', "Pikachu's Ball"], ['Saffron', 'Blastoise'], ['Saffron', 'Ash']];
+  for (const name of ['Saffron', 'Cerulean', 'Saffron', 'Cerulean']) {
+    await page.evaluate(({ keys, edges, name }) => {
       const w = window as any;
-      const box = (el: Element) => { const r = el.getBoundingClientRect(); return { x: r.x, y: r.y }; };
-      const retained = () => Object.fromEntries(['Cerulean', 'Saffron'].map(n => [n, box(document.querySelector(`[data-tile-key="${keys[n]}"]`)!)]));
-      const opacity = (el: Element) => { let value = 1; for (let at: Element | null = el; at; at = at.parentElement) value *= Number(getComputedStyle(at).opacity); return value; };
-      w.__revealFrames = [];
-      w.__retainedBefore = retained();
+      const box = (el: Element | null) => { if (!el) return null; const r = el.getBoundingClientRect(); return [Math.round(r.x * 10) / 10, Math.round(r.y * 10) / 10, Math.round(r.width * 10) / 10, Math.round(r.height * 10) / 10]; };
+      const sample = () => ({
+        tiles: Object.fromEntries(Object.entries(keys).map(([n, k]) => [n, box(document.querySelector(`[data-tile-key="${k}"]`))])),
+        connectors: Object.fromEntries(edges.map(([from, to]) => [`${from}>${to}`, [...document.querySelectorAll(`path[data-from="node:${keys[from]}"][data-to="node:${keys[to]}"], path[data-motion-from="node:${keys[from]}"][data-motion-to="node:${keys[to]}"]`)].map(box)])),
+        ghosts: document.querySelectorAll('[data-motion-ghost], [data-ghost-tile-key]').length,
+        running: w.trace.motion.state().running.length,
+        styling: document.querySelector(`[data-node-key="${keys[name]}"]`)!.getAnimations({ subtree: true }).some(a => 'transitionProperty' in a && a.playState === 'running'),
+      });
+      w.__selectionFrames = [sample()];
       document.addEventListener('click', () => {
         const start = performance.now(), channel = new MessageChannel();
-        const sample = () => {
-          const tiles = Object.fromEntries(Object.entries(keys).map(([n, k]) => {
-            const tile = document.querySelector(`[data-tile-key="${k}"]`);
-            return [n, tile ? opacity(tile) : null];
-          }));
-          const children = name === 'Cerulean' ? ["Pikachu's Ball"] : ['Blastoise', 'Ash'];
-          const cards = Object.fromEntries(children.map(child => {
-            const tile = document.querySelector(`[data-tile-key="${keys[child]}"]`);
-            return [child, tile ? opacity(tile.querySelector('.card') ?? tile) : null];
-          }));
-          const connectors = Object.fromEntries(children.map(child => [child, [...document.querySelectorAll(`path[data-from="node:${keys[name]}"][data-to="node:${keys[child]}"], path[data-motion-from="node:${keys[name]}"][data-motion-to="node:${keys[child]}"]`)].map(opacity)]));
-          const selected = document.querySelector(`[data-node-key="${keys[name]}"]`)!;
-          w.__revealFrames.push({ tiles, cards, connectors, retained: retained(), ghosts: document.querySelectorAll('[data-motion-ghost]').length,
-            styling: selected.getAnimations({ subtree: true }).some(a => 'transitionProperty' in a && a.playState === 'running') });
+        const next = () => {
+          w.__selectionFrames.push(sample());
           if (performance.now() - start < 350) requestAnimationFrame(() => channel.port2.postMessage(null));
-          else { channel.port1.close(); channel.port2.close(); w.__revealDone = true; }
+          else { channel.port1.close(); channel.port2.close(); w.__selectionDone = true; }
         };
-        channel.port1.onmessage = sample;
-        w.__revealDone = false;
+        channel.port1.onmessage = next;
+        w.__selectionDone = false;
         requestAnimationFrame(() => channel.port2.postMessage(null));
       }, { once: true, capture: true });
-    }, { keys, name });
+    }, { keys, edges, name });
     await (await card(page, name)).click();
-    await page.waitForFunction(() => (window as any).__revealDone);
-    const { frames, before } = await page.evaluate(() => ({ frames: (window as any).__revealFrames, before: (window as any).__retainedBefore }));
+    await page.waitForFunction(() => (window as any).__selectionDone);
+    const frames = await page.evaluate(() => (window as any).__selectionFrames);
     await info.attach(`${name} frames`, { body: JSON.stringify(frames), contentType: 'application/json' });
-    const children = name === 'Cerulean' ? ["Pikachu's Ball"] : ['Blastoise', 'Ash'];
     expect(frames.length).toBeGreaterThan(3);
-    // Selection styling is part of the scene: it changes in the commit's frame, with no transition ("Native re-run fixes").
-    for (const frame of frames) expect(frame.styling, 'no selection CSS transition').toBe(false);
-    // The scene commits once its images are drawable: until then, frames show the previous scene, none of its new children.
-    const revealed = frames.findIndex((frame: any) => children.some((child) => frame.tiles[child] !== null));
-    expect(revealed, `${name}: its children appear`).toBeGreaterThan(-1);
+    const [before] = frames;
+    for (const n of names) expect(before.tiles[n], `${n} shown`).not.toBeNull();
     for (const [index, frame] of frames.entries()) {
-      expect(frame.ghosts, `${name}: no retiring copies`).toBe(0);
-      for (const retained of ['Cerulean', 'Saffron']) {
-        expect(frame.retained[retained].x).toBeCloseTo(before[retained].x, 1);
-        expect(frame.retained[retained].y).toBeCloseTo(before[retained].y, 1);
-      }
-      if (index < revealed) continue;
-      for (const child of children) {
-        expect(frame.tiles[child], `${name}: ${child} fully visible from its first frame`).toBe(1);
-        expect(frame.cards[child], `${child}: effective card opacity`).toBe(1);
-        expect(frame.connectors[child], `${child}: one live opaque connector`).toEqual([1]);
-      }
-    }
-    // Every live tile/connector that persists across consecutive frames is monotone.
-    for (let i = 1; i < frames.length; i++) {
-      for (const n of names) if (frames[i - 1].tiles[n] !== null && frames[i].tiles[n] !== null)
-        expect(frames[i].tiles[n]).toBeGreaterThanOrEqual(frames[i - 1].tiles[n]);
-      if (i > revealed) for (const child of children) expect(Math.max(...frames[i].connectors[child])).toBeGreaterThanOrEqual(Math.max(...frames[i - 1].connectors[child]));
+      expect(frame.ghosts, `${name} frame ${index}: no retiring copies`).toBe(0);
+      expect(frame.running, `${name} frame ${index}: no scene motion`).toBe(0);
+      expect(frame.styling, 'no selection CSS transition').toBe(false);
+      expect(frame.tiles, `${name} frame ${index}: every tile where it was`).toEqual(before.tiles);
+      expect(frame.connectors, `${name} frame ${index}: every connector where it was, one each`).toEqual(before.connectors);
     }
     await settle(page);
+    expect(await rendered(page, 'tone', 'focus'), `${name} is the focus`).toHaveLength(1);
     expect(await page.locator('.graph').getAttribute('data-orientation'), `${name}: orientation kept`).toBe(orientation);
   }
   expect((await uncaught(page)).filter(e => e !== 'ResizeObserver loop completed with undelivered notifications.')).toEqual([]);
