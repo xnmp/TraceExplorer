@@ -7,7 +7,7 @@ import { measure, validateLayout, cost, routePlan, sharedLaneLength, type Measur
 import { incrementalBudget, incrementalTree } from "./band-incremental";
 import { forEachPathNumber, isPlainPathData, mapPathNumbers, pathNumbers } from "./path-data";
 import { extentCost, optimisticCost, rectangleCost } from "./layout-cost-bound";
-import { bandHistorySignature, historyFit, resizedLayout } from "./band-history";
+import { bandHistorySignature, historyFit, resizedLayout, resizedTiles } from "./band-history";
 
 export { bandWidthBudget };
 
@@ -41,7 +41,13 @@ function fittedHistory(input: LayoutRequest, options: BandOptions): { readonly h
   if (!fit || (fit.kind === "grown" && !options.growthHistory)) return none;
   if (fit.kind === "same") return { history, ...none };
   if (!fit.heights.size) return { history, resized: false, grew: true };
-  return { history: { ...history, layout: resizedLayout(history.layout, fit.heights), placed: resizedLayout(history.placed, fit.heights) }, resized: true, grew: true };
+  // With an attachment, the placed geometry is attached afresh from `layout` (`normalizedHistory`)
+  // and never read, so only `layout` is resized. Geometry that cannot be resized in place keeps
+  // only its tiles: they hold the band where it was while it is laid out again.
+  const layout = resizedLayout(history.layout, fit.heights);
+  const placed = history.attachment ? history.placed : layout && resizedLayout(history.placed, fit.heights);
+  if (layout && placed) return { history: { ...history, layout, placed }, resized: true, grew: true };
+  return { history: { ...history, layout: resizedTiles(history.layout, fit.heights), placed: resizedTiles(history.placed, fit.heights) }, resized: true, grew: true };
 }
 
 interface Candidate { readonly name: string; readonly layout: GraphLayout; readonly partition?: readonly number[] }

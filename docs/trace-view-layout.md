@@ -550,24 +550,37 @@ expired the history and each arriving output relaid the band, moving the selecte
 
 - History stays compatible when the frame (pane width, tile size, pinned cover) and every
   shared image's order, inputs and size match. The one size change allowed is the expansion
-  hint: a tile's first output adds it, and its last output leaving (a failed or dismissed
-  placeholder, a discard) takes it away. The tile is resized in place (`resizedLayout`), a
-  cut-and-stretch step as in incremental orthogonal drawing (Papakostas and Tollis 1998):
-  everything below a horizontal cut that crosses no tile moves rigidly, and connectors
-  crossing the cut stretch along their vertical runs.
-  - Growing, the cut is the first clear line under the tile, and things below it move down
-    by what the tile needs: nothing, when a taller neighbour already gives its row the room.
-    If a connector passes through that room, the cut is right under the tile instead, and
-    the neighbours it passes stay. A connector leaving a staying tile's lower edge on the
-    cut keeps its start and bridges down to what moved.
-  - Shrinking, things below the cut move back up as far as the freed space allows. Growing
-    and shrinking back restores the drawing, except after a cut right under the tile: then
-    the room stays, rather than pulling the rows below closer to the taller neighbour.
+  hint, by exactly its height (16 px): a tile's first output adds it, and its last output
+  leaving (a failed or dismissed placeholder, a discard) takes it away. Any other change of
+  height (a scope flip, say) lays the band out afresh. The tile is resized in place
+  (`resizedLayout`), a cut-and-stretch step as in incremental orthogonal drawing (Papakostas
+  and Tollis 1998): everything below a horizontal cut moves rigidly, and connectors crossing
+  the cut stretch along their vertical runs.
+  - Tiles one above the other keep their gap, less only room the layout leaves spare: room
+    beside a taller neighbour in the tile's row (the channel under the row stays), and, running
+    right, room beyond the stack gap between the tiles of one column of a shelf.
+  - Growing, the cut is the first line under the tile that crosses no tile, and things below it
+    move down by what the tile and the gaps under it need: nothing, when a taller neighbour
+    already gives its row the room, or a shrink left room in its column. If that cut would leave
+    a tile of the tile's column in place too close under it, or bring a connector within 2 px of
+    the tile (closer than it was), the cut is right under the tile instead, and the neighbours
+    it passes stay. A connector leaving a staying tile's lower edge on the cut keeps its start
+    and bridges down to what moved.
+  - Shrinking, things below the cut move back up as far as the freed space allows, and no
+    further than any tile's gap to the tile above it in its column allows: running right, a
+    column beside the tile does not rise because the tile shrank. Otherwise the space stays,
+    and the next growth reuses it, so repeated failed edits never drift.
   - Running right, a connector arriving at the tile's left side follows its new centre; if
     that would run it along another source's line, it steps across one arrow length before
     the tile instead.
-  - When only hints changed and the resized geometry passes every hard gate, it is kept as
-    it is (decision `resized-visible`), so an output arriving out of sight moves nothing.
+  - Every connector must meet its tiles where it did. When no cut manages that (a neighbour's
+    side port below the cut, a step that would run along the edge of the tile it leaves),
+    the band is laid out again, holding its tiles where the resize would have put them
+    (`resizedTiles`): the committed geometry without its connectors is never kept as it is.
+  - When only hints changed, the committed layout shares no lane, and the resized geometry
+    passes every hard gate, it is kept as it is (decision `resized-visible`): an output
+    arriving out of sight moves tiles only straight down (by the hint, at most, per tile that
+    grew), and one leaving only straight up.
 - When the component grew, anchors yield (`anchor-yield`) if holding them makes the band
   more than `anchorHeightRatio` (1.5) times taller than the best unanchored layout: a chain
   growing below a held column must still wrap. A click on an unchanged component never
