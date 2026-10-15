@@ -5,7 +5,7 @@
 import { describe, expect, it } from "vitest";
 import {
   arrowTip, axisOf, BERTH_SLACK, berthsOf, CORNER_BERTH, cornersOf, distanceToSegment, distanceToTile, entersBerth, grazesTile, INTO_JUNCTION, INTO_TILE,
-  leavingRun, routeEnds, shallowRun, SHALLOW_RUN, TILE_GRAZE,
+  leavingRun, leavingRunFrom, routeEnds, shallowRun, SHALLOW_RUN, TILE_GRAZE,
 } from "$lib/domain/trace-graph/route-contacts";
 import type { PlacedNode, PlacedRoute } from "$lib/domain/trace-graph/layout";
 import { ARROW, LANE_SEPARATION, PORT_BERTH } from "$lib/domain/trace-graph/metrics";
@@ -170,6 +170,22 @@ describe("tile clearance (grazesTile)", () => {
     expect(grazesTile(hugging, tile, true)).toBe(true);
     // Doubling back along the run is a turn.
     expect(leavingRun(polyline(p(180, 130), p(190, 130), p(185, 130)))).toBe(1);
+  });
+
+  it("a first run along the tile's border does not leave it: it lies on the border", () => {
+    // Out of the right port and straight down the right edge (a gutter or gap lane on the edge itself).
+    const down = polyline(p(180, 130), p(180, 240), p(140, 240));
+    expect(leavingRunFrom(down, tile)).toBe(0);
+    expect(grazesTile(down, tile, true)).toBe(true);
+    // The same through a zero-length piece at the port first.
+    expect(grazesTile(polyline(p(180, 130), p(180, 130), p(180, 240)), tile, true)).toBe(true);
+    // Leaving the bottom port straight down, or the right port straight right, it leaves the tile.
+    expect(leavingRunFrom(polyline(p(140, 160), p(140, 200), p(300, 200)), tile)).toBe(1);
+    expect(grazesTile(polyline(p(140, 160), p(140, 200), p(300, 200)), tile, true)).toBe(false);
+    expect(leavingRunFrom(polyline(p(180, 130), p(181.5, 130), p(181.5, 130), p(200, 130)), tile)).toBe(3);
+    // A route starting off the outline leaves nothing.
+    expect(leavingRunFrom(polyline(p(190, 130), p(200, 130)), tile)).toBe(0);
+    expect(leavingRunFrom([], tile)).toBe(0);
   });
 
   it("malformed or empty routes never graze", () => {

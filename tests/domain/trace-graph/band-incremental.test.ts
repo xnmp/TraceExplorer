@@ -4,6 +4,7 @@ import { incrementalBudget, incrementalTree, INCREMENTAL_LIMIT } from "$lib/doma
 import { attachSingleBand, bandExtent } from "$lib/domain/trace-graph/band-geometry";
 import { measure, segments, sharedLaneLength } from "$lib/domain/trace-graph/layout-quality";
 import { ARROW, spacingFor } from "$lib/domain/trace-graph/metrics";
+import { distanceToTile, TILE_GRAZE } from "$lib/domain/trace-graph/route-contacts";
 import { node, random } from "./fixtures";
 import secondChanceScene from "./second-chance-scene.json";
 import { engines, type FolderLayout } from "$lib/domain/trace-graph/folder-layout";
@@ -166,6 +167,21 @@ describe("incremental tree: chains", () => {
   });
 });
 
+describe("incremental tree: tiles kept off lines", () => {
+  it("does not place a new tile against another tile's retained connector", () => {
+    const items = [item("root"), item("a", ["root"], 1), item("z", ["root"], 2)];
+    const base = committed(items);
+    // A retained connector of z down x = 116, where the slot right below a would put c's border.
+    const held: PlacedRoute = { id: "held", from: { kind: "node", id: "z" }, to: { kind: "node", id: "z" }, consumers: [{ parent: "root", child: "z" }], terminal: false, path: "M116 240 L116 400" };
+    const previous = { ...base, routes: [...base.routes, held] };
+    const next = request([...items, item("c", ["a"], 3)]);
+    const result = incrementalTree(next, previous);
+    expect(result).not.toBeNull();
+    const c = result!.nodes.get("c")!;
+    expect(Math.min(...segments(held.path).map(s => distanceToTile(s, c)))).toBeGreaterThanOrEqual(TILE_GRAZE);
+  });
+});
+
 describe("incremental tree: robustness", () => {
   it("is deterministic", () => {
     const previous = committed(base.slice(0, 4)), next = request([...base.slice(0, 4), item("c", ["a", "b", "d"], 5), item("f", ["c"], 6)]);
@@ -192,6 +208,18 @@ describe("incremental tree: robustness", () => {
     }
   });
 
+  it("withholds promptly when geometry is beyond reach", () => {
+    const previous = committed(base.slice(0, 3)), next = request([...base.slice(0, 3), item("c", ["a", "b"], 5)]);
+    const tile = (field: "y" | "height", value: number) => ({ ...previous, nodes: new Map([...previous.nodes].map(([k, n]) => [k, k === "a" ? { ...n, [field]: value } : n])) });
+    const cases: [LayoutRequest, GraphLayout][] = [
+      [next, tile("y", 1e300)],
+      [next, tile("height", Infinity)],
+      [request([...base.slice(0, 3), { ...item("c", ["a", "b"], 5), height: 1e300 }]), previous],
+      [request([...base.slice(0, 3), item("c", ["a", "b"], 5)], 1e300), previous],
+    ];
+    for (const [r, p] of cases) expect(incrementalTree(r, p)).toBeNull();
+  });
+
   it("keeps every result lane-free across a long reveal of a dense DAG", () => {
     const next = random(7);
     const items = [item("root"), ...Array.from({ length: 24 }, (_, i) => {
@@ -213,19 +241,19 @@ describe("incremental tree: robustness", () => {
 });
 
 describe("incremental tree: second chance", () => {
-  // A bench reveal (random-dag-40-7502, 900 px, 64 px images, step 3) whose crowded scene leaves
-  // the new tile no placement on the normal grain and grid; only the finer second chance finds one.
-  const scene = secondChanceScene as unknown as { request: LayoutRequest; previous: GraphLayout & { nodes: unknown; junctions: unknown } };
+  // A bench reveal (random-tree-12-7121, 454 px, 64 px images, step 1): in the narrow pane, n5's
+  // second new child has no lane-free route on the normal lanes and grid; only the second chance's
+  // grid, with columns beside every foreign lane, finds one.
+  const scene = secondChanceScene as unknown as { request: LayoutRequest; previous: GraphLayout & { nodes: unknown; junctions: unknown; readingOrder: unknown } };
   const request = scene.request;
-  const previous = { ...scene.previous, nodes: new Map(scene.previous.nodes as [string, never][]), junctions: new Map(scene.previous.junctions as [string, never][]) } as GraphLayout;
+  const previous = { ...scene.previous, nodes: new Map(scene.previous.nodes as [string, never][]), junctions: new Map(scene.previous.junctions as [string, never][]), readingOrder: new Map(scene.previous.readingOrder as [string, number][]) } as GraphLayout;
 
   it("places a tile the normal search cannot, lane-free and within the hard gates", () => {
+    expect(incrementalTree(request, previous, { ...incrementalBudget(), second: 0 })).toBeNull();
     const result = incrementalTree(request, previous);
     expect(result).not.toBeNull();
     const m = measure(attachSingleBand(result!, request), request.band!.key, request.maxWidth, request.items);
-    // The recorded history runs some connectors closer than LANE_SEPARATION; the new ones share no lane.
-    const kept = new Set(previous.routes.map(r => r.path));
-    expect(m.sharedLanePx).toBeCloseTo(sharedLaneLength({ ...result!, routes: result!.routes.filter(r => kept.has(r.path)) }), 6);
+    expect(m.sharedLanePx).toBe(0);
     expect([m.tileIntersections, m.overlaps, m.missingEdges, m.extraEdges, m.missingNodes, m.extraNodes, m.invalidGeometry, m.invalidPaths, m.terminalViolations, m.disconnectedEdges, m.overflow]).toEqual(clean);
     // Retained tiles keep their places.
     for (const [key, node] of previous.nodes) if (result!.nodes.has(key)) expect(result!.nodes.get(key)).toMatchObject({ x: node.x, y: node.y });
@@ -238,17 +266,17 @@ describe("incremental tree: second chance", () => {
   it("gives way to the full layout once its request's work budget is spent", () => {
     expect(incrementalTree(request, previous, incrementalBudget())).not.toBeNull();
     expect(incrementalTree(request, previous, { fallback: 0, second: 0, probes: 0 })).toBeNull();
-    // The plain fallback alone places the tile for about 7,500 units of grid work; 3,000 is not enough.
-    expect(incrementalTree(request, previous, { fallback: 20_000, second: 0, probes: 0 })).not.toBeNull();
-    expect(incrementalTree(request, previous, { fallback: 3000, second: 0, probes: 0 })).toBeNull();
+    // The second chance alone places the tile for about 1,600 units of grid work; 1,000 is not enough.
+    expect(incrementalTree(request, previous, { fallback: 0, second: 2400, probes: 0 })).not.toBeNull();
+    expect(incrementalTree(request, previous, { fallback: 0, second: 1000, probes: 0 })).toBeNull();
   });
 
   it("shares one budget across every embedding tried for a request", () => {
     // Enough for one embedding, not two: the second call sees what the first left.
-    const budget = { fallback: 20_000, second: 0, probes: 0 };
+    const budget = { fallback: 0, second: 2400, probes: 0 };
     expect(incrementalTree(request, previous, budget)).not.toBeNull();
     expect(incrementalTree(request, previous, budget)).toBeNull();
-    expect(incrementalTree(request, previous, { fallback: 20_000, second: 0, probes: 0 })).not.toBeNull();
+    expect(incrementalTree(request, previous, { fallback: 0, second: 2400, probes: 0 })).not.toBeNull();
   });
 });
 

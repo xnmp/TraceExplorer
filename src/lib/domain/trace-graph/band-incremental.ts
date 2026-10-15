@@ -17,7 +17,7 @@
  */
 import { nearestFree, type GraphLayout, type LayoutRequest, type PlacedNode, type PlacedRoute, type PlacedJunction } from "./layout";
 import { ARROW, JUNCTION_BERTH, LANE_SEPARATION, PORT_BERTH, spacingFor, STACK_STEM_ROOM } from "./metrics";
-import { axisOf, berthsOf, entersBerth, grazesTile, INTO_JUNCTION, INTO_TILE, leavingRun, routeEnds, shallowRun, SHALLOW_RUN, TILE_GRAZE, type Berth, type Ends } from "./route-contacts";
+import { axisOf, berthsOf, distanceToTile, entersBerth, grazesTile, INTO_JUNCTION, INTO_TILE, leavingRunFrom, routeEnds, shallowRun, SHALLOW_RUN, TILE_GRAZE, type Berth, type Ends } from "./route-contacts";
 import { bandExtent } from "./band-geometry";
 import { intersectsTile, overlapLength, segments, type Segment } from "./layout-quality";
 import { orthogonalRoute, LANE_TOLERANCE, NEAR_LANE, type AxisRun, type ForeignLanes } from "./orthogonal-route";
@@ -57,6 +57,8 @@ const DETOUR_SCAN = 8;
 const GRID_BUDGET = 5000;
 /** Most 64 px rows one segment may span in the lane index (about 4 million px): beyond it the history is not usable. */
 const MAX_INDEX_ROWS = 65_536;
+/** Whether a coordinate or size lies within the lane index's reach: finite, at most `MAX_INDEX_ROWS` rows from zero. */
+const inReach = (value: number) => Number.isFinite(value) && Math.abs(value) <= MAX_INDEX_ROWS * 64;
 
 /**
  * Grid work one layout request may spend on its second chance (~45 ms of grid search; the
@@ -189,7 +191,7 @@ class TileIndex {
    */
   grazes(ss: readonly Segment[], source: PlacedNode, extra?: PlacedNode): boolean {
     if (!ss.length) return false;
-    const lead = onOutline(source, ss[0][0]) ? leavingRun(ss) : 0;
+    const lead = leavingRunFrom(ss, source);
     const near = (t: PlacedNode, segment: Segment, leaving: boolean) => !(leaving && t.key === source.key) && grazesTile([segment], t);
     for (let i = 0; i < ss.length; i++) {
       const segment = ss[i], a = segment[0], b = segment[1], first = i < lead;
@@ -209,10 +211,6 @@ class TileIndex {
     return false;
   }
 }
-
-/** Whether `p` lies on the tile's outline. */
-const onOutline = (t: PlacedNode, p: Point) => p.x >= t.x - .01 && p.x <= t.x + t.width + .01 && p.y >= t.y - .01 && p.y <= t.y + t.height + .01
-  && (Math.abs(p.x - t.x) <= .01 || Math.abs(p.x - t.x - t.width) <= .01 || Math.abs(p.y - t.y) <= .01 || Math.abs(p.y - t.y - t.height) <= .01);
 
 /** A run of `source`; a speck is a near-zero-length piece, held as the point it sits at. */
 interface Run extends AxisRun { readonly source: string; readonly segment: Segment; readonly speck?: true }
@@ -420,6 +418,25 @@ class LaneIndex {
       if (bucket) for (const index of bucket) if (intersectsTile(this.all[index], tile)) return true;
     }
     return false;
+  }
+
+  /**
+   * Whether any segment comes within `TILE_GRAZE` of the tile: through it, along its border or
+   * beside it (`distanceToTile`). A tile placed there would have another tile's line on its
+   * outline, which reads as its own input or output; a route keeps the same clearance from tiles
+   * placed before it (`TileIndex.grazes`).
+   */
+  grazed(tile: PlacedNode): boolean {
+    if (this.base?.grazed(tile)) return true;
+    const left = tile.x - TILE_GRAZE, right = tile.x + tile.width + TILE_GRAZE, top = tile.y - TILE_GRAZE, bottom = tile.y + tile.height + TILE_GRAZE;
+    const query = ++this.query;
+    return this.cells.some(left, top, right, bottom, index => {
+      if (this.visited[index] === query) return false;
+      this.visited[index] = query;
+      const segment = this.all[index], [a, b] = segment;
+      if (Math.max(a.x, b.x) < left || Math.min(a.x, b.x) > right || Math.max(a.y, b.y) < top || Math.min(a.y, b.y) > bottom) return false;
+      return distanceToTile(segment, tile) < TILE_GRAZE - 1e-9;
+    });
   }
 
   /**
@@ -1102,8 +1119,11 @@ export function incrementalTree(request: LayoutRequest, previous: GraphLayout, b
   const key = request.band!.key, s = spacingFor(request.tileWidth), wanted = new Set(request.items.map(n => n.key));
   if (request.items.length > INCREMENTAL_LIMIT || !wanted.has(key)) return null;
   if (!previous.nodes.has(key) || request.items.some(n => n.key !== key && n.parents.length === 0 && !previous.nodes.has(n.key))) return null;
+  // Geometry beyond the lane index's reach (or not finite) cannot be searched in bounded time; lay out afresh.
+  if (!inReach(request.maxWidth) || request.items.some(n => !inReach(n.width) || !inReach(n.height))) return null;
   const nodes = new Map<string, PlacedNode>();
   previous.nodes.forEach((node, id) => { if (wanted.has(id)) nodes.set(id, node); });
+  for (const n of nodes.values()) if (!inReach(n.x) || !inReach(n.y) || !inReach(n.width) || !inReach(n.height)) return null;
   // Retained routes carry only their visible consumers; the junctions they touch stay.
   const visible = (c: { readonly parent: string; readonly child: string }) => wanted.has(c.parent) && wanted.has(c.child);
   const kept: PlacedRoute[] = [], routes: PlacedRoute[] = [], referenced = new Set<string>();
@@ -1165,7 +1185,7 @@ export function incrementalTree(request: LayoutRequest, previous: GraphLayout, b
       let near = rows.get(n.y);
       if (!near) { const row = { y: n.y, height: n.height }; near = boxes.filter(b => overlapY(row, b, s.clearance)); rows.set(n.y, near); }
       for (const b of near) if (overlapX(n, b, s.clearance)) return false;
-      return !lanes.hits(n);
+      return !lanes.hits(n) && !lanes.grazed(n);
     };
     const free = (n: PlacedNode) => parents.every(parent => n.x >= parent.x + parent.width || n.y >= parent.y + parent.height) && clear(n);
     // Rank every probe, then test freedom lazily: only probes up to the first routable one are

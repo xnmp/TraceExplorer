@@ -85,13 +85,15 @@ function clipsRect(a: Point, b: Point, left: number, top: number, right: number,
   return true;
 }
 
+type Rect = { readonly x: number; readonly y: number; readonly width: number; readonly height: number };
+
 /**
  * Whether a route drawn through `ss` comes within `TILE_GRAZE` of the tile, other than where it
- * leaves it: a route that starts on the tile's outline (`leaves`) meets it along its first run
- * (`leavingRun`). Malformed points never graze.
+ * leaves it: a route that starts on the tile's outline (`leaves`) meets it along the run it
+ * leaves by (`leavingRunFrom`). Malformed points never graze.
  */
-export function grazesTile(ss: readonly Segment[], tile: { readonly x: number; readonly y: number; readonly width: number; readonly height: number }, leaves = false): boolean {
-  for (let i = leaves ? leavingRun(ss) : 0; i < ss.length; i++) {
+export function grazesTile(ss: readonly Segment[], tile: Rect, leaves = false): boolean {
+  for (let i = leaves ? leavingRunFrom(ss, tile) : 0; i < ss.length; i++) {
     const d = distanceToTile(ss[i], tile);
     if (d < TILE_GRAZE - 1e-9) return true;
   }
@@ -117,6 +119,25 @@ export function leavingRun(ss: readonly Segment[]): number {
     if (!(ex * dx + ey * dy > 0) || !(across < 1e-3)) break;
   }
   return i;
+}
+
+/**
+ * How many of a route's first segments it leaves `tile` by: its first run (`leavingRun`) when the
+ * route starts on the tile's outline and that run heads away from the tile; otherwise none. A
+ * first run heading along the outline lies on the tile's border: it does not leave the tile.
+ */
+export function leavingRunFrom(ss: readonly Segment[], tile: Rect): number {
+  const start = ss[0]?.[0];
+  if (!start || !onOutline(tile, start)) return 0;
+  const run = leavingRun(ss);
+  for (let i = 0; i < run; i++) {
+    const [a, b] = ss[i], length = Math.hypot(b.x - a.x, b.y - a.y);
+    if (!(length > 1e-9)) continue;
+    // A step along the run from where it starts: leaving, the step takes it that far off the tile.
+    const step = Math.min(1, length), q = { x: a.x + (b.x - a.x) / length * step, y: a.y + (b.y - a.y) / length * step };
+    return distanceToTile([q, q], tile) >= step / 2 ? run : 0;
+  }
+  return run;
 }
 
 /** Distance from `p` to the segment. */
@@ -161,7 +182,7 @@ export function cornersOf(ss: readonly Segment[]): Point[] {
 }
 
 /** Whether `p` lies on the tile's outline (within half a pixel). */
-function onOutline(tile: PlacedNode | undefined, p: Point): boolean {
+function onOutline(tile: Rect | undefined, p: Point): boolean {
   if (!tile) return false;
   const inX = p.x >= tile.x - .5 && p.x <= tile.x + tile.width + .5, inY = p.y >= tile.y - .5 && p.y <= tile.y + tile.height + .5;
   return (inX && (Math.abs(p.y - tile.y) <= .5 || Math.abs(p.y - tile.y - tile.height) <= .5))

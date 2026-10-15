@@ -368,20 +368,25 @@ export function layoutBand(input: LayoutRequest, options: BandOptions = BAND_DEF
     const budget = incrementalBudget();
     const incremental = incrementalTree(request, previous, budget);
     if (incremental) history.push({ name: "incremental-tree", layout: incremental });
-    // Re-embed other retained tiles only when the fixed warm embedding exceeds
-    // the compact height budget (shelves and the downward layout); otherwise its
-    // zero displacement is valuable. Build the downward layout only if its height decides.
+    // With nothing new to place, the retained tiles as they are (`retained-visible`).
+    const retained = projected(previous, request);
+    // Re-embed other retained tiles around the anchors when there is no fixed warm embedding
+    // (the incremental one failed) or it exceeds the compact height budget (shelves and the
+    // downward layout); otherwise its zero displacement is valuable. With nothing new to place,
+    // the warm embedding is the retained geometry itself, if it passes the hard gates as the
+    // unchanged geometry must above. Build the downward layout only if its height decides.
     const fixed = new Set([...anchors, key]);
     if (anchors.length && fixed.size < previous.nodes.size) {
+      const warm = incremental ?? (retained && !(sharedLaneLength(retained) > 0)
+        && (!fitted.resized || Number.isFinite(cost(validateLayout(retained, key, request.maxWidth, request.items), tileWidth))) ? retained : null);
       const compactShelf = Math.min(...shelves.map(c => bandExtent(c.layout, key).height));
-      const height = incremental ? bandExtent(incremental, key).height : Infinity;
-      const repack = !incremental || height > compactShelf * 1.1
+      const height = warm ? bandExtent(warm, key).height : Infinity;
+      const repack = !warm || height > compactShelf * 1.1
         || (wantsDown && height > rowsHeight * 1.1 && height > bandExtent(visibleDown().layout, key).height * 1.1);
       const subset = repack ? projected(previous, { ...request, items: request.items.filter(n => fixed.has(n.key)) }) : null;
       const compact = subset && incrementalTree(request, { ...subset, bandBounds: undefined, anchorX: undefined, anchorY: undefined }, budget);
       if (compact) history.push({ name: "anchored-repack", layout: compact });
     }
-    const retained = projected(previous, request);
     if (retained) history.push({ name: "retained-visible", layout: retained, partition: request.history?.layout.decision?.partition });
   }
 

@@ -292,6 +292,86 @@ describe("lines kept off tiles", () => {
     }
     expect(incremental).toBeGreaterThan(0);
   });
+
+  /** Distance from a point to a tile's rectangle (zero inside). */
+  const pointToTile = (q: P, t: { x: number; y: number; width: number; height: number }) =>
+    Math.hypot(Math.max(t.x - q.x, 0, q.x - t.x - t.width), Math.max(t.y - q.y, 0, q.y - t.y - t.height));
+  /** Points every half pixel along the route, from `from` px past its start. */
+  function along(ss: readonly (readonly [P, P])[], from: number): P[] {
+    const out: P[] = [];
+    let walked = 0;
+    for (const [a, b] of ss) {
+      const length = Math.hypot(b.x - a.x, b.y - a.y);
+      for (let t = Math.max(0, from - walked); t <= length; t += .5) out.push({ x: a.x + (b.x - a.x) * t / length, y: a.y + (b.y - a.y) * t / length });
+      walked += length;
+    }
+    return out;
+  }
+  /**
+   * In a layout the incremental embedding made: lines closer than TILE_GRAZE to a tile it placed
+   * (new or moved) that they neither leave nor enter, and its routes running on their own tile's
+   * border past the port they leave by.
+   */
+  function onPlacedTiles(layout: GraphLayout, placed: GraphLayout, before: GraphLayout | undefined): string[] {
+    const out: string[] = [];
+    const fresh = [...layout.nodes.values()].filter(n => { const o = before?.nodes.get(n.key); return !o || o.x !== n.x || o.y !== n.y; }).map(n => placed.nodes.get(n.key)!);
+    for (const r of placed.routes) {
+      const ss = routePlan(r).segments;
+      for (const t of fresh) {
+        if (t.key === r.from.id || t.key === r.to.id) continue;
+        const d = Math.min(...ss.map(([a, b]) => toTile(a, b, t)));
+        if (d < TILE_GRAZE - 1e-6) out.push(`${r.id} ${d.toFixed(2)} px from placed ${t.key}`);
+      }
+      if (!r.id.startsWith("incremental") || r.from.kind !== "node") continue;
+      const own = placed.nodes.get(r.from.id)!, hugging = along(ss, TILE_GRAZE + .25).filter(q => pointToTile(q, own) < TILE_GRAZE - 1e-6);
+      if (hugging.length) out.push(`${r.id} runs on ${own.key}'s border for ${hugging.length / 2} px`);
+    }
+    return out;
+  }
+
+  // Tours where tiles the embedding placed once sat on retained connectors (merge-k8 sessions 6 and
+  // 8 at 640 px), and a route left its tile down the tile's own border (observed session 2).
+  it.each([["merge-k8", 6, 640, 48], ["merge-k8", 8, 640, 48], ["observed", 2, 454, 64]] as const)("keeps lines off the tiles the embedding places, and off their own tile's border (%s session %i, %i px)", (profile, seed, width, imagePx) => {
+    const component = sessionComponents(provenanceSession(profiles[profile], seed))[0];
+    const shown = new Set(component.flatMap(n => n.parents));
+    const focuses = [null, ...component.filter(n => n.scope === "current" && shown.has(n.key)).map(n => n.key).reverse().slice(0, 8), null];
+    let previous: { signature: string; layout: GraphLayout; placed: GraphLayout } | undefined, embedded = 0;
+    for (const focus of focuses) {
+      const request = requestFor({ id: `${profile}-${seed}`, nodes: component, focuses: [] }, focus, width, imagePx, previous?.layout.readingOrder);
+      const layout = layoutGraph({ ...request, anchorKey: focus ?? undefined, history: previous });
+      const placed = attachSingleBand(layout, request);
+      if (layout.decision?.candidate === "incremental-tree" || layout.decision?.candidate === "anchored-repack") {
+        embedded++;
+        expect(onPlacedTiles(layout, placed, previous?.layout), `focus ${focus}`).toEqual([]);
+      }
+      previous = { signature: bandHistorySignature(request), layout, placed };
+    }
+    expect(embedded).toBeGreaterThan(0);
+  });
+});
+
+describe("clicks that show nothing new", () => {
+  // Chains session 4 at 640 px: clicking back up the chain hides tiles and shows none. The retained
+  // band is within its height budget, so its tiles stay where they were; re-embedding them once moved
+  // them 43–60 px on average for no less height.
+  it("keep the retained tiles where they were when the band is within its height budget", () => {
+    const component = sessionComponents(provenanceSession(profiles.chains, 4))[0];
+    const shown = new Set(component.flatMap(n => n.parents));
+    const focuses = [null, ...component.filter(n => n.scope === "current" && shown.has(n.key)).map(n => n.key).reverse().slice(0, 8), null];
+    let previous: { signature: string; layout: GraphLayout; placed: GraphLayout } | undefined, checked = 0;
+    for (const [step, focus] of focuses.entries()) {
+      const request = requestFor({ id: "chains-4", nodes: component, focuses: [] }, focus, 640, 48, previous?.layout.readingOrder);
+      const layout = layoutGraph({ ...request, anchorKey: focus ?? undefined, history: previous });
+      if (step >= 6 && step <= 8) {
+        expect(request.items.every(n => previous!.layout.nodes.has(n.key)), `step ${step} shows nothing new`).toBe(true);
+        expect(request.items.length).toBeLessThan(previous!.layout.nodes.size);
+        for (const n of request.items) expect(layout.nodes.get(n.key), `step ${step}: ${n.key}`).toMatchObject({ x: previous!.layout.nodes.get(n.key)!.x, y: previous!.layout.nodes.get(n.key)!.y });
+        checked++;
+      }
+      previous = { signature: bandHistorySignature(request), layout, placed: attachSingleBand(layout, request) };
+    }
+    expect(checked).toBe(3);
+  });
 });
 
 describe("calibrated crossings", () => {
