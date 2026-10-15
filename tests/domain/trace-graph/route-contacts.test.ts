@@ -4,8 +4,8 @@
  */
 import { describe, expect, it } from "vitest";
 import {
-  arrowTip, axisOf, BERTH_SLACK, berthsOf, CORNER_BERTH, cornersOf, distanceToSegment, entersBerth, INTO_JUNCTION, INTO_TILE,
-  routeEnds, shallowRun, SHALLOW_RUN,
+  arrowTip, axisOf, BERTH_SLACK, berthsOf, CORNER_BERTH, cornersOf, distanceToSegment, distanceToTile, entersBerth, grazesTile, INTO_JUNCTION, INTO_TILE,
+  leavingRun, routeEnds, shallowRun, SHALLOW_RUN, TILE_GRAZE,
 } from "$lib/domain/trace-graph/route-contacts";
 import type { PlacedNode, PlacedRoute } from "$lib/domain/trace-graph/layout";
 import { ARROW, LANE_SEPARATION, PORT_BERTH } from "$lib/domain/trace-graph/metrics";
@@ -134,5 +134,48 @@ describe("axisOf and shallowRun", () => {
     expect(shallowRun(axis, slanted(60))).toBe(0);
     expect(shallowRun(axis, [p(0, 50), p(10, 51)])).toBe(0);
     expect(shallowRun([p(0, 0), p(1, 1)], slanted(10))).toBe(0);
+  });
+});
+
+describe("tile clearance (grazesTile)", () => {
+  const tile = { x: 100, y: 100, width: 80, height: 60 };
+
+  it("measures a segment's distance to a tile's rectangle, zero where they meet", () => {
+    expect(distanceToTile([p(0, 50), p(300, 50)], tile)).toBeCloseTo(50);
+    expect(distanceToTile([p(190, 0), p(190, 300)], tile)).toBeCloseTo(10);
+    // Past a corner, the corner counts.
+    expect(distanceToTile([p(183, 163), p(200, 200)], tile)).toBeCloseTo(Math.hypot(3, 3));
+    expect(distanceToTile([p(0, 160), p(300, 160)], tile)).toBe(0);
+    expect(distanceToTile([p(0, 0), p(300, 300)], tile)).toBe(0);
+    expect(distanceToTile([p(140, 130), p(150, 130)], tile)).toBe(0);
+  });
+
+  it("a line running a pixel off a tile's border grazes it; TILE_GRAZE off, it does not", () => {
+    expect(grazesTile(polyline(p(0, 161), p(300, 161)), tile)).toBe(true);
+    expect(grazesTile(polyline(p(0, 160 + TILE_GRAZE), p(300, 160 + TILE_GRAZE)), tile)).toBe(false);
+    expect(grazesTile(polyline(p(181, 0), p(181, 300)), tile)).toBe(true);
+    expect(grazesTile(polyline(p(0, 0), p(10, 10)), tile)).toBe(false);
+  });
+
+  it("a route leaving the tile's port straight away does not graze it, through bends that do not turn", () => {
+    // Out of the right port, through a lane column that turns nowhere (a zero-length piece), on to the next tile.
+    const straight = polyline(p(180, 130), p(181.5, 130), p(181.5, 130), p(200, 130));
+    expect(leavingRun(straight)).toBe(3);
+    expect(grazesTile(straight, tile, true)).toBe(false);
+    // Not leaving from the tile (`leaves` unset), the same line meets it.
+    expect(grazesTile(straight, tile)).toBe(true);
+    // Out of the right port, then down along the tile's right border: the run along it grazes.
+    const hugging = polyline(p(180, 130), p(181.5, 130), p(181.5, 240), p(140, 240));
+    expect(leavingRun(hugging)).toBe(1);
+    expect(grazesTile(hugging, tile, true)).toBe(true);
+    // Doubling back along the run is a turn.
+    expect(leavingRun(polyline(p(180, 130), p(190, 130), p(185, 130)))).toBe(1);
+  });
+
+  it("malformed or empty routes never graze", () => {
+    expect(grazesTile([], tile)).toBe(false);
+    expect(grazesTile(polyline(p(NaN, 130), p(200, 130)), tile)).toBe(false);
+    expect(grazesTile(polyline(p(0, 161), p(300, 161)), { x: NaN, y: 100, width: 80, height: 60 })).toBe(false);
+    expect(leavingRun([])).toBe(0);
   });
 });

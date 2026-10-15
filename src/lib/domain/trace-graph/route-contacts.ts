@@ -61,9 +61,10 @@ export const BERTH_SLACK = .01;
  */
 export const TILE_GRAZE = 2;
 
-/** Distance between the segment and a tile's rectangle (0 when they meet). */
+/** Distance between the segment and a tile's rectangle (0 when they meet; NaN for malformed input). */
 export function distanceToTile([a, b]: Segment, n: { readonly x: number; readonly y: number; readonly width: number; readonly height: number }): number {
   const right = n.x + n.width, bottom = n.y + n.height;
+  if (!Number.isFinite(a.x + a.y + b.x + b.y + right + bottom + n.x + n.y)) return NaN;
   const toPoint = (p: Point) => Math.hypot(Math.max(n.x - p.x, 0, p.x - right), Math.max(n.y - p.y, 0, p.y - bottom));
   if (toPoint(a) === 0 || toPoint(b) === 0 || clipsRect(a, b, n.x, n.y, right, bottom)) return 0;
   return Math.min(toPoint(a), toPoint(b), distanceToSegment([a, b], { x: n.x, y: n.y }), distanceToSegment([a, b], { x: right, y: n.y }),
@@ -85,16 +86,36 @@ function clipsRect(a: Point, b: Point, left: number, top: number, right: number,
 
 /**
  * Whether a route drawn through `ss` comes within `TILE_GRAZE` of the tile, other than where it
- * leaves it: the first segment of a route that starts on the tile's outline (`leaves`) meets it
- * at its port. Malformed points never graze.
+ * leaves it: a route that starts on the tile's outline (`leaves`) meets it along its first run
+ * (`leavingRun`). Malformed points never graze.
  */
 export function grazesTile(ss: readonly Segment[], tile: { readonly x: number; readonly y: number; readonly width: number; readonly height: number }, leaves = false): boolean {
-  for (let i = 0; i < ss.length; i++) {
-    if (i === 0 && leaves) continue;
+  for (let i = leaves ? leavingRun(ss) : 0; i < ss.length; i++) {
     const d = distanceToTile(ss[i], tile);
     if (d < TILE_GRAZE - 1e-9) return true;
   }
   return false;
+}
+
+/**
+ * How many of a route's first segments form the run it leaves its start along: the pieces up to
+ * its first turn, zero-length ones included (a straight route drawn through a bend that does not
+ * turn is one run). Along it the route moves straight away from where it started.
+ */
+export function leavingRun(ss: readonly Segment[]): number {
+  let i = 0, dx = 0, dy = 0;
+  const origin = ss[0]?.[0];
+  if (!origin) return 0;
+  for (; i < ss.length; i++) {
+    const [a, b] = ss[i], ex = b.x - a.x, ey = b.y - a.y, length = Math.hypot(ex, ey);
+    if (!(length >= 0)) break;
+    if (length < 1e-9) continue;
+    if (!dx && !dy) { dx = ex / length; dy = ey / length; continue; }
+    // The piece continues the run: it heads the same way, on the run's line.
+    const across = Math.abs((b.x - origin.x) * dy - (b.y - origin.y) * dx) + Math.abs((a.x - origin.x) * dy - (a.y - origin.y) * dx);
+    if (!(ex * dx + ey * dy > 0) || !(across < 1e-3)) break;
+  }
+  return i;
 }
 
 /** Distance from `p` to the segment. */

@@ -17,7 +17,7 @@
  */
 import { nearestFree, type GraphLayout, type LayoutRequest, type PlacedNode, type PlacedRoute, type PlacedJunction } from "./layout";
 import { ARROW, JUNCTION_BERTH, LANE_SEPARATION, PORT_BERTH, spacingFor, STACK_STEM_ROOM } from "./metrics";
-import { axisOf, berthsOf, entersBerth, grazesTile, INTO_JUNCTION, INTO_TILE, routeEnds, shallowRun, SHALLOW_RUN, TILE_GRAZE, type Berth, type Ends } from "./route-contacts";
+import { axisOf, berthsOf, entersBerth, grazesTile, INTO_JUNCTION, INTO_TILE, leavingRun, routeEnds, shallowRun, SHALLOW_RUN, TILE_GRAZE, type Berth, type Ends } from "./route-contacts";
 import { bandExtent } from "./band-geometry";
 import { intersectsTile, overlapLength, segments, type Segment } from "./layout-quality";
 import { orthogonalRoute, LANE_TOLERANCE, NEAR_LANE, type AxisRun, type ForeignLanes } from "./orthogonal-route";
@@ -180,14 +180,14 @@ class TileIndex {
   }
   /**
    * Whether a route through `ss` from `source`'s port comes within `TILE_GRAZE` of a tile here or
-   * `extra`, other than where it leaves `source` (`grazesTile`).
+   * `extra`, other than along the run it leaves `source` by (`grazesTile`).
    */
   grazes(ss: readonly Segment[], source: PlacedNode, extra?: PlacedNode): boolean {
     if (!ss.length) return false;
-    const start = ss[0][0], leaves = onOutline(source, start);
-    const near = (t: PlacedNode, segment: Segment, first: boolean) => !(first && leaves && t.key === source.key) && grazesTile([segment], t);
+    const lead = onOutline(source, ss[0][0]) ? leavingRun(ss) : 0;
+    const near = (t: PlacedNode, segment: Segment, leaving: boolean) => !(leaving && t.key === source.key) && grazesTile([segment], t);
     for (let i = 0; i < ss.length; i++) {
-      const segment = ss[i], a = segment[0], b = segment[1], first = i === 0;
+      const segment = ss[i], a = segment[0], b = segment[1], first = i < lead;
       if (extra && near(extra, segment, first)) return true;
       const minX = Math.min(a.x, b.x) - TILE_GRAZE, maxX = Math.max(a.x, b.x) + TILE_GRAZE, minY = Math.min(a.y, b.y) - TILE_GRAZE, maxY = Math.max(a.y, b.y) + TILE_GRAZE;
       if (!Number.isFinite(minX + maxX + minY + maxY)) continue;

@@ -3,7 +3,7 @@ import { layoutGraph, type GraphLayout, type LayoutItem, type LayoutRequest, typ
 import { incrementalBudget, incrementalTree, INCREMENTAL_LIMIT } from "$lib/domain/trace-graph/band-incremental";
 import { attachSingleBand, bandExtent } from "$lib/domain/trace-graph/band-geometry";
 import { measure, segments, sharedLaneLength } from "$lib/domain/trace-graph/layout-quality";
-import { ARROW } from "$lib/domain/trace-graph/metrics";
+import { ARROW, spacingFor } from "$lib/domain/trace-graph/metrics";
 import { random } from "./fixtures";
 import secondChanceScene from "./second-chance-scene.json";
 
@@ -138,6 +138,26 @@ describe("incremental tree: compactness", () => {
     expect(result).not.toBeNull();
     expect(result.nodes.get("g")!.y).toBe(previous.nodes.get("d0")!.y);
     expect(bandExtent(result, "root").height).toBe(bandExtent(previous, "root").height);
+    expect(verdict(result, next)).toEqual({ sharedLanePx: 0, gates: clean });
+  });
+});
+
+describe("incremental tree: chains", () => {
+  // 64 px images: the column gap (19 px) leaves the arrow's lane 1.5 px from a's edge, where a
+  // line that turned would run along a's border; a straight one only leaves a's port.
+  it("continues a chain in the next column beside its parent along a straight arrow", () => {
+    const wide = (key: string, parents: string[] = [], order = 0): LayoutItem => ({ ...item(key, parents, order), width: 108 });
+    const at = (items: readonly LayoutItem[]): LayoutRequest => ({ ...request(items, 454), tileWidth: 108 });
+    const items = [wide("root"), wide("a", ["root"], 1)], first = at(items);
+    const previous = attachSingleBand(layoutGraph(first), first), next = at([...items, wide("b", ["a"], 2), wide("c", ["b"], 3)]);
+    const result = incrementalTree(next, previous)!;
+    expect(result).not.toBeNull();
+    const a = result.nodes.get("a")!, b = result.nodes.get("b")!;
+    expect(b.y).toBe(a.y);
+    expect(b.x).toBe(a.x + a.width + spacingFor(108).column);
+    // Out of a's right port straight into b's left: one horizontal line.
+    const route = result.routes.find(r => r.from.kind === "node" && r.from.id === "a" && r.to.kind === "node" && r.to.id === "b")!;
+    expect(new Set(segments(route.path).flatMap(([p, q]) => [p.y, q.y])).size).toBe(1);
     expect(verdict(result, next)).toEqual({ sharedLanePx: 0, gates: clean });
   });
 });
