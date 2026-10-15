@@ -427,6 +427,8 @@ class LaneIndex {
    * another source's line at a point when no route avoids every such touch.
    */
   contacts = true;
+  /** Set when `conflicts` turned a route down for a touch alone (its lanes, dots and curves clear). */
+  touchBlocked = false;
 
   /**
    * Whether any of `list` (axis-parallel, consecutive) runs along a segment of a source other than
@@ -445,8 +447,8 @@ class LaneIndex {
     if (this.nearDot(ink)) return true;
     for (const segment of ink) if (axisOf(segment) && this.shallowInto(segment, source, new Map())) return true;
     if (!this.contacts) return false;
-    for (const segment of ink) if (this.nearBerth(segment, source)) return true;
-    for (const berth of berthsOf(list, ends)) if (ink.some(segment => entersBerth(segment, berth)) && this.touched(berth, source)) return true;
+    for (const segment of ink) if (this.nearBerth(segment, source)) return this.touchBlocked = true;
+    for (const berth of berthsOf(list, ends)) if (ink.some(segment => entersBerth(segment, berth)) && this.touched(berth, source)) return this.touchBlocked = true;
     return false;
   }
 
@@ -870,8 +872,8 @@ class RouteSearch {
    * Routes into a `taken` arrival are skipped: another source's route ends there from the same
    * side, so their final approaches would run along it.
    */
-  find(lanes: LaneIndex, record = false, taken?: ReadonlySet<Arrival>): Route | null {
-    for (let index = 0; index < 2; index++) {
+  find(lanes: LaneIndex, record = false, taken?: ReadonlySet<Arrival>, directOnly = false): Route | null {
+    for (let index = 0; index < (directOnly ? 1 : 2); index++) {
       const { families, owner, order, bases, variants } = this.tier(index), crowded: number[] = [];
       for (const f of order) {
         if (taken?.has(owner[f])) continue;
@@ -933,10 +935,10 @@ interface Wiring { readonly routes: readonly Route[]; readonly levels?: readonly
  * through a junction (spine) whose rows are tried at a few offsets, its parents in a few
  * orders. `undefined` when there is none.
  */
-function wire(parents: readonly PlacedNode[], n: PlacedNode, s: Scene, lanes: LaneIndex, item: string, hardest: { index: number }): Wiring | undefined {
+function wire(parents: readonly PlacedNode[], n: PlacedNode, s: Scene, lanes: LaneIndex, item: string, hardest: { index: number }, directOnly = false): Wiring | undefined {
   if (parents.length === 1) {
     const t = n, arrivals: Arrival[] = [{ end: point(t.x + t.width / 2, t.y - ARROW.length), heading: "down", level: -1 }, { end: point(t.x - ARROW.length, t.y + t.height / 2), heading: "right", level: -1 }];
-    const route = new RouteSearch(parents[0], arrivals, s, true).find(lanes);
+    const route = new RouteSearch(parents[0], arrivals, s, true).find(lanes, false, undefined, directOnly);
     return route ? { routes: [route] } : undefined;
   }
   const junction = sourceKey("junction", `incremental-join:${item}`);
@@ -956,7 +958,7 @@ function wire(parents: readonly PlacedNode[], n: PlacedNode, s: Scene, lanes: La
     const alone: Route[] = [];
     let complete = true;
     for (let k = 0; k < parents.length; k++) {
-      const i = k ? (k <= hardest.index ? k - 1 : k) : hardest.index, route = search(i).find(lanes, true);
+      const i = k ? (k <= hardest.index ? k - 1 : k) : hardest.index, route = search(i).find(lanes, true, undefined, directOnly);
       if (!route) { hardest.index = i; complete = false; break; }
       alone[i] = route;
     }
@@ -970,7 +972,7 @@ function wire(parents: readonly PlacedNode[], n: PlacedNode, s: Scene, lanes: La
       let stuck = -1;
       for (const i of order) {
         const p = parents[i], source = sourceKey("node", p.key);
-        const route = !lanes.conflicts(laneSegments(p, alone[i]), source, INTO_JUNCTION) ? alone[i] : search(i).find(lanes, false, taken);
+        const route = !lanes.conflicts(laneSegments(p, alone[i]), source, INTO_JUNCTION) ? alone[i] : search(i).find(lanes, false, taken, directOnly);
         if (!route) { stuck = i; break; }
         routes[i] = route;
         taken.add(route.arrival);
@@ -1172,7 +1174,10 @@ export function incrementalTree(request: LayoutRequest, previous: GraphLayout, b
     // taken only if no probe adding no more height has a direct route: a detour costs length
     // and turns, and the layout that holds still must not lose to a fresh one on them.
     const ny = ys.length, ranked = rankProbes(xs, ys, bottom, item.height);
-    const probes = (): { node: PlacedNode; wiring: Wiring } | undefined => {
+    // With `blocked`, a pass records the probes a touch turned down (lanes, dots and curves clear):
+    // with touches allowed only those can wire differently, so a later pass is given them as `only`
+    // and counts the rest as failed without wiring them again.
+    const probes = (blocked?: number[], only?: ReadonlySet<number>): { node: PlacedNode; wiring: Wiring } | undefined => {
       const hardest = { index: 0 };
       let holeTries = HOLE_TRIES;
       // The first placement routed only by a detour, kept while probes adding no more height
@@ -1184,12 +1189,18 @@ export function incrementalTree(request: LayoutRequest, previous: GraphLayout, b
         const n: PlacedNode = { key: item.key, x, y, width: item.width, height: item.height, row: y === parent.y ? parent.row : parent.row + 1, band: parent.band + 1 };
         if (!free(n)) continue;
         if (detoured && (Math.max(bottom, n.y + n.height) > detoured.reach || !(scan-- > 0))) return detoured.found;
+        if (only && !only.has(probe)) { if (hole) holeTries--; continue; }
         if (!(budget.probes > 0)) return detoured?.found;
         budget.probes--;
-        const wiring = wire(parents, n, sceneFor(n), lanes, item.key, hardest);
+        lanes.touchBlocked = false;
+        // Once a detour is in hand, only a direct route can replace it.
+        const wiring = wire(parents, n, sceneFor(n), lanes, item.key, hardest, !!detoured);
         if (wiring && !wiring.routes.some(r => r.detour)) return { node: n, wiring };
         if (wiring) detoured ??= { found: { node: n, wiring }, reach: Math.max(bottom, n.y + n.height) };
-        else if (hole) holeTries--;
+        else {
+          if (hole) holeTries--;
+          if (lanes.touchBlocked) blocked?.push(probe);
+        }
       }
       return detoured?.found;
     };
@@ -1197,7 +1208,8 @@ export function incrementalTree(request: LayoutRequest, previous: GraphLayout, b
     // probes again with touches allowed (contacts are a cost, not a reason to lay out afresh).
     // The grid fallbacks take the first route that keeps lanes and dots alone.
     const touching = <T>(search: () => T): T => { lanes.contacts = false; try { return search(); } finally { lanes.contacts = true; } };
-    let best = probes() ?? touching(probes);
+    const blocked: number[] = [];
+    let best = probes(blocked) ?? (blocked.length ? touching(() => probes(undefined, new Set(blocked))) : undefined);
     if (!best) {
       const rowYs = [...new Set([Math.max(baseBottom, ...parents.map(p => p.y + p.height)) + arrivalGap,
         ...boxes.filter(n => n.y > baseBottom).map(n => n.y), Math.max(bottom, previous.height) + arrivalGap])].sort((a, b) => a - b);
@@ -1220,7 +1232,8 @@ export function incrementalTree(request: LayoutRequest, previous: GraphLayout, b
         // The second chance: the probes again on lanes half a step apart, then the grid router.
         const effort = second ??= secondChance(budget);
         grain = FINE_GRAIN;
-        best = probes() ?? touching(() => probes() ?? fallback(effort));
+        const fine: number[] = [];
+        best = probes(fine) ?? touching(() => (fine.length ? probes(undefined, new Set(fine)) : undefined) ?? fallback(effort));
         grain = GRAIN;
       }
       if (!best) return null;
