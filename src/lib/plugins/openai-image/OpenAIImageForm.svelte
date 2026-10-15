@@ -334,7 +334,8 @@
           {#if inspectingDrops}<span class="hint">Reading input images…</span>{/if}
           <div class="drop-feedback" role="status" aria-live="polite" aria-atomic="true">
             {#key dropResult}
-              {#if dropStatus}<p>{dropStatus}</p>{/if}
+              <!-- The count repeats the header's "n / 8", so it is announced, not shown. -->
+              {#if dropStatus}<p class="announcement-overflow">{dropStatus}</p>{/if}
               {#if visibleDropIssues.length}
                 <ul>{#each visibleDropIssues as issue}<li><span title={issue.path ?? undefined}>{issue.path ? basename(issue.path) : "Invalid path"}</span>: {issue.message}</li>{/each}</ul>
               {/if}
