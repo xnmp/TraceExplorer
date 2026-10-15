@@ -83,8 +83,8 @@
     const caps = pinnedConnection?.capabilities;
     quality = fallbackOption<typeof quality>("auto", "auto", caps?.quality as (typeof quality)[] | undefined);
     background = fallbackOption<typeof background>("auto", "auto", caps?.background as (typeof background)[] | undefined);
-    resolution = offered.resolution ? fallbackOption<ImageResolution>(resolution, "2k", caps?.resolution as ImageResolution[] | undefined) : "2k";
-    aspectRatio = offered.aspectRatio
+    resolution = offered.resolution || caps?.resolution?.length ? fallbackOption<ImageResolution>(resolution, "2k", caps?.resolution as ImageResolution[] | undefined) : "2k";
+    aspectRatio = offered.aspectRatio || caps?.aspectRatio?.length
       ? fallbackOption<ImageAspectRatio>(aspectRatio, defaultAspectRatio, (caps?.aspectRatio as ImageAspectRatio[] | undefined)?.filter((v) => editing || v !== "keep"))
       : defaultAspectRatio;
   }
@@ -235,7 +235,7 @@
       const outputFilename = imageOutputFilename(images[0] ? basename(images[0].path) : null);
       const fields = inputRequestFields(images);
       const settings = { ...connectionFields(connection, modelOverride), size, quality, background,
-        ...(offered.resolution ? { resolution } : {}), ...(offered.aspectRatio ? { aspectRatio } : {}) };
+        ...(offered.resolution || connection.capabilities.resolution?.length ? { resolution } : {}), ...(offered.aspectRatio || connection.capabilities.aspectRatio?.length ? { aspectRatio } : {}) };
       const problem = capabilityProblem(connection, settings, images.length);
       if (problem) throw new Error(problem);
       const batchId = count > 1 ? crypto.randomUUID() : null;
@@ -291,7 +291,7 @@
           <Select aria-label="Image connection" value={latestConnection?.id ?? ""} disabled={submitting || configuring || loadingConnections}
             options={connectionOptions} placeholder="Select a connection" onchange={chooseConnection} />
         </label>
-        <button type="button" class="btn btn-secondary" disabled={submitting || configuring || inspectingDrops} onclick={() => void configure()}>{configuring ? "Configuring…" : "Configure connections"}</button>
+        <button type="button" class="btn btn-secondary" aria-label="Configure image connections" title="Configure image connections" disabled={submitting || configuring || inspectingDrops} onclick={() => void configure()}>{configuring ? "Configuring…" : "Configure"}</button>
         <button type="button" class="btn btn-secondary icon-btn" aria-label="Reload connections" title="Reload connections" disabled={submitting || configuring || loadingConnections} onclick={() => void refreshConnections()}>
           <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" class:spinning={loadingConnections}><path d="M13.5 8a5.5 5.5 0 1 1-1.6-3.9M13.5 2.5v3h-3" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" /></svg>
         </button>
@@ -311,19 +311,16 @@
         </label>
       {/if}
         <section class="prompt-field inputs" class:drop-enabled={!!registerFileDropTarget && dropsAccepted} aria-labelledby="openai-image-inputs-label" aria-busy={inspectingDrops} use:registerInputs>
-          <span id="openai-image-inputs-label">Inputs <span class="hint">{images.length} / 8{images.length ? " — Image 1, Image 2, … in the order sent" : ""}</span></span>
-          {#if registerFileDropTarget && dropsAccepted}
-            <div class="drop-hint" class:empty={!images.length}>Drop PNG, JPEG or WebP images here <span class="hint">Up to 8 inputs</span></div>
-          {:else if !images.length}
+          <span id="openai-image-inputs-label">Inputs <span class="hint">{images.length} / 8</span></span>
+          {#if !(registerFileDropTarget && dropsAccepted) && !images.length}
             <span class="hint">No input images</span>
           {/if}
           {#if images.length}
           <ol class="strip" aria-labelledby="openai-image-inputs-label" tabindex="-1" bind:this={stripRef}>
             {#each images as input, index (input.path)}
-              <li class="input-card" class:invalid={!!input.error} data-input-path={input.path} aria-label="Image {index + 1}: {basename(input.path)}">
+              <li class="input-card" class:invalid={!!input.error} data-input-path={input.path} aria-label="Image {index + 1}: {basename(input.path)}" title={input.path}>
                 <span class="thumb"><TraceThumbnail path={input.path} present={!input.error} revision={0} label="" /></span>
-                <span class="number">Image {index + 1}</span>
-                <span class="name" title={input.path}>{basename(input.path)}</span>
+                <span class="number" aria-hidden="true">{index + 1}</span>
                 {#if input.error}<span class="input-error" title={input.error}>Can’t use: {input.error}</span>{/if}
                 <span class="card-actions">
                   <button type="button" data-move="left" aria-label="Move Image {index + 1} earlier" title="Move earlier" disabled={submitting || index === 0} onclick={() => void move(index, index - 1, "left")}>‹</button>
@@ -348,7 +345,7 @@
             <button type="button" class="btn btn-secondary" onclick={() => { feedbackLimit += 8; }}>Show more reasons ({dropIssues.length - feedbackLimit} remaining)</button>
           {/if}
         </section>
-      <label class="prompt-field">{editing ? "Edit prompt" : "Image prompt"}
+      <label class="prompt-field">{editing ? "Prompt" : "Image prompt"}
         <textarea class="prompt-input" rows="4" maxlength="16000" bind:value={prompt} bind:this={promptRef} disabled={submitting} required
           placeholder={images.length > 1 ? "Describe your edit. Refer to images by number, e.g. “the hat in Image 2”…" : editing ? "Describe your edit…" : "Describe your image…"}></textarea>
       </label>
@@ -402,27 +399,29 @@
   .options .prompt-input { width: 100%; box-sizing: border-box; min-width: 0; }
   .options .prompt-field { margin-bottom: 0; }
   label { font-size: 12px; color: var(--text-secondary); }
-  textarea { resize: vertical; min-height: 88px; box-sizing: border-box; }
+  textarea { display: block; width: 100%; min-width: 0; resize: vertical; min-height: 88px; box-sizing: border-box; white-space: pre-wrap; overflow-wrap: anywhere; }
   .hint { color: var(--text-tertiary); }
   .inputs { min-width: 0; }
   .inputs.drop-enabled { padding: 8px; border: 1px dashed var(--control-stroke); border-radius: var(--radius-sm); }
   .inputs:global(.drop-target) { border-color: var(--accent); background: var(--subtle-fill-secondary); }
-  .drop-hint { font-size: 12px; color: var(--text-secondary); display: flex; flex-wrap: wrap; gap: 4px 12px; }
-  .drop-hint.empty { padding: 12px 0; }
   .drop-feedback { font-size: 12px; color: var(--text-secondary); overflow-wrap: anywhere; }
   .drop-feedback p { margin: 0; }
   .drop-feedback ul { margin: 4px 0 0; padding-left: 16px; }
   .announcement-overflow { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
-  .strip { display: flex; gap: 8px; margin: 0; padding: 2px 2px 6px; list-style: none; overflow-x: auto; }
+  /* Cards are as wide as their thumbnail, whatever the file is called, and wrap within the section. */
+  .strip { display: flex; flex-wrap: wrap; gap: 8px; margin: 0; padding: 2px; list-style: none; }
   .strip:focus-visible { outline: 2px solid var(--focus-stroke-outer); outline-offset: 1px; }
-  .input-card { position: relative; flex: 0 0 96px; display: flex; flex-direction: column; gap: 2px; padding: 6px; border: 1px solid var(--control-stroke); border-radius: var(--radius-sm); background: var(--control-fill); }
+  .input-card { position: relative; flex: 0 0 var(--card-size); width: var(--card-size); min-width: 0; align-self: flex-start; overflow: hidden; border: 1px solid var(--control-stroke); border-radius: var(--radius-sm); background: var(--control-fill); --card-size: 88px; }
   .input-card.invalid { border-color: var(--system-critical); }
-  .thumb { display: block; height: 56px; overflow: hidden; border-radius: 4px; }
-  .thumb :global(.thumbnail) { height: 56px !important; flex-basis: auto !important; }
-  .number { font-size: 12px; font-weight: 600; color: var(--text-primary); }
-  .name { font-size: 11px; color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .input-error { font-size: 11px; color: var(--system-critical-text, var(--system-critical)); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .card-actions { display: flex; gap: 4px; }
+  .thumb { display: block; height: var(--card-size); }
+  .thumb :global(.thumbnail) { height: 100% !important; flex-basis: auto !important; }
+  .number { position: absolute; top: 4px; left: 4px; min-width: 18px; height: 18px; padding: 0 4px; box-sizing: border-box; display: grid; place-items: center; font-size: 11px; font-weight: 600; line-height: 1; color: var(--text-on-accent); background: var(--accent); border-radius: var(--radius-pill); pointer-events: none; }
+  .input-error { display: block; padding: 2px 4px; font-size: 11px; overflow-wrap: anywhere; color: var(--system-critical-text, var(--system-critical)); }
+  /* Overlaid on the image, so hiding them frees no space and showing them moves nothing. */
+  .card-actions { position: absolute; left: 0; right: 0; bottom: 0; display: flex; gap: 2px; padding: 3px; background: color-mix(in srgb, var(--background-solid) 80%, transparent); opacity: 0; transition: opacity var(--transition-fast); }
+  .input-card:hover .card-actions, .input-card:focus-within .card-actions { opacity: 1; }
+  /* Touch has no hover to reveal them. */
+  @media (hover: none) { .card-actions { opacity: 1; } }
   .card-actions button { flex: 1; min-width: 0; height: 22px; padding: 0; font: inherit; font-size: 14px; line-height: 1; color: var(--text-primary); background: var(--subtle-fill); border: 1px solid var(--control-stroke); border-radius: 4px; cursor: pointer; }
   .card-actions button:hover:not(:disabled) { background: var(--subtle-fill-secondary); }
   .card-actions button:disabled { opacity: 0.4; cursor: default; }
