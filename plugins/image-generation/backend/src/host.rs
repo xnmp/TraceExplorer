@@ -16,6 +16,11 @@ pub trait Host: Send + Sync {
     fn process_stdin_bound(&self) -> Option<usize> {
         None
     }
+    /// Whether `host.process.run` takes explicit operation custody
+    /// (`processCustody`). Learned from initialization, never from a version.
+    fn process_custody(&self) -> bool {
+        false
+    }
     /// Frees a finished `host.process.run` result's output files. The host
     /// never answers `host.process.release`, so it is a notification: a call
     /// would wait for its deadline. Hosts that run no processes need nothing.
@@ -25,6 +30,8 @@ pub trait Host: Send + Sync {
 static RECEIPT_BILLING: AtomicBool = AtomicBool::new(false);
 /// The connection's `processStdin` bound; zero until a host advertises one.
 static PROCESS_STDIN: AtomicUsize = AtomicUsize::new(0);
+/// Whether the connection's host advertised `processCustody`.
+static PROCESS_CUSTODY: AtomicBool = AtomicBool::new(false);
 /// Record optional host capabilities from `initialize` params.
 pub fn initialize(params: &Value) {
     RECEIPT_BILLING.store(
@@ -35,6 +42,10 @@ pub fn initialize(params: &Value) {
         te_plugin_runtime::process::stdin_bound(params).unwrap_or(0),
         Ordering::Release,
     );
+    PROCESS_CUSTODY.store(
+        te_plugin_runtime::process::custody_supported(params),
+        Ordering::Release,
+    );
 }
 pub struct NativeHost;
 impl Host for NativeHost {
@@ -43,6 +54,9 @@ impl Host for NativeHost {
     }
     fn process_stdin_bound(&self) -> Option<usize> {
         Some(PROCESS_STDIN.load(Ordering::Acquire)).filter(|bytes| *bytes > 0)
+    }
+    fn process_custody(&self) -> bool {
+        PROCESS_CUSTODY.load(Ordering::Acquire)
     }
     fn call(&self, method: &str, params: Value, cancelled: &AtomicBool) -> Result<Value> {
         te_plugin_runtime::invoke(
