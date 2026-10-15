@@ -55,9 +55,9 @@ describe("shared lanes between sources", () => {
 });
 
 describe("lane-free production layouts", () => {
-  // One test per corpus case, so each fits vitest's 5 s default: the whole corpus in one test
-  // took 3.2 s locally and timed out on the x86_64 Linux CI runner; the slowest case
-  // (random-dag-200-9102) takes 0.8 s locally.
+  // One test per corpus case. This is a correctness check, not a timing budget: the slowest
+  // case (random-dag-200-9102) takes 0.8 s locally but over 5 s on the macOS x86_64 runner,
+  // so each case gets 30 s. Layout latency is measured by layout:eval, not here.
   it.each(corpus().map(c => [c.id, c] as const))("never shows a shared lane in %s unless it says why", (_, c) => {
     const unexplained: string[] = [];
     for (const width of [360, 900]) {
@@ -71,7 +71,7 @@ describe("lane-free production layouts", () => {
       }
     }
     expect(unexplained).toEqual([]);
-  });
+  }, 30_000);
 
   it("brings every input of a junction to its dot along its own line", () => {
     for (const c of corpus().filter(c => c.id.startsWith("random-dag-12") || c.id.includes("merges"))) {
