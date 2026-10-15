@@ -7,7 +7,7 @@ import { measure, validateLayout, cost, routePlan, sharedLaneLength, type Measur
 import { incrementalBudget, incrementalTree } from "./band-incremental";
 import { forEachPathNumber, isPlainPathData, mapPathNumbers, pathNumbers } from "./path-data";
 import { extentCost, optimisticCost, rectangleCost } from "./layout-cost-bound";
-import { bandHistorySignature, grownLayout, historyFit } from "./band-history";
+import { bandHistorySignature, historyFit, resizedLayout } from "./band-history";
 
 export { bandWidthBudget };
 
@@ -41,7 +41,7 @@ function fittedHistory(input: LayoutRequest, options: BandOptions): { readonly h
   if (!fit || (fit.kind === "grown" && !options.growthHistory)) return none;
   if (fit.kind === "same") return { history, ...none };
   if (!fit.heights.size) return { history, resized: false, grew: true };
-  return { history: { ...history, layout: grownLayout(history.layout, fit.heights), placed: grownLayout(history.placed, fit.heights) }, resized: true, grew: true };
+  return { history: { ...history, layout: resizedLayout(history.layout, fit.heights), placed: resizedLayout(history.placed, fit.heights) }, resized: true, grew: true };
 }
 
 interface Candidate { readonly name: string; readonly layout: GraphLayout; readonly partition?: readonly number[] }
@@ -300,14 +300,17 @@ export function layoutBand(input: LayoutRequest, options: BandOptions = BAND_DEF
   const previous = compatible?.attachment ? normalizedHistory(compatible, request) : compatible?.placed;
   const anchors = previous ? anchorKeys(request, previous) : [];
   // Unchanged geometry is kept as is, unless it shares lanes between sources (an
-  // earlier fallback): then the search below looks for a layout that does not. Grown tiles
-  // changed the committed geometry, which then has to pass the gates like any candidate.
-  if (previous && !fitted.resized && request.items.length === previous.nodes.size && request.items.every(n => {
+  // earlier fallback): then the search below looks for a layout that does not. When the
+  // visible tiles are the same but some gained or lost their expansion hint (an output arrived
+  // or left out of sight), the committed geometry was resized in place; it is kept the same way
+  // if it passes the hard gates, since nothing more became visible to make room for.
+  if (previous && request.items.length === previous.nodes.size && request.items.every(n => {
     const p = previous.nodes.get(n.key);
     return p && p.width === n.width && p.height === n.height;
-  }) && !(sharedLaneLength(previous) > 0)) {
+  }) && !(sharedLaneLength(previous) > 0)
+    && (!fitted.resized || Number.isFinite(cost(validateLayout(previous, key, request.maxWidth, request.items), request.tileWidth ?? 92)))) {
     const retained = request.history!.layout;
-    if (retained) return { ...retained, preferredX: bandExtent(previous, key).left, anchorY: anchors.length && compatible?.attachment ? compatible.attachment.bandTop - compatible.attachment.placement.coverHeight : undefined, anchorX: anchors.length ? bandExtent(previous, key).left : undefined, decision: { candidate: "unchanged-visible", stability: true, partition: request.history?.layout.decision?.partition } };
+    if (retained) return { ...retained, preferredX: bandExtent(previous, key).left, anchorY: anchors.length && compatible?.attachment ? compatible.attachment.bandTop - compatible.attachment.placement.coverHeight : undefined, anchorX: anchors.length ? bandExtent(previous, key).left : undefined, decision: { candidate: fitted.resized ? "resized-visible" : "unchanged-visible", stability: true, partition: request.history?.layout.decision?.partition } };
   }
   const tileWidth = request.tileWidth ?? 92;
   const prepare = (c: Candidate): Prepared => {
