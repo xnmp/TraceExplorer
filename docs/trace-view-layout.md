@@ -100,8 +100,9 @@ request that defeats every candidate on other gates (malformed input, such as a 
 a visible parent: `pinnedViolation`) shows the downward layout as is, flagged
 `gate-infeasible`. `fallbackReason` gives the reason from the layout itself. Across the
 evaluation corpus (6,060 layouts) and the legal tours (2,595 steps, plus 540 dense-tour
-steps) the only shared lane shown is 6 px, in random-dag-40-7502 at 1,400 px / preset 48
-(`lane-infeasible`; no candidate of that cold request is lane-free).
+steps) no shared lane is shown. Before straight passing ([Optimality gap](#optimality-gap)),
+one was: 6 px, in random-dag-40-7502 at 1,400 px / preset 48 (`lane-infeasible`; no
+candidate of that cold request was lane-free).
 
 #### Crossings
 
@@ -230,8 +231,9 @@ quality by at least 15%, preventing near-tie oscillation. Anchored history may e
 compact candidate's height; the decision records that stability exception.
 
 `BandHistory` contains the last accepted raw layout, its exact attached geometry and
-attachment context. History is incompatible after membership/relationships, pane width,
-pin or metrics change. Packing-only updates refresh the accepted geometry without
+attachment context. History is incompatible after a pane width, pin or metrics change, or
+a change to any shared image's inputs, order or size; it survives growth (see
+[Growth](#growth)). Packing-only updates refresh the accepted geometry without
 replanning. History from a superseded scene is never consumed. Normalisation removes
 preceding packed-band offsets and reconciles host cover chrome before local scoring.
 `decision.fallback` reports `anchor-infeasible` when the bounded candidate family has no
@@ -538,6 +540,104 @@ layered engine supplies ordering, while a separate packing stage fits independen
 into the row. Explicit ports and lane reservations keep
 those compaction steps from falsifying parentage.
 
+## Growth
+
+An edit adds outputs; an image's inputs never change. So a component's history survives
+images arriving or leaving (`band-history.ts`), the way North's DynaDAG (1995) inserts new
+nodes into the previous drawing instead of recomputing it. Before, any membership change
+expired the history and each arriving output relaid the band, moving the selected input in
+24–68% of arrivals, by up to 1,000+ px.
+
+- History stays compatible when the frame (pane width, tile size, pinned cover) and every
+  shared image's order, inputs and size match. The one size change allowed is a tile's first
+  output: it gains the expansion hint and grows downward in place, and everything below the
+  first clear line under it moves down by what it needs. A connector arriving at its left
+  side (running right) follows its new centre.
+- When the component grew, anchors yield (`anchor-yield`) if holding them makes the band
+  more than `anchorHeightRatio` (1.5) times taller than the best unanchored layout: a chain
+  growing below a held column must still wrap. A click on an unchanged component never
+  yields to height; there the band only shows more of what was already there.
+- The selected input still moves in two cases: a flagged yield, or the growth push, where
+  a merge's other input above it gains its first output and grows (16 px at the default
+  size). `layout-properties.test.ts` admits exactly these.
+
+The phase 3 policy (#79) stays registered as the `phase3` engine (`BAND_PHASE3`) for A/B.
+
+## Optimality gap
+
+How far the engine is from optimal on the criteria that matter, measured against exact and
+reference oracles. Scripts and raw results live outside the repository (the study's work
+directory); the method is reproducible from this description.
+
+**Sources, reported separately.** The user's one real folder (25 images, all trees, fan-out
+≤ 3, depth ≤ 3; topology only, never committed) is a check on shape only. A seeded
+generative model (`layout-eval/provenance-model.ts`) supplies the statistics: its `observed`
+profile brackets the real folder on all eight shape measures over 300 seeds; `variations`,
+`chains`, `combinations` and `mixed` deliberately stretch fan width, depth and merges. The
+existing corpus and 160 North DAGs (10–99 nodes) complete the set.
+
+**Oracles.**
+- *Metric agreement.* An independent implementation (shapely) matches production crossings
+  on 3,090 of 3,109 layouts (the rest differ by ≤ 0.24%, all on one 10⁴-crossing case) and
+  height to a constant 14 px bottom margin.
+- *Exact crossing optimum.* A Jünger–Mutzel ILP (CP-SAT) with the drawing's own display rows
+  as layers: tiles stay in their rows, everything else is free; a second model also fixes
+  our tile order, leaving only passing positions free. Trees need no solver: they are level
+  planar, so their optimum is 0.
+- *Reference engines.* Graphviz `dot` and ELK Layered (also with Coffman–Graham width-bounded
+  layering) on the same graphs, tile sizes and gaps, scored by the same independent code.
+
+**Results** (static click tours unless noted; ours is this engine).
+
+| Source | Arrival: input moved (phase3 → now) | X ours | X dot / ELK where they fit | Tree layouts crossing (optimum 0) |
+|---|---|---:|---:|---:|
+| real | 122 → 0 of 513 | 0.02 | 0 / 0 | 2.0% |
+| observed | 2,008 → 70 of 3,021 | 0.03 | 0 / 0 | 2.2% |
+| variations | 3,881 → 220 of 8,721 | 1.81 | 0.08 / 0.09 | 22% |
+| chains | 6,249 → 240 of 12,483 | 0.56 | 0 / 0 | 5% |
+| combinations | 5,486 → 416 of 16,074 | 11.5 | 0.26 / 0.30 | 6% |
+| mixed | 4,395 → 199 of 12,198 | 2.6 | 0.03 / 0 | 8% |
+| corpus | 38,393 → 1,506 of 71,706 | 330 | 0.32 / 0.27 | 21% |
+| North | (static only) | 182 | 4.8 / 4.5 | 61% |
+
+The references cannot wrap a generation, so on the DAG sources they overflow the pane in
+45–80% of layouts; where they fit, ours is 30–60% shorter (chains: 560 vs 1,242 px) but
+crosses more. Their latency is 7–22 ms at p50 (ours 1–3 ms).
+
+On downward layouts of merge-heavy sources, standard layered crossings κ against the exact
+optimum (both proven): combinations 7,692 vs 151 (625 with our tile order fixed), mixed
+999 vs 0 (68), North 38,446 vs 1,601 (3,801). Better generation orders barely help (median
+sweep −1 to −14%, with sibling inversions), and injecting the optimal tile orders does not
+realise the optimum. The gap is in how routes pass the rows between their ends.
+
+**Passing routes.** A route into a tile passing a row takes the open gap nearest the
+straight line from its source to the centroid of the ends its source's routes still passing
+that row head for (`Passing: "straight"`: the usual placement of a long edge's dummy nodes,
+bundled so a fan keeps one trunk). Lanes in a gap are ordered by where those lines cross
+it, and gaps whose every x meets another source's stem are skipped. Against the previous
+rule (nearest the end at every row): crossings −15% (variations), −8% (mixed), −5%
+(combinations), −0.4% (North), unchanged on real, chains and the corpus (+0.2%); shared
+lanes in the raw-engine fuzz 57 → 6 of 2,700. Straight lines per route, unbundled, split
+fans at their first row: corpus crossings +3.5%, mostly in wide wrapped trees.
+Routes into junctions keep the old rule: on straight lines they cut North crossings by 10%
+but, in crowded junction channels, routes passed within 5 px of a foreign dot in 11–13 of
+800 stress layouts instead of 7, and a route that seems to join a dot misstates provenance.
+
+**Remaining gap.**
+- On the real-shaped sources it is 0.02–0.03 crossings per layout, all in trees whose
+  optimum is 0; stability on growth is within the flagged exceptions above.
+- On merge-heavy profiles passing routes still cross about ten times the tile-order-fixed
+  optimum. The next principled step is edge insertion: a shortest path per route over
+  (row, gap) states priced by crossings with segments already fixed. It is worth doing only
+  if real folders merge often.
+- Tree layouts that keep committed geometry cross more than fresh ones (variations 25% vs
+  16%, mixed 15% vs 4%): the stability weight's price, a product trade-off.
+- Near-shared lanes: parallel runs of different sources under 3 px apart over more than
+  8 px. Collinear runs are gated, but these are not. They show in 2 of 348 real layouts,
+  34% of combinations and 54% of North layouts. Mostly they are the incremental
+  embedding's horizontal runs, and short vertical runs in crowded downward channels. The
+  production lane gate should treat them as shared.
+
 ## Reproducible optimisation acceptance
 
 `bun run layout:eval` compares against a frozen copy of the graph, attachment and
@@ -552,26 +652,37 @@ and the limits of the anchor feasibility checks.
 
 #### Known limits
 
-Five acceptance rows fail. Each is a measured limit of this engine, not a loosened target:
+Seven acceptance rows fail. Each is a measured limit of this engine, not a loosened target.
+The figures are from the run after straight passing ([Optimality gap](#optimality-gap));
+where that change moved a row, the earlier figure is given.
 
 - **Legal click anchors stationary: 9 of 2,595 tour steps move their anchor** (baseline:
-  509), every one flagged `anchor-infeasible`: random-dag-100-8103 (454 px step 7, 640 px
-  step 6), random-dag-200-9102 (360 px step 4; 454 px steps 4–6) and random-dag-200-9103
-  (360/640/900 px step 1), 42–94 visible tiles. No lane-free anchor-preserving embedding
-  was found within the per-request budget. Without the crossing cap 7 steps fall back;
-  the cap's 74 yields change later history in some tours.
-- **Dense tours: 83 of 480 clicks move their anchor** (baseline: 476), all flagged
-  `anchor-infeasible`: 6 at fan-in ≤ 4 and 77 at fan-in ≤ 10. 86 more yield to the
+  509), every one flagged `anchor-infeasible`. They are random-dag-100-8103 (454 px step 7,
+  640 px step 6), random-dag-200-9102 (360 px step 4; 454 px steps 4–6) and
+  random-dag-200-9103 (360/640/900 px step 1), with 42–94 visible tiles. No lane-free
+  anchor-preserving embedding was found within the per-request budget. Without the crossing
+  cap, 7 steps fall back; the cap's 67 yields change later history in some tours.
+- **Dense tours: 81 of 480 clicks move their anchor** (baseline: 476), all flagged
+  `anchor-infeasible`: 3 at fan-in ≤ 4 and 78 at fan-in ≤ 10. 84 more yield to the
   crossing cap. Where many sources merge into most tiles, the lane-free incremental
   embedding often finds no route set within its budget.
-- **67 crossing regressions not paid for by height** (of 417 that cross more than the
-  baseline): see [Known readability limits](#known-readability-limits).
-- **8 cases with worse p95 than the baseline**, all with 3–12 visible tiles and a baseline
-  p95 of 0.19–1.10 ms; the largest gap is 0.16 ms. The new engine builds and scores at
-  least two candidates where the baseline ran one layered pass; which sub-millisecond cases
+- **190 crossing regressions not paid for by height**, of 470 layouts that cross more than
+  the baseline (before straight passing: 67 of 417). Against the previous engine, straight
+  passing crosses less in 1,243 layouts and more in 568, and mean crossings fall from 333.8
+  to 326.8. The new regressions concentrate in dense random DAGs (random-dag-200: 70,
+  repeated over the steps of each tour) and junction-heavy fixtures (overlapping-merges:
+  12): routes into junctions keep the old rule, and the two rules interact. See also
+  [Known readability limits](#known-readability-limits).
+- **One layout family more than 10% taller than the baseline without a stability reason**:
+  random-chainy-100-8301 at 360 px / preset 64 (all 5 tour steps), 7,032 → 7,813 px.
+  Straight passing cut the downward layout's crossings from 356 to 222, so the objective now
+  prefers it to the shelves layout (7,245 px).
+- **10 cases with worse p95 than the baseline**, all with 3–12 visible tiles and a baseline
+  p95 of 0.10–1.14 ms; the largest gap is 0.15 ms. The new engine builds and scores at
+  least two candidates where the baseline ran one layered pass. Which sub-millisecond cases
   land on the list changes between runs.
-- **One request with ≤ 30 visible tiles above 5 ms at p95**: random-dag-40-7503's
-  committed reveal, 7.4 ms (p50 5.6 ms; baseline 12.4 ms). It has 24 visible tiles plus
-  history, so the dispatch rule runs it in the worker. The crossing cap adds about 1.5 ms
-  (its winner crosses 190 times, so the best unanchored layout is evaluated); before the
-  cap it measured 5.2 ms.
+- **Two requests with ≤ 30 visible tiles above 5 ms at p95**: the committed reveals of
+  random-dag-40-7503 (9.2 ms; baseline 15.9 ms) and random-dag-40-7502 (6.3 ms; baseline
+  10.4 ms). Both have 22–24 visible tiles plus history, so the dispatch rule runs them in the
+  worker; main-thread requests stay at or under 2.3 ms at p95. The crossing cap adds about
+  1.5 ms when its winner crosses often, because the best unanchored layout is then evaluated.
