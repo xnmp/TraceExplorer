@@ -578,6 +578,41 @@ expired the history and each arriving output relaid the band, moving the selecte
 
 The phase 3 policy (#79) stays registered as the `phase3` engine (`BAND_PHASE3`) for A/B.
 
+## Workflow shapes
+
+What the layout must handle, from the product's limits and public raw data. The user's one real
+folder is a sanity check, not a prior: it holds 22 runs.
+
+- **Product limits.** An edit takes one to eight equal, ordered inputs (`MAX_IMAGE_INPUTS`). A
+  prompt makes one to eight outputs, each its own run in one batch. An input from outside the
+  folder is a reference badge, not a route, and a shared reference does not join components.
+  A retry resubmits the same inputs as a new run, adding siblings.
+- **The real folder** (22 runs over 11 days): 21 single-input edits and one two-input edit
+  (which failed), no batches, at most three runs per image, depth at most three. Merge rate
+  1 of 22 (95% interval 0.1–23%); batches 0 of 22 (under 13%).
+- **Midjourney** (vivym/midjourney-messages, three shards, 3.0 M bot messages, March–August
+  2023, jobs linked by user and prompt). 13.6–16.2% of new jobs are image-conditioned, and
+  16–23% of those combine several images (pooled 19%). Inputs per combination: 2 (69%),
+  3 (17%), 4 (7%), 5 (5%), 6 (1%), 7 (0.7%), 8 or more (1.2%). Half of all image-prompt uses
+  reuse a link the same user used before. Runs per varied image: one 60%, two 23%, three 9%,
+  four 4%, five to eight 3%, more 0.5% (at most 38). Every job makes a batch of four; 51–62%
+  of continued grids continue one image. 16–18% of lineages have a derived run; among them,
+  depth 1 is 57–61%, 2 is 22%, 3 is 8–9%, 4–9 is 9–10%, and 10 or more about 1% (an upper
+  bound: linking to the latest job turns siblings into chains).
+- **DiffusionDB** (2M subset): sessions split at 30-minute gaps have a median of five
+  commands (as in Xie et al. 2023), and same-prompt reruns, the retry analogue, are 15.8% of
+  in-session commands. Batches are not recoverable: the subset keeps about one image per
+  prompt.
+- **Not available**: public lineage data for instruction-based editing. MagicBrush and
+  similar sets are annotator-designed edit chains, not user sessions.
+
+Midjourney is a different tool, so its frequencies are an analogue, not a measurement of
+this product's users. The generative model (`layout-eval/provenance-model.ts`) therefore
+spans the range instead of fitting one point: `mj` uses Midjourney's frequencies, `merge-k8`
+and `batch8` push merges and batches to the product's limits, and `variations`, `chains`,
+`combinations` and `mixed` stretch one dimension each. Results are reported per profile, and
+defects are ranked by severity at the worst plausible frequency.
+
 ## Optimality gap
 
 How far the engine is from optimal on the criteria that matter, measured against exact and

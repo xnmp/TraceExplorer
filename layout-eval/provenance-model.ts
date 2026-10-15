@@ -16,9 +16,16 @@
  *
  * `observed` reproduces the shapes of the one real folder measured (single-input edits only, fans of
  * up to three, chains up to three deep, half the edits continuing from the image just made; see
- * docs/trace-view-layout.md, "Optimality gap"). The other profiles stretch one dimension each, so a
- * layout change is never judged on that folder alone. Parameters are guesses where the folder is
- * silent (merges, references, batches): see the questions in the same section.
+ * docs/trace-view-layout.md, "Optimality gap"). That folder is a sanity check, not a prior: it holds
+ * 22 runs. The other profiles span what the product allows (one to eight inputs per edit, one to
+ * eight outputs per prompt, references from outside the folder, retries) at frequencies taken from
+ * public raw data where it exists (docs/trace-view-layout.md, "Workflow shapes"):
+ * - `mj`: Midjourney's Discord lineage (3.0 M bot messages, 2023): 19% of image-conditioned jobs
+ *   combine several images, in-degrees 2-8 as measured (`MJ_EXTRA_INPUTS`), half of all reference
+ *   uses reuse an earlier one, and every job makes a batch of four.
+ * - `merge-k8` and `batch8` push merges (35%, every extra input a folder image) and batches (eight
+ *   outputs) to the product's limits; `variations`, `chains`, `combinations` and `mixed` stretch one
+ *   dimension each. They bound what the engine must survive, not what users do.
  */
 import type { TraceNode } from '../src/lib/domain/trace-graph/model';
 import { rng } from './corpus';
@@ -39,7 +46,18 @@ export interface ProvenanceParams {
   /** Probability of each further output of one edit (variations in one batch), at most `maxBatch`. */
   readonly batch: number;
   readonly maxBatch: number;
+  /** Relative weights of 1, 2, … further inputs of a combination; replaces the uniform 1..`maxExtraInputs`. */
+  readonly extraInputs?: readonly number[];
+  /** Relative weights of batches of 1, 2, … outputs; replaces `batch` and `maxBatch`. */
+  readonly batches?: readonly number[];
 }
+
+/**
+ * Further inputs of a combination (in-degree 2..8, the product's limit), from the image links of
+ * 40,161 multi-image Midjourney jobs (2023): 27,629 with 2 images, 6,654 with 3, 2,673 with 4,
+ * 2,009 with 5, 429 with 6, 290 with 7 and 477 with 8 or more (folded into 8).
+ */
+export const MJ_EXTRA_INPUTS: readonly number[] = Object.freeze([27629, 6654, 2673, 2009, 429, 290, 477]);
 
 export const profiles: Readonly<Record<string, ProvenanceParams>> = Object.freeze({
   observed: { events: 25, importRate: .35, continueChain: .2, recency: .6, fresh: .3, merge: 0, maxExtraInputs: 1, reference: 0, reuse: 0, batch: 0, maxBatch: 1 },
@@ -47,7 +65,18 @@ export const profiles: Readonly<Record<string, ProvenanceParams>> = Object.freez
   chains: { events: 40, importRate: .1, continueChain: .85, recency: .6, fresh: .1, merge: .05, maxExtraInputs: 1, reference: .5, reuse: .7, batch: .1, maxBatch: 2 },
   combinations: { events: 40, importRate: .2, continueChain: .45, recency: .8, fresh: .15, merge: .35, maxExtraInputs: 2, reference: .4, reuse: .6, batch: .2, maxBatch: 3 },
   mixed: { events: 60, importRate: .15, continueChain: .5, recency: .8, fresh: .15, merge: .15, maxExtraInputs: 2, reference: .4, reuse: .6, batch: .35, maxBatch: 4 },
+  mj: { events: 40, importRate: .2, continueChain: .45, recency: .8, fresh: .15, merge: .19, maxExtraInputs: 7, reference: .4, reuse: .55, batch: 0, maxBatch: 4, extraInputs: MJ_EXTRA_INPUTS, batches: [0, 0, 0, 1] },
+  "merge-k8": { events: 40, importRate: .2, continueChain: .45, recency: .8, fresh: .15, merge: .35, maxExtraInputs: 7, reference: 0, reuse: 0, batch: 0, maxBatch: 1, extraInputs: MJ_EXTRA_INPUTS },
+  batch8: { events: 40, importRate: .2, continueChain: .45, recency: .8, fresh: .15, merge: .05, maxExtraInputs: 1, reference: .4, reuse: .55, batch: 0, maxBatch: 8, batches: [0, 0, 0, 0, 0, 0, 0, 1] },
 });
+
+/** Index drawn with probability proportional to `weights[index]` (all finite and nonnegative, some positive). */
+function weighted(weights: readonly number[], random: () => number): number {
+  const total = weights.reduce((a, b) => a + b, 0);
+  let r = random() * total;
+  for (let k = 0; k < weights.length; k++) { r -= weights[k]; if (r < 0) return k; }
+  return weights.length - 1;
+}
 
 const image = (key: string, parents: readonly string[], order: number, scope: TraceNode['scope'] = 'current'): TraceNode => ({
   key, parents, order, artifactId: order, runId: parents.length ? order : null, path: `${key}.png`, scope, location: '', state: 'present',
@@ -80,7 +109,7 @@ export function provenanceSession(params: ProvenanceParams, seed: number): Trace
     const primary = random() < params.continueChain ? last : random() < params.fresh ? imports[imports.length - 1] : earlier(new Set()) ?? last;
     const inputs = [nodes[primary].key];
     if (random() < params.merge) {
-      const extra = 1 + Math.floor(random() * params.maxExtraInputs);
+      const extra = 1 + (params.extraInputs ? weighted(params.extraInputs, random) : Math.floor(random() * params.maxExtraInputs));
       for (let k = 0; k < extra; k++) {
         if (random() < params.reference) {
           const style = styles.length && random() < params.reuse ? styles[Math.floor(random() * styles.length)] : add([], 'external').key;
@@ -93,7 +122,8 @@ export function provenanceSession(params: ProvenanceParams, seed: number): Trace
       }
     }
     let outputs = 1;
-    while (outputs < params.maxBatch && random() < params.batch) outputs++;
+    if (params.batches) outputs = 1 + weighted(params.batches, random);
+    else while (outputs < params.maxBatch && random() < params.batch) outputs++;
     for (let k = 0; k < outputs; k++) add(inputs);
   }
   return nodes;
