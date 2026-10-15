@@ -14,10 +14,11 @@
  * this engine sits behind the `layoutGraph(LayoutRequest) → GraphLayout`
  * boundary instead; callers never depend on how it works.
  */
-import { layoutBand } from "./band-layout";
+import { layoutBand, type BandOptions } from "./band-layout";
 import type { NodeKey } from "./model";
 import { buildInputJunctions, endpointKey, type Consumer, type Endpoint, type Junction } from "./junctions";
 import { ARROW, bendZones, JUNCTION_BERTH, spacingFor, TRACK_HEIGHT } from "./metrics";
+import { orderLayers } from "./layer-order";
 
 export interface LayoutItem {
   readonly key: NodeKey;
@@ -293,14 +294,21 @@ function hashOf(text: string): string {
   return (hash >>> 0).toString(36);
 }
 
-export function layoutGraph(request: LayoutRequest): GraphLayout {
+export function layoutGraph(request: LayoutRequest, options?: BandOptions): GraphLayout {
   if (!request || !Array.isArray(request.items)) throw new RangeError("malformed layout request");
-  return request.band ? layoutBand(request) : layoutLayered(request);
+  return request.band ? layoutBand(request, options) : layoutLayered(request);
 }
 
+/**
+ * How a generation is ordered: `barycenter` sorts each generation once by its parents' mean
+ * reading position; `median-sweep` runs Gansner et al.'s iterated median and transpose sweeps
+ * (`layer-order.ts`) on the generations, long edges split by virtual nodes.
+ */
+export type Ordering = "barycenter" | "median-sweep";
+
 /** The reusable layered engine; band candidates call it without recursively planning bands. */
-export function layoutLayered(request: LayoutRequest): GraphLayout {
-  if (request.orientation !== "right") return layoutDown(request, spacingFor(request.tileWidth).minWidth);
+export function layoutLayered(request: LayoutRequest, ordering: Ordering = "barycenter"): GraphLayout {
+  if (request.orientation !== "right") return layoutDown(request, spacingFor(request.tileWidth).minWidth, ordering);
   // Left to right: the same engine on transposed tiles, transposed back.
   // Generations then form columns that never wrap (no height budget), and
   // the canvas needs no minimum height.
@@ -357,14 +365,14 @@ export function transposeLayout(layout: GraphLayout): GraphLayout {
 }
 
 /** The top-to-bottom engine; `minWidth` is the narrowest canvas it draws (within the budget). */
-function layoutDown(request: LayoutRequest, minWidth: number): GraphLayout {
+function layoutDown(request: LayoutRequest, minWidth: number, ordering: Ordering = "barycenter"): GraphLayout {
   // Outer margins hold every lane that does not fit between tiles, and the
   // junctions a crowded channel has no column for. When they overflow, they
   // widen (the graph scrolls horizontally) rather than letting lanes merge or
   // dots stack. Legacy placement needs two retries. A pinned band can first
   // consume spare pane width; moving rows within that width changes gap slots,
   // so allow two further routing passes to settle the new slot choices.
-  const prepared = prepare(request);
+  const prepared = prepare(request, ordering);
   let extra = { left: 0, right: 0 };
   const attempts = prepared.pinned ? 4 : 2;
   for (let attempt = 0; ; attempt++) {
@@ -489,7 +497,7 @@ export function downwardBandBound(request: LayoutRequest, coverKey: NodeKey, ste
  * Everything about a request that does not depend on a pass's extra margins:
  * computed once and shared by every pass of {@link layoutDown}.
  */
-function prepare(request: LayoutRequest) {
+function prepare(request: LayoutRequest, ordering: Ordering = "barycenter") {
   // Malformed input never spreads through the geometry: a size that is not a
   // finite, non-negative number counts as zero, sizes are capped far above
   // any tile, and an order that is not a number sorts first (ties by key).
@@ -575,6 +583,10 @@ function prepare(request: LayoutRequest) {
   // Generation 0 has no parents to follow, so its order (rank alone) is the same every pass.
   const firstBand = byBand.length ? byBand[0].filter((key) => !pinned || key !== pinned.key).sort((a, b) => rank.get(a)! - rank.get(b)!) : [];
 
+  // Swept generation orders (real nodes, pinned cover excluded), or null to sort by barycenters per pass.
+  const swept = ordering === "median-sweep" && bandCount > 1
+    ? orderLayers({ layers: byBand.map((members, b) => b ? members : [...(pinned ? [pinned.key] : []), ...firstBand]), parents: parentsOf, rank: (key) => rank.get(key)! }).map((layer) => layer.filter((key) => !pinned || key !== pinned.key))
+    : null;
   const { joinFacts, ordered, targetsOf } = plan.joins.length ? junctionFacts(plan, bands) : NO_JOINS;
   // Route ids join endpoint keys with ">" (and trunk ids with "~"); while no key holds
   // either, the plan's routes (distinct by their ends) have ids distinct from each other and
@@ -582,7 +594,7 @@ function prepare(request: LayoutRequest) {
   let plainKeys = true;
   for (const key of keys) if (typeof key !== "string" || key.includes(">") || key.includes("~")) { plainKeys = false; break; }
   return {
-    space, items, keys, parentsOf, bandCount, byBand, pinnedViolation, plan, joinFacts, ordered, targetsOf, plainKeys,
+    space, items, keys, parentsOf, bandCount, byBand, pinnedViolation, plan, joinFacts, ordered, targetsOf, plainKeys, swept,
     gap, margin, budget, pinned, contentWidth, rank, firstBand, firstRows: wrapRow(firstBand.map((key) => items.get(key)!.width), contentWidth, gap),
   };
 }
@@ -676,7 +688,12 @@ function layoutPass(prepared: Prepared, extra: { readonly left: number; readonly
     }
     let members: NodeKey[], wrapped: number[][];
     if (bandIndex === 0) ({ firstBand: members, firstRows: wrapped } = prepared);
-    else {
+    else if (prepared.swept) {
+      members = prepared.swept[bandIndex];
+      const widths: number[] = [];
+      for (const key of members) widths.push(items.get(key)!.width);
+      wrapped = wrapRow(widths, contentWidth, gap);
+    } else {
       // Barycenter of parents in reading order (row first, then x) keeps
       // children near their parents even when parent rows wrapped. Parents
       // lie in earlier bands, already placed, so each score is computed once.

@@ -24,7 +24,7 @@
 import type { NodeKey } from "../model";
 import { gridFlow, type GridItem, type GridMetrics, type GridRect } from "../grid-flow";
 import { attachPackedBand, bandExtent, bandPlacements, packedGridFlow } from "../band-geometry";
-import { bandHistorySignature } from "../band-layout";
+import { BAND_DEFAULTS, bandHistorySignature, type BandOptions } from "../band-layout";
 import { folderGridGeometry, gridPins, type FolderGridGeometry } from "../folder-grid";
 import { layoutGraph, type BandHistory, type GraphLayout, type LayoutRequest } from "../layout";
 import { layoutSignature } from "../layout-signature";
@@ -138,10 +138,10 @@ export function planBands(input: FolderLayoutInput, geometry: FolderGridGeometry
 }
 
 /** Plans and lays out every open band (step 2). */
-export function layoutBands(input: FolderLayoutInput, geometry: FolderGridGeometry, cache: BoundedCache<GraphLayout> | null = null): ReadonlyMap<GraphId, PlannedBand> {
+export function layoutBands(input: FolderLayoutInput, geometry: FolderGridGeometry, cache: BoundedCache<GraphLayout> | null = null, options: BandOptions = BAND_DEFAULTS): ReadonlyMap<GraphId, PlannedBand> {
   const bands = new Map<GraphId, PlannedBand>();
   for (const [id, { plan, kept }] of planBands(input, geometry)) {
-    const layout = kept ?? bandLayout(plan.request, cache);
+    const layout = kept ?? bandLayout(plan.request, cache, options);
     // A cover the band does not place cannot be attached; the stack is shown closed.
     if (layout.nodes.has(id)) bands.set(id, { plan, layout });
   }
@@ -163,12 +163,12 @@ export function rememberBands(layout: FolderLayout, cache: BoundedCache<GraphLay
   for (const graph of layout.graphs.values()) cache.set(layoutSignature(graph.plan.request), graph.layout);
 }
 
-function bandLayout(request: LayoutRequest, cache: BoundedCache<GraphLayout> | null): GraphLayout {
-  if (!cache) return layoutGraph(request);
+function bandLayout(request: LayoutRequest, cache: BoundedCache<GraphLayout> | null, options: BandOptions): GraphLayout {
+  if (!cache) return layoutGraph(request, options);
   const key = layoutSignature(request);
   const known = cache.get(key);
   if (known) return known;
-  const layout = layoutGraph(request);
+  const layout = layoutGraph(request, options);
   cache.set(key, layout);
   return layout;
 }
@@ -211,13 +211,15 @@ function folderBounds(grid: GridRect, cells: Iterable<GridRect>, bands: readonly
 export interface DefaultEngineOptions {
   /** Per-band layout reuse keyed by the exact request; null disables it. Output is identical either way. */
   readonly bandCache?: BoundedCache<GraphLayout> | null;
+  /** Band layout policy (A/B in `layout-eval`); production uses the defaults. */
+  readonly band?: BandOptions;
 }
 
 export function createDefaultEngine(options: DefaultEngineOptions = {}): FolderLayoutEngine {
   const cache = options.bandCache === undefined ? createBoundedCache(estimateLayoutBytes) : options.bandCache;
   return (input) => {
     const geometry = folderGridGeometry(input.width, input.tile, input.grid);
-    return composeFolderLayout(input.items, geometry, layoutBands(input, geometry, cache));
+    return composeFolderLayout(input.items, geometry, layoutBands(input, geometry, cache, options.band));
   };
 }
 
