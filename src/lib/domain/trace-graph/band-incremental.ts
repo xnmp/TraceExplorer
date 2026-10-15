@@ -48,6 +48,11 @@ const FALLBACK_SLOTS = 3;
 const HOLE_ROWS = 8;
 /** Free holes per new tile whose wiring may fail before the remaining holes are passed over. */
 const HOLE_TRIES = 2;
+/**
+ * Probes adding no more height than the first one routed only by a detour that are still wired,
+ * looking for one with a direct route.
+ */
+const DETOUR_SCAN = 8;
 /** Grid points a fallback route search may expand before it gives up (a bounded failure). */
 const GRID_BUDGET = 5000;
 /** Most 64 px rows one segment may span in the lane index (about 4 million px): beyond it the history is not usable. */
@@ -719,6 +724,16 @@ function plans(p: PlacedNode, arrival: Arrival, s: Scene, bottomOnly: boolean, d
       if (bx === ex) emit(family(() => [bottom, end], 1));
       else emit(family(k => { const mid = laneAround((pb + ey - 8) / 2, pb, ey - run, k, grain); return mid === null ? null : [bottom, point(bx, mid), point(ex, mid), end]; }, 2 * choices - 1));
     }
+    // From the right port down the gap beside the parent, then along a row between the tiles
+    // above the target and its arrival: the way past lines leaving the parent's row near their
+    // ports (lane choice (k, j): gap lane k, row j).
+    if (!bottomOnly) {
+      const rows = 2 * choices - 1;
+      emit(family(i => {
+        const x = sideX(Math.floor(i / rows)), y = laneAround((bottomAbove + ey - run) / 2, bottomAbove + 2, ey - run - 2, i % rows, grain);
+        return y === null || x > width - 8 || Math.abs(ex - x) < 1 ? null : [right, point(x, right.y), point(x, y), point(ex, y), end];
+      }, choices * rows));
+    }
     return;
   }
   if (heading === "down") {
@@ -772,7 +787,13 @@ function plans(p: PlacedNode, arrival: Arrival, s: Scene, bottomOnly: boolean, d
   }, choices));
 }
 
-interface Route { readonly points: readonly Point[]; readonly ss: readonly Segment[]; readonly arrival: Arrival }
+interface Route {
+  readonly points: readonly Point[];
+  readonly ss: readonly Segment[];
+  readonly arrival: Arrival;
+  /** Taken from the detours: no direct route was lane-free (`RouteSearch.find`). */
+  readonly detour?: true;
+}
 /** A route's ends by where it arrives: a tile's port (an arrowhead) or a junction's dot. */
 const endsInto = (arrival: Arrival): Ends => arrival.level < 0 ? INTO_TILE : INTO_JUNCTION;
 
@@ -857,7 +878,7 @@ class RouteSearch {
         const c = bases[f] ??= this.candidate(families[f].base);
         if (!this.isClear(c)) continue;
         if (!c.crowded) {
-          if (!lanes.conflicts(c.lanes, this.source, endsInto(owner[f]))) return { points: c.points, ss: c.ss, arrival: owner[f] };
+          if (!lanes.conflicts(c.lanes, this.source, endsInto(owner[f]))) return route(c, owner[f], index);
           if (record) c.crowded = true;
         }
         crowded.push(f);
@@ -872,13 +893,16 @@ class RouteSearch {
       for (const i of ranked) {
         const c = options[i];
         if (c.crowded) continue;
-        if (!lanes.conflicts(c.lanes, this.source, endsInto(owner[from[i]]))) { if (this.isClear(c)) return { points: c.points, ss: c.ss, arrival: owner[from[i]] }; }
+        if (!lanes.conflicts(c.lanes, this.source, endsInto(owner[from[i]]))) { if (this.isClear(c)) return route(c, owner[from[i]], index); }
         else if (record) c.crowded = true;
       }
     }
     return null;
   }
 }
+
+/** The route a search found in tier `tier` (0: direct, 1: detours). */
+const route = (c: Candidate, arrival: Arrival, tier: number): Route => tier ? { points: c.points, ss: c.ss, arrival, detour: true } : { points: c.points, ss: c.ss, arrival };
 
 /** Junction points above tile `n` for `count` parents: level 0 lowest, `LEVEL_GAP` apart. */
 function joinLevels(n: PlacedNode, count: number, shift: number): Point[] {
@@ -1143,23 +1167,31 @@ export function incrementalTree(request: LayoutRequest, previous: GraphLayout, b
     };
     const free = (n: PlacedNode) => parents.every(parent => n.x >= parent.x + parent.width || n.y >= parent.y + parent.height) && clear(n);
     // Rank every probe, then test freedom lazily: only probes up to the first routable one are
-    // checked, and only those are wired. Probe p is (xs[p / ny], ys[p % ny]).
+    // checked, and only those are wired. Probe p is (xs[p / ny], ys[p % ny]). A placement that
+    // only a detour reaches (round other tiles, through the header or the outer gutters) is
+    // taken only if no probe adding no more height has a direct route: a detour costs length
+    // and turns, and the layout that holds still must not lose to a fresh one on them.
     const ny = ys.length, ranked = rankProbes(xs, ys, bottom, item.height);
     const probes = (): { node: PlacedNode; wiring: Wiring } | undefined => {
       const hardest = { index: 0 };
       let holeTries = HOLE_TRIES;
+      // The first placement routed only by a detour, kept while probes adding no more height
+      // are wired for a direct route (at most DETOUR_SCAN of them).
+      let detoured: { readonly found: { node: PlacedNode; wiring: Wiring }; readonly reach: number } | undefined, scan = DETOUR_SCAN;
       for (const probe of ranked) {
         const x = xs[(probe - probe % ny) / ny], y = ys[probe % ny], hole = (probe % ny) >= base;
         if (hole && !holeTries) continue;
         const n: PlacedNode = { key: item.key, x, y, width: item.width, height: item.height, row: y === parent.y ? parent.row : parent.row + 1, band: parent.band + 1 };
         if (!free(n)) continue;
-        if (!(budget.probes > 0)) return undefined;
+        if (detoured && (Math.max(bottom, n.y + n.height) > detoured.reach || !(scan-- > 0))) return detoured.found;
+        if (!(budget.probes > 0)) return detoured?.found;
         budget.probes--;
         const wiring = wire(parents, n, sceneFor(n), lanes, item.key, hardest);
-        if (wiring) return { node: n, wiring };
-        if (hole) holeTries--;
+        if (wiring && !wiring.routes.some(r => r.detour)) return { node: n, wiring };
+        if (wiring) detoured ??= { found: { node: n, wiring }, reach: Math.max(bottom, n.y + n.height) };
+        else if (hole) holeTries--;
       }
-      return undefined;
+      return detoured?.found;
     };
     // Placements whose routes touch no other source's line come first; failing those, the
     // probes again with touches allowed (contacts are a cost, not a reason to lay out afresh).

@@ -7,7 +7,7 @@ import { cost, measure, routePlan, sharedLaneLength, validateLayout, CROSSING_HE
 import { spacingFor } from "$lib/domain/trace-graph/metrics";
 import { corpus, node, requestFor, rng, screenshot } from "../../../layout-eval/corpus";
 import { profiles, provenanceSession, sessionComponents } from "../../../layout-eval/provenance-model";
-import { axisOf, shallowRun, SHALLOW_RUN } from "$lib/domain/trace-graph/route-contacts";
+import { axisOf, shallowRun, SHALLOW_RUN, TILE_GRAZE } from "$lib/domain/trace-graph/route-contacts";
 import type { TraceNode } from "$lib/domain/trace-graph/model";
 
 const route = (id: string, from: string, to: string, path: string): PlacedRoute =>
@@ -241,6 +241,56 @@ describe("lines alongside curves", () => {
         previous = { signature: bandHistorySignature(request), layout, placed };
       }
     }
+  });
+});
+
+describe("lines kept off tiles", () => {
+  type P = { readonly x: number; readonly y: number };
+  const toSegment = (p: P, a: P, b: P) => {
+    const dx = b.x - a.x, dy = b.y - a.y, l = dx * dx + dy * dy, t = l ? Math.max(0, Math.min(1, ((p.x - a.x) * dx + (p.y - a.y) * dy) / l)) : 0;
+    return Math.hypot(a.x + t * dx - p.x, a.y + t * dy - p.y);
+  };
+  /** Distance from segment ab to a tile's rectangle: zero where they meet (an independent check, not `distanceToTile`). */
+  function toTile(a: P, b: P, t: { x: number; y: number; width: number; height: number }): number {
+    const inside = (p: P) => p.x >= t.x && p.x <= t.x + t.width && p.y >= t.y && p.y <= t.y + t.height;
+    if (inside(a) || inside(b)) return 0;
+    const c = [{ x: t.x, y: t.y }, { x: t.x + t.width, y: t.y }, { x: t.x + t.width, y: t.y + t.height }, { x: t.x, y: t.y + t.height }];
+    const side = (p: P, q: P, r: P) => Math.sign((q.x - p.x) * (r.y - p.y) - (q.y - p.y) * (r.x - p.x));
+    const edges = c.map((p, i) => [p, c[(i + 1) % 4]] as const);
+    if (edges.some(([p, q]) => side(a, b, p) * side(a, b, q) < 0 && side(p, q, a) * side(p, q, b) < 0)) return 0;
+    return Math.min(...edges.flatMap(([p, q]) => [toSegment(a, p, q), toSegment(b, p, q), toSegment(p, a, b), toSegment(q, a, b)]));
+  }
+  /** Incremental routes drawn closer than TILE_GRAZE to a tile other than the two they connect: on its outline, they read as part of it. */
+  function grazing(layout: GraphLayout): string[] {
+    const out: string[] = [];
+    for (const r of layout.routes) {
+      if (!r.id.startsWith("incremental")) continue;
+      const ss = routePlan(r).segments;
+      for (const t of layout.nodes.values()) {
+        if (t.key === r.from.id || t.key === r.to.id) continue;
+        const d = Math.min(...ss.map(([a, b]) => toTile(a, b, t)));
+        if (d < TILE_GRAZE - 1e-6) out.push(`${r.id} ${d.toFixed(2)} px from ${t.key}`);
+      }
+    }
+    return out;
+  }
+
+  // Variations sessions' click tours whose incremental embedding once ran new routes a pixel off
+  // the borders of tiles they pass (sessions 3 and 6 at 454 px).
+  it.each([[3, 454, 64], [6, 454, 64]] as const)("keeps every incremental route off the tiles it passes (session %i, %i px)", (seed, width, imagePx) => {
+    const component = sessionComponents(provenanceSession(profiles.variations, seed))[0];
+    const shown = new Set(component.flatMap(n => n.parents));
+    const focuses = [null, ...component.filter(n => n.scope === "current" && shown.has(n.key)).map(n => n.key).reverse().slice(0, 8), null];
+    let previous: { signature: string; layout: GraphLayout; placed: GraphLayout } | undefined, incremental = 0;
+    for (const focus of focuses) {
+      const request = requestFor({ id: `variations-${seed}`, nodes: component, focuses: [] }, focus, width, imagePx, previous?.layout.readingOrder);
+      const layout = layoutGraph({ ...request, anchorKey: focus ?? undefined, history: previous });
+      const placed = attachSingleBand(layout, request);
+      incremental += placed.routes.filter(r => r.id.startsWith("incremental")).length;
+      expect(grazing(placed), `focus ${focus}`).toEqual([]);
+      previous = { signature: bandHistorySignature(request), layout, placed };
+    }
+    expect(incremental).toBeGreaterThan(0);
   });
 });
 

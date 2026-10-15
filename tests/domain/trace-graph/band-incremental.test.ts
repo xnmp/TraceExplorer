@@ -4,8 +4,12 @@ import { incrementalBudget, incrementalTree, INCREMENTAL_LIMIT } from "$lib/doma
 import { attachSingleBand, bandExtent } from "$lib/domain/trace-graph/band-geometry";
 import { measure, segments, sharedLaneLength } from "$lib/domain/trace-graph/layout-quality";
 import { ARROW, spacingFor } from "$lib/domain/trace-graph/metrics";
-import { random } from "./fixtures";
+import { node, random } from "./fixtures";
 import secondChanceScene from "./second-chance-scene.json";
+import { engines, type FolderLayout } from "$lib/domain/trace-graph/folder-layout";
+import { projectDag, projectReferenceBadges } from "$lib/domain/trace-graph/projection";
+import { expandNode, expandedKeys, expansionAnchor, NO_EXPANSION, openStack, type Expansion } from "$lib/domain/trace-graph/expansion";
+import { tileMetrics, tileSize } from "$lib/domain/trace-graph/metrics";
 
 const item = (key: string, parents: string[] = [], order = 0): LayoutItem => ({ key, parents, order, width: 92, height: 97 });
 const request = (items: readonly LayoutItem[], width = 640): LayoutRequest =>
@@ -245,5 +249,38 @@ describe("incremental tree: second chance", () => {
     expect(incrementalTree(request, previous, budget)).not.toBeNull();
     expect(incrementalTree(request, previous, budget)).toBeNull();
     expect(incrementalTree(request, previous, { fallback: 20_000, second: 0, probes: 0 })).not.toBeNull();
+  });
+});
+
+describe("incremental tree: opening a second branch", () => {
+  // The user's recording (e2e/explicit-expansion.spec.ts): a stack with Cerulean (→ Pikachu's Ball)
+  // and Saffron (→ Blastoise, Ash → Charizard). With Saffron's branch open, Saffron's children sit
+  // under Cerulean's column, so a route from Cerulean to Pikachu's Ball passes Saffron's lines where
+  // they leave its row. Routing round them the long way once made the fresh layout cheaper, and
+  // opening Cerulean moved Saffron's branch.
+  const graph = projectReferenceBadges(projectDag([node("stack"), node("Cerulean", ["stack"], 1), node("Saffron", ["stack"], 2),
+    node("Pikachu's Ball", ["Cerulean"], 3), node("Blastoise", ["Saffron"], 4), node("Ash", ["Saffron"], 5), node("Charizard", ["Ash"], 6)]));
+  const members = graph.dag.order, scope = { graph, members, cover: "stack" };
+  const laidOut = (expansion: Expansion, imagePx: number, width: number, previous: FolderLayout | null) => {
+    const tile = tileMetrics(imagePx), columns = Math.max(1, Math.floor((width + 16) / (tile.width + 16)));
+    return engines.default({
+      items: [{ id: "stack", kind: "stack" }], width: columns * tile.width + (columns - 1) * 16, tile, previous,
+      grid: { cellWidth: tile.width, cellHeight: tileSize({ foreign: false, hint: true }, tile).height, gap: 16 },
+      open: new Map([["stack", { id: "stack", graph, members, anchor: expansionAnchor(expansion, scope), expanded: expandedKeys(expansion, scope) }]]),
+    });
+  };
+  const tiles = (layout: FolderLayout) => new Map([...layout.graphs.get("stack")!.attached.nodes].map(([key, n]) => [key, [n.x, n.y, n.width, n.height]]));
+
+  it.each([48, 64, 96, 128])("leaves the open branch where it was (%i px images)", imagePx => {
+    for (const width of [500, 900]) {
+      const opened = openStack(NO_EXPANSION, "stack"), saffron = expandNode(opened, scope, "Saffron"), both = expandNode(saffron, scope, "Cerulean");
+      const before = laidOut(saffron, imagePx, width, laidOut(opened, imagePx, width, null));
+      const after = laidOut(both, imagePx, width, before);
+      const was = tiles(before), now = tiles(after);
+      expect(now.has("Pikachu's Ball"), `${width} px`).toBe(true);
+      for (const key of ["Cerulean", "Saffron", "Blastoise", "Ash"]) expect(now.get(key), `${key} at ${width} px`).toEqual(was.get(key));
+      const g = after.graphs.get("stack")!;
+      expect(measure(g.attached, "stack", after.size.width, g.plan.request.items).sharedLanePx, `${width} px`).toBe(0);
+    }
   });
 });

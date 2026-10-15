@@ -14,10 +14,11 @@
  * and no other source's line runs within `LANE_SEPARATION` of a slanted (curved) stretch of it
  * for longer than `SHALLOW_RUN`: a crossing that shallow reads as the lines merging.
  *
- * Parallel runs and junction dots have their own rules (`sharedLanePx`'s near lanes,
- * `JUNCTION_BERTH`); the inputs of one junction meet at its dot by design, so they are exempt
- * from each other. The router keeps these rules as it builds routes (`band-incremental`), and the
- * quality gate counts what any layout breaks (`layout-quality`).
+ * Parallel runs and junction dots have their own rules (`sharedLanePx`'s near lanes, a hard gate
+ * of `layout-quality`, and `JUNCTION_BERTH`); the inputs of one junction meet at its dot by
+ * design, so they are exempt from each other. The incremental router keeps these rules as it
+ * builds routes (`band-incremental`): shallow runs always, touches whenever some placement avoids
+ * them. The downward router keeps ports and corners apart through its tracks (`layout.ts`).
  *
  * Tiles are kept off the same way: a line drawn on or right beside a tile's border reads as part
  * of its outline, so as that tile's input or output (ELK's `spacing.edgeNode`, libavoid's shape
