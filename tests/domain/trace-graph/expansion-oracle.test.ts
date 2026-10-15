@@ -154,5 +154,5 @@ describe("expansion oracle: random stacks and random actions", () => {
     for (const f of fails) { const b = best.get(f.kind); if (!b || f.detail.length < b.length) best.set(f.kind, f.detail); }
     expect(cases).toBeGreaterThan(1000);
     expect(Object.fromEntries(counts), [...best].map(([kind, detail]) => `${kind}: ${detail}`).join("\n")).toEqual({});
-  });
+  }, 60_000); // 2500 seeds take ~2.5 s alone; a loaded machine running the suite in parallel can take several times that.
 });

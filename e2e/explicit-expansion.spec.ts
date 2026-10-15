@@ -8,7 +8,7 @@
  */
 import { test, expect, type Page } from "@playwright/test";
 import { card, caret, key, openView, settle, state, uncaught } from "./support";
-import { samplePaintedFrames } from "./helpers/scene-events";
+import { samplePaintedFrames, sceneBusy } from "./helpers/scene-events";
 import { sceneFrame, type SceneFrame } from "./helpers/scene-frames";
 import { awaitMotionStarted, holdMotion, releaseMotion, seekMotion } from "./animation-control";
 import { DOUBLE_CLICK_MS } from "../src/lib/plugins/trace/view/reclick";
@@ -29,7 +29,7 @@ async function open(page: Page): Promise<Record<Name, string>> {
   return Object.fromEntries(await Promise.all(NAMES.map(async (name) => [name, await key(page, name)]))) as Record<Name, string>;
 }
 
-/** Every painted frame from just before `action` until `duration` ms later, then waits for the scene to settle. */
+/** Every painted frame from just before `action` until `duration` ms later and the view is no longer busy (`sceneBusy`), then waits for the scene to settle. */
 async function framesOf(page: Page, action: () => Promise<void>, duration = 600): Promise<Frame[]> {
   const frames = await samplePaintedFrames(page, () => {
     const w = window as any, frame = w.__sceneFrame();
@@ -52,7 +52,7 @@ async function framesOf(page: Page, action: () => Promise<void>, duration = 600)
     frame.caption = saffron ? saffron.innerText : null;
     frame.started = w.trace.motion.state().started;
     return frame;
-  }, duration, action);
+  }, duration, action, sceneBusy);
   await settle(page);
   return frames as Frame[];
 }
@@ -77,13 +77,13 @@ function expectSteady(frames: Frame[], label: string): void {
 }
 
 /**
- * A motion started for the action, and at least `least` frames show a pose part-way. An arrival
- * fades in over the last ~80 ms of its motion, of which a loaded machine may paint only two
- * frames, one of them fully shown; so arrivals ask for one.
+ * A motion started for the action, and at least one frame shows a pose part-way (a snap shows
+ * none). How many frames a motion gets depends on the machine's load: under load a departure has
+ * painted only one part-way frame.
  */
-function expectAnimated(frames: Frame[], label: string, partWay: (frame: Frame) => boolean, least = 2): void {
+function expectAnimated(frames: Frame[], label: string, partWay: (frame: Frame) => boolean): void {
   expect(frames.at(-1)!.started, `${label}: a motion epoch started`).toBeGreaterThan(frames[0].started);
-  expect(frames.filter(partWay).length, `${label}: frames part-way`).toBeGreaterThanOrEqual(least);
+  expect(frames.filter(partWay).length, `${label}: frames part-way`).toBeGreaterThanOrEqual(1);
 }
 
 const arriving = (keys: string[]) => (frame: Frame) => keys.some((k) => drawn(frame, k) && between(opacityOf(frame, k)));
@@ -146,13 +146,13 @@ test("the brief: branches stay open across selection; a second click, the caret 
   // Saffron's first click opens its children: they arrive with motion.
   let frames = await framesOf(page, press(page, "Saffron"));
   expectSteady(frames, "open Saffron");
-  expectAnimated(frames, "open Saffron", arriving(children.Saffron), 1);
+  expectAnimated(frames, "open Saffron", arriving(children.Saffron));
   expect(all(frames.at(-1)!, children.Saffron)).toBe(true);
 
   // Cerulean's first click opens its children; Saffron's stay on every frame.
   frames = await framesOf(page, press(page, "Cerulean"));
   expectSteady(frames, "open Cerulean");
-  expectAnimated(frames, "open Cerulean", arriving(children.Cerulean), 1);
+  expectAnimated(frames, "open Cerulean", arriving(children.Cerulean));
   frames.forEach((frame, index) => expect(all(frame, children.Saffron), `Saffron's children at frame ${index}`).toBe(true));
   expect(all(frames.at(-1)!, children.Cerulean)).toBe(true);
 
@@ -178,7 +178,7 @@ test("the brief: branches stay open across selection; a second click, the caret 
   // The caret opens it again, without selecting it.
   frames = await framesOf(page, pressCaret(page, "Saffron"));
   expectSteady(frames, "Saffron's caret again");
-  expectAnimated(frames, "Saffron's caret again", arriving(children.Saffron), 1);
+  expectAnimated(frames, "Saffron's caret again", arriving(children.Saffron));
   expect(all(frames.at(-1)!, children.Saffron)).toBe(true);
   expect((await state(page)).selected).toEqual([path("Cerulean")]);
 
