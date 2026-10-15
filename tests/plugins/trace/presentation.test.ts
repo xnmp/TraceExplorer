@@ -344,6 +344,31 @@ describe("retargetPresentation", () => {
     expect(expectContinuous(displayed, p)).toBeGreaterThan(0);
   });
 
+  it("reopening a band sliding under its cover uncovers its tiles and connectors at one still edge, the cover's bottom", () => {
+    const open = sceneFor([A]), closed = sceneFor([], { previous: open.layout }), reopened = sceneFor([A], { previous: closed.layout });
+    const closing = step(staticPresentation(open), open, closed, Infinity).presentation;
+    const { displayed, presentation: p } = step(closing, closed, reopened, fadeEnd(closing) / 2);
+    const cover = reopened.records.get(entityId("tile", A, A))!;
+    const edge = cover.rect.y + cover.rect.height;
+    // The band's tiles and connectors that take over what the closing group displayed.
+    const shown = new Set([...closing.retiring.values()].filter((r) => r.group !== null && displayed.poses.get(r.renderId)!.opacity > PAINTED).map((r) => r.record.id));
+    const takers = [...p.live.values()].filter((live) => shown.has(live.record.id) && live.record.id !== cover.id);
+    expect(new Set(takers.map((live) => live.record.kind))).toEqual(new Set(["tile", "route"]));
+    expect(expectContinuous(displayed, p)).toBeGreaterThan(0);
+    for (let t = 0; t <= MOTION_MS; t += 8) for (const live of takers) {
+      const pose = samplePresentation(p, t).poses.get(live.renderId)!, clip = effectiveClip(pose);
+      if (pose.opacity <= PAINTED) continue;
+      const { rect } = pose, label = `${live.record.id} at ${t} ms`;
+      // Shown exactly below the cover's bottom, the same edge for every record; nothing else is cut.
+      expect(Math.max(rect.y, clip ? clip.y : -Infinity), label).toBeCloseTo(Math.max(rect.y, edge), 6);
+      if (!clip) continue;
+      expect(clip.y + clip.height, label).toBeGreaterThanOrEqual(rect.y + rect.height - 1e-6);
+      expect(clip.x, label).toBeLessThanOrEqual(rect.x + 1e-6);
+      expect(clip.x + clip.width, label).toBeGreaterThanOrEqual(rect.x + rect.width - 1e-6);
+    }
+    for (const live of takers) if (live.record.kind === "tile") expect(effectiveClip(sampleTrack(live.track!, MOTION_MS)), "whole at the end").toBeNull();
+  });
+
   it("closing again during a reopening starts its clip from the displayed extent", () => {
     const open = sceneFor([A]), closed = sceneFor([], { previous: open.layout }), reopened = sceneFor([A], { previous: closed.layout });
     const closing = step(staticPresentation(open), open, closed, Infinity).presentation;

@@ -287,6 +287,19 @@ function collapsing(from: Pose, edge: number, rise: number, duration = MOTION_MS
   return easedFrames(stops.map((progress) => [progress, at(progress)] as const), duration);
 }
 
+/**
+ * `track` shown only below `window`'s top edge: each pose clipped to its own box, extended up to that
+ * edge and by its own size on the other sides (what it draws past its box, such as a selection
+ * ring), so the edge stays still and the clip never cuts anything else, whatever its motion.
+ */
+function belowEdge(track: Track, window: GridRect): Track {
+  return { frames: track.frames.map((frame) => {
+    const { rect } = frame.pose, x = rect.x - rect.width;
+    const clip = { x, y: window.y, width: 3 * rect.width, height: Math.max(0, rect.y + 2 * rect.height - window.y) };
+    return { ...frame, pose: { ...frame.pose, clip } };
+  }) };
+}
+
 // ─── Presentations ──────────────────────────────────────────────────────────
 
 const settled = (record: SceneRecord): PresentedRecord => ({ renderId: record.id, record, initial: settledPose(record), track: null });
@@ -613,6 +626,17 @@ export function retargetPresentation(displayed: DisplayedPresentation | null, ne
     if (old) fresh.push({ renderId: retireId(transaction, "old-route", id), record: from, initial: old.frames[0].pose, track: old,
       sourceTransaction: transaction, group: null, reason: "old-route", branch: branch(record.graphId) });
     tracks.set(id, arrival({ ...target, opacity: 0 }, target, w, D));
+  }
+
+  // 4b. Reopening a band that was collapsing under its cover: whatever takes over a member of its
+  // exit group keeps the group's top edge (the cover's bottom) still while it slides back down, so
+  // tiles and connectors come out from under the cover together. A clip interpolated towards each
+  // record's own box would uncover each at its own pace, cutting a tile and its connector apart.
+  for (const [id, record] of next.records) {
+    const retiree = takeovers.get(id), track = tracks.get(id);
+    if (!retiree || retiree.group === null || !consumed.has(retiree.renderId) || !track) continue;
+    const window = effectiveClip(shown.get(retiree.renderId)!);
+    if (window) tracks.set(record.id, belowEdge(track, window));
   }
 
   // 5. Retirees. Running ones continue while they still paint; a reveal drops its graphs'.
