@@ -56,10 +56,13 @@ fn process_failure(
         ),
     }
 }
-/// Both owned processes of a generation are done for its operation, so both
-/// carry its custody: the host then retains a lost reply for that operation
-/// and releases it with the operation, never with unrelated work. Hosts
-/// without `processCustody` refuse the fields, so they get none.
+/// The image turn is the operation's paid work, so it carries the operation's
+/// custody: the host then retains a lost reply for that operation and releases
+/// it with the operation, never with unrelated work. The login check is not
+/// operation output and stays unbound; bound, a successful `login status`
+/// reply lost in a crash would count as retained output and keep the
+/// operation from settling. Custody is sent only to hosts that advertise
+/// `processCustody`.
 fn run(
     host: &dyn Host,
     executable: &super::codex_executable::CodexExecutable,
@@ -67,7 +70,7 @@ fn run(
     stdin: Option<String>,
     cwd: &Path,
     home: &Path,
-    operation: &OperationCustody,
+    custody: Option<&OperationCustody>,
     cancel: &AtomicBool,
 ) -> Result<ProcessOutput> {
     let login = args == ["login", "status"];
@@ -91,7 +94,7 @@ fn run(
         stdout_limit: 16 * 1024 * 1024,
         stderr_limit: 64 * 1024,
         stdin,
-        custody: host.process_custody().then(|| operation.clone()),
+        custody: custody.filter(|_| host.process_custody()).cloned(),
     };
     if !request.fits_frame() {
         // Never sent, so nothing ran: a definite refusal on either step.
@@ -198,7 +201,7 @@ fn generate_at(
         None,
         work.path(),
         home,
-        operation,
+        None,
         cancel,
     );
     stage("credential_check_done");
@@ -294,7 +297,7 @@ fn generate_at(
         stdin,
         work.path(),
         home,
-        operation,
+        Some(operation),
         cancel,
     );
     stage("process_finished");
@@ -671,7 +674,7 @@ mod tests {
         );
     }
     #[test]
-    fn both_owned_processes_carry_operation_custody_only_when_the_host_takes_it() {
+    fn only_the_image_turn_carries_operation_custody_and_only_when_the_host_takes_it() {
         for custody in [true, false] {
             let state = tempfile::tempdir().unwrap();
             let home = tempfile::tempdir().unwrap();
@@ -696,14 +699,16 @@ mod tests {
             );
             let requests = host.requests.lock().unwrap();
             assert_eq!(requests.len(), 2, "login check and image turn");
-            for request in requests.iter() {
-                if custody {
-                    assert_eq!(request["consumerPackageId"], "test.consumer");
-                    assert_eq!(request["operationId"], "checkpoint-order");
-                } else {
-                    assert!(request.get("consumerPackageId").is_none(), "{request}");
-                    assert!(request.get("operationId").is_none(), "{request}");
-                }
+            let (login, turn) = (&requests[0], &requests[1]);
+            assert_eq!(login["args"], json!(["login", "status"]));
+            assert!(login.get("consumerPackageId").is_none(), "{login}");
+            assert!(login.get("operationId").is_none(), "{login}");
+            if custody {
+                assert_eq!(turn["consumerPackageId"], "test.consumer");
+                assert_eq!(turn["operationId"], "checkpoint-order");
+            } else {
+                assert!(turn.get("consumerPackageId").is_none(), "{turn}");
+                assert!(turn.get("operationId").is_none(), "{turn}");
             }
         }
     }
