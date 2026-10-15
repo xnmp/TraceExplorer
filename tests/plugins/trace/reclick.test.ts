@@ -21,6 +21,12 @@ describe("re-click toggle", () => {
     expect(run([{ kind: "reclick", key: "a", at: 0 }, { kind: "tick", at: DOUBLE_CLICK_MS }, { kind: "tick", at: 2 * DOUBLE_CLICK_MS }]).toggled).toEqual(["a"]);
   });
 
+  it("waits out the slowest common platform double click (Windows' default, 500 ms)", () => {
+    // A slow double click whose second press comes 480 ms later must not toggle first.
+    expect(run([{ kind: "reclick", key: "a", at: 0 }, { kind: "tick", at: 480 }, { kind: "press", at: 480 }]).toggled).toEqual([]);
+    expect(run([{ kind: "reclick", key: "a", at: 0 }, { kind: "tick", at: 500 }]).toggled).toEqual(["a"]);
+  });
+
   it("a double click never toggles: its second press, its double-click event or a second re-click cancels", () => {
     for (const second of [{ kind: "press", at: 150 }, { kind: "dblclick" }, { kind: "reclick", key: "a", at: 150 }] as ReclickEvent[]) {
       const { toggled, pending } = run([{ kind: "press", at: 0 }, { kind: "reclick", key: "a", at: 5 }, second, { kind: "tick", at: 1000 }]);

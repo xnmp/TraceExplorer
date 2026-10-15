@@ -9,10 +9,13 @@
  */
 
 /**
- * The double-click window: GTK's default `gtk-double-click-time` (400 ms), which WebKitGTK hosts
- * use; Windows' default is 500 ms and macOS's is about the same. A toggle waits this long.
+ * The double-click window, which a toggle waits out: the largest common platform default, so a
+ * slow double click never toggles first on any of them. Windows' default is 500 ms, macOS's
+ * (`NSEvent.doubleClickInterval`) is about the same, and GTK's `gtk-double-click-time`, which
+ * WebKitGTK hosts use, is 400 ms. The webview does not expose the user's setting, and the host SDK
+ * offers no capability for it yet.
  */
-export const DOUBLE_CLICK_MS = 400;
+export const DOUBLE_CLICK_MS = 500;
 
 /** A re-click waiting to toggle `key`, made at time `at` (ms). */
 export interface PendingToggle {
