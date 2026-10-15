@@ -1,5 +1,5 @@
 import { expect, test, type Locator, type Page } from "@playwright/test";
-import { card, click, openView, settle, state } from "./support";
+import { card, caret, click, openView, settle, state, tile } from "./support";
 
 /** Find real unused space, rather than dispatching a synthetic click through a tile. */
 async function emptyPoint(area: Locator): Promise<{ x: number; y: number }> {
@@ -20,6 +20,8 @@ async function emptyPoint(area: Locator): Promise<{ x: number; y: number }> {
 
 async function selectImages(page: Page) {
   await click(page, "village");
+  // A modified click only selects: open warm's branch (merge) with its caret first.
+  if (!await (await tile(page, "merge")).count()) { await (await caret(page, "warm")).click(); await settle(page); }
   await click(page, "warm", { modifiers: ["Shift"] });
   await click(page, "mist", { modifiers: ["Control"] });
   await click(page, "merge", { modifiers: ["Control"] });

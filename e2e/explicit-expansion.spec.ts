@@ -11,6 +11,7 @@ import { card, caret, key, openView, settle, state, uncaught } from "./support";
 import { samplePaintedFrames } from "./helpers/scene-events";
 import { sceneFrame, type SceneFrame } from "./helpers/scene-frames";
 import { awaitMotionStarted, holdMotion, releaseMotion, seekMotion } from "./animation-control";
+import { DOUBLE_CLICK_MS } from "../src/lib/plugins/trace/view/reclick";
 
 const NAMES = ["stack", "Cerulean", "Saffron", "Pikachu's Ball", "Blastoise", "Ash", "Charizard"] as const;
 type Name = (typeof NAMES)[number];
@@ -75,10 +76,14 @@ function expectSteady(frames: Frame[], label: string): void {
     if (frames.slice(i + 1).some((later) => drawn(later, tileKey))) expect(drawn(frames[i], tileKey), `${label}: ${tileKey} blinks at frame ${i}`).toBe(true);
 }
 
-/** A motion started for the action, and at least two frames show a pose part-way. */
-function expectAnimated(frames: Frame[], label: string, partWay: (frame: Frame) => boolean): void {
+/**
+ * A motion started for the action, and at least `least` frames show a pose part-way. An arrival
+ * fades in over the last ~80 ms of its motion, of which a loaded machine may paint only two
+ * frames, one of them fully shown; so arrivals ask for one.
+ */
+function expectAnimated(frames: Frame[], label: string, partWay: (frame: Frame) => boolean, least = 2): void {
   expect(frames.at(-1)!.started, `${label}: a motion epoch started`).toBeGreaterThan(frames[0].started);
-  expect(frames.filter(partWay).length, `${label}: frames part-way`).toBeGreaterThanOrEqual(2);
+  expect(frames.filter(partWay).length, `${label}: frames part-way`).toBeGreaterThanOrEqual(least);
 }
 
 const arriving = (keys: string[]) => (frame: Frame) => keys.some((k) => drawn(frame, k) && between(opacityOf(frame, k)));
@@ -141,18 +146,22 @@ test("the brief: branches stay open across selection; a second click, the caret 
   // Saffron's first click opens its children: they arrive with motion.
   let frames = await framesOf(page, press(page, "Saffron"));
   expectSteady(frames, "open Saffron");
-  expectAnimated(frames, "open Saffron", arriving(children.Saffron));
+  expectAnimated(frames, "open Saffron", arriving(children.Saffron), 1);
   expect(all(frames.at(-1)!, children.Saffron)).toBe(true);
 
   // Cerulean's first click opens its children; Saffron's stay on every frame.
   frames = await framesOf(page, press(page, "Cerulean"));
   expectSteady(frames, "open Cerulean");
-  expectAnimated(frames, "open Cerulean", arriving(children.Cerulean));
+  expectAnimated(frames, "open Cerulean", arriving(children.Cerulean), 1);
   frames.forEach((frame, index) => expect(all(frame, children.Saffron), `Saffron's children at frame ${index}`).toBe(true));
   expect(all(frames.at(-1)!, children.Cerulean)).toBe(true);
 
-  // A second click on Cerulean (the selection) hides its children, with motion; the selection stays.
-  frames = await framesOf(page, press(page, "Cerulean"));
+  // A second click on Cerulean (the selection) hides its children once no double click follows,
+  // with motion; the selection stays.
+  frames = await framesOf(page, press(page, "Cerulean"), 1100);
+  const due = frames.findIndex((frame) => frame.started > frames[0].started);
+  expect(due, "nothing moves within the double-click window").toBeGreaterThan(0);
+  frames.slice(0, due).forEach((frame, index) => expect(geometry(frame), `frame ${index}`).toEqual(geometry(frames[0])));
   expectSteady(frames, "re-click Cerulean");
   expectAnimated(frames, "re-click Cerulean", leaving(children.Cerulean));
   expect(none(frames.at(-1)!, children.Cerulean)).toBe(true);
@@ -169,7 +178,7 @@ test("the brief: branches stay open across selection; a second click, the caret 
   // The caret opens it again, without selecting it.
   frames = await framesOf(page, pressCaret(page, "Saffron"));
   expectSteady(frames, "Saffron's caret again");
-  expectAnimated(frames, "Saffron's caret again", arriving(children.Saffron));
+  expectAnimated(frames, "Saffron's caret again", arriving(children.Saffron), 1);
   expect(all(frames.at(-1)!, children.Saffron)).toBe(true);
   expect((await state(page)).selected).toEqual([path("Cerulean")]);
 
@@ -192,8 +201,9 @@ test("a stack's cover follows the same rules: a first click selects and opens, a
   await cover.click(); await settle(page);
   await expect(toggle, "a first click opens").toHaveAttribute("aria-expanded", "true");
   expect((await state(page)).selected).toEqual([path("stack")]);
-  await cover.click(); await settle(page);
+  await cover.click();
   await expect(toggle, "a second click closes").toHaveAttribute("aria-expanded", "false");
+  await settle(page);
   expect((await state(page)).selected).toEqual([path("stack")]);
   await cover.click(); await settle(page);
   await expect(toggle, "a third click opens again").toHaveAttribute("aria-expanded", "true");
@@ -204,5 +214,138 @@ test("a stack's cover follows the same rules: a first click selects and opens, a
   frames.forEach((frame, index) => expect(geometry(frame), `frame ${index}`).toEqual(geometry(frames[0])));
   expect((await state(page)).selected).toEqual([path("stack")]);
   await expect(page.locator(`[data-tile-key="${keys["Pikachu's Ball"]}"]`)).toHaveCount(1);
+  expect(await uncaught(page)).toEqual([]);
+});
+
+test("a double click on the selected open tile or the selected open stack cover opens the file and moves nothing on any frame", async ({ page }) => {
+  const keys = await open(page);
+  await press(page, "Saffron")(); await settle(page);
+  let frames = await framesOf(page, async () => { await (await card(page, "Saffron")).dblclick(); }, DOUBLE_CLICK_MS + 500);
+  expect((await state(page)).opened).toContain(path("Saffron"));
+  expect(frames.at(-1)!.started, "no motion").toBe(frames[0].started);
+  frames.forEach((frame, index) => expect(geometry(frame), `Saffron: frame ${index}`).toEqual(geometry(frames[0])));
+  await expect(page.locator(`[data-tile-key="${keys.Blastoise}"]`)).toHaveCount(1);
+
+  const cover = page.locator(".cover-press").first();
+  await cover.click(); await settle(page);
+  expect((await state(page)).selected).toEqual([path("stack")]);
+  frames = await framesOf(page, async () => { await cover.dblclick(); }, DOUBLE_CLICK_MS + 500);
+  expect((await state(page)).opened).toContain(path("stack"));
+  expect(frames.at(-1)!.started, "no motion").toBe(frames[0].started);
+  frames.forEach((frame, index) => expect(geometry(frame), `cover: frame ${index}`).toEqual(geometry(frames[0])));
+  await expect(page.locator("[data-stack-toggle]")).toHaveAttribute("aria-expanded", "true");
+  expect(await uncaught(page)).toEqual([]);
+});
+
+test("a Ctrl or Shift click on a collapsed node selects it and moves nothing", async ({ page }) => {
+  const keys = await open(page);
+  await press(page, "Saffron")(); await settle(page);
+  for (const modifier of ["Control", "Shift"] as const) {
+    const frames = await framesOf(page, async () => { await (await card(page, "Cerulean")).click({ modifiers: [modifier] }); });
+    expect((await state(page)).selected, modifier).toContain(path("Cerulean"));
+    expect(frames.at(-1)!.started, `${modifier}: no motion`).toBe(frames[0].started);
+    frames.forEach((frame, index) => expect(geometry(frame), `${modifier}: frame ${index}`).toEqual(geometry(frames[0])));
+    await expect(page.locator(`[data-tile-key="${keys["Pikachu's Ball"]}"]`)).toHaveCount(0);
+    await press(page, "Saffron")(); await settle(page);
+  }
+  expect(await uncaught(page)).toEqual([]);
+});
+
+test("a selected leaf shows the AI edit started from it", async ({ page }) => {
+  await open(page);
+  for (const name of ["Saffron", "Ash", "Charizard"] as const) { await press(page, name)(); await settle(page); }
+  const placeholder = await page.evaluate(() => (window as any).trace.backend.startGeneration("Charizard", "gen1"));
+  await expect(page.locator(`[data-tile-key="${placeholder}"]`)).toHaveCount(1);
+  expect(await uncaught(page)).toEqual([]);
+});
+
+test("an AI edit started from the view on an image in a collapsed branch reveals the image and its output", async ({ page }) => {
+  await page.setViewportSize({ width: 1100, height: 900 });
+  await openView(page, 900, "?selectionBlink=1&ai=1", false);
+  await page.locator("[data-stack-toggle]").click(); await settle(page);
+  for (const name of ["Saffron", "Ash", "Charizard"] as const) { await press(page, name)(); await settle(page); }
+  await (await caret(page, "Saffron")).click(); await settle(page);
+  const charizard = await key(page, "Charizard");
+  await expect(page.locator(`[data-tile-key="${charizard}"]`)).toHaveCount(0);
+  await page.evaluate(() => (window as any).trace.command("plugin.openai-image.edit"));
+  const dialog = page.getByRole("dialog");
+  await dialog.getByRole("textbox", { name: "Prompt", exact: true }).fill("Give Charizard a hat");
+  await page.keyboard.press("Control+Enter");
+  await expect.poll(() => page.evaluate(() => (window as any).trace.backend.calls("jobs.start").length)).toBe(1);
+  const output = await page.evaluate(() => { const b = (window as any).trace.backend; return b.key("job-900") ?? b.key("job-901"); });
+  expect(output).toBeTruthy();
+  await expect(page.locator(`[data-tile-key="${charizard}"]`)).toHaveCount(1);
+  await expect(page.locator(`[data-tile-key="${output}"]`)).toHaveCount(1);
+  expect(await uncaught(page)).toEqual([]);
+});
+
+test("a caret is offered only where it changes what is shown: a child another open parent shows", async ({ page }) => {
+  const keys = await open(page);
+  const caretOf = (name: Name) => page.locator(`[data-node-caret="${keys[name]}"]`);
+  const charizard = page.locator(`[data-tile-key="${keys.Charizard}"]`);
+  for (const name of ["Saffron", "Ash"] as const) { await press(page, name)(); await settle(page); }
+  // Charizard becomes an edit of Ash and Blastoise: open Ash shows it already.
+  await page.evaluate(() => (window as any).trace.backend.addInput("Charizard", "Blastoise"));
+  await expect(caretOf("Blastoise")).toHaveCount(0);
+  await expect(caretOf("Ash")).toHaveCount(1);
+  // Once Ash closes, Blastoise alone can show Charizard: its caret appears and works.
+  await caretOf("Ash").click(); await settle(page);
+  await expect(charizard).toHaveCount(0);
+  await caretOf("Blastoise").click(); await settle(page);
+  await expect(charizard).toHaveCount(1);
+  // Now Ash's caret would show nothing new.
+  await expect(caretOf("Ash")).toHaveCount(0);
+  // A first click on Ash records it open (showing nothing new); then neither parent alone hides
+  // Charizard, so a slow second click on Ash does nothing at all.
+  await press(page, "Blastoise")(); await settle(page);
+  await press(page, "Ash")(); await settle(page);
+  await expect(caretOf("Blastoise")).toHaveCount(0);
+  const frames = await framesOf(page, press(page, "Ash"), DOUBLE_CLICK_MS + 400);
+  expect(frames.at(-1)!.started, "no motion").toBe(frames[0].started);
+  frames.forEach((frame, index) => expect(geometry(frame), `frame ${index}`).toEqual(geometry(frames[0])));
+  expect(await uncaught(page)).toEqual([]);
+});
+
+test("an opening interrupted by another toggle continues its children's fade from where it was", async ({ page }) => {
+  const keys = await open(page);
+  await press(page, "Saffron")(); await settle(page);
+  await holdMotion(page);
+  const opacities: number[] = [];
+  try {
+    await press(page, "Cerulean")();
+    await awaitMotionStarted(page);
+    await seekMotion(page, 60);
+    await (await caret(page, "Saffron")).click();
+    await awaitMotionStarted(page);
+    for (let at = 0; at <= 160; at += 10) {
+      await seekMotion(page, at);
+      opacities.push(((await now(page)).tiles[keys["Pikachu's Ball"]] as number[] | undefined)?.[4] ?? 0);
+    }
+  } finally { await releaseMotion(page); }
+  // Its arrival began fading in about 80 ms after the first click: 40 ms into the second motion
+  // (100 ms after the first click) it is appearing, and it never jumps.
+  expect(opacities[4], JSON.stringify(opacities)).toBeGreaterThan(0);
+  for (let i = 1; i < opacities.length; i++) {
+    expect(opacities[i], JSON.stringify(opacities)).toBeGreaterThanOrEqual(opacities[i - 1] - .01);
+    expect(opacities[i] - opacities[i - 1], JSON.stringify(opacities)).toBeLessThan(.5);
+  }
+  expect(opacities.at(-1)).toBe(1);
+  expect(await uncaught(page)).toEqual([]);
+});
+
+test("a second click on the selected cover of a stack still opening closes it", async ({ page }) => {
+  await page.setViewportSize({ width: 1100, height: 900 });
+  await openView(page, 900, "?selectionBlink=1", false);
+  const toggle = page.locator("[data-stack-toggle]"), cover = page.locator(".cover-press").first();
+  await page.evaluate(() => (window as any).trace.backend.holdNodeReads());
+  await cover.click();
+  await expect(toggle, "opening").toHaveAttribute("aria-label", "Cancel opening stack");
+  expect((await state(page)).selected).toEqual([path("stack")]);
+  await page.waitForTimeout(DOUBLE_CLICK_MS + 100);
+  await cover.click();
+  await expect(toggle, "the second click cancels the opening").toHaveAttribute("aria-label", "Expand stack");
+  await page.evaluate(() => (window as any).trace.backend.releaseNodeReads());
+  await settle(page);
+  await expect(toggle).toHaveAttribute("aria-expanded", "false");
   expect(await uncaught(page)).toEqual([]);
 });
