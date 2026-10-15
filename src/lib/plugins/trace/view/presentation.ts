@@ -16,7 +16,6 @@ import type { Orientation } from "$lib/domain/trace-graph/layout";
 import { endpointKey } from "$lib/domain/trace-graph/junctions";
 import { pathTranslation, translatePath, type Point } from "$lib/domain/trace-graph/path-sampling";
 import { entityId, type EntityId, type FolderScene, type GraphId, type SceneDiff, type SceneRecord } from "$lib/domain/trace-graph/folder-scene";
-import { departureVisibility } from "./band-motion";
 
 export type TransactionId = number;
 export type RenderId = string;
@@ -78,6 +77,8 @@ export const EASE: Ease = [.2, .8, .2, 1];
 export const RETIREE_LIMIT = 200;
 /** Opacity at or below which a record paints nothing. */
 export const PAINTED = .01;
+/** Eased progress from which a closing band's group fades (it ends with its clip's sweep). */
+export const COLLAPSE_FADE_FROM = .5;
 const NEAR = .01;
 
 /**
@@ -329,8 +330,11 @@ export function samplePresentation(current: Presentation, at: number): Displayed
   for (const [id, retiree] of current.retiring) if (retiree.group === null) poses.set(id, poseAt(retiree, at));
   for (const [id, retiree] of current.retiring) {
     if (retiree.group === null) continue;
-    const own = poseAt(retiree, at), group = poses.get(retiree.group);
-    poses.set(id, group ? { rect: own.rect, opacity: own.opacity * group.opacity, clip: intersect(own.clip, group.clip) } : { ...own, opacity: 0 });
+    const own = poseAt(retiree, at), group = poses.get(retiree.group), base = current.retiring.get(retiree.group)?.record.rect;
+    if (!group || !base) { poses.set(id, { ...own, opacity: 0 }); continue; }
+    // Members ride their group's container (a closing band slides up under its cover).
+    const by = displacement(group, base);
+    poses.set(id, { rect: translate(own.rect, by), opacity: own.opacity * group.opacity, clip: intersect(own.clip ? translate(own.clip, by) : null, group.clip) });
   }
   return { presentation: current, at, poses };
 }
@@ -428,9 +432,9 @@ const isBandRecord = (record: SceneRecord) => record.kind === "route" || record.
  *   retiree's displayed pose instead (reopening), and the retiree is dropped.
  * - Connectors whose endpoints move rigidly with them travel along; rerouted ones crossfade
  *   between their exact displayed and new paths (a path is never interpolated).
- * - A closed stack's displayed tiles and connectors retire as one exit group: they fade together
- *   while a clip reclaims the band from its displayed extent, the fade ending before the clip
- *   reaches any displayed tile or port. Departures inside an open band vanish in its departure
+ * - A closed stack's displayed tiles and connectors retire as one exit group that collapses like
+ *   an accordion over the whole motion: it slides up under its cover, clipped between the band's
+ *   top and the rising rows below, and fades in the second half. Departures inside an open band vanish in its departure
  *   window. Above `RETIREE_LIMIT` paintable retirees, this publication's departures snap. A
  *   reveal drops its graphs' retirees.
  * - No previous presentation, scope changes and reduced motion present target poses only.
@@ -604,6 +608,21 @@ export function retargetPresentation(displayed: DisplayedPresentation | null, ne
   let carried = 0;
   for (const retiree of retiring.values()) if (retiree.record.kind !== "band") carried++;
 
+  /**
+   * How far the nearest live records displayed at or below `y` rise in this motion (0 for none):
+   * the rows below a closing band, which its bottom edge must keep ahead of.
+   */
+  const risingBelow = (y: number): number => {
+    let nearest = Infinity, rise = 0;
+    for (const [id, record] of next.records) {
+      const pose = before.live.has(id) ? shown.get(id) : undefined;
+      if (!pose || (record.graphId !== null && !(record.kind === "tile" && record.cover)) || pose.rect.y < y - .5) continue;
+      const by = pose.rect.y - record.rect.y;
+      if (pose.rect.y < nearest - .5) { nearest = pose.rect.y; rise = by; }
+      else if (pose.rect.y <= nearest + .5) rise = Math.max(rise, by);
+    }
+    return Math.max(0, rise);
+  };
   // This publication's exits, by graph.
   const exits = new Map<GraphId, SceneRecord[]>();
   for (const [id, record] of diff.exit) {
@@ -650,18 +669,30 @@ export function retargetPresentation(displayed: DisplayedPresentation | null, ne
     // A group still clipped (an interrupted reopening) closes from its displayed extent.
     const clips = members.map(({ pose }) => effectiveClip(pose));
     const extent = Math.min(container.height, clips.every((clip) => clip !== null) ? Math.max(...clips.map((clip) => clip!.y + clip!.height)) - top : container.height);
-    const lastPort = Math.max(...members.map(({ pose }) => {
+    // Accordion: the band slides up under its cover, shown between its top and a bottom edge that
+    // rises with the rows below it, so it visibly collapses over the whole motion. Its lowest
+    // tile rides the edge and its connectors (above their tiles) go first: nothing is cut from
+    // below and no connector shows without its tiles. The shared fade runs in the second half.
+    // (A fade ending before the clip reached the lowest tile lasted ~2 ms of a 160 ms epoch: the
+    // band was gone on the first painted frame.)
+    // The band begins under its cover (its connectors leave the cover's bottom edge; their
+    // records' bounds are padded), and never below its first tile.
+    const coverBottom = cover ? (shown.get(coverId)?.rect ?? cover.record.rect).height : -Infinity;
+    const tileTops = members.flatMap(({ record, pose }) => record.kind === "tile" ? [pose.rect.y - top] : []);
+    const floor = Math.max(0, Math.min(cover ? coverBottom : Math.min(...members.map(({ pose }) => pose.rect.y)) - top, ...tileTops));
+    if (!(extent > floor)) continue;
+    const lowest = Math.min(extent, Math.max(...members.map(({ pose }) => {
       const clip = effectiveClip(pose);
       return Math.min(pose.rect.y + pose.rect.height, clip ? clip.y + clip.height : Infinity);
-    })) - top;
-    const gone = departureVisibility(extent, 0, lastPort);
-    if (!(gone > 0) || !(extent > 0)) continue;
-    const clipTo = (height: number): GridRect => ({ ...container, height: Math.max(0, height) });
-    const groupTrack = easedFrames([
-      [0, { rect: container, opacity: 1, clip: clipTo(extent) }],
-      [gone, { rect: container, opacity: 0, clip: clipTo(extent * (1 - gone)) }],
-      [1, { rect: container, opacity: 0, clip: clipTo(0) }],
-    ], D);
+    })) - top);
+    // The edge rises at least as far as the nearest row below does, so that row never covers the band.
+    const reclaimed = Math.max(extent - floor, risingBelow(top + extent));
+    const slide = Math.max(0, reclaimed - (extent - lowest));
+    const collapsed = (progress: number, opacity: number): Pose => ({
+      rect: translate(container, { x: 0, y: -slide * progress }), opacity,
+      clip: { ...container, y: top + floor, height: Math.max(0, extent - floor - reclaimed * progress) },
+    });
+    const groupTrack = easedFrames([[0, collapsed(0, 1)], [COLLAPSE_FADE_FROM, collapsed(COLLAPSE_FADE_FROM, 1)], [1, collapsed(1, 0)]], D);
     if (!groupTrack) continue;
     const bandId = band?.id ?? entityId("band", graphId, graphId);
     const groupId = retireId(transaction, "exit", bandId);

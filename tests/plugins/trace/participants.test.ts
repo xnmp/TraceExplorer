@@ -188,7 +188,7 @@ describe("participants: returning records", () => {
     const p = retarget(displayed, closed, reopened, records);
     for (const member of members) {
       if (member.record.kind !== "tile") continue;
-      const first = sampleTrack(p.live.get(member.record.id)!.track!, 0), was = displayed.poses.get(member.renderId)!;
+      const live = p.live.get(member.record.id)!, first = live.track ? sampleTrack(live.track, 0) : live.initial, was = displayed.poses.get(member.renderId)!;
       expect(Math.abs(first.rect.y - was.rect.y) + Math.abs(first.rect.x - was.rect.x), member.record.id).toBeLessThanOrEqual(.5);
       expect(first.opacity).toBeCloseTo(was.opacity, 2);
       expect(p.retiring.has(member.renderId)).toBe(false);

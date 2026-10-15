@@ -230,7 +230,7 @@ describe("retargetPresentation", () => {
     if (at < 100) expect([...closing.retiring.values()].filter((r) => r.record.kind === "tile")).toEqual([]);
   });
 
-  it("closing a band retires it as one group that fades before its clip reaches a port", () => {
+  it("closing a band collapses it like an accordion: it slides up under its cover, visibly, over the whole motion", () => {
     const open = sceneFor([A]), closed = sceneFor([], { previous: open.layout });
     const { presentation: p } = step(staticPresentation(open), open, closed, Infinity);
     const groups = [...p.retiring.values()].filter((r) => r.record.kind === "band");
@@ -238,19 +238,52 @@ describe("retargetPresentation", () => {
     const [group] = groups, members = [...p.retiring.values()].filter((r) => r.group === group.renderId);
     expect(members.length).toBe(bandTiles(open, A).length + routesOf(open, A).length + [...open.records.values()].filter((r) => r.kind === "junction" && r.graphId === A).length);
     expect(members.every((m) => m.track === null)).toBe(true);
-    const lowest = Math.max(...members.map((m) => m.record.rect.y + m.record.rect.height));
+    const windowTop = group.initial.clip!.y;
+    const tiles = members.filter((m) => m.record.kind === "tile"), others = members.filter((m) => m.record.kind !== "tile");
+    /** How much of a member is shown at `t`: its painted height (0 when faded out or clipped away). */
+    const shownHeight = (m: (typeof members)[number], t: number) => {
+      const pose = samplePresentation(p, t).poses.get(m.renderId)!, clip = effectiveClip(pose);
+      if (pose.opacity <= PAINTED) return 0;
+      const top = Math.max(pose.rect.y, clip ? clip.y : -Infinity), bottom = Math.min(pose.rect.y + pose.rect.height, clip ? clip.y + clip.height : Infinity);
+      return Math.max(0, bottom - top);
+    };
+    // Nothing is cut or faded on the first frame (connectors' bounds are padded: they leave the
+    // cover's bottom edge, where the band's window begins); nothing is left at the end.
+    const cover = open.records.get(entityId("tile", A, A))!.rect;
+    expect(windowTop).toBeCloseTo(cover.y + cover.height, 6);
+    for (const m of tiles) expect(shownHeight(m, 0), m.renderId).toBeCloseTo(m.record.rect.height, 6);
+    for (const m of members) expect(shownHeight(m, MOTION_MS), m.renderId).toBe(0);
+    let previous = Infinity, cut = 0;
     for (let t = 0; t <= MOTION_MS; t += 2) {
-      const shown = samplePresentation(p, t).poses.get(group.renderId)!;
-      if (shown.clip!.y + shown.clip!.height < lowest - .01) expect(shown.opacity, `${t} ms`).toBeLessThanOrEqual(1e-9);
-      for (const m of members) expect(samplePresentation(p, t).poses.get(m.renderId)!.opacity).toBeCloseTo(shown.opacity, 9);
+      const poses = samplePresentation(p, t).poses, shown = poses.get(group.renderId)!;
+      const bottom = shown.clip!.y + shown.clip!.height;
+      expect(bottom, `${t} ms: the band's bottom only rises`).toBeLessThanOrEqual(previous + 1e-9);
+      previous = bottom;
+      for (const m of members) {
+        const pose = poses.get(m.renderId)!;
+        expect(pose.opacity).toBeCloseTo(shown.opacity, 9);
+        // It slides under its cover: nothing shows above where the band began.
+        if (shownHeight(m, t) > 0) expect(Math.max(pose.rect.y, effectiveClip(pose)?.y ?? -Infinity), `${t} ms ${m.renderId}`).toBeGreaterThanOrEqual(windowTop - 1e-6);
+      }
+      // Never a connector or junction without a tile.
+      if (others.some((m) => shownHeight(m, t) > 0)) expect(tiles.some((m) => shownHeight(m, t) > 0), `${t} ms: a connector without its tiles`).toBe(true);
+      if (tiles.some((m) => shownHeight(m, t) > 0 && shownHeight(m, t) < m.record.rect.height - 1e-6)) cut++;
     }
-    expect(samplePresentation(p, MOTION_MS).poses.get(group.renderId)!.clip!.height).toBe(0);
+    expect(cut, "frames (2 ms apart) showing a tile partly collapsed").toBeGreaterThanOrEqual(20);
+    // Still painted half-way through the motion (the old fade ended ~2 ms in), the tiles first faded in its second half.
+    for (const t of [8, 16, 33, MOTION_MS / 2]) expect(tiles.some((m) => shownHeight(m, t) > 0), `${t} ms: a tile shown`).toBe(true);
+    expect(samplePresentation(p, 16).poses.get(group.renderId)!.opacity).toBe(1);
     // A settled epoch shows no retirees.
     expect(settledPresentation(p).retiring.size).toBe(0);
   });
 
-  /** When a closing group's shared fade ends. */
-  const fadeEnd = (closing: Presentation) => [...closing.retiring.values()].find((r) => r.record.kind === "band")!.track!.frames[1].at;
+  /** The last instant a closing group still paints. */
+  const fadeEnd = (closing: Presentation) => {
+    const group = [...closing.retiring.values()].find((r) => r.record.kind === "band")!;
+    let t = 0;
+    while (t < MOTION_MS && samplePresentation(closing, t + .5).poses.get(group.renderId)!.opacity > PAINTED) t += .5;
+    return t;
+  };
 
   for (const part of [0, .5, .9]) it(`reopening takes over the displayed retirees (${part * 100}% through their fade)`, () => {
     const open = sceneFor([A]), closed = sceneFor([], { previous: open.layout }), reopened = sceneFor([A], { previous: closed.layout });
@@ -262,7 +295,7 @@ describe("retargetPresentation", () => {
     let takenOver = 0;
     for (const member of members) {
       const live = p.live.get(member.record.id)!, was = displayed.poses.get(member.renderId)!;
-      if (live.record.kind === "tile") expect(samePose(sampleTrack(live.track!, MOTION_MS), { rect: live.record.rect, opacity: 1, clip: null })).toBe(true);
+      if (live.record.kind === "tile") expect(samePose(live.track ? sampleTrack(live.track, MOTION_MS) : live.initial, { rect: live.record.rect, opacity: 1, clip: null })).toBe(true);
       if (close(live.initial, was)) { takenOver++; continue; }
       // A connector that cannot travel with its endpoints (its cover tile is fully shown) crossfades
       // from exactly what was displayed instead.
@@ -285,10 +318,15 @@ describe("retargetPresentation", () => {
     const group = [...p.retiring.values()].find((r) => r.record.kind === "band")!;
     const members = [...p.retiring.values()].filter((r) => r.group === group.renderId);
     expect(members.length).toBeGreaterThan(0);
-    // The reopened tiles were shown whole, so the new clip starts below every one of them: nothing is cut on the first frame.
-    const lowest = Math.max(...members.map((m) => m.record.rect.y + m.record.rect.height));
-    expect(group.initial.clip!.y + group.initial.clip!.height).toBeGreaterThanOrEqual(lowest - 1e-6);
-    expect(group.initial.clip!.y).toBeCloseTo(group.record.rect.y, 6);
+    // The new clip starts below everything the reopening showed: nothing is cut further on the first frame.
+    for (const m of members) {
+      const was = displayed.poses.get(m.record.id)!, clip = effectiveClip(was);
+      const shownBottom = Math.min(was.rect.y + was.rect.height, clip ? clip.y + clip.height : Infinity);
+      const shownTop = Math.max(was.rect.y, clip ? clip.y : -Infinity);
+      if (was.opacity <= PAINTED || shownBottom <= shownTop) continue;
+      expect(group.initial.clip!.y + group.initial.clip!.height, m.record.id).toBeGreaterThanOrEqual(shownBottom - 1e-6);
+      expect(group.initial.clip!.y, m.record.id).toBeLessThanOrEqual(shownTop + 1e-6);
+    }
     expect(expectContinuous(displayed, p)).toBeGreaterThan(0);
   });
 
