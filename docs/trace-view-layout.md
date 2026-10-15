@@ -325,16 +325,34 @@ The view passes the metrics to `planBandScene`, whose layout request carries the
 
 ## Visible nodes
 
-`visibility.ts` keeps the context limited, and a pure function of the current focus (earlier selections never accumulate expanded branches):
+An open stack's band shows what the user expanded, never what is selected (`bandVisibleKeys` in `visibility.ts`; the state lives in `expansion.ts`). A node's children are visible exactly when the node is expanded and visible itself:
 
-- every root (a folder image without a parent in the folder) and its children;
-- the focused node's ancestry, its children, and its nearest **siblings**: the other children of its folder parents;
+- every in-folder root (a folder image without a parent in the folder);
+- the children of every visible expanded node, and the consumers (in this stack) of every expanded reference badge that a visible node carries;
 - every further parent a visible output needs, so each output keeps all of its inputs.
 
-Siblings are context, not lineage: they keep the `unrelated` tone (lightly dimmed), and routes into them are not highlighted. Only the focus's own siblings are added, not its parents' siblings or its siblings' children. Two bounds keep a selection from flooding the graph:
+Defaults: the stack's cover is expanded while the stack is open (its expansion *is* the open state), other in-folder roots are expanded until collapsed, and every other node is collapsed until expanded. A collapsed node with hidden children shows its "n edits" hint and a caret. Selection plays no part: the band plan (`planBandScene`) reads no selection, and an unchanged expansion plans the same tiles, so selecting a tile restyles it and moves nothing.
 
-- **Only folder parents.** A reference input (subfolder or external), such as one style image applied to hundreds of variations, contributes no siblings: its other outputs are not variations of the focus. (Before this rule, selecting one of 300 styled variations pulled in all 300 others: 602 tiles, a canvas almost five times the pane width, half a second of layout.)
-- **At most `SIBLING_LIMIT` (12).** The siblings nearest the focus in their parent's child order (creation order), half on either side where there are enough. A parent with children left out shows its usual "n further edits" hint (with the chevron); selecting it shows them all. The limit only matters below a parent that is not a root: a root's children are always shown.
+The expansion is pane state (one map of explicit choices by node key, plus at most one pending reveal), saved and restored with the pane's scene, so it survives a refresh. Node keys are stable across component merges, so a merge keeps it. Choices of nodes gone from the index are dropped; choices of nodes not loaded are kept, at most the latest 256 (`pruneExpansion`). Every operation is linear in the component (a 20,000-step chain and a 5,000-child fan are covered in `expansion.test.ts`).
+
+`visibleKeys` (focus-derived context: the focus's ancestry, children and up to `SIBLING_LIMIT` nearest siblings) is the legacy section view's rule, kept for `planScene` only.
+
+## Interaction model
+
+Showing and hiding children is always an explicit act, as in a file tree. The rules (`TraceView.svelte`: `activate`, `toggleExpansion`, `activateStack`; pure transitions in `expansion.ts`):
+
+- **A first click on an unselected tile** selects it and opens its children (`expandNode`). It only ever *adds* that node's children: no other branch opens or closes, and nothing moves except to make room. Selecting a leaf, or a node whose children are already open, changes styling only: every tile and connector keeps its exact place on every frame. Other open branches stay open whatever is selected.
+- **A second click on the selected tile** (a plain single click on the node that is the whole selection) toggles its children. The second click of a double click does not: a double click opens the file, as before.
+- **The caret** (`[data-node-caret]`, a real button next to the hint) toggles a node's children without changing the selection. It is in the roving tab order like the stack's disclosure; arrow keys pressed on it move between tiles.
+- **A stack's cover** follows the same rules: pressing a closed stack's cover selects it and opens the stack, pressing the selected cover again closes it, and pressing an open, unselected cover only selects it. The stack's disclosure caret opens or closes the stack without selecting.
+- **Collapsing an ancestor of the selection** hides the selected tile; the selection stays (hidden), as a file tree keeps a selection inside a folder it collapses. Nothing else changes. *Decision:* the alternatives (moving the selection to the collapsed node, or refusing to collapse) would make the caret change the selection or not do what it shows.
+- **Keyboard navigation** moves the selection between visible tiles only; it never expands or collapses.
+- **A selection made outside the view** (the host's file list, Show image, Preview's input links) reveals its node: the ancestors on one path to it count as expanded (`revealNode`, `revealPath`) until the next expansion choice in that stack turns them into explicit choices (`settleReveal`). A reveal expands nothing else and collapses nothing.
+- **Recalled hidden state.** A collapsed node keeps the expansion of its hidden descendants, so expanding it again restores what was open below it.
+
+Motion: an explicit expansion animates. Opening, new tiles slide in from their parent's side and fade in, while the rows below make room. Closing, departing tiles collapse with the rows rising into their space and fade in the second half (an accordion; see `docs/scene-transactions.md`, "Closing collapses like an accordion"). A collapse inside a band that holds still shows its children leaving in place, clipped above the rows rising below them. Selection alone is instant and changes no geometry.
+
+Known follow-up: a new generation's output under a collapsed parent stays hidden until the parent is expanded (its hint count grows).
 
 ## Orientation
 
@@ -443,7 +461,7 @@ The reusable layered algorithm is described top to bottom; a left-to-right shelf
 
 ## Performance
 
-- **Stages.** Bands, ordering, wrapping and junction placement are near-linear in the shown tiles (consumers are indexed once; junction lookups are bucketed by x). Routing is proportional to the crossings drawn: per-row gap lists are cached, vertical runs are bucketed by x and source, and the trie claims each crossing once per source. It is not linear in general. A graph where many independent sources each reach many distant rows costs about sources × rows; the view's limited context (focus lineage plus nearby generations) normally keeps such graphs from reaching layout. The hidden-descendant hints traverse only hidden nodes and stop at 999.
+- **Stages.** Bands, ordering, wrapping and junction placement are near-linear in the shown tiles (consumers are indexed once; junction lookups are bucketed by x). Routing is proportional to the crossings drawn: per-row gap lists are cached, vertical runs are bucketed by x and source, and the trie claims each crossing once per source. It is not linear in general. A graph where many independent sources each reach many distant rows costs about sources × rows; the view's limited context (only what the user expanded) normally keeps such graphs from reaching layout. The hidden-descendant hints traverse only hidden nodes and stop at 999.
 - **Measured** (one thread, `bun`, layout only, 900–1,100 px):
 
   | Graph | Size | Time |
