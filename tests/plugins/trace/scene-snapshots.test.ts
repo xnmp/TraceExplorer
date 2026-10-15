@@ -114,7 +114,7 @@ describe("restoration", () => {
 
   it("lays out again when the current expansion, open stacks, width or metrics change the layout, never for the focus", () => {
     expect(restoredInput(saved, "p", intent({ focus: { key: second, componentId: folder.stacks.get(A)!.componentId } }), session())!.reuse).toBe(true);
-    expect(restoredInput(saved, "p", intent({ expansion: { choices: new Map([[second, true]]), reveal: null } }), session())!.reuse).toBe(false);
+    expect(restoredInput(saved, "p", intent({ expansion: { choices: new Map([[second, true]]), reveals: [] } }), session())!.reuse).toBe(false);
     expect(restoredInput(saved, "p", intent({ open: new Set([A]) }), session())!.reuse).toBe(false);
     expect(restoredInput(saved, "p", intent({ width: 900 }), session())!.reuse).toBe(false);
     expect(restoredInput(saved, "p", intent({ tile: tileMetrics(160) }), session())!.reuse).toBe(false);

@@ -19,6 +19,11 @@ export interface TracePaneView {
   inputs(): readonly string[];
   /** A highlighted Preview target that cannot be used as an image input. */
   hasUnusableTarget(): boolean;
+  /**
+   * A job started from this view on these input paths: their stacks open and each input is
+   * revealed and expanded, so the job's placeholder and output show (`expandForOutputs`).
+   */
+  expandForOutputs(paths: readonly string[]): void;
 }
 
 let views = $state.raw<ReadonlyMap<string, TracePaneView>>(new Map());

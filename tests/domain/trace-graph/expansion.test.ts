@@ -1,9 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { projectDag, projectReferenceBadges } from "$lib/domain/trace-graph/projection";
-import { bandVisibleKeys } from "$lib/domain/trace-graph/visibility";
+import { bandVisibleKeys, togglableKeys } from "$lib/domain/trace-graph/visibility";
 import { planBandScene } from "$lib/domain/trace-graph/scene";
 import {
-  NO_EXPANSION, expandNode, expandedKeys, expansionAnchor, isExpanded, pruneExpansion, readExpansion, revealNode, revealPath,
+  NO_EXPANSION, MAX_REVEALS, expandForOutputs, expandNode, expandedKeys, expansionAnchor, isExpanded, pruneExpansion, readExpansion, revealNode, revealPath,
   sameExpansion, settleReveal, toggleNode, MAX_UNKNOWN_CHOICES, type Expansion, type ExpansionScope,
 } from "$lib/domain/trace-graph/expansion";
 import type { TraceNode } from "$lib/domain/trace-graph/model";
@@ -34,10 +34,14 @@ describe("explicit expansion", () => {
     expect(shown(cerulean, scope)).toEqual(["Ash", "Blastoise", "Cerulean", "Pikachu", "Saffron", "root"]);
   });
 
-  it("selecting a leaf or an expanded node changes nothing: the same expansion object", () => {
+  it("selecting an expanded node changes nothing; a leaf records the intent without changing what is shown or the anchor", () => {
     const scope = recording();
     const open = expandNode(expandNode(NO_EXPANSION, scope, "Saffron"), scope, "Ash");
-    expect(expandNode(open, scope, "Charizard"), "a leaf").toBe(open);
+    const leaf = expandNode(open, scope, "Charizard");
+    expect(leaf.choices.get("Charizard"), "a leaf's intent").toBe(true);
+    expect(shown(leaf, scope)).toEqual(shown(open, scope));
+    expect(expansionAnchor(leaf, scope), "a leaf holds nothing still").toBe("Ash");
+    expect(expandNode(leaf, scope, "Charizard"), "recorded once").toBe(leaf);
     expect(expandNode(open, scope, "Ash"), "already expanded").toBe(open);
     expect(expandNode(open, scope, "root"), "the cover").toBe(open);
     expect(expandNode(open, scope, "elsewhere"), "not in the stack").toBe(open);
@@ -72,11 +76,11 @@ describe("explicit expansion", () => {
     expect(shown(revealed, scope)).toContain("Charizard");
     expect(revealPath(scope, expandedKeys(NO_EXPANSION, scope), "Charizard")).toEqual(["Ash", "Saffron"]);
     const collapsed = toggleNode(revealed, scope, "Saffron");
-    expect(collapsed.reveal).toBeNull();
+    expect(collapsed.reveals).toEqual([]);
     expect(shown(collapsed, scope)).not.toContain("Charizard");
     expect(shown(toggleNode(collapsed, scope, "Saffron"), scope)).toContain("Charizard");
     // A reveal in another stack is left pending.
-    expect(settleReveal(revealNode(NO_EXPANSION, "elsewhere"), scope).reveal).toBe("elsewhere");
+    expect(settleReveal(revealNode(NO_EXPANSION, "elsewhere"), scope).reveals).toEqual(["elsewhere"]);
   });
 
   it("reveals a badge through one of its consumers, and an expanded badge shows only its own stack's consumers", () => {
@@ -103,7 +107,7 @@ describe("explicit expansion", () => {
     expect(expansionAnchor(revealNode(NO_EXPANSION, "Ash"), scope)).toBe("Ash");
     const state = toggleNode(expandNode(NO_EXPANSION, scope, "Saffron"), scope, "Cerulean");
     expect(expansionAnchor(state, scope)).toBe("Cerulean");
-    expect(expansionAnchor({ choices: new Map([["Saffron", true], ["elsewhere", true]]), reveal: null }, scope)).toBe("Saffron");
+    expect(expansionAnchor({ choices: new Map([["Saffron", true], ["elsewhere", true]]), reveals: [] }, scope)).toBe("Saffron");
     // The band plan reads no selection: the same expansion plans the same tiles and request.
     const plan = (anchor: string | null) => planBandScene(scope.graph, scope.members, anchor, 640, { pinned: { key: "root", x: 80 }, expanded: expandedKeys(state, scope) });
     expect([...plan(null).tiles.keys()]).toEqual([...plan("Cerulean").tiles.keys()]);
@@ -111,14 +115,78 @@ describe("explicit expansion", () => {
   });
 });
 
+describe("outputs, reveals and carets", () => {
+  it("a leaf selected before an AI edit shows the edit's placeholder once it appears", () => {
+    const scope = recording();
+    const state = expandNode(expandNode(expandNode(NO_EXPANSION, scope, "Saffron"), scope, "Ash"), scope, "Charizard");
+    const grown = scopeOf([
+      node("root"), node("Cerulean", ["root"]), node("Saffron", ["root"]), node("Pikachu", ["Cerulean"]),
+      node("Blastoise", ["Saffron"]), node("Ash", ["Saffron"]), node("Charizard", ["Ash"]), node("gen1", ["Charizard"]),
+    ]);
+    expect(shown(state, grown)).toContain("gen1");
+    // It anchors on the leaf once it has children to show.
+    expect(expansionAnchor(state, grown)).toBe("Charizard");
+  });
+
+  it("a job started on an input in a collapsed branch reveals and expands it; one already shown and open changes nothing", () => {
+    const scope = recording();
+    const collapsed = toggleNode(expandNode(expandNode(NO_EXPANSION, scope, "Saffron"), scope, "Ash"), scope, "Saffron");
+    expect(shown(collapsed, scope)).not.toContain("Charizard");
+    const started = expandForOutputs(collapsed, scope, "Charizard");
+    expect(shown(started, scope)).toEqual(["Ash", "Blastoise", "Cerulean", "Charizard", "Saffron", "root"]);
+    expect(isExpanded(started, scope, "Charizard")).toBe(true);
+    expect(started.reveals, "settled into choices").toEqual([]);
+    expect(expandForOutputs(started, scope, "Charizard")).toBe(started);
+    expect(expandForOutputs(started, scope, "elsewhere")).toBe(started);
+  });
+
+  it("keeps an earlier reveal pending while its stack is not loaded, and forgets the oldest past the limit", () => {
+    const scope = recording();
+    let state = revealNode(NO_EXPANSION, "unloaded");
+    state = revealNode(state, "Charizard");
+    expect(state.reveals).toEqual(["unloaded", "Charizard"]);
+    expect(shown(state, scope)).toContain("Charizard");
+    // Settling this stack leaves the other stack's reveal pending.
+    expect(settleReveal(state, scope).reveals).toEqual(["unloaded"]);
+    for (let i = 0; i < 40; i++) state = revealNode(state, `n${i}`);
+    expect(state.reveals).toHaveLength(MAX_REVEALS);
+    expect(state.reveals.at(-1)).toBe("n39");
+  });
+
+  it("offers a caret only where it changes what is shown", () => {
+    // Charizard is an edit of Ash and Blastoise: either open parent keeps it shown.
+    const scope = scopeOf([node("root"), node("Saffron", ["root"]), node("Blastoise", ["Saffron"]), node("Ash", ["Saffron"]), node("Charizard", ["Ash", "Blastoise"]), node("Mew", ["Ash"])]);
+    const carets = (expansion: Expansion) => [...togglableKeys(scope.graph, scope.members, expandedKeys(expansion, scope))].sort();
+    let state = expandNode(expandNode(NO_EXPANSION, scope, "Saffron"), scope, "Ash");
+    // Blastoise's only child is shown through Ash: expanding Blastoise would show nothing.
+    expect(carets(state)).toEqual(["Ash", "Saffron", "root"]);
+    state = expandNode(state, scope, "Blastoise");
+    // Ash still hides Mew; Blastoise's collapse would hide nothing.
+    expect(carets(state)).toEqual(["Ash", "Saffron", "root"]);
+    state = toggleNode(state, scope, "Ash");
+    // Now Blastoise alone keeps Charizard (and Ash, its input) shown... Ash stays as an input Charizard needs.
+    expect(shown(state, scope)).toEqual(["Ash", "Blastoise", "Charizard", "Saffron", "root"]);
+    expect(carets(state)).toEqual(["Ash", "Blastoise", "Saffron", "root"]);
+  });
+
+  it("finds carets in linear-ish time on a 20,000-step revealed chain", () => {
+    const chain = scopeOf(Array.from({ length: 20_000 }, (_, i) => node(`n${i}`, i ? [`n${i - 1}`] : [], "current", { order: i })));
+    const state = revealNode(NO_EXPANSION, "n19999");
+    const start = performance.now();
+    const carets = togglableKeys(chain.graph, chain.members, expandedKeys(state, chain));
+    expect(carets.size).toBe(19_999);
+    expect(performance.now() - start).toBeLessThan(2000);
+  });
+});
+
 describe("expansion state hygiene", () => {
   it("drops choices of nodes that are gone, keeps present ones and the most recent unknown ones", () => {
     const choices = new Map<string, boolean>([["gone", true], ["here", false], ...Array.from({ length: 300 }, (_, i) => [`u${i}`, true] as [string, boolean])]);
-    const state: Expansion = { choices, reveal: "gone" };
+    const state: Expansion = { choices, reveals: ["gone", "here"] };
     const pruned = pruneExpansion(state, (key) => key === "gone" ? "gone" : key === "here" ? "present" : "unknown");
     expect(pruned.choices.has("gone")).toBe(false);
     expect(pruned.choices.get("here")).toBe(false);
-    expect(pruned.reveal).toBeNull();
+    expect(pruned.reveals).toEqual(["here"]);
     const unknown = [...pruned.choices.keys()].filter((key) => key.startsWith("u"));
     expect(unknown).toHaveLength(MAX_UNKNOWN_CHOICES);
     expect(unknown.at(-1)).toBe("u299");
@@ -128,16 +196,19 @@ describe("expansion state hygiene", () => {
 
   it("reads malformed remembered state as no expansion, keeping well-formed choices", () => {
     for (const value of [null, undefined, 3, "x", [], {}, { choices: [["a", true]] }]) expect(readExpansion(value)).toEqual(NO_EXPANSION);
-    const read = readExpansion({ choices: new Map<unknown, unknown>([["a", true], [3, true], ["b", "yes"], ["", true], ["c", false]]), reveal: 7 });
+    const read = readExpansion({ choices: new Map<unknown, unknown>([["a", true], [3, true], ["b", "yes"], ["", true], ["c", false]]), reveals: ["x", 7, "", "x", "y"] });
     expect([...read.choices]).toEqual([["a", true], ["c", false]]);
-    expect(read.reveal).toBeNull();
+    expect(read.reveals).toEqual(["x", "y"]);
+    // An older snapshot's single reveal, and a malformed one.
+    expect(readExpansion({ choices: new Map(), reveal: "old" }).reveals).toEqual(["old"]);
+    expect(readExpansion({ choices: new Map(), reveal: 7 }).reveals).toEqual([]);
   });
 
   it("compares by contents, not order or identity", () => {
-    const a: Expansion = { choices: new Map([["x", true], ["y", false]]), reveal: null };
-    expect(sameExpansion(a, { choices: new Map([["y", false], ["x", true]]), reveal: null })).toBe(true);
-    expect(sameExpansion(a, { choices: new Map([["x", true]]), reveal: null })).toBe(false);
-    expect(sameExpansion(a, { ...a, reveal: "x" })).toBe(false);
+    const a: Expansion = { choices: new Map([["x", true], ["y", false]]), reveals: [] };
+    expect(sameExpansion(a, { choices: new Map([["y", false], ["x", true]]), reveals: [] })).toBe(true);
+    expect(sameExpansion(a, { choices: new Map([["x", true]]), reveals: [] })).toBe(false);
+    expect(sameExpansion(a, { ...a, reveals: ["x"] })).toBe(false);
   });
 
   it("ignores keys outside the stack and empty keys", () => {
@@ -145,7 +216,7 @@ describe("expansion state hygiene", () => {
     expect(toggleNode(NO_EXPANSION, scope, "elsewhere")).toBe(NO_EXPANSION);
     expect(toggleNode(NO_EXPANSION, scope, "")).toBe(NO_EXPANSION);
     expect(revealNode(NO_EXPANSION, "")).toBe(NO_EXPANSION);
-    expect(shown({ choices: new Map([["elsewhere", true]]), reveal: "nowhere" }, scope)).toEqual(shown(NO_EXPANSION, scope));
+    expect(shown({ choices: new Map([["elsewhere", true]]), reveals: ["nowhere"] }, scope)).toEqual(shown(NO_EXPANSION, scope));
   });
 
   it("stays linear on a 20,000-step chain and a 5,000-child fan", () => {

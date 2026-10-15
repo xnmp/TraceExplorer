@@ -8,13 +8,16 @@
  * visible itself. The only geometry a click can change is the clicked node's own children:
  *
  * - a first click on an unselected tile selects it and opens its children (`expandNode`), adding
- *   only them; selecting a leaf or a node already expanded changes styling only;
+ *   only them; selecting a leaf or a node already expanded changes styling only (a leaf records
+ *   the intent, so children it gets later, such as an AI edit's output, show);
  * - the caret and a second click on the selected tile toggle one node (`toggleNode`);
  * - collapsing an ancestor of the selected node hides it; the selection stays (host file-tree
  *   behaviour) and nothing else changes;
  * - a selection made outside the view (or Show image) reveals its node (`revealNode`): its
  *   ancestors count as expanded (`revealPath`) until a later choice settles them into explicit
- *   choices (`settleReveal`).
+ *   choices (`settleReveal`);
+ * - starting a job from the view shows its outputs (`expandForOutputs`): each input is revealed
+ *   and expanded, so the job's placeholder and output appear under it.
  *
  * Defaults: in-folder roots are expanded unless the user collapsed them; every other node is
  * collapsed until expanded. A stack's cover is expanded while its stack is open: its expansion is
@@ -31,13 +34,17 @@ export interface Expansion {
    */
   readonly choices: ReadonlyMap<NodeKey, boolean>;
   /**
-   * The node a selection asked to show. Its ancestors count as expanded (whatever the choices
-   * say) until `settleReveal` turns them into choices. Null once settled.
+   * Nodes selections asked to show, oldest first (at most `MAX_REVEALS`). Each one's ancestors
+   * count as expanded (whatever the choices say) until `settleReveal` turns them into choices in
+   * its stack. One whose stack is not loaded stays pending until it is.
    */
-  readonly reveal: NodeKey | null;
+  readonly reveals: readonly NodeKey[];
 }
 
-export const NO_EXPANSION: Expansion = { choices: new Map(), reveal: null };
+export const NO_EXPANSION: Expansion = { choices: new Map(), reveals: [] };
+
+/** Pending reveals kept: the most recent. */
+export const MAX_REVEALS = 16;
 
 /** One open stack, as expansion resolves against it. */
 export interface ExpansionScope {
@@ -60,6 +67,12 @@ const isKey = (value: unknown): value is NodeKey => typeof value === "string" &&
 
 /** Whether `key` belongs to the scope: a member or one of its reference badges. */
 const inScope = (scope: ExpansionScope, key: NodeKey): boolean => scope.members.includes(key) || scope.graph.badges.has(key);
+
+/** The children `key` has in the scope: a node's, or a reference badge's consumers. */
+const childCount = (scope: ExpansionScope, key: NodeKey): number => {
+  const badge = scope.graph.badges.get(key);
+  return badge ? badge.consumers.length : scope.graph.dag.children.get(key)?.length ?? 0;
+};
 
 /** What the choices alone expand in the scope: chosen keys, unchosen in-folder roots, and the cover. */
 function chosenKeys(expansion: Expansion, scope: ExpansionScope): Set<NodeKey> {
@@ -113,7 +126,7 @@ export function revealPath(scope: ExpansionScope, expanded: ReadonlySet<NodeKey>
  */
 export function expandedKeys(expansion: Expansion, scope: ExpansionScope): ReadonlySet<NodeKey> {
   const expanded = chosenKeys(expansion, scope);
-  if (expansion.reveal !== null && inScope(scope, expansion.reveal)) for (const key of revealPath(scope, expanded, expansion.reveal)) expanded.add(key);
+  for (const target of expansion.reveals) if (inScope(scope, target)) for (const key of revealPath(scope, expanded, target)) expanded.add(key);
   return expanded;
 }
 
@@ -121,51 +134,67 @@ export function expandedKeys(expansion: Expansion, scope: ExpansionScope): Reado
 export const isExpanded = (expansion: Expansion, scope: ExpansionScope, key: NodeKey): boolean => expandedKeys(expansion, scope).has(key);
 
 /**
- * Turns a pending reveal in this scope into explicit choices (its path expanded), so a later
- * toggle starts from what is shown. A reveal in another scope is left as is.
+ * Turns the pending reveals in this scope into explicit choices (their paths expanded), so a later
+ * toggle starts from what is shown. Reveals in other scopes are left pending.
  */
 export function settleReveal(expansion: Expansion, scope: ExpansionScope): Expansion {
-  const target = expansion.reveal;
-  if (target === null || !inScope(scope, target)) return expansion;
-  const choices = new Map(expansion.choices);
-  // Outermost first, so the chain reads from the stack down in recency order.
-  for (const key of revealPath(scope, chosenKeys(expansion, scope), target).reverse()) { choices.delete(key); choices.set(key, true); }
-  return { choices, reveal: null };
+  const here = expansion.reveals.filter((key) => inScope(scope, key));
+  if (!here.length) return expansion;
+  const choices = new Map(expansion.choices), expanded = chosenKeys(expansion, scope);
+  for (const target of here) {
+    // Outermost first, so the chain reads from the stack down in recency order.
+    for (const key of revealPath(scope, expanded, target).reverse()) { choices.delete(key); choices.set(key, true); expanded.add(key); }
+  }
+  return { choices, reveals: expansion.reveals.filter((key) => !inScope(scope, key)) };
 }
 
 /**
  * Shows `key` (a selection made outside the view, Show image, Preview's input links): its
- * ancestors count as expanded until settled. Expands nothing else and collapses nothing. A
- * pending reveal of an earlier node should be settled first (`settleReveal`) where its stack is
- * known; otherwise it is replaced. Selecting a tile in the view never calls this.
+ * ancestors count as expanded until settled. Expands nothing else and collapses nothing; earlier
+ * reveals stay pending (the oldest beyond `MAX_REVEALS` are forgotten). Selecting a tile in the
+ * view never calls this.
  */
 export function revealNode(expansion: Expansion, key: NodeKey): Expansion {
-  if (!isKey(key) || expansion.reveal === key) return expansion;
-  return { choices: expansion.choices, reveal: key };
+  if (!isKey(key) || expansion.reveals.at(-1) === key) return expansion;
+  return { choices: expansion.choices, reveals: [...expansion.reveals.filter((other) => other !== key), key].slice(-MAX_REVEALS) };
 }
 
 /**
  * The node the layout holds still in this scope: the one the user expanded or collapsed last
- * (the most recent choice in the scope), else a pending reveal in it; null for none.
+ * (the most recent choice in the scope of a node with children: a leaf's recorded intent shows
+ * nothing, so it moves nothing), else the latest pending reveal in it; null for none.
  */
 export function expansionAnchor(expansion: Expansion, scope: ExpansionScope): NodeKey | null {
   const keys = [...expansion.choices.keys()];
-  for (let index = keys.length - 1; index >= 0; index--) if (inScope(scope, keys[index])) return keys[index];
-  return expansion.reveal !== null && inScope(scope, expansion.reveal) ? expansion.reveal : null;
+  for (let index = keys.length - 1; index >= 0; index--) if (inScope(scope, keys[index]) && childCount(scope, keys[index]) > 0) return keys[index];
+  for (let index = expansion.reveals.length - 1; index >= 0; index--) if (inScope(scope, expansion.reveals[index])) return expansion.reveals[index];
+  return null;
 }
 
 /**
- * A first click on an unselected tile: opens its children, if it has any and they are not open
- * already. It only ever adds that node's children: nothing else is expanded or collapsed, and a
- * node already expanded (or a leaf) returns `expansion` itself, so selecting it changes no geometry.
+ * A first click on an unselected tile: opens its children if they are not open already. It only
+ * ever adds that node's children: nothing else is expanded or collapsed, and a node already
+ * expanded returns `expansion` itself. A leaf records the intent (it shows nothing and moves
+ * nothing: see `expansionAnchor`), so children it gets later show.
  */
 export function expandNode(expansion: Expansion, scope: ExpansionScope, key: NodeKey): Expansion {
   if (!isKey(key) || !inScope(scope, key) || isExpanded(expansion, scope, key)) return expansion;
-  const badge = scope.graph.badges.get(key);
-  const children = badge ? badge.consumers.length : scope.graph.dag.children.get(key)?.length ?? 0;
-  if (!children) return expansion;
+  if (!childCount(scope, key)) return { ...expansion, choices: choose(expansion.choices, key, true) };
   const settled = settleReveal(expansion, scope);
   return { ...settled, choices: choose(settled.choices, key, true) };
+}
+
+/**
+ * A job started from the view on `key` (one of its inputs): `key` is revealed, as a selection
+ * from outside the view would be, and expanded, so the job's placeholder and output show under
+ * it even when it sat in a collapsed branch. `expansion` itself when it is shown and expanded already.
+ */
+export function expandForOutputs(expansion: Expansion, scope: ExpansionScope, key: NodeKey): Expansion {
+  if (!isKey(key) || !inScope(scope, key)) return expansion;
+  const expanded = expandedKeys(expansion, scope);
+  if (expanded.has(key) && revealPath(scope, expanded, key).length === 0) return expansion;
+  const settled = settleReveal(revealNode(expansion, key), scope);
+  return isExpanded(settled, scope, key) ? settled : { ...settled, choices: choose(settled.choices, key, true) };
 }
 
 /**
@@ -198,15 +227,15 @@ export function pruneExpansion(expansion: Expansion, status: (key: NodeKey) => C
     if (states[index] === "unknown" && unknown > Math.max(0, limit)) { unknown--; return false; }
     return true;
   });
-  const reveal = expansion.reveal !== null && isKey(expansion.reveal) && status(expansion.reveal) !== "gone" ? expansion.reveal : null;
-  if (kept.length === expansion.choices.size && reveal === expansion.reveal) return expansion;
-  return { choices: new Map(kept), reveal };
+  const reveals = expansion.reveals.filter((key) => isKey(key) && status(key) !== "gone");
+  if (kept.length === expansion.choices.size && reveals.length === expansion.reveals.length) return expansion;
+  return { choices: new Map(kept), reveals };
 }
 
-/** Same choices (in any order) and the same pending reveal. */
+/** Same choices (in any order) and the same pending reveals. */
 export function sameExpansion(a: Expansion, b: Expansion): boolean {
   if (a === b) return true;
-  if (a.reveal !== b.reveal || a.choices.size !== b.choices.size) return false;
+  if (a.reveals.length !== b.reveals.length || a.reveals.some((key, index) => b.reveals[index] !== key) || a.choices.size !== b.choices.size) return false;
   for (const [key, value] of a.choices) if (b.choices.get(key) !== value) return false;
   return true;
 }
@@ -217,7 +246,9 @@ export function sameExpansion(a: Expansion, b: Expansion): boolean {
  */
 export function readExpansion(value: unknown): Expansion {
   if (typeof value !== "object" || value === null) return NO_EXPANSION;
-  const { choices, reveal } = value as { choices?: unknown; reveal?: unknown };
+  const { choices, reveals, reveal } = value as { choices?: unknown; reveals?: unknown; reveal?: unknown };
   const entries = choices instanceof Map ? [...choices].filter(([key, open]) => isKey(key) && typeof open === "boolean") as [NodeKey, boolean][] : [];
-  return { choices: new Map(entries), reveal: isKey(reveal) ? reveal : null };
+  // An older snapshot kept one pending reveal.
+  const pending = Array.isArray(reveals) ? reveals.filter(isKey) : isKey(reveal) ? [reveal] : [];
+  return { choices: new Map(entries), reveals: [...new Set(pending)].slice(-MAX_REVEALS) };
 }

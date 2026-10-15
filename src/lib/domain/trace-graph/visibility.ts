@@ -133,3 +133,83 @@ export function hiddenDescendantCount(dag: TraceDag, key: NodeKey, visible: Read
   }
   return seen.size;
 }
+
+/**
+ * The visible members whose caret changes what the band shows (`bandVisibleKeys`), so that no
+ * control ever does nothing visible: a collapsed node with a child not shown, and an expanded
+ * node with a child that no other expansion keeps shown. A child shown through another open
+ * parent (an edit with two inputs), or as an input a shown output needs, is kept by that.
+ *
+ * Exact and near-linear: `bandVisibleKeys` is reachability from the roots in a graph whose edges
+ * are "x shows its parents", "an expanded x shows its children" (through a node standing for x's
+ * expansion) and "a shown consumer shows its expanded badge's consumers". Collapsing x hides
+ * something exactly when its expansion node dominates another node: the immediate dominator of
+ * some node (Cooper, Harvey and Kennedy's iterative algorithm, "A Simple, Fast Dominance
+ * Algorithm", 2001).
+ */
+export function togglableKeys(graph: BadgeProjection, members: readonly NodeKey[], expanded: ReadonlySet<NodeKey>): ReadonlySet<NodeKey> {
+  const { dag } = graph;
+  const inComponent = new Set(members);
+  const visible = new Set(bandVisibleKeys(graph, members, expanded));
+  const result = new Set<NodeKey>();
+  // Collapsed: expanding shows something exactly when a child is hidden.
+  for (const key of visible) if (!expanded.has(key) && (dag.children.get(key) ?? []).some((child) => inComponent.has(child) && !visible.has(child))) result.add(key);
+  // Expanded: build the derivation graph over what is shown. Index 0 is the source.
+  const ids = new Map<string, number>();
+  const id = (name: string) => { let at = ids.get(name); if (at === undefined) ids.set(name, at = ids.size + 1); return at; };
+  const edges: number[][] = [[]];
+  const edge = (from: number, to: number) => { (edges[from] ??= []).push(to); edges[to] ??= []; };
+  const node = (key: NodeKey) => id(`n:${key}`), opened = (key: NodeKey) => id(`e:${key}`), badge = (key: NodeKey) => id(`b:${key}`);
+  for (const root of componentRoots(dag, members, "in-folder")) edge(0, node(root));
+  const consumers = new Map<NodeKey, NodeKey[]>();
+  for (const key of members) for (const reference of graph.byConsumer.get(key) ?? []) if (expanded.has(reference.key)) {
+    const list = consumers.get(reference.key);
+    if (list) list.push(key); else consumers.set(reference.key, [key]);
+  }
+  for (const key of visible) {
+    for (const parent of dag.parents.get(key) ?? []) if (inComponent.has(parent)) edge(node(key), node(parent));
+    const children = (dag.children.get(key) ?? []).filter((child) => inComponent.has(child));
+    if (expanded.has(key) && children.length) { edge(node(key), opened(key)); for (const child of children) edge(opened(key), node(child)); }
+    for (const reference of graph.byConsumer.get(key) ?? []) if (consumers.has(reference.key)) edge(node(key), badge(reference.key));
+  }
+  for (const [key, list] of consumers) if (ids.has(`b:${key}`)) for (const consumer of list) edge(badge(key), node(consumer));
+  const idom = dominators(edges);
+  const owner = new Map<number, NodeKey>();
+  for (const key of visible) if (ids.has(`e:${key}`)) owner.set(ids.get(`e:${key}`)!, key);
+  for (let at = 1; at < idom.length; at++) { const key = owner.get(idom[at]); if (key !== undefined) result.add(key); }
+  return result;
+}
+
+/** Immediate dominators from node 0 (-1 for unreachable nodes and for 0 itself), iteratively. */
+function dominators(edges: readonly (readonly number[] | undefined)[]): number[] {
+  const count = edges.length, order: number[] = [], rank = new Array<number>(count).fill(-1);
+  // Postorder by an explicit stack.
+  const stack: [number, number][] = [[0, 0]], seen = new Uint8Array(count);
+  seen[0] = 1;
+  while (stack.length) {
+    const top = stack[stack.length - 1], next = edges[top[0]] ?? [];
+    if (top[1] < next.length) {
+      const to = next[top[1]++];
+      if (!seen[to]) { seen[to] = 1; stack.push([to, 0]); }
+    } else { rank[top[0]] = order.length; order.push(top[0]); stack.pop(); }
+  }
+  const predecessors: number[][] = Array.from({ length: count }, () => []);
+  for (let from = 0; from < count; from++) if (seen[from]) for (const to of edges[from] ?? []) predecessors[to].push(from);
+  const idom = new Array<number>(count).fill(-1);
+  idom[0] = 0;
+  const intersect = (a: number, b: number) => {
+    while (a !== b) { while (rank[a] < rank[b]) a = idom[a]; while (rank[b] < rank[a]) b = idom[b]; }
+    return a;
+  };
+  for (let changed = true; changed;) {
+    changed = false;
+    for (let i = order.length - 2; i >= 0; i--) {
+      const at = order[i];
+      let dom = -1;
+      for (const from of predecessors[at]) if (idom[from] !== -1) dom = dom === -1 ? from : intersect(from, dom);
+      if (dom !== idom[at]) { idom[at] = dom; changed = true; }
+    }
+  }
+  idom[0] = -1;
+  return idom;
+}

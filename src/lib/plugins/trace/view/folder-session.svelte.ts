@@ -8,6 +8,7 @@
  * returning to a Trace tab never shows "Loading Trace…" again.
  */
 import type { ComponentSummary, TraceNode } from "$lib/domain/trace-graph/model";
+import { togglableKeys } from "$lib/domain/trace-graph/visibility";
 import { matchesIndex, type ComponentData, type FolderIndex, type Member } from "$lib/domain/trace-graph/folder-data";
 import type { OrientationHistory } from "$lib/domain/trace-graph/orientation";
 import { projectDag } from "$lib/domain/trace-graph/projection";
@@ -17,7 +18,7 @@ import { sceneSnapshots } from "./scene-snapshots";
 import { componentRequest } from "./component-requests";
 import { parentDir, samePath } from "$lib/domain/path";
 import { coverAliases, coverIdentity, forgetOpenStack, stackIdentity, pathIdentity, revisionIdentity, resolveOpenStacks } from "./open-stacks";
-import { NO_EXPANSION, expandNode, expandedKeys, pruneExpansion, readExpansion, revealNode, settleReveal, toggleNode, type ChoiceStatus, type Expansion, type ExpansionScope } from "$lib/domain/trace-graph/expansion";
+import { NO_EXPANSION, expandForOutputs, expandNode, expandedKeys, pruneExpansion, readExpansion, revealNode, toggleNode, type ChoiceStatus, type Expansion, type ExpansionScope } from "$lib/domain/trace-graph/expansion";
 import { projectionOf } from "./scene-inputs";
 
 export type { ComponentData, FolderIndex, Member };
@@ -196,12 +197,14 @@ export function createFolderSession(backend: TraceBackend = traceBackend, snapsh
   }
 
   /**
-   * Drops choices of nodes that are gone: not in any fresh component, while the component they
-   * were last seen in is fresh. Records where each present one is now.
+   * Drops choices of nodes that are gone, and records where each present one is now. A node is
+   * gone only when the index cannot place it in a component that is not loaded: not a listed file
+   * of one (`index.members`), and every listed component is loaded and fresh without it. A node
+   * that moved to a component not loaded yet (a split) is kept.
    */
   function pruneChoices(state: PaneFolderSnapshot): PaneFolderSnapshot {
     const current = state.expansion ?? NO_EXPANSION;
-    if (!index || (!current.choices.size && current.reveal === null)) return state;
+    if (!index || (!current.choices.size && !current.reveals.length)) return state;
     const listed = new Set(index.components.map((summary) => summary.id));
     const owners = new Map(state.expansionOwners ?? []);
     const where = (key: string): string | null => {
@@ -212,14 +215,15 @@ export function createFolderSession(backend: TraceBackend = traceBackend, snapsh
       }
       return null;
     };
+    const listedKeys = new Set([...index.members.values()].map((member) => member.key));
+    const allKnown = [...listed].every((id) => { const data = components.get(id); return !!data && !stale.has(id) && matchesIndex(data, index!); });
     const status = (key: string): ChoiceStatus => {
       const holder = where(key);
       if (holder) { owners.set(key, holder); return "present"; }
-      const owner = owners.get(key);
-      return owner && listed.has(owner) && components.has(owner) && !stale.has(owner) ? "gone" : "unknown";
+      return !listedKeys.has(key) && allKnown ? "gone" : "unknown";
     };
     const pruned = pruneExpansion(current, status);
-    for (const key of [...owners.keys()]) if (!pruned.choices.has(key) && pruned.reveal !== key) owners.delete(key);
+    for (const key of [...owners.keys()]) if (!pruned.choices.has(key) && !pruned.reveals.includes(key)) owners.delete(key);
     return { ...state, expansion: pruned, expansionOwners: owners };
   }
 
@@ -491,15 +495,8 @@ export function createFolderSession(backend: TraceBackend = traceBackend, snapsh
     throw new Error("Trace kept changing while revealing the image");
   }
 
-  /** `expansion` with `key` revealed, settling an earlier reveal into choices where its stack is loaded. */
-  function revealed(key: string): Expansion {
-    let next = expansion;
-    if (next.reveal !== null) {
-      const scope = scopeHolding(next.reveal);
-      next = scope ? settleReveal(next, scope) : { ...next, reveal: null };
-    }
-    return revealNode(next, key);
-  }
+  /** `expansion` with `key` revealed; earlier reveals stay pending until their stacks settle them. */
+  const revealed = (key: string): Expansion => revealNode(expansion, key);
   const expandedKeysOf = (scope: ExpansionScope) => expandedKeys(expansion, scope);
 
   return {
@@ -584,6 +581,35 @@ export function createFolderSession(backend: TraceBackend = traceBackend, snapsh
       const owner = [...components].find(([, data]) => projectionOf(data) === scope.graph)?.[0];
       paneState = { ...paneState, expansion: next, expansionOwners: owner ? new Map(paneState.expansionOwners ?? []).set(key, owner) : paneState.expansionOwners };
       remember();
+    },
+    /**
+     * A job started from the view on these inputs (node keys): each is revealed and expanded in the
+     * loaded component holding it, so the job's placeholder and output show (`expandForOutputs`).
+     */
+    expandForOutputs(keys: readonly string[]): void {
+      let next = expansion;
+      const owners = new Map(paneState.expansionOwners ?? []);
+      for (const key of keys) {
+        const scope = scopeHolding(key);
+        if (!scope) continue;
+        next = expandForOutputs(next, scope, key);
+        const owner = [...components].find(([, data]) => projectionOf(data) === scope.graph)?.[0];
+        if (owner) owners.set(key, owner);
+      }
+      if (next === expansion) return;
+      paneState = { ...paneState, expansion: next, expansionOwners: owners };
+      remember();
+    },
+    /**
+     * Whether toggling `key` changes what its band shows (`togglableKeys`); a reference badge, whether
+     * it has consumers. False when its component is not loaded.
+     */
+    canToggle(key: string, componentId?: string): boolean {
+      const scope = (componentId ? expansionScope(componentId) : null) ?? scopeHolding(key);
+      if (!scope) return false;
+      const badge = scope.graph.badges.get(key);
+      if (badge) return badge.consumers.length > 0;
+      return togglableKeys(scope.graph, scope.members, expandedKeysOf(scope)).has(key);
     },
     /** Whether `key` is expanded as the view shows it (false when its component is not loaded). */
     isExpanded(key: string, componentId?: string): boolean {

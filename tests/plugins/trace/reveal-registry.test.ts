@@ -2,7 +2,7 @@ import "./svelte-host";
 import { afterEach, expect, it } from "vitest";
 import { tracePanes, type TracePaneView } from "../../../src/lib/plugins/trace/view/pane-registry.svelte";
 const view: TracePaneView = { directory: "/f", active: true, node: () => null, nodeForPath: () => null,
-  focus: () => {}, reveal: async () => {}, inputs: () => [], hasUnusableTarget: () => false };
+  focus: () => {}, reveal: async () => {}, inputs: () => [], hasUnusableTarget: () => false, expandForOutputs: () => {} };
 afterEach(() => tracePanes.clear());
 it("waits for the target pane to mount and ignores other panes", async () => {
   const task = tracePanes.waitFor("target", "/f", new AbortController().signal);

@@ -58,7 +58,8 @@
       : tile.hiddenDescendants ? `${tile.hiddenDescendants} further ${tile.hiddenDescendants === 1 ? "edit" : "edits"}` : `${tile.childCount} ${tile.childCount === 1 ? "edit" : "edits"}`
     : "");
   const tag = $derived(!explorer && card ? "button" : "div");
-  const caret = $derived(tile.expandable && !explorer);
+  // Offered only where it changes what is shown (`togglableKeys`): a control never does nothing visible.
+  const caret = $derived(tile.togglable && !explorer);
   // Collapsed, the caret points across the band's flow; expanded, along it, towards the children.
   const caretPath = $derived(tile.expanded !== (orientation === "right") ? "m5 9 7 7 7-7" : "m9 5 7 7-7 7");
 </script>

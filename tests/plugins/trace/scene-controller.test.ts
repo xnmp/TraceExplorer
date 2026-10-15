@@ -1,6 +1,6 @@
 import { NO_EXPANSION, type Expansion } from "$lib/domain/trace-graph/expansion";
 /** The user expanded a2 (its caret): a3 shows. */
-const A2_EXPANDED: Expansion = { choices: new Map([["a2", true]]), reveal: null };
+const A2_EXPANDED: Expansion = { choices: new Map([["a2", true]]), reveals: [] };
 import "./svelte-host";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createSceneController, MEDIA_DEADLINE_MS, PREPARATION_DEADLINE_MS, type SceneCause, type SceneController, type SceneMedia } from "$lib/plugins/trace/view/scene-controller.svelte";
@@ -338,7 +338,7 @@ describe("scene controller", () => {
     expect(h.published.length).toBe(before);
     expect(h.controller.published!.scene.inputs.styling.focus).toBe("a3");
     // Collapsing a2 (its caret) hides a3: a geometry commit, also on the committed snapshot.
-    h.act("collapse", () => h.offer({ expansion: { choices: new Map([["a2", false]]), reveal: null } }));
+    h.act("collapse", () => h.offer({ expansion: { choices: new Map([["a2", false]]), reveals: [] } }));
     await flush();
     expect(h.published.length).toBe(before + 1);
     expect(h.controller.published!.scene.graphs.get("a1")!.plan.tiles.has("a3")).toBe(false);

@@ -40,6 +40,7 @@
   import { marqueeSelection, sameSelection, type MarqueeRect } from "./marquee-selection";
   import { pendingMarqueeComponents } from "./marquee-components";
   import { pendingListingPaths } from "./stack-grid";
+  import { DOUBLE_CLICK_MS, reclickStep, type PendingToggle, type ReclickEvent } from "./reclick";
 
   interface Props { pane: FileViewPane; session?: FolderSession }
   let { pane, session: provided }: Props = $props();
@@ -461,10 +462,13 @@
     void controller.action(selection(key, "reveal"), (lease) => reachAndFocus(lease, key, componentId, modifiers, "reveal"));
   }
 
+  const modified = (event: MouseEvent) => event.ctrlKey || event.metaKey || event.shiftKey || event.altKey;
+
   /**
    * Whether a click is a second click on the selected tile: a plain single click (not the second
    * click of a double click) on the focused node while it is the whole selection. It toggles the
-   * node's expansion instead of selecting (docs/trace-view-layout.md, "Interaction model").
+   * node's expansion instead of selecting (docs/trace-view-layout.md, "Interaction model"), once
+   * the double-click window has passed (`reclick.ts`).
    */
   function isReclick(key: NodeKey, event: MouseEvent): boolean {
     return !event.ctrlKey && !event.metaKey && !event.shiftKey && !event.altKey && event.detail <= 1
@@ -477,8 +481,9 @@
    * selected tile toggles its expansion instead (an open stack's cover closes its stack).
    */
   function activate(key: NodeKey, event: MouseEvent, componentId: string): void {
-    if (isReclick(key, event)) { toggleExpansion(key, componentId); return; }
-    const opens = !selectedKeys.has(key);
+    if (isReclick(key, event)) { reclick({ kind: "reclick", key, at: performance.now() }, () => toggleExpansion(key, componentId)); return; }
+    // A modified click (Ctrl, Shift) only changes the selection: selection alone never moves anything.
+    const opens = !selectedKeys.has(key) && !modified(event);
     void controller.action(selection(key, "hold"), (lease) => {
       const pending = reachAndFocus(lease, key, componentId, modifiersOf(event), "hold");
       if (!opens) return pending;
@@ -499,9 +504,8 @@
       return;
     }
     const found = findNode(key, componentId);
-    // A reference badge's children are its consumers.
-    const children = found ? (session.components.get(found.componentId)?.dag.children.get(key)?.length ?? 0) : 0;
-    if (!children) return;
+    // Only a toggle that changes what is shown happens: a control never does nothing visible.
+    if (!session.canToggle(key, found?.componentId ?? componentId)) return;
     const expanded = session.isExpanded(key, found?.componentId ?? componentId);
     void controller.action({ kind: expanded ? "collapse" : "expand", target: key, anchor: "hold" }, () => {
       supersedeReveal(); releaseAnchors();
@@ -525,11 +529,21 @@
       void controller.action({ kind: "collapse", target: cell.id, anchor: "hold" }, () => setExpanded(summary.id, false));
       return;
     }
-    if (toggle || isReclick(cell.id, event)) {
+    if (toggle) {
       void controller.action({ kind: "expand", target: cell.id, anchor: "hold" }, () => { supersedeReveal(); releaseAnchors(); setExpanded(summary.id, true); });
       return;
     }
-    const opens = !selectedKeys.has(cell.id);
+    if (isReclick(cell.id, event)) {
+      // A second click toggles the stack once no double click follows: a requested stack (open, or
+      // still opening) closes, as its disclosure does; a closed one opens.
+      reclick({ kind: "reclick", key: cell.id, at: performance.now() }, () => {
+        const id = cell.summary?.id ?? summary.id;
+        if (openKeys.has(cell.id)) void controller.action({ kind: "collapse", target: cell.id, anchor: "hold" }, () => setExpanded(id, false));
+        else void controller.action({ kind: "expand", target: cell.id, anchor: "hold" }, () => { supersedeReveal(); releaseAnchors(); setExpanded(id, true); });
+      });
+      return;
+    }
+    const opens = !selectedKeys.has(cell.id) && !modified(event);
     void controller.action({ kind: opens ? "expand" : "selection", target: cell.id, anchor: "hold" }, (lease) => {
       let pending: Promise<void> | void = undefined;
       const index = controller.committedIndex;
@@ -540,6 +554,33 @@
       return pending;
     });
   }
+
+  /**
+   * The re-click waiting out the double-click window, and what it runs. Its timer is the window
+   * itself, not a workaround: the rule is `reclickStep`.
+   */
+  let pendingToggle: PendingToggle | null = null;
+  let pendingRun: (() => void) | null = null;
+  let toggleTimer: ReturnType<typeof setTimeout> | null = null;
+  function reclick(event: ReclickEvent, run: (() => void) | null = null): void {
+    const step = reclickStep(pendingToggle, event);
+    if (toggleTimer !== null) { clearTimeout(toggleTimer); toggleTimer = null; }
+    const fire = step.toggle !== null ? pendingRun : null;
+    if (step.pending && step.pending !== pendingToggle) pendingRun = run;
+    if (!step.pending) pendingRun = null;
+    pendingToggle = step.pending;
+    if (step.pending) {
+      const due = step.pending.at + DOUBLE_CLICK_MS - performance.now();
+      toggleTimer = setTimeout(() => { toggleTimer = null; reclick({ kind: "tick", at: performance.now() }); }, Math.max(0, due) + 1);
+    }
+    fire?.();
+  }
+  // A change of pane, folder or selection cancels a pending re-click (compared by contents).
+  const selectionState = $derived(JSON.stringify([pane.paneId, directory, focus?.key ?? null, focus?.componentId ?? null, [...selectedKeys], [...selectedPaths]]));
+  $effect(() => {
+    void selectionState;
+    untrack(() => reclick({ kind: "cancel" }));
+  });
 
   /** Retries a failed open by its stable cover key, against the current index (components may have merged). */
   function retryStack(coverKey: string): void {
@@ -813,6 +854,19 @@
     },
     get active() { return pane.active; },
     inputs: () => inputs,
+    expandForOutputs: (paths) => {
+      const found = paths.flatMap((path) => {
+        const member = session.componentOf(path);
+        if (member) return [{ key: member.key, componentId: member.componentId }];
+        for (const [componentId, data] of session.components) for (const node of data.nodes) if (node.path === path) return [{ key: node.key, componentId }];
+        return [];
+      });
+      if (!found.length) return;
+      void controller.action({ kind: "expand", target: found[0].key, anchor: "none" }, () => {
+        for (const { componentId } of found) session.setStackOpen(componentId, true);
+        session.expandForOutputs(found.map(({ key }) => key));
+      });
+    },
     hasUnusableTarget: () => {
       if (!targetData) return false;
       const node = findNode(targetData.key, targetData.componentId)?.node;
@@ -842,6 +896,7 @@
   }
 
   onDestroy(() => {
+    reclick({ kind: "cancel" });
     marqueeTurn++;
     supersedeReveal();
     releaseAnchors();
@@ -879,6 +934,7 @@
 
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <div class="trace-view" bind:this={scroller} bind:clientWidth use:backgroundSelection
+  onpointerdowncapture={() => reclick({ kind: "press", at: performance.now() })} ondblclickcapture={() => reclick({ kind: "dblclick" })}
   oncontextmenu={(event) => { if (event.target === event.currentTarget) pane.contextMenu(event); }}
   data-testid="trace-view">
   <!-- Zero-height and sticky: failures overlay the top of the view without moving the grid or changing its scroll extent. -->

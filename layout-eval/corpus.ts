@@ -69,7 +69,7 @@ export function corpus(): readonly Case[] { return [...handCases, ...(['tree', '
  * and then expanded it would see it (the tours predate explicit expansion, when the focus decided
  * what a band showed). The node is also the layout's anchor.
  */
-export const focusExpansion = (focus: string | null): Expansion => focus === null ? NO_EXPANSION : { choices: new Map([[focus, true]]), reveal: focus };
+export const focusExpansion = (focus: string | null): Expansion => focus === null ? NO_EXPANSION : { choices: new Map([[focus, true]]), reveals: [focus] };
 export const focusExpanded = (graph: BadgeProjection, members: readonly string[], cover: string, focus: string | null): ReadonlySet<string> =>
     expandedKeys(focusExpansion(focus), { graph, members, cover });
 export function requestFor(c: Case, focus: string | null, width: number, imagePx: number, hint?: ReadonlyMap<string, number>): LayoutRequest {
