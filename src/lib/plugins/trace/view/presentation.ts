@@ -300,6 +300,25 @@ function belowEdge(track: Track, window: GridRect): Track {
   }) };
 }
 
+const ALPHA_EPSILON = .001;
+/** Eased-progress stops a continued fade is sampled at, between its own keyframes. */
+const FADE_STOPS = 16;
+
+/**
+ * From `from` to `to` (an `EASE` motion over `duration`), with the opacity `fade` (the rest of an
+ * interrupted arrival) gives at each moment: an arrival interrupted before or during its fade-in
+ * continues it rather than starting over (it would hold at nothing for most of another motion,
+ * then pop in).
+ */
+function continuingFade(from: Pose, to: Pose, fade: Track, duration: number): Track | null {
+  const keys = fade.frames.map((frame) => frame.at).filter((t) => t > 0 && t < duration).map((t) => easeAt(EASE, t / duration));
+  const stops = [...new Set([0, ...keys, ...Array.from({ length: FADE_STOPS - 1 }, (_, i) => (i + 1) / FADE_STOPS), 1])].sort((a, b) => a - b);
+  return easedFrames(stops.map((progress) => {
+    const pose = mixPose({ ...from, opacity: 0 }, { ...to, opacity: 0 }, progress);
+    return [progress, { ...pose, opacity: sampleTrack(fade, easeTimeAt(EASE, progress) * duration).opacity }] as const;
+  }), duration);
+}
+
 // ─── Presentations ──────────────────────────────────────────────────────────
 
 const settled = (record: SceneRecord): PresentedRecord => ({ renderId: record.id, record, initial: settledPose(record), track: null });
@@ -559,6 +578,9 @@ export function retargetPresentation(displayed: DisplayedPresentation | null, ne
     if (record.kind === "band" || samePose(from, target)) return null;
     // Cells, covers and rows only move (entering ones appear at once; rows grow from their top).
     if (record.kind === "row" || record.kind === "entry" || (record.kind === "tile" && record.cover)) return retargetTrack({ rect: from.rect, opacity: 1, clip: null }, target, D);
+    // Still arriving: its fade continues on its own schedule, wherever it now heads.
+    const was = before.live.get(record.id), fading = was?.track ? sliceTrack(was.track, at) : null;
+    if (fading && from.opacity < 1 - ALPHA_EPSILON && finalPose(fading).opacity >= 1 - ALPHA_EPSILON) return continuingFade(from, target, fading, D);
     if (from.opacity <= PAINTED) return arrival(from, target, windowOf(record.graphId), D);
     return retargetTrack(from, target, D);
   };
