@@ -86,15 +86,20 @@ function bandRules(graph: BadgeProjection, members: readonly NodeKey[], expansio
   const badgeConsumers = new Map<NodeKey, NodeKey[]>();
   const supporters = new Map<NodeKey, NodeKey[]>();
   for (const key of inComponent) {
-    const badges = graph.byConsumer.get(key) ?? [];
+    const parents = dag.parents.get(key) ?? [], badges = graph.byConsumer.get(key) ?? [];
+    let latest = -1, expanded = false;
+    const consider = (decider: NodeKey) => { const at = rank.get(decider); if (at !== undefined && at > latest) { latest = at; expanded = value.get(decider)!; } };
+    for (const parent of parents) if (inComponent.has(parent)) consider(parent);
     for (const badge of badges) {
+      consider(badge.key);
       const list = badgeConsumers.get(badge.key);
       if (list) list.push(key); else badgeConsumers.set(badge.key, [key]);
     }
-    const deciders = [...(dag.parents.get(key) ?? []).filter((parent) => inComponent.has(parent)), ...badges.map((badge) => badge.key)];
-    let latest: NodeKey | null = null;
-    for (const decider of deciders) if (rank.has(decider) && (latest === null || rank.get(decider)! > rank.get(latest)!)) latest = decider;
-    if (latest !== null && value.get(latest)) supporters.set(key, deciders.filter((decider) => value.get(decider) === true));
+    if (!expanded) continue;
+    const support: NodeKey[] = [];
+    for (const parent of parents) if (inComponent.has(parent) && value.get(parent) === true) support.push(parent);
+    for (const badge of badges) if (value.get(badge.key) === true) support.push(badge.key);
+    supporters.set(key, support);
   }
   return { inComponent, badgeConsumers, supporters, roots: componentRoots(dag, members, "in-folder") };
 }
@@ -140,6 +145,8 @@ function bandChildren(graph: BadgeProjection, rules: BandRules, key: NodeKey): r
 
 /** What a band shows and how each shown key's caret reads: open when all of its children are shown. */
 export interface BandCarets {
+  /** What the band shows (`bandVisibleKeys`), in `members` order. */
+  readonly visible: readonly NodeKey[];
   /** Shown keys (members and reference badges) whose caret changes what is shown: only these offer one. */
   readonly togglable: ReadonlySet<NodeKey>;
   /** Shown keys with children, all of them shown: the caret reads expanded, and pressing it collapses. */
@@ -154,40 +161,78 @@ export interface BandCarets {
  * rule (`BandRules`), and stays only if something else holds it: a root, or an input a shown
  * output needs. A child shown through a parent that is not otherwise shown goes with it.
  *
- * Exact up to one rare shape (two children that each hold the other as an input of an edit the
- * other decides), and near-linear: visibility is reachability from the roots in a graph whose
- * edges are "x shows its parents and badges" and "a supporter shows a node's rule, which shows
- * the node". Collapsing hides child c exactly when c's rule dominates c: its immediate dominator
- * (Cooper, Harvey and Kennedy, "A Simple, Fast Dominance Algorithm", 2001).
+ * Exact and near-linear: visibility is reachability from the roots in a graph whose edges are
+ * "x shows its parents and badges" and "a supporter shows a node's rule, which shows the node".
+ * Collapsing removes the rules of all the node's children. It hides child c when c's rule
+ * dominates c: its immediate dominator (Cooper, Harvey and Kennedy, "A Simple, Fast Dominance
+ * Algorithm", 2001). Otherwise, with several children held by rules that may hold each other (each
+ * an input of an edit the other decides), a search without them decides, within a budget of a
+ * few passes over the graph; past it (only in dense lattices of edits) such a caret is left out.
+ * A caret offered always changes something.
  */
 export function bandCarets(graph: BadgeProjection, members: readonly NodeKey[], expansion: BandExpansion): BandCarets {
+  // The view asks for the carets it has just drawn (a click reads them): the last answer per graph is kept.
+  const signature = expansionSignature(expansion), last = lastCarets.get(graph);
+  if (last && last.signature === signature && sameKeys(last.members, members)) return last.carets;
+  const carets = computeCarets(graph, members, expansion);
+  lastCarets.set(graph, { members, signature, carets });
+  return carets;
+}
+
+const lastCarets = new WeakMap<BadgeProjection, { readonly members: readonly NodeKey[]; readonly signature: string; readonly carets: BandCarets }>();
+
+function expansionSignature(expansion: BandExpansion): string {
+  let signature = "";
+  for (const [key, value] of expansion) signature += (value ? "+" : "-") + key + "\u0000";
+  return signature;
+}
+
+const sameKeys = (a: readonly NodeKey[], b: readonly NodeKey[]) => a === b || (a.length === b.length && a.every((key, index) => b[index] === key));
+
+function computeCarets(graph: BadgeProjection, members: readonly NodeKey[], expansion: BandExpansion): BandCarets {
   const { dag } = graph;
   const rules = bandRules(graph, members, expansion);
   const visible = bandVisibility(graph, rules);
-  // Vertex 0 is the source; then one per key, and one per node's rule.
-  const ids = new Map<string, number>();
-  const id = (name: string) => { let at = ids.get(name); if (at === undefined) ids.set(name, at = ids.size + 1); return at; };
-  const edges: number[][] = [[]];
-  const edge = (from: number, to: number) => { (edges[from] ??= []).push(to); edges[to] ??= []; };
-  const vertex = (key: NodeKey) => id(`k:${key}`), rule = (key: NodeKey) => id(`r:${key}`);
-  for (const root of rules.roots) edge(0, vertex(root));
+  // Vertex 0 is the source; then one per shown key, and one per shown node's rule.
+  const vertexOf = new Map<NodeKey, number>(), ruleOf = new Map<NodeKey, number>();
+  let count = 1;
+  for (const key of visible) vertexOf.set(key, count++);
+  for (const key of visible) if (rules.inComponent.has(key) && rules.supporters.has(key)) ruleOf.set(key, count++);
+  const edges: number[][] = Array.from({ length: count }, () => []);
+  let size = count;
+  for (const root of rules.roots) edges[0].push(vertexOf.get(root)!);
   for (const key of visible) {
     if (!rules.inComponent.has(key)) continue;
-    for (const parent of dag.parents.get(key) ?? []) if (rules.inComponent.has(parent)) edge(vertex(key), vertex(parent));
-    for (const badge of graph.byConsumer.get(key) ?? []) edge(vertex(key), vertex(badge.key));
-    const supporters = rules.supporters.get(key);
-    if (supporters) { for (const from of supporters) if (visible.has(from)) edge(vertex(from), rule(key)); edge(rule(key), vertex(key)); }
+    const at = vertexOf.get(key)!, out = edges[at];
+    for (const parent of dag.parents.get(key) ?? []) { const to = rules.inComponent.has(parent) ? vertexOf.get(parent) : undefined; if (to !== undefined) out.push(to); }
+    for (const badge of graph.byConsumer.get(key) ?? []) out.push(vertexOf.get(badge.key)!);
+    const via = ruleOf.get(key);
+    if (via !== undefined) {
+      for (const from of rules.supporters.get(key)!) { const supporter = vertexOf.get(from); if (supporter !== undefined) edges[supporter].push(via); }
+      edges[via].push(at);
+    }
+    size += out.length;
   }
   const idom = dominators(edges);
+  // Searching without several rules at once is exact but linear per node: a budget of a few
+  // passes over the graph keeps the whole linear, after which a caret it would decide is left out.
+  let budget = 2 * size + 1000;
   const togglable = new Set<NodeKey>(), open = new Set<NodeKey>();
   for (const key of visible) {
     const children = bandChildren(graph, rules, key);
     if (!children.length) continue;
     if (children.some((child) => !visible.has(child))) { togglable.add(key); continue; }
     open.add(key);
-    if (children.some((child) => { const via = ids.get(`r:${child}`); return via !== undefined && idom[ids.get(`k:${child}`)!] === via; })) togglable.add(key);
+    const held = children.flatMap((child) => { const via = ruleOf.get(child); return via === undefined ? [] : [[vertexOf.get(child)!, via] as const]; });
+    if (held.some(([child, via]) => idom[child] === via)) { togglable.add(key); continue; }
+    // No single rule holds a child alone; several may hold each other: search without them.
+    if (held.length > 1 && budget > 0) {
+      const search = reachesAll(edges, new Set(held.map(([, via]) => via)), held.map(([child]) => child), budget);
+      budget -= search.visited;
+      if (search.reached === false) togglable.add(key);
+    }
   }
-  return { togglable, open };
+  return { visible: members.filter((key) => visible.has(key)), togglable, open };
 }
 
 /** Siblings shown around a focus; enough for a batch or two of variations. */
@@ -232,6 +277,23 @@ export function hiddenDescendantCount(dag: TraceDag, key: NodeKey, visible: Read
     for (const child of dag.children.get(id) ?? []) if (!visible.has(child) && !seen.has(child)) pending.push(child);
   }
   return seen.size;
+}
+
+/**
+ * Whether every one of `targets` is reachable from vertex 0 without passing through `removed`;
+ * null when the search would visit more than `budget` vertices.
+ */
+function reachesAll(edges: readonly (readonly number[])[], removed: ReadonlySet<number>, targets: readonly number[], budget: number): { reached: boolean | null; visited: number } {
+  const wanted = new Set(targets), seen = new Uint8Array(edges.length), stack = [0];
+  seen[0] = 1;
+  let visited = 0;
+  while (stack.length && wanted.size) {
+    if (++visited > budget) return { reached: null, visited };
+    const at = stack.pop()!;
+    wanted.delete(at);
+    for (const to of edges[at]) if (!seen[to] && !removed.has(to)) { seen[to] = 1; stack.push(to); }
+  }
+  return { reached: wanted.size === 0, visited };
 }
 
 /** Immediate dominators from node 0 (-1 for unreachable nodes and for 0 itself), iteratively. */

@@ -7,7 +7,7 @@
 import type { NodeKey, TraceNode } from "./model";
 import type { BadgeProjection, ReferenceBadge, TraceDag } from "./projection";
 import { lineage, lineageWithBadges, toneOf, type Lineage, type NodeTone } from "./lineage";
-import { bandCarets, bandVisibleKeys, hiddenDescendantCount, visibleKeys, type BandExpansion } from "./visibility";
+import { bandCarets, hiddenDescendantCount, visibleKeys, type BandExpansion } from "./visibility";
 import { tileMetrics, tileSize, type TileMetrics, type TileSize } from "./metrics";
 import { chooseOrientation, generationProfile, sidewaysWidth, type OrientationHistory } from "./orientation";
 import type { GraphLayout, BandHistory, LayoutItem, LayoutRequest, PinnedCover, PlacedRoute } from "./layout";
@@ -145,7 +145,7 @@ export function planBandScene(graph: BadgeProjection, members: readonly NodeKey[
   const anchored = anchor !== null && (membership.has(anchor) || graph.badges.has(anchor)) ? anchor : undefined;
   const tile = options.tile ?? tileMetrics();
   const carets = bandCarets(graph, members, options.expanded);
-  const { tiles, items } = sceneTiles(dag, bandVisibleKeys(graph, members, options.expanded), NO_LINEAGE, tile, carets.open, carets.togglable);
+  const { tiles, items } = sceneTiles(dag, carets.visible, NO_LINEAGE, tile, carets.open, carets.togglable);
   const badges = new Map([...tiles.keys()].flatMap((key) => {
     const references = graph.byConsumer.get(key);
     return references ? [[key, references] as const] : [];

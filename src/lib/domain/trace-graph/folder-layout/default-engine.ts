@@ -99,13 +99,11 @@ function membersOf(stack: OpenStack): readonly NodeKey[] {
   return stack.members.filter((key) => typeof key === "string" && nodes.has(key) && !seen.has(key) && !!seen.add(key));
 }
 
-/** The stack's expansion, well-formed entries only, with its cover expanded and newest (expanded while the stack is open). */
+/** The stack's expansion, well-formed entries only; the cover is expanded, oldest, unless an entry decides it. */
 function expandedOf(stack: OpenStack, cover: GraphId): BandExpansion {
   const given: unknown = stack.expanded;
   const entries = given instanceof Map ? [...given].filter((entry): entry is [NodeKey, boolean] => typeof entry[0] === "string" && typeof entry[1] === "boolean") : [];
-  const expansion = new Map(entries);
-  expansion.delete(cover);
-  return expansion.set(cover, true);
+  return new Map(entries.some(([key]) => key === cover) ? entries : [[cover, true], ...entries]);
 }
 
 /** Open stack items in grid order whose cover is a drawable member. */

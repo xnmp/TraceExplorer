@@ -3,7 +3,7 @@ import { projectDag, projectReferenceBadges } from "$lib/domain/trace-graph/proj
 import { bandCarets, bandVisibleKeys } from "$lib/domain/trace-graph/visibility";
 import { planBandScene } from "$lib/domain/trace-graph/scene";
 import {
-  NO_EXPANSION, MAX_CHOICES, MAX_REVEALS, expandForOutputs, expandNode, expandedKeys, expansionAnchor, isOpen, pruneExpansion, readExpansion, revealNode, revealPath,
+  NO_EXPANSION, MAX_REVEALS, badgeChoiceKey, expandForOutputs, expandNode, expandedKeys, expansionAnchor, isOpen, openStack, pruneExpansion, readExpansion, revealNode, revealPath,
   sameExpansion, settleReveal, toggleNode, MAX_UNKNOWN_CHOICES, type Expansion, type ExpansionScope,
 } from "$lib/domain/trace-graph/expansion";
 import type { TraceNode } from "$lib/domain/trace-graph/model";
@@ -63,13 +63,30 @@ describe("explicit expansion", () => {
     expect(expansionAnchor(state, scope)).toBe("Saffron");
   });
 
-  it("toggles any root, but the cover's expansion is its stack's open state", () => {
+  it("opening a stack is a choice like any other: a later collapse of another parent of the cover's child hides it, reopening shows it", () => {
     const scope = scopeOf([node("cover"), node("other"), node("joined", ["cover", "other"]), node("solo", ["other"])]);
-    expect(shown(NO_EXPANSION, scope)).toEqual(["cover", "joined", "other", "solo"]);
-    const collapsed = toggleNode(NO_EXPANSION, scope, "other");
-    // `joined` stays: the cover still shows it, and it keeps both its inputs.
-    expect(shown(collapsed, scope)).toEqual(["cover", "joined", "other"]);
-    expect(isOpen(toggleNode(NO_EXPANSION, scope, "cover"), scope, "cover")).toBe(true);
+    let state = openStack(NO_EXPANSION, "cover");
+    expect(shown(state, scope)).toEqual(["cover", "joined", "other", "solo"]);
+    // Collapsing `other` is the latest choice for `joined`, though the cover's children were shown.
+    state = toggleNode(state, scope, "other");
+    expect(shown(state, scope)).toEqual(["cover", "other"]);
+    expect(isOpen(state, scope, "cover")).toBe(false);
+    // Reopening the stack expands the cover as the latest choice: only shows.
+    const reopened = openStack(state, "cover");
+    expect(shown(reopened, scope)).toEqual(["cover", "joined", "other"]);
+    expect(openStack(reopened, "cover"), "already the latest").toBe(reopened);
+    expect(expansionAnchor(reopened, scope), "the cover is pinned, never the anchor").toBe("other");
+  });
+
+  it("a caret on a child of the cover changes something (the junction: a merge of the cover's two children)", () => {
+    const scope = scopeOf([node("b"), node("b1", ["b"]), node("b2", ["b"]), node("merge", ["b", "b1"])]);
+    let state = openStack(NO_EXPANSION, "b");
+    expect(shown(state, scope)).toEqual(["b", "b1", "b2", "merge"]);
+    expect(carets(state, scope)).toContain("b1");
+    state = toggleNode(state, scope, "b1");
+    expect(shown(state, scope)).toEqual(["b", "b1", "b2"]);
+    state = toggleNode(state, scope, "b1");
+    expect(shown(state, scope)).toEqual(["b", "b1", "b2", "merge"]);
   });
 
   it("collapsing an ancestor of a revealed selection hides it; the reveal settles into choices", () => {
@@ -264,14 +281,39 @@ describe("expansion state hygiene", () => {
     expect(pruneExpansion(pruned, () => "present")).toBe(pruned);
   });
 
-  it("keeps at most MAX_CHOICES choices, forgetting the oldest", () => {
-    const scope = recording();
-    const many: Expansion = { choices: new Map(Array.from({ length: MAX_CHOICES }, (_, i) => [`u${i}`, true] as [string, boolean])), reveals: [] };
-    const next = toggleNode(many, scope, "Saffron");
-    expect(next.choices.size).toBe(MAX_CHOICES);
-    expect(next.choices.has("u0"), "the oldest is forgotten").toBe(false);
-    expect([...next.choices.keys()].at(-1)).toBe("Saffron");
-    expect(readExpansion({ choices: new Map(Array.from({ length: MAX_CHOICES + 5 }, (_, i) => [`r${i}`, false])) }).choices.size).toBe(MAX_CHOICES);
+  it("never forgets a loaded node's choice, so no choice count makes a first click hide anything", () => {
+    // root -> a -> a1; root -> b -> b1; then many choices about nodes elsewhere.
+    const scope = scopeOf([node("root"), node("a", ["root"]), node("a1", ["a"]), node("b", ["root"]), node("b1", ["b"])]);
+    const choices = new Map<string, boolean>([["a", true]]);
+    for (let i = 0; i < 5000; i++) choices.set(`elsewhere-${i}`, true);
+    const state: Expansion = { choices, reveals: [] };
+    expect(shown(state, scope)).toContain("a1");
+    const after = expandNode(state, scope, "b");
+    expect(shown(after, scope)).toEqual(["a", "a1", "b", "b1", "root"]);
+    // Pruning forgets only choices of nodes not loaded, the oldest first.
+    const pruned = pruneExpansion(after, (key) => scope.members.includes(key) ? "present" : "unknown");
+    expect(pruned.choices.get("a"), "oldest, but loaded").toBe(true);
+    expect([...pruned.choices.keys()].filter((key) => key.startsWith("elsewhere"))).toHaveLength(MAX_UNKNOWN_CHOICES);
+    expect(shown(pruned, scope)).toEqual(shown(after, scope));
+  });
+
+  it("a badge's choice belongs to the stack it was made in", () => {
+    // The mist badge is carried in two stacks; w and x, made from mist alone, show it in each.
+    const nodes = [node("village"), node("warm", ["village", "mist"]), node("mist", [], "external"), node("w", ["mist"]),
+      node("forest"), node("y", ["forest", "mist"]), node("x", ["mist"])];
+    const graph = projectReferenceBadges(projectDag(nodes));
+    const village = { graph, members: ["village", "warm", "w"], cover: "village" }, forest = { graph, members: ["forest", "y", "x"], cover: "forest" };
+    const inVillage = (state: Expansion) => bandVisibleKeys(graph, village.members, expandedKeys(state, village));
+    const inForest = (state: Expansion) => bandVisibleKeys(graph, forest.members, expandedKeys(state, forest));
+    let state = openStack(openStack(NO_EXPANSION, "village"), "forest");
+    state = toggleNode(toggleNode(state, forest, "forest"), village, "village");
+    expect(inVillage(state)).toEqual(["village", "w"]);
+    expect(inForest(state)).toEqual(["forest", "x"]);
+    // Pressing mist in village opens its consumers there, and nowhere else.
+    state = toggleNode(state, village, "mist");
+    expect([...state.choices.keys()]).toContain(badgeChoiceKey("village", "mist"));
+    expect(inVillage(state)).toEqual(["village", "warm", "w"]);
+    expect(inForest(state), "forest's y stays hidden").toEqual(["forest", "x"]);
   });
 
   it("reads malformed remembered state as no expansion, keeping well-formed choices", () => {
@@ -300,15 +342,36 @@ describe("expansion state hygiene", () => {
     expect(shown({ choices: new Map([["elsewhere", true]]), reveals: ["nowhere"] }, scope)).toEqual(shown(NO_EXPANSION, scope));
   });
 
+  it("a click on a 3,000-member stack reads the drawn carets, toggles and plans the new ones in a few milliseconds", () => {
+    const shapes = {
+      chain: [node("r"), ...Array.from({ length: 3000 }, (_, i) => node(`c${i}`, [i ? `c${i - 1}` : "r"]))],
+      fan: [node("r"), ...Array.from({ length: 3000 }, (_, i) => node(`c${i}`, ["r"]))],
+      lattice: [node("r"), ...Array.from({ length: 3000 }, (_, i) => node(`l${i}`, i < 50 ? ["r"] : [`l${i - 50}`, `l${i - 50 - (i % 50) + ((i + 1) % 50)}`]))],
+    };
+    for (const [name, nodes] of Object.entries(shapes)) {
+      const scope = scopeOf(nodes, "r");
+      let state: Expansion = { choices: new Map(scope.members.map((key) => [key, true] as [string, boolean])), reveals: [] };
+      const key = scope.members[1500], times: number[] = [];
+      bandCarets(scope.graph, scope.members, expandedKeys(state, scope));
+      for (let i = 0; i < 9; i++) {
+        const start = performance.now();
+        bandCarets(scope.graph, scope.members, expandedKeys(state, scope));
+        state = toggleNode(state, scope, key);
+        bandCarets(scope.graph, [...scope.members], expandedKeys(state, scope));
+        times.push(performance.now() - start);
+      }
+      // About 5-9 ms on a desktop; the bound leaves room for slow CI machines.
+      expect(times.sort((a, b) => a - b)[4], name).toBeLessThan(50);
+    }
+  });
+
   it("stays linear on a 20,000-step chain and a 5,000-child fan", () => {
     const chain = scopeOf(Array.from({ length: 20_000 }, (_, i) => node(`n${i}`, i ? [`n${i - 1}`] : [], "current", { order: i })));
     let start = performance.now();
     const deep = revealNode(NO_EXPANSION, "n19999");
     expect(shown(deep, chain)).toHaveLength(20_000);
-    // Settling keeps at most MAX_CHOICES choices: toggle within a chain that fits.
-    const fits = scopeOf(chain.members.slice(0, MAX_CHOICES).map((key, i) => node(key, i ? [`n${i - 1}`] : [], "current", { order: i })));
-    const collapsed = toggleNode(revealNode(NO_EXPANSION, `n${MAX_CHOICES - 1}`), fits, "n1");
-    expect(shown(collapsed, fits)).toHaveLength(2);
+    const collapsed = toggleNode(deep, chain, "n1");
+    expect(shown(collapsed, chain)).toHaveLength(2);
     expect(performance.now() - start).toBeLessThan(2000);
     const fan = scopeOf([node("root"), ...Array.from({ length: 5000 }, (_, i) => node(`f${i}`, ["root"])), ...Array.from({ length: 5000 }, (_, i) => node(`g${i}`, [`f${i}`]))]);
     start = performance.now();

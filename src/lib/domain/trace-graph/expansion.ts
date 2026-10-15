@@ -23,10 +23,16 @@
  *   revealed and expanded, so the job's placeholder and output appear under it. Reference badges
  *   are never expanded for it: an output of badges alone is a root, shown anyway.
  *
- * Defaults: in-folder roots are expanded unless the user collapsed them, and older than any
- * choice; every other node is collapsed until expanded. A stack's cover is expanded while its
- * stack is open, newer than any choice: its expansion is the stack's open state, which the
- * open-stack set owns.
+ * Defaults: in-folder roots (the cover among them) are expanded unless the user collapsed them,
+ * older than any choice; every other node is collapsed until expanded. Opening a stack is a
+ * choice too: it expands the cover as the latest choice (`openStack`), so the cover's children
+ * show, and a later collapse of another of their parents still hides them.
+ *
+ * A reference badge's choice belongs to the stack it was made in (`badgeChoiceKey`): one style
+ * image shared by many stacks opens its consumers only where it was pressed.
+ *
+ * Eviction never changes what is shown: choices of loaded nodes are always kept, and only
+ * choices of nodes not loaded beyond `MAX_UNKNOWN_CHOICES` are forgotten (`pruneExpansion`).
  */
 import type { NodeKey } from "./model";
 import type { BadgeProjection } from "./projection";
@@ -34,11 +40,11 @@ import { bandVisibleKeys, componentRoots, type BandExpansion } from "./visibilit
 
 export interface Expansion {
   /**
-   * The user's explicit choices by node key (or reference badge key): true expanded, false
-   * collapsed. Absent keys take the default. Insertion order is recency (latest last); at most
-   * `MAX_CHOICES`, the oldest forgotten first.
+   * The user's explicit choices by node key (a reference badge's by `badgeChoiceKey`): true
+   * expanded, false collapsed. Absent keys take the default. Insertion order is recency (latest
+   * last).
    */
-  readonly choices: ReadonlyMap<NodeKey, boolean>;
+  readonly choices: ReadonlyMap<string, boolean>;
   /**
    * Nodes selections asked to show, oldest first (at most `MAX_REVEALS`). Each one's ancestors
    * count as expanded (whatever the choices say) until `settleReveal` turns them into choices in
@@ -52,84 +58,125 @@ export const NO_EXPANSION: Expansion = { choices: new Map(), reveals: [] };
 /** Pending reveals kept: the most recent. */
 export const MAX_REVEALS = 16;
 
-/**
- * Choices kept: the most recent. A forgotten choice falls back to its default, so a reveal path
- * deeper than this settles only its innermost part.
- */
-export const MAX_CHOICES = 4096;
-
 /** One open stack, as expansion resolves against it. */
 export interface ExpansionScope {
   readonly graph: BadgeProjection;
   /** Drawable keys of the component. */
   readonly members: readonly NodeKey[];
-  /** The stack's cover: expanded while the stack is open. */
+  /** The stack's cover: a stable key for the stack (component ids change when components merge). */
   readonly cover: NodeKey;
 }
 
-/** `choices` with each of `keys` set to `value`, in order, as the most recent; the oldest beyond `MAX_CHOICES` are forgotten. */
-function choose(choices: ReadonlyMap<NodeKey, boolean>, keys: NodeKey | readonly NodeKey[], value: boolean): ReadonlyMap<NodeKey, boolean> {
+const BADGE_SEPARATOR = "\u001f";
+
+/** The choice key of reference badge `badge` pressed in the stack whose cover is `cover`. */
+export const badgeChoiceKey = (cover: NodeKey, badge: NodeKey): string => `${cover}${BADGE_SEPARATOR}${badge}`;
+
+/** The node a choice key is about: itself, or a badge choice's badge. */
+export function choiceNode(key: string): NodeKey {
+  const at = key.indexOf(BADGE_SEPARATOR);
+  return at < 0 ? key : key.slice(at + 1);
+}
+
+const memberSets = new WeakMap<readonly NodeKey[], ReadonlySet<NodeKey>>();
+/** The scope's members as a set, built once per members array. */
+function memberSet(scope: ExpansionScope): ReadonlySet<NodeKey> {
+  let set = memberSets.get(scope.members);
+  if (!set) memberSets.set(scope.members, set = new Set(scope.members));
+  return set;
+}
+
+/** `choices` with each of `keys` set to `value`, in order, as the most recent. */
+function choose(choices: ReadonlyMap<string, boolean>, keys: string | readonly string[], value: boolean): ReadonlyMap<string, boolean> {
   const next = new Map(choices);
   for (const key of typeof keys === "string" ? [keys] : keys) { next.delete(key); next.set(key, value); }
-  for (const oldest of next.keys()) { if (next.size <= MAX_CHOICES) break; next.delete(oldest); }
   return next;
 }
 
 const isKey = (value: unknown): value is NodeKey => typeof value === "string" && value.length > 0;
 
 /** Whether `key` belongs to the scope: a member or one of its reference badges. */
-const inScope = (scope: ExpansionScope, key: NodeKey): boolean => scope.members.includes(key) || scope.graph.badges.has(key);
+const inScope = (scope: ExpansionScope, key: NodeKey): boolean => memberSet(scope).has(key) || scope.graph.badges.has(key);
 
-/** The children `key` has in the scope: a node's, or a reference badge's consumers. */
-const childCount = (scope: ExpansionScope, key: NodeKey): number => {
-  const badge = scope.graph.badges.get(key);
-  return badge ? badge.consumers.length : scope.graph.dag.children.get(key)?.length ?? 0;
-};
+/** The choice key of `key` (in the scope) in `Expansion.choices`. */
+const choiceKey = (scope: ExpansionScope, key: NodeKey): string => scope.graph.badges.has(key) ? badgeChoiceKey(scope.cover, key) : key;
+
+/** The scope key a choice is about, or null when it is not about this stack. */
+function scopedKey(scope: ExpansionScope, key: string): NodeKey | null {
+  const at = key.indexOf(BADGE_SEPARATOR);
+  if (at < 0) return memberSet(scope).has(key) ? key : null;
+  const badge = key.slice(at + 1);
+  return key.slice(0, at) === scope.cover && scope.graph.badges.has(badge) ? badge : null;
+}
+
+/** The children `key` has in the scope's component: a node's, or a badge's consumers there. */
+function scopeChildren(scope: ExpansionScope, key: NodeKey): readonly NodeKey[] {
+  const badge = scope.graph.badges.get(key), members = memberSet(scope);
+  return (badge ? badge.consumers : scope.graph.dag.children.get(key) ?? []).filter((child) => members.has(child));
+}
 
 /**
- * What the choices alone decide in the scope, oldest first: unchosen in-folder roots (expanded),
- * the scope's choices in order, then the cover (expanded).
+ * What the choices alone decide in the scope, oldest first: unchosen in-folder roots and the cover
+ * (expanded), then the scope's choices in order.
  */
 function chosenKeys(expansion: Expansion, scope: ExpansionScope): Map<NodeKey, boolean> {
   const { graph, members } = scope;
   const decided = new Map<NodeKey, boolean>();
-  for (const root of componentRoots(graph.dag, members, "in-folder")) if (!expansion.choices.has(root)) decided.set(root, true);
-  for (const [key, value] of expansion.choices) if (inScope(scope, key)) decided.set(key, value);
-  if (members.includes(scope.cover)) { decided.delete(scope.cover); decided.set(scope.cover, true); }
+  for (const root of [scope.cover, ...componentRoots(graph.dag, members, "in-folder")]) if (memberSet(scope).has(root) && !expansion.choices.has(root)) decided.set(root, true);
+  for (const [key, value] of expansion.choices) {
+    const scoped = scopedKey(scope, key);
+    if (scoped !== null) { decided.delete(scoped); decided.set(scoped, value); }
+  }
   return decided;
 }
 
 /** `decided` with `key` expanded as its latest entry. */
 const expandLatest = (decided: Map<NodeKey, boolean>, key: NodeKey) => { decided.delete(key); decided.set(key, true); };
 
+/** Older first, by creation order then key: so a path never depends on how parents were listed. */
+const byAge = (scope: ExpansionScope) => (a: NodeKey, b: NodeKey) =>
+  (scope.graph.dag.nodes.get(a)?.order ?? 0) - (scope.graph.dag.nodes.get(b)?.order ?? 0) || (a < b ? -1 : a > b ? 1 : 0);
+
 /**
- * The nodes to expand, as the latest entries of `expanded`, so that `target` is visible: one chain
- * of parents from it up to a visible node, preferring visible, then in-folder, then older parents. A reference
+ * The keys to expand, as the latest entries of `expanded`, so that `target` is visible: one chain
+ * from it up to a visible node or badge, through parents and the badges it carries, preferring a
+ * visible parent, then a visible badge, then an in-folder parent, then the oldest. A reference
  * input without parents shows once one of its outputs does (each output keeps its inputs); a
  * reference badge, once one of its consumers does. Empty when `target` is visible already or is
- * not in the scope.
+ * not in the scope. Deterministic: independent of the order parents and members are listed in.
  */
 export function revealPath(scope: ExpansionScope, expanded: BandExpansion, target: NodeKey): NodeKey[] {
-  const { graph, members } = scope, { dag } = graph;
-  const inComponent = new Set(members);
-  const visible = new Set(bandVisibleKeys(graph, members, expanded));
+  return revealPathIn(scope, new Set(bandVisibleKeys(scope.graph, scope.members, expanded)), target);
+}
+
+function revealPathIn(scope: ExpansionScope, visible: ReadonlySet<NodeKey>, target: NodeKey): NodeKey[] {
+  const { graph } = scope, { dag } = graph, members = memberSet(scope), older = byAge(scope);
+  const consumersOf = (badge: NodeKey) => (graph.badges.get(badge)?.consumers ?? []).filter((key) => members.has(key));
   let at = target;
-  const badge = graph.badges.get(target);
-  if (badge) {
-    const consumers = badge.consumers.filter((key) => inComponent.has(key));
+  if (graph.badges.has(target)) {
+    const consumers = consumersOf(target).sort(older);
     if (!consumers.length || consumers.some((key) => visible.has(key))) return [];
     at = consumers[0];
   }
-  if (!inComponent.has(at)) return [];
+  if (!members.has(at)) return [];
   const local = (key: NodeKey) => dag.nodes.get(key)?.scope === "current";
   const path: NodeKey[] = [], seen = new Set<NodeKey>();
   while (!visible.has(at) && !seen.has(at)) {
     seen.add(at);
-    const parents = (dag.parents.get(at) ?? []).filter((key) => inComponent.has(key));
-    const parent = parents.find((key) => visible.has(key)) ?? parents.find(local) ?? parents[0];
+    const parents = (dag.parents.get(at) ?? []).filter((key) => members.has(key)).sort(older);
+    const shownParent = parents.find((key) => visible.has(key));
+    const shownBadge = shownParent === undefined
+      ? (graph.byConsumer.get(at) ?? []).map((badge) => badge.key).filter((badge) => consumersOf(badge).some((key) => visible.has(key))).sort()[0] : undefined;
+    // A badge shown on another consumer: expanding it shows this one.
+    if (shownBadge !== undefined) { path.push(shownBadge); break; }
+    const parent = shownParent ?? parents.find(local) ?? parents[0];
     if (parent !== undefined) { path.push(parent); at = parent; continue; }
+    // No parent here, but a badge: expand it, and reveal another of its consumers.
+    const viaBadge = (graph.byConsumer.get(at) ?? []).map((badge) => badge.key).sort()
+      .map((badge) => [badge, consumersOf(badge).filter((key) => !seen.has(key)).sort(older)] as const).find(([, others]) => others.length);
+    if (viaBadge) { path.push(viaBadge[0]); at = viaBadge[1].find(local) ?? viaBadge[1][0]; continue; }
     // A parentless reference input: reveal an output of it instead.
-    const children = (dag.children.get(at) ?? []).filter((key) => inComponent.has(key) && !seen.has(key));
+    const children = (dag.children.get(at) ?? []).filter((key) => members.has(key) && !seen.has(key)).sort(older);
     const child = children.find(local) ?? children[0];
     if (child === undefined) break;
     at = child;
@@ -137,21 +184,30 @@ export function revealPath(scope: ExpansionScope, expanded: BandExpansion, targe
   return path;
 }
 
+/** The pending reveals' paths in the scope, expanding `decided` as it goes (newest entries). */
+function revealAll(expansion: Expansion, scope: ExpansionScope, decided: Map<NodeKey, boolean>): NodeKey[] {
+  const settled: NodeKey[] = [];
+  let visible: ReadonlySet<NodeKey> | null = null;
+  for (const target of expansion.reveals) {
+    if (!inScope(scope, target)) continue;
+    visible ??= new Set(bandVisibleKeys(scope.graph, scope.members, decided));
+    const path = revealPathIn(scope, visible, target);
+    if (!path.length) continue;
+    // Outermost first, so the chain reads from the stack down in recency order.
+    for (const key of path.reverse()) { settled.push(key); expandLatest(decided, key); }
+    visible = null;
+  }
+  return settled;
+}
+
 /**
- * The scope's expansion, oldest first: the defaults, the choices, the cover, and the path each
- * pending reveal needs (expanded, newest). What the layout input carries for an open stack
- * (`OpenStack.expanded`).
+ * The scope's expansion, oldest first: the defaults, the choices, and the path each pending reveal
+ * needs (expanded, newest). What the layout input carries for an open stack (`OpenStack.expanded`).
  */
 export function expandedKeys(expansion: Expansion, scope: ExpansionScope): BandExpansion {
   const decided = chosenKeys(expansion, scope);
-  for (const target of expansion.reveals) if (inScope(scope, target)) for (const key of revealPath(scope, decided, target)) expandLatest(decided, key);
+  revealAll(expansion, scope, decided);
   return decided;
-}
-
-/** The children `key` has in the scope's component: a node's, or a badge's consumers there. */
-function scopeChildren(scope: ExpansionScope, key: NodeKey): readonly NodeKey[] {
-  const badge = scope.graph.badges.get(key);
-  return (badge ? badge.consumers : scope.graph.dag.children.get(key) ?? []).filter((child) => scope.members.includes(child));
 }
 
 /**
@@ -171,14 +227,9 @@ export function isOpen(expansion: Expansion, scope: ExpansionScope, key: NodeKey
  * toggle starts from what is shown. Reveals in other scopes are left pending.
  */
 export function settleReveal(expansion: Expansion, scope: ExpansionScope): Expansion {
-  const here = expansion.reveals.filter((key) => inScope(scope, key));
-  if (!here.length) return expansion;
-  const decided = chosenKeys(expansion, scope), settled: NodeKey[] = [];
-  for (const target of here) {
-    // Outermost first, so the chain reads from the stack down in recency order.
-    for (const key of revealPath(scope, decided, target).reverse()) { settled.push(key); expandLatest(decided, key); }
-  }
-  return { choices: choose(expansion.choices, settled, true), reveals: expansion.reveals.filter((key) => !inScope(scope, key)) };
+  if (!expansion.reveals.some((key) => inScope(scope, key))) return expansion;
+  const settled = revealAll(expansion, scope, chosenKeys(expansion, scope));
+  return { choices: choose(expansion.choices, settled.map((key) => choiceKey(scope, key)), true), reveals: expansion.reveals.filter((key) => !inScope(scope, key)) };
 }
 
 /**
@@ -193,13 +244,28 @@ export function revealNode(expansion: Expansion, key: NodeKey): Expansion {
 }
 
 /**
+ * The stack whose cover is the scope's opened: the cover's expansion becomes the latest choice, so
+ * its children show (it only ever shows things). `expansion` itself when it is the latest already.
+ */
+export function openStack(expansion: Expansion, cover: NodeKey): Expansion {
+  if (!isKey(cover)) return expansion;
+  const latest = [...expansion.choices].at(-1);
+  if (latest?.[0] === cover && latest[1]) return expansion;
+  return { ...expansion, choices: choose(expansion.choices, cover, true) };
+}
+
+/**
  * The node the layout holds still in this scope: the one the user expanded or collapsed last
- * (the most recent choice in the scope of a node with children: a leaf's recorded intent shows
- * nothing, so it moves nothing), else the latest pending reveal in it; null for none.
+ * (the most recent choice in the scope of a node with children other than the cover, which is
+ * pinned anyway: a leaf's recorded intent shows nothing, so it moves nothing), else the latest
+ * pending reveal in it; null for none.
  */
 export function expansionAnchor(expansion: Expansion, scope: ExpansionScope): NodeKey | null {
   const keys = [...expansion.choices.keys()];
-  for (let index = keys.length - 1; index >= 0; index--) if (inScope(scope, keys[index]) && childCount(scope, keys[index]) > 0) return keys[index];
+  for (let index = keys.length - 1; index >= 0; index--) {
+    const key = scopedKey(scope, keys[index]);
+    if (key !== null && key !== scope.cover && scopeChildren(scope, key).length > 0) return key;
+  }
   for (let index = expansion.reveals.length - 1; index >= 0; index--) if (inScope(scope, expansion.reveals[index])) return expansion.reveals[index];
   return null;
 }
@@ -213,9 +279,9 @@ export function expansionAnchor(expansion: Expansion, scope: ExpansionScope): No
  */
 export function expandNode(expansion: Expansion, scope: ExpansionScope, key: NodeKey): Expansion {
   if (!isKey(key) || !inScope(scope, key) || isOpen(expansion, scope, key)) return expansion;
-  if (!scopeChildren(scope, key).length) return { ...expansion, choices: choose(expansion.choices, key, true) };
+  if (!scopeChildren(scope, key).length) return { ...expansion, choices: choose(expansion.choices, choiceKey(scope, key), true) };
   const settled = settleReveal(expansion, scope);
-  return { ...settled, choices: choose(settled.choices, key, true) };
+  return { ...settled, choices: choose(settled.choices, choiceKey(scope, key), true) };
 }
 
 /**
@@ -227,7 +293,7 @@ export function expandNode(expansion: Expansion, scope: ExpansionScope, key: Nod
  * `key` is shown and already the latest choice, expanded.
  */
 export function expandForOutputs(expansion: Expansion, scope: ExpansionScope, key: NodeKey): Expansion {
-  if (!isKey(key) || !scope.members.includes(key)) return expansion;
+  if (!isKey(key) || !memberSet(scope).has(key)) return expansion;
   const latest = [...expansion.choices].at(-1);
   if (latest?.[0] === key && latest[1] && revealPath(scope, expandedKeys(expansion, scope), key).length === 0) return expansion;
   const settled = settleReveal(revealNode(expansion, key), scope);
@@ -244,22 +310,24 @@ export function expandForOutputs(expansion: Expansion, scope: ExpansionScope, ke
 export function toggleNode(expansion: Expansion, scope: ExpansionScope, key: NodeKey): Expansion {
   if (!isKey(key) || !inScope(scope, key)) return expansion;
   const settled = settleReveal(expansion, scope);
-  return { ...settled, choices: choose(settled.choices, key, !isOpen(settled, scope, key)) };
+  return { ...settled, choices: choose(settled.choices, choiceKey(scope, key), !isOpen(settled, scope, key)) };
 }
 
-/** Whether a chosen key's node still exists: in loaded data, gone from it, or not known (its stack is not loaded). */
+/** Whether a chosen node still exists: in loaded data, gone from it, or not known (its stack is not loaded). */
 export type ChoiceStatus = "present" | "gone" | "unknown";
 
 /** Choices of nodes that are not loaded are kept, but only this many (the most recent). */
 export const MAX_UNKNOWN_CHOICES = 256;
 
 /**
- * Drops choices (and a pending reveal) of nodes that are gone, and all but the most recent
- * `limit` choices of nodes not known. Returns `expansion` itself when nothing changes.
+ * Drops choices (and pending reveals) of nodes that are gone, and all but the most recent `limit`
+ * choices of nodes not known. Choices of loaded nodes are always kept (the loaded data bounds
+ * them), so forgetting one never changes what is shown. `status` is asked about each choice's
+ * node (`choiceNode`). Returns `expansion` itself when nothing changes.
  */
 export function pruneExpansion(expansion: Expansion, status: (key: NodeKey) => ChoiceStatus, limit = MAX_UNKNOWN_CHOICES): Expansion {
-  const entries = [...expansion.choices].filter(([key, value]) => isKey(key) && typeof value === "boolean");
-  const states = entries.map(([key]) => status(key));
+  const entries = [...expansion.choices].filter(([key, value]) => isKey(key) && isKey(choiceNode(key)) && typeof value === "boolean");
+  const states = entries.map(([key]) => status(choiceNode(key)));
   let unknown = states.filter((state) => state === "unknown").length;
   const kept = entries.filter((_, index) => {
     if (states[index] === "gone") return false;
@@ -287,8 +355,8 @@ export function sameExpansion(a: Expansion, b: Expansion): boolean {
 export function readExpansion(value: unknown): Expansion {
   if (typeof value !== "object" || value === null) return NO_EXPANSION;
   const { choices, reveals, reveal } = value as { choices?: unknown; reveals?: unknown; reveal?: unknown };
-  const entries = choices instanceof Map ? [...choices].filter(([key, open]) => isKey(key) && typeof open === "boolean") as [NodeKey, boolean][] : [];
+  const entries = choices instanceof Map ? [...choices].filter(([key, open]) => isKey(key) && typeof open === "boolean") as [string, boolean][] : [];
   // An older snapshot kept one pending reveal.
   const pending = Array.isArray(reveals) ? reveals.filter(isKey) : isKey(reveal) ? [reveal] : [];
-  return { choices: new Map(entries.slice(-MAX_CHOICES)), reveals: [...new Set(pending)].slice(-MAX_REVEALS) };
+  return { choices: new Map(entries), reveals: [...new Set(pending)].slice(-MAX_REVEALS) };
 }

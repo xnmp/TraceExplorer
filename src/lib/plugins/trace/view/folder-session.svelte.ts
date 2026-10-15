@@ -8,7 +8,7 @@
  * returning to a Trace tab never shows "Loading Trace…" again.
  */
 import type { ComponentSummary, TraceNode } from "$lib/domain/trace-graph/model";
-import { bandCarets } from "$lib/domain/trace-graph/visibility";
+import { bandCarets, type BandCarets } from "$lib/domain/trace-graph/visibility";
 import { matchesIndex, type ComponentData, type FolderIndex, type Member } from "$lib/domain/trace-graph/folder-data";
 import type { OrientationHistory } from "$lib/domain/trace-graph/orientation";
 import { projectDag } from "$lib/domain/trace-graph/projection";
@@ -18,7 +18,7 @@ import { sceneSnapshots } from "./scene-snapshots";
 import { componentRequest } from "./component-requests";
 import { parentDir, samePath } from "$lib/domain/path";
 import { coverAliases, coverIdentity, forgetOpenStack, stackIdentity, pathIdentity, revisionIdentity, resolveOpenStacks } from "./open-stacks";
-import { NO_EXPANSION, expandForOutputs, expandNode, expandedKeys, isOpen, pruneExpansion, readExpansion, revealNode, toggleNode, type ChoiceStatus, type Expansion, type ExpansionScope } from "$lib/domain/trace-graph/expansion";
+import { NO_EXPANSION, expandForOutputs, expandNode, expandedKeys, isOpen, openStack, pruneExpansion, readExpansion, revealNode, toggleNode, type ChoiceStatus, type Expansion, type ExpansionScope } from "$lib/domain/trace-graph/expansion";
 import { projectionOf } from "./scene-inputs";
 
 export type { ComponentData, FolderIndex, Member };
@@ -483,6 +483,9 @@ export function createFolderSession(backend: TraceBackend = traceBackend, snapsh
     throw new Error("Trace kept changing while revealing the image");
   }
 
+  /** The carets of a loaded stack as drawn (`bandCarets` keeps the band's last answer). */
+  const caretsOf = (scope: ExpansionScope): BandCarets => bandCarets(scope.graph, scope.members, expandedKeys(expansion, scope));
+
   /** `expansion` with `key` revealed; earlier reveals stay pending until their stacks settle them. */
   const revealed = (key: string): Expansion => revealNode(expansion, key);
 
@@ -508,7 +511,9 @@ export function createFolderSession(backend: TraceBackend = traceBackend, snapsh
         if (membership) keys = new Set(forgetOpenStack(openStacks, membership));
       }
       const resolved = resolveOpenStacks(keys, stackMembership, openStacks.owners);
-      paneState = { ...paneState, openCovers: resolved.remembered, openOwners: resolved.owners };
+      // Opening a stack expands its cover as the latest choice (`openStack`).
+      const opened = opening && !openStacks.open.has(summary.coverKey);
+      paneState = { ...paneState, openCovers: resolved.remembered, openOwners: resolved.owners, expansion: opened ? openStack(expansion, summary.coverKey) : expansion };
       remember();
     },
     /**
@@ -586,12 +591,14 @@ export function createFolderSession(backend: TraceBackend = traceBackend, snapsh
      */
     canToggle(key: string, componentId?: string): boolean {
       const scope = (componentId ? expansionScope(componentId) : null) ?? scopeHolding(key);
-      return !!scope && bandCarets(scope.graph, scope.members, expandedKeys(expansion, scope)).togglable.has(key);
+      return !!scope && caretsOf(scope).togglable.has(key);
     },
     /** Whether `key` reads expanded as the view shows it (`isOpen`); false when its component is not loaded. */
     isExpanded(key: string, componentId?: string): boolean {
       const scope = (componentId ? expansionScope(componentId) : null) ?? scopeHolding(key);
-      return !!scope && isOpen(expansion, scope, key);
+      if (!scope) return false;
+      const carets = caretsOf(scope);
+      return carets.togglable.has(key) || carets.open.has(key) ? carets.open.has(key) : isOpen(expansion, scope, key);
     },
     /** Switch folders. Data for the previous folder is never shown for the new one. */
     setDirectory(dir: string | null) {

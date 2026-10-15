@@ -57,7 +57,7 @@ export interface OpenStack {
   /**
    * The stack's expansion (`expandedKeys` in `expansion.ts`): members and reference badge keys,
    * each expanded or collapsed, oldest first. Each node follows the latest entry among its parents
-   * and badges; the cover is always expanded, newest. What the band shows follows from this alone
+   * and badges; the cover counts as expanded (oldest) unless an entry decides it. What the band shows follows from this alone
    * (`bandVisibleKeys`). Keys outside the stack are ignored.
    */
   readonly expanded: BandExpansion;
