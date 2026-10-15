@@ -56,36 +56,62 @@ export async function sampleFrames<T>(page: Page, sample: () => T, duration: num
 }
 
 /**
+ * Whether the view is still working on a scene: a layout is pending, scene motion is running, or the
+ * newest transaction has neither published geometry nor failed (it may be waiting for its media),
+ * up to 2 s after it began (a transaction that changes no geometry publishes none). Self-contained:
+ * it is serialised into the page, as `samplePaintedFrames`'s `busy`.
+ */
+export const sceneBusy = (): boolean => {
+  const trace = (window as any).trace;
+  if (!trace) return false;
+  if ((trace.layoutsPending?.() ?? 0) > 0 || (trace.motion?.state().running.length ?? 0) > 0) return true;
+  const events: { kind: string; transaction: number; time: number }[] = trace.scene?.events() ?? [];
+  const begun = events.filter((event) => event.kind === "action-begin").at(-1);
+  return !!begun && performance.now() - begun.time < 2000
+    && !events.some((event) => event.transaction === begun.transaction && (event.kind === "geometry-publication" || event.kind === "failure"));
+};
+
+/**
  * Like `sampleFrames`, but each sample runs at the last moment before its frame paints: in a
  * ResizeObserver callback, fired every frame by a probe that a frame callback resizes. The
  * page's own observers (the view's measured width) were created before it, so they and the
  * microtasks they started have run by then; the sample sees what that frame paints, never a state
  * between two tasks that no frame shows. Use it when the test drives changes (a width) that the
  * page reacts to in its own ResizeObserver.
+ *
+ * `busy` (serialised like `sample`) extends the sampling: it lasts until `duration` has passed and
+ * `busy` has been false for the last 300 ms, so work of unknown length (a layout in the worker) is
+ * sampled through to its commit instead of being cut off at a fixed time.
  */
-export async function samplePaintedFrames<T>(page: Page, sample: () => T, duration: number, during?: () => Promise<void>): Promise<T[]> {
-  await page.evaluate(({ source, duration }) => {
+export async function samplePaintedFrames<T>(page: Page, sample: () => T, duration: number, during?: () => Promise<void>, busy?: () => boolean): Promise<T[]> {
+  await page.evaluate(({ source, duration, busySource }) => {
     const w = window as any, read = new Function(`return (${source})`)() as () => unknown;
+    const isBusy = busySource ? new Function(`return (${busySource})`)() as () => boolean : () => false;
     w.__frames = []; w.__framesDone = false;
     const probe = document.createElement("div");
     probe.style.cssText = "position:fixed;left:-10px;top:-10px;width:1px;height:1px;pointer-events:none";
     document.body.append(probe);
     let frame = 0, sampled = -1;
     const start = performance.now();
+    let quietSince = start;
+    // Whether to stop is decided as a frame is sampled, so the last sample is of the frame that ended it.
     const observer = new ResizeObserver(() => {
       if (sampled === frame) return;
       sampled = frame;
       w.__frames.push(read());
+      const time = performance.now();
+      if (isBusy()) quietSince = time;
+      if (time - start >= duration && time - quietSince >= 300) { observer.disconnect(); probe.remove(); w.__framesDone = true; }
     });
     observer.observe(probe);
     const next = () => {
-      if (performance.now() - start >= duration) { observer.disconnect(); probe.remove(); w.__framesDone = true; return; }
+      if (w.__framesDone) return;
       frame++;
       probe.style.width = `${1 + (frame % 2)}px`;
       requestAnimationFrame(next);
     };
     requestAnimationFrame(next);
-  }, { source: sample.toString(), duration });
+  }, { source: sample.toString(), duration, busySource: busy?.toString() ?? null });
   await during?.();
   await page.waitForFunction(() => (window as any).__framesDone === true, undefined, { polling: "raf" });
   return page.evaluate(() => (window as any).__frames as unknown[]) as Promise<T[]>;

@@ -10,7 +10,7 @@
  * animations, such as spinners and selection borders, are not the scene's motion).
  */
 import { expect, test, type Page } from "@playwright/test";
-import { clearSceneEvents, samplePaintedFrames as sampleFrames, sceneEvents } from "./helpers/scene-events";
+import { clearSceneEvents, samplePaintedFrames as sampleFrames, sceneBusy, sceneEvents } from "./helpers/scene-events";
 import { drawn, expectHeldThenSnapped, expectSnapped, navigateRemounting as navigate, now, scene, sceneFrame, setExpanded, toggleOf, type SceneFrame } from "./helpers/scene-frames";
 import { key, openView, settle, tile, uncaught } from "./support";
 
@@ -108,19 +108,24 @@ const VARIANTS = [
 /**
  * Changes the pane's width while sampling, holding worker replies for `hold` ms; returns the frames
  * at the new width only, the scene before, and how many layouts the change sent to the worker.
+ * Sampling lasts until the view is no longer busy (`sceneBusy`), so a slow worker reply (a cold
+ * worker on a loaded machine) is sampled through to its commit.
  */
 async function widthFrames(page: Page, width: number, hold = 250): Promise<{ frames: SceneFrame[]; before: SceneFrame; settled: SceneFrame; workers: number }> {
   const before = await now(page);
-  let workers = 0;
+  const sent = (): Promise<number> => page.evaluate(() => (window as any).trace.sentLayouts());
+  const sentBefore = await sent();
   await page.evaluate(() => (window as any).trace.holdLayoutReplies());
   const frames = await sampleFrames(page, sceneFrame, 700 + hold, async () => {
     await page.evaluate((width) => (window as any).trace.setWidth(width), width);
     await page.waitForTimeout(hold);
-    workers = await page.evaluate(() => (window as any).trace.heldLayoutReplies().length);
     await page.evaluate(() => (window as any).trace.releaseLayoutReplies());
-  });
+  }, sceneBusy);
   await settle(page);
   const settled = await now(page);
+  // Requests posted, not replies held at `hold`: a reply can arrive after any fixed wait (the
+  // worker's first job starts it, which can take hundreds of milliseconds on a loaded machine).
+  const workers = await sent() - sentBefore;
   expect(settled.width).not.toBe(before.width);
   return { frames: frames.filter((frame) => frame.width === settled.width), before, settled, workers };
 }

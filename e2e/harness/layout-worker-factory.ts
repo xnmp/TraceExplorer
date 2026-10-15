@@ -16,6 +16,7 @@ export function createLayoutWorker(): Worker {
   // Resolved per call, so specs that patch `Worker.prototype.postMessage` still intercept.
   real.postMessage = ((message: any, options?: any) => {
     Worker.prototype.postMessage.call(real, message, options);
+    layoutGate.sent();
     // A folder run (the scene controller's whole-engine message) names its grid items, then every
     // open stack's members, and its open stacks.
     const folderKeys = (folder: any): string[] => [...(folder.items ?? []).map((item: { id: string }) => item.id),

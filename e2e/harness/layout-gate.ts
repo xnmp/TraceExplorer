@@ -21,6 +21,7 @@ interface Held { info: LayoutReplyInfo; owner: object; deliver: () => void }
 
 let predicate: LayoutReplyPredicate | null = null;
 let held: Held[] = [];
+let sent = 0;
 
 export const layoutGate = {
   hold(match: LayoutReplyPredicate = () => true) { predicate = match; },
@@ -33,6 +34,14 @@ export const layoutGate = {
   route(info: LayoutReplyInfo, owner: object, deliver: () => void) {
     if (predicate && predicate(info)) held.push({ info, owner, deliver }); else deliver();
   },
+  /** Counts a request posted to a worker (the factory calls this as it posts). */
+  sent() { sent++; },
+  /**
+   * How many requests were posted to a worker since the page loaded. Unlike held replies, this does
+   * not depend on how long the worker takes: a cold worker (its first job starts it) or a loaded
+   * machine can reply after any fixed wait.
+   */
+  sentCount: (): number => sent,
   /** A terminated worker never delivers what it had in flight. */
   forget(owner: object) { held = held.filter((entry) => entry.owner !== owner); },
 };
