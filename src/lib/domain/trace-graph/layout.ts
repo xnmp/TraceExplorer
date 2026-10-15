@@ -304,7 +304,10 @@ export function layoutGraph(request: LayoutRequest, options?: BandOptions): Grap
  * reading position; `median-sweep` runs Gansner et al.'s iterated median and transpose sweeps
  * (`layer-order.ts`) on the generations, long edges split by virtual nodes.
  */
-export type Ordering = "barycenter" | "median-sweep";
+export type Ordering = "barycenter" | "median-sweep" | {
+  /** An explicit position for each key within its generation (evaluation oracles inject exact orders); unknown keys follow by rank. */
+  readonly positions: ReadonlyMap<NodeKey, number>;
+};
 
 /** The reusable layered engine; band candidates call it without recursively planning bands. */
 export function layoutLayered(request: LayoutRequest, ordering: Ordering = "barycenter"): GraphLayout {
@@ -584,7 +587,10 @@ function prepare(request: LayoutRequest, ordering: Ordering = "barycenter") {
   const firstBand = byBand.length ? byBand[0].filter((key) => !pinned || key !== pinned.key).sort((a, b) => rank.get(a)! - rank.get(b)!) : [];
 
   // Swept generation orders (real nodes, pinned cover excluded), or null to sort by barycenters per pass.
-  const swept = ordering === "median-sweep" && bandCount > 1
+  const given = typeof ordering === "object" ? ordering.positions : null;
+  const swept = given ? byBand.map((members) => members.filter((key) => !pinned || key !== pinned.key)
+      .sort((a, b) => (given.get(a) ?? 1e15) - (given.get(b) ?? 1e15) || rank.get(a)! - rank.get(b)!))
+    : ordering === "median-sweep" && bandCount > 1
     ? orderLayers({ layers: byBand.map((members, b) => b ? members : [...(pinned ? [pinned.key] : []), ...firstBand]), parents: parentsOf, rank: (key) => rank.get(key)! }).map((layer) => layer.filter((key) => !pinned || key !== pinned.key))
     : null;
   const { joinFacts, ordered, targetsOf } = plan.joins.length ? junctionFacts(plan, bands) : NO_JOINS;

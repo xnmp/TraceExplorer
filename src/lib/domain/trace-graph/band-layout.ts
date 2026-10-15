@@ -19,7 +19,7 @@ export interface BandOptions {
   readonly growthHistory: boolean;
   /** A cover's lone child sits below the cover; otherwise its band prefers the pane's left edge. */
   readonly loneChildBelowCover: boolean;
-  /** Anchors yield (`anchor-yield`) when holding them makes the band this many times taller than the best unanchored layout; Infinity: never. */
+  /** When the component grew, anchors yield (`anchor-yield`) if holding them makes the band this many times taller than the best unanchored layout; Infinity: never. */
   readonly anchorHeightRatio: number;
   /** How the downward layout orders each generation (`layout.ts`, `Ordering`). */
   readonly ordering: Ordering;
@@ -28,14 +28,20 @@ export const BAND_DEFAULTS: BandOptions = Object.freeze({ growthHistory: true, l
 /** The engine as merged in plan phase 3 (#79), for A/B comparison. */
 export const BAND_PHASE3: BandOptions = Object.freeze({ growthHistory: false, loneChildBelowCover: false, anchorHeightRatio: Infinity, ordering: "barycenter" as const });
 
-/** The committed history this request may build on, adjusted to the request's tile sizes; and whether it needed adjusting. */
-function fittedHistory(input: LayoutRequest, options: BandOptions): { readonly history?: import("./layout").BandHistory; readonly grown: boolean } {
+/**
+ * The committed history this request may build on, adjusted to the request's tile sizes;
+ * whether it needed adjusting (`resized`); and whether the component itself changed since
+ * (`grew`: images arrived or left), as opposed to a click on the same component.
+ */
+function fittedHistory(input: LayoutRequest, options: BandOptions): { readonly history?: import("./layout").BandHistory; readonly resized: boolean; readonly grew: boolean } {
+  const none = { resized: false, grew: false };
   const history = input.history;
-  if (!history || typeof history.signature !== "string" || !input.items.some(n => n.key === input.band!.key) || !usableHistory(history)) return { grown: false };
+  if (!history || typeof history.signature !== "string" || !input.items.some(n => n.key === input.band!.key) || !usableHistory(history)) return none;
   const fit = historyFit(history.signature, input);
-  if (!fit || (fit.kind === "grown" && !options.growthHistory)) return { grown: false };
-  if (fit.kind === "same" || !fit.heights.size) return { history, grown: false };
-  return { history: { ...history, layout: grownLayout(history.layout, fit.heights), placed: grownLayout(history.placed, fit.heights) }, grown: true };
+  if (!fit || (fit.kind === "grown" && !options.growthHistory)) return none;
+  if (fit.kind === "same") return { history, ...none };
+  if (!fit.heights.size) return { history, resized: false, grew: true };
+  return { history: { ...history, layout: grownLayout(history.layout, fit.heights), placed: grownLayout(history.placed, fit.heights) }, resized: true, grew: true };
 }
 
 interface Candidate { readonly name: string; readonly layout: GraphLayout; readonly partition?: readonly number[] }
@@ -296,7 +302,7 @@ export function layoutBand(input: LayoutRequest, options: BandOptions = BAND_DEF
   // Unchanged geometry is kept as is, unless it shares lanes between sources (an
   // earlier fallback): then the search below looks for a layout that does not. Grown tiles
   // changed the committed geometry, which then has to pass the gates like any candidate.
-  if (previous && !fitted.grown && request.items.length === previous.nodes.size && request.items.every(n => {
+  if (previous && !fitted.resized && request.items.length === previous.nodes.size && request.items.every(n => {
     const p = previous.nodes.get(n.key);
     return p && p.width === n.width && p.height === n.height;
   }) && !(sharedLaneLength(previous) > 0)) {
@@ -541,12 +547,14 @@ export function layoutBand(input: LayoutRequest, options: BandOptions = BAND_DEF
     const free = bestUnanchored();
     if (free && winner.metrics.crossings > free.metrics.crossings + Math.max(ANCHOR_CROSSING_SLACK, ANCHOR_CROSSING_RATIO * free.metrics.crossings)) { winner = free; yielded = true; }
   }
-  // Height cap: holding the anchors still must not grow the band without bound (a chain that
-  // keeps growing below a held column instead of wrapping). An anchored winner taller than
-  // `anchorHeightRatio` times the best unanchored candidate yields. The unanchored heights'
+  // Height cap: when the component grew, holding the anchors still must not grow the band
+  // without bound (a chain that keeps growing below a held column instead of wrapping). An
+  // anchored winner taller than `anchorHeightRatio` times the best unanchored candidate yields.
+  // A click on an unchanged component never yields to it: there the user is reading what they
+  // clicked, and the band only shows more of what was already there. The unanchored heights'
   // lower bound (exact for built candidates, the display-row bound for the downward layout)
   // decides first whether that candidate needs scoring at all.
-  if (anchors.length && winner.anchors && !yielded && !lanesShared && Number.isFinite(options.anchorHeightRatio)) {
+  if (fitted.grew && anchors.length && winner.anchors && !yielded && !lanesShared && Number.isFinite(options.anchorHeightRatio)) {
     const floor = Math.min(...prepared.filter(c => !c.holds && Number.isFinite(c.floor)).map(c => c.height), wantsDown ? rowsHeight : Infinity);
     if (winner.metrics.height > options.anchorHeightRatio * floor + .01) {
       const free = bestUnanchored();
