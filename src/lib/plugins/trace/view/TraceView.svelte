@@ -27,7 +27,7 @@
   import { findLoadedNode, locateTarget, unresolvedTargetComponents } from "./target-location";
   import { holdAnchor, scrollsByUser, USER_SCROLL, type AnchorHold } from "./motion";
   import { createSceneController, type ActionLease, type SceneCause } from "./scene-controller.svelte";
-  import { computeFolderLayout, holdLayoutWork } from "./layout-client";
+  import { computeFolderLayout, holdLayoutWork, warmLayoutWorker } from "./layout-client";
   import { folderLayoutRuntime } from "./folder-layout-runtime";
   import type { SceneIntent } from "./scene-inputs";
   import { sceneSnapshots } from "./scene-snapshots";
@@ -899,7 +899,11 @@
     if (id && openKeys.has(coverOf(id))) session.setStackOpen(id, true);
   }
 
+  // The worker starts with the view, not with its first heavy layout (a resize, a large stack opening).
+  const coolLayoutWorker = warmLayoutWorker();
+
   onDestroy(() => {
+    coolLayoutWorker();
     reclick({ kind: "cancel" });
     marqueeTurn++;
     supersedeReveal();

@@ -187,6 +187,25 @@ test.describe("a width change snaps, and its first frame shows the layout for th
     expect(step.frames.some((frame) => JSON.stringify(scene(frame)) !== JSON.stringify(scene(step.settled))), "the previous scene was shown while the worker was held").toBe(true);
     expect(await sceneEvents(page, "motion-start")).toEqual([]);
   });
+
+  // The worker starts with the view, so the first layout heavy enough for it (here a widening of
+  // small stacks laid out inline so far) does not also wait for it to start: a cold start took
+  // 130-700 ms on a loaded machine, all of it with the previous scene held.
+  test("the layout worker starts with the view, before the first layout that needs it", async ({ page }) => {
+    type Started = { created: number; sentBefore: number; firstSent: number | null };
+    const workers = () => page.evaluate(() => (window as any).trace.layoutWorkers() as Started[]);
+    await openView(page, 870);
+    await expect.poll(async () => (await workers()).length, { message: "a worker started with the view" }).toBe(1);
+    expect((await workers())[0].firstSent, "opening laid everything out inline").toBeNull();
+    const asked = await page.evaluate(() => performance.now());
+    const step = await widthFrames(page, 1158);
+    expect(step.workers, "the widening went to the worker").toBeGreaterThan(0);
+    const [started, ...more] = await workers();
+    expect(more, "no other worker was started").toEqual([]);
+    expect(started.created, "the worker was running before the widening asked for it").toBeLessThan(asked);
+    expect(started.firstSent!, "the widening was its first layout").toBeGreaterThan(asked);
+    expectWidthSnapped(step, "widen");
+  });
 });
 
 // Review of dc33274 (R6b): motion follows what changed, not which transaction commits. A click

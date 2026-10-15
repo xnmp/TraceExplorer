@@ -26,6 +26,7 @@ const application = mount(ViewHarness, { target: document.querySelector("#app")!
   releaseNextLayoutReply: () => layoutGate.releaseNext(),
   releaseLayoutReplies: () => layoutGate.releaseAll(),
   sentLayouts: () => layoutGate.sentCount(),
+  layoutWorkers: () => layoutGate.workers(),
   /** Scene instrumentation events: events(), clear(), and the production hooks. */
   scene: sceneSink,
   /** The motion driver's clock (e2e/animation-control.ts): hold(), seek(ms), release(), finish(), setRate(r), state(). */
