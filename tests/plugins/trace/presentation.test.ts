@@ -308,10 +308,22 @@ describe("retargetPresentation", () => {
     expect(continued).toBeGreaterThan(0);
   });
 
-  it("a reveal snaps its own records and drops its graph's retirees", () => {
+  it("an expansion reflows: its band's tiles travel and enter", () => {
+    const base = sceneFor([A]), expanded = sceneFor([A], { focus: "s0:Saffron", previous: base.layout });
+    const diff = diffScenes(base, expanded);
+    expect(diff.policy.graphs.get(A)).toBe("reflow");
+    const p = retargetPresentation(samplePresentation(staticPresentation(base), Infinity), expanded, diff, participants());
+    const entering = bandTiles(expanded, A).filter((record) => !base.records.has(record.id));
+    expect(entering.length).toBeGreaterThan(0);
+    for (const record of entering) expect(p.live.get(record.id)!.track, record.id).not.toBeNull();
+  });
+
+  it("a reveal (an anchor that moved a band showing the same tiles) snaps its own records and drops its graph's retirees", () => {
+    // Expansion reflows; a reveal is only an anchor change without one, so its policy is forced here.
+    const asReveal = (diff: ReturnType<typeof diffScenes>) => ({ ...diff, policy: { ...diff.policy, graphs: new Map(diff.policy.graphs).set(A, "reveal" as const),
+      records: new Map([...diff.policy.records].map(([id, policy]) => [id, (diff.enter.get(id) ?? diff.exit.get(id) ?? diff.update.get(id)?.after)?.graphId === A ? "snap" as const : policy])) } });
     const base = sceneFor([A]), focused = sceneFor([A], { focus: "s0:Saffron", previous: base.layout });
-    const diff = diffScenes(base, focused);
-    expect(diff.policy.graphs.get(A)).toBe("reveal");
+    const diff = asReveal(diffScenes(base, focused));
     const p = retargetPresentation(samplePresentation(staticPresentation(base), Infinity), focused, diff, participants());
     for (const [id, policy] of diff.policy.records) if (policy === "snap") expect(p.live.get(id)!.track).toBeNull();
     expect(p.retiring.size).toBe(0);
@@ -321,8 +333,7 @@ describe("retargetPresentation", () => {
     const resizing = step(staticPresentation(narrow), narrow, wide, Infinity).presentation;
     expect([...resizing.retiring.values()].filter((r) => r.record.graphId === A).length).toBeGreaterThan(0);
     const revealed = sceneFor([A, B], { width: 900, focus: "s0:Saffron", previous: wide.layout });
-    const revealDiff = diffScenes(wide, revealed);
-    expect(revealDiff.policy.graphs.get(A)).toBe("reveal");
+    const revealDiff = asReveal(diffScenes(wide, revealed));
     const q = retargetPresentation(samplePresentation(resizing, 1), revealed, revealDiff, participants());
     expect([...q.retiring.values()].filter((r) => r.record.graphId === A)).toEqual([]);
     for (const [id, policy] of revealDiff.policy.records) if (policy === "snap") expect(q.live.get(id)!.track).toBeNull();

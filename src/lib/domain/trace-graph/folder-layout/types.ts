@@ -16,7 +16,9 @@
  *
  * Geometry only: styling that cannot move a rectangle (tones, selection,
  * badge hover highlighting, route emphasis) is derived by the caller from
- * the output and the current focus, and must not be an input here.
+ * the output and the current focus, and must not be an input here. Neither
+ * is the selection: what a band shows is the user's explicit expansion
+ * (`OpenStack.expanded`), and its anchor the node last toggled.
  *
  * Coordinates are folder coordinates: (0, 0) is the grid's top-left inside
  * the pane's grid padding.
@@ -46,8 +48,17 @@ export interface OpenStack {
   readonly graph: BadgeProjection;
   /** Drawable keys of the component, in the component's order. */
   readonly members: readonly NodeKey[];
-  /** The focused node when it belongs to this stack (as a member or a badge consumer); otherwise null. */
-  readonly focus: NodeKey | null;
+  /**
+   * The node the user last expanded or collapsed in this stack (`expansionAnchor`), which the
+   * layout holds still; null for none. Never the selection: selecting changes no geometry.
+   */
+  readonly anchor: NodeKey | null;
+  /**
+   * The stack's expanded keys (`expandedKeys` in `expansion.ts`): members and reference badge keys
+   * whose children (a badge's consumers) are shown while they are visible. The cover is always one.
+   * What the band shows follows from this alone (`bandVisibleKeys`). Keys outside the stack are ignored.
+   */
+  readonly expanded: ReadonlySet<NodeKey>;
 }
 
 export interface FolderLayoutInput {

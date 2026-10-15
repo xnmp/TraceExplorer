@@ -59,16 +59,16 @@ describe("diffScenes", () => {
     expect(new Set(diff.policy.records.values())).toEqual(new Set(["carry"]));
   });
 
-  it("snaps a reveal and everything it alone displaces", () => {
+  it("animates an expansion and everything it displaces: it is a spatial change the user made", () => {
     const before = sceneFor(["s0:root"], null), after = sceneFor(["s0:root"], "s0:Saffron", before.layout);
     const diff = diffScenes(before, after);
-    expect(diff.policy.graphs.get("s0:root")).toBe("reveal");
+    expect(diff.policy.graphs.get("s0:root")).toBe("reflow");
     expect(diff.enter.size).toBeGreaterThan(0);
-    for (const [id, record] of diff.enter) { expect(record.graphId).toBe("s0:root"); expect(policyOf(diff, id)).toBe("snap"); }
-    // Rows below the band moved, and snap with it.
+    for (const [id, record] of diff.enter) { expect(record.graphId === "s0:root" || record.kind === "row").toBe(true); expect(policyOf(diff, id)).toBe("animate"); }
+    // Rows below the band moved, and travel with it.
     const below = rowOf(1).map((cell) => cellRecord(cell.id));
-    for (const id of below) { expect(diff.update.has(id)).toBe(true); expect(policyOf(diff, id)).toBe("snap"); }
-    expect(new Set(diff.policy.records.values())).not.toContain("animate");
+    for (const id of below) { expect(diff.update.has(id)).toBe(true); expect(policyOf(diff, id)).toBe("animate"); }
+    expect(new Set(diff.policy.records.values())).not.toContain("snap");
   });
 
   it("animates a reflow: an opened band and what it displaces", () => {
@@ -87,21 +87,15 @@ describe("diffScenes", () => {
     for (const id of closed.exit.keys()) expect(policyOf(closed, id)).toBe("animate");
   });
 
-  it("separates a reveal from a coalesced reflow: only what the reveal alone moved snaps", () => {
+  it("animates an expansion coalesced with an opened band: both are the user's spatial changes", () => {
     const before = sceneFor(["s0:root"], null), after = sceneFor(["s0:root", "s1:root"], "s0:Saffron", before.layout);
     const diff = diffScenes(before, after);
-    expect(diff.policy.graphs.get("s0:root")).toBe("reveal");
+    expect(diff.policy.graphs.get("s0:root")).toBe("reflow");
     expect(diff.policy.graphs.get("s1:root")).toBe("reflow");
-    // Row 1 (B's own row) moved only because A's band grew.
-    for (const cell of rowOf(1)) { const id = cellRecord(cell.id); expect(diff.update.has(id)).toBe(true); expect(policyOf(diff, id)).toBe("snap"); }
-    expect(policyOf(diff, entityId("row", null, "0"))).toBe("snap");
-    // Row 2 moved because of both: it animates.
+    for (const cell of rowOf(1)) { const id = cellRecord(cell.id); expect(diff.update.has(id)).toBe(true); expect(policyOf(diff, id)).toBe("animate"); }
     for (const cell of rowOf(2)) expect(policyOf(diff, cellRecord(cell.id))).toBe("animate");
-    // A's own content snaps; B's arrives animated.
-    for (const [id, record] of diff.enter) expect(policyOf(diff, id)).toBe(record.graphId === "s0:root" ? "snap" : "animate");
-    for (const [id, { after: record }] of diff.update) if (record.graphId === "s0:root") expect(["snap", "carry"]).toContain(policyOf(diff, id));
+    for (const id of diff.enter.keys()) expect(policyOf(diff, id)).toBe("animate");
   });
-
   it("classifies with the raw layouts and covers every record, exits included", () => {
     const before = sceneFor(["s0:root", "s1:root"], "s1:ab"), after = sceneFor(["s1:root"], "s1:a", before.layout);
     const diff = diffScenes(before, after);

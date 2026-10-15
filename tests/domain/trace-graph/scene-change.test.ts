@@ -7,20 +7,24 @@ import { tileMetrics } from '$lib/domain/trace-graph/metrics';
 import { node } from './fixtures';
 
 const dag = projectDag([node('root'), node('a', ['root']), node('b', ['root']), node('aa', ['a']), node('bb', ['b'])]);
-const scene = (focus: string | null = null, width = 454): CommittedGraph => {
+/** A band anchored at `anchor` with `expanded` expanded (by default the anchor: a user who expanded it). */
+const scene = (anchor: string | null = null, width = 454, expanded: readonly string[] = anchor ? [anchor] : []): CommittedGraph => {
   const tile = tileMetrics();
-  const plan = planBandScene(projectReferenceBadges(dag), dag.order, focus, width, { pinned: { key: 'root', x: 46 }, tile });
+  const plan = planBandScene(projectReferenceBadges(dag), dag.order, anchor, width, { pinned: { key: 'root', x: 46 }, tile, expanded: new Set(['root', ...expanded]) });
   return { plan, layout: layoutGraph(plan.request), data: dag, componentId: 'component', revision: 0, tile };
 };
 const changedGeometry = (s: CommittedGraph): CommittedGraph => ({ ...s, layout: { ...s.layout, height: s.layout.height + 1 } });
 
 describe('committed scene motion policy', () => {
-  it('snaps focus and visibility swaps with unchanged component and layout inputs', () => {
+  it('reflows an expansion (the visible tiles change), so it animates; snaps an anchor change that moved the same tiles', () => {
     const a = scene('a'), b = scene('b');
-    expect(classifySceneChange(a, b)).toBe('reveal');
-    expect(classifySceneChange(b, a)).toBe('reveal');
-    expect(classifySceneChange(scene(), a)).toBe('reveal');
-    expect(classifySceneChange(a, { ...b, plan: { ...b.plan, lineage: a.plan.lineage } })).toBe('reveal');
+    expect(classifySceneChange(a, b)).toBe('reflow');
+    expect(classifySceneChange(b, a)).toBe('reflow');
+    expect(classifySceneChange(scene(), a)).toBe('reflow');
+    expect(classifySceneChange(a, scene('a', 454, []))).toBe('reflow');
+    const sameTiles = changedGeometry(scene('b', 454, ['a']));
+    expect([...sameTiles.plan.tiles.keys()]).toEqual([...a.plan.tiles.keys()]);
+    expect(classifySceneChange(a, sameTiles)).toBe('reveal');
   });
   it('restyles identical geometry even after data refresh or focus changes', () => {
     const a = scene('a');
@@ -49,11 +53,12 @@ describe('committed scene motion policy', () => {
     const plan = { ...a.plan, tiles: new Map(), request: { ...a.plan.request, items: [] } };
     const empty = { ...a, plan, layout: layoutGraph(plan.request) };
     expect(classifySceneChange(empty, empty)).toBe('restyle');
-    expect(classifySceneChange(empty, a)).toBe('reveal');
+    expect(classifySceneChange(empty, a)).toBe('reflow');
   });
   it('compares extremely large finite widths without arithmetic overflow', () => {
     const wide = (s: CommittedGraph) => ({ ...s, plan: { ...s.plan, request: { ...s.plan.request, maxWidth: Number.MAX_VALUE } } });
-    expect(classifySceneChange(wide(scene('a')), wide(scene('b')))).toBe('reveal');
+    expect(classifySceneChange(wide(scene('a')), wide(scene('b')))).toBe('reflow');
+    expect(classifySceneChange(wide(scene('a')), changedGeometry(wide(scene('b', 454, ['a']))))).toBe('reveal');
   });
   it.each([null, undefined, {}, { plan: {} }, { ...scene(), tile: null }, { ...scene(), layout: { ...scene().layout, nodes: null } },
     { ...scene(), layout: { ...scene().layout, height: NaN } },
@@ -77,6 +82,19 @@ describe('geometry motion policy', () => {
   };
   const with_ = (change: Partial<GeometryInputs>): GeometryInputs => ({ ...base, ...change });
   const opened = with_({ open: new Map([...base.open, ['a1', { componentId: 'ca', revision: 1, data: dataA }]]), requested: new Set(['a1', 'b1']) });
+
+  it('animates an expansion or collapse inside an open stack, alone; snaps it with a change the user does not drive', () => {
+    const expanded = (signature: string) => with_({ expanded: new Map([['b1', signature]]) });
+    expect(geometryMotion(expanded('["b1"]'), expanded('["b1","b2"]')), 'expand').toBe('animate');
+    expect(geometryMotion(expanded('["b1","b2"]'), expanded('["b1"]')), 'collapse').toBe('animate');
+    expect(geometryMotion(expanded('["b1"]'), { ...expanded('["b1","b2"]'), width: 600 }), 'with a resize').toBe('snap');
+    expect(geometryMotion(expanded('["b1"]'), { ...expanded('["b1","b2"]'), token: 't2' }), 'with new data').toBe('snap');
+    expect(geometryMotion(expanded('["b1"]'), expanded('["b1"]')), 'unchanged').toBe('snap');
+    // Inputs from before expansion existed compare as unchanged.
+    expect(geometryMotion(base, expanded('["b1","b2"]'))).toBe('snap');
+    // A stack closing takes its expansion with it: the close animates.
+    expect(geometryMotion({ ...opened, expanded: new Map([['a1', '["a1"]'], ['b1', '["b1"]']]) }, expanded('["b1"]'))).toBe('animate');
+  });
 
   it('animates the spatial changes the user makes: an expand, a collapse, a focus change', () => {
     expect(geometryMotion(base, opened), 'expand').toBe('animate');

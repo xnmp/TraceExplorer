@@ -1,4 +1,8 @@
 /**
+ * Two visibility rules. `bandVisibleKeys` is the Trace view's: explicit
+ * expansion (see `expansion.ts`). `visibleKeys` is the legacy section view's
+ * focus-derived context, kept for `planScene`:
+ *
  * Limited context: roots and their immediate children, the focused node's
  * ancestry, direct children and nearest siblings, and every further parent
  * needed to explain a visible output. Visibility is a pure function of the
@@ -12,7 +16,7 @@
  * hidden-edits hint as usual.
  */
 import type { NodeKey } from "./model";
-import type { TraceDag } from "./projection";
+import type { BadgeProjection, TraceDag } from "./projection";
 
 /** Roots are folder images without a parent in the folder itself. */
 export function componentRoots(dag: TraceDag, members: readonly NodeKey[], policy: "legacy" | "in-folder" = "legacy"): NodeKey[] {
@@ -51,6 +55,39 @@ export function visibleKeys(dag: TraceDag, members: readonly NodeKey[], focus: N
     }
   }
   return members.filter((key) => visible.has(key) && inComponent.has(key));
+}
+
+/**
+ * What an open stack's band shows under explicit expansion (docs/trace-view-layout.md, "Visible
+ * nodes"): every in-folder root; the children of every visible node in `expanded`; the consumers
+ * of every expanded reference badge a visible node carries; and every parent a visible node
+ * needs, so each output keeps all of its inputs. A node's children are visible exactly when it is
+ * expanded and visible itself. Selection plays no part. Linear in the component, keys outside
+ * `members` are ignored, and the result is in `members` order.
+ */
+export function bandVisibleKeys(graph: BadgeProjection, members: readonly NodeKey[], expanded: ReadonlySet<NodeKey>): NodeKey[] {
+  const { dag } = graph;
+  const inComponent = new Set(members);
+  // An expanded badge's consumers in this component, found from the members: a badge shared by
+  // other components (one style image used across a folder) is never traversed beyond them.
+  const badgeConsumers = new Map<NodeKey, NodeKey[]>();
+  for (const key of inComponent) for (const badge of graph.byConsumer.get(key) ?? []) if (expanded.has(badge.key)) {
+    const list = badgeConsumers.get(badge.key);
+    if (list) list.push(key); else badgeConsumers.set(badge.key, [key]);
+  }
+  const visible = new Set<NodeKey>(), pending: NodeKey[] = [];
+  const show = (key: NodeKey) => { if (inComponent.has(key) && !visible.has(key)) { visible.add(key); pending.push(key); } };
+  for (const root of componentRoots(dag, members, "in-folder")) show(root);
+  while (pending.length) {
+    const key = pending.pop()!;
+    for (const parent of dag.parents.get(key) ?? []) show(parent);
+    if (expanded.has(key)) for (const child of dag.children.get(key) ?? []) show(child);
+    for (const badge of graph.byConsumer.get(key) ?? []) {
+      const consumers = badgeConsumers.get(badge.key);
+      if (consumers) { badgeConsumers.delete(badge.key); for (const consumer of consumers) show(consumer); }
+    }
+  }
+  return members.filter((key) => visible.has(key));
 }
 
 /** Siblings shown around a focus; enough for a batch or two of variations. */

@@ -12,6 +12,7 @@
  * Inputs are checked, not trusted:
  * - a non-finite width or metric, a non-positive tile, negative grid metrics, duplicate item ids
  *   or overflowing geometry throw RangeError; a negative width counts as zero (one column);
+ * - a stack's `expanded` that is not a Set counts as only its cover; non-string keys are ignored;
  * - open ids that are not stack items, and stacks whose cover is not a drawable member of their
  *   graph, are laid out closed; member keys missing from the graph and repeated keys are dropped;
  * - `previous` is a hint: a malformed graph in it contributes nothing, and one from another width
@@ -97,6 +98,13 @@ function membersOf(stack: OpenStack): readonly NodeKey[] {
   return stack.members.filter((key) => typeof key === "string" && nodes.has(key) && !seen.has(key) && !!seen.add(key));
 }
 
+/** The stack's expanded keys, string keys only, with its cover (expanded while the stack is open). */
+function expandedOf(stack: OpenStack, cover: GraphId): ReadonlySet<NodeKey> {
+  const given: unknown = stack.expanded;
+  const keys = given instanceof Set ? [...given].filter((key): key is NodeKey => typeof key === "string") : [];
+  return new Set([...keys, cover]);
+}
+
 /** Open stack items in grid order whose cover is a drawable member. */
 function openStacks(input: FolderLayoutInput): readonly (readonly [GraphId, OpenStack, readonly NodeKey[]])[] {
   if (!(input.open instanceof Map)) return [];
@@ -121,8 +129,8 @@ export function planBands(input: FolderLayoutInput, geometry: FolderGridGeometry
   const plans = new Map<GraphId, BandPlan>();
   for (const [id, stack, members] of open) {
     const prior = priors.get(id);
-    const plan = planBandScene(stack.graph, members, typeof stack.focus === "string" ? stack.focus : null, width,
-      { pinned: pins.get(id)!, history: prior?.history, hint: prior?.hint, tile: input.tile });
+    const plan = planBandScene(stack.graph, members, typeof stack.anchor === "string" ? stack.anchor : null, width,
+      { pinned: pins.get(id)!, expanded: expandedOf(stack, id), history: prior?.history, hint: prior?.hint, tile: input.tile });
     plans.set(id, { plan, kept: prior?.committed && prior.committed.basis === requestBasis(plan.request) ? prior.committed.layout : null });
   }
   return plans;

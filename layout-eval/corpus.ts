@@ -1,5 +1,7 @@
 import { projectDag, projectReferenceBadges } from '../src/lib/domain/trace-graph/projection';
 import { planBandScene } from '../src/lib/domain/trace-graph/scene';
+import { expandedKeys, NO_EXPANSION, type Expansion } from '../src/lib/domain/trace-graph/expansion';
+import type { BadgeProjection } from '../src/lib/domain/trace-graph/projection';
 import { tileMetrics } from '../src/lib/domain/trace-graph/metrics';
 import type { TraceNode } from '../src/lib/domain/trace-graph/model';
 import type { LayoutRequest } from '../src/lib/domain/trace-graph/layout';
@@ -62,11 +64,19 @@ function denseCase(seed: number, n: number, fanIn: number): Case {
 }
 export function denseCorpus(): readonly Case[] { return [4, 10].flatMap(fanIn => [40, 100].flatMap(n => [1, 2, 3].map(k => denseCase(20000 + 100 * fanIn + n + k, n, fanIn)))); }
 export function corpus(): readonly Case[] { return [...handCases, ...(['tree', 'dag', 'bushy', 'chainy'] as const).flatMap((shape, s) => [12, 40, 100, 200].flatMap(n => [1, 2, 3].map(k => randomCase(7000 + 100 * s + 10 * n + k, n, shape))))]; }
+/**
+ * A tour step's expansion: the step's node revealed and expanded, as a user who opened its branch
+ * and then expanded it would see it (the tours predate explicit expansion, when the focus decided
+ * what a band showed). The node is also the layout's anchor.
+ */
+export const focusExpansion = (focus: string | null): Expansion => focus === null ? NO_EXPANSION : { choices: new Map([[focus, true]]), reveal: focus };
+export const focusExpanded = (graph: BadgeProjection, members: readonly string[], cover: string, focus: string | null): ReadonlySet<string> =>
+    expandedKeys(focusExpansion(focus), { graph, members, cover });
 export function requestFor(c: Case, focus: string | null, width: number, imagePx: number, hint?: ReadonlyMap<string, number>): LayoutRequest {
     const graph = projectReferenceBadges(projectDag(c.nodes));
     const members = graph.dag.order;
     const tile = tileMetrics(imagePx);
     const pin = { key: members.includes('root') ? 'root' : members[0] ?? 'root', x: Math.max(tile.width / 2, Math.min(width - tile.width / 2, width * .75)) };
-    const request = planBandScene(graph, members, focus, width, { pinned: pin, tile, hint }).request;
+    const request = planBandScene(graph, members, focus, width, { pinned: pin, tile, hint, expanded: focusExpanded(graph, members, pin.key, focus) }).request;
     return c.full ? { ...request, items: request.band!.items } : request;
 }

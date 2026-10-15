@@ -40,11 +40,13 @@
     focused?: boolean;
     onfocus?: () => void;
     onstacktoggle?: (event: MouseEvent) => void;
+    /** A band tile's caret: toggles the node's expansion. Without it the caret is drawn passively. */
+    oncaret?: () => void;
     onkey?: (event: KeyboardEvent) => void;
     onretry?: () => void;
   }
 
-  let { tile, selected, revision, orientation = "down", explorer, card = null, press, focused = true, onfocus, onstacktoggle, onkey, onretry }: Props = $props();
+  let { tile, selected, revision, orientation = "down", explorer, card = null, press, focused = true, onfocus, onstacktoggle, oncaret, onkey, onretry }: Props = $props();
   const preparing = $derived(explorer?.progress === "loading" || explorer?.progress === "arranging");
   const node = $derived(tile.node);
   const title = $derived(promptTitles.labelFor(node.runId, node.prompt) || nodeTitle(node));
@@ -52,10 +54,13 @@
   const thumbnail = $derived(nodeThumbnail(node));
   const unsaved = $derived(node.temporary && !node.discarded && node.artifactId !== null);
   const hint = $derived(tile.expandable
-    ? tile.tone === "focus" ? `${tile.childCount} ${tile.childCount === 1 ? "child" : "children"} open`
+    ? tile.expanded ? `${tile.childCount} ${tile.childCount === 1 ? "child" : "children"} open`
       : tile.hiddenDescendants ? `${tile.hiddenDescendants} further ${tile.hiddenDescendants === 1 ? "edit" : "edits"}` : `${tile.childCount} ${tile.childCount === 1 ? "edit" : "edits"}`
     : "");
   const tag = $derived(!explorer && card ? "button" : "div");
+  const caret = $derived(tile.expandable && !explorer);
+  // Collapsed, the caret points across the band's flow; expanded, along it, towards the children.
+  const caretPath = $derived(tile.expanded !== (orientation === "right") ? "m5 9 7 7 7-7" : "m9 5 7 7-7 7");
 </script>
 
 {#snippet contents()}
@@ -100,9 +105,8 @@
     {:else}<span class="text">{title}</span>{/if}
     {#if node.runId !== null && promptTitles.pending(node.runId)}<span class="title-spinner" role="status" aria-label="Generating title"></span>{/if}
     {#if unsaved && !explorer}<span class="unsaved-dot" aria-hidden="true"></span>{/if}
-    {#if tile.expandable && !explorer}
-      <svg class="chevron" viewBox="0 0 24 24" aria-hidden="true"><path d={tile.tone === "focus" && orientation === "down" ? "m5 9 7 7 7-7" : "m9 5 7 7-7 7"} /></svg>
-    {/if}
+    <!-- The caret is the card's sibling (a button cannot hold one); this keeps its room in the label. -->
+    {#if caret}<span class="caret-room" aria-hidden="true"></span>{/if}
   </span>
   {#if node.scope !== "current" && !explorer}
     <span class="scope {node.scope}">
@@ -121,6 +125,18 @@
   {@render press?.()}
   {@render contents()}
 </svelte:element>
+{#if caret}
+  {#if oncaret}
+    <button type="button" class="caret" style:top="{tile.size.imageHeight + 8}px" tabindex={focused ? 0 : -1} {onfocus}
+      data-node-caret={node.key} aria-expanded={tile.expanded} aria-label={tile.expanded ? "Collapse" : "Expand"}
+      onclick={(event) => { event.stopPropagation(); oncaret(); }} ondblclick={(event) => event.stopPropagation()}
+      onkeydown={(event) => { if (["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End"].includes(event.key)) onkey?.(event); }}>
+      <svg class="chevron" viewBox="0 0 24 24" aria-hidden="true"><path d={caretPath} /></svg>
+    </button>
+  {:else}
+    <span class="caret" style:top="{tile.size.imageHeight + 8}px" aria-hidden="true"><svg class="chevron" viewBox="0 0 24 24"><path d={caretPath} /></svg></span>
+  {/if}
+{/if}
 {#if hint && !explorer}<span class="hint" style:height="{TILE.hint}px">{hint}</span>{/if}
 
 <style>
@@ -179,7 +195,13 @@
   .label { display: flex; align-items: center; gap: 3px; min-width: 0; height: 14px; margin-top: 4px; }
   .text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; line-height: 14px; }
   .chevron { width: 11px; height: 11px; flex: none; fill: none; stroke: var(--text-secondary); stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
-  .card:hover .chevron, .card:focus-visible .chevron { stroke: var(--text-primary); }
+  .caret-room { width: 11px; height: 11px; flex: none; }
+  /* Over the card's label row, where the room is kept: an 18 px target around the 11 px chevron. */
+  .caret { position: absolute; right: 3px; z-index: 1; display: grid; place-items: center; width: 18px; height: 18px; box-sizing: border-box; padding: 0; border: 0; border-radius: var(--radius-sm); background: none; font: inherit; }
+  button.caret { cursor: pointer; }
+  button.caret:hover, button.caret:focus-visible { background: color-mix(in srgb, var(--accent) 32%, var(--background-solid)); }
+  button.caret:hover .chevron, button.caret:focus-visible .chevron { stroke: var(--accent); }
+  button.caret:focus-visible { outline: 2px solid var(--focus-stroke-outer); outline-offset: 1px; }
   .unsaved-dot { flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--system-caution-text, var(--system-caution)); }
   .scope { display: flex; align-items: center; gap: 3px; height: 14px; margin-top: 3px; font-size: 10px; color: var(--accent-text, var(--accent)); white-space: nowrap; overflow: hidden; }
   .scope.external { color: var(--system-caution-text, var(--system-caution)); }

@@ -23,6 +23,8 @@
 
   interface Props {
     graph: FolderSceneGraph;
+    /** The scene's focus (styling): it pins its tile mounted and draws the selected branch with more contrast. */
+    focus: NodeKey | null;
     records: GraphRecords;
     /** This band's motion layers and retirees this epoch. */
     presented: GraphPresentation;
@@ -46,13 +48,15 @@
     onactivate: (key: NodeKey, event: MouseEvent) => void;
     onopen: (key: NodeKey) => void;
     onmenu: (key: NodeKey, event: MouseEvent) => void;
+    /** A tile's caret: expands or collapses it. */
+    ontoggle: (key: NodeKey) => void;
     onsaved: (key: NodeKey, path: string, select: boolean) => void;
     /** Selection lease for hover saves (see TraceImageActions). */
     captureSelection?: () => () => boolean;
     ondiscarded: (key: NodeKey) => void;
   }
 
-  let { graph, records, presented, pinned, handles, nodes, selected, revision, windowTop, windowBottom, onactivate, onopen, onmenu, onsaved, ondiscarded, captureSelection, ongridkey, focusedKey, onfocuskey, onbadgehover }: Props = $props();
+  let { graph, focus, ontoggle, records, presented, pinned, handles, nodes, selected, revision, windowTop, windowBottom, onactivate, onopen, onmenu, onsaved, ondiscarded, captureSelection, ongridkey, focusedKey, onfocuskey, onbadgehover }: Props = $props();
 
   /** Tile windowing only pays off for very large neighborhoods. */
   const WINDOW_MIN = 120;
@@ -67,7 +71,6 @@
   const bandTop = $derived(windowed ? windowTop : null), bandBottom = $derived(windowed ? windowBottom : null);
   const band = $derived(bandTop === null || bandBottom === null ? null : { top: bandTop, bottom: bandBottom });
 
-  const focus = $derived(graph.plan.lineage.focus);
   const visibleTiles = $derived(records.tiles.filter((record) => {
     if (!band || record.tile.key === focus || record.tile.key === focusedKey || selected.has(record.tile.key) || pinned.has(record.id)
       || (focus !== null && record.badges.some((badge) => badge.key === focus))) return true;
@@ -138,7 +141,7 @@
     <TraceTile tile={record.tile} badgeNodes={nodes} focused={focusedKey === undefined || focusedKey === record.tile.key} onfocus={() => onfocuskey?.(record.tile.key)} badges={record.badges} badgeSelection={selected} onbadge={onactivate} onbadgehover={(key) => onbadgehover?.(key)} placed={record.placed} orientation={graph.layout.orientation} selected={record.selected} {revision}
       handle={handles.attach(record.id)}
       onactivate={(event) => onactivate(record.tile.key, event)} onopen={() => onopen(record.tile.key)}
-      onmenu={(event) => onmenu(record.tile.key, event)} onkey={(event) => keydown(record.tile.key, event)}
+      onmenu={(event) => onmenu(record.tile.key, event)} oncaret={() => ontoggle(record.tile.key)} onkey={(event) => keydown(record.tile.key, event)}
       {captureSelection} onsaved={(path, select) => onsaved(record.tile.key, path, select)} ondiscarded={() => ondiscarded(record.tile.key)} />
   {/each}
 </div>

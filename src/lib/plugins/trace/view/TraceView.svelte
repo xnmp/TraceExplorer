@@ -146,15 +146,23 @@
   /** Stacks by component id, from the index (cover keys are stack identities). */
   const coverOf = (id: string) => summaries.find((summary) => summary.id === id)?.coverKey ?? id;
   const openKeys = $derived(session.openStackKeys);
-  $effect(() => {
+  /** The selection as the session follows it: its identity, the components it touches and its focused node. */
+  function followed(): { choice: string; ids: Set<string>; focus: NodeKey | null } {
     const choice = JSON.stringify([hostChoice, target?.id, pane.focusedPath]);
+    const ids = new Set(pane.selection.flatMap((entry) => { const member = session.componentOf(entry.path); return member ? [member.componentId] : []; }));
+    if (focus) ids.add(focus.componentId);
+    return { choice, ids, focus: focus?.key ?? null };
+  }
+  // A selection made outside the view opens its stacks and reveals its node. The view's own
+  // selections were adopted when they were made (`commitPicks`), so they change no geometry.
+  $effect(() => {
+    void hostChoice; void target?.id; void pane.focusedPath;
     const index = session.index;
     const dragging = marqueeActive;
     untrack(() => {
       if (!index || dragging) return;
-      const ids = new Set(pane.selection.flatMap((entry) => { const member = session.componentOf(entry.path); return member ? [member.componentId] : []; }));
-      if (focus) ids.add(focus.componentId);
-      controller.derive(() => session.followSelection(choice, ids));
+      const { choice, ids, focus: key } = followed();
+      controller.derive(() => session.followSelection(choice, ids, key));
     });
   });
 
@@ -247,6 +255,9 @@
     void hostChoice;
     picks = settlePicks(next, hostSelected);
     pendingSave = null;
+    // The view's own selection: followed as is, so it opens, reveals and expands nothing.
+    const { choice, ids, focus: key } = followed();
+    session.adoptSelection(choice, ids, key);
   }
 
   /** Selects a listed file through the host and records it in the picks. */
@@ -369,7 +380,6 @@
     const found = findNode(key, componentId);
     if (!found) return;
     keepFocusedOpen();
-    setExpanded(found.componentId, true);
     const entry = fileEntry(found.node);
     if (entry) { selectListed(entry, modifiers); return; }
     if (modifiers.ctrlKey || modifiers.shiftKey) {
@@ -451,15 +461,62 @@
     void controller.action(selection(key, "reveal"), (lease) => reachAndFocus(lease, key, componentId, modifiers, "reveal"));
   }
 
-  function activate(key: NodeKey, event: MouseEvent, componentId: string): void {
-    void controller.action(selection(key, "hold"), (lease) => reachAndFocus(lease, key, componentId, modifiersOf(event), "hold"));
+  /**
+   * Whether a click is a second click on the selected tile: a plain single click (not the second
+   * click of a double click) on the focused node while it is the whole selection. It toggles the
+   * node's expansion instead of selecting (docs/trace-view-layout.md, "Interaction model").
+   */
+  function isReclick(key: NodeKey, event: MouseEvent): boolean {
+    return !event.ctrlKey && !event.metaKey && !event.shiftKey && !event.altKey && event.detail <= 1
+      && focus?.key === key && selectedKeys.size === 1 && selectedKeys.has(key) && selectedPaths.size <= 1;
   }
 
   /**
-   * Pressing a stack's cover or disclosure is one action: select what its open cover selects (the
-   * listed file, or its node once loaded), then open it. With `toggle` (the disclosure only), a
-   * requested stack (open, still opening, or failed) closes instead: pressing a pending stack's
-   * disclosure cancels its opening. Pressing the cover itself never closes or cancels it.
+   * A first click on an unselected tile selects it and opens its children, adding only them
+   * (`expandNode`); selecting a leaf or an expanded node changes styling only. A second click on the
+   * selected tile toggles its expansion instead (an open stack's cover closes its stack).
+   */
+  function activate(key: NodeKey, event: MouseEvent, componentId: string): void {
+    if (isReclick(key, event)) { toggleExpansion(key, componentId); return; }
+    const opens = !selectedKeys.has(key);
+    void controller.action(selection(key, "hold"), (lease) => {
+      const pending = reachAndFocus(lease, key, componentId, modifiersOf(event), "hold");
+      if (!opens) return pending;
+      if (!pending) { session.expandNode(key, componentId); return; }
+      return pending.then(() => { if (lease.isCurrent()) lease.derive(() => session.expandNode(key, componentId)); });
+    });
+  }
+
+  /**
+   * The caret, or a second click on the selected tile: expands or collapses `key` without
+   * changing the selection. An open stack's cover closes its stack (the cover's expansion is the
+   * stack's open state). A node without children has nothing to toggle.
+   */
+  function toggleExpansion(key: NodeKey, componentId: string): void {
+    const summary = summaries.find((candidate) => candidate.coverKey === key);
+    if (summary && openKeys.has(key)) {
+      void controller.action({ kind: "collapse", target: key, anchor: "hold" }, () => setExpanded(summary.id, false));
+      return;
+    }
+    const found = findNode(key, componentId);
+    // A reference badge's children are its consumers.
+    const children = found ? (session.components.get(found.componentId)?.dag.children.get(key)?.length ?? 0) : 0;
+    if (!children) return;
+    const expanded = session.isExpanded(key, found?.componentId ?? componentId);
+    void controller.action({ kind: expanded ? "collapse" : "expand", target: key, anchor: "hold" }, () => {
+      supersedeReveal(); releaseAnchors();
+      const element = anchorTile(key, found?.componentId ?? componentId);
+      if (scroller && element) heldAnchor = hold(element);
+      session.toggleExpansion(key, found?.componentId ?? componentId);
+    });
+  }
+
+  /**
+   * Pressing a closed stack's cover is a first click on its tile: it selects what its open cover
+   * selects (the listed file, or its node once loaded) and opens the stack, unless the cover was
+   * selected already and the press is not a second click. The disclosure (`toggle`) opens or
+   * closes the stack without selecting: a requested stack (open, still opening, or failed) closes,
+   * so pressing a pending stack's disclosure cancels its opening.
    */
   function activateStack(cell: FolderCell, event: MouseEvent, toggle: boolean): void {
     const summary = cell.summary;
@@ -468,13 +525,18 @@
       void controller.action({ kind: "collapse", target: cell.id, anchor: "hold" }, () => setExpanded(summary.id, false));
       return;
     }
-    void controller.action({ kind: "expand", target: cell.id, anchor: "hold" }, (lease) => {
+    if (toggle || isReclick(cell.id, event)) {
+      void controller.action({ kind: "expand", target: cell.id, anchor: "hold" }, () => { supersedeReveal(); releaseAnchors(); setExpanded(summary.id, true); });
+      return;
+    }
+    const opens = !selectedKeys.has(cell.id);
+    void controller.action({ kind: opens ? "expand" : "selection", target: cell.id, anchor: "hold" }, (lease) => {
       let pending: Promise<void> | void = undefined;
       const index = controller.committedIndex;
       if (cell.entry && index?.members.get(cell.entry.path)?.key === cell.coverKey) {
         supersedeReveal(); releaseAnchors(); keepFocusedOpen(); selectListed(cell.entry, modifiersOf(event));
       } else pending = reachAndFocus(lease, cell.id, summary.id, modifiersOf(event), "hold");
-      setExpanded(summary.id, true);
+      if (opens) setExpanded(summary.id, true);
       return pending;
     });
   }
@@ -713,6 +775,7 @@
         lease.derive(() => flushSync(() => {
           checkReveal(owner);
           session.setStackOpen(found.componentId, true);
+          session.reveal(found.node.key);
           applyFocusNode(found.node.key, {}, found.componentId);
           owner.ownsSelection = captureSelection();
         }));
@@ -743,6 +806,8 @@
         const found = findNode(key, focus?.componentId);
         if (found && !summaries.some((summary) => summary.id === found.componentId && isExpanded(summary))) setExpanded(found.componentId, true);
         else if (found) session.setStackOpen(found.componentId, true);
+        // Going to an image from Preview shows it: its stack opens and its ancestors expand.
+        if (found) session.reveal(key);
         focusNode(lease, key, {}, "reveal", found?.componentId);
       });
     },
@@ -788,7 +853,7 @@
   // The one intake: the pane's intent and data revision, compared by content in the controller.
   $effect(() => {
     const intent: SceneIntent = {
-      directory, listing: pane.entries, claimed: claimedPaths, open: openKeys, focus, selectedKeys, selectedPaths, badgeHover,
+      directory, listing: pane.entries, claimed: claimedPaths, open: openKeys, expansion: session.expansion, focus, selectedKeys, selectedPaths, badgeHover,
       // Unmeasured (0) holds the first publication until the pane has a width.
       width: clientWidth > 0 ? Math.max(width, 1) : 0, tile, grid: gridMetrics, cover: coverChrome,
       hostChoice: JSON.stringify([hostChoice, target?.id ?? null, pane.focusedPath]),
@@ -827,7 +892,7 @@
   </div>
   {#if published}
     <StackGrid {pane} {controller} publication={published} notices={controller.notices} gridPadding={gridMetrics.gridPadding} {focus} {revision} {scroller}
-      onstack={activateStack} onactivate={activate} onnavigate={navigateNode} onopen={open} onmenu={menu}
+      onstack={activateStack} onactivate={activate} ontoggle={toggleExpansion} onnavigate={navigateNode} onopen={open} onmenu={menu}
       onselect={(entry, event) => void controller.action(selection(entry.path), () => { supersedeReveal(); releaseAnchors(); keepFocusedOpen(); selectListed(entry, modifiersOf(event)); })}
       onordinarymenu={(entry, event) => void controller.action(selection(entry.path), () => { supersedeReveal(); releaseAnchors(); if (!selectedPaths.has(entry.path)) { keepFocusedOpen(); selectListed(entry); } pane.contextMenu(event, entry); })}
       onbadgehover={(key) => badgeHover = key} onretry={retryStack}

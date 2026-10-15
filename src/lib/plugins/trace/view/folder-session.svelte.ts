@@ -17,6 +17,8 @@ import { sceneSnapshots } from "./scene-snapshots";
 import { componentRequest } from "./component-requests";
 import { parentDir, samePath } from "$lib/domain/path";
 import { coverAliases, coverIdentity, forgetOpenStack, stackIdentity, pathIdentity, revisionIdentity, resolveOpenStacks } from "./open-stacks";
+import { NO_EXPANSION, expandNode, expandedKeys, pruneExpansion, readExpansion, revealNode, settleReveal, toggleNode, type ChoiceStatus, type Expansion, type ExpansionScope } from "$lib/domain/trace-graph/expansion";
+import { projectionOf } from "./scene-inputs";
 
 export type { ComponentData, FolderIndex, Member };
 
@@ -64,12 +66,19 @@ interface PaneFolderSnapshot {
   readonly openOwners: ReadonlyMap<string, string>;
   readonly selectionChoice: string;
   readonly selectionCovers: ReadonlySet<string>;
+  /** The node the last followed selection focused (a reveal follows only a new one). */
+  readonly selectionFocus?: string | null;
+  /** Explicit expansion inside open stacks (`expansion.ts`). */
+  readonly expansion?: Expansion;
+  /** The component each chosen key was last seen in, to tell a node that is gone from one not loaded. */
+  readonly expansionOwners?: ReadonlyMap<string, string>;
 }
-const emptyPaneSnapshot = (): PaneFolderSnapshot => ({ openCovers: new Set(), openOwners: new Map(), selectionChoice: "", selectionCovers: new Set() });
+const emptyPaneSnapshot = (): PaneFolderSnapshot => ({ openCovers: new Set(), openOwners: new Map(), selectionChoice: "", selectionCovers: new Set(), selectionFocus: null, expansion: NO_EXPANSION, expansionOwners: new Map() });
 /** Members and nodes a snapshot holds, which bound the cache's memory. */
 export const snapshotWeight = (snapshot: FolderSnapshot): number =>
   snapshot.index.members.size + [...snapshot.components.values()].reduce((sum, data) => sum + data.nodes.length, 0)
-  + [...(snapshot.panes?.values() ?? [])].reduce((sum, pane) => sum + pane.openCovers.size + pane.openOwners.size + pane.selectionCovers.size, 0);
+  + [...(snapshot.panes?.values() ?? [])].reduce((sum, pane) => sum + pane.openCovers.size + pane.openOwners.size + pane.selectionCovers.size
+    + (pane.expansion?.choices.size ?? 0) + (pane.expansionOwners?.size ?? 0), 0);
 /** Shared by every session, so a remounted view finds what the previous one loaded. */
 const folderSnapshots = createSnapshotCache<FolderSnapshot>({ limit: 8, budget: 200_000, weigh: snapshotWeight });
 /** Forgets every folder's data, when the plugin is disabled. */
@@ -167,6 +176,53 @@ export function createFolderSession(backend: TraceBackend = traceBackend, snapsh
     });
   }
 
+  const expansion = $derived(paneState.expansion ?? NO_EXPANSION);
+
+  /** A loaded component as expansion resolves against it (any loaded copy: what the view draws). */
+  function expansionScope(componentId: string): ExpansionScope | null {
+    const data = components.get(componentId), summary = index?.components.find((candidate) => candidate.id === componentId);
+    if (!data || !summary) return null;
+    const graph = projectionOf(data);
+    return { graph, members: graph.dag.order, cover: summary.coverKey };
+  }
+  /** The loaded component holding `key` (a node or a reference badge), preferring fresh data. */
+  function scopeHolding(key: string): ExpansionScope | null {
+    const ids = [...components.keys()].sort((a, b) => Number(stale.has(a)) - Number(stale.has(b)));
+    for (const id of ids) {
+      const graph = projectionOf(components.get(id)!);
+      if (graph.dag.nodes.has(key) || graph.badges.has(key)) return expansionScope(id);
+    }
+    return null;
+  }
+
+  /**
+   * Drops choices of nodes that are gone: not in any fresh component, while the component they
+   * were last seen in is fresh. Records where each present one is now.
+   */
+  function pruneChoices(state: PaneFolderSnapshot): PaneFolderSnapshot {
+    const current = state.expansion ?? NO_EXPANSION;
+    if (!index || (!current.choices.size && current.reveal === null)) return state;
+    const listed = new Set(index.components.map((summary) => summary.id));
+    const owners = new Map(state.expansionOwners ?? []);
+    const where = (key: string): string | null => {
+      for (const [id, data] of components) {
+        if (stale.has(id) || !matchesIndex(data, index!)) continue;
+        const graph = projectionOf(data);
+        if (graph.dag.nodes.has(key) || graph.badges.has(key)) return id;
+      }
+      return null;
+    };
+    const status = (key: string): ChoiceStatus => {
+      const holder = where(key);
+      if (holder) { owners.set(key, holder); return "present"; }
+      const owner = owners.get(key);
+      return owner && listed.has(owner) && components.has(owner) && !stale.has(owner) ? "gone" : "unknown";
+    };
+    const pruned = pruneExpansion(current, status);
+    for (const key of [...owners.keys()]) if (!pruned.choices.has(key) && pruned.reveal !== key) owners.delete(key);
+    return { ...state, expansion: pruned, expansionOwners: owners };
+  }
+
   /** Retain missing covers; only unlisted identities need fresh node pages to resolve. */
   function reconcileOpenStacks(): void {
     if (!index) return;
@@ -174,7 +230,7 @@ export function createFolderSession(backend: TraceBackend = traceBackend, snapsh
     const pending = [...resolved.unresolved].filter((key) =>
       !(key.startsWith("path:") && samePath(parentDir(key.slice(5)), index!.directory)));
     const unread = index.components.filter((summary) => !components.has(summary.id) || stale.has(summary.id));
-    paneState = { ...paneState, openCovers: resolved.remembered, openOwners: resolved.owners };
+    paneState = pruneChoices({ ...paneState, openCovers: resolved.remembered, openOwners: resolved.owners });
     remember();
     if (pending.length) for (const summary of unread) void ensure(summary.id);
   }
@@ -435,6 +491,17 @@ export function createFolderSession(backend: TraceBackend = traceBackend, snapsh
     throw new Error("Trace kept changing while revealing the image");
   }
 
+  /** `expansion` with `key` revealed, settling an earlier reveal into choices where its stack is loaded. */
+  function revealed(key: string): Expansion {
+    let next = expansion;
+    if (next.reveal !== null) {
+      const scope = scopeHolding(next.reveal);
+      next = scope ? settleReveal(next, scope) : { ...next, reveal: null };
+    }
+    return revealNode(next, key);
+  }
+  const expandedKeysOf = (scope: ExpansionScope) => expandedKeys(expansion, scope);
+
   return {
     get index() { return index; },
     get status() { return status; },
@@ -460,16 +527,68 @@ export function createFolderSession(backend: TraceBackend = traceBackend, snapsh
       paneState = { ...paneState, openCovers: resolved.remembered, openOwners: resolved.owners };
       remember();
     },
-    /** A new external selection opens its stacks; an explicitly closed selection stays closed on return. */
-    followSelection(choice: string, ids: ReadonlySet<string>) {
+    /**
+     * A new selection made outside the view opens its stacks and reveals its focused node (once per
+     * new focus); an explicitly closed selection stays closed on return. The view's own selections
+     * are adopted first (`adoptSelection`), so they change nothing here: selecting in the view
+     * never changes geometry.
+     */
+    followSelection(choice: string, ids: ReadonlySet<string>, focus: string | null = null) {
       if (!index) return;
       const selected = index.components.filter((summary) => ids.has(summary.id)).map((summary) => coverIdentity(summary, index!.members));
       const added = index.components.filter((summary) => ids.has(summary.id) && (choice !== paneState.selectionChoice || !paneState.selectionCovers.has(coverIdentity(summary, index!.members))));
       const keys = new Set(paneState.openCovers);
       for (const summary of added) for (const key of coverAliases(summary, index.members)) { keys.delete(key); keys.add(key); }
       const resolved = resolveOpenStacks(keys, stackMembership, openStacks.owners);
-      paneState = { openCovers: resolved.remembered, openOwners: resolved.owners, selectionChoice: choice, selectionCovers: new Set(selected) };
+      const reveal = choice !== paneState.selectionChoice && focus !== null && focus !== (paneState.selectionFocus ?? null);
+      paneState = { ...paneState, openCovers: resolved.remembered, openOwners: resolved.owners, selectionChoice: choice, selectionCovers: new Set(selected),
+        selectionFocus: focus, expansion: reveal ? revealed(focus!) : expansion };
       remember();
+    },
+    /** Records a selection the view made itself as followed: it opens, reveals and expands nothing. */
+    adoptSelection(choice: string, ids: ReadonlySet<string>, focus: string | null) {
+      if (!index) return;
+      const selected = index.components.filter((summary) => ids.has(summary.id)).map((summary) => coverIdentity(summary, index!.members));
+      paneState = { ...paneState, selectionChoice: choice, selectionCovers: new Set(selected), selectionFocus: focus };
+      remember();
+    },
+    /** The pane's explicit expansion inside open stacks. */
+    get expansion() { return expansion; },
+    /** Shows `key` (Show image, Preview's input links): its ancestors count as expanded. */
+    reveal(key: string) {
+      paneState = { ...paneState, expansion: revealed(key) };
+      remember();
+    },
+    /**
+     * Toggles `key` (a caret, or a second click on the selected tile) in the loaded component
+     * holding it, from what is shown. False when that component is not loaded.
+     */
+    toggleExpansion(key: string, componentId?: string): boolean {
+      const scope = (componentId ? expansionScope(componentId) : null) ?? scopeHolding(key);
+      if (!scope) return false;
+      const next = toggleNode(expansion, scope, key);
+      const owner = [...components].find(([, data]) => projectionOf(data) === scope.graph)?.[0];
+      paneState = { ...paneState, expansion: next, expansionOwners: owner ? new Map(paneState.expansionOwners ?? []).set(key, owner) : paneState.expansionOwners };
+      remember();
+      return true;
+    },
+    /**
+     * A first click on an unselected tile: opens its children if it has any and they are not open
+     * (`expandNode`). Changes nothing otherwise, so selecting a leaf or an expanded node keeps geometry.
+     */
+    expandNode(key: string, componentId?: string): void {
+      const scope = (componentId ? expansionScope(componentId) : null) ?? scopeHolding(key);
+      if (!scope) return;
+      const next = expandNode(expansion, scope, key);
+      if (next === expansion) return;
+      const owner = [...components].find(([, data]) => projectionOf(data) === scope.graph)?.[0];
+      paneState = { ...paneState, expansion: next, expansionOwners: owner ? new Map(paneState.expansionOwners ?? []).set(key, owner) : paneState.expansionOwners };
+      remember();
+    },
+    /** Whether `key` is expanded as the view shows it (false when its component is not loaded). */
+    isExpanded(key: string, componentId?: string): boolean {
+      const scope = (componentId ? expansionScope(componentId) : null) ?? scopeHolding(key);
+      return !!scope && expandedKeysOf(scope).has(key);
     },
     /** Switch folders. Data for the previous folder is never shown for the new one. */
     setDirectory(dir: string | null) {
@@ -483,7 +602,8 @@ export function createFolderSession(backend: TraceBackend = traceBackend, snapsh
       viewInterest = new Set();
       leaseInterests.clear();
       const known = dir ? snapshots.recall(dir) : undefined;
-      paneState = (!started && known?.panes?.get(paneId)) || emptyPaneSnapshot();
+      const restored = (!started && known?.panes?.get(paneId)) || emptyPaneSnapshot();
+      paneState = { ...restored, expansion: readExpansion(restored.expansion), expansionOwners: new Map(restored.expansionOwners ?? []) };
       started = true;
       if (!known) { orientations = new Map(); void open(dir, false); return; }
       // Show what the folder last showed, as it was laid out, while its index is read again; open() reloads what is wanted.

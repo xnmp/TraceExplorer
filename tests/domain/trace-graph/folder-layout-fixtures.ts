@@ -6,7 +6,8 @@ import { projectDag, projectReferenceBadges, type BadgeProjection } from "$lib/d
 import { folderCells, type FolderCell } from "$lib/domain/trace-graph/folder-grid";
 import { tileMetrics, type TileMetrics } from "$lib/domain/trace-graph/metrics";
 import type { FolderGridMetrics, FolderLayout, FolderLayoutInput, OpenStack } from "$lib/domain/trace-graph/folder-layout";
-import { corpus, handCases, rng, node as corpusNode } from "../../../layout-eval/corpus";
+import { corpus, focusExpansion, handCases, rng, node as corpusNode } from "../../../layout-eval/corpus";
+import { expandedKeys, expansionAnchor, type Expansion } from "$lib/domain/trace-graph/expansion";
 
 export interface FolderStack {
   readonly componentId: string;
@@ -60,6 +61,8 @@ export const belongs = (stack: FolderStack, focus: NodeKey | null): boolean =>
 export interface InputOptions {
   readonly open?: Iterable<string>;
   readonly focus?: NodeKey | null;
+  /** The pane's expansion; by default the focus's (`focusExpansion`). */
+  readonly expansion?: Expansion;
   readonly width?: number;
   readonly tile?: TileMetrics;
   readonly grid?: FolderGridMetrics;
@@ -73,8 +76,11 @@ export function folderInput(folder: Folder, options: InputOptions = {}): FolderL
   for (const id of options.open ?? []) {
     const stack = folder.stacks.get(id);
     if (!stack) continue;
-    const focus = options.focus ?? null;
-    open.set(id, { id, graph: stack.graph, members: stack.graph.dag.order, focus: belongs(stack, focus) ? focus : null });
+    const focus = options.focus ?? null, mine = belongs(stack, focus) ? focus : null;
+    // A focus stands for a user who revealed and expanded it (`focusExpansion`), unless expansion is given.
+    const expansion = options.expansion ?? focusExpansion(mine);
+    const scope = { graph: stack.graph, members: stack.graph.dag.order, cover: id };
+    open.set(id, { id, graph: stack.graph, members: stack.graph.dag.order, anchor: expansionAnchor(expansion, scope), expanded: expandedKeys(expansion, scope) });
   }
   return { items: options.items ?? cellsOf(folder), open, width: options.width ?? 900, tile,
     grid: options.grid ?? { cellWidth: tile.width, cellHeight: 0, gap: 8 }, previous: options.previous ?? null };

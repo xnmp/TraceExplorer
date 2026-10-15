@@ -1,3 +1,4 @@
+import { NO_EXPANSION } from "$lib/domain/trace-graph/expansion";
 import { describe, expect, it } from "vitest";
 import { engines, type FolderLayout } from "$lib/domain/trace-graph/folder-layout";
 import { buildFolderScene, type FolderScene, type SceneStyling } from "$lib/domain/trace-graph/folder-scene";
@@ -26,7 +27,7 @@ const chained = sceneFor([A, B], first.layout, [...folder.stacks.get(A)!.graph.d
 
 const intent = (change: Partial<SceneIntent> = {}): SceneIntent => ({
   directory: "/f", listing: folder.entries, claimed: new Set(), open: new Set([A, B]), focus: null, selectedKeys: new Set(), selectedPaths: new Set(),
-  badgeHover: null, width: 660, tile, grid: fallbackGridMetrics(tile), cover: { imagePx: null, small: false }, hostChoice: "[]", ...change,
+  badgeHover: null, expansion: NO_EXPANSION, width: 660, tile, grid: fallbackGridMetrics(tile), cover: { imagePx: null, small: false }, hostChoice: "[]", ...change,
 });
 const committed = (scene: FolderScene, change: Partial<SceneIntent> = {}) => ({
   intent: intent(change), data: { index: folder.index, components: new Map() }, history: { directory: "/f", columns: scene.columns, held: new Set<string>() }, basis: "b",
@@ -111,8 +112,9 @@ describe("restoration", () => {
     expect(restoredInput(saved, "p", now, session({ index: null }))!.reuse).toBe(true);
   });
 
-  it("lays out again when the current focus, open stacks, width or metrics change the layout", () => {
-    expect(restoredInput(saved, "p", intent({ focus: { key: second, componentId: folder.stacks.get(A)!.componentId } }), session())!.reuse).toBe(false);
+  it("lays out again when the current expansion, open stacks, width or metrics change the layout, never for the focus", () => {
+    expect(restoredInput(saved, "p", intent({ focus: { key: second, componentId: folder.stacks.get(A)!.componentId } }), session())!.reuse).toBe(true);
+    expect(restoredInput(saved, "p", intent({ expansion: { choices: new Map([[second, true]]), reveal: null } }), session())!.reuse).toBe(false);
     expect(restoredInput(saved, "p", intent({ open: new Set([A]) }), session())!.reuse).toBe(false);
     expect(restoredInput(saved, "p", intent({ width: 900 }), session())!.reuse).toBe(false);
     expect(restoredInput(saved, "p", intent({ tile: tileMetrics(160) }), session())!.reuse).toBe(false);
