@@ -189,6 +189,19 @@ describe("routes trading columns", () => {
     expect([gates.tileIntersections, gates.overlaps, gates.missingEdges, gates.extraEdges, gates.invalidGeometry, gates.invalidPaths, gates.terminalViolations, gates.disconnectedEdges]).toEqual(Array(8).fill(0));
     if (!explained(layout)) expect(gates.sharedLanePx).toBe(0);
   });
+
+  // Seeds whose layered layout once had a cycle of turn orders in one bend zone (each bend leaving
+  // a column beside where the next arrives), broken by turning one bend early: it then ran a pixel
+  // or two beside another source's line for a slice or two, and the layout was flagged lane-infeasible.
+  it.each([80, 93, 118, 230, 235, 493, 744])("break a cycle of turn orders with a dogleg, not a shared lane (seed %i)", seed => {
+    const request = requestFor({ id: `layered-${seed}`, nodes: layered(seed), focuses: [null], full: true }, null, 454, 128);
+    const layout = layoutGraph(request), drawn = attachSingleBand(layout, request);
+    const gates = validateLayout(drawn, request.band!.key, 454, request.items);
+    expect(layout.decision?.fallback).toBeUndefined();
+    expect(gates.sharedLanePx).toBe(0);
+    expect(continuations(drawn)).toEqual([]);
+    expect([gates.tileIntersections, gates.overlaps, gates.missingEdges, gates.extraEdges, gates.invalidGeometry, gates.invalidPaths, gates.terminalViolations, gates.disconnectedEdges]).toEqual(Array(8).fill(0));
+  });
 });
 
 describe("calibrated crossings", () => {

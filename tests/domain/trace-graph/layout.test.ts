@@ -546,8 +546,9 @@ describe("pinned cover layout", () => {
     console.info(`pinned fuzz: lane sharing ${counts.pinned}/2700; main ${counts.main}/2700; spike 68/2700`);
     expect(failures).toEqual([]);
     // This bound tracks an existing, documented routing limit, not a new invariant.
-    // Was 57 and 25 before routes passed rows along their straight lines, clear of other sources' stems.
-    expect(counts.main).toBe(6);
+    // Was 57 and 25 before routes passed rows along their straight lines, clear of other sources' stems,
+    // and 6 before a cycle of turn orders in a bend zone took a dogleg.
+    expect(counts.main).toBe(0);
     expect(counts.pinned).toBeLessThanOrEqual(4);
   }, 180_000);
 

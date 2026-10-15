@@ -183,6 +183,8 @@ const MIN_LANE = 3;
  * insets, 9 px tall, which S-curves 9 px wide cross at about 53°. Wider swaps take a dogleg.
  */
 const CROSSING_SWAP = 2 * TRACK_HEIGHT - LANE_SEPARATION;
+/** Farthest beyond its bend's own span a dogleg breaking a cycle of turn orders may take its column. */
+const DOGLEG_REACH = 4 * MIN_LANE;
 /** Widest offset, from its junction's column, at which an input ends its bend (see the fan-in step). */
 const FAN_IN = 3;
 /** Distance kept outside a forbidden interval when stepping past it. */
@@ -1227,7 +1229,7 @@ function layoutPass(prepared: Prepared, extra: { readonly left: number; readonly
     zone: number; track: number;
     /** Tracks its curve spans, up to and including `track` (one unless it crosses a swapping partner). */
     span?: number;
-    /** A swap's dogleg: the bend first curves to column `x` in track `track`, then on in its own. */
+    /** A dogleg (a swap's, or one breaking a cycle of turn orders): the bend first curves to column `x` in track `track`, then on in its own. */
     dogleg?: { readonly track: number; readonly x: number };
   }
   const leg = (channel: number, source: string, target: string | null, x1: number, x2: number, from: Anchor, to: Anchor, own: ReadonlySet<string>): Leg => {
@@ -1456,14 +1458,55 @@ function layoutPass(prepared: Prepared, extra: { readonly left: number; readonly
       later.add(unitOf[j]);
       pending[unitOf[j]]++;
     }
-    // Turn order: the forced constraints, otherwise the sort order above (a
-    // cycle of forced constraints is broken in sort order).
+    // Turn order: the forced constraints, otherwise the sort order above.
     const sequenced: boolean[] = [];
     // Bends already given a track, in turn order.
     const done: number[] = [];
+    // A cycle of forced constraints (three or more bends, each leaving a column beside where the
+    // next arrives) has no order: whichever turns first meets the last one's line along a column
+    // pair closer than a lane, between their tracks. Channel routers break such a cycle by
+    // splitting one of its nets with a dogleg (Deutsch 1976; ELK's orthogonal router splits a
+    // segment of a critical cycle, Schulze et al.): the bend first curves from its column to a
+    // free one, in a slice before any of the bends arriving beside its column, runs down the
+    // free column, and curves on in a later slice of its own. The first pieces, by bend index.
+    const pieces = new Map<number, { readonly x: number; readonly track: number; readonly low: number; readonly high: number }>();
+    /** The first slice a piece reaching from `low` to `high` can take, after every bend and piece so far it would meet. */
+    const firstTrack = (low: number, high: number, item: Leg) => {
+      let track = 0;
+      for (const earlier of done) if (ordered[earlier].track + 1 > track && reachLow[earlier] < high && low < reachHigh[earlier] && !compatible(ordered[earlier], item)) track = ordered[earlier].track + 1;
+      for (const [index, piece] of pieces) if (piece.track + 1 > track && piece.low < high && low < piece.high && !compatible(ordered[index], item)) track = piece.track + 1;
+      return track;
+    };
+    /** Splits one bend of a cycle with a dogleg, if one can take a free column; whether it did. */
+    const splitCycle = (): boolean => {
+      for (const id of units) {
+        const later = forced[id];
+        if (sequenced[id] || members[id].length !== 1 || !later?.size) continue;
+        const index = members[id][0], item = ordered[index];
+        // A junction's input keeps its fan-in shape.
+        if ("junction" in item.to) continue;
+        const busy: [number, number][] = [];
+        for (const x of columnsIn[channel] ?? []) busy.push([x - MIN_LANE, x + MIN_LANE]);
+        const lo = Math.min(item.x1, item.x2), hi = Math.max(item.x1, item.x2);
+        const x = nearestFree((lo + hi) / 2, busy, Math.max(0, lo - DOGLEG_REACH), Math.min(width, hi + DOGLEG_REACH));
+        if (x === null) continue;
+        const low = Math.min(item.x1, x) - MIN_LANE, high = Math.max(item.x1, x) + MIN_LANE;
+        pieces.set(index, { x, track: firstTrack(low, high, item), low, high });
+        (columnsIn[channel] ??= []).push(x);
+        // The bend leaves its column in the piece, so the bends arriving beside that column
+        // need no longer wait for it; what remains of it runs from the free column.
+        for (const unit of later) pending[unit]--;
+        later.clear();
+        reachLow[index] = Math.min(x, item.x2) - MIN_LANE; reachHigh[index] = Math.max(x, item.x2) + MIN_LANE;
+        return true;
+      }
+      return false;
+    };
+    const ready = () => { for (const id of units) if (!sequenced[id] && pending[id] === 0) return id; return -1; };
     for (let step = 0; step < units.length; step++) {
-      let next = -1;
-      for (const id of units) if (!sequenced[id] && pending[id] === 0) { next = id; break; }
+      let next = ready();
+      while (next < 0 && splitCycle()) next = ready();
+      // No bend of the cycle can dogleg: it is broken in sort order.
       if (next < 0) for (const id of units) if (!sequenced[id]) { next = id; break; }
       sequenced[next] = true;
       const later = forced[next];
@@ -1475,6 +1518,10 @@ function layoutPass(prepared: Prepared, extra: { readonly left: number; readonly
       for (const earlier of done) {
         if (!(ordered[earlier].track + 1 > track)) continue;
         for (const index of group) if (conflict(earlier, index)) { track = ordered[earlier].track + 1; break; }
+      }
+      // After the pieces it would meet, and a split bend after its own first piece.
+      for (const [index, piece] of pieces) for (const member of group) {
+        if (member === index || (piece.low < reachHigh[member] && reachLow[member] < piece.high && !compatible(ordered[index], ordered[member]))) track = Math.max(track, piece.track + 1);
       }
       const crossing = group.length === 2 ? swapCrossing(channel, ordered[group[0]], ordered[group[1]]) : null;
       if (crossing === "cross") {
@@ -1497,6 +1544,7 @@ function layoutPass(prepared: Prepared, extra: { readonly left: number; readonly
     }
     let most = 1;
     for (const item of ordered) most = Math.max(most, item.track + 1);
+    for (const [index, piece] of pieces) { ordered[index].dogleg = { track: piece.track, x: piece.x }; most = Math.max(most, piece.track + 1); }
     (trackCount[channel] ??= [])[zone] = most;
   }
   const tracksIn = (channel: number, zone: number) => trackCount[channel]?.[zone] ?? 1;
@@ -1538,7 +1586,7 @@ function layoutPass(prepared: Prepared, extra: { readonly left: number; readonly
   for (const item of trie) if (item.parent < 0 && item.tile !== undefined) append(portsByRow, item.row, { x: item.x, source: item.source });
   for (const item of allLegs) {
     if (item.zone !== 0 || portBerth[item.channel] || !bends(item)) continue;
-    const lo = Math.min(item.x1, item.x2) + .5, hi = Math.max(item.x1, item.x2) - .5;
+    const lo = Math.min(item.x1, item.x2, item.dogleg?.x ?? Infinity) + .5, hi = Math.max(item.x1, item.x2, item.dogleg?.x ?? -Infinity) - .5;
     for (const port of portsByRow.get(item.channel) ?? []) if (port.source !== item.source && port.x > lo && port.x < hi) { portBerth[item.channel] = PORT_BERTH; break; }
   }
   const berthAt = (channel: number, zone: number) => zone === 0 ? portBerth[channel] ?? 0 : 0;

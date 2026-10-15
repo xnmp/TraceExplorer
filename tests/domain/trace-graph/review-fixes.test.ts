@@ -48,9 +48,10 @@ describe("lane-infeasible requests without history", () => {
   // the best of them with its lanes priced, flagged lane-infeasible, not the raw downward
   // layout flagged as malformed input.
   // (Found by a seeded search; the earlier 7-node fixture gained a lane-free layout once routes
-  // passed rows along their straight lines.)
-  const nodes = [node("root"), node("n1", ["root"], 1), node("n2", ["n1"], 2), node("n3", ["n1"], 3), node("n4", ["n3"], 4), node("n5", ["root"], 5),
-    node("n6", ["n4", "root"], 6), node("n7", ["n6"], 7), node("n8", ["n2", "root", "n4", "n5"], 8), node("n9", ["n6", "n2"], 9)];
+  // passed rows along their straight lines, and the 10-node one after it once a cycle of turn
+  // orders took a dogleg.)
+  const nodes = [node("root"), node("n1", ["root"], 1), node("n2", ["n1"], 2), node("n3", ["n1", "root", "n2"], 3), node("n4", ["n1"], 4),
+    node("n5", ["n3", "n4", "root"], 5)];
   const request = requestFor({ id: "lane-infeasible", nodes, focuses: [null] }, null, 900, 96);
 
   it("shows the best priced candidate, flagged lane-infeasible", () => {
