@@ -14,7 +14,7 @@
 
 <script lang="ts">
   import { tick } from "svelte";
-  import { NONE, emptyTypeahead, indexOfValue, initialActive, keyAction, move, normalizeScale, place, typeahead, typeaheadMatch, type Move, type SelectOption } from "./select-model";
+  import { NONE, clickToggles, emptyTypeahead, indexOfValue, initialActive, keyAction, move, normalizeScale, place, pressToggles, typeahead, typeaheadMatch, type Move, type SelectOption } from "./select-model";
 
   let {
     value = $bindable(), options, placeholder = "", disabled = false, id, onchange, class: className = "",
@@ -150,6 +150,31 @@
     if (disabled) return;
     if (expanded) close(); else show(initialActive(options, value));
   }
+
+  // A mouse press toggles on pointerdown, in the same task as the outside press that closes another
+  // open list, so switching lists takes one frame; the click that ends that press is then ignored.
+  // Focus is set here and the press's own focus move is cancelled: where a press does not focus
+  // buttons (WebKit on macOS) that move would blur the trigger, and the blur would close the list.
+  let pressToggled = false;
+  function press(event: PointerEvent): void {
+    pressToggled = !disabled && pressToggles(event);
+    if (!pressToggled) return;
+    trigger?.focus();
+    toggle();
+  }
+  function mousedown(event: MouseEvent): void {
+    if (pressToggled) event.preventDefault();
+  }
+  // A press released off the trigger sends it no click; leaving the control forgets that press.
+  function blurred(): void {
+    pressToggled = false;
+    close();
+  }
+  function clicked(event: MouseEvent): void {
+    const toggles = clickToggles(event.detail, pressToggled);
+    pressToggled = false;
+    if (toggles) toggle();
+  }
 </script>
 
 <span bind:this={root} class="select {className}">
@@ -158,7 +183,7 @@
     {disabled} data-value={value ?? ""} aria-label={ariaLabel} aria-labelledby={ariaLabelledby}
     aria-haspopup="listbox" aria-expanded={expanded} aria-controls={listId}
     aria-activedescendant={expanded && active !== NONE ? optionId(active) : undefined}
-    onclick={toggle} onkeydown={keydown} onkeyup={(event) => { if (event.key === " ") event.preventDefault(); }} onblur={close}
+    onpointerdown={press} onmousedown={mousedown} onclick={clicked} onkeydown={keydown} onkeyup={(event) => { if (event.key === " ") event.preventDefault(); }} onblur={blurred}
   ><span class="text">{label}</span></button>
   {#if expanded}
     <!-- Not focusable by design: the trigger keeps focus and handles every key (aria-activedescendant). -->
