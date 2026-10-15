@@ -53,6 +53,11 @@ const HOLE_TRIES = 2;
  * looking for one with a direct route.
  */
 const DETOUR_SCAN = 8;
+/**
+ * How far a route keeps off its source's side where it runs down the gap beside it: clear of the
+ * border (`TILE_GRAZE`), so the line reads as leaving the tile, not as part of its outline.
+ */
+const SIDE_LANE = 4;
 /** Grid points a fallback route search may expand before it gives up (a bounded failure). */
 const GRID_BUDGET = 5000;
 /** Most 64 px rows one segment may span in the lane index (about 4 million px): beyond it the history is not usable. */
@@ -737,7 +742,7 @@ function plans(p: PlacedNode, arrival: Arrival, s: Scene, bottomOnly: boolean, d
   const travel = (j: number) => bottomAbove + 6 + step * TRAVEL_ROWS[j];
   const headerRow = (k: number) => s.header + HEADER_ROWS[k % HEADER_ROWS.length];
   const exitRow = (k: number) => pb + 4 + step * k;
-  const sideX = (k: number) => pr + 4 + step * k;
+  const sideX = (k: number) => pr + SIDE_LANE + step * k;
   if (heading === "down" && direct) {
     if (ey >= pb + 8) {
       if (bx === ex) emit(family(() => [bottom, end], 1));
@@ -776,8 +781,16 @@ function plans(p: PlacedNode, arrival: Arrival, s: Scene, bottomOnly: boolean, d
   // Side arrivals: along `end`'s row from the left (heading right) or the right (heading left).
   const fromLeft = heading === "right";
   if (arrival.level < 0) {
-    // A tile's left port, from the parent's right port across the gap between them.
-    if (direct && !bottomOnly && ex >= pr + 8) emit(family(k => { const mid = laneAround((pr + ex - 8) / 2, pr, ex - run, k, grain); return mid === null ? null : [right, point(mid, right.y), point(mid, ey), end]; }, 2 * choices - 1));
+    // A tile's left port, from the parent's right port across the gap between them: straight
+    // where the ports line up, else a jog in the gap, off the parent's side and before the
+    // arrowhead's straight run.
+    if (direct && !bottomOnly && ex >= pr + 8) {
+      if (ey === right.y) emit(family(() => [right, end], 1));
+      else emit(family(k => {
+        const lo = pr + SIDE_LANE, hi = ex - run, mid = laneAround(Math.min(hi, Math.max(lo, (pr + ex - 8) / 2)), lo, hi, k, grain);
+        return mid === null ? null : [right, point(mid, right.y), point(mid, ey), end];
+      }, 2 * choices - 1));
+    }
     return;
   }
   if (direct) {
@@ -1171,7 +1184,12 @@ export function incrementalTree(request: LayoutRequest, previous: GraphLayout, b
       seen.add(x);
       if (x >= 24 && x + item.width <= width - 24) xs.push(x);
     };
-    column(parent.x + parent.width + s.column); column(parent.x); column(24); column(width - item.width - 24);
+    column(parent.x + parent.width + s.column);
+    // Beside a parent of another height the ports do not line up: the next column then leaves
+    // room for the jog between them (a side lane and the arrowhead's approach), where the
+    // column gap alone would put it on the parent's border.
+    if (item.height !== parent.height) column(parent.x + parent.width + Math.max(s.column, SIDE_LANE + s.approach));
+    column(parent.x); column(24); column(width - item.width - 24);
     for (const b of boxes) { column(b.x); column(b.x + b.width + s.column); }
     const ys = distinctValues3(Math.max(cover.height + STACK_STEM_ROOM, parent.y), Math.max(cover.height + STACK_STEM_ROOM, parent.y + parent.height + arrivalGap), bottom + arrivalGap);
     // Holes: the rows of placed tiles below the parent that a new tile fits in without adding

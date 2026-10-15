@@ -167,6 +167,28 @@ describe("incremental tree: chains", () => {
   });
 });
 
+describe("incremental tree: chains beside a taller parent", () => {
+  // Default tiles: the column gap (16 px) is just the arrowhead's approach. A new edit is shorter than
+  // its parent (which now shows the expand hint), so its port is 8 px higher and the line between
+  // them must jog; in the column gap alone, the jog would run up the parent's side.
+  it("continues the chain in the next column, the jog clear of the parent's side", () => {
+    const short = (key: string, parents: string[], order: number): LayoutItem => ({ ...item(key, parents, order), height: 81 });
+    const items = [item("root"), item("a", ["root"], 1)], first = request(items, 454);
+    const previous = attachSingleBand(layoutGraph(first), first), next = request([...items, short("b", ["a"], 2)], 454);
+    const result = incrementalTree(next, previous)!;
+    expect(result).not.toBeNull();
+    const a = result.nodes.get("a")!, b = result.nodes.get("b")!;
+    expect(b.y).toBe(a.y);
+    expect(b.x - (a.x + a.width)).toBeLessThanOrEqual(spacingFor(92).approach + 4);
+    const route = result.routes.find(r => r.from.kind === "node" && r.from.id === "a" && r.to.kind === "node" && r.to.id === "b")!;
+    // It leaves a's port heading away from a; every later run keeps off a's side.
+    const [leaving, ...rest] = segments(route.path);
+    expect(leaving[1].x).toBeGreaterThan(leaving[0].x);
+    for (const s of rest) expect(distanceToTile(s, a)).toBeGreaterThanOrEqual(TILE_GRAZE);
+    expect(verdict(result, next)).toEqual({ sharedLanePx: 0, gates: clean });
+  });
+});
+
 describe("incremental tree: tiles kept off lines", () => {
   it("does not place a new tile against another tile's retained connector", () => {
     const items = [item("root"), item("a", ["root"], 1), item("z", ["root"], 2)];

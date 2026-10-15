@@ -374,6 +374,32 @@ describe("clicks that show nothing new", () => {
   });
 });
 
+describe("arrivals along a chain", () => {
+  // Chains session 7 (26 images in one chain) at 454 px, 48 px images, edit by edit: the user selects
+  // the latest image, its edit arrives. Each new edit is shorter than its parent (which now shows the
+  // expand hint). Without room beside the parent for the jog between their ports, an edit went to the
+  // row's far end, and the next arrivals re-laid the band, moving the image being edited.
+  it("leave the image being edited where it was", () => {
+    const component = sessionComponents(provenanceSession(profiles.chains, 7))[0];
+    const byOrder = [...component].sort((a, b) => a.order - b.order);
+    let previous: { signature: string; layout: GraphLayout; placed: GraphLayout } | undefined, checked = 0;
+    const show = (nodes: readonly TraceNode[], input: string) => {
+      const request = requestFor({ id: "chains-7", nodes, focuses: [] }, input, 454, 48, previous?.layout.readingOrder);
+      const layout = layoutGraph({ ...request, anchorKey: input, history: previous });
+      previous = { signature: bandHistorySignature(request), layout, placed: attachSingleBand(layout, request) };
+      return layout;
+    };
+    for (let k = 2; k <= byOrder.length; k++) {
+      const input = byOrder[k - 1].parents[0];
+      const before = show(byOrder.slice(0, k - 1), input).nodes.get(input)!;
+      const after = show(byOrder.slice(0, k), input).nodes.get(input)!;
+      // From the third edit on: the band has its rows.
+      if (k >= 4) { expect({ x: after.x, y: after.y }, `edit ${k - 1} of ${input}`).toEqual({ x: before.x, y: before.y }); checked++; }
+    }
+    expect(checked).toBe(23);
+  });
+});
+
 describe("calibrated crossings", () => {
   it("prices a crossing as the band height it must save", () => {
     expect(CROSSING_WEIGHT).toBeCloseTo(HEIGHT_WEIGHT * CROSSING_HEIGHT_TILES, 12);
