@@ -72,6 +72,9 @@ function fakeSource(token = "t1") {
   return { source, reads, deliver, fail, pending: (id: string) => reads.filter((read) => read.id === id && !read.released) };
 }
 
+// Each flush is 30 timer turns. Windows timers tick every ~15.6 ms, so a flush takes ~0.5 s
+// there, and the longer scenarios here exceed vitest's 5 s default.
+vi.setConfig({ testTimeout: 30_000 });
 const flush = async (rounds = 30) => { for (let i = 0; i < rounds; i++) await new Promise<void>((resolve) => setTimeout(resolve, 0)); };
 const tile = tileMetrics(96);
 
