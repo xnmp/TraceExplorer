@@ -1013,6 +1013,22 @@ function layoutPass(prepared: Prepared, extra: { readonly left: number; readonly
     sourceRoot.set(source, trie.length - 1);
     return trie.length - 1;
   };
+  // Straight passing follows each source's bundle, not each route: at every row
+  // its routes into tiles still passing head for the centroid of their ends, so a
+  // fan keeps one trunk (Gansner et al. 1993 likewise route a fan's long edges
+  // together until they part). Per source and row: sums of end x, end row, count.
+  const bundles = new Map<string, Map<number, { x: number; row: number; count: number }>>();
+  if (passing === "straight") for (const route of plan.routes) {
+    if (route.to.kind !== "node") continue;
+    const source = endpointKey(route.from), start = trie[rootOf(route.from, source)].row;
+    const endRow = columns.get(route.to.id)!.row, endX = center(route.to.id);
+    let byRow = bundles.get(source);
+    if (!byRow) bundles.set(source, byRow = new Map());
+    for (let row = start + 1; row < endRow; row++) {
+      const sum = byRow.get(row);
+      if (sum) { sum.x += endX; sum.row += endRow; sum.count++; } else byRow.set(row, { x: endX, row: endRow, count: 1 });
+    }
+  }
   const courses = plan.routes.map((route) => {
     const source = endpointKey(route.from);
     let node = rootOf(route.from, source);
@@ -1035,7 +1051,8 @@ function layoutPass(prepared: Prepared, extra: { readonly left: number; readonly
       for (let row = startRow + 1; row <= endChannel; row++) {
         let slot = byRow.get(row);
         if (slot === undefined) {
-          const want = straight ? sourceX + (endX - sourceX) * (row - startRow) / (endChannel + 1 - startRow) : endX;
+          const bundle = straight ? bundles.get(source)?.get(row) : undefined;
+          const want = bundle ? sourceX + (bundle.x / bundle.count - sourceX) * Math.min(1, (row - startRow) / (bundle.row / bundle.count - startRow)) : endX;
           byRow.set(row, slot = claim(row, want, source, sourceX));
           if (slot && straight) {
             let bySource = wanted.get(slot);
