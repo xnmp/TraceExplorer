@@ -1,4 +1,5 @@
 import type { Plugin, PluginContext } from "../api";
+import type { PluginDialogPane } from "../../../../integration/plugin-sdk";
 import type { FileEntry } from "$lib/domain/file";
 import { isVirtualPath } from "$lib/domain/virtual-path";
 import { basename, parentDir } from "$lib/domain/path";
@@ -49,17 +50,24 @@ function commandIntent(ctx: PluginContext): { intent: AIEditIntent; outputDir: s
   return { intent, outputDir };
 }
 
+/**
+ * Where a job's outputs show: the Trace view of `pane` (the pane an edit was started from; the
+ * active pane on hosts that cannot capture one), if it shows Trace. The view is looked up when the
+ * job is accepted, since the pane's view may have remounted, or gone, meanwhile.
+ */
+function outputsShownIn(pane: PluginDialogPane | null): ((paths: readonly string[]) => void) | undefined {
+  const tracePane = pane ? (tracePanes.get(pane.paneId) ? pane.paneId : null) : tracePanes.activeId();
+  return tracePane ? (paths) => tracePanes.get(tracePane)?.expandForOutputs(paths) : undefined;
+}
+
 async function open(ctx: PluginContext, inputs: readonly string[], outputDir: string): Promise<void> {
   // Capture synchronously: later async preparation must never retarget to another active pane.
   const capturePane = hostCapturePane(ctx.workspace);
   const pane = capturePane?.();
   if (capturePane && !pane) throw new Error("The dialog's pane is unavailable. Choose an open pane and try again.");
-  // The Trace view in the pane the dialog was opened from shows the job's outputs. It is looked up
-  // when a job is accepted: the pane's view may have remounted, or gone, since.
-  const tracePane = pane ? (tracePanes.get(pane.paneId) ? pane.paneId : null) : tracePanes.activeId();
   const props = {
     inputs: inputs.map((path) => ({ path })), outputDir,
-    onStart: tracePane ? (paths: readonly string[]) => tracePanes.get(tracePane)?.expandForOutputs(paths) : undefined,
+    onStart: outputsShownIn(pane ?? null),
     jobs: ctx.jobs, toast: ctx.toast,
     configureConnections: () => configureConnections(ctx),
     captureSelection: ctx.workspace.captureSelection,
@@ -88,7 +96,9 @@ export const openAIImagePlugin: Plugin = {
     ctx.registerImageEditorTool({
       id: EDITOR_TOOL_ID, title: "AI edit", component: OpenAIImageEditorTool,
       when: (source) => ["PNG", "JPEG", "WebP"].includes(source.format),
-      props: { configureConnections: () => configureConnections(ctx), jobs: ctx.jobs, toast: ctx.toast, captureSelection: ctx.workspace.captureSelection },
+      props: { configureConnections: () => configureConnections(ctx), jobs: ctx.jobs, toast: ctx.toast, captureSelection: ctx.workspace.captureSelection,
+        // Captured as the tool opens: the pane the image was opened from.
+        outputsShownIn: () => outputsShownIn(hostCapturePane(ctx.workspace)?.() ?? null) },
     });
     ctx.registerDialog({ id: DIALOG_ID, component: OpenAIImageDialog });
     ctx.registerDialog({ id: "openai-image.history", component: OpenAIImageHistory });

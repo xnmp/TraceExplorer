@@ -98,6 +98,20 @@ describe("OpenAI plugin SDK contributions",()=>{
     expect(f.opened.at(-1)!.props.onStart).toBeUndefined();
     traceViews = new Map(); activeTraceId = null;
   });
+  it("the image editor tool shows its jobs' outputs in the Trace view of the pane it was opened from", async () => {
+    vi.stubGlobal("__TAURI_EXPLORER_PLUGIN_SDK__", { sdkVersion: 1, apiVersion: 2, svelteVersion: SVELTE_ABI, capabilities: ["paneDialogs"] });
+    const owner = { expandForOutputs: vi.fn() };
+    traceViews = new Map([["owner", owner]]);
+    const f = fixture(); f.ctx.workspace.capturePane = () => ({ paneId: "owner" });
+    await openAIImagePlugin.activate(f.ctx);
+    const props = f.tools.find((tool) => tool.id === "openai-image")!.props as { outputsShownIn: () => ((paths: readonly string[]) => void) | undefined };
+    const onStart = props.outputsShownIn();
+    onStart!([image.path]);
+    expect(owner.expandForOutputs).toHaveBeenCalledWith([image.path]);
+    f.ctx.workspace.capturePane = () => ({ paneId: "files" });
+    expect(props.outputsShownIn(), "opened from a pane without Trace").toBeUndefined();
+    traceViews = new Map();
+  });
   it("contributes only a shared configuration action and awaits managed dialog closure",async()=>{
     const f=fixture();
     let close:()=>void=()=>{};
