@@ -1,7 +1,7 @@
 <script lang="ts">
   /**
    * A closed stack's band as it retires (docs/scene-transactions.md §6): one exit group, drawn
-   * where it was displayed. Its tiles, connectors and junctions share the group's fade and clip
+   * where it was displayed. Its tiles, connectors and junctions share the group's fade, clip and slide
    * (the motion driver animates the container). Inert, hidden from assistive technology and
    * absent from selection and navigation. The container has no height of its own: its clip is an
    * absolute polygon from its top.

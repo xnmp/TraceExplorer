@@ -207,7 +207,7 @@ export function buildFolderScene(input: FolderSceneInput): FolderScene {
     const planned = graph?.plan.tiles.get(cell.id);
     const node = stack?.graph.dag.nodes.get(cell.id) ?? input.coverNodes?.get(cell.id) ?? coverNode({ ...cell, coverKey: cell.coverKey ?? cell.id });
     const sceneTile: SceneTile = planned && lineage ? { ...planned, node, tone: toneOf(lineage, cell.id) }
-      : { key: cell.id, node, tone: styling.focus === cell.id ? "focus" : styling.focus !== null ? "unrelated" : "neutral", size: coverSize, childCount: 0, hiddenDescendants: 0, expandable: false };
+      : { key: cell.id, node, tone: styling.focus === cell.id ? "focus" : styling.focus !== null ? "unrelated" : "neutral", size: coverSize, childCount: 0, hiddenDescendants: 0, expandable: false, expanded: false, togglable: false };
     const summary = cell.summary;
     const placed: PlacedNode = { key: cell.id, x: (rect.width - tile.width) / 2, y: 0, width: tile.width, height: rect.height, row: 0, band: 0 };
     tiles.set(entityId("tile", cell.id, cell.id), add<TileRecord>({ kind: "tile", id: entityId("tile", cell.id, cell.id), graphId: cell.id,

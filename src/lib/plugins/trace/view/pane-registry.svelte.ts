@@ -19,6 +19,11 @@ export interface TracePaneView {
   inputs(): readonly string[];
   /** A highlighted Preview target that cannot be used as an image input. */
   hasUnusableTarget(): boolean;
+  /**
+   * A job started from this view on these input paths: their stacks open and each input is
+   * revealed and expanded, so the job's placeholder and output show (`expandForOutputs`).
+   */
+  expandForOutputs(paths: readonly string[]): void;
 }
 
 let views = $state.raw<ReadonlyMap<string, TracePaneView>>(new Map());
@@ -44,6 +49,8 @@ export const tracePanes = {
   get(paneId: string | null): TracePaneView | null { return paneId ? views.get(paneId) ?? null : null; },
   /** The view in the window's active pane, if that pane shows Trace. */
   active(): TracePaneView | null { for (const view of views.values()) if (view.active) return view; return null; },
+  /** The window's active pane, if it shows Trace. */
+  activeId(): string | null { for (const [paneId, view] of views) if (view.active) return paneId; return null; },
   /** Registers a pane's view (safe to call from effects); returns the unregister function. */
   set(paneId: string, view: TracePaneView): () => void {
     untrack(() => { views = new Map(views).set(paneId, view); });

@@ -12,6 +12,7 @@
  * Inputs are checked, not trusted:
  * - a non-finite width or metric, a non-positive tile, negative grid metrics, duplicate item ids
  *   or overflowing geometry throw RangeError; a negative width counts as zero (one column);
+ * - a stack's `expanded` that is not a Set counts as only its cover; non-string keys are ignored;
  * - open ids that are not stack items, and stacks whose cover is not a drawable member of their
  *   graph, are laid out closed; member keys missing from the graph and repeated keys are dropped;
  * - `previous` is a hint: a malformed graph in it contributes nothing, and one from another width
@@ -28,6 +29,7 @@ import { folderGridGeometry, gridPins, type FolderGridGeometry } from "../folder
 import { layoutGraph, type BandHistory, type GraphLayout, type LayoutRequest } from "../layout";
 import { layoutSignature } from "../layout-signature";
 import { planBandScene, type BandScenePlan } from "../scene";
+import type { BandExpansion } from "../visibility";
 import { createBoundedCache, estimateLayoutBytes, type BoundedCache } from "./bounded-cache";
 import { routeBounds, unionRect } from "./route-bounds";
 import type { FolderGraph, FolderLayout, FolderLayoutEngine, FolderLayoutInput, GraphId, OpenStack } from "./types";
@@ -97,6 +99,13 @@ function membersOf(stack: OpenStack): readonly NodeKey[] {
   return stack.members.filter((key) => typeof key === "string" && nodes.has(key) && !seen.has(key) && !!seen.add(key));
 }
 
+/** The stack's expansion, well-formed entries only; the cover is expanded, oldest, unless an entry decides it. */
+function expandedOf(stack: OpenStack, cover: GraphId): BandExpansion {
+  const given: unknown = stack.expanded;
+  const entries = given instanceof Map ? [...given].filter((entry): entry is [NodeKey, boolean] => typeof entry[0] === "string" && typeof entry[1] === "boolean") : [];
+  return new Map(entries.some(([key]) => key === cover) ? entries : [[cover, true], ...entries]);
+}
+
 /** Open stack items in grid order whose cover is a drawable member. */
 function openStacks(input: FolderLayoutInput): readonly (readonly [GraphId, OpenStack, readonly NodeKey[]])[] {
   if (!(input.open instanceof Map)) return [];
@@ -121,8 +130,8 @@ export function planBands(input: FolderLayoutInput, geometry: FolderGridGeometry
   const plans = new Map<GraphId, BandPlan>();
   for (const [id, stack, members] of open) {
     const prior = priors.get(id);
-    const plan = planBandScene(stack.graph, members, typeof stack.focus === "string" ? stack.focus : null, width,
-      { pinned: pins.get(id)!, history: prior?.history, hint: prior?.hint, tile: input.tile });
+    const plan = planBandScene(stack.graph, members, typeof stack.anchor === "string" ? stack.anchor : null, width,
+      { pinned: pins.get(id)!, expanded: expandedOf(stack, id), history: prior?.history, hint: prior?.hint, tile: input.tile });
     plans.set(id, { plan, kept: prior?.committed && prior.committed.basis === requestBasis(plan.request) ? prior.committed.layout : null });
   }
   return plans;

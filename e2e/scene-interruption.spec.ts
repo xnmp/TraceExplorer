@@ -11,27 +11,32 @@ import { openView, settle, uncaught } from "./support";
  * yet or not. Each action starts motion once.
  */
 
-interface Shown { key: string; live: boolean; x: number; y: number; width: number; bottom: number; opacity: number }
-interface Connector { id: string; source: string; target: string; from: { x: number; y: number }; tip: { x: number; y: number }; opacity: number }
+/** `top` and `bottom`: what its clips leave visible (`top` may exceed `bottom`: all hidden). */
+interface Shown { key: string; live: boolean; x: number; y: number; width: number; top: number; bottom: number; opacity: number }
+/** `shown`: the vertical window its clipping ancestors leave visible (screen pixels). */
+interface Connector { id: string; source: string; target: string; from: { x: number; y: number }; tip: { x: number; y: number }; opacity: number; shown: { top: number; bottom: number } }
 interface Displayed { tiles: Shown[]; routes: Connector[] }
 
 /** What is displayed: every tile and connector instance, live or retiring, in screen pixels, with its effective opacity and clip. */
 const displayed = (page: Page): Promise<Displayed> => page.evaluate(() => {
   const opacity = (element: Element) => { let value = 1; for (let at: Element | null = element; at; at = at.parentElement) value *= Number(getComputedStyle(at).opacity); return value; };
-  /** The visible bottom under every clipping ancestor (clip paths are inset() or absolute polygon()). */
-  const clippedBottom = (element: Element, bottom: number) => {
-    for (let at: Element | null = element.parentElement; at; at = at.parentElement) {
+  /** The visible span under its own clip and every clipping ancestor's (clip paths are inset() or absolute polygon()). */
+  const clipped = (element: Element, top: number, bottom: number, from: Element | null = element) => {
+    for (let at: Element | null = from; at; at = at.parentElement) {
       const style = getComputedStyle(at), box = at.getBoundingClientRect();
       const inset = /^inset\(([^)]*)\)/.exec(style.clipPath), polygon = /^polygon\(([^)]*)\)/.exec(style.clipPath);
-      if (inset) { const v = inset[1].split(/\s+/).map(parseFloat); bottom = Math.min(bottom, box.bottom - v[2 % v.length]); }
-      if (polygon) bottom = Math.min(bottom, box.top + Math.max(...polygon[1].split(",").map((p) => parseFloat(p.trim().split(/\s+/)[1]))));
+      if (inset) { const v = inset[1].split(/\s+/).map(parseFloat); top = Math.max(top, box.top + v[0]); bottom = Math.min(bottom, box.bottom - v[2 % v.length]); }
+      if (polygon) {
+        const ys = polygon[1].split(",").map((p) => parseFloat(p.trim().split(/\s+/)[1]));
+        top = Math.max(top, box.top + Math.min(...ys)); bottom = Math.min(bottom, box.top + Math.max(...ys));
+      }
     }
-    return bottom;
+    return { top, bottom };
   };
   const tiles = [...document.querySelectorAll<HTMLElement>("[data-tile-key], [data-ghost-tile-key]")].map((element) => {
-    const box = element.getBoundingClientRect();
+    const box = element.getBoundingClientRect(), { top, bottom } = clipped(element, box.top, box.bottom);
     return { key: element.dataset.tileKey ?? element.dataset.ghostTileKey!, live: !!element.dataset.tileKey, x: box.x, y: box.y, width: box.width,
-      bottom: clippedBottom(element, box.bottom), opacity: opacity(element) };
+      top, bottom, opacity: opacity(element) };
   });
   const routes = [...document.querySelectorAll<SVGPathElement>("path[data-route], path[data-motion-route]")].map((path) => {
     const matrix = path.getScreenCTM()!, scale = Math.hypot(matrix.a, matrix.b), length = path.getTotalLength();
@@ -39,7 +44,8 @@ const displayed = (page: Page): Promise<Displayed> => page.evaluate(() => {
     const from = point(0), end = point(length), near = point(Math.max(0, length - 1 / scale));
     const arrow = path.hasAttribute("marker-end") ? 8 * scale : 0, tangent = Math.hypot(end.x - near.x, end.y - near.y) || 1;
     return { id: path.dataset.route ?? path.dataset.motionRoute!, source: path.dataset.from ?? path.dataset.motionFrom ?? "", target: path.dataset.to ?? path.dataset.motionTo ?? "",
-      from, tip: { x: end.x + arrow * (end.x - near.x) / tangent, y: end.y + arrow * (end.y - near.y) / tangent }, opacity: opacity(path) };
+      from, tip: { x: end.x + arrow * (end.x - near.x) / tangent, y: end.y + arrow * (end.y - near.y) / tangent }, opacity: opacity(path),
+      shown: clipped(path, -Infinity, Infinity, path.parentElement) };
   });
   return { tiles, routes };
 });
@@ -67,18 +73,26 @@ function expectContinuous(before: Displayed, after: Displayed, label: string, { 
   return checked;
 }
 
-/** Visible connectors end on visible tiles: each tile endpoint lies on (within 2px of) its tile's box. */
+/**
+ * Visible connectors end on visible tiles: each tile endpoint lies on (within 2px of) the visible
+ * part of its tile's box. A tile or connector whose clips hide all of it is not visible. Where a clip
+ * hides an endpoint, the connector's visible end is at the clip's edge, which must lie on the tile
+ * instead. (A closing band slides up under its cover, hiding tiles there; their connectors show
+ * from the cover's bottom edge.)
+ */
 function expectAttached(scene: Displayed, label: string): number {
   const onBox = (p: { x: number; y: number }, t: Shown) => {
-    const dx = Math.max(t.x - p.x, 0, p.x - (t.x + t.width)), dy = Math.max(t.y - p.y, 0, p.y - Math.max(t.y, t.bottom));
+    const dx = Math.max(t.x - p.x, 0, p.x - (t.x + t.width)), dy = Math.max(t.top - p.y, 0, p.y - t.bottom);
     const outside = Math.hypot(dx, dy);
-    const inside = Math.min(p.x - t.x, t.x + t.width - p.x, p.y - t.y, Math.max(t.y, t.bottom) - p.y);
+    const inside = Math.min(p.x - t.x, t.x + t.width - p.x, p.y - t.top, t.bottom - p.y);
     return outside > 0 ? outside : inside;
   };
   let attached = 0;
-  for (const route of scene.routes.filter((r) => r.opacity > .2)) for (const [end, point] of [[route.source, route.from], [route.target, route.tip]] as const) {
+  const visible = (r: Connector) => r.opacity > .2 && Math.max(r.from.y, r.tip.y) > r.shown.top && Math.min(r.from.y, r.tip.y) < r.shown.bottom;
+  for (const route of scene.routes.filter(visible)) for (const [end, shownAt] of [[route.source, route.from], [route.target, route.tip]] as const) {
     if (!end.startsWith("node:") || route.source === route.target) continue;
-    const tiles = scene.tiles.filter((t) => t.key === end.slice(5) && t.opacity > .2);
+    const point = { x: shownAt.x, y: Math.min(Math.max(shownAt.y, route.shown.top), route.shown.bottom) };
+    const tiles = scene.tiles.filter((t) => t.key === end.slice(5) && t.opacity > .2 && t.top < t.bottom);
     if (!tiles.length) continue;
     expect(Math.min(...tiles.map((t) => onBox(point, t))), `${label}: ${route.id} ${end} ${JSON.stringify({ point, tiles })}`).toBeLessThanOrEqual(2);
     attached++;

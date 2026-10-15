@@ -1,5 +1,5 @@
 import { test, expect, type Page } from "@playwright/test";
-import { key, openView, settle, uncaught, ensureExpanded } from "./support";
+import { key, openView, settle, state, uncaught, ensureExpanded } from "./support";
 import { awaitMotionStarted, holdMotion, motionState, releaseMotion } from "./animation-control";
 import { clickThroughGym, motionFaults, node, sampleClick, settledScrollTop } from "./motion-support";
 
@@ -31,7 +31,10 @@ async function openAnchorView(page: Page, extra = "") {
   for (const name of ["anchor-a", "anchor-b"]) await ensureExpanded(page.locator(`section[aria-label="${name}"]`));
 }
 
-test("a clicked tile stays on screen while an earlier section shrinks and its own graph stays still", async ({ page }) => {
+// Selection never changes another section (explicit expansion): a click in B leaves A as it was,
+// and B's cover (already open) holds still on every frame. (Before, focus moved away from A and
+// A's neighborhood shrank.)
+test("a click in a later section leaves an earlier one as it was, and the clicked tile stays still on screen", async ({ page }) => {
   await page.setViewportSize({ width: 800, height: 600 });
   await openAnchorView(page);
   await page.locator(await node(page, "anchor-a-middle")).click();
@@ -62,10 +65,8 @@ test("a clicked tile stays on screen while an earlier section shrinks and its ow
     const positions = [sample()];
     view.querySelector<HTMLElement>(`[data-node-key="${CSS.escape(clicked)}"]`)!.click();
     await frame();
-    // The two small inline layouts have now committed. Machine speed cannot
-    // advance their held motion clock while we sample the anchor.
-    // The earlier focus-only shrink snaps, including rows displaced by it.
-    if (motion.owns(graphA)) throw new Error("the reveal animated its height");
+    // Machine speed cannot advance a held motion clock while we sample the anchor.
+    if (motion.owns(graphA)) throw new Error("the click moved the earlier section");
     const bMotions = [graphB, ...graphB.querySelectorAll("*")].filter((element) => motion.owns(element)).length;
     const duration = Math.max(0, ...motion.state().running.map((epoch: { duration: number }) => epoch.duration));
     for (let step = 0; step <= 10; step++) {
@@ -82,13 +83,13 @@ test("a clicked tile stays on screen while an earlier section shrinks and its ow
   await releaseMotion(page);
   await settle(page);
   expect(result.bMotions, "B's geometry stays unchanged").toBe(0);
-  expect(result.shrink).toBe(115);
-  expect(result.scrollTop).toBeCloseTo(before.scrollTop - 115, 0);
+  expect(result.shrink, "A keeps its height").toBe(0);
+  expect(result.scrollTop, "nothing to compensate").toBeCloseTo(before.scrollTop, 0);
   for (const position of result.positions) {
     expect(Math.abs(position.x - before.x), "clicked tile's screen x throughout the relayout").toBeLessThan(1);
     expect(Math.abs(position.y - before.y), "clicked tile's screen y throughout the relayout").toBeLessThan(1);
   }
-  await expect(page.locator(`[data-tile-key="${last}"]`)).toHaveCount(0);
+  await expect(page.locator(`[data-tile-key="${last}"]`)).toHaveCount(1);
   expect(await uncaught(page)).toEqual([]);
 });
 
@@ -110,7 +111,9 @@ async function prepareCrossSectionAnchor(page: Page, name: string, extra = "") {
   return { clicked, earlier, before };
 }
 
-test("a worker-sized clicked neighborhood commits with the section above in one scene, anchored throughout", async ({ page }) => {
+// The first click on B's child opens its 75 descendants: a worker-sized layout. Nothing of it
+// commits until the worker answers, and the section above never changes (explicit expansion).
+test("a worker-sized expansion commits once its layout arrives, anchored throughout, leaving the section above as it was", async ({ page }) => {
   const { clicked, earlier, before } = await prepareCrossSectionAnchor(page, "anchor-b-child", "&anchorWorker=1");
   await holdMotion(page);
   try {
@@ -123,7 +126,7 @@ test("a worker-sized clicked neighborhood commits with the section above in one 
       };
       document.querySelector<HTMLElement>(`[data-node-key="${CSS.escape(clicked)}"]`)!.click();
     }, clicked);
-    // One action: while B's worker layout is held, nothing of it commits, A's shrink included.
+    // One action: while B's worker layout is held, nothing of it commits.
     await page.waitForFunction(() => (window as any).__anchorLayouts.length > 0);
     const pending = await page.evaluate(async ({ clicked, earlier, earlierHeight }) => {
       const view = document.querySelector<HTMLElement>("[data-testid=trace-view]")!;
@@ -145,7 +148,7 @@ test("a worker-sized clicked neighborhood commits with the section above in one 
       return { positions, shrink: height - graph.getBoundingClientRect().height, pending: (window as any).trace.layoutsPending() };
     }, { clicked, earlier, earlierHeight: before.earlierHeight });
     expect(pending.pending, "B's real worker request is still held").toBeGreaterThan(0);
-    expect(pending.shrink, "A keeps its committed geometry until B's layout completes").toBe(0);
+    expect(pending.shrink, "A keeps its geometry").toBe(0);
     await expect(page.locator(`[data-tile-key="${await key(page, "anchor-a-last")}"]`)).toHaveCount(1);
     for (const y of pending.positions) expect(Math.abs(y - before.y), "held before the scene commits").toBeLessThan(1);
 
@@ -155,10 +158,10 @@ test("a worker-sized clicked neighborhood commits with the section above in one 
       for (const release of w.__anchorLayouts.splice(0)) release();
     });
     await page.waitForFunction(() => (window as any).trace.layoutsPending() === 0);
-    // B's 75 newly revealed descendants prove this was the worker-sized scene; A shrank in the same commit.
+    // B's 75 newly opened descendants prove this was the worker-sized scene; A is as it was.
     const leaf = await key(page, "anchor-b-leaf-74");
     await expect(page.locator(`[data-tile-key="${leaf}"]`)).toHaveCount(1);
-    await expect(page.locator(`[data-tile-key="${await key(page, "anchor-a-last")}"]`)).toHaveCount(0);
+    await expect(page.locator(`[data-tile-key="${await key(page, "anchor-a-last")}"]`)).toHaveCount(1);
     const positions = await page.evaluate(async (clicked) => {
       const tile = () => document.querySelector<HTMLElement>(`[data-tile-key="${CSS.escape(clicked)}"]`)!;
       const frame = () => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
@@ -460,13 +463,11 @@ test.describe("anchoring under the host's zoom", () => {
 });
 
 test.describe("anchoring under the host's zoom, content above changing", () => {
-  // A legal click keeps the clicked tile in place within its own graph, so the
-  // scroll compensation under zoom is exercised by a section above it shrinking.
-  test("at 130% zoom the clicked tile stays where it was on screen while an earlier section shrinks", async ({ page }) => {
+  // A click changes nothing outside the clicked tile's own children, so the scroll compensation
+  // under zoom is exercised by new data growing a section above it (a generation landing in A).
+  test("at 130% zoom the clicked tile stays where it was on screen while an earlier section grows", async ({ page }) => {
     await page.setViewportSize({ width: 800, height: 600 });
     await openAnchorView(page, "&zoom=1.3");
-    await page.locator(await node(page, "anchor-a-middle")).click();
-    await settle(page);
     const clicked = await key(page, "anchor-b");
     const before = await page.evaluate((clicked) => {
       const view = document.querySelector<HTMLElement>("[data-testid=trace-view]")!;
@@ -475,30 +476,46 @@ test.describe("anchoring under the host's zoom, content above changing", () => {
       return { scrollTop: view.scrollTop };
     }, clicked);
     expect(before.scrollTop).toBeGreaterThan(115);
-    const frames = await sampleClick(page, await node(page, "anchor-b"));
+    await settle(page);
+    const frames = await page.evaluate(async (clicked) => {
+      const w = window as any, view = document.querySelector<HTMLElement>("[data-testid=trace-view]")!;
+      const tile = () => view.querySelector<HTMLElement>(`[data-tile-key="${CSS.escape(clicked)}"]`)!.getBoundingClientRect();
+      const frames: Array<{ x: number; y: number }> = [{ x: tile().x, y: tile().y }];
+      view.querySelector<HTMLElement>(`[data-node-key="${CSS.escape(clicked)}"]`)!.click();
+      const added = w.trace.backend.startGeneration("anchor-a", "zoomed-growth");
+      for (let index = 0; index < 2000; index++) {
+        await new Promise((resolve) => requestAnimationFrame(resolve));
+        frames.push({ x: tile().x, y: tile().y });
+        if (view.querySelector(`[data-tile-key="${CSS.escape(added)}"]`) && index > 30) break;
+      }
+      return frames;
+    }, clicked);
     await settle(page);
     const scrollTop = await page.evaluate(() => document.querySelector<HTMLElement>("[data-testid=trace-view]")!.scrollTop);
-    // The earlier section's shrink moved the clicked tile up in the document; the view compensated.
-    expect(before.scrollTop - scrollTop, "the view scrolled to compensate").toBeGreaterThan(50);
-    const shown = frames.filter((frame) => frame.tiles[clicked]);
-    expect(shown.length).toBeGreaterThan(3);
-    for (const frame of shown) {
-      expect(Math.abs(frame.tiles[clicked][3] - shown[0].tiles[clicked][3]), "clicked tile's screen y on every frame").toBeLessThanOrEqual(2);
-      expect(Math.abs(frame.tiles[clicked][0] - shown[0].tiles[clicked][0]), "clicked tile's screen x on every frame").toBeLessThanOrEqual(2);
+    // The earlier section's growth moved the clicked tile down in the document; the view compensated.
+    expect(scrollTop - before.scrollTop, "the view scrolled to compensate").toBeGreaterThan(30);
+    expect(frames.length).toBeGreaterThan(3);
+    for (const frame of frames) {
+      expect(Math.abs(frame.y - frames[0].y), "clicked tile's screen y on every frame").toBeLessThanOrEqual(2);
+      expect(Math.abs(frame.x - frames[0].x), "clicked tile's screen x on every frame").toBeLessThanOrEqual(2);
     }
     expect(await uncaught(page)).toEqual([]);
   });
 });
 
-test.describe("focus reveals snap", () => {
+test.describe("reveals from outside the view", () => {
   test.use({ viewport: { width: 900, height: 900 } });
 
-  test("a revealed tile is immediately at its accepted destination", async ({ page }) => {
+  // The host selecting a node hidden under a collapsed parent opens the path to it: an expansion,
+  // so it travels into place (from its parent's side) and ends exactly at its destination.
+  test("a node the host selects is revealed and travels to its accepted destination", async ({ page }) => {
     await openView(page, 900, "?deeper=1");
     const dawn = await key(page, "mist-dawn");
+    await expect(page.locator(`[data-tile-key="${dawn}"]`)).toHaveCount(0);
     await holdMotion(page);
     try {
-      await page.evaluate(selector => document.querySelector<HTMLElement>(selector)!.click(), await node(page, "forest-mist"));
+      await page.evaluate(() => (window as any).trace.selectPath("/pictures/mist-dawn.png"));
+      await expect(page.locator(`[data-tile-key="${dawn}"]`)).toHaveCount(1);
       await awaitMotionStarted(page);
       const seen = await page.evaluate(async (dawn) => {
         const view = document.querySelector<HTMLElement>("[data-testid=trace-view]")!;
@@ -512,12 +529,12 @@ test.describe("focus reveals snap", () => {
         return positions;
       }, dawn);
       const last = seen.at(-1)!;
-      for (const sample of seen) {
-        expect(Math.abs(sample[0] - last[0])).toBeLessThanOrEqual(1);
-        expect(Math.abs(sample[1] - last[1])).toBeLessThanOrEqual(1);
-      }
+      // Monotone toward its destination, from no further than the entrance offset.
+      for (let i = 1; i < seen.length; i++) expect(Math.hypot(seen[i][0] - last[0], seen[i][1] - last[1])).toBeLessThanOrEqual(Math.hypot(seen[i - 1][0] - last[0], seen[i - 1][1] - last[1]) + .5);
+      expect(Math.hypot(seen[0][0] - last[0], seen[0][1] - last[1])).toBeLessThanOrEqual(11);
     } finally { await releaseMotion(page); }
     await settle(page);
+    expect((await state(page)).selected).toEqual(["/pictures/mist-dawn.png"]);
     expect(await uncaught(page)).toEqual([]);
   });
 });
@@ -537,8 +554,9 @@ for (const exitAt of [.01, 40]) test(`reopening after collapse reserves space be
       const tile = document.querySelector<HTMLElement>(`[data-grid-exit] [data-ghost-tile-key="${child}"]`)!;
       return Number(getComputedStyle(tile).opacity) * Number(getComputedStyle(tile.closest('[data-grid-exit]')!).opacity);
     }, { child, exitAt });
-    if (exitAt < 1) { expect(exitOpacity).toBeGreaterThan(0); expect(exitOpacity).toBeLessThan(1); }
-    else expect(exitOpacity, 'tile and connectors have finished the shared exit fade').toBe(0);
+    // A closing band collapses like an accordion: shown whole at first, fading in its second half.
+    if (exitAt < 1) expect(exitOpacity, 'shown whole as the collapse starts').toBeCloseTo(1, 2);
+    else { expect(exitOpacity, 'fading with the end of the collapse').toBeGreaterThan(0); expect(exitOpacity).toBeLessThan(1); }
     await village.locator("[data-stack-toggle]").click();
     await awaitMotionStarted(page);
     const result = await page.evaluate(async (child) => {

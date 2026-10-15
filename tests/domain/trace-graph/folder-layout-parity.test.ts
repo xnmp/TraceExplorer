@@ -19,6 +19,7 @@ import { layoutGraph, type BandHistory, type GraphLayout, type PinnedCover } fro
 import { layoutSignature } from "$lib/domain/trace-graph/layout-signature";
 import { tileMetrics, tileSize, type TileMetrics } from "$lib/domain/trace-graph/metrics";
 import { connectedComponents, projectDag, projectReferenceBadges } from "$lib/domain/trace-graph/projection";
+import { focusExpanded } from "../../../layout-eval/corpus";
 import { planBandScene, type BandScenePlan, type ComponentFocus } from "$lib/domain/trace-graph/scene";
 import type { TraceNode } from "$lib/domain/trace-graph/model";
 import { belongs, handCase, makeFolder, type Folder } from "./folder-layout-fixtures";
@@ -54,7 +55,9 @@ function viewPipeline(folder: Folder, display: Display, mounted: ReadonlyMap<str
     const projection = projectReferenceBadges(projectDag(folder.stacks.get(cell.id)!.nodes));
     const known = mounted.get(cell.id);
     const history: BandHistory | undefined = known && { signature: bandHistorySignature(known.plan.request), layout: known.layout, placed: known.attached, attachment: { bandTop: known.bandTop, placement: known.placement } };
-    const plan = planBandScene(projection, projection.dag.order, focus?.key ?? null, innerWidth, { pinned: pins.get(cell.id)!, history, hint: known?.layout.readingOrder, tile, badgeHighlight: null });
+    // The display's focus stands for a user who revealed and expanded it, the band's anchor.
+    const mine = focus && (projection.dag.nodes.has(focus.key) || projection.badges.has(focus.key)) ? focus.key : null;
+    const plan = planBandScene(projection, projection.dag.order, mine, innerWidth, { pinned: pins.get(cell.id)!, expanded: focusExpanded(projection, projection.dag.order, cell.id, mine), history, hint: known?.layout.readingOrder, tile });
     if (known && requestBasis(known.plan.request) === requestBasis(plan.request)) unchanged.push(cell.id);
     covers.set(cell.id, { plan, layout: layoutGraph(plan.request) });
   }
@@ -75,7 +78,8 @@ const requestBasis = (request: BandScenePlan["request"]) => layoutSignature({ ..
 function engineDisplay(folder: Folder, display: Display, previous: FolderLayout | null, innerWidth: number, grid: { cellWidth: number; cellHeight: number; gap: number }): FolderLayout {
   const open = new Map(display.open.flatMap((id) => {
     const stack = folder.stacks.get(id);
-    return stack ? [[id, { id, graph: stack.graph, members: stack.graph.dag.order, focus: belongs(stack, display.focus) ? display.focus : null }] as const] : [];
+    const mine = stack && belongs(stack, display.focus) ? display.focus : null;
+    return stack ? [[id, { id, graph: stack.graph, members: stack.graph.dag.order, anchor: mine, expanded: focusExpanded(stack.graph, stack.graph.dag.order, id, mine ?? null) }] as const] : [];
   }));
   return engines.default({ items: folderCells(folder.entries, folder.index), open, width: innerWidth, tile: display.tile, grid, previous });
 }

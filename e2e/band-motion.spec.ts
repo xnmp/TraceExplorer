@@ -256,7 +256,9 @@ async function routeFrame(page: Page) {
           const points = polygon[1].split(',').map(p => p.trim().split(/\s+/).map(parseFloat));
           const bounds = { x: box.x + Math.min(...points.map(p => p[0])), y: box.y + Math.min(...points.map(p => p[1])),
             right: box.x + Math.max(...points.map(p => p[0])), bottom: box.y + Math.max(...points.map(p => p[1])) };
-          clips.push(bounds); motionClips.push(bounds);
+          // A closing band slides up under its cover: what its window's top edge hides is under the
+          // cover, where its connectors attach. Only the bottom edge (the rising rows) must never cut a port.
+          clips.push(bounds); motionClips.push(at.matches('[data-grid-exit]') ? { ...bounds, y: -Infinity } : bounds);
         }
         const id = style.clipPath.match(/#([^"')]+)/)?.[1];
         if (id) {
@@ -392,8 +394,9 @@ test('a retiring group keeps its connector fade when another group closes', asyn
   try {
     await toggle('a').evaluate((element: HTMLElement) => element.click());
     await awaitMotionStarted(page);
+    // Into the second half of the collapse, where its group fades (`COLLAPSE_FADE_FROM`).
     await page.evaluate(async () => {
-      (window as any).trace.motion.seek(.01);
+      (window as any).trace.motion.seek(60);
       await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
     });
     const before = (await routeFrame(page)).routes.filter(r => r.id.startsWith(`node:${a}>`) && r.opacity > 0);

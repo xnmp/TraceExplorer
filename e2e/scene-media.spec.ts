@@ -60,16 +60,21 @@ test("alternating clicks with cold thumbnails: every frame drawing a tile draws 
     const children = CHILDREN[name];
     // The first reveal of each stack's children is cold: their thumbnails were requested by this click.
     if (round < 2) expect((await thumbnailRequests(page)).length, `${name}: cold thumbnails requested`).toBeGreaterThan(before);
-    const revealed = frames.findIndex((frame) => children.every((child) => frame.tiles[child] !== null));
-    expect(revealed, `${name}: its children appear`).toBeGreaterThan(-1);
+    // The first click on each opens its children (explicit expansion); later ones select only, the
+    // children shown already. The scene commits in the frame the clicked card takes its final look.
+    const committed = frames.findIndex((frame) => children.every((child) => frame.tiles[child] !== null)
+      && JSON.stringify(frame.tiles[name]?.look) === JSON.stringify(final.tiles[name]?.look));
+    expect(committed, `${name}: its children shown and the selection drawn`).toBeGreaterThan(-1);
+    if (round < 2) expect(children.some((child) => frames[0].tiles[child] !== null), `${name}: its children are new`).toBe(false);
     frames.forEach((frame, index) => {
       for (const tile of NAMES) {
         const shown = frame.tiles[tile];
         if (shown) expect(shown.image, `${name} frame ${index}: ${tile} draws its image`).toBe("img");
       }
-      if (index < revealed) return;
-      // From the frame the new scene first draws, every card already has its final look.
-      for (const tile of NAMES) if (frame.tiles[tile] && final.tiles[tile]) expect(frame.tiles[tile]!.look, `${name} frame ${index}: ${tile} look`).toEqual(final.tiles[tile]!.look);
+      // Until the commit, the previous scene's looks (but the pressed card's hover); from it on,
+      // every card already has its final look.
+      const expected = index < committed ? frames[0] : final;
+      for (const tile of NAMES) if (frame.tiles[tile] && expected.tiles[tile] && (index >= committed || tile !== name)) expect(frame.tiles[tile]!.look, `${name} frame ${index}: ${tile} look`).toEqual(expected.tiles[tile]!.look);
     });
   }
   expect((await uncaught(page)).filter((e) => e !== "ResizeObserver loop completed with undelivered notifications.")).toEqual([]);
@@ -87,8 +92,8 @@ test("a thumbnail slower than the media deadline: the scene commits at the deadl
   for (const child of ["Blastoise", "Ash"]) expect(frames[revealed].tiles[child]!.image, `${child} at the deadline`).toBe("placeholder");
   const loaded = frames.findIndex((frame) => frame.tiles["Blastoise"]?.image === "img" && frame.tiles["Ash"]?.image === "img");
   expect(loaded, "the images arrive in place").toBeGreaterThan(revealed);
-  // In place: the image arriving moves nothing.
-  for (const child of ["Blastoise", "Ash"]) expect(frames[loaded].tiles[child]!.at, `${child} stays`).toEqual(frames[revealed].tiles[child]!.at);
+  // In place: the image arriving moves nothing (the children's entrance ended long before).
+  for (const child of ["Blastoise", "Ash"]) expect(frames[loaded].tiles[child]!.at, `${child} stays`).toEqual(frames[loaded - 1].tiles[child]!.at);
   expect((await uncaught(page)).filter((e) => e !== "ResizeObserver loop completed with undelivered notifications.")).toEqual([]);
 });
 

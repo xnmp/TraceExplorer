@@ -316,7 +316,9 @@ for (const host of ["", "&fileTile=1&tileSize=medium"]) {
   });
 }
 
-test("selection inside a band snaps only rows below vertically, including another open band", async ({ page }) => {
+// A first click on rain opens its child (explicit expansion): the band grows, and every row below,
+// including the other open stack, travels down from where it was. (Before, a focus change snapped.)
+test("a first click inside a band opens its children and moves only rows below, vertically, including another open band", async ({ page }) => {
   await page.setViewportSize({ width: 800, height: 1400 });
   await openView(page, 180, "?deeper=1", false);
   await expect(page.getByRole("grid", { name: "Folder", exact: true })).toHaveAttribute("aria-colcount", "1");
@@ -358,8 +360,9 @@ test("selection inside a band snaps only rows below vertically, including anothe
   const delta = after[below].y - before[below].y;
   expect(Math.abs(delta)).toBeGreaterThan(40);
   expect(after[forest].y - before[forest].y).toBeCloseTo(delta, 1);
-  expect(samples[0][below].y).toBeCloseTo(after[below].y, 1);
+  expect(samples[0][below].y, "it starts where it was").toBeCloseTo(before[below].y, 1);
   expect(samples.at(-1)![below].y).toBeCloseTo(after[below].y, 1);
+  expect(samples.some((sample) => Math.abs(sample[below].y - before[below].y) > 1 && Math.abs(sample[below].y - after[below].y) > 1), "it travels").toBe(true);
   let previous = before[below].y;
   for (const sample of samples) {
     expect((sample[below].y - previous) * Math.sign(delta)).toBeGreaterThanOrEqual(-.5);
@@ -521,8 +524,9 @@ test("closing during emergence reclaims rows without overlapping the remaining b
   expect(await uncaught(page)).toEqual([]);
 });
 
-test("selecting in another band after a reveal snaps each neighborhood without subsequent motion", async ({ page }) => {
-  // Both focus changes reveal new neighborhoods and snap their footprints.
+// Both first clicks open children (explicit expansion): each moves what it displaces, and the second,
+// interrupting the first, continues from what is displayed. (Before, both focus changes snapped.)
+test("opening children in another band during a running expansion continues from what is displayed", async ({ page }) => {
   await openView(page, 420, "?deeper=1", false);
   for (const name of ["village", "forest"]) { await stack(page, name).locator("[data-stack-toggle]").click(); await settle(page); }
   await holdMotion(page);
@@ -546,15 +550,15 @@ test("selecting in another band after a reveal snaps each neighborhood without s
     await awaitMotionStarted(page);
     await seek(0);
     const resumed = await positions();
-    expect((await motionState(page)).running, "the reveal snaps: nothing moves").toEqual([]);
-    // The newly committed positions remain fixed, even when test clocks seek.
-    let previous = resumed[mist][1];
+    expect((await motionState(page)).running, "the second expansion moves").toHaveLength(1);
+    expect(resumed[mist][1], "it continues from where forest-mist was displayed").toBeCloseTo(displayed[mist][1], 0);
+    const samples = [resumed[mist][1]];
     for (const time of [20, 40, 80, 120, 160]) {
       await seek(time);
-      const now = (await positions())[mist][1];
-      expect(now, `forest-mist at ${time}ms`).toBeCloseTo(previous, 1);
-      previous = now;
+      samples.push((await positions())[mist][1]);
     }
+    const end = samples.at(-1)!;
+    for (let i = 1; i < samples.length; i++) expect(Math.abs(samples[i] - end), `forest-mist sample ${i} heads to its place`).toBeLessThanOrEqual(Math.abs(samples[i - 1] - end) + .5);
   } finally { await releaseMotion(page); }
   await settle(page);
   expect(await uncaught(page)).toEqual([]);
@@ -651,9 +655,10 @@ test("reduced motion opens and closes bands without animations", async ({ page }
   expect((await motionState(page)).started, "motion started").toBe(started);
 });
 
+// A closed stack's cover selects (and opens); its caret only opens (explicit expansion).
 test("clicking a closed in-place-edit stack selects its cover revision, as clicking the open cover does", async ({ page }) => {
   await openView(page, 420, "?grouping=in-place-edit", false);
-  await page.locator("[data-stack-toggle]").click(); await settle(page);
+  await page.locator(".cover-press").first().click(); await settle(page);
   expect((await state(page)).target).toMatchObject({ id: "trace:a:1", badge: "Earlier revision" });
   expect(await uncaught(page)).toEqual([]);
 });
@@ -749,7 +754,7 @@ test("an in-place edit's stack hangs from its root revision, inside the view and
 test("an unsaved cover that is not the component's namesake selects itself as the AI input", async ({ page }) => {
   // The unsaved draft is the cover; the component is named after the later source it merged with.
   await openView(page, 420, "?grouping=unsaved-root-joined-with-source", false);
-  await stack(page, "draft").locator("[data-stack-toggle]").click(); await settle(page);
+  await stack(page, "draft").locator(".cover-press").click(); await settle(page);
   await expect(page.locator('[data-tile-key="o:10:0"]')).toBeVisible();
   expect((await state(page)).inputs).toEqual(["/managed/draft.png"]);
   expect((await state(page)).selected).not.toContain("/pictures/source.png");
@@ -806,7 +811,7 @@ test("#51 a cold activation follows its revision after merging into an older lin
   const clicked = await key(page, "draft");
   const oldId = await stack(page, "draft").getAttribute("data-component");
   await page.evaluate(() => (window as any).trace.backend.holdNodeReads());
-  await stack(page, "draft").locator("[data-stack-toggle]").click();
+  await stack(page, "draft").locator(".cover-press").click();
   await expect.poll(() => page.evaluate((id) => (window as any).trace.backend.calls("trace_component_nodes").some((call: { params: { componentId: string } }) => call.params.componentId === id), oldId)).toBe(true);
   // Only nodes are held: the new index overtakes the clicked stack's node load. The requested open
   // is a dependency of the refresh, so the committed scene stays until its data is complete.
@@ -849,7 +854,7 @@ test("a refresh that merges the stack during activation still selects the clicke
   const backend = (fn: string, ...args: unknown[]) => page.evaluate(([fn, args]) => (window as any).trace.backend[fn as string](...(args as unknown[])), [fn, args] as const);
   await backend("holdFolderReads");
   // An unsaved cover is not a listed file, so pressing it loads its component before selecting.
-  await stack(page, "out").locator("[data-stack-toggle]").click();
+  await stack(page, "out").locator(".cover-press").click();
   await backend("joinGeneration", ["o:10:0", "out"], "joined");
   await backend("releaseFolderReads");
   await settle(page);
@@ -970,7 +975,8 @@ test.describe("a save that outlives the control that started it still claims its
 });
 
 /** Grid navigation stops; the stop's own stack disclosure is a secondary control reached by Tab. */
-const tabStops = (page: Page) => page.locator('[role="grid"] [tabindex="0"]:not([data-stack-toggle])');
+/** The grid's roving tab stop. A focused tile's disclosure (a stack's or a node's caret) follows it in tab order. */
+const tabStops = (page: Page) => page.locator('[role="grid"] [tabindex="0"]:not([data-stack-toggle]):not([data-node-caret])');
 
 test("keyboard alone collapses and re-expands an open stack through its disclosure", async ({ page }) => {
   await openView(page, 900, "", false);
@@ -1003,7 +1009,8 @@ test("deselecting the focused band tile leaves one tab stop and keeps the keyboa
   const focused = () => page.evaluate(() => document.activeElement?.getAttribute("data-node-key") ?? null);
   const before = await focused();
   expect(before).not.toBeNull();
-  await page.keyboard.press("ArrowDown"); await settle(page);
+  // Quiet is the band's lowest tile (only expanded nodes show children): up reaches rain.
+  await page.keyboard.press("ArrowUp"); await settle(page);
   const after = await focused();
   expect(after).not.toBeNull();
   expect(after).not.toBe(before);
@@ -1154,7 +1161,8 @@ for (const worker of [false, true]) test(`cold children reveal from their accept
 
 for (const host of ["", "&fileTile=1&tileSize=medium"]) test(`closed explorer covers dim without filtering their stacked thumbnail (${host ? "host" : "fallback"})`, async ({ page }) => {
   await openView(page, 620, `?grouping=two-chains${host}`, false);
-  await stack(page, "photo-a").locator("[data-stack-toggle]").click(); await settle(page);
+  // Selecting photo-a's cover (which opens it) dims the other stack's cover.
+  await stack(page, "photo-a").locator(".cover-press").click(); await settle(page);
   const other = stack(page, "photo-b");
   await expect(other.locator("[data-grid-band]")).toHaveCount(0);
   const style = await other.locator(".tile").evaluate((tile) => ({

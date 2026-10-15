@@ -11,7 +11,7 @@ import type { GraphLayout, LayoutRequest } from '../src/lib/domain/trace-graph/l
 import { tileMetrics, tileSize, type TileMetrics } from '../src/lib/domain/trace-graph/metrics';
 import { projectDag, projectReferenceBadges } from '../src/lib/domain/trace-graph/projection';
 import { engines, type FolderLayout, type FolderLayoutEngine, type OpenStack } from '../src/lib/domain/trace-graph/folder-layout';
-import { handCases, requestFor, screenshot, type Case } from './corpus';
+import { focusExpanded, handCases, requestFor, screenshot, type Case } from './corpus';
 import { measure } from './geometry';
 const engineName = process.argv.find(a => a.startsWith('--engine='))?.slice(9) ?? 'default';
 const folderEngine: FolderLayoutEngine | undefined = engines[engineName];
@@ -21,7 +21,7 @@ function runEngine(cases: readonly Case[], focuses: readonly (string | null)[], 
   const open = new Map<string, OpenStack>(cases.map((c, i) => {
     if (c.full) throw new Error(`${c.id}: full-lineage requests have no folder equivalent`);
     const graph = projectReferenceBadges(projectDag(c.nodes)), members = graph.dag.order;
-    return [members[0], { id: members[0], graph, members, focus: focuses[i] }];
+    return [members[0], { id: members[0], graph, members, anchor: focuses[i], expanded: focusExpanded(graph, members, members[0], focuses[i]) }];
   }));
   const items = [...open.keys()].map(id => ({ id, kind: 'stack' as const }));
   const layout = folderEngine!({ items, open, width: gridWidth, tile, grid: { cellWidth: tile.width, cellHeight: coverHeight, gap: 16 }, previous });

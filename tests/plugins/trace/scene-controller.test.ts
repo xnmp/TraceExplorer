@@ -1,3 +1,6 @@
+import { NO_EXPANSION, type Expansion } from "$lib/domain/trace-graph/expansion";
+/** The user expanded a2 (its caret): a3 shows. */
+const A2_EXPANDED: Expansion = { choices: new Map([["a2", true]]), reveals: [] };
 import "./svelte-host";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createSceneController, MEDIA_DEADLINE_MS, PREPARATION_DEADLINE_MS, type SceneCause, type SceneController, type SceneMedia } from "$lib/plugins/trace/view/scene-controller.svelte";
@@ -101,7 +104,7 @@ function harness(options: { inline?: (input: FolderLayoutInput) => boolean; toke
   });
   let intent: SceneIntent = {
     directory: "/f", listing: LISTING, claimed: new Set(), open: new Set(), focus: null, selectedKeys: new Set(), selectedPaths: new Set(),
-    badgeHover: null, width: 900, tile, grid: fallbackGridMetrics(tile), cover: { imagePx: null, small: false }, hostChoice: "[]",
+    badgeHover: null, expansion: NO_EXPANSION, width: 900, tile, grid: fallbackGridMetrics(tile), cover: { imagePx: null, small: false }, hostChoice: "[]",
   };
   /** The view's intake: the current intent and the session's data revision. */
   const offer = (change: Partial<SceneIntent> = {}) => {
@@ -318,19 +321,27 @@ describe("scene controller", () => {
     expect(h.engine.mock.calls.at(-1)![0].previous).toBe(committed);
   });
 
-  it("lets a selection commit on the committed snapshot while a refresh is reading", async () => {
+  it("lets a selection and a collapse commit on the committed snapshot while a refresh is reading", async () => {
     const h = setup();
-    h.offer({ open: new Set(["a1"]) }); await flush();
+    h.offer({ open: new Set(["a1"]), expansion: A2_EXPANDED }); await flush();
     h.deliver("ca"); await flush();
+    expect(h.controller.published!.scene.graphs.get("a1")!.plan.tiles.has("a3")).toBe(true);
     // A refresh: a new index whose open stack must be read again.
     h.fake.source.index = indexFor("t2");
     h.offer();
     await flush();
     expect(h.fake.pending("ca").some((read) => read.token === "t2")).toBe(true);
     const before = h.published.length;
+    // A selection restyles (it never changes geometry) on the committed snapshot.
     h.act("selection", () => h.offer({ focus: { key: "a3", componentId: "ca" }, selectedKeys: new Set(["a3"]), hostChoice: "[\"/f/a3.png\"]" }));
     await flush();
+    expect(h.published.length).toBe(before);
+    expect(h.controller.published!.scene.inputs.styling.focus).toBe("a3");
+    // Collapsing a2 (its caret) hides a3: a geometry commit, also on the committed snapshot.
+    h.act("collapse", () => h.offer({ expansion: { choices: new Map([["a2", false]]), reveals: [] } }));
+    await flush();
     expect(h.published.length).toBe(before + 1);
+    expect(h.controller.published!.scene.graphs.get("a1")!.plan.tiles.has("a3")).toBe(false);
     expect(h.controller.committedIndex!.token).toBe("t1"); // never an old graph with the new index
     h.deliver("ca"); await flush();
     expect(h.controller.committedIndex!.token).toBe("t2");
@@ -749,12 +760,12 @@ describe("scene controller: review fixes (099e72f)", () => {
     }
   });
 
-  it("a focus that changes an open stack's layout is laid out before the first frame and snaps", async () => {
+  it("an expansion that changes an open stack's layout is laid out before the first frame and snaps", async () => {
     const h = await remount(store());
-    h.offer({ open: new Set(["a1"]), selectedKeys: new Set(["a3"]), focus: { key: "a3", componentId: "ca" } });
+    h.offer({ open: new Set(["a1"]), expansion: A2_EXPANDED, selectedKeys: new Set(["a3"]), focus: { key: "a3", componentId: "ca" } });
     const first = h.controller.published!;
     expect(h.engine).toHaveBeenCalledTimes(1);
-    expect(first.scene.graphs.get("a1")!.plan.lineage.focus).toBe("a3");
+    expect(first.scene.graphs.get("a1")!.plan.tiles.has("a3")).toBe(true);
     expect(selectedTiles(first)).toEqual(["a3"]);
     expect(first.presentation.duration).toBe(0);
     await flush();
@@ -764,11 +775,11 @@ describe("scene controller: review fixes (099e72f)", () => {
   // Review 8d257bf: a return that needed the worker was blank, then "Loading Trace…".
   it("a layout too large to run inline shows the saved scene, styled as now, until the current scene is ready, then snaps to it", async () => {
     const h = await remount(store(), { inline: () => false });
-    h.offer({ open: new Set(["a1"]), selectedKeys: new Set(["a3"]), focus: { key: "a3", componentId: "ca" } });
+    h.offer({ open: new Set(["a1"]), expansion: A2_EXPANDED, selectedKeys: new Set(["a3"]), focus: { key: "a3", componentId: "ca" } });
     // Synchronously: the saved layout, with the selection the pane has now.
     const saved = h.controller.published!;
     expect(saved).not.toBeNull();
-    expect(saved.scene.graphs.get("a1")!.plan.lineage.focus).not.toBe("a3");
+    expect(saved.scene.graphs.get("a1")!.plan.tiles.has("a3")).toBe(false);
     expect(saved.scene.inputs.styling.selectedKeys).toEqual(new Set(["a3"]));
     expect(selectedTiles(saved), "not the selection it was saved with").not.toContain("b1");
     expect(saved.presentation.duration).toBe(0);
@@ -778,7 +789,7 @@ describe("scene controller: review fixes (099e72f)", () => {
     h.layouts[0].reply.resolve(engines.default(h.layouts[0].input));
     await flush();
     const current = h.controller.published!;
-    expect(current.scene.graphs.get("a1")!.plan.lineage.focus).toBe("a3");
+    expect(current.scene.graphs.get("a1")!.plan.tiles.has("a3")).toBe(true);
     expect(current.presentation.duration).toBe(0);
     expect(h.published).toHaveLength(2);
   });
@@ -812,13 +823,13 @@ describe("scene controller: review fixes (099e72f)", () => {
       // A NaN graph origin: the scene rejects it.
       return { ...layout, graphs: new Map([...layout.graphs].map(([id, graph]) => [id, { ...graph, origin: { x: NaN, y: 0 } }])) };
     });
-    // The focus changes an open stack's layout, so the return lays it out (inline) and builds it.
-    expect(() => h.offer({ open: new Set(["a1"]), selectedKeys: new Set(["a3"]), focus: { key: "a3", componentId: "ca" } })).not.toThrow();
+    // The expansion changes an open stack's layout, so the return lays it out (inline) and builds it.
+    expect(() => h.offer({ open: new Set(["a1"]), expansion: A2_EXPANDED, selectedKeys: new Set(["a3"]), focus: { key: "a3", componentId: "ca" } })).not.toThrow();
     expect(poisoned).toBe(false);
     expect(h.failures.length).toBeGreaterThan(0);
     await flush();
     expect(h.controller.published).not.toBeNull();
-    expect(h.controller.published!.scene.graphs.get("a1")!.plan.lineage.focus).toBe("a3");
+    expect(h.controller.published!.scene.graphs.get("a1")!.plan.tiles.has("a3")).toBe(true);
     // Data, a selection and a resize all still commit.
     h.fake.source.components = new Map(h.fake.source.components);
     h.offer({ selectedPaths: new Set(["/f/notes.txt"]), hostChoice: "n" }); await flush();

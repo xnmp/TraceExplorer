@@ -8,6 +8,7 @@
  * returning to a Trace tab never shows "Loading Trace…" again.
  */
 import type { ComponentSummary, TraceNode } from "$lib/domain/trace-graph/model";
+import { bandCarets, type BandCarets } from "$lib/domain/trace-graph/visibility";
 import { matchesIndex, type ComponentData, type FolderIndex, type Member } from "$lib/domain/trace-graph/folder-data";
 import type { OrientationHistory } from "$lib/domain/trace-graph/orientation";
 import { projectDag } from "$lib/domain/trace-graph/projection";
@@ -17,6 +18,8 @@ import { sceneSnapshots } from "./scene-snapshots";
 import { componentRequest } from "./component-requests";
 import { parentDir, samePath } from "$lib/domain/path";
 import { coverAliases, coverIdentity, forgetOpenStack, stackIdentity, pathIdentity, revisionIdentity, resolveOpenStacks } from "./open-stacks";
+import { NO_EXPANSION, expandForOutputs, expandNode, expandedKeys, isOpen, openStack, pruneExpansion, readExpansion, revealNode, toggleNode, type ChoiceStatus, type Expansion, type ExpansionScope } from "$lib/domain/trace-graph/expansion";
+import { projectionOf } from "./scene-inputs";
 
 export type { ComponentData, FolderIndex, Member };
 
@@ -64,12 +67,17 @@ interface PaneFolderSnapshot {
   readonly openOwners: ReadonlyMap<string, string>;
   readonly selectionChoice: string;
   readonly selectionCovers: ReadonlySet<string>;
+  /** The node the last followed selection focused (a reveal follows only a new one). */
+  readonly selectionFocus?: string | null;
+  /** Explicit expansion inside open stacks (`expansion.ts`). */
+  readonly expansion?: Expansion;
 }
-const emptyPaneSnapshot = (): PaneFolderSnapshot => ({ openCovers: new Set(), openOwners: new Map(), selectionChoice: "", selectionCovers: new Set() });
+const emptyPaneSnapshot = (): PaneFolderSnapshot => ({ openCovers: new Set(), openOwners: new Map(), selectionChoice: "", selectionCovers: new Set(), selectionFocus: null, expansion: NO_EXPANSION });
 /** Members and nodes a snapshot holds, which bound the cache's memory. */
 export const snapshotWeight = (snapshot: FolderSnapshot): number =>
   snapshot.index.members.size + [...snapshot.components.values()].reduce((sum, data) => sum + data.nodes.length, 0)
-  + [...(snapshot.panes?.values() ?? [])].reduce((sum, pane) => sum + pane.openCovers.size + pane.openOwners.size + pane.selectionCovers.size, 0);
+  + [...(snapshot.panes?.values() ?? [])].reduce((sum, pane) => sum + pane.openCovers.size + pane.openOwners.size + pane.selectionCovers.size
+    + (pane.expansion?.choices.size ?? 0), 0);
 /** Shared by every session, so a remounted view finds what the previous one loaded. */
 const folderSnapshots = createSnapshotCache<FolderSnapshot>({ limit: 8, budget: 200_000, weigh: snapshotWeight });
 /** Forgets every folder's data, when the plugin is disabled. */
@@ -167,6 +175,46 @@ export function createFolderSession(backend: TraceBackend = traceBackend, snapsh
     });
   }
 
+  const expansion = $derived(paneState.expansion ?? NO_EXPANSION);
+
+  /** A loaded component as expansion resolves against it (any loaded copy: what the view draws). */
+  function expansionScope(componentId: string): ExpansionScope | null {
+    const data = components.get(componentId), summary = index?.components.find((candidate) => candidate.id === componentId);
+    if (!data || !summary) return null;
+    const graph = projectionOf(data);
+    return { graph, members: graph.dag.order, cover: summary.coverKey };
+  }
+  /** The loaded component holding `key` (a node or a reference badge), preferring fresh data. */
+  function scopeHolding(key: string): ExpansionScope | null {
+    const ids = [...components.keys()].sort((a, b) => Number(stale.has(a)) - Number(stale.has(b)));
+    for (const id of ids) {
+      const graph = projectionOf(components.get(id)!);
+      if (graph.dag.nodes.has(key) || graph.badges.has(key)) return expansionScope(id);
+    }
+    return null;
+  }
+
+  /**
+   * Drops choices of nodes that are gone. A node is gone only when the index cannot place it in a component that is not loaded: not a listed file
+   * of one (`index.members`), and every listed component is loaded and fresh without it. A node
+   * that moved to a component not loaded yet (a split) is kept.
+   */
+  function pruneChoices(state: PaneFolderSnapshot): PaneFolderSnapshot {
+    const current = state.expansion ?? NO_EXPANSION;
+    if (!index || (!current.choices.size && !current.reveals.length)) return state;
+    const listed = new Set(index.components.map((summary) => summary.id));
+    const present = (key: string): boolean => [...components].some(([id, data]) => {
+      if (stale.has(id) || !matchesIndex(data, index!)) return false;
+      const graph = projectionOf(data);
+      return graph.dag.nodes.has(key) || graph.badges.has(key);
+    });
+    const listedKeys = new Set([...index.members.values()].map((member) => member.key));
+    const allKnown = [...listed].every((id) => { const data = components.get(id); return !!data && !stale.has(id) && matchesIndex(data, index!); });
+    const status = (key: string): ChoiceStatus => present(key) ? "present" : !listedKeys.has(key) && allKnown ? "gone" : "unknown";
+    const pruned = pruneExpansion(current, status);
+    return pruned === current ? state : { ...state, expansion: pruned };
+  }
+
   /** Retain missing covers; only unlisted identities need fresh node pages to resolve. */
   function reconcileOpenStacks(): void {
     if (!index) return;
@@ -174,7 +222,7 @@ export function createFolderSession(backend: TraceBackend = traceBackend, snapsh
     const pending = [...resolved.unresolved].filter((key) =>
       !(key.startsWith("path:") && samePath(parentDir(key.slice(5)), index!.directory)));
     const unread = index.components.filter((summary) => !components.has(summary.id) || stale.has(summary.id));
-    paneState = { ...paneState, openCovers: resolved.remembered, openOwners: resolved.owners };
+    paneState = pruneChoices({ ...paneState, openCovers: resolved.remembered, openOwners: resolved.owners });
     remember();
     if (pending.length) for (const summary of unread) void ensure(summary.id);
   }
@@ -435,6 +483,12 @@ export function createFolderSession(backend: TraceBackend = traceBackend, snapsh
     throw new Error("Trace kept changing while revealing the image");
   }
 
+  /** The carets of a loaded stack as drawn (`bandCarets` keeps the band's last answer). */
+  const caretsOf = (scope: ExpansionScope): BandCarets => bandCarets(scope.graph, scope.members, expandedKeys(expansion, scope));
+
+  /** `expansion` with `key` revealed; earlier reveals stay pending until their stacks settle them. */
+  const revealed = (key: string): Expansion => revealNode(expansion, key);
+
   return {
     get index() { return index; },
     get status() { return status; },
@@ -457,19 +511,94 @@ export function createFolderSession(backend: TraceBackend = traceBackend, snapsh
         if (membership) keys = new Set(forgetOpenStack(openStacks, membership));
       }
       const resolved = resolveOpenStacks(keys, stackMembership, openStacks.owners);
-      paneState = { ...paneState, openCovers: resolved.remembered, openOwners: resolved.owners };
+      // Opening a stack expands its cover as the latest choice (`openStack`).
+      const opened = opening && !openStacks.open.has(summary.coverKey);
+      paneState = { ...paneState, openCovers: resolved.remembered, openOwners: resolved.owners, expansion: opened ? openStack(expansion, summary.coverKey) : expansion };
       remember();
     },
-    /** A new external selection opens its stacks; an explicitly closed selection stays closed on return. */
-    followSelection(choice: string, ids: ReadonlySet<string>) {
+    /**
+     * A new selection made outside the view opens its stacks and reveals its focused node (once per
+     * new focus); an explicitly closed selection stays closed on return. The view's own selections
+     * are adopted first (`adoptSelection`), so they change nothing here: selecting in the view
+     * never changes geometry.
+     */
+    followSelection(choice: string, ids: ReadonlySet<string>, focus: string | null = null) {
       if (!index) return;
       const selected = index.components.filter((summary) => ids.has(summary.id)).map((summary) => coverIdentity(summary, index!.members));
       const added = index.components.filter((summary) => ids.has(summary.id) && (choice !== paneState.selectionChoice || !paneState.selectionCovers.has(coverIdentity(summary, index!.members))));
       const keys = new Set(paneState.openCovers);
       for (const summary of added) for (const key of coverAliases(summary, index.members)) { keys.delete(key); keys.add(key); }
       const resolved = resolveOpenStacks(keys, stackMembership, openStacks.owners);
-      paneState = { openCovers: resolved.remembered, openOwners: resolved.owners, selectionChoice: choice, selectionCovers: new Set(selected) };
+      const reveal = choice !== paneState.selectionChoice && focus !== null && focus !== (paneState.selectionFocus ?? null);
+      paneState = { ...paneState, openCovers: resolved.remembered, openOwners: resolved.owners, selectionChoice: choice, selectionCovers: new Set(selected),
+        selectionFocus: focus, expansion: reveal ? revealed(focus!) : expansion };
       remember();
+    },
+    /** Records a selection the view made itself as followed: it opens, reveals and expands nothing. */
+    adoptSelection(choice: string, ids: ReadonlySet<string>, focus: string | null) {
+      if (!index) return;
+      const selected = index.components.filter((summary) => ids.has(summary.id)).map((summary) => coverIdentity(summary, index!.members));
+      paneState = { ...paneState, selectionChoice: choice, selectionCovers: new Set(selected), selectionFocus: focus };
+      remember();
+    },
+    /** The pane's explicit expansion inside open stacks. */
+    get expansion() { return expansion; },
+    /** Shows `key` (Show image, Preview's input links): its ancestors count as expanded. */
+    reveal(key: string) {
+      paneState = { ...paneState, expansion: revealed(key) };
+      remember();
+    },
+    /**
+     * Toggles `key` (a caret, or a second click on the selected tile) in the loaded component
+     * holding it, from what is shown. False when that component is not loaded.
+     */
+    toggleExpansion(key: string, componentId?: string): boolean {
+      const scope = (componentId ? expansionScope(componentId) : null) ?? scopeHolding(key);
+      if (!scope) return false;
+      paneState = { ...paneState, expansion: toggleNode(expansion, scope, key) };
+      remember();
+      return true;
+    },
+    /**
+     * A first click on an unselected tile: opens its children if it has any and they are not open
+     * (`expandNode`). Changes nothing otherwise, so selecting a leaf or an expanded node keeps geometry.
+     */
+    expandNode(key: string, componentId?: string): void {
+      const scope = (componentId ? expansionScope(componentId) : null) ?? scopeHolding(key);
+      if (!scope) return;
+      const next = expandNode(expansion, scope, key);
+      if (next === expansion) return;
+      paneState = { ...paneState, expansion: next };
+      remember();
+    },
+    /**
+     * A job started from the view on these inputs (node keys): each is revealed and expanded in the
+     * loaded component holding it, so the job's placeholder and output show (`expandForOutputs`).
+     */
+    expandForOutputs(keys: readonly string[]): void {
+      let next = expansion;
+      for (const key of keys) {
+        const scope = scopeHolding(key);
+        if (scope) next = expandForOutputs(next, scope, key);
+      }
+      if (next === expansion) return;
+      paneState = { ...paneState, expansion: next };
+      remember();
+    },
+    /**
+     * Whether toggling `key` (a node or a reference badge) changes what its band shows: the caret
+     * rule (`bandCarets`). False when its component is not loaded.
+     */
+    canToggle(key: string, componentId?: string): boolean {
+      const scope = (componentId ? expansionScope(componentId) : null) ?? scopeHolding(key);
+      return !!scope && caretsOf(scope).togglable.has(key);
+    },
+    /** Whether `key` reads expanded as the view shows it (`isOpen`); false when its component is not loaded. */
+    isExpanded(key: string, componentId?: string): boolean {
+      const scope = (componentId ? expansionScope(componentId) : null) ?? scopeHolding(key);
+      if (!scope) return false;
+      const carets = caretsOf(scope);
+      return carets.togglable.has(key) || carets.open.has(key) ? carets.open.has(key) : isOpen(expansion, scope, key);
     },
     /** Switch folders. Data for the previous folder is never shown for the new one. */
     setDirectory(dir: string | null) {
@@ -483,7 +612,8 @@ export function createFolderSession(backend: TraceBackend = traceBackend, snapsh
       viewInterest = new Set();
       leaseInterests.clear();
       const known = dir ? snapshots.recall(dir) : undefined;
-      paneState = (!started && known?.panes?.get(paneId)) || emptyPaneSnapshot();
+      const restored = (!started && known?.panes?.get(paneId)) || emptyPaneSnapshot();
+      paneState = { ...restored, expansion: readExpansion(restored.expansion) };
       started = true;
       if (!known) { orientations = new Map(); void open(dir, false); return; }
       // Show what the folder last showed, as it was laid out, while its index is read again; open() reloads what is wanted.

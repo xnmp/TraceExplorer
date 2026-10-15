@@ -14,6 +14,8 @@ import type { TileMetrics } from "$lib/domain/trace-graph/metrics";
 import type { FolderLayout, FolderLayoutInput, GraphId, OpenStack } from "$lib/domain/trace-graph/folder-layout";
 import type { FolderScene, SceneGraphSource, SceneStyling } from "$lib/domain/trace-graph/folder-scene";
 import { arrivingStacks, type GeometryInputs } from "$lib/domain/trace-graph/scene-change";
+import { expandedKeys, expansionAnchor, sameExpansion, type Expansion } from "$lib/domain/trace-graph/expansion";
+import type { BandExpansion } from "$lib/domain/trace-graph/visibility";
 
 /** What the pane wants shown, captured from host and session state (data excluded). */
 export interface SceneIntent {
@@ -25,6 +27,8 @@ export interface SceneIntent {
   /** Requested open stacks by cover key (the session's open stack keys). */
   readonly open: ReadonlySet<GraphId>;
   readonly focus: ComponentFocus | null;
+  /** The pane's explicit expansion (the session's): what open bands show. */
+  readonly expansion: Expansion;
   readonly selectedKeys: ReadonlySet<NodeKey>;
   readonly selectedPaths: ReadonlySet<string>;
   readonly badgeHover: NodeKey | null;
@@ -58,10 +62,10 @@ export function projectionOf(data: ComponentData): BadgeProjection {
 export const focusBelongs = (graph: BadgeProjection, focus: NodeKey | null): boolean =>
   focus !== null && (graph.dag.nodes.has(focus) || graph.badges.has(focus));
 
-/** The open stack for a cover, focused when the focus belongs to it. */
-export function openStackOf(id: GraphId, data: ComponentData, focus: NodeKey | null): OpenStack {
-  const graph = projectionOf(data);
-  return { id, graph, members: graph.dag.order, focus: focusBelongs(graph, focus) ? focus : null };
+/** The open stack for a cover: its expanded keys and anchor, from the pane's expansion (never the selection). */
+export function openStackOf(id: GraphId, data: ComponentData, expansion: Expansion): OpenStack {
+  const graph = projectionOf(data), members = graph.dag.order, scope = { graph, members, cover: id };
+  return { id, graph, members, anchor: expansionAnchor(expansion, scope), expanded: expandedKeys(expansion, scope) };
 }
 
 /** Same members in any order. */
@@ -87,7 +91,7 @@ export interface IntentChange {
   readonly resize: boolean;
   /** Tile, grid or cover metrics. */
   readonly metrics: boolean;
-  /** Open set, focus, selection, claimed paths or badge hover. */
+  /** Open set, expansion, focus, selection, claimed paths or badge hover. */
   readonly other: boolean;
 }
 export function intentChange(before: SceneIntent | null, after: SceneIntent): IntentChange {
@@ -99,7 +103,7 @@ export function intentChange(before: SceneIntent | null, after: SceneIntent): In
     listing: !sameListing(before.listing, after.listing),
     resize: before.width !== after.width,
     metrics,
-    other: !sameSet(before.open, after.open) || !sameFocus(before.focus, after.focus) || !sameSet(before.selectedKeys, after.selectedKeys)
+    other: !sameSet(before.open, after.open) || !sameExpansion(before.expansion, after.expansion) || !sameFocus(before.focus, after.focus) || !sameSet(before.selectedKeys, after.selectedKeys)
       || !sameSet(before.selectedPaths, after.selectedPaths) || !sameSet(before.claimed, after.claimed) || before.badgeHover !== after.badgeHover,
   };
 }
@@ -162,14 +166,14 @@ export function prepareLayoutInput(intent: SceneIntent, data: SceneData, open: R
   const { columns } = folderGridGeometry(width, intent.tile, grid);
   const kept = history && history.directory === data.index.directory && history.columns === columns ? history.held : new Set<string>();
   const { cells, held } = folderItems(intent.listing, data.index, intent.claimed, kept);
-  const stacks = new Map<GraphId, OpenStack>(), sources = new Map<GraphId, SceneGraphSource>(), versions: [GraphId, number, NodeKey | null][] = [];
+  const stacks = new Map<GraphId, OpenStack>(), sources = new Map<GraphId, SceneGraphSource>(), versions: StackBasis[] = [];
   for (const [id, componentId] of open) {
     const component = data.components.get(componentId);
     if (!component) continue;
-    const stack = openStackOf(id, component, intent.focus?.key ?? null);
+    const stack = openStackOf(id, component, intent.expansion);
     stacks.set(id, stack);
     sources.set(id, { componentId, revision: component.version, data: component.dag });
-    versions.push([id, component.version, stack.focus]);
+    versions.push([id, component.version, stack.anchor, expandedSignature(stack.expanded)]);
   }
   const coverNodes = new Map<GraphId, TraceNode>();
   for (const cell of cells) if (cell.kind === "stack" && cell.summary && !stacks.has(cell.id)) {
@@ -180,12 +184,19 @@ export function prepareLayoutInput(intent: SceneIntent, data: SceneData, open: R
   return { input, cells, history: { directory: data.index.directory, columns, held }, sources, coverNodes, basis: layoutBasis(input, versions) };
 }
 
+/** An open stack's part of the layout basis: its id, data version, anchor and expanded keys (`expandedSignature`). */
+export type StackBasis = readonly [GraphId, number, NodeKey | null, string];
+
+/** A stack's expansion as one string. Its order is part of it: the latest entry decides, and the carets read it. */
+export const expandedSignature = (expanded: BandExpansion): string => JSON.stringify([...expanded]);
+
 /**
  * Everything the engine reads apart from `previous`: item identities, each open stack's data
- * version and focus, width, tile and grid. Equal bases lay out alike, so the committed layout is
- * reused instead of asking the engine again with a new history (docs/scene-transactions.md §4).
+ * version, anchor and expanded keys (never the selection), width, tile and grid. Equal bases lay out alike, so the
+ * committed layout is reused instead of asking the engine again with a new history
+ * (docs/scene-transactions.md §4).
  */
-export function layoutBasis(input: FolderLayoutInput, versions: readonly (readonly [GraphId, number, NodeKey | null])[]): string {
+export function layoutBasis(input: FolderLayoutInput, versions: readonly StackBasis[]): string {
   return JSON.stringify([input.items.map((item) => [item.id, item.kind]), [...versions].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)),
     input.width, input.tile.width, input.tile.image, input.grid.cellWidth, input.grid.cellHeight, input.grid.gap]);
 }
@@ -213,5 +224,6 @@ export function geometryInputsOf(scene: FolderScene, intent: SceneIntent, token:
     current, width: input.width, padding: intent.grid.gridPadding, tile: input.tile, grid: input.grid,
     items: input.items.map((item) => `${item.kind}\0${item.id}`), token, open, requested: intent.open,
     arriving: arrivingStacks(previous, intent.open, open, failed), focus: intent.focus?.key ?? null,
+    expanded: new Map([...input.open].map(([id, stack]) => [id, expandedSignature(stack.expanded)])),
   };
 }

@@ -41,7 +41,11 @@ const samePin = (a: PinnedCover | undefined, b: PinnedCover | undefined): boolea
     && aa.every((obstacle, i) => obstacle.x === bb[i].x && obstacle.width === bb[i].width);
 };
 
-/** Invalid or first inputs conservatively reflow. Geometry equality keeps travelling motion alive. */
+/**
+ * Invalid or first inputs conservatively reflow. Geometry equality keeps travelling motion alive.
+ * `reveal` (the graph snaps whole) is an anchor change that moved the band's geometry while it
+ * shows the same tiles; a change of the visible tiles (expansion) reflows, so it animates.
+ */
 export function classifySceneChange(previous: CommittedGraph | null | undefined, next: CommittedGraph | null | undefined): SceneChange {
   if (!valid(previous) || !valid(next)) return 'reflow';
   if (sameGraphGeometry(previous.layout, next.layout)) return 'restyle';
@@ -53,7 +57,9 @@ export function classifySceneChange(previous: CommittedGraph | null | undefined,
     && a.band?.key === b.band?.key && previous.layout.orientation === next.layout.orientation;
   const visibilityChanged = previous.plan.tiles.size !== next.plan.tiles.size
     || [...previous.plan.tiles.keys()].some(key => !next.plan.tiles.has(key));
-  return sameInputs && (previous.plan.lineage.focus !== next.plan.lineage.focus || visibilityChanged) ? 'reveal' : 'reflow';
+  // What a band shows changes only by the user's expansion (or new data): a spatial change that travels.
+  // An anchor alone that moved the band snaps.
+  return sameInputs && !visibilityChanged && a.anchorKey !== b.anchorKey ? 'reveal' : 'reflow';
 }
 
 /** Why a scene transaction committed (the controller's `SceneCause.kind`): instrumentation and anchoring only, never motion. */
@@ -74,7 +80,8 @@ export interface OpenStackSource {
 /**
  * What a scene's geometry was laid out from, as the motion policy compares it (`geometryMotion`).
  * Each field is either something the pane or the backend changes (width, metrics, the items, the
- * data) or something the user changes in the view (the requested open stacks, the focus).
+ * data) or something the user changes in the view (the requested open stacks, the expansion
+ * inside them, the focus).
  */
 export interface GeometryInputs {
   /**
@@ -102,6 +109,12 @@ export interface GeometryInputs {
   readonly arriving: ReadonlySet<string>;
   /** The focus the scene was laid out for. */
   readonly focus: string | null;
+  /**
+   * Each open stack's expanded keys as laid out (an order-independent signature): what its band
+   * shows. Changed only by the user (a caret, a second click on the selected tile, a selection).
+   * Absent in inputs from before expansion existed: compared as unchanged.
+   */
+  readonly expanded?: ReadonlyMap<string, string>;
 }
 
 /** Every measure is a finite number: anything else is not comparable, so it counts as a change. */
@@ -146,9 +159,19 @@ function outsideChange(previous: GeometryInputs, next: GeometryInputs): boolean 
   return false;
 }
 
-/** Whether the user changed what the layout depends on: a stack opened or closed (Retry and Show image included), or the focus. */
+/** Whether a stack open in both lays out other expanded keys. */
+const expansionChanged = (previous: GeometryInputs, next: GeometryInputs): boolean =>
+  [...next.open.keys()].some((id) => previous.open.has(id) && (previous.expanded?.get(id) ?? null) !== (next.expanded?.get(id) ?? null)
+    && previous.expanded !== undefined && next.expanded !== undefined);
+
+/**
+ * Whether the user changed what the layout depends on: a stack opened or closed (Retry and Show
+ * image included), an expansion inside an open stack (a caret, a second click on the selected
+ * tile, a selection that expands or reveals), or the focus.
+ */
 const userChange = (previous: GeometryInputs, next: GeometryInputs): boolean => previous.focus !== next.focus
-  || previous.open.size !== next.open.size || [...next.open.keys()].some((id) => !previous.open.has(id));
+  || previous.open.size !== next.open.size || [...next.open.keys()].some((id) => !previous.open.has(id))
+  || expansionChanged(previous, next);
 
 /**
  * The motion policy for geometry (docs/scene-transactions.md, "Review fixes (dc33274)"), decided
@@ -159,7 +182,8 @@ const userChange = (previous: GeometryInputs, next: GeometryInputs): boolean => 
  * - **snap** when any input the user does not drive changed (`outsideChange`): the old positions
  *   are no longer comparable, so a user change committing with it snaps too;
  * - **animate** when only user inputs changed: opening or closing a stack (an expand, a collapse,
- *   a cold open completing, Retry, Show image) or the focus (a selection);
+ *   a cold open completing, Retry, Show image), expanding or collapsing inside an open stack (a
+ *   caret, a second click on the selected tile, a selection that expands), or the focus;
  * - **snap** otherwise (geometry changed although no input did).
  *
  * Restyles (no geometry change) are not governed here: they keep whatever motion is running.

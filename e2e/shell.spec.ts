@@ -1,5 +1,5 @@
 import { test, expect } from "@playwright/test";
-import { openView, click, state, uncaught, settle, rendered, tile, ensureExpanded } from "./support";
+import { openView, click, caret, state, uncaught, settle, rendered, tile, ensureExpanded } from "./support";
 
 const view = (page: import("@playwright/test").Page) => page.getByTestId("trace-view");
 const builtin = (page: import("@playwright/test").Page) => page.getByRole("list", { name: "Built-in listing" });
@@ -144,6 +144,10 @@ test("disabling removes the view cleanly and re-enabling restores a working one"
   await page.evaluate(() => (window as any).trace.enable());
   await expect(view(page)).toBeVisible();
   await expect(page.locator("[data-tile-key]").first()).toBeVisible();
+  await settle(page);
+  // A new view starts with nothing expanded (the host's selection of warm only reveals it).
+  await expect(await tile(page, "rain")).toHaveCount(0);
+  await (await caret(page, "warm")).click();
   await settle(page);
   await click(page, "rain");
   expect(await rendered(page, "tone", "focus")).toEqual(["rain"]);

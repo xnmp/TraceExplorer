@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { BADGES_SHOWN, connectedComponents, projectDag, projectReferenceBadges, visibleBadges, type ReferenceBadge } from "$lib/domain/trace-graph/projection";
 import { lineageWithBadges, toneOf } from "$lib/domain/trace-graph/lineage";
-import { planBandScene, planScene, routeStyle } from "$lib/domain/trace-graph/scene";
+import { bandFocus, planBandScene, planScene, routeStyle } from "$lib/domain/trace-graph/scene";
 import { componentRoots, visibleKeys } from "$lib/domain/trace-graph/visibility";
 import { layoutGraph } from "$lib/domain/trace-graph/layout";
 import { node, sourcesReaching } from "./fixtures";
@@ -64,29 +64,34 @@ describe("reference badge projection", () => {
 });
 
 describe("band scene", () => {
-  it("hover preserves the selected deep neighborhood, focus tone and layout geometry", () => {
+  /** A band whose cover (and `expanded`) the user expanded. */
+  const band = (graph: ReturnType<typeof projectReferenceBadges>, members: readonly string[], expanded: readonly string[], cover = members[0], x = 80, anchor: string | null = null) =>
+    planBandScene(graph, members, anchor, 640, { pinned: { key: cover, x }, expanded: new Map([cover, ...expanded].map((key) => [key, true])) });
+  const tones = (graph: ReturnType<typeof projectReferenceBadges>, members: readonly string[], focus: string | null, hover: string | null = null) => {
+    const { lineage } = bandFocus(graph, members, focus, hover);
+    return (key: string) => toneOf(lineage, key);
+  };
+
+  it("hover and selection tone the expanded deep neighborhood; neither is a band input", () => {
     const graph = projectReferenceBadges(projectDag([node("root"), node("ref", [], "external"), node("a", ["root", "ref"]), node("b", ["a"]), node("c", ["b"]), node("d", ["c"])]));
-    const options = { pinned: { key: "root", x: 80 } };
-    const selected = planBandScene(graph, graph.dag.order, "c", 640, options);
-    const hovered = planBandScene(graph, graph.dag.order, "c", 640, { ...options, badgeHighlight: "ref" });
-    expect([...hovered.tiles.keys()]).toEqual([...selected.tiles.keys()]);
-    expect(hovered.tiles.get("c")?.tone).toBe("focus");
-    expect(hovered.tiles.has("d")).toBe(true);
-    expect(hovered.request).toEqual(selected.request);
-    expect(planBandScene(graph, graph.dag.order, "c", 640, { ...options, badgeHighlight: "unknown" })).toEqual(selected);
+    const plan = band(graph, graph.dag.order, ["a", "b", "c"]);
+    expect([...plan.tiles.keys()]).toEqual(["root", "a", "b", "c", "d"]);
+    expect(tones(graph, graph.dag.order, "c", "ref")("c")).toBe("focus");
+    expect(tones(graph, graph.dag.order, "c")("root")).toBe("related");
+    // Planned neutral: selection and hover tone the scene later, never the plan.
+    expect([...plan.tiles.values()].every((tile) => tile.tone === "neutral")).toBe(true);
+    expect(plan.lineage.focus).toBeNull();
   });
 
-  it("hover highlights shared consumers in another band without changing its visible tiles", () => {
+  it("hover highlights shared consumers in another band", () => {
     const graph = projectReferenceBadges(sharedStyle());
     for (const members of connectedComponents(graph.dag)) {
-      const options = { pinned: { key: members[0], x: 80 } };
-      const idle = planBandScene(graph, members, "a2", 640, options);
-      const hover = planBandScene(graph, members, "a2", 640, { ...options, badgeHighlight: "style" });
-      expect(hover.request).toEqual(idle.request);
-      expect(hover.tiles.get(members.find((key) => key.endsWith("1"))!)?.tone).toBe("related");
-      if (members.includes("a2")) expect(hover.tiles.get("a2")?.tone).toBe("focus");
+      const tone = tones(graph, members, "a2", "style");
+      expect(tone(members.find((key) => key.endsWith("1"))!)).toBe("related");
+      if (members.includes("a2")) expect(tone("a2")).toBe("focus");
     }
   });
+
   it("plans 500 bands in a 10,000-image folder without traversing every other badge consumer", () => {
     const nodes = [node("ref", [], "external"), ...Array.from({ length: 500 }, (_, chain) =>
       Array.from({ length: 20 }, (_, step) => node(`c${chain}-${step}`, step ? [`c${chain}-${step - 1}`, "ref"] : []))).flat()];
@@ -94,21 +99,22 @@ describe("band scene", () => {
     const components = connectedComponents(graph.dag);
     expect(components).toHaveLength(500);
     const start = performance.now();
-    const scenes = components.map((members) => planBandScene(graph, members, "ref", 640, { pinned: { key: members[0], x: 80 } }));
+    // The shared badge expanded in every band: all of its consumers show.
+    const scenes = components.map((members) => ({ plan: band(graph, members, ["ref"]), focus: bandFocus(graph, members, "ref") }));
     const ms = performance.now() - start;
     console.info(`badge band planning: 500 bands / 10,000 images ${ms.toFixed(1)} ms`);
     expect(ms).toBeLessThan(1500);
-    for (const scene of scenes) {
-      expect(scene.tiles.size).toBe(20);
-      expect(scene.lineage.related.size).toBe(20); // the badge and 19 outputs, within this band
-      expect([...scene.tiles.values()].filter((tile) => tile.tone === "related")).toHaveLength(19);
+    for (const { plan, focus } of scenes) {
+      expect(plan.tiles.size).toBe(20);
+      expect(focus.lineage.related.size).toBe(20); // the badge and 19 outputs, within this band
+      expect([...plan.tiles.keys()].filter((key) => toneOf(focus.lineage, key) === "related")).toHaveLength(19);
     }
   }, 30_000);
 
   it("pins a reference-generated cover as a drawable root, retaining its preview badge and no reference routes", () => {
     const source = projectDag([node("ref", [], "external"), node("cover", ["ref"]), node("child", ["cover", "ref"])]);
     const graph = projectReferenceBadges(source);
-    const scene = planBandScene(graph, graph.dag.order, null, 1000, { pinned: { key: "cover", x: 800 } });
+    const scene = planBandScene(graph, graph.dag.order, null, 1000, { pinned: { key: "cover", x: 800 }, expanded: new Map([["cover", true]]) });
     expect(scene.request.orientation).toBe("down");
     expect([...scene.tiles.keys()]).toEqual(["cover", "child"]);
     expect(scene.badges.get("cover")?.[0].path).toBe("/pictures/ref.png");
@@ -128,29 +134,35 @@ describe("band scene", () => {
   it("highlights consumers in separate bands when a shared badge is focused", () => {
     const graph = projectReferenceBadges(sharedStyle());
     for (const members of connectedComponents(graph.dag)) {
-      const scene = planBandScene(graph, members, "style", 640, { pinned: { key: members[0], x: 80 } });
+      const scene = band(graph, members, []);
       const consumer = members.find((key) => key.endsWith("1"))!;
-      expect(scene.tiles.get(consumer)?.tone).toBe("related");
-      expect(scene.lineage.focus).toBe("style");
+      const focus = bandFocus(graph, members, "style");
+      expect(toneOf(focus.lineage, consumer)).toBe("related");
+      expect(focus.lineage.focus).toBe("style");
       expect(scene.tiles.has("style")).toBe(false);
       expect(scene.badges.get(consumer)?.[0].key).toBe("style");
     }
     const [members] = connectedComponents(graph.dag);
-    const unrelated = planBandScene(graph, members, "b", 640, { pinned: { key: "a", x: 80 } });
-    expect([...unrelated.tiles.values()].every((tile) => tile.tone === "unrelated")).toBe(true);
+    const unrelated = bandFocus(graph, members, "b");
+    expect(members.every((key) => toneOf(unrelated.lineage, key) === "unrelated")).toBe(true);
   });
 
-  it("reveals deeper direct badge consumers and their ancestors when the badge is focused", () => {
+  it("shows deeper direct badge consumers and their ancestors when the badge is expanded, not when it is focused", () => {
     const source = projectDag([node("root"), node("a", ["root"]), node("b", ["a"]), node("ref", [], "subfolder"), node("c", ["b", "ref"])]);
     const graph = projectReferenceBadges(source);
-    const idle = planBandScene(graph, graph.dag.order, null, 640, { pinned: { key: "root", x: 80 } });
+    const idle = band(graph, graph.dag.order, [], "root");
     expect([...idle.tiles.keys()]).toEqual(["root", "a"]);
-    const focused = planBandScene(graph, graph.dag.order, "ref", 640, { pinned: { key: "root", x: 80 } });
-    expect([...focused.tiles.keys()]).toEqual(["root", "a", "b", "c"]);
-    expect(focused.tiles.get("c")?.tone).toBe("related");
-    expect(focused.tiles.get("b")?.tone).toBe("unrelated");
-    const selected = planBandScene(graph, graph.dag.order, "c", 640, { pinned: { key: "root", x: 80 } });
-    for (const route of layoutGraph(selected.request).routes) expect(routeStyle(route, graph.dag, selected.lineage).related).toBe(true);
+    expect([...band(graph, graph.dag.order, [], "root", 80, "ref").tiles.keys()], "an anchor alone shows nothing").toEqual(["root", "a"]);
+    // The badge is drawn on c, which is hidden: expanding it shows c, and c's inputs.
+    const expanded = band(graph, graph.dag.order, ["ref"], "root");
+    expect([...expanded.tiles.keys()]).toEqual(["root", "a"]);
+    const shown = band(graph, graph.dag.order, ["a", "b"], "root");
+    expect([...shown.tiles.keys()]).toEqual(["root", "a", "b", "c"]);
+    const focus = bandFocus(graph, graph.dag.order, "ref");
+    expect(toneOf(focus.lineage, "c")).toBe("related");
+    expect(toneOf(focus.lineage, "b")).toBe("unrelated");
+    const selected = bandFocus(graph, graph.dag.order, "c");
+    for (const route of layoutGraph(shown.request).routes) expect(routeStyle(route, graph.dag, selected.lineage).related).toBe(true);
   });
 
   it("opts into current-folder roots without changing the legacy reference-only fallback", () => {

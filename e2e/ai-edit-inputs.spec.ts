@@ -1,5 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
-import { card, click, openView, settle, state, tile } from "./support";
+import { card, caret, click, openView, settle, state, tile } from "./support";
 
 const SHOTS = process.env.ROUND4_SHOTS;
 const path = (page: Page, name: string) => page.evaluate((n) => (window as any).trace.backend.path(n) as string, name);
@@ -348,6 +348,9 @@ test.describe("picks follow saves and deletes", () => {
   test("a save does not bring back an image a Shift range dropped", async ({ page }) => {
     await openView(page, 1400, "?ai=1");
     await click(page, "village");
+    // A modified click only selects: open warm's branch (merge) with its caret first.
+    await (await caret(page, "warm")).click();
+    await settle(page);
     await click(page, "warm", { modifiers: ["Control"] });
     await click(page, "daylight", { modifiers: ["Shift"] });
     const range = (await state(page)).selected;

@@ -12,14 +12,18 @@ for (const scene of ["deep", "wrapped"] as const) test(`compact ${scene} band`, 
     await page.locator(`section[aria-label="${name}"] [data-stack-toggle]`).click(); await settle(page);
   }
   if (scene === "deep") {
+    // The host's selection reveals Ash (its path opens); its caret opens its own children.
     await page.evaluate(() => (window as any).trace.selectPath(`/pictures/Ash.png`)); await settle(page);
+    await page.locator(`[data-node-caret="${await key(page, "Ash")}"]`).click(); await settle(page);
   }
   const band = page.locator("[data-grid-row-band]").first();
   const height = (await band.boundingBox())!.height;
   console.log(`LAYOUT ${scene} band height: ${height}px`);
   await page.screenshot({ path: test.info().outputPath(`layout-${scene}-${process.env.LAYOUT_BASELINE ? "before" : "after"}.png`) });
   if (process.env.LAYOUT_BASELINE) return;
-  expect(height).toBeLessThanOrEqual(scene === "deep" ? 340 : 390);
+  // Deep: the open stack shows its cover's children, so Cerulean is drawn beside Ash's lineage
+  // (explicit expansion; a focus on Ash used to hide it: 340 px for five tiles, 452 for six).
+  expect(height).toBeLessThanOrEqual(scene === "deep" ? 460 : 390);
   const relationships = scene === "deep" ? [["deep", "Cerulean"], ["deep", "Saffron"], ["Saffron", "Blastoise"], ["Saffron", "Ash"], ["Ash", "Charizard"]]
     : [["stack-a", "stack-a-1"], ["stack-a", "stack-a-2"], ["stack-b", "stack-b-1"], ["stack-b", "stack-b-2"]];
   const edges = await Promise.all(relationships.map(async ([parent, child]) => [await key(page, parent), await key(page, child)]));

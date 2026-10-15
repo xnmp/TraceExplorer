@@ -1,3 +1,4 @@
+import { NO_EXPANSION } from "$lib/domain/trace-graph/expansion";
 import { describe, expect, it } from "vitest";
 import { intentChange, changed, requiredComponents, resolveCover, sameStyling, sameListing, type SceneIntent } from "$lib/plugins/trace/view/scene-inputs";
 import { folderCells, fallbackGridMetrics } from "$lib/domain/trace-graph/folder-grid";
@@ -15,7 +16,7 @@ const index: FolderIndex = {
 const tile = tileMetrics(96);
 const intent: SceneIntent = {
   directory: "/f", listing: [entry("a1.png"), entry("b1.png")], claimed: new Set(), open: new Set(["a1"]), focus: null, selectedKeys: new Set(["a1"]),
-  selectedPaths: new Set(), badgeHover: null, width: 900, tile, grid: fallbackGridMetrics(tile), cover: { imagePx: null, small: false }, hostChoice: "[]",
+  selectedPaths: new Set(), badgeHover: null, expansion: NO_EXPANSION, width: 900, tile, grid: fallbackGridMetrics(tile), cover: { imagePx: null, small: false }, hostChoice: "[]",
 };
 
 describe("scene inputs", () => {

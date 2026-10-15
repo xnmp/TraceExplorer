@@ -76,18 +76,19 @@ describe("lane-infeasible requests without history", () => {
 });
 
 describe("crossing cap on anchored layouts", () => {
-  // A bench reveal (random-dag-100-8101, 360 px, 128 px images): holding n66 still at step 2
-  // kept an embedding with 725 crossings where the unanchored layout has 321.
+  // A bench reveal (random-dag-40-7502, 454 px, 128 px images): holding n26 still at step 2 costs a
+  // crossings explosion. (The case was random-dag-100-8101 at 360 px until explicit expansion
+  // changed the tours' visible sets; this is the corpus step that yields now.)
   it("lets the anchors yield, flagged, when holding them still costs a crossings explosion", () => {
-    const c = corpus().find(c => c.id === "random-dag-100-8101")!;
+    const c = corpus().find(c => c.id === "random-dag-40-7502")!;
     let previous: Optimized | undefined, fresh = 0, layout: GraphLayout | undefined;
-    const crossings = (l: GraphLayout, r: LayoutRequest) => measure(attachSingleBand(l, r), r.band!.key, 360, r.items).crossings;
+    const crossings = (l: GraphLayout, r: LayoutRequest) => measure(attachSingleBand(l, r), r.band!.key, 454, r.items).crossings;
     for (const focus of c.focuses.slice(0, 3)) {
-      const request = requestFor(c, focus, 360, 128);
+      const request = requestFor(c, focus, 454, 128);
       previous = optimizedBand({ ...request, hint: previous?.layout.readingOrder }, { previous, anchorKey: focus ?? undefined });
       layout = previous.layout;
       fresh = crossings(layoutGraph({ ...request, hint: layout.readingOrder }), request);
-      if (focus === "n66") {
+      if (focus === "n26") {
         expect(layout.decision?.fallback).toBe("anchor-yield");
         expect(layout.decision?.stability).toBe(false);
         expect(crossings(layout, request)).toBeLessThanOrEqual(fresh + Math.max(50, fresh * .25));

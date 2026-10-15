@@ -28,9 +28,11 @@
     jobs: PluginJobs;
     toast: PluginToast;
     onClose: () => void;
+    /** Called with the input paths once the first job is accepted, so the view they came from shows its outputs. */
+    onStart?: (inputs: readonly string[]) => void;
   }
   let { open, onBusyChange = () => {}, captureSelection, registerFileDropTarget, header, inputs = [], outputDir,
-    configureConnections, jobs, toast, onClose }: Props = $props();
+    configureConnections, jobs, toast, onClose, onStart }: Props = $props();
   /** The edit's images as arranged here: order, removals, and what the backend reported. */
   let arranged = $state.raw<readonly ImageInput[]>(untrack(() => inputs.map((input) => ({ ...input, id: Symbol() }))));
   /**
@@ -239,6 +241,7 @@
       const problem = capabilityProblem(connection, settings, images.length);
       if (problem) throw new Error(problem);
       const batchId = count > 1 ? crypto.randomUUID() : null;
+      const startedFrom = images.map((image) => image.path);
       for (let index = 0; index < count; index += 1) {
       if (!alive) break;
       const result = await startImageJob({ jobs },
@@ -248,6 +251,8 @@
           prompt: prompt.trim(), outputFilename, ...settings });
       if (!result.ok) throw new Error(result.error);
       accepted += 1;
+      // Its output will show where it was started from, once a job is accepted: never for a failed start.
+      if (accepted === 1) onStart?.(startedFrom);
       }
       if (alive) onClose();
     } catch (cause) {

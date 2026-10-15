@@ -9,6 +9,7 @@ interface PostedRequest { itemKeys: string[]; openKeys: string[] }
 
 export function createLayoutWorker(): Worker {
   const real: Worker = new LayoutWorker();
+  const index = layoutGate.created();
   // The client assigns `onmessage`; capture it so every reply goes through the gate.
   let handler: ((event: MessageEvent) => unknown) | null = null;
   Object.defineProperty(real, "onmessage", { configurable: true, get: () => handler, set: (next) => { handler = next; } });
@@ -16,6 +17,7 @@ export function createLayoutWorker(): Worker {
   // Resolved per call, so specs that patch `Worker.prototype.postMessage` still intercept.
   real.postMessage = ((message: any, options?: any) => {
     Worker.prototype.postMessage.call(real, message, options);
+    layoutGate.sent(index);
     // A folder run (the scene controller's whole-engine message) names its grid items, then every
     // open stack's members, and its open stacks.
     const folderKeys = (folder: any): string[] => [...(folder.items ?? []).map((item: { id: string }) => item.id),

@@ -30,7 +30,7 @@
   import TraceTile from "./TraceTile.svelte";
   import OrdinaryTile from "./OrdinaryTile.svelte";
 
-  let { pane, controller, publication, notices, gridPadding, focus, revision, scroller, onstack, onactivate, onnavigate, onopen, onmenu,
+  let { pane, controller, publication, notices, gridPadding, focus, revision, scroller, onstack, onactivate, ontoggle, onnavigate, onopen, onmenu,
     onselect, onordinarymenu, onbadgehover, onretry, captureSelection, onsaved, ondiscarded }: {
     pane: FileViewPane; controller: SceneController; publication: Publication; notices: ReadonlyMap<string, PreparationNotice>;
     /** The host grid padding the published scene was laid out with. */
@@ -41,6 +41,8 @@
     /** Pressing a stack's cover (`toggle` false: selects, and opens a closed stack) or its disclosure (`toggle`: closes a requested, opening or failed stack). */
     onstack: (cell: FolderCell, event: MouseEvent, toggle: boolean) => void;
     onactivate: (key: string, event: MouseEvent, componentId: string) => void;
+    /** A band tile's caret: expands or collapses it without selecting. */
+    ontoggle: (key: string, componentId: string) => void;
     onnavigate: (key: string, componentId: string, modifiers?: { shiftKey?: boolean }) => void; onopen: (key: string) => void;
     onmenu: (key: string, event: MouseEvent, componentId: string) => void;
     onselect: (entry: FileEntry, event: MouseEvent) => void; onordinarymenu: (entry: FileEntry, event: MouseEvent) => void;
@@ -205,10 +207,10 @@
           <div class="content" data-grid-band={cell.id} data-grid-band-row={band.row} data-group-left={placement.left} data-group-width={placement.right - placement.left} data-child-group-left={band.x} data-child-group-width={band.width} data-horizontal-scroll style:height="{band.y + band.height - rect.y}px">
             {#if nearRect(band.y, band.height) || focus?.componentId === summary.id || holdsStop(cell.id) || presented.pinnedGraphs.has(cell.id)}
               {@const span = bandSpan(cell.id, graph.origin.y)}
-              <TraceGraph {graph} records={grouped.get(cell.id)!} presented={presented.graphs.get(cell.id) ?? NO_GRAPH} {pinned} {handles} {nodes} focusedKey={stop ?? undefined} onfocuskey={(key) => tabStop = key} {onbadgehover} selected={styling.selectedKeys} {revision}
+              <TraceGraph {graph} focus={styling.focus} records={grouped.get(cell.id)!} presented={presented.graphs.get(cell.id) ?? NO_GRAPH} {pinned} {handles} {nodes} focusedKey={stop ?? undefined} onfocuskey={(key) => tabStop = key} {onbadgehover} selected={styling.selectedKeys} {revision}
                 windowTop={span?.top ?? null} windowBottom={span?.bottom ?? null}
                 ongridkey={keydown} onactivate={(key, event) => onactivate(key, event, summary.id)} {onopen}
-                onmenu={(key, event) => onmenu(key, event, summary.id)} {captureSelection} {onsaved} {ondiscarded} />
+                onmenu={(key, event) => onmenu(key, event, summary.id)} ontoggle={(key) => ontoggle(key, summary.id)} {captureSelection} {onsaved} {ondiscarded} />
             {/if}
           </div>
         {/if}

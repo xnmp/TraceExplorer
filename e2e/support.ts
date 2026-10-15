@@ -30,6 +30,8 @@ const FIRST_TILES_TIMEOUT_MS = 20_000;
 export const key = (page: Page, name: Name): Promise<string> => page.evaluate((n) => (window as any).trace.backend.key(n), name);
 export const tile = async (page: Page, name: Name): Promise<Locator> => page.locator(`[data-tile-key="${await key(page, name)}"], [data-reference-key="${await key(page, name)}"]`).first();
 export const card = async (page: Page, name: Name): Promise<Locator> => page.locator(`[data-node-key="${await key(page, name)}"], [data-reference-key="${await key(page, name)}"]`).first();
+/** A tile's disclosure caret: expands or collapses that node without changing the selection. */
+export const caret = async (page: Page, name: Name): Promise<Locator> => page.locator(`[data-node-caret="${await key(page, name)}"]`);
 export const state = (page: Page) => page.evaluate(() => (window as any).trace.state() as {
   selected: string[]; inputs: string[]; cursor: string | null; target: { id: string; title: string; badge: string | null } | null;
   fileView: string | null; opened: string[]; menus: Array<string | null>; navigations: string[];

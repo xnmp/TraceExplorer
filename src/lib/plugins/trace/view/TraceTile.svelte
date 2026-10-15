@@ -25,6 +25,8 @@
     onbadge?: (key: string, event: MouseEvent) => void;
     onbadgehover?: (key: string | null) => void;
     onstacktoggle?: (event: MouseEvent) => void;
+    /** A band tile's caret: expands or collapses it without selecting. */
+    oncaret?: () => void;
     focused?: boolean;
     onfocus?: () => void;
     tile: SceneTile;
@@ -44,7 +46,7 @@
     captureSelection?: () => () => boolean;
   }
 
-  let { tile, placed, orientation = "down", selected, revision, handle, onactivate, onopen, onmenu, onkey, onsaved, ondiscarded, captureSelection, badges = [], badgeNodes, badgeSelection = new Set(), onbadge, onbadgehover, onstacktoggle, focused = true, onfocus, explorer, onretry }: Props = $props();
+  let { tile, placed, orientation = "down", selected, revision, handle, onactivate, onopen, onmenu, onkey, onsaved, ondiscarded, captureSelection, badges = [], badgeNodes, badgeSelection = new Set(), onbadge, onbadgehover, onstacktoggle, oncaret, focused = true, onfocus, explorer, onretry }: Props = $props();
   const node = $derived(tile.node);
   const title = $derived(promptTitles.labelFor(node.runId, node.prompt) || nodeTitle(node));
   const status = $derived(nodeStatus(node));
@@ -81,7 +83,7 @@
         {@attach explorer.expanded ? tooltip : null} onclick={onactivate} ondblclick={onopen} oncontextmenu={onmenu} onkeydown={onkey}></button>
     {/if}
   {/snippet}
-  <TileVisual {tile} {selected} {revision} {orientation} {explorer} {card} press={explorer ? press : undefined} {focused} {onfocus} {onstacktoggle} {onkey} {onretry} />
+  <TileVisual {tile} {selected} {revision} {orientation} {explorer} {card} press={explorer ? press : undefined} {focused} {onfocus} {onstacktoggle} {oncaret} {onkey} {onretry} />
   {#if badges.length && onbadge}<ReferenceBadges {badges} nodes={badgeNodes} {revision} selected={badgeSelection} onactivate={onbadge} onhover={onbadgehover} />{/if}
   {#if artifact}
     <div class="actions">

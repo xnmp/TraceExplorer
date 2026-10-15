@@ -1,5 +1,5 @@
 import { expect, test, type Locator, type Page } from "@playwright/test";
-import { card, click, openView, settle, state } from "./support";
+import { card, caret, click, openView, settle, state, tile } from "./support";
 
 /** Find real unused space, rather than dispatching a synthetic click through a tile. */
 async function emptyPoint(area: Locator): Promise<{ x: number; y: number }> {
@@ -20,6 +20,8 @@ async function emptyPoint(area: Locator): Promise<{ x: number; y: number }> {
 
 async function selectImages(page: Page) {
   await click(page, "village");
+  // A modified click only selects: open warm's branch (merge) with its caret first.
+  if (!await (await tile(page, "merge")).count()) { await (await caret(page, "warm")).click(); await settle(page); }
   await click(page, "warm", { modifiers: ["Shift"] });
   await click(page, "mist", { modifiers: ["Control"] });
   await click(page, "merge", { modifiers: ["Control"] });
@@ -91,7 +93,7 @@ test("empty canvas marquee replaces selection, including dragging away and back"
   }
 });
 
-test("closing preserves selection, reopening selects its cover, and background right-click clears like the host list", async ({ page }) => {
+test("closing and reopening with the caret preserve selection, and background right-click clears like the host list", async ({ page }) => {
   await openView(page, 1400);
   const before = await selectImages(page);
   // Pin the section by its id: collapsing unmounts its cards, so a locator
@@ -103,9 +105,10 @@ test("closing preserves selection, reopening selects its cover, and background r
   await expect(heading).toHaveAttribute("aria-expanded", "false");
   expect((await state(page)).selected).toEqual(before.selected);
   expect((await state(page)).inputs).toEqual(before.inputs);
+  // The caret toggles its stack without changing the selection (explicit expansion).
   await heading.click();
   await settle(page);
-  expect((await state(page)).selected).toEqual(["/pictures/village.png"]);
+  expect((await state(page)).selected).toEqual(before.selected);
   const point = await emptyPoint(section.locator(".graph"));
   await page.mouse.click(point.x, point.y, { button: "right" });
   await expectEmpty(page);

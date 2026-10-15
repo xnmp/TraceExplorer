@@ -16,7 +16,9 @@
  *
  * Geometry only: styling that cannot move a rectangle (tones, selection,
  * badge hover highlighting, route emphasis) is derived by the caller from
- * the output and the current focus, and must not be an input here.
+ * the output and the current focus, and must not be an input here. Neither
+ * is the selection: what a band shows is the user's explicit expansion
+ * (`OpenStack.expanded`), and its anchor the node last toggled.
  *
  * Coordinates are folder coordinates: (0, 0) is the grid's top-left inside
  * the pane's grid padding.
@@ -28,6 +30,7 @@ import type { GridBand, GridCell, GridItem, GridItemId, GridRect } from "../grid
 import type { BandPlacement } from "../band-geometry";
 import type { BandScenePlan } from "../scene";
 import type { GraphLayout } from "../layout";
+import type { BandExpansion } from "../visibility";
 
 /** A stack's stable identity: its cover node key (component ids change when components merge). */
 export type GraphId = GridItemId;
@@ -46,8 +49,18 @@ export interface OpenStack {
   readonly graph: BadgeProjection;
   /** Drawable keys of the component, in the component's order. */
   readonly members: readonly NodeKey[];
-  /** The focused node when it belongs to this stack (as a member or a badge consumer); otherwise null. */
-  readonly focus: NodeKey | null;
+  /**
+   * The node the user last expanded or collapsed in this stack (`expansionAnchor`), which the
+   * layout holds still; null for none. Never the selection: selecting changes no geometry.
+   */
+  readonly anchor: NodeKey | null;
+  /**
+   * The stack's expansion (`expandedKeys` in `expansion.ts`): members and reference badge keys,
+   * each expanded or collapsed, oldest first. Each node follows the latest entry among its parents
+   * and badges; the cover counts as expanded (oldest) unless an entry decides it. What the band shows follows from this alone
+   * (`bandVisibleKeys`). Keys outside the stack are ignored.
+   */
+  readonly expanded: BandExpansion;
 }
 
 export interface FolderLayoutInput {

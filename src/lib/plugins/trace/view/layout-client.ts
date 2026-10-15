@@ -117,6 +117,27 @@ function workerInstance(): Worker | null {
   return worker;
 }
 
+/** How long a warm-up waits for an idle main thread at most, and its delay where idle callbacks are missing (WebKit). */
+const WARM_IDLE_TIMEOUT_MS = 1000;
+const WARM_FALLBACK_MS = 200;
+
+/**
+ * Starts the worker once the main thread is idle, posting nothing, so the first layout heavy enough
+ * for it does not also wait for the worker to start (130-700 ms on a loaded machine, all of it with
+ * the previous scene held). Does nothing when a worker exists or was ruled out; the host's
+ * permission is checked as for a job. Returns a cancel for a warm-up still waiting.
+ */
+export function warmLayoutWorker(): () => void {
+  if (worker !== undefined) return () => {};
+  const start = () => { workerInstance(); };
+  if (typeof requestIdleCallback === "function") {
+    const handle = requestIdleCallback(start, { timeout: WARM_IDLE_TIMEOUT_MS });
+    return () => cancelIdleCallback(handle);
+  }
+  const handle = setTimeout(start, WARM_FALLBACK_MS);
+  return () => clearTimeout(handle);
+}
+
 /**
  * Runs a folder layout engine off the main thread (the worker runs the registered default
  * engine; `fallback` must be that engine, used on the main thread after yielding a frame when no

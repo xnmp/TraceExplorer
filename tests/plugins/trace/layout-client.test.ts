@@ -209,6 +209,49 @@ describe("layout client (whole folder runs)", () => {
       await expect(computeFolderLayout(folderInput(), vi.fn() as never, stale.signal)).rejects.toMatchObject({ name: "AbortError" });
       expect(created.last?.posted ?? []).toHaveLength(0);
     });
+
+    describe("warming up", () => {
+      beforeEach(() => vi.useFakeTimers());
+      afterEach(() => vi.useRealTimers());
+
+      it("starts the worker once idle, posting nothing, and the next job uses it", async () => {
+        const idle: Array<() => void> = [];
+        vi.stubGlobal("requestIdleCallback", (cb: () => void) => idle.push(cb));
+        vi.stubGlobal("cancelIdleCallback", () => {});
+        const { computeFolderLayout, warmLayoutWorker } = await load();
+        warmLayoutWorker();
+        expect(created.count, "nothing starts before the main thread is idle").toBe(0);
+        idle.forEach((cb) => cb());
+        expect(created.count).toBe(1);
+        expect(created.last!.posted).toEqual([]);
+        void computeFolderLayout(folderInput(700), vi.fn() as never);
+        expect(created.count).toBe(1);
+        expect(created.last!.posted).toHaveLength(1);
+        warmLayoutWorker();
+        idle.forEach((cb) => cb());
+        expect(created.count, "a running worker is not started again").toBe(1);
+      });
+
+      it("falls back to a timer without idle callbacks, and a cancelled warm-up starts nothing", async () => {
+        vi.stubGlobal("requestIdleCallback", undefined);
+        const { warmLayoutWorker } = await load();
+        warmLayoutWorker()();
+        vi.runAllTimers();
+        expect(created.count).toBe(0);
+        warmLayoutWorker();
+        vi.runAllTimers();
+        expect(created.count).toBe(1);
+      });
+
+      it("starts nothing when the host forbids blob workers", async () => {
+        sdk.allow = false;
+        vi.stubGlobal("requestIdleCallback", undefined);
+        const { warmLayoutWorker } = await load();
+        warmLayoutWorker();
+        vi.runAllTimers();
+        expect(created.count).toBe(0);
+      });
+    });
   });
 
   it("holdLayoutWork counts as pending until released, once", async () => {

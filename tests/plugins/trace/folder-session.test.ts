@@ -1084,6 +1084,98 @@ describe("pane and folder open-stack snapshots", () => {
     back.dispose();
   });
 
+  describe("explicit expansion", () => {
+    // left: a → b → c, with a second child d of a.
+    const tree = () => fakeBackend({
+      components: vi.fn(async () => ({ ...compPage("t", []), components: [stackSummary("left", "/f/a.png", "a")], total: 1 })),
+      members: vi.fn(async () => memPage([["/f/a.png", "left", "a"]])),
+      nodes: vi.fn(async () => nodePage([node("a", 0), node("b", 1, ["a"]), node("c", 2, ["b"]), node("d", 3, ["a"])])),
+    });
+
+    it("a view's own selection opens, reveals and expands nothing; an outside one opens and reveals once per new focus", async () => {
+      const session = sessionFor("pane", tree());
+      session.setDirectory("/f"); await flush();
+      await session.ensure("left");
+      session.adoptSelection("own", new Set(["left"]), "d");
+      session.followSelection("own", new Set(["left"]), "d");
+      expect(session.openStackKeys.size).toBe(0);
+      expect(session.expansion.reveals).toEqual([]);
+      session.followSelection("outside", new Set(["left"]), "c");
+      expect(session.openStackKeys).toEqual(new Set(["a"]));
+      expect(session.expansion.reveals).toEqual(["c"]);
+      expect(session.isExpanded("b", "left")).toBe(true);
+      // Collapsing an ancestor hides it; a re-issued target (same focus, new choice) does not reveal it again.
+      expect(session.toggleExpansion("b", "left")).toBe(true);
+      expect(session.isExpanded("b", "left")).toBe(false);
+      session.followSelection("outside, re-issued", new Set(["left"]), "c");
+      expect(session.isExpanded("b", "left")).toBe(false);
+      session.dispose();
+    });
+
+    it("expands on a first click only what is collapsed; a leaf records the intent", async () => {
+      const session = sessionFor("pane", tree());
+      session.setDirectory("/f"); await flush();
+      await session.ensure("left");
+      const before = session.expansion;
+      session.expandNode("a", "left");
+      expect(session.expansion, "the cover changes nothing").toBe(before);
+      session.expandNode("c", "left");
+      expect(session.expansion.choices.get("c"), "a leaf's intent").toBe(true);
+      expect(session.canToggle("c", "left"), "but no caret: it has nothing to show").toBe(false);
+      session.expandNode("b", "left");
+      expect(session.isExpanded("b", "left")).toBe(true);
+      session.dispose();
+    });
+
+    it("persists with the pane across remounts, forgets on navigation, and drops nodes that are gone", async () => {
+      const backend = tree();
+      const first = sessionFor("pane", backend);
+      first.setDirectory("/f"); await flush();
+      await first.ensure("left");
+      first.toggleExpansion("b", "left");
+      first.dispose();
+      const back = sessionFor("pane", backend);
+      back.setDirectory("/f");
+      expect(back.expansion.choices.get("b")).toBe(true);
+      await flush(); await back.ensure("left");
+      // b is deleted: a refresh of its (loaded) component drops the choice.
+      backend.nodes.mockImplementation(async () => nodePage([node("a", 0), node("d", 3, ["a"])]));
+      backend.components.mockImplementation(async () => ({ ...compPage("t2", []), components: [stackSummary("left", "/f/a.png", "a")], total: 1 }));
+      await back.refresh(); await flush(); await back.ensure("left"); await flush();
+      expect(back.expansion.choices.has("b")).toBe(false);
+      back.toggleExpansion("d", "left");
+      back.setDirectory("/g"); await flush();
+      back.setDirectory("/f");
+      expect(back.expansion.choices.size).toBe(0);
+      back.dispose();
+    });
+  });
+
+  it("keeps the choice of a node that moved to a stack not loaded yet (a split), and drops it once every stack is loaded without it", async () => {
+    const backend = fakeBackend({
+      components: vi.fn(async () => ({ ...compPage("t", []), components: [stackSummary("left", "/f/a.png", "a")], total: 1 })),
+      members: vi.fn(async () => memPage([["/f/a.png", "left", "a"], ["/f/b.png", "left", "b"]])),
+      nodes: vi.fn(async () => nodePage([node("a", 0), node("b", 1, ["a"]), node("c", 2, ["b"])])),
+    });
+    const session = sessionFor("pane", backend);
+    session.setDirectory("/f"); await flush();
+    await session.ensure("left");
+    session.toggleExpansion("b", "left");
+    expect(session.expansion.choices.get("b")).toBe(true);
+    // b splits off into its own stack, which is not loaded yet.
+    backend.components.mockImplementation(async () => ({ ...compPage("t2", []), components: [stackSummary("left", "/f/a.png", "a"), stackSummary("right", "/f/b.png", "b")], total: 2 }));
+    backend.members.mockImplementation(async () => memPage([["/f/a.png", "left", "a"], ["/f/b.png", "right", "b"]]));
+    backend.nodes.mockImplementation(async (_d, _t, id) => nodePage(id === "right" ? [node("b", 1), node("c", 2, ["b"])] : [node("a", 0)]));
+    await session.refresh(); await flush(); await session.ensure("left"); await flush();
+    expect(session.expansion.choices.get("b"), "kept while its new stack is not loaded").toBe(true);
+    // b is deleted: once every listed stack is loaded and fresh without it, it is gone.
+    backend.components.mockImplementation(async () => ({ ...compPage("t3", []), components: [stackSummary("left", "/f/a.png", "a")], total: 1 }));
+    backend.members.mockImplementation(async () => memPage([["/f/a.png", "left", "a"]]));
+    await session.refresh(); await flush(); await session.ensure("left"); await flush();
+    expect(session.expansion.choices.has("b")).toBe(false);
+    session.dispose();
+  });
+
   it("keeps stacks with a shared reference title independently open", async () => {
     const components = [stackSummary("first", "/outside/style.png", "o:2:0"), stackSummary("second", "/outside/style.png", "o:3:0")];
     const backend = backendFor(components, []);
