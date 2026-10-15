@@ -390,3 +390,47 @@ test("a second click on a stack's cover toggles its stack when the toggle fires,
   await expect(toggle, "the second click closes the merged stack").toHaveAttribute("aria-expanded", "false");
   expect(await uncaught(page)).toEqual([]);
 });
+
+test("a caret on a child of the stack's cover changes what is shown, both ways (the junction)", async ({ page }) => {
+  await page.setViewportSize({ width: 1100, height: 900 });
+  await openView(page, 900, "?bandMotion=junction", false);
+  await page.locator('section[aria-label="stack-b"] [data-stack-toggle]').click(); await settle(page);
+  // stack-b-merge is an edit of the cover and of stack-b-1.
+  const merge = page.locator(`[data-tile-key="${await key(page, "stack-b-merge")}"]`);
+  const caretOfOne = await caret(page, "stack-b-1");
+  await expect(merge).toHaveCount(1);
+  await expect(caretOfOne).toHaveAttribute("aria-expanded", "true");
+  await caretOfOne.click(); await settle(page);
+  await expect(merge, "collapsing stack-b-1 hides the merge, though the cover opened it earlier").toHaveCount(0);
+  await expect(caretOfOne).toHaveAttribute("aria-expanded", "false");
+  await caretOfOne.click(); await settle(page);
+  await expect(merge).toHaveCount(1);
+  expect(await uncaught(page)).toEqual([]);
+});
+
+test("pressing a reference badge shared by two stacks opens its consumers only in the stack it was pressed in", async ({ page }) => {
+  await page.setViewportSize({ width: 1400, height: 1400 });
+  await openView(page, 1300, "", false);
+  await page.evaluate(() => {
+    const backend = (window as any).trace.backend;
+    backend.joinGeneration(["forest", "mist"], "x");
+    backend.joinGeneration(["autumn", "mist"], "y");
+    backend.joinGeneration(["morning", "mist"], "z");
+  });
+  await settle(page);
+  for (const name of ["village", "forest"]) {
+    const toggle = page.locator(`section[aria-label="${name}"] [data-stack-toggle]`);
+    if ((await toggle.getAttribute("aria-expanded")) !== "true") await toggle.click();
+    await settle(page);
+  }
+  const y = page.locator(`[data-tile-key="${await key(page, "y")}"]`), z = page.locator(`[data-tile-key="${await key(page, "z")}"]`);
+  await expect(y, "autumn is collapsed").toHaveCount(0);
+  await expect(z, "daylight is collapsed").toHaveCount(0);
+  // The mist badge on warm, in village's band.
+  const mist = await key(page, "mist");
+  const badge = page.locator(`section[aria-label="village"] [data-reference-key="${mist}"]`).first();
+  await badge.click(); await settle(page);
+  await expect(z, "village's z shows").toHaveCount(1);
+  await expect(y, "forest's y stays hidden").toHaveCount(0);
+  expect(await uncaught(page)).toEqual([]);
+});
