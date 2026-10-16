@@ -617,41 +617,7 @@ function layoutBandCandidates(input: LayoutRequest, options: BandOptions): Graph
   // A direction switch must earn a visible quality saving, not a rounding-sized difference.
   const same = previous && pool.filter(c => c.layout.orientation === previous.orientation).sort((a, b) => a.score - b.score)[0];
   if (same && winner.layout.orientation !== same.layout.orientation && winner.score > same.score * .85) winner = same;
-  let yielded = false;
-  if (!fitted.grew && anchors.length && winner.anchors && !lanesShared && winner.metrics.crossings > ANCHOR_CROSSING_SLACK) {
-    const free = bestUnanchored();
-    if (free && winner.metrics.crossings > free.metrics.crossings + Math.max(ANCHOR_CROSSING_SLACK, ANCHOR_CROSSING_RATIO * free.metrics.crossings)) { winner = free; yielded = true; }
-  }
-  /**
-   * The candidate the engine would show if no tile were anchored: the same objective and
-   * orientation rule over the unanchored family, found exactly by branch and bound (the
-   * main search's lower bounds prune what cannot change it; the downward layout is built
-   * only if its bound may).
-   */
-  function bestUnanchored(): Scored | undefined {
-    const free = ranked.filter(c => !c.anchors);
-    let same = Infinity, turned = Infinity;
-    const note = (c: Scored) => { if (c.layout.orientation === previous!.orientation) same = Math.min(same, c.score); else turned = Math.min(turned, c.score); };
-    free.forEach(note);
-    const limit = (orientation: GraphLayout["orientation"]) => orientation === previous!.orientation ? Math.min(same, turned / .85) : Math.min(turned, same * .85);
-    const beyond = (bound: number, orientation: GraphLayout["orientation"]) => bound > limit(orientation) + 1e-7;
-    const pending = lazy.find(p => p.name === "visible-down" && !realised.has(p));
-    if (pending && !beyond(pending.floor, pending.orientation)) realise(pending);
-    for (const c of prepared.filter(c => !c.holds && Number.isFinite(c.floor)).sort(byFloor)) {
-      if (beyond(c.floor, c.layout.orientation) || free.some(f => f.layout === c.layout)) continue;
-      if (!placements.has(c.layout) && beyond((c.floor + rigidConnectorCost(c.layout, key, tileWidth)) * (1 - 1e-9), c.layout.orientation)) continue;
-      const placed = placementFor(c);
-      if (beyond(optimisticCost(placed, key, request.maxWidth, tileWidth, request.items, previous, request.anchorKey), c.layout.orientation)) continue;
-      const metrics = gate(c, true), score = cost(metrics, tileWidth);
-      if (!Number.isFinite(score)) continue;
-      const scoredFree: Scored = { ...c, placed, metrics, score, anchors: false };
-      free.push(scoredFree);
-      note(scoredFree);
-    }
-    const best = free.reduce<Scored | undefined>((a, c) => !a || c.score < a.score ? c : a, undefined);
-    const sameFree = free.filter(c => c.layout.orientation === previous!.orientation).sort((a, b) => a.score - b.score)[0];
-    return best && sameFree && best.layout.orientation !== sameFree.layout.orientation && best.score > sameFree.score * .85 ? sameFree : best;
-  }
+  const yielded = false;
   let stability = !yielded && !!previous && (winner.metrics.height > minimumHeight * 1.1 || winner.name.startsWith("anchored") || winner.name === "retained-visible" || winner.name === "incremental-tree");
   // A shorter safe embedding may have been pruned because it moved an anchor.
   // Its existence still explains a height-for-stability exception; certify only
