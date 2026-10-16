@@ -1186,8 +1186,65 @@ function freeBlockedPorts(request: LayoutRequest, previous: GraphLayout, budget:
   return changed ? { ...previous, routes } : previous;
 }
 
+/** Shift only an internal orthogonal run that occludes a newly active source port.
+ * Endpoints and logical identities stay fixed; the shared insertion budget bounds repair.
+ * This also handles junction inputs, which cannot be replaced by a tile-to-tile router. */
+function freePortLanes(request: LayoutRequest, previous: GraphLayout, budget: IncrementalBudget): GraphLayout {
+  const newParents = new Set(request.items.filter(n => !previous.nodes.has(n.key)).flatMap(n => n.parents));
+  let routes = [...previous.routes], repairs = 0;
+  if (previous.nodes.size > INCREMENTAL_LIMIT || !inReach(request.maxWidth)
+    || previous.routes.some(r => !usableRetainedRoute(r))) return previous;
+  const tiles = new TileIndex([...previous.nodes.values()]);
+  for (const key of newParents) {
+    const parent = previous.nodes.get(key); if (!parent) continue;
+    const ports = [point(parent.x + parent.width / 2, parent.y + parent.height), point(parent.x + parent.width, parent.y + parent.height / 2)];
+    for (const blocked of [...routes]) {
+      if (repairs >= 4 || budget.probes <= 0) return { ...previous, routes };
+      if (blocked.from.kind !== 'node' || blocked.from.id === key || /[^ML0-9.,+ eE-]/.test(blocked.path)) continue;
+      const lines = segments(blocked.path);
+      if (!lines.length || !ports.some(port => lines.some(line => distanceToSegment(line, port) < PORT_BERTH - .01))) continue;
+      const from = previous.nodes.get(blocked.from.id); if (!from) continue;
+      const points = [lines[0][0], ...lines.map(line => line[1])], lanes = retainedIndex(previous, routes);
+      let found: Point[] | undefined;
+      for (let i = 1; i < points.length - 2 && !found; i++) {
+        const a = points[i], b = points[i + 1], vertical = a.x === b.x, horizontal = a.y === b.y;
+        if (!vertical && !horizontal) continue;
+        const nearby = ports.filter(port => distanceToSegment([a, b], port) < PORT_BERTH - .01);
+        for (const port of nearby) {
+          const old = vertical ? a.x : a.y, axis = vertical ? 'x' : 'y', center = vertical ? port.x : port.y;
+          const direction = old < center ? -1 : 1;
+          for (const distance of [PORT_BERTH + LANE_STEP, PORT_BERTH + 2 * LANE_STEP, PORT_BERTH, PORT_BERTH + 3 * LANE_STEP]) {
+            if (budget.probes-- <= 0) break;
+            const coordinate = center + direction * distance;
+            const candidate = points.map((p, k) => k === i || k === i + 1 ? { ...p, [axis]: coordinate } : p);
+            if (candidate.some(p => p.x < 8 || p.x > request.maxWidth - 8)) continue;
+            const pieces = pathSegments(candidate), end = candidate.at(-1)!, beforeEnd = candidate.at(-2)!;
+            if (pieces.some(([a,b]) => a.x !== b.x && a.y !== b.y)) continue;
+            if (blocked.terminal && !((end.x === beforeEnd.x && end.y - beforeEnd.y >= ARROW.length)
+              || (end.y === beforeEnd.y && end.x - beforeEnd.x >= ARROW.length))) continue;
+            if (tiles.crosses(pieces) || tiles.grazes(pieces, from)
+              || lanes.conflicts(pieces, sourceKey('node', blocked.from.id), blocked.to.kind === 'junction' ? INTO_JUNCTION : INTO_TILE)) continue;
+            found = candidate; break;
+          }
+          if (found) break;
+        }
+      }
+      if (found) { routes = routes.map(r => r === blocked ? { ...r, path: path(found!) } : r); repairs++; }
+    }
+  }
+  return repairs ? { ...previous, routes } : previous;
+}
+
+function insertWithPortRepair(request: LayoutRequest, previous: GraphLayout, budget: IncrementalBudget): GraphLayout | null {
+  const repaired = freeBlockedPorts(request, previous, budget);
+  const placed = insertTree(request, repaired, budget);
+  if (placed) return placed;
+  const shifted = freePortLanes(request, repaired, budget);
+  return shifted === repaired ? null : insertTree(request, shifted, budget);
+}
+
 export function incrementalTree(request: LayoutRequest, previous: GraphLayout, budget: IncrementalBudget = incrementalBudget()): GraphLayout | null {
-  const placed = insertTree(request, freeBlockedPorts(request, previous, budget), budget);
+  const placed = insertWithPortRepair(request, previous, budget);
   if (!placed) return null;
   const key = request.band!.key;
   const extent = bandExtent({ ...placed, bandBounds: undefined }, key);
@@ -1198,7 +1255,7 @@ export function incrementalTree(request: LayoutRequest, previous: GraphLayout, b
 
 /** World coordinates already include packing. No child-band allocation padding applies. */
 export function incrementalWorld(request: LayoutRequest, previous: GraphLayout, budget: IncrementalBudget = incrementalBudget()): GraphLayout | null {
-  const placed = insertTree(request, freeBlockedPorts(request, previous, budget), budget);
+  const placed = insertWithPortRepair(request, previous, budget);
   if (!placed) return null;
   const extent = bandExtent({ ...placed, bandBounds: undefined }, request.band!.key, 0);
   return extent.left < 0 || extent.left + extent.width > request.maxWidth ? null : { ...placed, bandBounds: undefined };
