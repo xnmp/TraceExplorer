@@ -53,7 +53,9 @@ it.each([16,32,100].flatMap(count => [true,false].map(padded => ({count,padded})
   const request={items,maxWidth:108,band:{key:'root',items},pinned:{key:'root',x:54}};
   const raw=safeLayout(request);
   expect(raw.width).toBeLessThanOrEqual(108);
-  expect(geometryGate(attachSingleBand(raw,request),items,'root',108)).toBeNull();
+  const attached=attachSingleBand(raw,request);
+  expect(geometryGate(attached,items,'root',108)).toBeNull();
+  expect(measure(attached,'root',108,items).overflow).toBe(0);
   const tables=new Set(raw.routes.map(r=>Array.isArray(r.consumers)?r.consumers:(r.consumers as {entries:readonly unknown[]}).entries));
   expect([...tables].reduce((sum,entries)=>sum+entries.length,0)).toBeLessThanOrEqual(count*8);
 });

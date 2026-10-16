@@ -93,5 +93,9 @@ function serialLayout(request: LayoutRequest, streaming: boolean, arrivalRank?: 
     }
   }
   return { orientation: 'down', width: Math.max(request.maxWidth, right), height: bottom + 14,
-    nodes, junctions, routes, rows, readingOrder, preferredX: 0, decision: { candidate: 'safe-rows', stability: false, fallback: 'geometry-fallback' } };
+    nodes, junctions, routes, rows, readingOrder, preferredX: 0,
+    // This construction owns the full pane, including boundary lanes. Attachment
+    // must not add a second cosmetic margin around its already bounded ink.
+    bandBounds: { left: 0, width: request.maxWidth, top: rows.find(row => row.keys.some(key => key !== cover))?.top ?? 0 },
+    decision: { candidate: 'safe-rows', stability: false, fallback: 'geometry-fallback' } };
 }
