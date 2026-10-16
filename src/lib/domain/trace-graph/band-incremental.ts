@@ -16,7 +16,7 @@ import { filterRouteConsumers } from "./route-consumers";
  * tail leaves downward; more parents nest further junctions on a spine above it. Where no
  * lane-free placement exists the candidate is withheld (null) rather than drawn with a shared lane.
  */
-import { nearestFree, type GraphLayout, type LayoutRequest, type PlacedNode, type PlacedRoute, type PlacedJunction } from "./layout";
+import { nearestFree, type GraphLayout, type LayoutItem, type LayoutRequest, type PlacedNode, type PlacedRoute, type PlacedJunction } from "./layout";
 import { ARROW, JUNCTION_BERTH, LANE_SEPARATION, PORT_BERTH, spacingFor, STACK_STEM_ROOM } from "./metrics";
 import { axisOf, berthsOf, distanceToTile, distanceToSegment, entersBerth, grazesTile, INTO_JUNCTION, INTO_TILE, leavingRunFrom, routeEnds, shallowRun, SHALLOW_RUN, TILE_GRAZE, type Berth, type Ends } from "./route-contacts";
 import { bandExtent } from "./band-geometry";
@@ -68,6 +68,17 @@ const BERTH_RETRIES = 16;
 const MAX_INDEX_ROWS = 65_536;
 /** Whether a coordinate or size lies within the lane index's reach: finite, at most `MAX_INDEX_ROWS` rows from zero. */
 export const inReach = (value: number) => Number.isFinite(value) && Math.abs(value) <= MAX_INDEX_ROWS * 64;
+
+/** Prefixes share immutable complete membership; the weak key releases its source index with it. */
+const futureSourceIndexes = new WeakMap<readonly LayoutItem[], ReadonlySet<string>>();
+function futureSourcesOf(items: readonly LayoutItem[]): ReadonlySet<string> {
+  const known = futureSourceIndexes.get(items);
+  if (known) return known;
+  const sources = new Set<string>();
+  for (const item of items) for (const parent of item.parents) sources.add(parent);
+  futureSourceIndexes.set(items, sources);
+  return sources;
+}
 
 /** Parsed endpoints and control points must fit the same bounded geometry as retained tiles. */
 export function usableRetainedRoute(route: PlacedRoute): boolean {
@@ -355,6 +366,13 @@ class LaneIndex {
       }
       if (dy <= LANE_TOLERANCE / 8 && dy < dx) this.log.push(file(this.horizontal, { at: (a.y + b.y) / 2, lo: Math.min(a.x, b.x), hi: Math.max(a.x, b.x), source, segment }));
       else if (dx <= LANE_TOLERANCE / 8 && dx < dy) this.log.push(file(this.vertical, { at: (a.x + b.x) / 2, lo: Math.min(a.y, b.y), hi: Math.max(a.y, b.y), source, segment }));
+    }
+  }
+  /** Future outputs need a usable departure even before this source has a visible route. */
+  reservePorts(node: PlacedNode): void {
+    const source = sourceKey('node', node.key);
+    for (const port of [point(node.x + node.width / 2, node.y + node.height), point(node.x + node.width, node.y + node.height / 2)]) {
+      this.log.push(push(this.berths, Math.floor(port.y / 64), { ...port, radius: PORT_BERTH, source }));
     }
   }
   /** Adds a junction dot: later routes keep `JUNCTION_BERTH` from it. */
@@ -1339,6 +1357,10 @@ function insertTree(request: LayoutRequest, previous: GraphLayout, budget: Incre
   const lanes = new LaneIndex(retainedIndex(previous, kept));
   // Retained geometry beyond any real band (millions of pixels) cannot be indexed; lay out afresh.
   if (lanes.tooLarge()) return null;
+  // Complete membership, including hidden outputs, determines future sources. A route inserted
+  // now must not occlude a tile that will become a parent later in this insertion or another click.
+  const futureSources = futureSourcesOf(request.band?.items ?? request.items);
+  for (const node of nodes.values()) if (futureSources.has(node.key)) lanes.reservePorts(node);
   const remaining = request.items.filter(n => !nodes.has(n.key));
   if (!remaining.length) return null;
   // Retained routes may already occupy channels outside the pane or the tile
@@ -1459,6 +1481,7 @@ function insertTree(request: LayoutRequest, previous: GraphLayout, budget: Incre
     if (nodes.has(item.key)) { nodes.set(item.key, placed); boxes = [...nodes.values()]; tiles = new TileIndex([...boxes]); bottom = Math.max(...boxes.map(n => n.y + n.height)); }
     else { nodes.set(item.key, placed); boxes.push(placed); tiles.add(placed); bottom = Math.max(bottom, placed.y + placed.height); }
     commit(item.key, item.parents, parents, placed, best.wiring);
+    if (futureSources.has(item.key)) lanes.reservePorts(placed);
   }
 
   /** Records a placed tile's routes, junctions and lanes. */

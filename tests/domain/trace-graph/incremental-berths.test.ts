@@ -1,5 +1,5 @@
 import { expect, it } from 'vitest';
-import { denseCorpus, requestFor } from '../../../layout-eval/corpus';
+import { corpus, denseCorpus, requestFor } from '../../../layout-eval/corpus';
 import { layoutGraph, type GraphLayout, type LayoutRequest, type PlacedNode } from '$lib/domain/trace-graph/layout';
 import { attachSingleBand } from '$lib/domain/trace-graph/band-geometry';
 import { incrementalBudget, incrementalTree } from '$lib/domain/trace-graph/band-incremental';
@@ -41,4 +41,19 @@ it('withholds a route when its shared search budget is exhausted', () => {
   const budget = { ...incrementalBudget(), fallback: 5000, second: 5000 };
   expect(incrementalTree(expanded, previous, budget)).toBeNull();
   expect(previous).toEqual(before);
+});
+
+it('keeps newly inserted co-parent ports usable while inserting the rest of a branch', () => {
+  const fixture = { ...corpus().find(c => c.id === 'random-dag-40-7501')!, full: false };
+  const base = requestFor(fixture, null, 454, 96), expanded = requestFor(fixture, 'n11', 454, 96);
+  extend(expanded, attachSingleBand(layoutGraph(base), base));
+});
+
+it('reserves a co-parent departure before its currently hidden child is expanded', () => {
+  const fixture = { ...corpus().find(c => c.id === 'random-dag-40-7501')!, full: false };
+  const base = requestFor(fixture, null, 454, 96), expanded = requestFor(fixture, 'n11', 454, 96);
+  const firstKeys = new Set([...base.items.map(n => n.key), 'n7', 'n8']);
+  const first = { ...expanded, items: expanded.items.filter(n => firstKeys.has(n.key)) };
+  const intermediate = extend(first, attachSingleBand(layoutGraph(base), base));
+  extend(expanded, intermediate);
 });
