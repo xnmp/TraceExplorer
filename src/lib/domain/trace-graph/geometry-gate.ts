@@ -88,7 +88,10 @@ function intentional(layout: GraphLayout, a: PlacedRoute, b: PlacedRoute, p: Poi
   for (const end of [a.from, a.to]) {
     if (end.kind !== 'junction' || ![b.from, b.to].some(other => other.kind === 'junction' && other.id === end.id)) continue;
     const dot = layout.junctions.get(end.id);
-    if (dot && Math.hypot(p.x - dot.x, p.y - dot.y) <= PORT_BERTH) return true;
+    // The final fan occupies a berth on each axis. A disk clips its corners:
+    // a valid approach at (3, -6) lies outside radius 6 before reaching the dot.
+    // This remains local to the declared join; earlier shared runs still reject.
+    if (dot && Math.abs(p.x - dot.x) <= PORT_BERTH && Math.abs(p.y - dot.y) <= PORT_BERTH) return true;
   }
   return false;
 }
