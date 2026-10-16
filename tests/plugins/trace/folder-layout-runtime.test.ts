@@ -27,3 +27,9 @@ describe("folder layout runtime", () => {
     expect(runtime.inline(folderInput(folder, { open: ["s0:root", "s1:root"], focus: "s0:Ash", previous }))).toBe(true);
   });
 });
+
+it('budgets the sum of independent small band computations', () => {
+  const many = makeFolder({stacks:Array.from({length:12},()=>handCase('screenshot'))});
+  const runtime=createFolderLayoutRuntime();
+  expect(runtime.inline(folderInput(many,{open:many.stacks.keys()}))).toBe(false);
+});

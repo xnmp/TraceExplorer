@@ -11,7 +11,7 @@
  * its previous layout to every request (a quarter to a third of a typical one). The inline
  * check and the run that follows it plan the input once.
  */
-import { canLayoutInline } from "$lib/domain/trace-graph/layout-workload";
+import { layoutWorkload, withinInlineBudget } from "$lib/domain/trace-graph/layout-workload";
 import { createBoundedCache, createDefaultEngine, estimateLayoutBytes, rememberBands, uncachedBandRequests,
   type FolderLayout, type FolderLayoutEngine, type FolderLayoutInput } from "$lib/domain/trace-graph/folder-layout";
 
@@ -29,7 +29,10 @@ export function createFolderLayoutRuntime(): FolderLayoutRuntime {
   return {
     engine,
     inline(input) {
-      try { return uncachedBandRequests(input, bands).every(canLayoutInline); }
+      try { return withinInlineBudget(uncachedBandRequests(input, bands).reduce((sum,request)=>{
+        const work=layoutWorkload(request);
+        return {tiles:sum.tiles+work.tiles,edges:sum.edges+work.edges,pathBytes:sum.pathBytes+work.pathBytes};
+      },{tiles:0,edges:0,pathBytes:0})); }
       catch { return true; } // Invalid geometry fails the same way inline, at once.
     },
     remember: (layout) => rememberBands(layout, bands),

@@ -36,14 +36,20 @@ export interface SavedScene {
 
 /** The same plan without its request's history reference. */
 function withoutHistory<G extends FolderGraph>(graph: G, plans: Map<object, FolderGraph["plan"]>): G {
-  if (!("history" in graph.plan.request)) return graph;
+  const hasCanonicalHistory = graph.canonical && "history" in graph.canonical.request;
+  if (!("history" in graph.plan.request) && !hasCanonicalHistory) return graph;
   let plan = plans.get(graph.plan);
   if (!plan) {
     const { history: _history, ...request } = graph.plan.request;
     plan = { ...graph.plan, request };
     plans.set(graph.plan, plan);
   }
-  return { ...graph, plan };
+  let canonical = graph.canonical;
+  if (canonical && hasCanonicalHistory) {
+    const { history: _history, ...request } = canonical.request;
+    canonical = { ...canonical, request };
+  }
+  return { ...graph, plan, ...(canonical ? { canonical } : {}) };
 }
 
 /** `scene` without request-history references; the scene itself is never changed. */

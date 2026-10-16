@@ -127,6 +127,7 @@ export interface BandHistory {
 }
 
 export interface BandDecision {
+  readonly relayout?: 'pane-width' | 'tile-size';
   readonly candidate: string;
   readonly partition?: readonly number[];
   readonly stability: boolean;
@@ -294,9 +295,6 @@ function nearestOutside(preferred: number, merged: readonly Interval[], low: num
 export function nearestFree(preferred: number, intervals: readonly Interval[], low: number, high: number): number | null {
   return nearestOutside(preferred, mergeIntervals(intervals), low, high);
 }
-
-/** A short, stable hash of a string (FNV-1a). */
-
 
 export function layoutGraph(request: LayoutRequest, options?: BandOptions): GraphLayout {
   if (!request || !Array.isArray(request.items)) throw new RangeError("malformed layout request");

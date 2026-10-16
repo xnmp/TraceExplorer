@@ -180,7 +180,7 @@ export function prepareLayoutInput(intent: SceneIntent, data: SceneData, open: R
     const node = loaded.get(cell.summary.id)?.dag.nodes.get(cell.id);
     if (node) coverNodes.set(cell.id, node);
   }
-  const input: FolderLayoutInput = { items: cells, open: stacks, width, tile: intent.tile, grid, previous };
+  const input: FolderLayoutInput = { items: cells, open: stacks, width, tile: intent.tile, grid, previous, dataRevision: data.index.token };
   return { input, cells, history: { directory: data.index.directory, columns, held }, sources, coverNodes, basis: layoutBasis(input, versions) };
 }
 
@@ -198,7 +198,7 @@ export const expandedSignature = (expanded: BandExpansion): string => JSON.strin
  */
 export function layoutBasis(input: FolderLayoutInput, versions: readonly StackBasis[]): string {
   return JSON.stringify([input.items.map((item) => [item.id, item.kind]), [...versions].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)),
-    input.width, input.tile.width, input.tile.image, input.grid.cellWidth, input.grid.cellHeight, input.grid.gap]);
+    input.width, input.tile.width, input.tile.image, input.grid.cellWidth, input.grid.cellHeight, input.grid.gap, input.dataRevision]);
 }
 
 /** Same styling by contents: renderers read some of it directly (reference badges' selection), not only through records. */

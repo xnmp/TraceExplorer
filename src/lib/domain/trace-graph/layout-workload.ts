@@ -1,11 +1,20 @@
 /** Conservative deterministic work budget for synchronous layout dispatch. */
 import type { LayoutRequest } from "./layout";
 
-export function canLayoutInline(request: LayoutRequest): boolean {
+export function layoutWorkload(request: LayoutRequest): { tiles: number; edges: number; pathBytes: number } {
   const history = request.history?.layout;
-  return request.items.length + (history?.nodes.size ?? 0) <= 30
-    && request.items.reduce((sum, n) => sum + n.parents.length, 0) + (history?.routes.length ?? 0) <= 40;
+  return { tiles: request.items.length + (history?.nodes.size ?? 0),
+    edges: request.items.reduce((sum, n) => sum + n.parents.length, 0) + (history?.routes.length ?? 0),
+    pathBytes: history?.routes.reduce((sum,r)=>sum+2*r.path.length,0) ?? 0 };
 }
+
+/** Certification is part of the budget, including retained path parsing. */
+export function canLayoutInline(request: LayoutRequest): boolean {
+  return withinInlineBudget(layoutWorkload(request));
+}
+
+export const withinInlineBudget = (work: ReturnType<typeof layoutWorkload>): boolean =>
+  work.tiles <= 20 && work.edges <= 20 && work.pathBytes <= 16_384;
 
 /**
  * The scene on screen: how far it reaches horizontally, and the width it was laid out for. Both are

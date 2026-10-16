@@ -75,11 +75,12 @@ describe("band routing regressions", () => {
       assertClear(graph); assertClear(attached(graph));
     }
   });
-  it("anchors the click and surviving ancestry using explicit history", () => {
+  it("preserves arriving outputs' retained ancestry with an explicit attachment", () => {
     const request = { items: deep.slice(0, 3), maxWidth: 448, tileWidth: 92, pinned: { key: "root", x: 300 }, band: { key: "root", items: deep } };
     const first = layoutGraph(request);
-    const placed = attachPackedBand(first, "root", 97, { x: 0, coverX: 300, coverHeight: 97, width: 448, left: 0, right: 448 });
-    const next = layoutGraph({ ...request, items: deep.slice(0, 5), anchorKey: "Saffron", history: { signature: bandHistorySignature(request), layout: first, placed } });
+    const placement = { x: 0, coverX: 300, coverHeight: 97, width: 448, left: 0, right: 448 };
+    const placed = attachPackedBand(first, "root", 97, placement);
+    const next = layoutGraph({ ...request, items: deep.slice(0, 5), anchorKey: "Saffron", history: { signature: bandHistorySignature(request), layout: first, placed, attachment: { bandTop: 97, placement } } });
     expect(next.decision?.fallback).toBeUndefined();
     assertClear(next);
   });

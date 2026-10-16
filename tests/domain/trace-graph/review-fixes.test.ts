@@ -1,9 +1,10 @@
+import { geometryGate } from "$lib/domain/trace-graph/geometry-gate";
 import { describe, expect, it } from "vitest";
 import { layoutGraph, type BandHistory, type GraphLayout, type LayoutRequest, type PlacedRoute } from "$lib/domain/trace-graph/layout";
 import { attachSingleBand, roundedStem } from "$lib/domain/trace-graph/band-geometry";
 import { bandHistorySignature, fallbackReason } from "$lib/domain/trace-graph/band-layout";
 import { buildShelves, columnsFor, partitions } from "$lib/domain/trace-graph/band-shelves";
-import { cost, measure, sharedLaneLength } from "$lib/domain/trace-graph/layout-quality";
+import { cost, measure } from "$lib/domain/trace-graph/layout-quality";
 import { spacingFor } from "$lib/domain/trace-graph/metrics";
 import { corpus, node, requestFor, screenshot } from "../../../layout-eval/corpus";
 import { optimizedBand, type Optimized } from "../../../layout-eval/engine";
@@ -44,9 +45,8 @@ describe("rounded cover stems", () => {
 });
 
 describe("lane-infeasible requests without history", () => {
-  // Every candidate for this small DAG shares a lane between two sources: the engine must show
-  // the best of them with its lanes priced, flagged lane-infeasible, not the raw downward
-  // layout flagged as malformed input.
+  // Ordinary candidates for this small DAG share lanes. The admission boundary must
+  // replace them with certified fallback geometry.
   // (Found by a seeded search; the earlier 7-node fixture gained a lane-free layout once routes
   // passed rows along their straight lines, and the 10-node one after it once a cycle of turn
   // orders took a dogleg.)
@@ -54,24 +54,16 @@ describe("lane-infeasible requests without history", () => {
     node("n5", ["n3", "n4", "root"], 5)];
   const request = requestFor({ id: "lane-infeasible", nodes, focuses: [null] }, null, 900, 96);
 
-  it("shows the best priced candidate, flagged lane-infeasible", () => {
-    const layout = layoutGraph(request);
-    expect(layout.decision?.fallback).toBe("lane-infeasible");
-    const metrics = measure(attachSingleBand(layout, request), request.band!.key, 900, request.items);
-    expect(metrics.sharedLanePx).toBeGreaterThan(0);
-    const priced = (l: GraphLayout) => cost(measure(attachSingleBand(l, request), request.band!.key, 900, request.items), request.tileWidth!, { stability: 1.5, sharedLanes: "priced" });
-    expect(Number.isFinite(priced(layout))).toBe(true);
-    // No shelf candidate prices lower.
-    const columns = columnsFor(request.items, request.band!.key, spacingFor(request.tileWidth).column);
-    for (const ends of columns && columns.length >= 2 ? partitions(columns, request) : []) {
-      const shelves = buildShelves(request, columns!, ends);
-      if (shelves) expect(priced(layout)).toBeLessThanOrEqual(priced(shelves) + 1e-6);
-    }
+  it("returns certified fallback geometry when ordinary candidates share lanes", () => {
+    const layout = layoutGraph(request), drawn = attachSingleBand(layout, request);
+    expect(layout.decision?.fallback).toBe("geometry-fallback");
+    expect(geometryGate(drawn, request.items, request.band!.key, 900)).toBeNull();
+    expect(measure(drawn, request.band!.key, 900, request.items).sharedLanePx).toBe(0);
   });
 
   it("gives its reason from the layout: malformed only when the input is", () => {
     const layout = layoutGraph(request);
-    expect(fallbackReason(layout)).toMatch(/^lane-infeasible/);
+    expect(fallbackReason(layout)).toMatch(/^geometry-fallback/);
     const gated = { ...layout, decision: { ...layout.decision!, fallback: "gate-infeasible" as const } };
     expect(fallbackReason(gated)).not.toMatch(/malformed/);
     expect(fallbackReason({ ...gated, pinnedViolation: "cover has a visible parent" } as GraphLayout)).toMatch(/malformed/);
@@ -83,22 +75,26 @@ describe("crossing cap on anchored layouts", () => {
   // A bench reveal (random-dag-40-7502, 454 px, 128 px images): holding n26 still at step 2 costs a
   // crossings explosion. (The case was random-dag-100-8101 at 360 px until explicit expansion
   // changed the tours' visible sets; this is the corpus step that yields now.)
-  it("lets the anchors yield, flagged, when holding them still costs a crossings explosion", () => {
+  it("does not trade retained positions for a soft crossing cap", () => {
     const c = corpus().find(c => c.id === "random-dag-40-7502")!;
     let previous: Optimized | undefined, fresh = 0, layout: GraphLayout | undefined;
     const crossings = (l: GraphLayout, r: LayoutRequest) => measure(attachSingleBand(l, r), r.band!.key, 454, r.items).crossings;
     for (const focus of c.focuses.slice(0, 3)) {
       const request = requestFor(c, focus, 454, 128);
+      const committed = previous?.placed;
       previous = optimizedBand({ ...request, hint: previous?.layout.readingOrder }, { previous, anchorKey: focus ?? undefined });
       layout = previous.layout;
       fresh = crossings(layoutGraph({ ...request, hint: layout.readingOrder }), request);
       if (focus === "n26") {
-        expect(layout.decision?.fallback).toBe("anchor-yield");
-        expect(layout.decision?.stability).toBe(false);
-        expect(crossings(layout, request)).toBeLessThanOrEqual(fresh + Math.max(50, fresh * .25));
+        expect(layout.decision?.fallback).not.toBe("anchor-yield");
+        for (const [key, was] of committed?.nodes ?? []) {
+          const now = previous.placed.nodes.get(key);
+          if (now) expect([now.x, now.y, now.width, now.height], key).toEqual([was.x, was.y, was.width, was.height]);
+        }
+        expect(geometryGate(attachSingleBand(layout, request), request.items, request.band!.key, 454)).toBeNull();
       }
     }
-    expect(layout?.decision?.fallback).toBe("anchor-yield");
+    expect(layout?.decision?.fallback).not.toBe("anchor-yield");
   });
 
   it("keeps anchors that cost few crossings", () => {
@@ -118,7 +114,7 @@ describe("malformed and oversized history", () => {
     const plain = layoutGraph({ ...next, anchorKey: "Saffron" });
     for (const history of [withFirstRoute(r => ({ ...r, path: 42 })), withFirstRoute(r => ({ ...r, from: undefined })), withFirstRoute(r => ({ ...r, to: { id: "x" } })),
       { signature: bandHistorySignature(first), layout: { ...base, routes: null }, placed: { ...placed, routes: null } } as unknown as BandHistory])
-      expect(layoutGraph({ ...next, anchorKey: "Saffron", history })).toEqual(plain);
+      expect(layoutGraph({ ...next, anchorKey: "Saffron", history })).toEqual({ ...plain, decision: { ...plain.decision!, fallback: "invalid-history" } });
   });
 
   it("lays out promptly when retained geometry spans a billion pixels", () => {
@@ -131,14 +127,16 @@ describe("malformed and oversized history", () => {
 });
 
 describe("unchanged requests", () => {
-  it("measure the committed layout's shared lanes once, not on every request", () => {
+  it("preserves a large unchanged drawing on repeated validated reuse", () => {
     const c = corpus().find(c => c.id === "random-dag-200-9102")!, request = requestFor({ ...c, full: true }, null, 640, 48);
     const layout = layoutGraph(request), history = { signature: bandHistorySignature(request), layout, placed: attachSingleBand(layout, request) };
     expect(layoutGraph({ ...request, history }).decision?.candidate).toBe("unchanged-visible");
-    const fastest = (f: () => unknown) => { let best = Infinity; for (let i = 0; i < 5; i++) { const t = performance.now(); f(); best = Math.min(best, performance.now() - t); } return best; };
-    // Measuring a fresh copy's lanes is the work an unchanged request must not repeat.
-    const measureOnce = fastest(() => sharedLaneLength({ ...layout }));
-    const unchanged = fastest(() => layoutGraph({ ...request, history }));
-    expect(unchanged).toBeLessThan(measureOnce * .5);
+    // Dedicated layout:eval measures latency without parallel test-runner contention.
+    for (let i=0;i<3;i++) {
+      const unchanged=layoutGraph({...request,history});
+      expect(unchanged.nodes).toEqual(layout.nodes);
+      expect(unchanged.routes).toEqual(layout.routes);
+      expect(geometryGate(attachSingleBand(unchanged,request),request.items,request.band!.key,request.maxWidth)).toBeNull();
+    }
   });
 });

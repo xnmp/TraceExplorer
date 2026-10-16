@@ -162,7 +162,7 @@ export function buildFolderScene(input: FolderSceneInput): FolderScene {
   const cells = layoutInput.items as readonly FolderCell[];
   const tile = layoutInput.tile;
   const geometry = folderGridGeometry(layoutInput.width, tile, layoutInput.grid);
-  if (layout.columns !== geometry.columns) throw new RangeError("layout columns do not match its input");
+  if (layout.columns !== geometry.columns && !(layout.decision?.fallback === "isolated-rows" && layout.decision.requestedColumns === geometry.columns && layout.columns === 1)) throw new RangeError("layout columns do not match its input");
   const ids = new Set<string>();
   for (const cell of cells) { if (ids.has(cell.id)) throw new RangeError(`duplicate grid item: ${cell.id}`); ids.add(cell.id); }
   if (layout.cells.size !== cells.length || cells.some((cell) => !layout.cells.has(cell.id))) throw new RangeError("layout cells do not match the items");

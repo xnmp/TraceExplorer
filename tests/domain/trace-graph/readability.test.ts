@@ -1,3 +1,4 @@
+import { geometryGate } from "$lib/domain/trace-graph/geometry-gate";
 import { describe, expect, it } from "vitest";
 import { layoutGraph, layoutLayered, type GraphLayout, type LayoutItem, type LayoutRequest, type PlacedRoute } from "$lib/domain/trace-graph/layout";
 import { bandHistorySignature } from "$lib/domain/trace-graph/band-layout";
@@ -199,7 +200,7 @@ describe("routes trading columns", () => {
     const request = requestFor({ id: `layered-${seed}`, nodes: layered(seed), focuses: [null], full: true }, null, 454, 128);
     const layout = layoutGraph(request), drawn = attachSingleBand(layout, request);
     const gates = validateLayout(drawn, request.band!.key, 454, request.items);
-    expect(layout.decision?.fallback).toBeUndefined();
+    expect(geometryGate(drawn, request.items, request.band!.key, request.maxWidth)).toBeNull();
     expect(gates.sharedLanePx).toBe(0);
     expect(continuations(drawn)).toEqual([]);
     expect([gates.tileIntersections, gates.overlaps, gates.missingEdges, gates.extraEdges, gates.invalidGeometry, gates.invalidPaths, gates.terminalViolations, gates.disconnectedEdges]).toEqual(Array(8).fill(0));
@@ -264,7 +265,7 @@ describe("lines kept off tiles", () => {
   function grazing(layout: GraphLayout): string[] {
     const out: string[] = [];
     for (const r of layout.routes) {
-      if (!r.id.startsWith("incremental")) continue;
+      if (!r.id.startsWith('["incremental')) continue;
       const ss = routePlan(r).segments;
       for (const t of layout.nodes.values()) {
         if (t.key === r.from.id || t.key === r.to.id) continue;
@@ -286,7 +287,7 @@ describe("lines kept off tiles", () => {
       const request = requestFor({ id: `variations-${seed}`, nodes: component, focuses: [] }, focus, width, imagePx, previous?.layout.readingOrder);
       const layout = layoutGraph({ ...request, anchorKey: focus ?? undefined, history: previous });
       const placed = attachSingleBand(layout, request);
-      incremental += placed.routes.filter(r => r.id.startsWith("incremental")).length;
+      incremental += placed.routes.filter(r => r.id.startsWith('["incremental')).length;
       expect(grazing(placed), `focus ${focus}`).toEqual([]);
       previous = { signature: bandHistorySignature(request), layout, placed };
     }
@@ -322,7 +323,7 @@ describe("lines kept off tiles", () => {
         const d = Math.min(...ss.map(([a, b]) => toTile(a, b, t)));
         if (d < TILE_GRAZE - 1e-6) out.push(`${r.id} ${d.toFixed(2)} px from placed ${t.key}`);
       }
-      if (!r.id.startsWith("incremental") || r.from.kind !== "node") continue;
+      if (!r.id.startsWith('["incremental') || r.from.kind !== "node") continue;
       const own = placed.nodes.get(r.from.id)!, hugging = along(ss, TILE_GRAZE + .25).filter(q => pointToTile(q, own) < TILE_GRAZE - 1e-6);
       if (hugging.length) out.push(`${r.id} runs on ${own.key}'s border for ${hugging.length / 2} px`);
     }
@@ -340,7 +341,7 @@ describe("lines kept off tiles", () => {
       const request = requestFor({ id: `${profile}-${seed}`, nodes: component, focuses: [] }, focus, width, imagePx, previous?.layout.readingOrder);
       const layout = layoutGraph({ ...request, anchorKey: focus ?? undefined, history: previous });
       const placed = attachSingleBand(layout, request);
-      if (layout.decision?.candidate === "incremental-tree" || layout.decision?.candidate === "anchored-repack") {
+      if (layout.decision?.candidate === "incremental-tree" || layout.decision?.candidate === "anchored-repack" || layout.decision?.candidate === "pinned-extension") {
         embedded++;
         expect(onPlacedTiles(layout, placed, previous?.layout), `focus ${focus}`).toEqual([]);
       }

@@ -1,5 +1,5 @@
 /** Global checks on the drawing, independent of placement and router occupancy tables. */
-import type { GraphLayout, LayoutItem, PlacedRoute } from './layout';
+import type { GraphLayout, LayoutItem, PlacedNode, PlacedRoute } from './layout';
 import { validateLayout, cost } from './layout-quality';
 import { ARROW, LANE_SEPARATION, PORT_BERTH } from './metrics';
 import { inReach } from './band-incremental';
@@ -7,7 +7,8 @@ import { geometrySignature } from './layout-signature';
 import { createBoundedCache } from './folder-layout/bounded-cache';
 
 type Point = { readonly x: number; readonly y: number };
-type Segment = { readonly a: Point; readonly b: Point; readonly route: PlacedRoute; readonly source: string; readonly error: number };
+type Segment = { readonly a: Point; readonly b: Point; readonly route: PlacedRoute; readonly source: string; readonly error: number; readonly hull: Box };
+type Primitive = readonly [Point, Point] | readonly [Point, Point, Point, Point];
 type Probe = { readonly p: Point; readonly radius: number };
 const sourceOf = (r: PlacedRoute) => JSON.stringify([r.from.kind, r.from.id]);
 const midpoint = (a: Point, b: Point): Point => ({ x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 });
@@ -18,15 +19,15 @@ const distance = (p: Point, a: Point, b: Point): number => {
 };
 
 /** Independent strict reader. Cubic subdivision has a geometric error bound, not a sample count. */
-function read(path: string): { points: Point[]; errors: number[]; corners: Point[] } | null {
+function read(path: string): { points: Point[]; errors: number[]; hulls: Box[]; corners: Point[]; primitives: Primitive[] } | null {
   const tokens = path.match(/[MLC]|[-+]?(?:\d*\.\d+|\d+\.?\d*)(?:e[-+]?\d+)?/gi) ?? [];
   if (path.replace(/[MLC]|[-+]?(?:\d*\.\d+|\d+\.?\d*)(?:e[-+]?\d+)?|[\s,]/gi, '') || tokens[0] !== 'M') return null;
   let at = 0, last = '';
-  const points: Point[] = [], errors: number[] = [], corners: Point[] = [];
+  const points: Point[] = [], errors: number[] = [], hulls: Box[] = [], corners: Point[] = [], primitives: Primitive[] = [];
   const point = (): Point => ({ x: Number(tokens[at++]), y: Number(tokens[at++]) });
   const curve = (a: Point, b: Point, c: Point, d: Point, depth: number): boolean => {
     if (a.x === d.x && a.y === d.y && (b.x !== a.x || b.y !== a.y || c.x !== a.x || c.y !== a.y)) return false;
-    if (Math.max(distance(b, a, d), distance(c, a, d)) <= .025) { points.push(d); errors.push(.025); return true; }
+    if (Math.max(distance(b, a, d), distance(c, a, d)) <= .025) { points.push(d); errors.push(.025); hulls.push(boxOf(a, b, c, d)); return true; }
     if (depth >= 16) return false;
     const ab = midpoint(a, b), bc = midpoint(b, c), cd = midpoint(c, d), abc = midpoint(ab, bc), bcd = midpoint(bc, cd), middle = midpoint(abc, bcd);
     return curve(a, ab, abc, middle, depth + 1) && curve(middle, bcd, cd, d, depth + 1);
@@ -40,9 +41,11 @@ function read(path: string): { points: Point[]; errors: number[]; corners: Point
         const a = points.at(-2)!, b = points.at(-1)!;
         if (Math.abs((b.x - a.x) * (p.y - b.y) - (b.y - a.y) * (p.x - b.x)) > 1e-7) corners.push(b);
       }
-      points.push(p); errors.push(0);
+      if (command === 'L') primitives.push([points.at(-1)!, p]);
+      hulls.push(boxOf(points.at(-1) ?? p, p)); points.push(p); errors.push(0);
     } else if (command === 'C' && points.length) {
-      const b = point(), c = point(), d = point();
+      const a = points.at(-1)!, b = point(), c = point(), d = point();
+      primitives.push([a, b, c, d]);
       if (![b.x, b.y, c.x, c.y, d.x, d.y].every(inReach) || !curve(points.at(-1)!, b, c, d, 0)) return null;
     } else return null;
     last = command;
@@ -54,10 +57,15 @@ function read(path: string): { points: Point[]; errors: number[]; corners: Point
     const dot = ((b.x - a.x) * (c.x - b.x) + (b.y - a.y) * (c.y - b.y)) / (Math.hypot(b.x - a.x, b.y - a.y) * Math.hypot(c.x - b.x, c.y - b.y));
     if (dot < .98) corners.push(b);
   }
-  return clean.length > 1 ? { points: clean, errors: cleanErrors, corners } : null;
+  return clean.length > 1 ? { points: clean, errors: cleanErrors, hulls: hulls.filter((_, i) => keep[i]), corners, primitives } : null;
 }
 
 interface Box { readonly minX: number; readonly minY: number; readonly maxX: number; readonly maxY: number }
+/** A Bézier curve lies inside the convex hull of its control points. */
+const boxOf = (...points: readonly Point[]): Box => ({ minX: Math.min(...points.map(p => p.x)), minY: Math.min(...points.map(p => p.y)),
+  maxX: Math.max(...points.map(p => p.x)), maxY: Math.max(...points.map(p => p.y)) });
+const boxDistance = (a: Box, b: Box): number => Math.hypot(Math.max(0, a.minX - b.maxX, b.minX - a.maxX), Math.max(0, a.minY - b.maxY, b.minY - a.maxY));
+const pointBoxDistance = (p: Point, box: Box): number => Math.hypot(Math.max(0, box.minX - p.x, p.x - box.maxX), Math.max(0, box.minY - p.y, p.y - box.maxY));
 interface Branch extends Box { readonly source: string | null; readonly entries?: readonly Segment[]; readonly left?: Branch; readonly right?: Branch }
 function index(entries: Segment[]): Branch {
   let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
@@ -103,15 +111,18 @@ function checkClearance(layout: GraphLayout): string | null {
   for (const route of layout.routes) {
     const parsed = read(route.path);
     if (!parsed) return 'invalid-path';
-    const source = sourceOf(route), { points, errors, corners } = parsed;
+    const source = sourceOf(route), { points, errors, hulls, corners } = parsed;
     const end = points.at(-1)!, before = points.at(-2)!;
     if (route.terminal) {
       const length = Math.hypot(end.x - before.x, end.y - before.y);
       if (!length) return 'invalid-terminal';
       errors.push(0);
       points.push({ x: end.x + ARROW.length * (end.x - before.x) / length, y: end.y + ARROW.length * (end.y - before.y) / length });
+      hulls.push(boxOf(end, points.at(-1)!));
+      // The arrow base is part of the target approach, not an ordinary interior crossing.
+      corners.push(end);
     }
-    for (let i = 1; i < points.length; i++) entries.push({ a: points[i - 1], b: points[i], route, source, error: errors[i] });
+    for (let i = 1; i < points.length; i++) entries.push({ a: points[i - 1], b: points[i], route, source, error: errors[i], hull: hulls[i] });
     const portRadius = (p: Point, end: PlacedRoute['from']) => {
       const n = end.kind === 'node' ? layout.nodes?.get(end.id) : undefined;
       const onOutline = n && p.x >= n.x - .01 && p.x <= n.x + n.width + .01 && p.y >= n.y - .01 && p.y <= n.y + n.height + .01
@@ -126,7 +137,7 @@ function checkClearance(layout: GraphLayout): string | null {
   for (const { route, source, probes: checks } of probes) for (const { p, radius } of checks) {
     const search = (branch: Branch): boolean => {
       if (branch.source === source || p.x + radius + .025 < branch.minX || p.x - radius - .025 > branch.maxX || p.y + radius + .025 < branch.minY || p.y - radius - .025 > branch.maxY) return false;
-      if (branch.entries) return branch.entries.some(s => s.source !== source && !intentional(layout, route, s.route, p) && distance(p, s.a, s.b) < radius + s.error - 1e-7);
+      if (branch.entries) return branch.entries.some(s => s.source !== source && !intentional(layout, route, s.route, p) && pointBoxDistance(p, s.hull) < radius - 1e-7 && distance(p, s.a, s.b) < radius + s.error - 1e-7);
       return search(branch.left!) || search(branch.right!);
     };
     if (search(tree)) return 'route-contact';
@@ -142,9 +153,16 @@ function checkClearance(layout: GraphLayout): string | null {
       if (branch.source === a.source || maxX < branch.minX || minX > branch.maxX || maxY < branch.minY || minY > branch.maxY) return false;
       if (!branch.entries) return search(branch.left!) || search(branch.right!);
       return branch.entries.some(b => {
-        if (a.source === b.source) return false;
+        // Chord error is only an upper uncertainty bound. A separated control hull
+        // proves exact clearance even when the conservative chord test cannot.
+        if (a.source === b.source || boxDistance(a.hull, b.hull) >= LANE_SEPARATION - 1e-7) return false;
         const bx = b.b.x - b.a.x, by = b.b.y - b.a.y;
         if (Math.abs(dx * by - dy * bx) > .2 * length * Math.hypot(bx, by)) return false;
+        const cross=dx*by-dy*bx;
+        if (cross) {
+          const x=b.a.x-a.a.x,y=b.a.y-a.a.y,t=(x*by-y*bx)/cross,u=(x*dy-y*dx)/cross;
+          if (t>=0 && t<=1 && u>=0 && u<=1 && !intentional(layout,a.route,b.route,{x:a.a.x+t*dx,y:a.a.y+t*dy})) return true;
+        }
         return [a.a, a.b].some(p => !intentional(layout, a.route, b.route, p) && distance(p, b.a, b.b) < LANE_SEPARATION + a.error + b.error - 1e-7)
           || [b.a, b.b].some(p => !intentional(layout, a.route, b.route, p) && distance(p, a.a, a.b) < LANE_SEPARATION + a.error + b.error - 1e-7);
       });
@@ -156,13 +174,124 @@ function checkClearance(layout: GraphLayout): string | null {
 
 const geometryChecks = createBoundedCache<string | null>(() => 64, { maxEntries: 64, maxBytes: 8 * 1024 * 1024 });
 
+interface TileBranch extends Box { readonly tiles?: readonly PlacedNode[]; readonly left?: TileBranch; readonly right?: TileBranch }
+function tileIndex(tiles: PlacedNode[]): TileBranch {
+  const bounds = tiles.reduce((b, n) => ({ minX: Math.min(b.minX,n.x), minY: Math.min(b.minY,n.y), maxX: Math.max(b.maxX,n.x+n.width), maxY: Math.max(b.maxY,n.y+n.height) }),
+    {minX:Infinity,minY:Infinity,maxX:-Infinity,maxY:-Infinity});
+  if (tiles.length <= 8) return {...bounds,tiles};
+  const axis = bounds.maxX-bounds.minX > bounds.maxY-bounds.minY ? 'x' : 'y';
+  tiles.sort((a,b) => a[axis]-b[axis]);
+  const middle = Math.floor(tiles.length/2);
+  return {...bounds,left:tileIndex(tiles.slice(0,middle)),right:tileIndex(tiles.slice(middle))};
+}
+
+/** Convex-hull rejection and subdivision certify curves, including excursions between samples.
+ * Ambiguous contact at the finite subdivision budget is rejected, never admitted. */
+function entersTile(primitive: Primitive, tile: PlacedNode): boolean {
+  const x0=tile.x+1e-7,x1=tile.x+tile.width-1e-7,y0=tile.y+1e-7,y1=tile.y+tile.height-1e-7;
+  let budget=4096;
+  const visit = (p: Primitive, depth: number): boolean => {
+    if (p.every(q=>q.x<=x0) || p.every(q=>q.x>=x1) || p.every(q=>q.y<=y0) || p.every(q=>q.y>=y1)) return false;
+    if (p.length===2) {
+      const [a,b]=p; let lo=0,hi=1;
+      for (const [start,delta,min,max] of [[a.x,b.x-a.x,x0,x1],[a.y,b.y-a.y,y0,y1]]) {
+        if (!delta) { if (start<=min || start>=max) return false; continue; }
+        const t0=(min-start)/delta,t1=(max-start)/delta;
+        lo=Math.max(lo,Math.min(t0,t1)); hi=Math.min(hi,Math.max(t0,t1));
+      }
+      return lo < hi;
+    }
+    if (depth===24 || --budget<=0) return true;
+    const [a,b,c,d]=p,ab=midpoint(a,b),bc=midpoint(b,c),cd=midpoint(c,d),abc=midpoint(ab,bc),bcd=midpoint(bc,cd),m=midpoint(abc,bcd);
+    return visit([a,ab,abc,m],depth+1) || visit([m,bcd,cd,d],depth+1);
+  };
+  return visit(primitive,0);
+}
+
+export function drawingClaimsViolation(layout: GraphLayout): string | null {
+  const tree=tileIndex([...layout.nodes.values()]);
+  const parsedRoutes: {route: PlacedRoute; parsed: NonNullable<ReturnType<typeof read>>}[]=[];
+  // Runs make homogeneous consumer-range checks constant time even on shared trunks.
+  type Consumer = import('./junctions').Consumer;
+  const runs=new Map<readonly Consumer[],{parent:Uint32Array;child:Uint32Array}>();
+  const uniform=(entries:readonly Consumer[],start:number,end:number,field:'parent'|'child',id:string):boolean=>{
+    if (start===end) return false;
+    let table=runs.get(entries);
+    if (!table) {
+      table={parent:new Uint32Array(entries.length),child:new Uint32Array(entries.length)};
+      for (let i=entries.length-1;i>=0;i--) for (const key of ['parent','child'] as const)
+        table[key][i]=i+1<entries.length && entries[i][key]===entries[i+1][key] ? table[key][i+1] : i+1;
+      runs.set(entries,table);
+    }
+    return entries[start][field]===id && table[field][start]>=end;
+  };
+  for (const route of layout.routes) {
+    for (const end of [route.from,route.to]) if (!(end.kind==='node' ? layout.nodes : layout.junctions).has(end.id)) return 'invalid-endpoint';
+    const c=route.consumers,range=Array.isArray(c)?{entries:c,start:0,end:c.length}:c as {entries:readonly Consumer[];start:number;end:number};
+    if (route.from.kind==='node' && !uniform(range.entries,range.start,range.end,'parent',route.from.id)) return 'invalid-source';
+    if (route.terminal && (route.to.kind!=='node' || !uniform(range.entries,range.start,range.end,'child',route.to.id))) return 'invalid-target';
+    const parsed=read(route.path);
+    if (!parsed) return 'invalid-path';
+    parsedRoutes.push({route,parsed});
+    const trunk=!route.terminal && route.from.kind===route.to.kind && route.from.id===route.to.id;
+    if (route.to.kind==='junction' && !trunk) {
+      const end=parsed.points.at(-1)!, dot=layout.junctions.get(route.to.id)!;
+      if (Math.hypot(end.x-dot.x,end.y-dot.y)>1e-7) return 'invalid-target';
+    }
+    for (const primitive of parsed.primitives) {
+      const xs=primitive.map(p=>p.x),ys=primitive.map(p=>p.y),minX=Math.min(...xs),maxX=Math.max(...xs),minY=Math.min(...ys),maxY=Math.max(...ys);
+      const search=(branch:TileBranch):boolean=>{
+        if (maxX<=branch.minX || minX>=branch.maxX || maxY<=branch.minY || minY>=branch.maxY) return false;
+        return branch.tiles ? branch.tiles.some(n=>entersTile(primitive,n)) : search(branch.left!) || search(branch.right!);
+      };
+      if (search(tree)) return 'route-through-tile';
+    }
+  }
+  // Trunks may begin away from their declared source, but must be reachable from it
+  // along directed carriers of that same source. Endpoint existence alone is insufficient:
+  // otherwise a forged junction identity can disguise two unrelated routes as one source.
+  const groups=new Map<string,typeof parsedRoutes>();
+  for (const entry of parsedRoutes) {
+    const key=sourceOf(entry.route),group=groups.get(key);
+    if (group) group.push(entry); else groups.set(key,[entry]);
+  }
+  for (const group of groups.values()) {
+    const byRoute=new Map(group.map((entry,i)=>[entry.route,i]));
+    const outgoing:number[][]=group.map(()=>[]),seen=new Set<number>(),ready:number[]=[];
+    const segments:Segment[]=group.flatMap(({route,parsed})=>parsed.points.slice(1).map((b,i)=>({a:parsed.points[i],b,route,source:sourceOf(route),error:parsed.errors[i+1],hull:parsed.hulls[i+1]})));
+    const carriers=index(segments);
+    for (const [i,{route,parsed}] of group.entries()) {
+      const p=parsed.points[0],end=route.from;
+      const origin=end.kind==='junction'?layout.junctions.get(end.id)!:layout.nodes.get(end.id)!;
+      const startsAtOrigin=end.kind==='junction' ? Math.hypot(p.x-origin.x,p.y-origin.y)<1e-7 : (()=>{
+        const n=origin as PlacedNode;
+        return p.x>=n.x-1e-7 && p.x<=n.x+n.width+1e-7 && p.y>=n.y-1e-7 && p.y<=n.y+n.height+1e-7
+          && Math.min(Math.abs(p.x-n.x),Math.abs(p.x-n.x-n.width),Math.abs(p.y-n.y),Math.abs(p.y-n.y-n.height))<1e-7;
+      })();
+      if (startsAtOrigin) { seen.add(i); ready.push(i); continue; }
+      const visit=(branch:Branch)=>{
+        if (p.x<branch.minX-1e-7 || p.x>branch.maxX+1e-7 || p.y<branch.minY-1e-7 || p.y>branch.maxY+1e-7) return;
+        if (branch.entries) for (const s of branch.entries) {
+          const other=byRoute.get(s.route)!;
+          if (other!==i && (s.error===0 ? distance(p,s.a,s.b)<1e-7 : Math.min(Math.hypot(p.x-s.a.x,p.y-s.a.y),Math.hypot(p.x-s.b.x,p.y-s.b.y))<1e-7)) outgoing[other].push(i);
+        } else { visit(branch.left!); visit(branch.right!); }
+      };
+      visit(carriers);
+    }
+    for (let at=0;at<ready.length;at++) for (const next of outgoing[ready[at]]) if (!seen.has(next)) {seen.add(next);ready.push(next);}
+    if (seen.size!==group.length) return 'invalid-source';
+  }
+  return null;
+}
+
 /** This is the admission boundary for a complete drawing, whatever generated it. */
 export function geometryGate(layout: GraphLayout, items: readonly LayoutItem[], cover: string, width: number): string | null {
   const key = JSON.stringify([cover, width, items.map(n => [n.key, n.width, n.height, n.parents]), geometrySignature(layout)]);
   const known = geometryChecks.get(key);
   if (known !== undefined) return known;
-  const metrics = validateLayout(layout, cover, width, items);
-  const failure = !Number.isFinite(cost(metrics, 92)) ? metrics.sharedLanePx ? 'shared-lane' : 'invalid-geometry' : routeClearanceViolation(layout);
+  const claims = drawingClaimsViolation(layout);
+  const metrics = claims ? null : validateLayout(layout, cover, width, items);
+  const failure = claims ?? (metrics && !Number.isFinite(cost(metrics, 92)) ? metrics.sharedLanePx ? 'shared-lane' : 'invalid-geometry' : routeClearanceViolation(layout));
   geometryChecks.set(key, failure);
   return failure;
 }

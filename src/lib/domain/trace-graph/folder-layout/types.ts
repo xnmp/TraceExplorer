@@ -14,11 +14,10 @@
  * against every registered engine. Caching is a wrapper (`memoizeEngine`),
  * never part of the seam.
  *
- * Geometry only: styling that cannot move a rectangle (tones, selection,
- * badge hover highlighting, route emphasis) is derived by the caller from
- * the output and the current focus, and must not be an input here. Neither
- * is the selection: what a band shows is the user's explicit expansion
- * (`OpenStack.expanded`), and its anchor the node last toggled.
+ * Geometry only: tones, selection, badge highlighting and route emphasis are derived from the
+ * output. Visibility comes from explicit expansion (`OpenStack.expanded`); the last click anchor
+ * is ignored. History is committed only on folder contents changes. Any click sequence reaching
+ * the same expansion state therefore uses the same arrival history and placement inputs.
  *
  * Coordinates are folder coordinates: (0, 0) is the grid's top-left inside
  * the pane's grid padding.
@@ -29,7 +28,7 @@ import type { TileMetrics } from "../metrics";
 import type { GridBand, GridCell, GridItem, GridItemId, GridRect } from "../grid-flow";
 import type { BandPlacement } from "../band-geometry";
 import type { BandScenePlan } from "../scene";
-import type { GraphLayout } from "../layout";
+import type { BandHistory, GraphLayout, LayoutRequest } from "../layout";
 import type { BandExpansion } from "../visibility";
 
 /** A stack's stable identity: its cover node key (component ids change when components merge). */
@@ -50,8 +49,8 @@ export interface OpenStack {
   /** Drawable keys of the component, in the component's order. */
   readonly members: readonly NodeKey[];
   /**
-   * The node the user last expanded or collapsed in this stack (`expansionAnchor`), which the
-   * layout holds still; null for none. Never the selection: selecting changes no geometry.
+   * The node last toggled, retained for callers that also use it for viewport navigation.
+   * The default layout ignores it; click history and selection cannot change geometry.
    */
   readonly anchor: NodeKey | null;
   /**
@@ -64,6 +63,9 @@ export interface OpenStack {
 }
 
 export interface FolderLayoutInput {
+  /** Backend observation epoch, stable across clicks. It is not proof of a contents change:
+   * status-only updates may advance it. Complete member facts still decide arrivals. */
+  readonly dataRevision?: string;
   /**
    * Grid items in host order with each stack collapsed to one item at its
    * cover's position (`folderCells`). A stack's item id is its `GraphId`.
@@ -76,10 +78,10 @@ export interface FolderLayoutInput {
   readonly tile: TileMetrics;
   readonly grid: FolderGridMetrics;
   /**
-   * The previous committed output, as a stability hint only: an engine may
-   * keep reading order, positions and band decisions from it, but must
-   * produce a valid layout without it and must not read anything else from
-   * it (it may come from another width or tile size, or be malformed).
+   * The previous complete output carries arrival-only history and canonical cache entries.
+   * The current displayed geometry becomes a new arrival snapshot only when folder contents
+   * change. Clicks reuse the existing snapshot. Validate any geometry before reuse: this value
+   * can be malformed or belong to another width/tile/grid basis.
    */
   readonly previous?: FolderLayout | null;
 }
@@ -89,7 +91,7 @@ export interface FolderGraph {
   readonly id: GraphId;
   /** Visible tiles, lineage of the focus and the request the band was laid out from. */
   readonly plan: BandScenePlan;
-  /** The band as laid out, in cover-relative coordinates (history and caching use this). */
+  /** The local drawing used for history. For world placement it equals `attached`; see `canonical`. */
   readonly layout: GraphLayout;
   /**
    * The same band attached to the packed grid: tile rects and connector paths relative to
@@ -99,9 +101,31 @@ export interface FolderGraph {
   /** Folder coordinates of `attached`'s (0, 0): the grid's left edge at the cover cell's top. */
   readonly origin: { readonly x: number; readonly y: number };
   readonly placement: BandPlacement;
+  /** Original request and raw band drawing: caching never reattaches a world/fallback drawing as raw. */
+  readonly canonical?: { readonly request: LayoutRequest; readonly layout: GraphLayout };
+  /** World placement has no band attachment transform to replay. */
+  readonly worldPlaced?: true;
+}
+
+export interface ArrivalHistory {
+  readonly contents: string;
+  readonly history?: BandHistory;
+}
+
+/** Exact folder coordinates retained at the last contents change, never an interaction. */
+export interface FolderPlacementHistory {
+  readonly basis: string;
+  readonly layout: Omit<FolderLayout, 'arrivalPlacement' | 'arrivals'>;
 }
 
 export interface FolderLayout {
+  /** Observation epoch used to distinguish freshly loaded facts from a new arrival. */
+  readonly dataRevision?: string;
+  readonly geometryBasis?: string;
+  readonly arrivalPlacement?: FolderPlacementHistory;
+  readonly decision?: { readonly fallback?: "isolated-rows" | "pin-search-exhausted"; readonly requestedColumns: number; readonly pinning?: "search-exhausted"; readonly relayout?: 'pane-width' | 'tile-size' };
+  /** Updated only by component membership/parentage changes, never by a scene interaction. */
+  readonly arrivals?: ReadonlyMap<GraphId, ArrivalHistory>;
   readonly columns: number;
   /** The grid's own box from (0, 0): what the grid element is sized to (connectors may overhang it; see `bounds`). */
   readonly size: { readonly width: number; readonly height: number };

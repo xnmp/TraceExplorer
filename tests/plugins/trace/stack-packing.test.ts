@@ -45,15 +45,15 @@ describe("shared grid row band", () => {
     const flow = packedGridFlow(items, new Map([["a", { width: 90, height: 80 }], ["b", { width: 90, height: 120 }]]), 2, metrics);
     expect(flow.bands.map(({ y }) => y)).toEqual([100, 100]);
     expect(flow.rowBands).toHaveLength(1);
-    expect(flow.cells.get("file")?.y).toBe(230);
-    expect(flow.height).toBe(330);
+    expect(flow.cells.get("file")?.y).toBe(242);
+    expect(flow.height).toBe(342);
   });
   it("adds wrapped lines within that band without moving any cover horizontally", () => {
     const flow = packedGridFlow(items, new Map([["a", { width: 140, height: 80 }], ["b", { width: 140, height: 120 }]]), 2, metrics);
-    expect(flow.bands.map(({ y }) => y)).toEqual([100, 180]);
+    expect(flow.bands.map(({ y }) => y)).toEqual([100, 182]);
     expect(flow.cells.get("b")?.x).toBe(110);
-    expect(flow.rowBands[0].height).toBe(200);
-    expect(flow.cells.get("file")?.y).toBe(310);
+    expect(flow.rowBands[0].height).toBe(214);
+    expect(flow.cells.get("file")?.y).toBe(324);
   });
   for (const childX of [20, 155, 160, 260]) {
     it(`leaves only bend room before routing to a child at ${childX}`, () => {

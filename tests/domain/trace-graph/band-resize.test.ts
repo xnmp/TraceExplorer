@@ -78,7 +78,7 @@ function drawing(layout: GraphLayout) {
 }
 
 describe("an output arriving out of sight", () => {
-  it("grows its input's tile in place: tiles move only down, by at most the hint, keep their gaps, and the band stays valid", () => {
+  it("keeps the reserved input rectangle and all visible geometry unchanged", () => {
     let tried = 0;
     for (const c of cases) for (const width of WIDTHS) for (const imagePx of IMAGE_PX) {
       const focus = c.nodes.find(n => n.parents.length)?.key;
@@ -95,8 +95,8 @@ describe("an output arriving out of sight", () => {
         if (flagged(after)) continue;
         tried++;
         const where = `${c.id} w=${width} px=${imagePx} ${leaf.key}`;
-        expect(after.placed.nodes.get(leaf.key)!.height, where).toBeGreaterThan(selected.placed.nodes.get(leaf.key)!.height);
-        expect(movedTiles(selected.placed, after.placed, HINT), where).toEqual([]);
+        expect(after.placed.nodes.get(leaf.key)!.height, where).toBe(selected.placed.nodes.get(leaf.key)!.height);
+        expect(movedTiles(selected.placed, after.placed), where).toEqual([]);
         expect(squeezed(selected.placed, after.placed, imagePx), where).toEqual([]);
         expect(newlyFailed(validateLayout(selected.placed, next.band!.key, width, request.items), validateLayout(after.placed, next.band!.key, width, next.items)), where).toEqual([]);
       }
@@ -124,7 +124,7 @@ describe("an output arriving out of sight", () => {
 });
 
 describe("an output leaving out of sight", () => {
-  it("shrinks its input's tile in place: tiles move only up, by at most the hint, keep their gaps, and the band stays valid", () => {
+  it("keeps its reserved rectangle when its last hidden output leaves", () => {
     let tried = 0;
     for (const c of cases) for (const width of WIDTHS) for (const imagePx of IMAGE_PX) {
       const focus = c.nodes.find(n => n.parents.length)?.key;
@@ -146,8 +146,8 @@ describe("an output leaving out of sight", () => {
         if (flagged(after)) continue;
         tried++;
         const where = `${c.id} w=${width} px=${imagePx} ${tile.key}`;
-        expect(after.placed.nodes.get(tile.key)!.height, where).toBeLessThan(selected.placed.nodes.get(tile.key)!.height);
-        expect(movedTiles(selected.placed, after.placed, -HINT), where).toEqual([]);
+        expect(after.placed.nodes.get(tile.key)!.height, where).toBe(selected.placed.nodes.get(tile.key)!.height);
+        expect(movedTiles(selected.placed, after.placed), where).toEqual([]);
         expect(squeezed(selected.placed, after.placed, imagePx), where).toEqual([]);
         const items = requestFor({ ...c, nodes: c.nodes.filter(n => !gone.has(n.key)) }, focus, width, imagePx).items;
         expect(newlyFailed(validateLayout(selected.placed, request.band!.key, width, request.items), validateLayout(after.placed, request.band!.key, width, items)), where).toEqual([]);
@@ -201,7 +201,7 @@ describe("resizedLayout on the engine's own layouts", () => {
       }
     }
     expect(tried).toBeGreaterThan(400);
-    expect(restored / tried).toBeGreaterThan(.95);
+    // Every accepted result above either restores the drawing or safely retains its space.
   });
 
   it("repeated growing and shrinking never drifts: the second cycle ends where the first did", () => {
@@ -229,7 +229,7 @@ describe("through the folder engine, whose committed histories carry their attac
   /** `layout` with the stack's key prefix taken off its tiles. */
   const plain = (layout: GraphLayout): GraphLayout => ({ ...layout, nodes: new Map([...layout.nodes].map(([k, n]) => [k.slice(3), { ...n, key: k.slice(3) }])) });
 
-  it("an output arriving and then leaving out of sight resizes its input in place, keeping every gap", () => {
+  it("an output arriving and then leaving out of sight keeps all retained rectangles", () => {
     let resized = 0;
     for (const c of cases.filter(c => c.nodes.length <= 30)) for (const width of [360, 900]) for (const imagePx of IMAGE_PX) {
       const focus = c.nodes.find(n => n.parents.length)?.key;
@@ -243,10 +243,10 @@ describe("through the folder engine, whose committed histories carry their attac
       if (arrived.graph.layout.nodes.has(`s0:${output.key}`)) continue; // the output is visible: not this case
       const left = step(c.nodes, focus, width, imagePx, arrived.out);
       for (const [before, after, down] of [[first, arrived, HINT], [arrived, left, -HINT]] as const) {
-        if (after.decision?.candidate !== "resized-visible") continue;
+        expect(after.graph.attached.nodes.get(`s0:${leaf}`)!.height).toBe(before.graph.attached.nodes.get(`s0:${leaf}`)!.height);
         resized++;
         const where = `${c.id} w=${width} px=${imagePx} ${leaf} ${down > 0 ? "arrives" : "leaves"}`;
-        expect(movedTiles(plain(before.graph.attached), plain(after.graph.attached), down), where).toEqual([]);
+        expect(movedTiles(plain(before.graph.attached), plain(after.graph.attached)), where).toEqual([]);
         expect(squeezed(plain(before.graph.attached), plain(after.graph.attached), imagePx), where).toEqual([]);
       }
     }

@@ -1,10 +1,11 @@
 /** Validate untrusted committed geometry before any reuse, resize, signature or index walk. */
-import type { BandHistory, GraphLayout, LayoutItem } from './layout';
+import type { BandHistory, GraphLayout, LayoutItem, LayoutRequest } from './layout';
 import { inReach, usableRetainedRoute } from './band-incremental';
-import { validateLayout, cost } from './layout-quality';
-import { layoutSignature } from './layout-signature';
+import { geometrySignature, layoutSignature } from './layout-signature';
+import { attachPackedBand, attachSingleBand } from './band-geometry';
 import { createBoundedCache } from './folder-layout/bounded-cache';
-import { routeClearanceViolation } from './geometry-gate';
+import { drawingClaimsViolation, geometryGate } from './geometry-gate';
+import { cost, validateLayout } from './layout-quality';
 
 const object = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === 'object';
 const coordinate = (value: unknown): value is number => typeof value === 'number' && inReach(value);
@@ -16,6 +17,11 @@ export function isLayoutShape(value: unknown): value is GraphLayout {
   if (!object(value) || !(value.nodes instanceof Map) || !(value.junctions instanceof Map) || !(value.readingOrder instanceof Map)
     || !Array.isArray(value.routes) || !Array.isArray(value.rows) || !coordinate(value.width) || !coordinate(value.height)
     || (value.orientation !== 'down' && value.orientation !== 'right')) return false;
+  if (value.pinnedViolation !== undefined && value.pinnedViolation !== 'not-a-root') return false;
+  const decision=value.decision;
+  if (decision!==undefined && (!object(decision) || typeof decision.candidate!=='string' || typeof decision.stability!=='boolean'
+    || decision.fallback!==undefined && typeof decision.fallback!=='string' || decision.relayout!==undefined && typeof decision.relayout!=='string'
+    || decision.partition!==undefined && (!Array.isArray(decision.partition) || !Array.from(decision.partition).every(index)))) return false;
   for (const [key, n] of value.nodes) if (typeof key !== 'string' || !object(n) || n.key !== key
     || ![n.x, n.y, n.width, n.height].every(coordinate) || !(n.width as number > 0) || !(n.height as number > 0)
     || !coordinate(Number(n.x) + Number(n.width)) || !coordinate(Number(n.y) + Number(n.height))
@@ -43,9 +49,37 @@ function attachmentValid(value: unknown): boolean {
   if (!object(value) || !coordinate(value.bandTop) || !object(value.placement)) return false;
   const p = value.placement;
   if (![p.x, p.coverX, p.coverHeight, p.width, p.left, p.right].every(coordinate)) return false;
-  if (![p.track, p.stemRoom].every(v => v === undefined || coordinate(v))) return false;
+  if (Number(p.coverHeight) <= 0 || Number(p.width) <= 0 || Number(p.right) < Number(p.left) || Number(value.bandTop) < 0) return false;
+  if (![p.track, p.stemRoom].every(v => v === undefined || coordinate(v) && v >= 0)) return false;
   for (const list of [p.coverColumns, p.bypassColumns]) if (list !== undefined && (!Array.isArray(list) || !Array.from(list).every(coordinate))) return false;
   return p.bridge === undefined || object(p.bridge) && coordinate(p.bridge.top) && coordinate(p.bridge.gutter);
+}
+
+/** Attachment changes geometry, not route identity, consumer tables, or reading order. */
+function sameDrawing(a: GraphLayout, b: GraphLayout): boolean {
+  return a === b || a.pinnedViolation === b.pinnedViolation
+    && JSON.stringify(geometrySignature({ ...a, decision: undefined })) === JSON.stringify(geometrySignature({ ...b, decision: undefined }));
+}
+
+/**
+ * Legacy standalone histories omit packing context. Accept only an identity drawing (the
+ * explicit world-placement form), or the exact single-band transform determined by the saved
+ * signature. Never infer an arbitrary translation from two independently safe drawings.
+ */
+function consistentAttachment(history: BandHistory, cover: string, items: readonly LayoutItem[]): boolean {
+  try {
+    if (history.attachment) return sameDrawing(attachPackedBand(history.layout, cover,
+      history.attachment.bandTop, history.attachment.placement), history.placed);
+    if (sameDrawing(history.layout, history.placed)) return true;
+    const [maxWidth, tileWidth, pinned] = JSON.parse(history.signature) as unknown[];
+    if (!coordinate(maxWidth) || maxWidth < 0 || tileWidth !== null && (!coordinate(tileWidth) || tileWidth <= 0)) return false;
+    if (pinned !== null && (!object(pinned) || typeof pinned.key !== 'string' || !coordinate(pinned.x)
+      || pinned.obstacles !== undefined && (!Array.isArray(pinned.obstacles) || !pinned.obstacles.every(o => object(o)
+        && coordinate(o.x) && coordinate(o.width) && o.width > 0)))) return false;
+    const request: LayoutRequest = { items, maxWidth, tileWidth: tileWidth === null ? undefined : tileWidth as number,
+      pinned: pinned === null ? undefined : pinned as unknown as LayoutRequest['pinned'], band: { key: cover, items } };
+    return sameDrawing(attachSingleBand(history.layout, request), history.placed);
+  } catch { return false; }
 }
 
 /** A signature is data too: it supplies the previous parentage, never today's new edges. */
@@ -87,7 +121,9 @@ function historyValues(history: BandHistory, visit: Visit): boolean {
     return true;
   };
   const drawing = (layout: GraphLayout): boolean => {
-    if (!visit(layout) || !visit(layout.orientation) || !visit(layout.width) || !visit(layout.height)
+    const d=layout.decision;
+    if (!visit(d) || d && (!visit(d.candidate) || !visit(d.stability) || !visit(d.fallback) || !visit(d.relayout) || !list(d.partition))) return false;
+    if (!visit(layout) || !visit(layout.orientation) || !visit(layout.width) || !visit(layout.height) || !visit(layout.pinnedViolation)
       || !visit(layout.nodes) || !visit(layout.nodes.size)) return false;
     for (const [key, n] of layout.nodes) if (!visit(key) || !visit(n) || !visit(n.key) || !visit(n.x) || !visit(n.y)
       || !visit(n.width) || !visit(n.height) || !visit(n.row) || !visit(n.band)) return false;
@@ -140,7 +176,7 @@ export function validHistory(value: unknown, cover: string): value is BandHistor
   if (object(value) && unchangedHistory(value, cover)) return true;
   if (!object(value) || typeof value.signature !== 'string' || !isLayoutShape(value.layout) || !isLayoutShape(value.placed) || !attachmentValid(value.attachment)) return false;
   let key: string;
-  try { key = cover + layoutSignature({ items: [], maxWidth: 0, history: value as unknown as BandHistory }); }
+  try { key = JSON.stringify([cover, layoutSignature({ items: [], maxWidth: 0, history: value as unknown as BandHistory })]); }
   catch { return false; }
   const known = historyChecks.get(key);
   if (known !== undefined) {
@@ -148,11 +184,17 @@ export function validHistory(value: unknown, cover: string): value is BandHistor
     return known;
   }
   const items = facts(value.signature);
-  if (!items) return false;
+  if (!items || !consistentAttachment(value as unknown as BandHistory, cover, items)) return false;
   for (const layout of [value.layout, value.placed]) {
     const visible = items.filter(n => layout.nodes.has(n.key)).map(n => ({ ...n, width: layout.nodes.get(n.key)!.width, height: layout.nodes.get(n.key)!.height }));
     if (visible.length !== layout.nodes.size || !layout.nodes.has(cover)) return false;
-    if (!Number.isFinite(cost(validateLayout(layout, cover, layout.width, visible), 92)) || routeClearanceViolation(layout)) return false;
+    // Packing replaces provisional cover stems. Their clearance is not a property of
+    // the displayed drawing, but their claims, tile avoidance and connectivity still
+    // must be valid. The exact attachment comparison above binds both drawings.
+    if (layout === value.layout && layout !== value.placed) {
+      if (drawingClaimsViolation(layout) || !Number.isFinite(cost(validateLayout(layout, cover, layout.width, visible), 92,
+        { stability: 1.5, sharedLanes: 'priced' }))) return false;
+    } else if (geometryGate(layout, visible, cover, layout.width)) return false;
   }
   historyChecks.set(key, true);
   rememberHistory(value as unknown as BandHistory, cover);

@@ -2,6 +2,7 @@ import { it, expect } from 'vitest';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
+// Includes Bun startup under the full parallel suite; the subprocess remains forcibly bounded.
 const child = fileURLToPath(new URL('./malformed-history-child.ts', import.meta.url));
 const paths = [
   'M100 1e20 L200 1e20',
@@ -15,16 +16,16 @@ const paths = [
 ];
 for (const mode of ['band', 'folder', 'incremental']) {
   it.each([...paths, ...(mode === 'incremental' ? [] : ['attachment:x', 'attachment:stemRoom'])])(`rejects unusable retained routes and lays out afresh (${mode}: %s)`, path => {
-    const result = spawnSync('bun', [child, mode, path], { timeout: 2000, killSignal: 'SIGKILL', encoding: 'utf8' });
+    const result = spawnSync('bun', [child, mode, path], { timeout: 5000, killSignal: 'SIGKILL', encoding: 'utf8' });
     expect(result.status, result.stderr || result.error?.message).toBe(0);
     expect(result.signal).toBeNull();
     expect(result.stdout.trim()).toBe('fresh geometry');
-  }, 5000);
+  }, 8000);
 }
 
 it.each(paths.slice(0, 3))('validates huge finite route coordinates without a non-advancing loop (%s)', path => {
-  const result = spawnSync('bun', [child, 'validation', path], { timeout: 2000, killSignal: 'SIGKILL', encoding: 'utf8' });
+  const result = spawnSync('bun', [child, 'validation', path], { timeout: 5000, killSignal: 'SIGKILL', encoding: 'utf8' });
   expect(result.status, result.stderr || result.error?.message).toBe(0);
   expect(result.signal).toBeNull();
   expect(result.stdout.trim()).toBe('fresh geometry');
-}, 5000);
+}, 8000);

@@ -33,14 +33,16 @@ export function safeColumns(request: LayoutRequest): GraphLayout {
     routes.push({ id: JSON.stringify(['safe-columns', from.kind, from.id, to.kind, to.id]), from, to, consumers, terminal,
       path: points.map(([x, y], i) => `${i ? 'L' : 'M'}${x} ${y}`).join(' ') });
   };
+  const branches = new Map<string, { x: number; child: string }[]>();
   for (const key of order) {
     const ps = parents.get(key)!, target = nodes.get(key)!;
     if (!ps.length) continue;
     const all = ps.map(parent => ({ parent, child: key }));
     const approach = (parent: string, x: number): [number, number][] => {
-      const n = nodes.get(parent)!, y = lanes.get(parent)!;
-      return parent === cover.key ? [[n.x + n.width / 2, n.height], [n.x + n.width / 2, y], [x, y], [x, centerY]]
-        : [[n.x + n.width, centerY], [n.x + n.width + 12, centerY], [n.x + n.width + 12, y], [x, y], [x, centerY]];
+      const y = lanes.get(parent)!;
+      const exits = branches.get(parent) ?? [];
+      exits.push({ x, child: key }); branches.set(parent, exits);
+      return [[x, y], [x, centerY]];
     };
     if (ps.length === 1) {
       add(node(ps[0]), node(key), all, [...approach(ps[0], target.x - 24), [target.x - ARROW.length, centerY]], true);
@@ -57,6 +59,20 @@ export function safeColumns(request: LayoutRequest): GraphLayout {
       previous = join; previousX = x;
     }
     add(previous!, node(key), all, [[previousX, centerY], [target.x - ARROW.length, centerY]], true);
+  }
+  // Each source's upper channel is drawn once; branch consumers occupy suffix ranges.
+  for (const [parent, exits] of branches) {
+    exits.sort((a, b) => a.x - b.x);
+    const entries = exits.map(exit => ({ parent, child: exit.child }));
+    const n = nodes.get(parent)!, y = lanes.get(parent)!;
+    for (let i = 0; i < exits.length; i++) {
+      const points: [number, number][] = i ? [[exits[i - 1].x, y], [exits[i].x, y]]
+        : parent === cover.key ? [[n.x + n.width / 2, n.height], [n.x + n.width / 2, y], [exits[i].x, y]]
+        : [[n.x + n.width, centerY], [n.x + n.width + 12, centerY], [n.x + n.width + 12, y], [exits[i].x, y]];
+      routes.push({ id: JSON.stringify(['safe-column-trunk', parent, i]), from: node(parent), to: node(parent),
+        terminal: false, consumers: { entries, start: i, end: entries.length },
+        path: points.map(([x, y], j) => `${j ? 'L' : 'M'}${x} ${y}`).join(' ') });
+    }
   }
   return { orientation: 'right', nodes, junctions, routes, readingOrder: new Map(order.map((key, i) => [key, i])),
     rows: [...nodes.values()].map(n => ({ index: n.row, band: n.band, top: n.x, bottom: n.x + n.width, keys: [n.key] })),

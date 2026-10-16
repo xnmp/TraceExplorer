@@ -2,6 +2,8 @@ import { filterRouteConsumers } from "./route-consumers";
 /** Visible-first, bounded band optimisation. Geometry and history are immutable inputs. */
 import { downwardBandBound, layoutLayered, type GraphLayout, type LayoutItem, type LayoutRequest, type Ordering, type Passing, type PlacedNode } from "./layout";
 import { geometryGate, routeClearanceViolation } from "./geometry-gate";
+import { safeChain } from "./safe-chain";
+import { safeFanGrid } from "./safe-grid";
 import { safeColumns } from "./safe-columns";
 import { safeLayout } from "./safe-layout";
 import { validHistory } from "./history-boundary";
@@ -12,7 +14,7 @@ import { measure, validateLayout, cost, routePlan, sharedLaneLength, type Measur
 import { incrementalBudget, incrementalTree, inReach, usableRetainedRoute } from "./band-incremental";
 import { forEachPathNumber, mapPathNumbers, pathNumbers } from "./path-data";
 import { extentCost, optimisticCost, rectangleCost } from "./layout-cost-bound";
-import { bandHistorySignature, historyFit, resizedLayout, resizedTiles } from "./band-history";
+import { bandHistorySignature, historyFit, historyRelayoutReason, resizedLayout, resizedTiles } from "./band-history";
 
 export { bandWidthBudget };
 
@@ -91,7 +93,7 @@ function projected(previous: GraphLayout, request: LayoutRequest): GraphLayout |
   const bottom = Math.max(0, ...[...nodes.values()].map(n => n.y + n.height), ...routes.flatMap(r => pathNumbers(r.path).filter((_, i) => i % 2)));
   return { ...previous, nodes, routes, junctions: new Map([...previous.junctions].filter(([key]) => joins.has(key))),
     height: bottom + spacingFor(request.tileWidth).bottom,
-    bandBounds: { left: extent.left, width: extent.width, top: Number.isFinite(first) ? first : 0 }, preferredX: extent.left,
+    bandBounds: { left: extent.left, width: extent.width, top: previous.bandBounds?.top ?? (Number.isFinite(first) ? first : 0) }, preferredX: extent.left,
     readingOrder: new Map([...previous.readingOrder].filter(([key]) => keys.has(key))) };
 }
 
@@ -275,6 +277,14 @@ export function layoutBand(input: LayoutRequest, options: BandOptions = BAND_DEF
       }
     }
     if (!replacement) {
+      const chain = safeChain(request);
+      if (chain && !geometryGate(attachSingleBand(chain, request), request.items, request.band!.key, request.maxWidth)) replacement = chain;
+    }
+    if (!replacement) {
+      const fan = safeFanGrid(request);
+      if (fan && !geometryGate(attachSingleBand(fan, request), request.items, request.band!.key, request.maxWidth)) replacement = fan;
+    }
+    if (!replacement) {
       const columns = safeColumns(request);
       if (!geometryGate(attachSingleBand(columns, request), request.items, request.band!.key, request.maxWidth)) replacement = columns;
     }
@@ -283,6 +293,8 @@ export function layoutBand(input: LayoutRequest, options: BandOptions = BAND_DEF
     if (failure) throw new RangeError("No certified layout: " + failure);
   }
   if (result.pinnedViolation) result = { ...result, decision: { ...result.decision!, fallback: "gate-infeasible" } };
+  const relayout = !invalid && input.history ? historyRelayoutReason(input.history.signature,input) : undefined;
+  if (relayout) result = {...result,decision:{...result.decision!,relayout}};
   return invalid ? { ...result, decision: { ...result.decision!, fallback: "invalid-history" } } : result;
 }
 

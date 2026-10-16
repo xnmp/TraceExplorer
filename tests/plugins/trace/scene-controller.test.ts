@@ -716,8 +716,8 @@ describe("scene controller: restoration", () => {
     const saved = scenes.recall("p", "/f")!;
     expect([...saved.scene.graphs.keys()].sort()).toEqual(["a1", "b1"]);
     for (const graph of [...saved.scene.graphs.values(), ...saved.scene.layout.graphs.values()]) expect(graph.plan.request.history).toBeUndefined();
-    // The published scene itself is unchanged.
-    expect([...h.controller.published!.scene.graphs.values()].some((graph) => graph.plan.request.history !== undefined)).toBe(true);
+    // Expansion commits no arrival history.
+    expect([...h.controller.published!.scene.graphs.values()].every((graph) => graph.plan.request.history === undefined)).toBe(true);
   });
 });
 

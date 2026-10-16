@@ -9,7 +9,7 @@ import { createSceneStore } from "$lib/plugins/trace/view/folder-snapshots";
 import { estimateSavedSceneBytes, restoredInput, savedScene, stripHistory, type CurrentData, type SavedScene } from "$lib/plugins/trace/view/scene-snapshots";
 import { prepareLayoutInput, stylingOf, type SceneData } from "$lib/plugins/trace/view/scene-inputs";
 import type { ComponentData } from "$lib/domain/trace-graph/folder-data";
-import { folderInput, handCase, makeFolder, sourcesOf } from "../../domain/trace-graph/folder-layout-fixtures";
+import { folderInput, handCase, makeFolder, sourcesOf, corpusNode } from "../../domain/trace-graph/folder-layout-fixtures";
 
 const scope = { paneId: "p", directory: "/f", generation: 3 };
 const plain: SceneStyling = { focus: null, selectedKeys: new Set(), selectedPaths: new Set(), badgeHover: null };
@@ -37,7 +37,7 @@ const save = (scene = chained, paneId = "p", change: Partial<SceneIntent> = {}) 
 describe("saving a committed scene", () => {
   it("drops every band request's history reference and keeps everything else", () => {
     const histories = [...chained.graphs.values()].filter((graph) => graph.plan.request.history !== undefined);
-    expect(histories.length).toBeGreaterThan(0);
+    expect(histories.length).toBe(0); // Clicks do not create arrival history.
     const stripped = stripHistory(chained);
     for (const graph of [...stripped.graphs.values(), ...stripped.layout.graphs.values()]) {
       expect("history" in graph.plan.request).toBe(false);
@@ -50,6 +50,23 @@ describe("saving a committed scene", () => {
     expect(stripped.records).toBe(chained.records);
     expect(stripped.navigation).toBe(chained.navigation);
     expect(stripped.inputs.layoutInput.previous).toBeNull();
+  });
+
+  it("strips incoming request history after an actual output arrival while retaining the arrival ledger", () => {
+    const nodes = handCase("screenshot");
+    const render = (nodes: ReturnType<typeof handCase>, previous: FolderLayout | null) => {
+      const of = makeFolder({stacks: [nodes]});
+      const input = folderInput(of, {open: ['s0:root'], width: 900, tile, grid, previous});
+      return buildFolderScene({scope,layoutInput: input,layout: engines.default(input),sources: sourcesOf(of),styling: plain});
+    };
+    const before = render(nodes, null);
+    const after = render([...nodes, corpusNode('arrival', ['root'], 100)], before.layout);
+    expect(after.graphs.get('s0:root')!.plan.request.history).toBeDefined();
+    const stripped = stripHistory(after);
+    expect(stripped.graphs.get('s0:root')!.plan.request.history).toBeUndefined();
+    expect(stripped.layout.arrivals).toBe(after.layout.arrivals);
+    expect(stripped.layout.arrivalPlacement).toBe(after.layout.arrivalPlacement);
+    expect(stripped.records).toBe(after.records);
   });
 
   it("never changes the scene it saves", () => {

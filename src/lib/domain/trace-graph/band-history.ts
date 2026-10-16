@@ -38,6 +38,15 @@ function parse(signature: string): Signature | null {
   } catch { return null; }
 }
 
+/** Explicit changes of the layout coordinate basis permit retained tiles to move. */
+export function historyRelayoutReason(signature: string, request: LayoutRequest): 'pane-width' | 'tile-size' | undefined {
+  const before=parse(signature),after=parse(bandHistorySignature(request));
+  if (!before || !after) return undefined;
+  if (before[0]!==after[0]) return 'pane-width';
+  if (before[1]!==after[1]) return 'tile-size';
+  return undefined;
+}
+
 /**
  * How a committed history relates to a request: the same component, a grown one (images arrived
  * or left; `heights`: the tiles whose expansion hint appeared or left, at their new heights), or neither.

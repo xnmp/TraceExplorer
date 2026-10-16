@@ -9,7 +9,7 @@ import { filterRouteConsumers } from "./route-consumers";
  * route passes within `JUNCTION_BERTH` of a junction dot, and no new dot lies that close to a
  * connector: a line through a dot reads as joining it, and a trunk branching at a merge's dot
  * would make its other branches read as that merge's outputs. Nor does a new route touch another
- * source's line at a point if any placement avoids it (`route-contacts`): it keeps `PORT_BERTH`
+ * source's line at a point (`route-contacts`): it keeps `PORT_BERTH`
  * from other sources' ports and `CORNER_BERTH` from their corners and forks, and its own ports
  * and corners keep the same from their lines. A tile with several parents gets a junction its inputs reach
  * from distinct directions (above, the left and the right along the junction's row) while its
@@ -18,7 +18,7 @@ import { filterRouteConsumers } from "./route-consumers";
  */
 import { nearestFree, type GraphLayout, type LayoutRequest, type PlacedNode, type PlacedRoute, type PlacedJunction } from "./layout";
 import { ARROW, JUNCTION_BERTH, LANE_SEPARATION, PORT_BERTH, spacingFor, STACK_STEM_ROOM } from "./metrics";
-import { axisOf, berthsOf, distanceToTile, entersBerth, grazesTile, INTO_JUNCTION, INTO_TILE, leavingRunFrom, routeEnds, shallowRun, SHALLOW_RUN, TILE_GRAZE, type Berth, type Ends } from "./route-contacts";
+import { axisOf, berthsOf, distanceToTile, distanceToSegment, entersBerth, grazesTile, INTO_JUNCTION, INTO_TILE, leavingRunFrom, routeEnds, shallowRun, SHALLOW_RUN, TILE_GRAZE, type Berth, type Ends } from "./route-contacts";
 import { bandExtent } from "./band-geometry";
 import { intersectsTile, overlapLength, routeBounds, segments, type Segment } from "./layout-quality";
 import { orthogonalRoute, LANE_TOLERANCE, NEAR_LANE, type AxisRun, type ForeignLanes } from "./orthogonal-route";
@@ -464,18 +464,10 @@ class LaneIndex {
   }
 
   /**
-   * Whether touches conflict (`conflicts`). Clearing it lets a search take a route that touches
-   * another source's line at a point when no route avoids every such touch.
-   */
-  contacts = true;
-  /** Set when `conflicts` turned a route down for a touch alone (its lanes, dots and curves clear). */
-  touchBlocked = false;
-
-  /**
    * Whether any of `list` (axis-parallel, consecutive) runs along a segment of a source other than
    * `source`, or alongside a curve of it at a shallow angle (the two read as one line, as near
    * lanes do), passes within `JUNCTION_BERTH` of a dot (new routes end at no dot already placed),
-   * or (while `contacts` is set) touches another source's line (`route-contacts`): passes within
+   * or touches another source's line (`route-contacts`): passes within
    * the berth of its ports, corners or forks, or has a corner or (as `ends` says) an end within
    * its own berth of that line. Only the route's new ink counts for curves, dots and touches:
    * where it follows its source's earlier lines, the drawing does not change.
@@ -487,9 +479,8 @@ class LaneIndex {
     if (!ink.length) return false;
     if (this.nearDot(ink)) return true;
     for (const segment of ink) if (axisOf(segment) && this.shallowInto(segment, source, new Map())) return true;
-    if (!this.contacts) return false;
-    for (const segment of ink) if (this.nearBerth(segment, source)) return this.touchBlocked = true;
-    for (const berth of berthsOf(list, ends)) if (ink.some(segment => entersBerth(segment, berth)) && this.touched(berth, source)) return this.touchBlocked = true;
+    for (const segment of ink) if (this.nearBerth(segment, source)) return true;
+    for (const berth of berthsOf(list, ends)) if (ink.some(segment => entersBerth(segment, berth)) && this.touched(berth, source)) return true;
     return false;
   }
 
@@ -1148,7 +1139,58 @@ function coverStemFor(request: LayoutRequest, cover: PlacedNode): (points: reado
   };
 }
 
+/** Tile pins do not pin wires. Free an occluded source port by rerouting a blocking
+ * terminal connector while preserving every retained rectangle and logical edge. */
+function freeBlockedPorts(request: LayoutRequest, previous: GraphLayout, budget: IncrementalBudget): GraphLayout {
+  const newParents = new Set(request.items.filter(n => !previous.nodes.has(n.key)).flatMap(n => n.parents));
+  if (!newParents.size || previous.nodes.size > INCREMENTAL_LIMIT || !inReach(request.maxWidth)
+    || !inReach(previous.width) || !inReach(previous.height)
+    || [...previous.nodes.values()].some(n => ![n.x, n.y, n.width, n.height].every(inReach))
+    || [...previous.junctions.values()].some(j => ![j.x, j.y].every(inReach))
+    || previous.routes.some(r => !usableRetainedRoute(r))) return previous;
+  let routes = [...previous.routes], changed = false, repairs = 0;
+  const source = (r: PlacedRoute) => sourceKey(r.from.kind, r.from.id);
+  for (const key of newParents) {
+    const parent = previous.nodes.get(key); if (!parent) continue;
+    const ports = [point(parent.x + parent.width / 2, parent.y + parent.height), point(parent.x + parent.width, parent.y + parent.height / 2)];
+    const blockers = ports.map(port => routes.filter(r => source(r) !== sourceKey('node', key)
+      && segments(r.path).some(segment => distanceToSegment(segment, port) < PORT_BERTH - .01)));
+    if (blockers.some(list => !list.length)) continue;
+    const candidates = [...new Set(blockers.flat())].sort((a, b) => Number(blockers.every(list => list.includes(b))) - Number(blockers.every(list => list.includes(a))));
+    for (const blocked of candidates) {
+      if (repairs++ >= 4 || !(budget.second > 0)) return changed ? { ...previous, routes } : previous;
+      if (blocked.from.kind !== 'node' || blocked.to.kind !== 'node' || !blocked.terminal || blocked.from.id === blocked.to.id) continue;
+      const from = previous.nodes.get(blocked.from.id), to = previous.nodes.get(blocked.to.id);
+      if (!from || !to) continue;
+      const kept = routes.filter(r => r !== blocked), cover = previous.nodes.get(request.band!.key);
+      if (!cover) return previous;
+      let replacement: Wiring | undefined;
+      // One clear port suffices. Requiring both can be impossible where a child
+      // sits just below its parent; represent the chosen berth in the search grid.
+      for (const port of ports) {
+        const lanes = new LaneIndex(retainedIndex(previous, kept));
+        const berth: PlacedNode = { key: JSON.stringify(['reserved-port', key]), x: port.x - PORT_BERTH, y: port.y - PORT_BERTH,
+          width: PORT_BERTH * 2, height: PORT_BERTH * 2, row: 0, band: 0 };
+        const scene: Scene = { tiles: new TileIndex([...previous.nodes.values(), berth]), extra: to,
+          width: Math.max(request.maxWidth, previous.width), clearance: spacingFor(request.tileWidth).clearance,
+          header: cover.height, bottomAbove: to.y - 20, cover: cover.key, coverStem: coverStemFor(request, cover), grain: FINE_GRAIN };
+        replacement = gridWireAll([from], to, scene, lanes, to.key, secondChance(budget));
+        if (replacement) break;
+      }
+      if (!replacement) continue;
+      routes = routes.map(r => r === blocked ? { ...r, path: path(replacement!.routes[0].points) } : r);
+      changed = true;
+      break;
+    }
+  }
+  return changed ? { ...previous, routes } : previous;
+}
+
 export function incrementalTree(request: LayoutRequest, previous: GraphLayout, budget: IncrementalBudget = incrementalBudget()): GraphLayout | null {
+  return insertTree(request, freeBlockedPorts(request, previous, budget), budget);
+}
+
+function insertTree(request: LayoutRequest, previous: GraphLayout, budget: IncrementalBudget): GraphLayout | null {
   const key = request.band!.key, s = spacingFor(request.tileWidth), wanted = new Set(request.items.map(n => n.key));
   if (request.items.length > INCREMENTAL_LIMIT || !wanted.has(key)) return null;
   if (!previous.nodes.has(key) || request.items.some(n => n.key !== key && n.parents.length === 0 && !previous.nodes.has(n.key))) return null;
@@ -1176,7 +1218,9 @@ export function incrementalTree(request: LayoutRequest, previous: GraphLayout, b
   if (lanes.tooLarge()) return null;
   const remaining = request.items.filter(n => !nodes.has(n.key));
   if (!remaining.length) return null;
-  const width = request.maxWidth, cover = nodes.get(key)!;
+  // Retained routes may already occupy channels outside the pane or the tile
+  // envelope. Keep that certified allocation when extending the drawing.
+  const width = Math.max(request.maxWidth, previous.width), cover = nodes.get(key)!;
   const coverStem = coverStemFor(request, cover);
   // Placed boxes in `nodes` order and their lowest edge, kept in step with `nodes` below.
   let boxes = [...nodes.values()], bottom = -Infinity, tiles = new TileIndex([...boxes]);
@@ -1234,10 +1278,7 @@ export function incrementalTree(request: LayoutRequest, previous: GraphLayout, b
     // taken only if no probe adding no more height has a direct route: a detour costs length
     // and turns, and the layout that holds still must not lose to a fresh one on them.
     const ny = ys.length, ranked = rankProbes(xs, ys, bottom, item.height);
-    // With `blocked`, a pass records the probes a touch turned down (lanes, dots and curves clear):
-    // with touches allowed only those can wire differently, so a later pass is given them as `only`
-    // and counts the rest as failed without wiring them again.
-    const probes = (blocked?: number[], only?: ReadonlySet<number>): { node: PlacedNode; wiring: Wiring } | undefined => {
+    const probes = (): { node: PlacedNode; wiring: Wiring } | undefined => {
       const hardest = { index: 0 };
       let holeTries = HOLE_TRIES;
       // The first placement routed only by a detour, kept while probes adding no more height
@@ -1249,27 +1290,21 @@ export function incrementalTree(request: LayoutRequest, previous: GraphLayout, b
         const n: PlacedNode = { key: item.key, x, y, width: item.width, height: item.height, row: y === parent.y ? parent.row : parent.row + 1, band: parent.band + 1 };
         if (!free(n)) continue;
         if (detoured && (Math.max(bottom, n.y + n.height) > detoured.reach || !(scan-- > 0))) return detoured.found;
-        if (only && !only.has(probe)) { if (hole) holeTries--; continue; }
         if (!(budget.probes > 0)) return detoured?.found;
         budget.probes--;
-        lanes.touchBlocked = false;
         // Once a detour is in hand, only a direct route can replace it.
         const wiring = wire(parents, n, sceneFor(n), lanes, item.key, hardest, !!detoured);
         if (wiring && !wiring.routes.some(r => r.detour)) return { node: n, wiring };
         if (wiring) detoured ??= { found: { node: n, wiring }, reach: Math.max(bottom, n.y + n.height) };
         else {
           if (hole) holeTries--;
-          if (lanes.touchBlocked) blocked?.push(probe);
         }
       }
       return detoured?.found;
     };
-    // Placements whose routes touch no other source's line come first; failing those, the
-    // probes again with touches allowed (contacts are a cost, not a reason to lay out afresh).
-    // The grid fallbacks take the first route that keeps lanes and dots alone.
-    const touching = <T>(search: () => T): T => { lanes.contacts = false; try { return search(); } finally { lanes.contacts = true; } };
-    const blocked: number[] = [];
-    let best = probes(blocked) ?? (blocked.length ? touching(() => probes(undefined, new Set(blocked))) : undefined);
+    // Contacts are a hard constraint. A failed compact probe must search another
+    // route or placement rather than returning an illegal connector for later rejection.
+    let best = probes();
     if (!best) {
       const rowYs = [...new Set([Math.max(baseBottom, ...parents.map(p => p.y + p.height)) + arrivalGap,
         ...boxes.filter(n => n.y > baseBottom).map(n => n.y), Math.max(bottom, previous.height) + arrivalGap])].sort((a, b) => a - b);
@@ -1287,13 +1322,12 @@ export function incrementalTree(request: LayoutRequest, previous: GraphLayout, b
       };
       // Once a tile needed the second chance, later tiles go to it directly: the scene has proved
       // too crowded for the plain fallback, and its failures cost as much as the second chance.
-      best = second ? undefined : touching(() => fallback(plain));
+      best = second ? undefined : fallback(plain);
       if (!best) {
         // The second chance: the probes again on lanes half a step apart, then the grid router.
         const effort = second ??= secondChance(budget);
         grain = FINE_GRAIN;
-        const fine: number[] = [];
-        best = probes(fine) ?? touching(() => (fine.length ? probes(undefined, new Set(fine)) : undefined) ?? fallback(effort));
+        best = probes() ?? fallback(effort);
         grain = GRAIN;
       }
       if (!best) return null;
@@ -1309,20 +1343,30 @@ export function incrementalTree(request: LayoutRequest, previous: GraphLayout, b
     const lanePoints = (p: PlacedNode, points: readonly Point[]) => p.key === key ? coverStem(points) : points;
     if (!wiring.levels) {
       const p = parents[0], route = wiring.routes[0];
-      routes.push({ id: `incremental:${p.key}:${child}`, from: { kind: "node", id: p.key }, to: { kind: "node", id: child },
+      routes.push({ id: JSON.stringify(["incremental", p.key, child]), from: { kind: "node", id: p.key }, to: { kind: "node", id: child },
         consumers: [{ parent: p.key, child }], terminal: true, path: path(route.points) });
       lanes.add(pathSegments(lanePoints(p, route.points)), sourceKey("node", p.key), INTO_TILE);
       return;
     }
     // Levels no parent reached are dropped; the spine runs through their points unchanged.
     const levels = wiring.levels, used = levels.map((_, level) => wiring.routes.some(r => r.arrival.level === level));
-    const ids = levels.map((_, level) => level ? `incremental-join:${child}:${level}` : `incremental-join:${child}`);
+    const ids = levels.map((_, level) => JSON.stringify(["incremental-join", child, level]));
     const kept = levels.map((_, level) => level).filter(level => used[level]);
-    /** Parents reaching level `level` or any above it. */
+    /** One shared consumer table; descending entry levels make every spine a prefix. */
+    const byLevel = Array.from({ length: levels.length }, () => [] as string[]);
+    parentKeys.forEach((parent, i) => byLevel[wiring.routes[i].arrival.level].push(parent));
+    const entries: { readonly parent: string; readonly child: string }[] = [];
+    const prefixEnds = new Uint32Array(levels.length);
+    for (let level = levels.length - 1; level >= 0; level--) {
+      for (const parent of byLevel[level]) entries.push({ parent, child });
+      prefixEnds[level] = entries.length;
+    }
+    const consumersAbove = (level: number) => ({ entries, start: 0, end: prefixEnds[level] });
+    /** Junction metadata preserves the original parent order. */
     const above = (level: number) => parentKeys.filter((_, i) => wiring.routes[i].arrival.level >= level);
     parents.forEach((p, i) => {
       const route = wiring.routes[i];
-      routes.push({ id: `incremental:${p.key}:${child}`, from: { kind: "node", id: p.key }, to: { kind: "junction", id: ids[route.arrival.level] },
+      routes.push({ id: JSON.stringify(["incremental", p.key, child]), from: { kind: "node", id: p.key }, to: { kind: "junction", id: ids[route.arrival.level] },
         consumers: [{ parent: p.key, child }], terminal: false, path: path(route.points) });
       lanes.add(pathSegments(lanePoints(p, route.points)), sourceKey("node", p.key), INTO_JUNCTION);
     });
@@ -1330,22 +1374,25 @@ export function incrementalTree(request: LayoutRequest, previous: GraphLayout, b
     // Spine routes between consecutive kept levels, top down, then the tail from the lowest.
     for (let k = kept.length - 1; k > 0; k--) {
       const upper = kept[k], lower = kept[k - 1], from = levels[upper], to = levels[lower];
-      routes.push({ id: `${ids[upper]}:spine`, from: { kind: "junction", id: ids[upper] }, to: { kind: "junction", id: ids[lower] },
-        consumers: above(upper).map(parent => ({ parent, child })), terminal: false, path: path([from, to]) });
+      routes.push({ id: JSON.stringify(["incremental-spine", ids[upper], ids[lower]]), from: { kind: "junction", id: ids[upper] }, to: { kind: "junction", id: ids[lower] },
+        consumers: consumersAbove(upper), terminal: false, path: path([from, to]) });
       lanes.add(pathSegments([from, to]), sourceKey("junction", ids[upper]), DOT_TO_DOT);
     }
     const low = levels[kept[0]], end = point(low.x, placed.y - ARROW.length);
-    routes.push({ id: `${ids[0]}:tail`, from: { kind: "junction", id: ids[kept[0]] }, to: { kind: "node", id: child },
-      consumers: parentKeys.map(parent => ({ parent, child })), terminal: true, path: path([low, end]) });
+    routes.push({ id: JSON.stringify(["incremental-tail", ids[kept[0]], child]), from: { kind: "junction", id: ids[kept[0]] }, to: { kind: "node", id: child },
+      consumers: { entries, start: 0, end: entries.length }, terminal: true, path: path([low, end]) });
     lanes.add(pathSegments([low, end]), sourceKey("junction", ids[kept[0]]), SPINE);
   }
 
   const readingOrder = new Map<string, number>();
   for (let i = 0; i < request.items.length; i++) readingOrder.set(request.items[i].key, i);
   const provisional: GraphLayout = { ...previous, nodes, routes, junctions: joins, rows: [],
-    height: bottom + s.bottom,
+    width: Math.max(previous.width, width), height: bottom + s.bottom,
     readingOrder };
   const extent = bandExtent({ ...provisional, bandBounds: undefined }, key);
   if (extent.left < 0 || extent.left + extent.width > width) return null;
-  return { ...provisional, bandBounds: { left: extent.left, width: extent.width, top: nodes.get(key)!.height + (request.history?.attachment?.placement.stemRoom ?? STACK_STEM_ROOM) }, preferredX: extent.left };
+  // These coordinates are already attached. Include the allocation origin rather than
+  // trimming empty space before the first child: a trimmed wide envelope would be
+  // centred again by single-band attachment and translate every retained rectangle.
+  return { ...provisional, bandBounds: { left: 0, width: extent.left + extent.width, top: nodes.get(key)!.height + (request.history?.attachment?.placement.stemRoom ?? STACK_STEM_ROOM) }, preferredX: 0 };
 }

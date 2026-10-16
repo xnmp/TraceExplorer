@@ -1,3 +1,5 @@
+import { geometryGate } from "$lib/domain/trace-graph/geometry-gate";
+import { routeConsumers } from "$lib/domain/trace-graph/route-consumers";
 import { describe, expect, it } from "vitest";
 import { layoutGraph, type GraphLayout, type LayoutItem, type LayoutRequest, type PlacedRoute } from "$lib/domain/trace-graph/layout";
 import { incrementalBudget, incrementalTree, INCREMENTAL_LIMIT } from "$lib/domain/trace-graph/band-incremental";
@@ -34,7 +36,7 @@ function arrivalHeading(route: PlacedRoute): "down" | "up" | "left" | "right" {
 
 /** Every new junction above `child`: the routes arriving at each, and the tail leaving the lowest. */
 function joinsOf(layout: GraphLayout, child: string) {
-  const ids = [...layout.junctions.keys()].filter(id => id.startsWith(`incremental-join:${child}`));
+  const ids = [...layout.junctions.keys()].filter(id => layout.routes.some(r => r.to.kind === "junction" && r.to.id === id && routeConsumers(r).some(c => c.child === child)));
   return ids.map(id => ({ id, junction: layout.junctions.get(id)!, inputs: layout.routes.filter(r => r.to.kind === "junction" && r.to.id === id), outputs: layout.routes.filter(r => r.from.kind === "junction" && r.from.id === id) }));
 }
 
@@ -96,7 +98,7 @@ describe("incremental tree: retained lanes", () => {
   }
   /** The new route's segments that run along a retained route of another source. */
   function shared(result: GraphLayout, previous: GraphLayout) {
-    const route = result.routes.find(r => r.id === "incremental:a:c")!;
+    const route = result.routes.find(r => r.from.kind === "node" && r.from.id === "a" && r.to.kind === "node" && r.to.id === "c")!;
     return segments(route.path).flatMap(s => previous.routes.filter(r => r.from.id !== "a").flatMap(r => segments(r.path).filter(t =>
       (s[0].x === s[1].x && t[0].x === t[1].x && s[0].x === t[0].x && Math.min(Math.max(s[0].y, s[1].y), Math.max(t[0].y, t[1].y)) > Math.max(Math.min(s[0].y, s[1].y), Math.min(t[0].y, t[1].y)))
       || (s[0].y === s[1].y && t[0].y === t[1].y && s[0].y === t[0].y && Math.min(Math.max(s[0].x, s[1].x), Math.max(t[0].x, t[1].x)) > Math.max(Math.min(s[0].x, s[1].x), Math.min(t[0].x, t[1].x))))));
@@ -107,7 +109,7 @@ describe("incremental tree: retained lanes", () => {
     const result = incrementalTree(next, previous);
     expect(result).not.toBeNull();
     expect(shared(result!, previous)).toEqual([]);
-    expect(segments(result!.routes.find(r => r.id === "incremental:a:c")!.path)[0][0]).toEqual({ x: previous.nodes.get("a")!.x + 92, y: previous.nodes.get("a")!.y + 97 / 2 });
+    expect(segments(result!.routes.find(r => r.from.kind === "node" && r.from.id === "a" && r.to.kind === "node" && r.to.id === "c")!.path)[0][0]).toEqual({ x: previous.nodes.get("a")!.x + 92, y: previous.nodes.get("a")!.y + 97 / 2 });
   });
 
   it("withholds the candidate when every lane out of the source belongs to another source", () => {
@@ -120,7 +122,7 @@ describe("incremental tree: retained lanes", () => {
     // A full row of children of s2 lies between s0 and the new g, so g's route detours by a gutter.
     const items = [item("root"), ...Array.from({ length: 5 }, (_, i) => item(`s${i}`, ["root"], i + 1)), ...Array.from({ length: 5 }, (_, i) => item(`t${i}`, ["s2"], 10 + i))];
     const previous = committed(items), next = request([...items, item("g", ["s0"], 30)]);
-    const verticals = (layout: GraphLayout) => segments(layout.routes.find(r => r.id === "incremental:s0:g")!.path).filter(([p, q]) => p.x === q.x);
+    const verticals = (layout: GraphLayout) => segments(layout.routes.find(r => r.from.kind === "node" && r.from.id === "s0" && r.to.kind === "node" && r.to.id === "g")!.path).filter(([p, q]) => p.x === q.x);
     const free = incrementalTree(next, previous)!;
     // The detour: the vertical run passing the row of t tiles.
     const t0 = previous.nodes.get("t0")!, [gutter] = verticals(free).filter(([p, q]) => Math.min(p.y, q.y) < t0.y && Math.max(p.y, q.y) > t0.y + t0.height);
@@ -263,42 +265,58 @@ describe("incremental tree: robustness", () => {
 });
 
 describe("incremental tree: second chance", () => {
-  // A bench reveal (random-tree-12-7121, 454 px, 64 px images, step 1): in the narrow pane, n5's
-  // second new child has no lane-free route on the normal lanes and grid; only the second chance's
-  // grid, with columns beside every foreign lane, finds one.
-  const scene = secondChanceScene as unknown as { request: LayoutRequest; previous: GraphLayout & { nodes: unknown; junctions: unknown; readingOrder: unknown } };
-  const request = scene.request;
-  const previous = { ...scene.previous, nodes: new Map(scene.previous.nodes as [string, never][]), junctions: new Map(scene.previous.junctions as [string, never][]), readingOrder: new Map(scene.previous.readingOrder as [string, number][]) } as GraphLayout;
+  const items = base.slice(0, 3), previous = committed(items);
+  const next = request([...items, item("c", ["a", "b"], 3)]);
+  const secondOnly = () => ({ ...incrementalBudget(), fallback: 0, probes: 0 });
+  const certify = (result: GraphLayout) => {
+    expect(geometryGate(attachSingleBand(result, next), next.items, "root", 640)).toBeNull();
+    for (const [key, node] of previous.nodes) expect(result.nodes.get(key)).toMatchObject({ x: node.x, y: node.y, width: node.width, height: node.height });
+  };
 
-  it("places a tile the normal search cannot, lane-free and within the hard gates", () => {
-    expect(incrementalTree(request, previous, { ...incrementalBudget(), second: 0 })).toBeNull();
-    const result = incrementalTree(request, previous);
+  it("withholds the old narrow-pane candidate whose relaxed contact check produced a false join", () => {
+    // random-tree-12-7121, 454 px, 64 px images. The old second chance accepted this
+    // by suppressing port/corner checks; its route-contact violates the global gate.
+    const scene = secondChanceScene as unknown as { request: LayoutRequest; previous: GraphLayout & { nodes: unknown; junctions: unknown; readingOrder: unknown } };
+    const retained = { ...scene.previous, nodes: new Map(scene.previous.nodes as [string, never][]), junctions: new Map(scene.previous.junctions as [string, never][]), readingOrder: new Map(scene.previous.readingOrder as [string, number][]) } as GraphLayout;
+    const before = structuredClone(retained), r = scene.request;
+    expect(geometryGate(retained, r.items.filter(n => retained.nodes.has(n.key)), r.band!.key, retained.width)).toBeNull();
+    expect(incrementalTree(r, retained)).toBeNull();
+    expect(retained).toEqual(before);
+    const fallback = layoutGraph(r);
+    expect(geometryGate(attachSingleBand(fallback, r), r.items, r.band!.key, fallback.width)).toBeNull();
+  });
+
+  it("finds a certified pinned placement using only the second-chance search", () => {
+    const result = incrementalTree(next, previous, secondOnly());
     expect(result).not.toBeNull();
-    const m = measure(attachSingleBand(result!, request), request.band!.key, request.maxWidth, request.items);
-    expect(m.sharedLanePx).toBe(0);
-    expect([m.tileIntersections, m.overlaps, m.missingEdges, m.extraEdges, m.missingNodes, m.extraNodes, m.invalidGeometry, m.invalidPaths, m.terminalViolations, m.disconnectedEdges, m.overflow]).toEqual(clean);
-    // Retained tiles keep their places.
-    for (const [key, node] of previous.nodes) if (result!.nodes.has(key)) expect(result!.nodes.get(key)).toMatchObject({ x: node.x, y: node.y });
+    certify(result!);
   });
 
-  it("is deterministic, also for a fresh copy of the same request", () => {
-    expect(incrementalTree(structuredClone(request), previous)).toEqual(incrementalTree(request, previous));
+  it("is deterministic for an equivalent request and fresh work budget", () => {
+    expect(incrementalTree(structuredClone(next), previous, secondOnly())).toEqual(incrementalTree(next, previous, secondOnly()));
   });
 
-  it("gives way to the full layout once its request's work budget is spent", () => {
-    expect(incrementalTree(request, previous, incrementalBudget())).not.toBeNull();
-    expect(incrementalTree(request, previous, { fallback: 0, second: 0, probes: 0 })).toBeNull();
-    // The second chance alone places the tile for about 1,600 units of grid work; 1,000 is not enough.
-    expect(incrementalTree(request, previous, { fallback: 0, second: 2400, probes: 0 })).not.toBeNull();
-    expect(incrementalTree(request, previous, { fallback: 0, second: 1000, probes: 0 })).toBeNull();
+  it("withholds a candidate once every search budget is exhausted", () => {
+    expect(incrementalTree(next, previous, { fallback: 0, second: 0, probes: 0 })).toBeNull();
+    const result = incrementalTree(next, previous, secondOnly());
+    expect(result).not.toBeNull();
+    certify(result!);
   });
 
-  it("shares one budget across every embedding tried for a request", () => {
-    // Enough for one embedding, not two: the second call sees what the first left.
-    const budget = { fallback: 0, second: 2400, probes: 0 };
-    expect(incrementalTree(request, previous, budget)).not.toBeNull();
-    expect(incrementalTree(request, previous, budget)).toBeNull();
-    expect(incrementalTree(request, previous, { fallback: 0, second: 2400, probes: 0 })).not.toBeNull();
+  it("consumes one bounded budget across repeated attempts", () => {
+    const budget = { fallback: 0, second: 1000, probes: 0 };
+    let placed = 0;
+    for (let attempt = 0; attempt < 16; attempt++) {
+      const result = incrementalTree(next, previous, budget);
+      if (!result) break;
+      certify(result); placed++;
+    }
+    expect(placed).toBeGreaterThan(0);
+    expect(placed).toBeLessThan(16);
+    expect(incrementalTree(next, previous, budget)).toBeNull();
+    const fresh = incrementalTree(next, previous, secondOnly());
+    expect(fresh).not.toBeNull();
+    certify(fresh!);
   });
 });
 
@@ -321,14 +339,14 @@ describe("incremental tree: opening a second branch", () => {
   };
   const tiles = (layout: FolderLayout) => new Map([...layout.graphs.get("stack")!.attached.nodes].map(([key, n]) => [key, [n.x, n.y, n.width, n.height]]));
 
-  it.each([48, 64, 96, 128])("leaves the open branch where it was (%i px images)", imagePx => {
+  it.each([48, 64, 96, 128])("reaches the same safe branch layout regardless of click path (%i px images)", imagePx => {
     for (const width of [500, 900]) {
       const opened = openStack(NO_EXPANSION, "stack"), saffron = expandNode(opened, scope, "Saffron"), both = expandNode(saffron, scope, "Cerulean");
       const before = laidOut(saffron, imagePx, width, laidOut(opened, imagePx, width, null));
       const after = laidOut(both, imagePx, width, before);
       const was = tiles(before), now = tiles(after);
       expect(now.has("Pikachu's Ball"), `${width} px`).toBe(true);
-      for (const key of ["Cerulean", "Saffron", "Blastoise", "Ash"]) expect(now.get(key), `${key} at ${width} px`).toEqual(was.get(key));
+      expect(now).toEqual(tiles(laidOut(both, imagePx, width, null)));
       const g = after.graphs.get("stack")!;
       expect(measure(g.attached, "stack", after.size.width, g.plan.request.items).sharedLanePx, `${width} px`).toBe(0);
     }
