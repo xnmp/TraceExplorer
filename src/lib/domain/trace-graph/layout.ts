@@ -1640,8 +1640,8 @@ function layoutPass(prepared: Prepared, extra: { readonly left: number; readonly
     return anchor.edge === "bottom" ? row.bottom : anchor.edge === "top" ? row.top : row.top - ARROW.length;
   };
 
-  // 7. Paths: vertical to the bend's slice, an S-curve within it (inset from the slice's edges
-  // where it has neighbours), vertical on.
+  // 7. Paths: vertical to the reserved track, across it, then vertical on.
+  // Paired swaps, doglegs and junction fans retain their dedicated curve shapes.
   // Bend zones end `approach` above the next row, so a route into a tile ends
   // in a straight, vertical stem at least as long as its arrowhead.
   const draw = (item: Leg): string => {
@@ -1675,7 +1675,10 @@ function layoutPass(prepared: Prepared, extra: { readonly left: number; readonly
       const side = `${round(x2 + fan)}`, berthTop = Math.max(end, y2 - JUNCTION_BERTH), into = `${round((berthTop + y2) / 2)}`;
       return `${start > y1 ? ` L${left} ${round(start)}` : ""} C${left} ${middle},${side} ${middle},${side} ${round(end)}${end < berthTop ? ` L${side} ${round(berthTop)}` : ""} C${side} ${into},${right} ${into},${right} ${round(y2)}`;
     }
-    return `${start > y1 ? ` L${left} ${round(start)}` : ""} C${left} ${middle},${right} ${middle},${right} ${round(end)}${end < y2 ? ` L${right} ${round(y2)}` : ""}`;
+    // Keep turns on their reserved orthogonal track; paired swaps need crossing curves.
+    return (item.span ?? 1) > 1
+      ? `${start > y1 ? ` L${left} ${round(start)}` : ""} C${left} ${middle},${right} ${middle},${right} ${round(end)}${end < y2 ? ` L${right} ${round(y2)}` : ""}`
+      : ` L${left} ${middle} L${right} ${middle} L${right} ${round(y2)}`;
   };
   // Shared stretches are drawn once, as trunks carrying the consumers of
   // every route through them; each route draws only from where it branches
