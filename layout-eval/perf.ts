@@ -3,30 +3,12 @@ delete process.env.OPENAI_API_KEY;
 import { writeFile, mkdir } from 'node:fs/promises';
 import { loadavg, cpus } from 'node:os';
 import { layoutGraph } from './baseline/layout';
-import { corpus, requestFor } from './corpus';
+import { performanceWorkloads } from './perf-workloads';
 import { layoutGraph as productionLayout, type LayoutRequest } from '../src/lib/domain/trace-graph/layout';
-import { bandHistorySignature } from '../src/lib/domain/trace-graph/band-layout';
-import { attachSingleBand } from '../src/lib/domain/trace-graph/band-geometry';
 import { canLayoutInline } from '../src/lib/domain/trace-graph/layout-workload';
 const quantile = (xs: number[], q: number) => [...xs].sort((a, b) => a - b)[Math.max(0, Math.ceil(xs.length * q) - 1)] ?? 0;
 const rows = [];
-const workloads: { case: string; baseline: LayoutRequest; proposed: LayoutRequest }[] = [];
-for (const original of corpus()) {
-  const focus = original.id === 'screenshot' ? 'Saffron' : original.id === 'chain-200' ? 'n199' : original.focuses.findLast(f => f !== null) ?? null;
-  const fixture = original.id.startsWith('random-') ? { ...original, full: true } : original;
-  const request = requestFor(fixture, focus, 454, 96);
-  workloads.push({ case: original.id, baseline: request, proposed: request });
-  const legal = { ...original, full: false }, before = requestFor(legal, null, 454, 96);
-  const click = before.items.filter(n => n.key !== before.band!.key && before.band!.items.some(child => child.parents.includes(n.key)))
-    .sort((a, b) => b.order - a.order || a.key.localeCompare(b.key))[0];
-  if (!click) continue;
-  const previous = productionLayout(before), baselinePrevious = layoutGraph(before);
-  const next = requestFor(legal, click.key, 454, 96);
-  if (next.items.map(n => n.key).sort().join(',') === before.items.map(n => n.key).sort().join(',')) continue;
-  workloads.push({ case: `${original.id} / committed reveal`, baseline: { ...next, hint: baselinePrevious.readingOrder },
-    proposed: { ...next, hint: previous.readingOrder, anchorKey: click.key,
-      history: { signature: bandHistorySignature(before), layout: previous, placed: attachSingleBand(previous, before) } } });
-}
+const workloads = performanceWorkloads();
 // Machine load affects both engines equally (pairs alternate), but heavy load still widens
 // tails; it is recorded with the results so a run can be judged.
 const loadBefore = loadavg();

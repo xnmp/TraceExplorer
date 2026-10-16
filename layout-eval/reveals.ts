@@ -14,7 +14,7 @@ for(const original of [...corpus(),...denseCorpus()])for(const width of [360,454
   for(let step=0;step<9;step++){
     const req=requestFor(c,focus,width,96,baseline?.readingOrder),keys=req.items.map(n=>n.key).sort().join(','),changed=step>0&&keys!==previousKeys;
     if(focus!==null&&previousKeys&&!previousKeys.split(',').includes(focus))throw new Error(`unavailable click ${c.id}/${focus}`);
-    baseline=layoutGraph(req);const next=optimizedBand({...req,hint:proposed?.layout.readingOrder},{previous:proposed,anchorKey:focus??undefined});
+    baseline=layoutGraph(req);const next=optimizedBand({...req,hint:proposed?.layout.readingOrder},{previous:proposed,anchorKey:focus??undefined,historyPolicy:"arrival-only"});
     const pb=attached(baseline,req),mb=measure(pb,req.band!.key,width,req.items,changed?placedB:undefined,focus??undefined),mp=measure(next.placed,req.band!.key,width,req.items,changed?proposed?.placed:undefined,focus??undefined);
     rows.push({case:c.id,dense:dense.has(c.id),width,step,focus,visible:req.items.length,changed,decision:next.layout.decision,reason:fallbackReason(next.layout),baseline:mb,proposed:mp});placedB=pb;proposed=next;previousKeys=keys;
     const expandable=req.items.filter(n=>!visited.has(n.key)&&req.band!.items.some(child=>child.parents.includes(n.key))).sort((a,b)=>b.order-a.order||a.key.localeCompare(b.key));
