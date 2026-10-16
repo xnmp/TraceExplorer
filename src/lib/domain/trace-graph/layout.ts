@@ -404,7 +404,8 @@ function layoutDown(request: LayoutRequest, minWidth: number, options: LayeredOp
  * (as built by {@link layoutLayered} with `orientation: "down"`), computed from
  * its display rows alone, before any routing: the band's height (from the first
  * child row to the last row's bottom, plus the bottom margin and `stemRoom`), its
- * child allocation width (tile span plus 8 px padding each side) and the connector
+ * child allocation width (tile span plus painted padding for orthogonal channels,
+ * or 8 px each side for the legacy style) and the connector
  * ink of a tree (each non-cover source's routes reach a child at least one
  * generation channel below it). Mirrors {@link layoutPass}: longest-path
  * generations wrap greedily onto rows of the content width, a row is as tall as
@@ -508,7 +509,7 @@ export function downwardBandBound(request: LayoutRequest, coverKey: NodeKey, ste
   }
   if (!tree) sources = 0;
   // Tile x is rounded to 0.01 px and attachment reassociates sums: stay strictly below.
-  return { height: height + space.bottom + stemRoom - 1e-6, width: Math.max(0, width + 16 - .02 - 1e-6),
+  return { height: height + space.bottom + stemRoom - 1e-6, width: Math.max(0, width + (options.channelStyle === "orthogonal" ? ARROW.width : 16) - .02 - 1e-6),
     length: Math.max(0, sources * (bandChannel - ARROW.length) - 1e-6) };
 }
 
@@ -1128,13 +1129,15 @@ function layoutPass(prepared: Prepared, extra: { readonly left: number; readonly
       for (const entry of entries) {
         const around: [number, number][] = [];
         for (const other of byX) {
-          if (!(other.lo <= entry.hi && entry.lo <= other.hi)) continue;
+          // Equal expanded row endpoints leave a whole tile row between the
+          // actual entry/exit channels, so their margin lane can be reused.
+          if (!(other.lo < entry.hi && entry.lo < other.hi)) continue;
           const start = other.x - separation + FREE_STEP, end = other.x + separation - FREE_STEP;
           const last = around.at(-1);
           if (last && start <= last[1] + FREE_STEP) last[1] = Math.max(last[1], end);
           else around.push([start, end]);
         }
-        const x = nearestOutside(entry.anchor, around, left ? -Infinity : entry.edge, left ? entry.edge : Infinity)!;
+        const x = nearestOutside(separation === MIN_LANE ? entry.edge : entry.anchor, around, left ? -Infinity : entry.edge, left ? entry.edge : Infinity)!;
         let at = byX.length;
         while (at > 0 && byX[at - 1].x > x) at--;
         byX.splice(at, 0, { x, lo: entry.lo, hi: entry.hi });

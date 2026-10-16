@@ -9,7 +9,7 @@ import { safeLayout } from "./safe-layout";
 import { validHistory } from "./history-boundary";
 import { spacingFor, STACK_STEM_ROOM } from "./metrics";
 import { bandWidthBudget, columnsFor, partitions, buildShelves, validate } from "./band-shelves";
-import { attachSingleBand, attachPackedBand, localBandPlacement, bandExtent, withBandBounds, singleBandSkeleton } from "./band-geometry";
+import { attachSingleBand, attachPackedBand, localBandPlacement, bandExtent, withBandBounds, withPaneBandBounds, singleBandSkeleton } from "./band-geometry";
 import { measure, validateLayout, cost, routePlan, sharedLaneLength, type Measures, type Weights } from "./layout-quality";
 import { incrementalBudget, incrementalTree, inReach, usableRetainedRoute } from "./band-incremental";
 import { forEachPathNumber, mapPathNumbers, pathNumbers } from "./path-data";
@@ -271,7 +271,7 @@ export function layoutBand(input: LayoutRequest, options: BandOptions = BAND_DEF
   if (request.items.length && geometryGate(attachSingleBand(result, request), request.items, request.band!.key, request.maxWidth)) {
     let replacement: GraphLayout | undefined;
     for (const scale of [1.5, 2, 3]) {
-      const candidate = withBandBounds(layoutLayered({ ...request, history: undefined, band: undefined, tileWidth: (request.tileWidth ?? 92) * scale, orientation: "down" }, { ordering: options.ordering, passing: options.passing, channelStyle: "orthogonal" }), request.band!.key);
+      const candidate = withPaneBandBounds(layoutLayered({ ...request, history: undefined, band: undefined, tileWidth: (request.tileWidth ?? 92) * scale, orientation: "down" }, { ordering: options.ordering, passing: options.passing, channelStyle: "orthogonal" }), request.band!.key, request.maxWidth);
       if (!geometryGate(attachSingleBand(candidate, request), request.items, request.band!.key, request.maxWidth)) {
         replacement = { ...candidate, decision: { candidate: "wide-channels", stability: false, fallback: "geometry-fallback" } }; break;
       }
@@ -379,7 +379,7 @@ function layoutBandCandidates(input: LayoutRequest, options: BandOptions): Graph
     const half = (request.items.find(n => n.key === request.pinned?.key)?.width ?? 0) / 2;
     const pin = request.pinned ? { ...request.pinned, x: Math.max(half, Math.min(width - half, request.pinned.x)) } : undefined;
     const layout = layoutLayered({ ...request, pinned: pin, history: undefined, band: undefined, maxWidth: width, orientation: "down" }, { ordering: options.ordering, passing: options.passing, channelStyle: "orthogonal" });
-    return { name: "visible-down", layout: withBandBounds(request.items.length === 2 && request.items.some(n => n.key !== key && n.parents.length === 1 && n.parents[0] === key) ? { ...layout, preferredX: 0 } : layout, key) };
+    return { name: "visible-down", layout: withPaneBandBounds(request.items.length === 2 && request.items.some(n => n.key !== key && n.parents.length === 1 && n.parents[0] === key) ? { ...layout, preferredX: 0 } : layout, key, request.maxWidth) };
   })();
   const history: Candidate[] = [];
   if (previous) {

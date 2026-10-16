@@ -115,11 +115,18 @@ function firstRow(layout: GraphLayout, key: string, byId: boolean): number {
 }
 
 /** Capture an immutable candidate's envelope once; attachment only translates it. */
-export function withBandBounds(layout: GraphLayout, key: string): GraphLayout {
+export function withBandBounds(layout: GraphLayout, key: string, padding = 8): GraphLayout {
   if (layout.bandBounds) return layout;
-  const extent = bandExtent(layout, key);
+  const extent = bandExtent(layout, key, padding);
   const top = firstRow(layout, key, false);
   return { ...layout, bandBounds: { left: extent.left, width: extent.width, top: Number.isFinite(top) ? top : 0 } };
+}
+
+/** Preserve comfortable allocation padding unless the pane requires its painted minimum. */
+export function withPaneBandBounds(layout: GraphLayout, key: string, paneWidth: number): GraphLayout {
+  const extent = bandExtent(layout, key, 0);
+  const padding = Math.max(ARROW.width / 2, Math.min(8, (paneWidth - extent.width) / 2));
+  return withBandBounds(layout, key, padding);
 }
 
 /** A field of the bounds as `{ ...bandBounds }` copies it: own enumerable properties only. */

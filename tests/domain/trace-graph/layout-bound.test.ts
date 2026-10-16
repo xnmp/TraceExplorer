@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { downwardBandBound, layoutLayered, type LayoutItem, type LayoutRequest } from "$lib/domain/trace-graph/layout";
-import { bandExtent, withBandBounds } from "$lib/domain/trace-graph/band-geometry";
+import { bandExtent, withBandBounds, withPaneBandBounds } from "$lib/domain/trace-graph/band-geometry";
 import { routePlan } from "$lib/domain/trace-graph/layout-quality";
 import { STACK_STEM_ROOM } from "$lib/domain/trace-graph/metrics";
 
@@ -10,7 +10,9 @@ const item = (key: string, parents: string[] = [], order = 0, width = 92, height
 /** The downward candidate exactly as the band engine builds it, measured the way it is scored. */
 function actual(items: readonly LayoutItem[], maxWidth: number, channelStyle: "scaled" | "orthogonal" = "scaled") {
   const request: LayoutRequest = { items, maxWidth, tileWidth: 92, orientation: "down", pinned: { key: "root", x: Math.min(maxWidth, 400) / 2 } };
-  const layout = withBandBounds(layoutLayered(request, { channelStyle }), "root"), extent = bandExtent(layout, "root");
+  const raw = layoutLayered(request, { channelStyle });
+  const layout = channelStyle === "orthogonal" ? withPaneBandBounds(raw, "root", maxWidth) : withBandBounds(raw, "root");
+  const extent = bandExtent(layout, "root");
   const length = layout.routes.filter(r => r.from.id !== "root").reduce((sum, r) => sum + routePlan(r).length, 0);
   return { request, height: extent.height, width: extent.width, length };
 }
