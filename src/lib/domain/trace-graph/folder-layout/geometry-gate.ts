@@ -5,12 +5,22 @@ import type { GraphLayout, LayoutItem, PlacedNode, PlacedJunction, PlacedRoute }
 import type { FolderLayout } from './types';
 
 export function folderGeometryGate(folder: FolderLayout): string | null {
+  if (folder.cellFootprints !== undefined) {
+    if (!(folder.cellFootprints instanceof Map)) return 'invalid-cell-footprint';
+    for (const [id, rect] of folder.cellFootprints) {
+      const cell = folder.cells.get(id);
+      if (!cell || !rect || ![rect.x, rect.y, rect.width, rect.height].every(Number.isFinite)
+        || !(rect.width > 0) || rect.width > cell.width || rect.y !== cell.y || rect.height !== cell.height
+        || Math.abs(rect.x + rect.width / 2 - cell.x - cell.width / 2) > 1e-7) return 'invalid-cell-footprint';
+    }
+  }
   const nodes = new Map<string, PlacedNode>(), junctions = new Map<string, PlacedJunction>(), routes: PlacedRoute[] = [], items: LayoutItem[] = [];
   const covers = new Set(folder.graphs.keys());
   for (const [id, cell] of folder.cells) if (!covers.has(id)) {
     const key = JSON.stringify(['cell', id]);
-    nodes.set(key, { ...cell, key, band: 0 });
-    items.push({ key, width: cell.width, height: cell.height, parents: [], order: items.length });
+    const footprint = folder.cellFootprints?.get(id) ?? cell;
+    nodes.set(key, { ...cell, ...footprint, key, band: 0 });
+    items.push({ key, width: footprint.width, height: footprint.height, parents: [], order: items.length });
   }
   for (const [id, graph] of folder.graphs) {
     const key = (value: string) => JSON.stringify(['graph', id, value]);

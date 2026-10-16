@@ -33,6 +33,7 @@ import { folderGridGeometry, gridPins, type FolderGridGeometry } from "../folder
 import { layoutGraph, type BandHistory, type GraphLayout, type LayoutRequest } from "../layout";
 import { layoutSignature } from "../layout-signature";
 import { isLayoutShape } from "../history-boundary";
+import { withCellFootprints } from "./cell-footprints";
 import { folderGeometryGate } from "./geometry-gate";
 import { safeLayout } from "../safe-layout";
 import { pinnedFolderPlacement, preservesFolderRectangles } from "./pinned-placement";
@@ -315,7 +316,7 @@ export function createDefaultEngine(options: DefaultEngineOptions = {}): FolderL
     }
     const arrivalPlacement = folderPlacementHistory(input, arrivals, geometryBasis);
     const bands = layoutPlanned(plans, cache, options.band);
-    let result = composeFolderLayout(input.items, geometry, bands);
+    let result = withCellFootprints(composeFolderLayout(input.items, geometry, bands), input);
     let failure = folderGeometryGate(result);
     let pinningFailed = false;
     if (arrivalPlacement && (failure || !preservesFolderRectangles(result, arrivalPlacement.layout))) {
@@ -332,7 +333,7 @@ export function createDefaultEngine(options: DefaultEngineOptions = {}): FolderL
         const request = { ...plan.request, history: undefined, hint: undefined, anchorKey: undefined };
         return [id, { plan: { ...plan, request }, layout: safeLayout(request) }] as const;
       }));
-      const isolated = composeFolderLayout(input.items, serial, fallback);
+      const isolated = withCellFootprints(composeFolderLayout(input.items, serial, fallback), input);
       // Attachment policy does not change the canonical band request or its cached result.
       // Workers remember those original requests, even when the final folder uses wider rows.
       const graphs = new Map([...isolated.graphs].map(([id, graph]) => {

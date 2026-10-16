@@ -36,6 +36,8 @@ export type GraphId = GridItemId;
 
 /** Host tile-grid metrics (the host's `tileGridMetrics`), or the fallback derived from the tile. */
 export interface FolderGridMetrics {
+  /** Centered painted ordinary-tile width, when known by its renderer; otherwise the entire cell is an obstacle. */
+  readonly contentWidth?: number;
   readonly cellWidth: number;
   readonly cellHeight: number;
   readonly gap: number;
@@ -119,6 +121,8 @@ export interface FolderPlacementHistory {
 }
 
 export interface FolderLayout {
+  /** Physical tile obstacles; allocations in cells retain their independent pinning contract. */
+  readonly cellFootprints?: ReadonlyMap<GridItemId, GridRect>;
   /** Observation epoch used to distinguish freshly loaded facts from a new arrival. */
   readonly dataRevision?: string;
   readonly geometryBasis?: string;

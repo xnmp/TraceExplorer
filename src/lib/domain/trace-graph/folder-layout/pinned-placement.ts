@@ -8,6 +8,7 @@ import type { Consumer } from '../junctions';
 import type { GraphLayout, LayoutItem, LayoutRequest, PlacedJunction, PlacedNode, PlacedRoute } from '../layout';
 import type { BandScenePlan } from '../scene';
 import type { GridBand, GridCell, GridRect } from '../grid-flow';
+import { centeredCellFootprint, withCellFootprints } from './cell-footprints';
 import { folderGeometryGate } from './geometry-gate';
 import { routeBounds, unionRect } from './route-bounds';
 import type { FolderGraph, FolderLayout, FolderLayoutInput, GraphId, FolderPlacementHistory } from './types';
@@ -89,8 +90,9 @@ function place(input: FolderLayoutInput, plans: ReadonlyMap<GraphId, Plan>, snap
   }
   for (const [id, cell] of cells) if (!plans.has(id)) {
     const key = scope('cell', id);
-    nodes.set(key, { ...cell, key, x: cell.x + ORIGIN_X, band: 0 });
-    items.push({ key, width: cell.width, height: cell.height, order: items.length, parents: [] });
+    const footprint = centeredCellFootprint(cell, candidate.cellFootprints?.get(id)?.width ?? cell.width);
+    nodes.set(key, { ...cell, ...footprint, key, x: footprint.x + ORIGIN_X, band: 0 });
+    items.push({ key, width: footprint.width, height: footprint.height, order: items.length, parents: [] });
   }
   for (const [id, { plan }] of plans) {
     const graph = snapshot.graphs.get(id), attached = graph?.attached, origin = graph?.origin;
@@ -135,7 +137,9 @@ function place(input: FolderLayoutInput, plans: ReadonlyMap<GraphId, Plan>, snap
     height: Math.max(snapshot.size.height, snapshot.bounds.y + snapshot.bounds.height, appendedY - MARGIN) };
   const maxWidth = Math.min(100_000, previous.width + missing.reduce((sum, n) => sum + n.width + 64, 64));
   const request: LayoutRequest = { items, maxWidth, tileWidth: input.tile.width, band: { key: ROOT, items } };
-  const placed = missing.length ? incrementalTree(request, previous) : previous;
+  const boundedWidth = input.width + ORIGIN_X;
+  const placed = missing.length ? incrementalTree({ ...request, maxWidth: boundedWidth }, { ...previous, width: boundedWidth })
+    ?? incrementalTree(request, previous) : previous;
   if (!placed) return null;
 
   const graphs = new Map<GraphId, FolderGraph>(), bands: GridBand[] = [];
@@ -188,5 +192,6 @@ function place(input: FolderLayoutInput, plans: ReadonlyMap<GraphId, Plan>, snap
   const rowBands = [...rowBounds].map(([row, rect]) => ({ ...rect, row, id: `row:${row}` }));
   const result: FolderLayout = { columns: snapshot.columns, size: { width: Math.max(snapshot.size.width, bounds!.x + bounds!.width), height: Math.max(snapshot.size.height, bounds!.y + bounds!.height) },
     bounds: bounds!, cells, bands, rowBands, graphs };
-  return folderGeometryGate(result) ? null : result;
+  const painted = withCellFootprints(result, input);
+  return folderGeometryGate(painted) ? null : painted;
 }
