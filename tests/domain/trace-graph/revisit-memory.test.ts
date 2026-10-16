@@ -95,3 +95,31 @@ it('rejects malformed memory descriptors and valid JSON containing invalid geome
   }
 });
 
+it('rejects a valid drawing stored under another geometry or expansion key', () => {
+  const folder=makeFolder({stacks:[handCase('screenshot')],files:6}),engine=createDefaultEngine();
+  const narrow=folderInput(folder,{open:['s0:root'],focus:'s0:Ash',width:360});
+  const before=engine(narrow);
+  for (const other of [{...narrow,width:900},folderInput(folder,{open:['s0:root'],focus:'s0:Saffron',width:360}),
+    folderInput(makeFolder({stacks:[handCase('screenshot')],files:5}),{open:['s0:root'],focus:'s0:Ash',width:360}),
+    {...narrow,items:[...narrow.items].reverse()}]) {
+    const wrong=engine(other);
+    const displays={...before.displays!,entries:[[before.displays!.entries[0][0],wrong.displays!.entries[0][1]]] as const};
+    const result=engine({...narrow,previous:{...before,displays}});
+    expect(result.revisited).toBeUndefined();
+    expect(drawing(result)).toEqual(drawing(before));
+    expect(folderGeometryGate(result)).toBeNull();
+  }
+});
+
+it('stores shared fan annotations in linear space while restoring exact geometry', () => {
+  const sizes=[200,400].map(count => {
+    const folder=makeFolder({stacks:[[node('root'),...Array.from({length:count},(_,i)=>node(`n${i}`,['root'],i+1))]]});
+    const input=folderInput(folder,{open:['s0:root']}),engine=createDefaultEngine();
+    const before=engine(input),after=engine({...input,previous:before});
+    expect(after.revisited).toBe(true);
+    expect(drawing(after)).toEqual(drawing(before));
+    return before.displays!.entries[0][1].length;
+  });
+  expect(sizes[1]/sizes[0]).toBeLessThan(2.2);
+});
+

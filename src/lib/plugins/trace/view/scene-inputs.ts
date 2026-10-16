@@ -182,8 +182,8 @@ export function prepareLayoutInput(intent: SceneIntent, data: SceneData, open: R
   }
   const input: FolderLayoutInput = { items: cells, open: stacks, width, tile: intent.tile, grid, previous, dataRevision: data.index.token,
     folderKey: data.index.directory,
-    contents: JSON.stringify([intent.listing.map(e => [e.path, e.kind, e.size, e.modified]),
-      data.index.components.map(c => [c.id, c.coverKey, c.imageCount, c.nodeCount]), [...data.index.members]]) };
+    contents: JSON.stringify([[...intent.listing].sort((a,b)=>a.path.localeCompare(b.path)).map(e => [e.path, e.kind, e.size, e.modified]),
+      [...data.index.components].sort((a,b)=>a.id.localeCompare(b.id)).map(c => [c.id, c.coverKey, c.imageCount, c.nodeCount]), [...data.index.members].sort(([a],[b])=>a.localeCompare(b))]) };
   return { input, cells, history: { directory: data.index.directory, columns, held }, sources, coverNodes, basis: layoutBasis(input, versions) };
 }
 

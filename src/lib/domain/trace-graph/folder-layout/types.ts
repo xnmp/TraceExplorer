@@ -120,7 +120,7 @@ export interface ArrivalHistory {
 /** Exact folder coordinates retained at the last contents change, never an interaction. */
 export interface FolderPlacementHistory {
   readonly basis: string;
-  readonly layout: Omit<FolderLayout, 'arrivalPlacement' | 'arrivals'>;
+  readonly layout: Omit<FolderLayout, 'arrivalPlacement' | 'arrivals' | 'displays'>;
 }
 
 export interface FolderLayout {

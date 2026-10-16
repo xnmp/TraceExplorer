@@ -37,7 +37,7 @@ const save = (scene = chained, paneId = "p", change: Partial<SceneIntent> = {}) 
 describe("saving a committed scene", () => {
   it("drops every band request's history reference and keeps everything else", () => {
     const histories = [...chained.graphs.values()].filter((graph) => graph.plan.request.history !== undefined);
-    expect(histories.length).toBe(0); // Clicks do not create arrival history.
+    expect(histories.length).toBeGreaterThan(0); // New clicks use displayed history.
     const stripped = stripHistory(chained);
     for (const graph of [...stripped.graphs.values(), ...stripped.layout.graphs.values()]) {
       expect("history" in graph.plan.request).toBe(false);
@@ -49,6 +49,7 @@ describe("saving a committed scene", () => {
     }
     expect(stripped.records).toBe(chained.records);
     expect(stripped.navigation).toBe(chained.navigation);
+    expect(stripped.layout.displays).toBe(chained.layout.displays);
     expect(stripped.inputs.layoutInput.previous).toBeNull();
   });
 

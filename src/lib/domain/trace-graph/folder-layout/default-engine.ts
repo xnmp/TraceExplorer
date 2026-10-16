@@ -67,6 +67,7 @@ interface Prior {
  * must not itself cause another layout (docs/scene-transactions.md §4, layout economy).
  */
 const requestBasis = (request: LayoutRequest): string => layoutSignature({ ...request, history: undefined, hint: undefined });
+const displayBasis = (request: LayoutRequest): string => requestBasis({ ...request, anchorKey: undefined });
 
 const isObject = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null;
 const finite = (...values: unknown[]) => values.every((value) => typeof value === "number" && Number.isFinite(value));
@@ -289,7 +290,7 @@ function folderPlacementHistory(input: FolderLayoutInput, arrivals: ReadonlyMap<
   if (!previous) return undefined;
   const itemIds = previous.cells instanceof Map ? [...previous.cells.keys()] : null;
   const changedItems = itemIds && (itemIds.length !== input.items.length
-    || input.items.some((item, i) => itemIds[i] !== item.id));
+    || input.items.some(item => !previous.cells.has(item.id)));
   const changedContents = previous.arrivals instanceof Map && [...arrivals].some(([id, arrival]) => {
     const old = previous.arrivals!.get(id);
     return old && old.contents !== arrival.contents && previous.graphs instanceof Map && previous.graphs.has(id)
@@ -321,10 +322,13 @@ export function createDefaultEngine(options: DefaultEngineOptions = {}): FolderL
     let restored: FolderLayout | undefined;
     try {
       const recalled = recallDisplay(input.previous?.displays, identity);
-      if (recalled) {
+      if (recalled?.geometryBasis === geometryBasis && recalled.cells.size === input.items.length &&
+        [...recalled.cells.keys()].every((id, i) => id === input.items[i].id) && recalled.graphs.size === plans.size &&
+        [...recalled.graphs].every(([id, graph]) => plans.has(id) &&
+          displayBasis(graph.canonical?.request ?? graph.plan.request) === displayBasis(plans.get(id)!.plan.request))) {
         const rebound = { ...recalled, graphs: new Map([...recalled.graphs].map(([id, graph]) =>
           [id, { ...graph, plan: plans.get(id)?.plan ?? graph.plan }])) };
-        if (rebound.graphs.size === plans.size && [...rebound.graphs.keys()].every(id => plans.has(id)) && !folderGeometryGate(rebound)) restored = rebound;
+        if (!folderGeometryGate(rebound)) restored = rebound;
       }
     } catch { /* Invalid stored geometry is never an authority. Rebuild through the normal gate. */ }
     if (restored) return { ...restored, revisited: true, arrivals, geometryBasis, dataRevision: input.dataRevision,
@@ -360,6 +364,11 @@ export function createDefaultEngine(options: DefaultEngineOptions = {}): FolderL
       if (failure) throw new RangeError("No certified folder layout: " + failure);
     }
     if (relayout) result = {...result,decision:{requestedColumns:geometry.columns,...result.decision,relayout}};
+    if (malformed) result = { ...result, graphs: new Map([...result.graphs].map(([id, graph]) => [id, {
+      ...graph,
+      layout: { ...graph.layout, decision: { ...graph.layout.decision!, fallback: 'invalid-history' } },
+      attached: { ...graph.attached, decision: { ...graph.attached.decision!, fallback: 'invalid-history' } },
+    }])) };
     const completed: FolderLayout = { ...result, ...(pinningFailed ? { decision: { ...(result.decision ?? { fallback: "pin-search-exhausted" as const, requestedColumns: geometry.columns }), pinning: "search-exhausted" as const } } : {}),
       geometryBasis, arrivalPlacement, arrivals, ...(input.dataRevision === undefined ? {} : { dataRevision: input.dataRevision }) };
     return { ...completed, displays: rememberDisplay(input.previous?.displays, identity, completed) };

@@ -26,7 +26,7 @@ export function displayIdentity(input: FolderLayoutInput, plans: Plans, policy?:
   for (const [id, { plan }] of plans) members.set(id, stableKey(plan.request.band?.items.map(n => [n.key, n.order, n.parents])));
   const ordered = [...members].sort(([a], [b]) => a.localeCompare(b));
   const items = input.items.map(i => [i.id, i.kind]);
-  const contents = stableKey([input.contents, items]);
+  const contents = stableKey([input.contents, [...items].sort(([a], [b]) => a.localeCompare(b))]);
   const changed = previous?.folder === folder && previous.members.some(([id, value]) => members.has(id) && members.get(id) !== value);
   // Effective expansion (including caret state), complete request geometry, and folder packing.
   // Anchor and reading history choose *new* geometry; they must not prevent a revisit hit.
@@ -43,7 +43,7 @@ function encode(value: unknown): string {
   const ids = new Map<object, number>(), objects: unknown[] = [];
   const ref = (v: any): any => {
     if (v === undefined) return ['undefined'];
-    if (typeof v === 'number' && !Number.isFinite(v)) return ['number', String(v)];
+    if (typeof v === 'number' && (!Number.isFinite(v) || Object.is(v,-0))) return ['number', Object.is(v,-0) ? '-0' : String(v)];
     if (!v || typeof v !== 'object') return v;
     const found = ids.get(v);
     if (found !== undefined) return ['ref', found];
