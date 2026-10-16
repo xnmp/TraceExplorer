@@ -4,8 +4,8 @@ import { spacingFor, STACK_STEM_ROOM } from "./metrics";
 import { bandWidthBudget, columnsFor, partitions, buildShelves, validate } from "./band-shelves";
 import { attachSingleBand, attachPackedBand, localBandPlacement, bandExtent, withBandBounds, singleBandSkeleton } from "./band-geometry";
 import { measure, validateLayout, cost, routePlan, sharedLaneLength, type Measures, type Weights } from "./layout-quality";
-import { incrementalBudget, incrementalTree } from "./band-incremental";
-import { forEachPathNumber, isPlainPathData, mapPathNumbers, pathNumbers } from "./path-data";
+import { incrementalBudget, incrementalTree, inReach, usableRetainedRoute } from "./band-incremental";
+import { forEachPathNumber, mapPathNumbers, pathNumbers } from "./path-data";
 import { extentCost, optimisticCost, rectangleCost } from "./layout-cost-bound";
 import { bandHistorySignature, historyFit, resizedLayout, resizedTiles } from "./band-history";
 
@@ -248,14 +248,15 @@ function rigidConnectorCost(layout: GraphLayout, key: string, tileWidth: number)
 
 /** History is plain committed geometry; anything non-finite or unparsable is treated as no history. */
 function usableHistory(history: import("./layout").BandHistory): boolean {
-  const finite = (...values: readonly (number | undefined)[]) => values.every(v => v === undefined || Number.isFinite(v));
-  const endpoint = (e: unknown) => !!e && typeof e === "object" && typeof (e as { kind?: unknown }).kind === "string";
+  const reachable = (...values: readonly (number | undefined)[]) => values.every(v => v === undefined || inReach(v));
+  const endpoint = (e: unknown) => !!e && typeof e === "object" && ((e as { kind?: unknown }).kind === "node" || (e as { kind?: unknown }).kind === "junction") && typeof (e as { id?: unknown }).id === "string";
   const geometry = (layout: GraphLayout | undefined) => !!layout && layout.nodes instanceof Map && Array.isArray(layout.routes) && layout.junctions instanceof Map
-    && [...layout.nodes.values()].every(n => !!n && finite(n.x, n.y, n.width, n.height))
-    && layout.routes.every(r => !!r && typeof r.path === "string" && isPlainPathData(r.path) && endpoint(r.from) && endpoint(r.to))
-    && [...layout.junctions.values()].every(j => !!j && finite(j.x, j.y));
+    && [layout.width, layout.height].every(inReach)
+    && [...layout.nodes.values()].every(n => !!n && [n.x, n.y, n.width, n.height].every(inReach) && n.width > 0 && n.height > 0)
+    && layout.routes.every(r => !!r && usableRetainedRoute(r) && endpoint(r.from) && endpoint(r.to) && Array.isArray(r.consumers) && r.consumers.every((c: { parent?: unknown; child?: unknown } | null) => !!c && typeof c.parent === "string" && typeof c.child === "string"))
+    && [...layout.junctions.values()].every(j => !!j && [j.x, j.y].every(inReach));
   const a = history.attachment;
-  return geometry(history.layout) && geometry(history.placed) && (!a || finite(a.bandTop, a.placement.x, a.placement.coverX,
+  return geometry(history.layout) && geometry(history.placed) && (!a || reachable(a.bandTop, a.placement.x, a.placement.coverX,
     a.placement.coverHeight, a.placement.width, a.placement.left, a.placement.right, a.placement.track, a.placement.stemRoom,
     a.placement.bridge?.top, a.placement.bridge?.gutter, ...(a.placement.coverColumns ?? []), ...(a.placement.bypassColumns ?? [])));
 }

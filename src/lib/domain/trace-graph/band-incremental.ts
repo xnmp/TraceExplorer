@@ -19,8 +19,9 @@ import { nearestFree, type GraphLayout, type LayoutRequest, type PlacedNode, typ
 import { ARROW, JUNCTION_BERTH, LANE_SEPARATION, PORT_BERTH, spacingFor, STACK_STEM_ROOM } from "./metrics";
 import { axisOf, berthsOf, distanceToTile, entersBerth, grazesTile, INTO_JUNCTION, INTO_TILE, leavingRunFrom, routeEnds, shallowRun, SHALLOW_RUN, TILE_GRAZE, type Berth, type Ends } from "./route-contacts";
 import { bandExtent } from "./band-geometry";
-import { intersectsTile, overlapLength, segments, type Segment } from "./layout-quality";
+import { intersectsTile, overlapLength, routeBounds, segments, type Segment } from "./layout-quality";
 import { orthogonalRoute, LANE_TOLERANCE, NEAR_LANE, type AxisRun, type ForeignLanes } from "./orthogonal-route";
+import { forEachPathNumber } from "./path-data";
 import type { Point } from "./path-sampling";
 
 /** Distance between neighbouring parallel lanes a route family may take. */
@@ -63,7 +64,19 @@ const GRID_BUDGET = 5000;
 /** Most 64 px rows one segment may span in the lane index (about 4 million px): beyond it the history is not usable. */
 const MAX_INDEX_ROWS = 65_536;
 /** Whether a coordinate or size lies within the lane index's reach: finite, at most `MAX_INDEX_ROWS` rows from zero. */
-const inReach = (value: number) => Number.isFinite(value) && Math.abs(value) <= MAX_INDEX_ROWS * 64;
+export const inReach = (value: number) => Number.isFinite(value) && Math.abs(value) <= MAX_INDEX_ROWS * 64;
+
+/** Parsed endpoints and control points must fit the same bounded geometry as retained tiles. */
+export function usableRetainedRoute(route: PlacedRoute): boolean {
+  if (typeof route.path !== "string") return false;
+  const bounds = routeBounds(route);
+  if (![bounds.minX, bounds.minY, bounds.maxX, bounds.maxY].every(inReach)) return false;
+  let usable = true;
+  forEachPathNumber(route.path, value => { if (!inReach(value)) usable = false; });
+  return usable;
+}
+/** Both ends must advance under ++; bounding only the span misses short runs at huge coordinates. */
+const indexRange = (first: number, last: number) => Number.isSafeInteger(first) && Number.isSafeInteger(last) && last >= first && last - first <= MAX_INDEX_ROWS;
 
 /**
  * Grid work one layout request may spend on its second chance (~45 ms of grid search; the
@@ -250,7 +263,7 @@ class Cells {
   private readonly wide: number[][] = [];
   file(index: number, minX: number, minY: number, maxX: number, maxY: number, log: unknown[][]): void {
     const r0 = Math.floor(minY / CELL), r1 = Math.floor(maxY / CELL), c0 = Math.floor(minX / CELL), c1 = Math.floor(maxX / CELL);
-    if (!(r1 - r0 <= MAX_INDEX_ROWS) || !Number.isFinite(c0 + c1)) return;
+    if (!indexRange(r0, r1) || !indexRange(c0, c1)) return;
     if ((r1 - r0 + 1) * (c1 - c0 + 1) <= WIDE) {
       for (let r = r0; r <= r1; r++) for (let c = c0; c <= c1; c++) {
         const key = r * 2 ** 20 + c, list = this.cells.get(key);
@@ -261,7 +274,7 @@ class Cells {
   /** Calls `visit` with each segment filed in a cell the box meets (a segment may come more than once); stops when it returns true. */
   some(minX: number, minY: number, maxX: number, maxY: number, visit: (index: number) => boolean): boolean {
     const r0 = Math.floor(minY / CELL), r1 = Math.floor(maxY / CELL), c0 = Math.floor(minX / CELL), c1 = Math.floor(maxX / CELL);
-    if (!(r1 - r0 <= MAX_INDEX_ROWS) || !(c1 - c0 <= MAX_INDEX_ROWS)) return false;
+    if (!indexRange(r0, r1) || !indexRange(c0, c1)) return true;
     for (let r = r0; r <= r1; r++) {
       const wide = this.wide[r];
       if (wide) for (const index of wide) if (visit(index)) return true;
@@ -313,6 +326,7 @@ class LaneIndex {
 
   /** Adds a route's segments (consecutive, as drawn) from `source`, and its berths: its corners, and its ends as `ends` says. */
   add(list: readonly Segment[], source: string, ends: Ends = NO_ENDS): void {
+    if (list.some(([a, b]) => ![a.x, a.y, b.x, b.y].every(inReach))) { this.oversized = true; return; }
     for (const berth of berthsOf(list, ends)) {
       const row = Math.floor(berth.y / 64);
       if (Number.isFinite(row) && Number.isFinite(berth.x)) this.log.push(push(this.berths, row, { ...berth, source }));
@@ -323,7 +337,7 @@ class LaneIndex {
       this.log.push(this.all, this.sources);
       const [a, b] = segment;
       const top = Math.floor(Math.min(a.y, b.y) / 64), bottom = Math.floor(Math.max(a.y, b.y) / 64);
-      if (bottom - top > MAX_INDEX_ROWS) { this.oversized = true; continue; }
+      if (!indexRange(top, bottom)) { this.oversized = true; continue; }
       for (let row = top; row <= bottom; row++) this.log.push(push(this.rows, row, index));
       this.visited.push(0);
       this.log.push(this.visited);
@@ -342,6 +356,7 @@ class LaneIndex {
   }
   /** Adds a junction dot: later routes keep `JUNCTION_BERTH` from it. */
   addDot(dot: Point): void {
+    if (!inReach(dot.x) || !inReach(dot.y)) { this.oversized = true; return; }
     const row = Math.floor(dot.y / 64);
     if (Number.isFinite(row) && Number.isFinite(dot.x)) this.log.push(push(this.dots, row, { x: dot.x, y: dot.y, radius: JUNCTION_BERTH }));
   }
@@ -351,6 +366,7 @@ class LaneIndex {
     if (this.base?.nearSegment(dot)) return true;
     const berth = { x: dot.x, y: dot.y, radius: JUNCTION_BERTH };
     const top = Math.floor((dot.y - JUNCTION_BERTH) / 64), bottom = Math.floor((dot.y + JUNCTION_BERTH) / 64);
+    if (!indexRange(top, bottom)) return true;
     for (let row = top; row <= bottom; row++) {
       const bucket = this.rows[row];
       if (bucket) for (const index of bucket) if (entersBerth(this.all[index], berth)) return true;
@@ -363,7 +379,7 @@ class LaneIndex {
     if (this.base?.nearDot(list)) return true;
     for (const segment of list) {
       const [a, b] = segment, top = Math.floor((Math.min(a.y, b.y) - JUNCTION_BERTH) / 64), bottom = Math.floor((Math.max(a.y, b.y) + JUNCTION_BERTH) / 64);
-      if (!(bottom - top <= MAX_INDEX_ROWS)) continue;
+      if (!indexRange(top, bottom)) return true;
       const left = Math.min(a.x, b.x) - JUNCTION_BERTH, right = Math.max(a.x, b.x) + JUNCTION_BERTH;
       for (let row = top; row <= bottom; row++) {
         const dots = this.dots[row];
@@ -402,6 +418,7 @@ class LaneIndex {
   /** Adds to `into` the spans of `source`'s runs on the line at `at` (within `LANE_TOLERANCE`). */
   private ownRuns(horizontal: boolean, at: number, source: string, into: [number, number][]): void {
     this.base?.ownRuns(horizontal, at, source, into);
+    if (!inReach(at)) return;
     const map = horizontal ? this.horizontal : this.vertical;
     for (let k = Math.round(at - LANE_TOLERANCE); k <= Math.round(at + LANE_TOLERANCE); k++) {
       const runs = map.get(k);
@@ -418,6 +435,7 @@ class LaneIndex {
   hits(tile: PlacedNode): boolean {
     if (this.base?.hits(tile)) return true;
     const top = Math.floor(tile.y / 64), bottom = Math.floor((tile.y + tile.height) / 64);
+    if (!indexRange(top, bottom)) return true;
     for (let row = top; row <= bottom; row++) {
       const bucket = this.rows[row];
       if (bucket) for (const index of bucket) if (intersectsTile(this.all[index], tile)) return true;
@@ -478,7 +496,7 @@ class LaneIndex {
   private nearBerth(segment: Segment, source: string): boolean {
     if (this.base?.nearBerth(segment, source)) return true;
     const [a, b] = segment, top = Math.floor((Math.min(a.y, b.y) - PORT_BERTH) / 64), bottom = Math.floor((Math.max(a.y, b.y) + PORT_BERTH) / 64);
-    if (!(bottom - top <= MAX_INDEX_ROWS)) return false;
+    if (!indexRange(top, bottom)) return true;
     const left = Math.min(a.x, b.x) - PORT_BERTH, right = Math.max(a.x, b.x) + PORT_BERTH;
     for (let row = top; row <= bottom; row++) {
       const list = this.berths[row];
@@ -532,6 +550,7 @@ class LaneIndex {
   }
 
   private blocked(horizontal: boolean, at: number, lo: number, hi: number, source: string, segment: Segment): boolean {
+    if (!inReach(at)) return true;
     if (this.base?.blocked(horizontal, at, lo, hi, source, segment)) return true;
     const map = horizontal ? this.horizontal : this.vertical;
     // Runs within reach of `at` are filed under these rounded coordinates (a run filed under
@@ -1142,6 +1161,7 @@ export function incrementalTree(request: LayoutRequest, previous: GraphLayout, b
   const kept: PlacedRoute[] = [], routes: PlacedRoute[] = [], referenced = new Set<string>();
   for (const r of previous.routes) {
     if (!r.consumers.some(visible)) continue;
+    if (!usableRetainedRoute(r)) return null;
     kept.push(r);
     routes.push({ ...r, consumers: r.consumers.filter(visible) });
     if (r.from.kind === "junction") referenced.add(r.from.id);
@@ -1149,6 +1169,8 @@ export function incrementalTree(request: LayoutRequest, previous: GraphLayout, b
   }
   const joins = new Map<string, PlacedJunction>();
   previous.junctions.forEach((join, id) => { if (referenced.has(id)) joins.set(id, join); });
+  for (const id of referenced) { const j = joins.get(id); if (!j || !inReach(j.x) || !inReach(j.y)) return null; }
+  if (!inReach(previous.width) || !inReach(previous.height)) return null;
   const lanes = new LaneIndex(retainedIndex(previous, kept));
   // Retained geometry beyond any real band (millions of pixels) cannot be indexed; lay out afresh.
   if (lanes.tooLarge()) return null;

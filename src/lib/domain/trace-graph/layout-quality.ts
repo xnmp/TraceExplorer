@@ -56,6 +56,10 @@ const boundsOf = ([a, b]: Segment): Bounds => ({ minX: Math.min(a.x, b.x), maxX:
 const touches = (a: Bounds, b: Bounds, tolerance = EPS): boolean => a.maxX >= b.minX - tolerance && b.maxX >= a.minX - tolerance && a.maxY >= b.minY - tolerance && b.maxY >= a.minY - tolerance;
 
 
+/** Small spans can still sit beyond integer precision, where a coordinate increment never advances. */
+const boundedCells = (x0: number, x1: number, y0: number, y1: number) => Number.isSafeInteger(x0) && Number.isSafeInteger(x1)
+    && Number.isSafeInteger(y0) && Number.isSafeInteger(y1) && (x1 - x0 + 1) * (y1 - y0 + 1) <= 4096;
+
 /** The reference broad phase: cells keyed by one number in a Map. Long spans use a bounded fallback rather than allocating unbounded bins. */
 class KeyedBins {
     /** Cells keyed by one number; coordinates beyond ±2^20 cells share keys harmlessly (results are filtered exactly). */
@@ -68,7 +72,7 @@ class KeyedBins {
     private static cell(x: number, y: number): number { return x * 2097152 + y; }
     add(index: number): void {
         const b = this.bounds[index], x0 = Math.floor((b.minX - this.margin) / this.size), x1 = Math.floor((b.maxX + this.margin) / this.size), y0 = Math.floor((b.minY - this.margin) / this.size), y1 = Math.floor((b.maxY + this.margin) / this.size);
-        if ((x1 - x0 + 1) * (y1 - y0 + 1) > 4096) { this.wide.push(index); return; }
+        if (!boundedCells(x0, x1, y0, y1)) { this.wide.push(index); return; }
         for (let x = x0; x <= x1; x++) for (let y = y0; y <= y1; y++) {
             const key = KeyedBins.cell(x, y), list = this.bins.get(key);
             if (list) list.push(index); else this.bins.set(key, [index]);
@@ -84,7 +88,7 @@ class KeyedBins {
         this.result.length = 0;
         if (++this.stamp === 0xffffffff) { this.seen.fill(0); this.stamp = 1; }
         const x0 = Math.floor(b.minX / this.size), x1 = Math.floor(b.maxX / this.size), y0 = Math.floor(b.minY / this.size), y1 = Math.floor(b.maxY / this.size);
-        if ((x1 - x0 + 1) * (y1 - y0 + 1) > 4096) {
+        if (!boundedCells(x0, x1, y0, y1)) {
             // Only already indexed entries are eligible during the incremental crossing join.
             for (const list of this.bins.values()) for (const index of list) this.append(index, b);
         } else {
@@ -1446,21 +1450,28 @@ function nearLaneLength(layout: GraphLayout, routeGeometry: readonly RouteData[]
     }
     return nearPairs(horizontal) + nearPairs(vertical);
     function nearPairs(runs: number[]): number {
-        const n = runs.length / 4, order = Array.from({ length: n }, (_, i) => i).sort((a, b) => runs[4 * a] - runs[4 * b] || a - b);
-        let total = 0;
-        for (let i = 0; i < n; i++) {
-            const a = order[i];
-            for (let j = i + 1; j < n; j++) {
-                const b = order[j], d = runs[4 * b] - runs[4 * a];
-                if (!(d < LANE_SEPARATION - AXIS_SLACK)) break;
+        // Sweep interval starts, expiring ends before visiting pairs. Equal columns on a
+        // long chain then cost O(n log n), rather than comparing every disjoint run.
+        const order = Array.from({ length: runs.length / 4 }, (_, i) => i)
+            .filter(i => runs[4 * i + 2] - runs[4 * i + 1] > NEAR_RUN)
+            .sort((a, b) => runs[4 * a + 1] - runs[4 * b + 1] || a - b);
+        const ends = [...order].sort((a, b) => runs[4 * a + 2] - runs[4 * b + 2] || a - b);
+        const active = new Set<number>();
+        let expired = 0, total = 0;
+        for (const a of order) {
+            const lo = runs[4 * a + 1];
+            while (expired < ends.length && runs[4 * ends[expired] + 2] - lo <= NEAR_RUN) active.delete(ends[expired++]);
+            for (const b of active) {
+                const d = Math.abs(runs[4 * b] - runs[4 * a]);
                 const ra = runs[4 * a + 3], rb = runs[4 * b + 3];
-                if (!(d > 1e-9) || of[ra] === of[rb]) continue;
-                const overlap = Math.min(runs[4 * a + 2], runs[4 * b + 2]) - Math.max(runs[4 * a + 1], runs[4 * b + 1]);
+                if (!(d > 1e-9 && d < LANE_SEPARATION - AXIS_SLACK) || of[ra] === of[rb]) continue;
+                const overlap = Math.min(runs[4 * a + 2], runs[4 * b + 2]) - lo;
                 if (!(overlap > NEAR_RUN)) continue;
                 const ta = layout.routes[ra].to, tb = layout.routes[rb].to;
                 if (ta.kind === "junction" && tb.kind === "junction" && ta.id === tb.id) continue;
                 total += overlap;
             }
+            active.add(a);
         }
         return total;
     }
