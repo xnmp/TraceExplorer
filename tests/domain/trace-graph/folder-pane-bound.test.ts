@@ -38,3 +38,18 @@ it('rejects malformed physical footprints instead of hiding cell collisions', ()
   ]) })).not.toBeNull();
   expect(folderGeometryGate({ ...base, cellFootprints: {} as never })).not.toBeNull();
 });
+
+it('does not add band padding to ordinary world-coordinate cells during a merge arrival', () => {
+  const engine = createDefaultEngine(), tile = tileMetrics(64);
+  const input = (grow: boolean) => {
+    const folder = makeFolder({stacks:[[node('root'),node('a',['root'],1),node('b',['root'],2),
+      ...(grow ? [node('c',['a','b'],3)] : [])],[node('root'),node('child',['root'],1)]],files:1});
+    const request = folderInput(folder,{open:folder.stacks.keys(),width:200,tile,grid:fallbackGridMetrics(tile)});
+    return {...request,open:new Map([...request.open].map(([id,s]) => [id,{...s,expanded:new Map(s.members.map(k=>[k,true]))}]))};
+  };
+  const before = engine(input(false)), after = engine({...input(true),previous:before});
+  expect(after.size.width).toBeLessThanOrEqual(200);
+  expect(folderGeometryGate(after)).toBeNull();
+  for (const [id,g] of before.graphs) for (const [key,n] of g.attached.nodes)
+    expect(after.graphs.get(id)!.attached.nodes.get(key)).toMatchObject({x:n.x,y:n.y,width:n.width,height:n.height});
+});

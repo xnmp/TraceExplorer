@@ -1,5 +1,5 @@
 /** Extend one committed folder drawing in world coordinates, so packing is also pinned. */
-import { incrementalTree } from '../band-incremental';
+import { incrementalWorld } from '../band-incremental';
 import { isLayoutShape, validHistory } from '../history-boundary';
 import { bandHistorySignature } from '../band-history';
 import { mapPathNumbers } from '../path-data';
@@ -130,16 +130,12 @@ function place(input: FolderLayoutInput, plans: ReadonlyMap<GraphId, Plan>, snap
   const missing = items.filter(item => !nodes.has(item.key));
   nodes.set(ROOT, { key: ROOT, x: 0, y: 0, width: 1, height: 1, row: 0, band: 0 });
   items.unshift({ key: ROOT, width: 1, height: 1, order: -1, parents: [] });
-  let right = Math.max(snapshot.size.width, snapshot.bounds.x + snapshot.bounds.width);
-  for (const n of nodes.values()) right = Math.max(right, n.x + n.width);
+  const maxWidth = input.width + ORIGIN_X;
   const previous: GraphLayout = { nodes, junctions, routes: retainedRoutes, rows: [], readingOrder: new Map(), orientation: 'down',
-    width: right + MARGIN,
-    height: Math.max(snapshot.size.height, snapshot.bounds.y + snapshot.bounds.height, appendedY - MARGIN) };
-  const maxWidth = Math.min(100_000, previous.width + missing.reduce((sum, n) => sum + n.width + 64, 64));
+    width: maxWidth, height: Math.max(snapshot.size.height, snapshot.bounds.y + snapshot.bounds.height, appendedY - MARGIN) };
   const request: LayoutRequest = { items, maxWidth, tileWidth: input.tile.width, band: { key: ROOT, items } };
-  const boundedWidth = input.width + ORIGIN_X;
-  const placed = missing.length ? incrementalTree({ ...request, maxWidth: boundedWidth }, { ...previous, width: boundedWidth })
-    ?? incrementalTree(request, previous) : previous;
+  const placed = missing.length ? incrementalWorld(request, previous)
+    ?? incrementalWorld({ ...request, maxWidth: Math.min(100_000, maxWidth + missing.reduce((sum,n) => sum + n.width + 64,64)) }, previous) : previous;
   if (!placed) return null;
 
   const graphs = new Map<GraphId, FolderGraph>(), bands: GridBand[] = [];

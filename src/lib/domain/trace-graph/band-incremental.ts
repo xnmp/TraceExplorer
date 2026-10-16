@@ -1187,7 +1187,21 @@ function freeBlockedPorts(request: LayoutRequest, previous: GraphLayout, budget:
 }
 
 export function incrementalTree(request: LayoutRequest, previous: GraphLayout, budget: IncrementalBudget = incrementalBudget()): GraphLayout | null {
-  return insertTree(request, freeBlockedPorts(request, previous, budget), budget);
+  const placed = insertTree(request, freeBlockedPorts(request, previous, budget), budget);
+  if (!placed) return null;
+  const key = request.band!.key;
+  const extent = bandExtent({ ...placed, bandBounds: undefined }, key);
+  if (extent.left < 0 || extent.left + extent.width > placed.width) return null;
+  return { ...placed, bandBounds: { left: 0, width: extent.left + extent.width,
+    top: placed.nodes.get(key)!.height + (request.history?.attachment?.placement.stemRoom ?? STACK_STEM_ROOM) }, preferredX: 0 };
+}
+
+/** World coordinates already include packing. No child-band allocation padding applies. */
+export function incrementalWorld(request: LayoutRequest, previous: GraphLayout, budget: IncrementalBudget = incrementalBudget()): GraphLayout | null {
+  const placed = insertTree(request, freeBlockedPorts(request, previous, budget), budget);
+  if (!placed) return null;
+  const extent = bandExtent({ ...placed, bandBounds: undefined }, request.band!.key, 0);
+  return extent.left < 0 || extent.left + extent.width > request.maxWidth ? null : { ...placed, bandBounds: undefined };
 }
 
 function insertTree(request: LayoutRequest, previous: GraphLayout, budget: IncrementalBudget): GraphLayout | null {
@@ -1389,10 +1403,5 @@ function insertTree(request: LayoutRequest, previous: GraphLayout, budget: Incre
   const provisional: GraphLayout = { ...previous, nodes, routes, junctions: joins, rows: [],
     width: Math.max(previous.width, width), height: bottom + s.bottom,
     readingOrder };
-  const extent = bandExtent({ ...provisional, bandBounds: undefined }, key);
-  if (extent.left < 0 || extent.left + extent.width > width) return null;
-  // These coordinates are already attached. Include the allocation origin rather than
-  // trimming empty space before the first child: a trimmed wide envelope would be
-  // centred again by single-band attachment and translate every retained rectangle.
-  return { ...provisional, bandBounds: { left: 0, width: extent.left + extent.width, top: nodes.get(key)!.height + (request.history?.attachment?.placement.stemRoom ?? STACK_STEM_ROOM) }, preferredX: 0 };
+  return provisional;
 }
