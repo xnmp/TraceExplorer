@@ -537,6 +537,21 @@ The reusable layered algorithm is described top to bottom; a left-to-right shelf
   time in the finer probes) takes 344 ms where `main` takes 11 ms, and finds a band 311 px
   shorter with 24 more crossings. Charging conflict checks to the budget would bound the
   time, at the cost of ending the heaviest embeddings sooner; it is not done.
+
+  Planning each input once, dropping the whole-input memo and sending the previous layout
+  to the worker by reference (`layout-protocol.ts`) leave every output unchanged. The table
+  below covers the whole seam as the view runs it: dispatch, client and worker store,
+  structured clones both ways. Runs were interleaved per source; ms per request, before →
+  after.
+
+  | Source | main-thread p50 | main-thread p95 | worker p50 | worker p95 |
+  |---|---:|---:|---:|---:|
+  | mixed | 1.05 → 0.48 | 2.57 → 1.45 | 4.40 → 2.51 | 7.06 → 4.40 |
+  | merge-k8 | 0.95 → 0.49 | 2.43 → 1.81 | 4.38 → 2.95 | 10.07 → 8.29 |
+  | batch8 | 0.60 → 0.35 | 2.14 → 1.60 | 4.97 → 3.37 | 14.32 → 12.69 |
+
+  On mj, measured more than two hours apart on a shared machine, the main-thread p50 fell
+  0.92 → 0.66 and the p95 rose 3.32 → 3.91.
 - **Off-thread.** A synchronous request has a budget of 30 current plus committed-history tiles and 40 current input edges plus committed-history routes. Requests above either budget run in a blob worker when the host announces `blobWorkers` (its CSP permits `worker-src blob:`), and otherwise on the main thread after yielding a frame. Hidden lineage does not consume placement slots or this geometry budget. Results are cached by their exact request including both committed embeddings and attachment, except that a non-band left-to-right request ignores pane width. The worker gets one job at a time, so a request superseded while it waits is dropped rather than computed; one already running finishes and is cached.
 - **Rendering.** Tiles outside the viewport (±800 px) are not mounted once a component shows more than 120 tiles; connectors and junctions are windowed the same way by their vertical extent. Grid rows and bands beyond a 1,200 px viewport margin are windowed; their logical geometry remains allocated. Closed stacks need only summaries. Open nearby bands load through the existing complete per-component paging and request scheduler. Focused bands stay mounted so keyboard and job reveals can finish even from offscreen.
 
@@ -828,6 +843,21 @@ height (no slack) cut the contact rules' share by about a third (mixed 769 px, c
   optimum. The next principled step is edge insertion: a shortest path per route over
   (row, gap) states priced by crossings with segments already fixed. It is worth doing only
   if real folders merge often.
+  - It was built and measured on 2026-10-16 (branch `layout-passing-plan-wip`): courses
+    that cross are re-planned one at a time with the rest held, for up to three rounds,
+    together with growth shoving, narrower margins in narrow panes and a tree crossing price.
+    On the static click tours it about halves κ above the optimum (combinations 41,401 →
+    23,807, merge-k8 173,047 → 106,148, mj 84,433 → 43,753, chains 290 → 295). It cuts tree
+    crossings by 20–70%, except on chains (62 → 74).
+  - It is not adopted. On `layout:eval`'s click tours it doubles the mean legal displacement
+    (17.3 → 39.0 px, above the reference's 31.2). With straight passing, the rest of the
+    change gives 19.3 px, so the re-planning is the cause. It picks more anchored repacks on
+    reveals (28 → 98 of 2,145 transitions); why is not yet isolated.
+  - Its largest main-thread p95 is 6.9 ms against 2.7 ms. The re-planning budget restarts
+    with every routing pass and does not count the plan's own work: the corpus's downward
+    layouts of up to 200 nodes take 10.3 s against 0.70 s.
+  - An independent review also found that undoing a growth can restore a stale band height.
+    The branch's commit message lists these defects.
 - Tree layouts that keep committed geometry cross more than fresh ones (variations 25% vs
   16%, mixed 15% vs 4%): the stability weight's price, a product trade-off.
 - Crossings at corners in crowded downward zones ([Contacts](#contacts)), and touching
