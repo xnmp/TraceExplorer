@@ -429,7 +429,7 @@ function layoutBandCandidates(input: LayoutRequest, options: BandOptions): Graph
   const feasible = (m: Measures) => Number.isFinite(cost(m, tileWidth));
 
   // A certified pinned solution wins before soft compactness/crossing objectives.
-  // Extra horizontal room is preferable to moving already visible tiles or later grid rows.
+  // Keep the pane-bounded construction whenever it can preserve the retained tiles.
   if (previous) {
     const pins = (layout: GraphLayout) => request.items.every(item => {
       const old = previous.nodes.get(item.key), now = layout.nodes.get(item.key);
@@ -437,7 +437,7 @@ function layoutBandCandidates(input: LayoutRequest, options: BandOptions): Graph
     });
     const pinned = history.filter(c => pins(placementFor(c)) && !geometryGate(placementFor(c), request.items, key, request.maxWidth));
     const added = request.items.filter(n => !previous.nodes.has(n.key));
-    if (added.length && !pinned.some(c => c.layout.height <= previous.height)) {
+    if (added.length && !pinned.length) {
       const edge = [...previous.nodes.values()].reduce((right, n) => Math.max(right, n.x + n.width), request.maxWidth);
       const extra = added.reduce((sum, n) => sum + n.width + 48, 48);
       const extended = incrementalTree({ ...request, maxWidth: Math.min(100_000, edge + extra) }, previous, incrementalBudget());
