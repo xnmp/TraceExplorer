@@ -121,7 +121,7 @@ for (const [label, pick] of [["a tile in an open stack", 12], ["the last listed 
     await clearSceneEvents(page);
     const selection = () => ({
       selected: [...document.querySelectorAll('[aria-selected="true"]')]
-        .map((element) => element.getAttribute("data-tile-key") ?? element.closest("[data-grid-cell]")?.getAttribute("data-grid-cell") ?? "?").sort(),
+        .map((element) => element.getAttribute("data-node-key") ?? element.getAttribute("data-tile-key") ?? element.closest("[data-grid-cell]")?.getAttribute("data-grid-cell") ?? "?").sort(),
       tiles: document.querySelectorAll("[data-tile-key]").length,
       entered: !!(window as any).__entered,
     });
@@ -132,7 +132,7 @@ for (const [label, pick] of [["a tile in an open stack", 12], ["the last listed 
       await page.evaluate(() => {
         const w = window as any; w.__states = [];
         const read = () => [...document.querySelectorAll('[aria-selected="true"]')]
-          .map((element) => element.getAttribute("data-tile-key") ?? element.closest("[data-grid-cell]")?.getAttribute("data-grid-cell") ?? "?").sort().join(",");
+          .map((element) => element.getAttribute("data-node-key") ?? element.getAttribute("data-tile-key") ?? element.closest("[data-grid-cell]")?.getAttribute("data-grid-cell") ?? "?").sort().join(",");
         new MutationObserver(() => { if (document.querySelectorAll("[data-tile-key]").length) w.__states.push(read()); })
           .observe(document.body, { subtree: true, childList: true, attributes: true, attributeFilter: ["aria-selected"] });
         w.__entered = true;
@@ -278,7 +278,7 @@ test("returning with a new focus inside a large open stack shows the saved scene
   const returned = frames.filter((frame) => frame.entered);
   expect(returned.length).toBeGreaterThan(5);
   expect(returned.filter((frame) => frame.tiles === 0 || frame.loading), "blank or loading frames after returning").toEqual([]);
-  await expect(page.locator(`.tile[aria-selected="true"]`).first()).toBeVisible();
+  await expect(page.locator('.tile [role="gridcell"][aria-selected="true"]').first()).toBeVisible();
   expect(await sceneEvents(page, "motion-start")).toEqual([]);
   expect(await uncaught(page)).toEqual([]);
 });

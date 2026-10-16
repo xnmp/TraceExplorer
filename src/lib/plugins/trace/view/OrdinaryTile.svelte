@@ -7,7 +7,7 @@
 </script>
 
 <div style:--entry-image="{tile.image}px" style:width="{tile.width}px" style:margin="0 auto">
-        <button type="button" class="entry" role="gridcell" aria-selected={selected} aria-colindex={column} tabindex={focused ? 0 : -1} {onfocus} {onkeydown} class:selected={selected} data-entry-path={entry.path}
+        <div class="entry" role="gridcell" aria-selected={selected} aria-colindex={column} tabindex={focused ? 0 : -1} {onfocus} {onkeydown} class:selected={selected} data-entry-path={entry.path}
           title={entry.name}
           onclick={(event) => onselect(entry, event)} ondblclick={() => onopen(entry)} oncontextmenu={(event) => onmenu(entry, event)}>
           <span class="icon">
@@ -20,11 +20,11 @@
             {/if}
           </span>
           <span class="name">{entry.name}</span>
-        </button>
+        </div>
 
 </div>
 <style>
-  .entry { box-sizing: border-box; display: flex; flex-direction: column; align-items: center; gap: 4px; width: 100%; padding: 5px; font: inherit; color: var(--text-primary); background: none; border: 1px solid transparent; border-radius: var(--radius-sm); cursor: pointer; }
+  .entry { box-sizing: border-box; display: flex; flex-direction: column; align-items: center; gap: 4px; width: 100%; padding: 5px; font: inherit; color: var(--text-primary); background: none; border: 1px solid transparent; border-radius: var(--radius-sm); cursor: pointer; user-select: none; -webkit-user-select: none; }
   .entry:hover { background: var(--subtle-fill-secondary); }
   .entry.selected { background: color-mix(in srgb, var(--accent) 12%, transparent); border-color: var(--accent); }
   .entry:focus-visible { outline: 2px solid var(--focus-stroke-outer); outline-offset: 2px; }

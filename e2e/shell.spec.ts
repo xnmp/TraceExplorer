@@ -10,7 +10,7 @@ for (const host of [
 ]) {
   test(`with ${host.name}, the folder grid lists files without provenance and keeps selection, opening and menus working`, async ({ page }) => {
     await openView(page, undefined, host.query);
-    // The host's Tiles view is a grid of gridcells with aria-selected; the built-in fallback is a list of buttons with aria-pressed.
+    // Host and fallback tiles both expose gridcell selection through aria-selected.
     const list = page.getByRole("grid", { name: "Folder" });
     const selectedAttribute = "aria-selected";
     const entry = (path: string) => list.locator(`[data-entry-path="${path}"]`);
@@ -40,13 +40,13 @@ for (const host of [
     expect(after.menus.at(-1)).toBe("/pictures/refs");
     expect(after.selected).toEqual(["/pictures/refs"]);
 
-    // Keyboard: entries are focusable; the built-in buttons select on Space (the host's gridcells do not).
+    // Space on a focused, unselected file toggles Preview without changing selection.
     await notes.focus();
     await expect(notes).toBeFocused();
-    if (!host.module) {
-      await page.keyboard.press("Space");
-      expect((await state(page)).selected).toEqual(["/pictures/notes.txt"]);
-    }
+    await page.keyboard.press("Space");
+    expect(await state(page)).toEqual(after);
+    await expect(page.getByRole("complementary", { name: "Preview" })).toHaveCount(0);
+    expect(await page.evaluate(() => (window as any).trace.previewCommands())).toEqual(["view.togglePreviewPane"]);
   });
 }
 

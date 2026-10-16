@@ -1,5 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
-import { card, caret, click, openView, settle, state, tile } from "./support";
+import { card, caret, click, openView, settle, state, tile, selectedOf } from "./support";
 
 const SHOTS = process.env.ROUND4_SHOTS;
 const path = (page: Page, name: string) => page.evaluate((n) => (window as any).trace.backend.path(n) as string, name);
@@ -145,7 +145,7 @@ test.describe("host selection changes the view did not make", () => {
     expect(before.toSorted()).toEqual([...listed, merge].toSorted());
     // The host's selection is a set mutated in place: the same files change nothing.
     await page.evaluate((paths) => (window as any).trace.setSelection(paths), listed);
-    await expect(await card(page, "merge")).toHaveAttribute("aria-pressed", "true");
+    await expect(await card(page, "merge")).toHaveAttribute("aria-selected", "true");
     expect(await editInputs(page)).toEqual(before);
   });
 
@@ -184,7 +184,8 @@ test.describe("the view's own clicks", () => {
     expect(await editInputs(page)).toEqual(picked);
     await page.evaluate(() => (window as any).trace.backend.setPrompt("merge", "a new prompt"));
     await settle(page);
-    await expect(await card(page, "mist")).toHaveAttribute("aria-pressed", "true");
+    const mistCard = await card(page, "mist");
+    await expect.poll(() => selectedOf(mistCard)).toBe("true");
     expect(await editInputs(page)).toEqual(picked);
   });
 
@@ -216,7 +217,7 @@ test.describe("the view's own clicks", () => {
     await click(page, "merge");
     await click(page, "mist", { modifiers: ["Control"] });
     await click(page, "merge", { modifiers: ["Control"] });
-    await expect(await card(page, "merge")).toHaveAttribute("aria-pressed", "false");
+    await expect(await card(page, "merge")).toHaveAttribute("aria-selected", "false");
     expect(await editInputs(page)).toEqual([await path(page, "mist")]);
   });
 });
@@ -341,7 +342,7 @@ test.describe("picks follow saves and deletes", () => {
     expect(await editInputs(page)).toEqual([warm, "/pictures/merge.png", mist]);
     await click(page, "merge", { modifiers: ["Control"] });
     expect((await state(page)).selected).toEqual([warm]);
-    await expect(await card(page, "merge")).toHaveAttribute("aria-pressed", "false");
+    await expect(await card(page, "merge")).toHaveAttribute("aria-selected", "false");
     expect(await editInputs(page)).toEqual([warm, mist]);
   });
 

@@ -30,6 +30,8 @@ const FIRST_TILES_TIMEOUT_MS = 20_000;
 export const key = (page: Page, name: Name): Promise<string> => page.evaluate((n) => (window as any).trace.backend.key(n), name);
 export const tile = async (page: Page, name: Name): Promise<Locator> => page.locator(`[data-tile-key="${await key(page, name)}"], [data-reference-key="${await key(page, name)}"]`).first();
 export const card = async (page: Page, name: Name): Promise<Locator> => page.locator(`[data-node-key="${await key(page, name)}"], [data-reference-key="${await key(page, name)}"]`).first();
+/** Whether a card or reference badge shows as selected: tiles are gridcells (`aria-selected`), badges toggle buttons (`aria-pressed`). */
+export const selectedOf = (locator: Locator): Promise<string | null> => locator.evaluate((element) => element.getAttribute("aria-selected") ?? element.getAttribute("aria-pressed"));
 /** A tile's disclosure caret: expands or collapses that node without changing the selection. */
 export const caret = async (page: Page, name: Name): Promise<Locator> => page.locator(`[data-node-caret="${await key(page, name)}"]`);
 export const state = (page: Page) => page.evaluate(() => (window as any).trace.state() as {

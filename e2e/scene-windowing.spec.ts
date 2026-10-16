@@ -205,7 +205,7 @@ test("arrow keys reach band tiles that are not mounted, mounting and focusing th
   await expect(focused).toBeFocused();
   await expect(focused).toBeInViewport();
   // It is the selection, as a click on it would make it.
-  await expect(page.locator(`.tile[data-tile-key="${reached}"]`)).toHaveAttribute("aria-selected", "true");
+  await expect(focused).toHaveAttribute("aria-selected", "true");
   expect(await uncaught(page)).toEqual([]);
 });
 

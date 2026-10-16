@@ -15,7 +15,7 @@
   /**
    * A tile's card: thumbnail, title, scope and hint. Shared by live tiles (`TraceTile`, which adds
    * the tooltip, actions, badges and selection semantics through `card` and `press`) and retiring
-   * tiles (`RetiringTile`), which draw it passively: no button, handler or disclosure.
+   * tiles (`RetiringTile`), which draw it passively: no focus target, handler or disclosure.
    */
   import type { Snippet } from "svelte";
   import type { SceneTile } from "$lib/domain/trace-graph/scene";
@@ -33,7 +33,7 @@
     /** Which way the tile's component runs; an open chevron points towards the children. */
     orientation?: Orientation;
     explorer?: CoverVisual;
-    /** A live tile's card semantics (a button's attributes and handlers; an attachment key may carry its tooltip). Passive when absent. */
+    /** A live tile's gridcell attributes and handlers; an attachment key may carry its tooltip. Passive when absent. */
     card?: Record<string | symbol, unknown> | null;
     /** A live cover's press target, laid over its card. */
     press?: Snippet;
@@ -57,7 +57,6 @@
     ? tile.expanded ? `${tile.childCount} ${tile.childCount === 1 ? "child" : "children"} open`
       : tile.hiddenDescendants ? `${tile.hiddenDescendants} further ${tile.hiddenDescendants === 1 ? "edit" : "edits"}` : `${tile.childCount} ${tile.childCount === 1 ? "edit" : "edits"}`
     : "");
-  const tag = $derived(!explorer && card ? "button" : "div");
   // Offered only where it changes what is shown (`bandCarets`): a control never does nothing visible.
   const caret = $derived(tile.togglable && !explorer);
   // Collapsed, the caret points across the band's flow; expanded, along it, towards the children.
@@ -106,7 +105,7 @@
     {:else}<span class="text">{title}</span>{/if}
     {#if node.runId !== null && promptTitles.pending(node.runId)}<span class="title-spinner" role="status" aria-label="Generating title"></span>{/if}
     {#if unsaved && !explorer}<span class="unsaved-dot" aria-hidden="true"></span>{/if}
-    <!-- The caret is the card's sibling (a button cannot hold one); this keeps its room in the label. -->
+    <!-- The caret is a separate control beside the gridcell; this keeps its room in the label. -->
     {#if caret}<span class="caret-room" aria-hidden="true"></span>{/if}
   </span>
   {#if node.scope !== "current" && !explorer}
@@ -122,10 +121,10 @@
   {/if}
 {/snippet}
 
-<svelte:element this={tag} {...card} class="card" class:selected class:focus={tile.tone === "focus"} class:discarded={node.discarded} aria-busy={explorer ? preparing : undefined}>
+<div {...card} class="card" class:selected class:focus={tile.tone === "focus"} class:discarded={node.discarded} aria-busy={explorer ? preparing : undefined}>
   {@render press?.()}
   {@render contents()}
-</svelte:element>
+</div>
 {#if caret}
   {#if oncaret}
     <button type="button" class="caret" style:top="{tile.size.imageHeight + 8}px" tabindex={focused ? 0 : -1} {onfocus}
@@ -182,7 +181,7 @@
   .stack-disclosure.expanded svg { transform: rotate(90deg); }
   .stack-disclosure:hover, .stack-disclosure:focus-visible { background: color-mix(in srgb, var(--accent) 32%, var(--background-solid)); color: var(--accent); }
   .stack-disclosure:focus-visible { outline: 2px solid var(--focus-stroke-outer); outline-offset: 2px; }
-  .card { display: flex; flex-direction: column; align-items: stretch; box-sizing: border-box; width: 100%; padding: 5px; overflow: hidden; text-align: left; font: inherit; color: var(--text-primary); background: var(--background-card-secondary, var(--control-fill)); border: 1px solid var(--control-stroke); border-radius: var(--radius-sm); cursor: pointer; }
+  .card { display: flex; flex-direction: column; align-items: stretch; box-sizing: border-box; width: 100%; padding: 5px; overflow: hidden; text-align: left; font: inherit; color: var(--text-primary); background: var(--background-card-secondary, var(--control-fill)); border: 1px solid var(--control-stroke); border-radius: var(--radius-sm); cursor: pointer; user-select: none; -webkit-user-select: none; }
   .card:hover { background: var(--subtle-fill-secondary); }
   /* Selection shows in styling, never size: an accent border, and for the focus a ring and halo. */
   .card.selected { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 14%, var(--background-card-secondary)); }

@@ -68,25 +68,26 @@
     pathState: node.state === "present" ? "present" : node.state === "missing" ? "missing" : "unavailable", temporary: true, discarded: false,
   } : null);
   const tooltipKey = createAttachmentKey();
-  // A band tile's card is its button: selection semantics, handlers and the tooltip.
+  // Match the SDK file tile's focusable gridcell semantics. Native buttons own
+  // Space as a click; file cells leave it to the host's configured Preview command.
   const card = $derived(explorer ? null : {
-    type: "button", tabindex: focused ? 0 : -1, onfocus, "data-node-key": node.key, "aria-pressed": selected, [tooltipKey]: tooltip,
+    role: "gridcell", tabindex: focused ? 0 : -1, onfocus, "data-node-key": node.key, "aria-selected": selected, [tooltipKey]: tooltip,
     "aria-label": `${title}${status ? `, ${status}` : ""}${unsaved ? ", unsaved" : ""}${node.scope === "external" ? ", outside this folder" : node.scope === "subfolder" ? ", in a subfolder" : ""}`,
     onclick: onactivate, ondblclick: doubleClick, oncontextmenu: onmenu, onkeydown: onkey,
   });
 </script>
 
 <div class="tile" class:explorer-cover={!!explorer} class:host-cover={explorer?.imagePx !== undefined} class:small-cover={explorer?.small} class:unrelated={tile.tone === "unrelated"} class:foreign={node.scope !== "current"}
-  role="gridcell" aria-selected={selected} data-tile-key={node.key} data-scope={node.scope} data-tone={tile.tone} {@attach handle}
+  data-tile-key={node.key} data-scope={node.scope} data-tone={tile.tone} {@attach handle}
   style:left="{placed.x}px" style:top="{placed.y}px" style:width="{placed.width}px" style:height="{placed.height}px">
-  <!-- A cover's card is not a button: the tile body remains the grid's tab stop through the press target laid over it, and the
+  <!-- The tile body remains the grid's tab stop through the press target laid over it, and the
        disclosure (a sibling control in its label) owns only toggling. While this tile is the stop, Tab reaches its disclosure next
-       (it follows the cover in DOM order), so keyboard users can collapse. A real button also excludes its pointer presses from marquee selection. -->
+       (it follows the cover in DOM order), so keyboard users can collapse. The tabindex excludes its pointer presses from marquee selection. -->
   {#snippet press()}
     {#if explorer}
-      <button type="button" class="cover-press" tabindex={focused ? 0 : -1} {onfocus} data-node-key={node.key}
-        aria-pressed={selected} aria-label="{explorer.name}, {explorer.count} images{status ? `, ${status}` : ''}{unsaved || explorer.unsaved ? ', unsaved' : ''}"
-        {@attach explorer.expanded ? tooltip : null} onclick={onactivate} ondblclick={doubleClick} oncontextmenu={onmenu} onkeydown={onkey}></button>
+      <div role="gridcell" class="cover-press" tabindex={focused ? 0 : -1} {onfocus} data-node-key={node.key}
+        aria-selected={selected} aria-label="{explorer.name}, {explorer.count} images{status ? `, ${status}` : ''}{unsaved || explorer.unsaved ? ', unsaved' : ''}"
+        {@attach explorer.expanded ? tooltip : null} onclick={onactivate} ondblclick={doubleClick} oncontextmenu={onmenu} onkeydown={onkey}></div>
     {/if}
   {/snippet}
   <TileVisual {tile} {selected} {revision} {orientation} {explorer} {card} press={explorer ? press : undefined} {focused} {onfocus} {onstacktoggle} {oncaret} {onkey} {onretry} />
@@ -101,7 +102,7 @@
 
 <style>
   .tile { position: absolute; box-sizing: border-box; }
-  .cover-press { position: absolute; inset: 0; width: 100%; height: 100%; padding: 0; border: 0; border-radius: inherit; background: none; cursor: pointer; }
+  .cover-press { position: absolute; inset: 0; width: 100%; height: 100%; padding: 0; border: 0; border-radius: inherit; background: none; cursor: pointer; user-select: none; -webkit-user-select: none; }
   .cover-press:focus-visible { outline: 2px solid var(--focus-stroke-outer); outline-offset: 2px; }
   /* The action chip sits in the image's top-right corner; status messages hang below it. */
   .actions { position: absolute; top: 9px; right: 9px; display: flex; flex-direction: column; align-items: flex-end; visibility: hidden; }
