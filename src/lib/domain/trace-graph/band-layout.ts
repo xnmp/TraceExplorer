@@ -1,19 +1,53 @@
 /** Visible-first, bounded band optimisation. Geometry and history are immutable inputs. */
-import { downwardBandBound, layoutLayered, type GraphLayout, type LayoutItem, type LayoutRequest, type PlacedNode } from "./layout";
+import { downwardBandBound, layoutLayered, type GraphLayout, type LayoutItem, type LayoutRequest, type Ordering, type Passing, type PlacedNode } from "./layout";
 import { spacingFor, STACK_STEM_ROOM } from "./metrics";
 import { bandWidthBudget, columnsFor, partitions, buildShelves, validate } from "./band-shelves";
 import { attachSingleBand, attachPackedBand, localBandPlacement, bandExtent, withBandBounds, singleBandSkeleton } from "./band-geometry";
 import { measure, validateLayout, cost, routePlan, sharedLaneLength, type Measures, type Weights } from "./layout-quality";
-import { incrementalBudget, incrementalTree } from "./band-incremental";
-import { forEachPathNumber, isPlainPathData, mapPathNumbers, pathNumbers } from "./path-data";
+import { incrementalBudget, incrementalTree, inReach, usableRetainedRoute } from "./band-incremental";
+import { forEachPathNumber, mapPathNumbers, pathNumbers } from "./path-data";
 import { extentCost, optimisticCost, rectangleCost } from "./layout-cost-bound";
+import { bandHistorySignature, historyFit, resizedLayout, resizedTiles } from "./band-history";
 
 export { bandWidthBudget };
 
-/** Geometry-compatible history expires on membership, relationships, width, pin or metrics changes. */
-export function bandHistorySignature(request: LayoutRequest): string {
-  return JSON.stringify([request.maxWidth, request.tileWidth, request.pinned,
-    [...(request.band?.items ?? request.items)].sort((a, b) => a.key.localeCompare(b.key)).map(n => [n.key, n.width, n.height, n.order, [...new Set(n.parents)].sort()])]);
+export { bandHistorySignature };
+
+/** Band policies that `layout-eval` and the registered engines compare (A/B); production uses {@link BAND_DEFAULTS}. */
+export interface BandOptions {
+  /** Keep committed history when the component grew (`band-history.ts`); otherwise it expires on any membership change. */
+  readonly growthHistory: boolean;
+  /** When the component grew, anchors yield (`anchor-yield`) if holding them makes the band this many times taller than the best unanchored layout; Infinity: never. */
+  readonly anchorHeightRatio: number;
+  /** How the downward layout orders each generation (`layout.ts`, `Ordering`). */
+  readonly ordering: Ordering;
+  /** How the downward layout's routes pass the rows between their ends (`layout.ts`, `Passing`). */
+  readonly passing: Passing;
+}
+export const BAND_DEFAULTS: BandOptions = Object.freeze({ growthHistory: true, anchorHeightRatio: 1.5, ordering: "barycenter" as const, passing: "straight" as const });
+/** The engine as merged in plan phase 3 (#79), for A/B comparison. */
+export const BAND_PHASE3: BandOptions = Object.freeze({ growthHistory: false, anchorHeightRatio: Infinity, ordering: "barycenter" as const, passing: "nearest-end" as const });
+
+/**
+ * The committed history this request may build on, adjusted to the request's tile sizes;
+ * whether it needed adjusting (`resized`); and whether the component itself changed since
+ * (`grew`: images arrived or left), as opposed to a click on the same component.
+ */
+function fittedHistory(input: LayoutRequest, options: BandOptions): { readonly history?: import("./layout").BandHistory; readonly resized: boolean; readonly grew: boolean } {
+  const none = { resized: false, grew: false };
+  const history = input.history;
+  if (!history || typeof history.signature !== "string" || !input.items.some(n => n.key === input.band!.key) || !usableHistory(history)) return none;
+  const fit = historyFit(history.signature, input);
+  if (!fit || (fit.kind === "grown" && !options.growthHistory)) return none;
+  if (fit.kind === "same") return { history, ...none };
+  if (!fit.heights.size) return { history, resized: false, grew: true };
+  // With an attachment, the placed geometry is attached afresh from `layout` (`normalizedHistory`)
+  // and never read, so only `layout` is resized. Geometry that cannot be resized in place keeps
+  // only its tiles: they hold the band where it was while it is laid out again.
+  const layout = resizedLayout(history.layout, fit.heights);
+  const placed = history.attachment ? history.placed : layout && resizedLayout(history.placed, fit.heights);
+  if (layout && placed) return { history: { ...history, layout, placed }, resized: true, grew: true };
+  return { history: { ...history, layout: resizedTiles(history.layout, fit.heights), placed: resizedTiles(history.placed, fit.heights) }, resized: true, grew: true };
 }
 
 interface Candidate { readonly name: string; readonly layout: GraphLayout; readonly partition?: readonly number[] }
@@ -214,14 +248,15 @@ function rigidConnectorCost(layout: GraphLayout, key: string, tileWidth: number)
 
 /** History is plain committed geometry; anything non-finite or unparsable is treated as no history. */
 function usableHistory(history: import("./layout").BandHistory): boolean {
-  const finite = (...values: readonly (number | undefined)[]) => values.every(v => v === undefined || Number.isFinite(v));
-  const endpoint = (e: unknown) => !!e && typeof e === "object" && typeof (e as { kind?: unknown }).kind === "string";
+  const reachable = (...values: readonly (number | undefined)[]) => values.every(v => v === undefined || inReach(v));
+  const endpoint = (e: unknown) => !!e && typeof e === "object" && ((e as { kind?: unknown }).kind === "node" || (e as { kind?: unknown }).kind === "junction") && typeof (e as { id?: unknown }).id === "string";
   const geometry = (layout: GraphLayout | undefined) => !!layout && layout.nodes instanceof Map && Array.isArray(layout.routes) && layout.junctions instanceof Map
-    && [...layout.nodes.values()].every(n => !!n && finite(n.x, n.y, n.width, n.height))
-    && layout.routes.every(r => !!r && typeof r.path === "string" && isPlainPathData(r.path) && endpoint(r.from) && endpoint(r.to))
-    && [...layout.junctions.values()].every(j => !!j && finite(j.x, j.y));
+    && [layout.width, layout.height].every(inReach)
+    && [...layout.nodes.values()].every(n => !!n && [n.x, n.y, n.width, n.height].every(inReach) && n.width > 0 && n.height > 0)
+    && layout.routes.every(r => !!r && usableRetainedRoute(r) && endpoint(r.from) && endpoint(r.to) && Array.isArray(r.consumers) && r.consumers.every((c: { parent?: unknown; child?: unknown } | null) => !!c && typeof c.parent === "string" && typeof c.child === "string"))
+    && [...layout.junctions.values()].every(j => !!j && [j.x, j.y].every(inReach));
   const a = history.attachment;
-  return geometry(history.layout) && geometry(history.placed) && (!a || finite(a.bandTop, a.placement.x, a.placement.coverX,
+  return geometry(history.layout) && geometry(history.placed) && (!a || reachable(a.bandTop, a.placement.x, a.placement.coverX,
     a.placement.coverHeight, a.placement.width, a.placement.left, a.placement.right, a.placement.track, a.placement.stemRoom,
     a.placement.bridge?.top, a.placement.bridge?.gutter, ...(a.placement.coverColumns ?? []), ...(a.placement.bypassColumns ?? [])));
 }
@@ -245,13 +280,14 @@ export function fallbackReason(layout: GraphLayout): string | null {
     : "gate-infeasible: no candidate passed the hard gates; the downward layout is shown as is";
 }
 
-export function layoutBand(input: LayoutRequest): GraphLayout {
+export function layoutBand(input: LayoutRequest, options: BandOptions = BAND_DEFAULTS): GraphLayout {
   if (!input || !Array.isArray(input.items) || !input.band) throw new RangeError("malformed band request");
   validate(input.items);
   if (input.tileWidth !== undefined && (!Number.isFinite(input.tileWidth) || input.tileWidth <= 0 || input.tileWidth > 100_000)) throw new RangeError("invalid tile metrics");
   const width = bandWidthBudget(input.maxWidth, input.tileWidth);
   const keys = new Set(input.items.map(n => n.key));
-  let request: LayoutRequest = { ...input, history: input.history && input.history.signature === bandHistorySignature(input) && input.items.some(n => n.key === input.band!.key) && usableHistory(input.history) ? input.history : undefined, maxWidth: Number.isFinite(input.maxWidth) && input.maxWidth > 0 ? Math.min(100_000, input.maxWidth) : width,
+  const fitted = fittedHistory(input, options);
+  let request: LayoutRequest = { ...input, history: fitted.history, maxWidth: Number.isFinite(input.maxWidth) && input.maxWidth > 0 ? Math.min(100_000, input.maxWidth) : width,
     items: input.items.map(n => ({ ...n, parents: [...new Set(n.parents)].filter(p => keys.has(p)) })).sort((a, b) => a.order - b.order || a.key.localeCompare(b.key)) };
   const key = request.band!.key;
   if (request.pinned) {
@@ -271,13 +307,17 @@ export function layoutBand(input: LayoutRequest): GraphLayout {
   const previous = compatible?.attachment ? normalizedHistory(compatible, request) : compatible?.placed;
   const anchors = previous ? anchorKeys(request, previous) : [];
   // Unchanged geometry is kept as is, unless it shares lanes between sources (an
-  // earlier fallback): then the search below looks for a layout that does not.
+  // earlier fallback): then the search below looks for a layout that does not. When the
+  // visible tiles are the same but some gained or lost their expansion hint (an output arrived
+  // or left out of sight), the committed geometry was resized in place; it is kept the same way
+  // if it passes the hard gates, since nothing more became visible to make room for.
   if (previous && request.items.length === previous.nodes.size && request.items.every(n => {
     const p = previous.nodes.get(n.key);
     return p && p.width === n.width && p.height === n.height;
-  }) && !(sharedLaneLength(previous) > 0)) {
-    const retained = input.history!.layout;
-    if (retained) return { ...retained, preferredX: bandExtent(previous, key).left, anchorY: anchors.length && compatible?.attachment ? compatible.attachment.bandTop - compatible.attachment.placement.coverHeight : undefined, anchorX: anchors.length ? bandExtent(previous, key).left : undefined, decision: { candidate: "unchanged-visible", stability: true, partition: input.history?.layout.decision?.partition } };
+  }) && !(sharedLaneLength(previous) > 0)
+    && (!fitted.resized || Number.isFinite(cost(validateLayout(previous, key, request.maxWidth, request.items), request.tileWidth ?? 92)))) {
+    const retained = request.history!.layout;
+    if (retained) return { ...retained, preferredX: bandExtent(previous, key).left, anchorY: anchors.length && compatible?.attachment ? compatible.attachment.bandTop - compatible.attachment.placement.coverHeight : undefined, anchorX: anchors.length ? bandExtent(previous, key).left : undefined, decision: { candidate: fitted.resized ? "resized-visible" : "unchanged-visible", stability: true, partition: request.history?.layout.decision?.partition } };
   }
   const tileWidth = request.tileWidth ?? 92;
   const prepare = (c: Candidate): Prepared => {
@@ -320,7 +360,7 @@ export function layoutBand(input: LayoutRequest): GraphLayout {
   const visibleDown = (): Candidate => down ??= (() => {
     const half = (request.items.find(n => n.key === request.pinned?.key)?.width ?? 0) / 2;
     const pin = request.pinned ? { ...request.pinned, x: Math.max(half, Math.min(width - half, request.pinned.x)) } : undefined;
-    const layout = layoutLayered({ ...request, pinned: pin, history: undefined, band: undefined, maxWidth: width, orientation: "down" });
+    const layout = layoutLayered({ ...request, pinned: pin, history: undefined, band: undefined, maxWidth: width, orientation: "down" }, { ordering: options.ordering, passing: options.passing });
     return { name: "visible-down", layout: withBandBounds(request.items.length === 2 && request.items.some(n => n.key !== key && n.parents.length === 1 && n.parents[0] === key) ? { ...layout, preferredX: 0 } : layout, key) };
   })();
   const history: Candidate[] = [];
@@ -329,21 +369,26 @@ export function layoutBand(input: LayoutRequest): GraphLayout {
     const budget = incrementalBudget();
     const incremental = incrementalTree(request, previous, budget);
     if (incremental) history.push({ name: "incremental-tree", layout: incremental });
-    // Re-embed other retained tiles only when the fixed warm embedding exceeds
-    // the compact height budget (shelves and the downward layout); otherwise its
-    // zero displacement is valuable. Build the downward layout only if its height decides.
+    // With nothing new to place, the retained tiles as they are (`retained-visible`).
+    const retained = projected(previous, request);
+    // Re-embed other retained tiles around the anchors when there is no fixed warm embedding
+    // (the incremental one failed) or it exceeds the compact height budget (shelves and the
+    // downward layout); otherwise its zero displacement is valuable. With nothing new to place,
+    // the warm embedding is the retained geometry itself, if it passes the hard gates as the
+    // unchanged geometry must above. Build the downward layout only if its height decides.
     const fixed = new Set([...anchors, key]);
     if (anchors.length && fixed.size < previous.nodes.size) {
+      const warm = incremental ?? (retained && !(sharedLaneLength(retained) > 0)
+        && (!fitted.resized || Number.isFinite(cost(validateLayout(retained, key, request.maxWidth, request.items), tileWidth))) ? retained : null);
       const compactShelf = Math.min(...shelves.map(c => bandExtent(c.layout, key).height));
-      const height = incremental ? bandExtent(incremental, key).height : Infinity;
-      const repack = !incremental || height > compactShelf * 1.1
+      const height = warm ? bandExtent(warm, key).height : Infinity;
+      const repack = !warm || height > compactShelf * 1.1
         || (wantsDown && height > rowsHeight * 1.1 && height > bandExtent(visibleDown().layout, key).height * 1.1);
       const subset = repack ? projected(previous, { ...request, items: request.items.filter(n => fixed.has(n.key)) }) : null;
       const compact = subset && incrementalTree(request, { ...subset, bandBounds: undefined, anchorX: undefined, anchorY: undefined }, budget);
       if (compact) history.push({ name: "anchored-repack", layout: compact });
     }
-    const retained = projected(previous, request);
-    if (retained) history.push({ name: "retained-visible", layout: retained, partition: input.history?.layout.decision?.partition });
+    if (retained) history.push({ name: "retained-visible", layout: retained, partition: request.history?.layout.decision?.partition });
   }
 
   const placements = new Map<GraphLayout, GraphLayout>();
@@ -516,6 +561,20 @@ export function layoutBand(input: LayoutRequest): GraphLayout {
   if (anchors.length && winner.anchors && !lanesShared && winner.metrics.crossings > ANCHOR_CROSSING_SLACK) {
     const free = bestUnanchored();
     if (free && winner.metrics.crossings > free.metrics.crossings + Math.max(ANCHOR_CROSSING_SLACK, ANCHOR_CROSSING_RATIO * free.metrics.crossings)) { winner = free; yielded = true; }
+  }
+  // Height cap: when the component grew, holding the anchors still must not grow the band
+  // without bound (a chain that keeps growing below a held column instead of wrapping). An
+  // anchored winner taller than `anchorHeightRatio` times the best unanchored candidate yields.
+  // A click on an unchanged component never yields to it: there the user is reading what they
+  // clicked, and the band only shows more of what was already there. The unanchored heights'
+  // lower bound (exact for built candidates, the display-row bound for the downward layout)
+  // decides first whether that candidate needs scoring at all.
+  if (fitted.grew && anchors.length && winner.anchors && !yielded && !lanesShared && Number.isFinite(options.anchorHeightRatio)) {
+    const floor = Math.min(...prepared.filter(c => !c.holds && Number.isFinite(c.floor)).map(c => c.height), wantsDown ? rowsHeight : Infinity);
+    if (winner.metrics.height > options.anchorHeightRatio * floor + .01) {
+      const free = bestUnanchored();
+      if (free && winner.metrics.height > options.anchorHeightRatio * free.metrics.height + .01) { winner = free; yielded = true; }
+    }
   }
   /**
    * The candidate the engine would show if no tile were anchored: the same objective and

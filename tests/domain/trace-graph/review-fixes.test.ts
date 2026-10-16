@@ -47,7 +47,11 @@ describe("lane-infeasible requests without history", () => {
   // Every candidate for this small DAG shares a lane between two sources: the engine must show
   // the best of them with its lanes priced, flagged lane-infeasible, not the raw downward
   // layout flagged as malformed input.
-  const nodes = [node("root"), node("n1", ["root"], 1), node("n2", ["n1"], 2), node("n3", ["n1"], 3), node("n4", ["n2", "n3"], 4), node("n6", ["root", "n4"], 6), node("n9", ["root", "n2"], 9)];
+  // (Found by a seeded search; the earlier 7-node fixture gained a lane-free layout once routes
+  // passed rows along their straight lines, and the 10-node one after it once a cycle of turn
+  // orders took a dogleg.)
+  const nodes = [node("root"), node("n1", ["root"], 1), node("n2", ["n1"], 2), node("n3", ["n1", "root", "n2"], 3), node("n4", ["n1"], 4),
+    node("n5", ["n3", "n4", "root"], 5)];
   const request = requestFor({ id: "lane-infeasible", nodes, focuses: [null] }, null, 900, 96);
 
   it("shows the best priced candidate, flagged lane-infeasible", () => {

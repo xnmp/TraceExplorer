@@ -2,10 +2,15 @@ import { describe, expect, it } from "vitest";
 import { layoutGraph, type GraphLayout, type LayoutItem, type LayoutRequest, type PlacedRoute } from "$lib/domain/trace-graph/layout";
 import { incrementalBudget, incrementalTree, INCREMENTAL_LIMIT } from "$lib/domain/trace-graph/band-incremental";
 import { attachSingleBand, bandExtent } from "$lib/domain/trace-graph/band-geometry";
-import { measure, segments } from "$lib/domain/trace-graph/layout-quality";
-import { ARROW } from "$lib/domain/trace-graph/metrics";
-import { random } from "./fixtures";
+import { measure, segments, sharedLaneLength } from "$lib/domain/trace-graph/layout-quality";
+import { ARROW, spacingFor } from "$lib/domain/trace-graph/metrics";
+import { distanceToTile, TILE_GRAZE } from "$lib/domain/trace-graph/route-contacts";
+import { node, random } from "./fixtures";
 import secondChanceScene from "./second-chance-scene.json";
+import { engines, type FolderLayout } from "$lib/domain/trace-graph/folder-layout";
+import { projectDag, projectReferenceBadges } from "$lib/domain/trace-graph/projection";
+import { expandNode, expandedKeys, expansionAnchor, NO_EXPANSION, openStack, type Expansion } from "$lib/domain/trace-graph/expansion";
+import { tileMetrics, tileSize } from "$lib/domain/trace-graph/metrics";
 
 const item = (key: string, parents: string[] = [], order = 0): LayoutItem => ({ key, parents, order, width: 92, height: 97 });
 const request = (items: readonly LayoutItem[], width = 640): LayoutRequest =>
@@ -142,6 +147,63 @@ describe("incremental tree: compactness", () => {
   });
 });
 
+describe("incremental tree: chains", () => {
+  // 64 px images: the column gap (19 px) leaves the arrow's lane 1.5 px from a's edge, where a
+  // line that turned would run along a's border; a straight one only leaves a's port.
+  it("continues a chain in the next column beside its parent along a straight arrow", () => {
+    const wide = (key: string, parents: string[] = [], order = 0): LayoutItem => ({ ...item(key, parents, order), width: 108 });
+    const at = (items: readonly LayoutItem[]): LayoutRequest => ({ ...request(items, 454), tileWidth: 108 });
+    const items = [wide("root"), wide("a", ["root"], 1)], first = at(items);
+    const previous = attachSingleBand(layoutGraph(first), first), next = at([...items, wide("b", ["a"], 2), wide("c", ["b"], 3)]);
+    const result = incrementalTree(next, previous)!;
+    expect(result).not.toBeNull();
+    const a = result.nodes.get("a")!, b = result.nodes.get("b")!;
+    expect(b.y).toBe(a.y);
+    expect(b.x).toBe(a.x + a.width + spacingFor(108).column);
+    // Out of a's right port straight into b's left: one horizontal line.
+    const route = result.routes.find(r => r.from.kind === "node" && r.from.id === "a" && r.to.kind === "node" && r.to.id === "b")!;
+    expect(new Set(segments(route.path).flatMap(([p, q]) => [p.y, q.y])).size).toBe(1);
+    expect(verdict(result, next)).toEqual({ sharedLanePx: 0, gates: clean });
+  });
+});
+
+describe("incremental tree: chains beside a taller parent", () => {
+  // Default tiles: the column gap (16 px) is just the arrowhead's approach. A new edit is shorter than
+  // its parent (which now shows the expand hint), so its port is 8 px higher and the line between
+  // them must jog; in the column gap alone, the jog would run up the parent's side.
+  it("continues the chain in the next column, the jog clear of the parent's side", () => {
+    const short = (key: string, parents: string[], order: number): LayoutItem => ({ ...item(key, parents, order), height: 81 });
+    const items = [item("root"), item("a", ["root"], 1)], first = request(items, 454);
+    const previous = attachSingleBand(layoutGraph(first), first), next = request([...items, short("b", ["a"], 2)], 454);
+    const result = incrementalTree(next, previous)!;
+    expect(result).not.toBeNull();
+    const a = result.nodes.get("a")!, b = result.nodes.get("b")!;
+    expect(b.y).toBe(a.y);
+    expect(b.x - (a.x + a.width)).toBeLessThanOrEqual(spacingFor(92).approach + 4);
+    const route = result.routes.find(r => r.from.kind === "node" && r.from.id === "a" && r.to.kind === "node" && r.to.id === "b")!;
+    // It leaves a's port heading away from a; every later run keeps off a's side.
+    const [leaving, ...rest] = segments(route.path);
+    expect(leaving[1].x).toBeGreaterThan(leaving[0].x);
+    for (const s of rest) expect(distanceToTile(s, a)).toBeGreaterThanOrEqual(TILE_GRAZE);
+    expect(verdict(result, next)).toEqual({ sharedLanePx: 0, gates: clean });
+  });
+});
+
+describe("incremental tree: tiles kept off lines", () => {
+  it("does not place a new tile against another tile's retained connector", () => {
+    const items = [item("root"), item("a", ["root"], 1), item("z", ["root"], 2)];
+    const base = committed(items);
+    // A retained connector of z down x = 116, where the slot right below a would put c's border.
+    const held: PlacedRoute = { id: "held", from: { kind: "node", id: "z" }, to: { kind: "node", id: "z" }, consumers: [{ parent: "root", child: "z" }], terminal: false, path: "M116 240 L116 400" };
+    const previous = { ...base, routes: [...base.routes, held] };
+    const next = request([...items, item("c", ["a"], 3)]);
+    const result = incrementalTree(next, previous);
+    expect(result).not.toBeNull();
+    const c = result!.nodes.get("c")!;
+    expect(Math.min(...segments(held.path).map(s => distanceToTile(s, c)))).toBeGreaterThanOrEqual(TILE_GRAZE);
+  });
+});
+
 describe("incremental tree: robustness", () => {
   it("is deterministic", () => {
     const previous = committed(base.slice(0, 4)), next = request([...base.slice(0, 4), item("c", ["a", "b", "d"], 5), item("f", ["c"], 6)]);
@@ -168,6 +230,18 @@ describe("incremental tree: robustness", () => {
     }
   });
 
+  it("withholds promptly when geometry is beyond reach", () => {
+    const previous = committed(base.slice(0, 3)), next = request([...base.slice(0, 3), item("c", ["a", "b"], 5)]);
+    const tile = (field: "y" | "height", value: number) => ({ ...previous, nodes: new Map([...previous.nodes].map(([k, n]) => [k, k === "a" ? { ...n, [field]: value } : n])) });
+    const cases: [LayoutRequest, GraphLayout][] = [
+      [next, tile("y", 1e300)],
+      [next, tile("height", Infinity)],
+      [request([...base.slice(0, 3), { ...item("c", ["a", "b"], 5), height: 1e300 }]), previous],
+      [request([...base.slice(0, 3), item("c", ["a", "b"], 5)], 1e300), previous],
+    ];
+    for (const [r, p] of cases) expect(incrementalTree(r, p)).toBeNull();
+  });
+
   it("keeps every result lane-free across a long reveal of a dense DAG", () => {
     const next = random(7);
     const items = [item("root"), ...Array.from({ length: 24 }, (_, i) => {
@@ -189,13 +263,15 @@ describe("incremental tree: robustness", () => {
 });
 
 describe("incremental tree: second chance", () => {
-  // A bench reveal (random-dag-40-7502, 900 px, 64 px images, step 3) whose crowded scene leaves
-  // the new tile no placement on the normal grain and grid; only the finer second chance finds one.
-  const scene = secondChanceScene as unknown as { request: LayoutRequest; previous: GraphLayout & { nodes: unknown; junctions: unknown } };
+  // A bench reveal (random-tree-12-7121, 454 px, 64 px images, step 1): in the narrow pane, n5's
+  // second new child has no lane-free route on the normal lanes and grid; only the second chance's
+  // grid, with columns beside every foreign lane, finds one.
+  const scene = secondChanceScene as unknown as { request: LayoutRequest; previous: GraphLayout & { nodes: unknown; junctions: unknown; readingOrder: unknown } };
   const request = scene.request;
-  const previous = { ...scene.previous, nodes: new Map(scene.previous.nodes as [string, never][]), junctions: new Map(scene.previous.junctions as [string, never][]) } as GraphLayout;
+  const previous = { ...scene.previous, nodes: new Map(scene.previous.nodes as [string, never][]), junctions: new Map(scene.previous.junctions as [string, never][]), readingOrder: new Map(scene.previous.readingOrder as [string, number][]) } as GraphLayout;
 
   it("places a tile the normal search cannot, lane-free and within the hard gates", () => {
+    expect(incrementalTree(request, previous, { ...incrementalBudget(), second: 0 })).toBeNull();
     const result = incrementalTree(request, previous);
     expect(result).not.toBeNull();
     const m = measure(attachSingleBand(result!, request), request.band!.key, request.maxWidth, request.items);
@@ -212,16 +288,49 @@ describe("incremental tree: second chance", () => {
   it("gives way to the full layout once its request's work budget is spent", () => {
     expect(incrementalTree(request, previous, incrementalBudget())).not.toBeNull();
     expect(incrementalTree(request, previous, { fallback: 0, second: 0, probes: 0 })).toBeNull();
-    // The plain fallback alone places the tile for about 7,500 units of grid work; 3,000 is not enough.
-    expect(incrementalTree(request, previous, { fallback: 20_000, second: 0, probes: 0 })).not.toBeNull();
-    expect(incrementalTree(request, previous, { fallback: 3000, second: 0, probes: 0 })).toBeNull();
+    // The second chance alone places the tile for about 1,600 units of grid work; 1,000 is not enough.
+    expect(incrementalTree(request, previous, { fallback: 0, second: 2400, probes: 0 })).not.toBeNull();
+    expect(incrementalTree(request, previous, { fallback: 0, second: 1000, probes: 0 })).toBeNull();
   });
 
   it("shares one budget across every embedding tried for a request", () => {
     // Enough for one embedding, not two: the second call sees what the first left.
-    const budget = { fallback: 10_000, second: 0, probes: 0 };
+    const budget = { fallback: 0, second: 2400, probes: 0 };
     expect(incrementalTree(request, previous, budget)).not.toBeNull();
     expect(incrementalTree(request, previous, budget)).toBeNull();
-    expect(incrementalTree(request, previous, { fallback: 10_000, second: 0, probes: 0 })).not.toBeNull();
+    expect(incrementalTree(request, previous, { fallback: 0, second: 2400, probes: 0 })).not.toBeNull();
+  });
+});
+
+describe("incremental tree: opening a second branch", () => {
+  // The user's recording (e2e/explicit-expansion.spec.ts): a stack with Cerulean (→ Pikachu's Ball)
+  // and Saffron (→ Blastoise, Ash → Charizard). With Saffron's branch open, Saffron's children sit
+  // under Cerulean's column, so a route from Cerulean to Pikachu's Ball passes Saffron's lines where
+  // they leave its row. Routing round them the long way once made the fresh layout cheaper, and
+  // opening Cerulean moved Saffron's branch.
+  const graph = projectReferenceBadges(projectDag([node("stack"), node("Cerulean", ["stack"], 1), node("Saffron", ["stack"], 2),
+    node("Pikachu's Ball", ["Cerulean"], 3), node("Blastoise", ["Saffron"], 4), node("Ash", ["Saffron"], 5), node("Charizard", ["Ash"], 6)]));
+  const members = graph.dag.order, scope = { graph, members, cover: "stack" };
+  const laidOut = (expansion: Expansion, imagePx: number, width: number, previous: FolderLayout | null) => {
+    const tile = tileMetrics(imagePx), columns = Math.max(1, Math.floor((width + 16) / (tile.width + 16)));
+    return engines.default({
+      items: [{ id: "stack", kind: "stack" }], width: columns * tile.width + (columns - 1) * 16, tile, previous,
+      grid: { cellWidth: tile.width, cellHeight: tileSize({ foreign: false, hint: true }, tile).height, gap: 16 },
+      open: new Map([["stack", { id: "stack", graph, members, anchor: expansionAnchor(expansion, scope), expanded: expandedKeys(expansion, scope) }]]),
+    });
+  };
+  const tiles = (layout: FolderLayout) => new Map([...layout.graphs.get("stack")!.attached.nodes].map(([key, n]) => [key, [n.x, n.y, n.width, n.height]]));
+
+  it.each([48, 64, 96, 128])("leaves the open branch where it was (%i px images)", imagePx => {
+    for (const width of [500, 900]) {
+      const opened = openStack(NO_EXPANSION, "stack"), saffron = expandNode(opened, scope, "Saffron"), both = expandNode(saffron, scope, "Cerulean");
+      const before = laidOut(saffron, imagePx, width, laidOut(opened, imagePx, width, null));
+      const after = laidOut(both, imagePx, width, before);
+      const was = tiles(before), now = tiles(after);
+      expect(now.has("Pikachu's Ball"), `${width} px`).toBe(true);
+      for (const key of ["Cerulean", "Saffron", "Blastoise", "Ash"]) expect(now.get(key), `${key} at ${width} px`).toEqual(was.get(key));
+      const g = after.graphs.get("stack")!;
+      expect(measure(g.attached, "stack", after.size.width, g.plan.request.items).sharedLanePx, `${width} px`).toBe(0);
+    }
   });
 });

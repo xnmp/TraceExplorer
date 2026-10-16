@@ -58,13 +58,29 @@ describe("production band contracts", () => {
       expect(result.decision?.stability).toBe(true);
     }
   });
-  it("expires incompatible history on membership, width, metric and relationship changes", () => {
+  it("expires incompatible history on width, metric and relationship changes", () => {
     const request = requestFor(screenshot, "Saffron", 454, 96), previous = history(request);
     const stale = { ...previous, signature: "incompatible", attachment: { bandTop: 500, placement: { x: 0, coverX: 10, coverHeight: 30, width: 20, left: 0, right: 20, bridge: { top: -500, gutter: -100 }, stemRoom: 1 } } };
     expect(layoutGraph({ ...request, history: stale })).toEqual(layoutGraph(request));
-    for (const next of [{ ...request, maxWidth: 900 }, { ...request, tileWidth: 172 }, { ...request, band: { ...request.band!, items: request.items } }]) {
+    const rewired = (items: readonly LayoutRequest["items"][number][]) => items.map(n => n.key === "Ash" ? { ...n, parents: ["Cerulean"] } : n);
+    for (const next of [{ ...request, maxWidth: 900 }, { ...request, tileWidth: 172 }, { ...request, band: { ...request.band!, items: rewired(request.band!.items) } }]) {
       expect(layoutGraph({ ...next, history: previous })).toEqual(layoutGraph(next));
     }
+  });
+  it("keeps history while the component grows: the selected input and every visible tile stay put", () => {
+    // Each output arrives below its selected input (docs/trace-view-layout.md, "Growth").
+    const nodes = screenshot.nodes;
+    let yields = 0;
+    for (const width of [360, 454, 900]) for (let k = 3; k < nodes.length; k++) {
+      const input = nodes[k].parents[0], before = { ...screenshot, nodes: nodes.slice(0, k) }, after = { ...screenshot, nodes: nodes.slice(0, k + 1) };
+      const first = requestFor(before, input, width, 96), previous = history(first);
+      const next = { ...requestFor(after, input, width, 96), anchorKey: input, history: previous };
+      const result = safe(next), decision = layoutGraph(next).decision;
+      // Anchors yield only to the height or crossing caps, and say so.
+      if (decision?.fallback !== "anchor-yield") expect(measure(result, "root", width, next.items, previous.placed, input).anchorDisplacement).toBe(0);
+      else yields++;
+    }
+    expect(yields).toBeLessThanOrEqual(1);
   });
   it("is deterministic under input permutation and does not mutate request or prior geometry", () => {
     const request = requestFor(screenshot, null, 640, 96), previous = history(request);

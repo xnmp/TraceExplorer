@@ -1,4 +1,4 @@
-import { TRACK_HEIGHT, type Spacing } from "$lib/domain/trace-graph/metrics";
+import { PORT_BERTH, TRACK_HEIGHT, type Spacing } from "$lib/domain/trace-graph/metrics";
 import type { NodeKey, NodeScope, TraceNode } from "$lib/domain/trace-graph/model";
 import type { GraphLayout } from "$lib/domain/trace-graph/layout";
 import type { JunctionPlan } from "$lib/domain/trace-graph/junctions";
@@ -225,13 +225,18 @@ export function arrowStemProblems(layout: GraphLayout, arrow: number): string[] 
   return problems;
 }
 
-export interface Channel { readonly between: string; readonly gap: number; readonly betweenBands: boolean; readonly levels: number; readonly routes: number }
+export interface Channel {
+  readonly between: string; readonly gap: number; readonly betweenBands: boolean; readonly levels: number; readonly routes: number;
+  /** Whether a route of one source runs across the column of another source's port on the row above (its tiles' outputs leave at their centres). */
+  readonly passesPort: boolean;
+}
 
 /**
  * Every channel between consecutive display rows, along the flow: its height,
- * whether it separates generations, how many junction levels it holds and how
+ * whether it separates generations, how many junction levels it holds, how
  * many drawn routes run through it (each crosses a channel at most once, and
- * draws each stretch only once, so this bounds the bends it holds).
+ * draws each stretch only once, so this bounds the bends it holds), and
+ * whether one of them passes another source's port.
  */
 export function channels(layout: GraphLayout): Channel[] {
   const sampled = layout.routes.map((route) => samplePath(route.path, 12));
@@ -239,8 +244,17 @@ export function channels(layout: GraphLayout): Channel[] {
     const above = layout.rows[index];
     const inside = (value: number) => value > above.bottom + 0.5 && value < row.top - 0.5;
     const levels = new Set([...layout.junctions.values()].map((junction) => along(layout, junction)).filter(inside).map((value) => Math.round(value)));
-    const routes = sampled.filter((points) => points.some((point) => inside(along(layout, point)))).length;
-    return { between: `rows ${above.index}-${row.index}`, gap: row.top - above.bottom, betweenBands: row.band !== above.band, levels: levels.size, routes };
+    const within = sampled.map((points) => points.filter((point) => inside(along(layout, point))));
+    const routes = within.filter((points) => points.length).length;
+    const ports = above.keys.filter((key) => layout.routes.some((route) => route.from.kind === "node" && route.from.id === key))
+      .map((key) => { const tile = layout.nodes.get(key)!; return { key, at: layout.orientation === "right" ? tile.y + tile.height / 2 : tile.x + tile.width / 2 }; });
+    const passesPort = within.some((points, i) => {
+      if (!points.length) return false;
+      const from = layout.routes[i].from, spread = points.map((point) => across(layout, point));
+      const lo = Math.min(...spread), hi = Math.max(...spread);
+      return ports.some((port) => !(from.kind === "node" && from.id === port.key) && port.at > lo + 0.5 && port.at < hi - 0.5);
+    });
+    return { between: `rows ${above.index}-${row.index}`, gap: row.top - above.bottom, betweenBands: row.band !== above.band, levels: levels.size, routes, passesPort };
   });
 }
 
@@ -250,16 +264,19 @@ export function channels(layout: GraphLayout): Channel[] {
  * is its default height (`bandChannel` between generations, `rowChannel`
  * between wrapped rows) plus `junctionLevel` per junction level; it grows past
  * that only when its bends need more tracks than a zone holds, by at most one
- * track per route crossing it in each zone. Without junctions, as many routes
- * as its default bend room has tracks for keep it at exactly its default.
+ * track per route crossing it in each zone, plus a port berth (`PORT_BERTH`)
+ * where a route passes another source's port on the row above. Without
+ * junctions, as many routes as its default bend room has tracks for (after
+ * that berth) keep it at exactly its default.
  */
 export function channelProblems(layout: GraphLayout, spacing: Spacing): string[] {
-  return channels(layout).flatMap(({ between, gap, betweenBands, levels, routes }) => {
+  return channels(layout).flatMap(({ between, gap, betweenBands, levels, routes, passesPort }) => {
     const base = betweenBands ? spacing.bandChannel : spacing.rowChannel;
+    const berth = passesPort ? PORT_BERTH : 0;
     const problems: string[] = [];
     if (gap < spacing.approach + TRACK_HEIGHT) problems.push(`${between}: ${gap} px leaves no room to bend`);
-    if (gap > base + levels * spacing.junctionLevel + (levels + 1) * routes * TRACK_HEIGHT) problems.push(`${between}: ${gap} px for ${levels} levels and ${routes} routes`);
-    if (!levels && routes * TRACK_HEIGHT <= base - spacing.approach && Math.abs(gap - base) > 0.01) problems.push(`${between}: ${gap} px, not the default ${base} px, for ${routes} routes`);
+    if (gap > base + levels * spacing.junctionLevel + (levels + 1) * routes * TRACK_HEIGHT + berth) problems.push(`${between}: ${gap} px for ${levels} levels and ${routes} routes`);
+    if (!levels && berth + routes * TRACK_HEIGHT <= base - spacing.approach && Math.abs(gap - base) > 0.01) problems.push(`${between}: ${gap} px, not the default ${base} px, for ${routes} routes`);
     return problems;
   });
 }

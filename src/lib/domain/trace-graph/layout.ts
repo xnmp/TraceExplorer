@@ -14,10 +14,11 @@
  * this engine sits behind the `layoutGraph(LayoutRequest) → GraphLayout`
  * boundary instead; callers never depend on how it works.
  */
-import { layoutBand } from "./band-layout";
+import { layoutBand, type BandOptions } from "./band-layout";
 import type { NodeKey } from "./model";
 import { buildInputJunctions, endpointKey, type Consumer, type Endpoint, type Junction } from "./junctions";
-import { ARROW, bendZones, JUNCTION_BERTH, spacingFor, TRACK_HEIGHT } from "./metrics";
+import { ARROW, bendZones, JUNCTION_BERTH, LANE_SEPARATION, PORT_BERTH, spacingFor, TRACK_HEIGHT } from "./metrics";
+import { orderLayers } from "./layer-order";
 
 export interface LayoutItem {
   readonly key: NodeKey;
@@ -177,6 +178,13 @@ const unitRoot = (unit: number[], index: number): number => unit[index] === inde
 const NO_JUNCTIONS: ReadonlySet<string> = new Set();
 /** Narrowest separation between lanes sharing a gap. */
 const MIN_LANE = 3;
+/**
+ * Widest column swap whose two bends cross in one shared slice: two minimal slices, less the
+ * insets, 9 px tall, which S-curves 9 px wide cross at about 53°. Wider swaps take a dogleg.
+ */
+const CROSSING_SWAP = 2 * TRACK_HEIGHT - LANE_SEPARATION;
+/** Farthest beyond its bend's own span a dogleg breaking a cycle of turn orders may take its column. */
+const DOGLEG_REACH = 4 * MIN_LANE;
 /** Widest offset, from its junction's column, at which an input ends its bend (see the fan-in step). */
 const FAN_IN = 3;
 /** Distance kept outside a forbidden interval when stepping past it. */
@@ -293,18 +301,41 @@ function hashOf(text: string): string {
   return (hash >>> 0).toString(36);
 }
 
-export function layoutGraph(request: LayoutRequest): GraphLayout {
+export function layoutGraph(request: LayoutRequest, options?: BandOptions): GraphLayout {
   if (!request || !Array.isArray(request.items)) throw new RangeError("malformed layout request");
-  return request.band ? layoutBand(request) : layoutLayered(request);
+  return request.band ? layoutBand(request, options) : layoutLayered(request);
 }
 
+/**
+ * How a generation is ordered: `barycenter` sorts each generation once by its parents' mean
+ * reading position; `median-sweep` runs Gansner et al.'s iterated median and transpose sweeps
+ * (`layer-order.ts`) on the generations, long edges split by virtual nodes.
+ */
+export type Ordering = "barycenter" | "median-sweep" | {
+  /** An explicit position for each key within its generation (evaluation oracles inject exact orders); unknown keys follow by rank. */
+  readonly positions: ReadonlyMap<NodeKey, number>;
+};
+
+/**
+ * Which gap a route takes through each display row it passes, and its lane's place in the gap.
+ * `straight` (the default): the gap nearest the straight line from the route's source to its end,
+ * at that row, and lanes ordered by where those lines cross the row. Two straight segments cross
+ * at most once, and only where their ends are in opposite orders, so following them adds no
+ * crossings of its own; it is the usual placement of a long edge's dummy nodes (Sugiyama, Tagawa
+ * and Toda 1981; Gansner et al. 1993, §4) with tiles as the fixed obstacles. `nearest-end`, as
+ * merged in plan phase 3: the gap nearest the route's end at every row, lanes ordered by source x.
+ */
+export type Passing = "straight" | "nearest-end";
+
+export interface LayeredOptions { readonly ordering?: Ordering; readonly passing?: Passing }
+
 /** The reusable layered engine; band candidates call it without recursively planning bands. */
-export function layoutLayered(request: LayoutRequest): GraphLayout {
-  if (request.orientation !== "right") return layoutDown(request, spacingFor(request.tileWidth).minWidth);
+export function layoutLayered(request: LayoutRequest, options: LayeredOptions = {}): GraphLayout {
+  if (request.orientation !== "right") return layoutDown(request, spacingFor(request.tileWidth).minWidth, options);
   // Left to right: the same engine on transposed tiles, transposed back.
   // Generations then form columns that never wrap (no height budget), and
   // the canvas needs no minimum height.
-  const turned = transposeLayout(layoutDown({ items: request.items.map((item) => ({ ...item, width: item.height, height: item.width })), maxWidth: Infinity, hint: request.hint, tileWidth: request.tileWidth }, 0));
+  const turned = transposeLayout(layoutDown({ items: request.items.map((item) => ({ ...item, width: item.height, height: item.width })), maxWidth: Infinity, hint: request.hint, tileWidth: request.tileWidth }, 0, { passing: options.passing }));
   const extent = request.extent !== undefined && Number.isFinite(request.extent) && request.extent > 0 ? Math.ceil(request.extent) : 0;
   return extent > turned.width ? { ...turned, width: extent } : turned;
 }
@@ -357,14 +388,14 @@ export function transposeLayout(layout: GraphLayout): GraphLayout {
 }
 
 /** The top-to-bottom engine; `minWidth` is the narrowest canvas it draws (within the budget). */
-function layoutDown(request: LayoutRequest, minWidth: number): GraphLayout {
+function layoutDown(request: LayoutRequest, minWidth: number, options: LayeredOptions = {}): GraphLayout {
   // Outer margins hold every lane that does not fit between tiles, and the
   // junctions a crowded channel has no column for. When they overflow, they
   // widen (the graph scrolls horizontally) rather than letting lanes merge or
   // dots stack. Legacy placement needs two retries. A pinned band can first
   // consume spare pane width; moving rows within that width changes gap slots,
   // so allow two further routing passes to settle the new slot choices.
-  const prepared = prepare(request);
+  const prepared = prepare(request, options.ordering ?? "barycenter", options.passing ?? "straight");
   let extra = { left: 0, right: 0 };
   const attempts = prepared.pinned ? 4 : 2;
   for (let attempt = 0; ; attempt++) {
@@ -489,7 +520,7 @@ export function downwardBandBound(request: LayoutRequest, coverKey: NodeKey, ste
  * Everything about a request that does not depend on a pass's extra margins:
  * computed once and shared by every pass of {@link layoutDown}.
  */
-function prepare(request: LayoutRequest) {
+function prepare(request: LayoutRequest, ordering: Ordering = "barycenter", passing: Passing = "straight") {
   // Malformed input never spreads through the geometry: a size that is not a
   // finite, non-negative number counts as zero, sizes are capped far above
   // any tile, and an order that is not a number sorts first (ties by key).
@@ -575,6 +606,13 @@ function prepare(request: LayoutRequest) {
   // Generation 0 has no parents to follow, so its order (rank alone) is the same every pass.
   const firstBand = byBand.length ? byBand[0].filter((key) => !pinned || key !== pinned.key).sort((a, b) => rank.get(a)! - rank.get(b)!) : [];
 
+  // Swept generation orders (real nodes, pinned cover excluded), or null to sort by barycenters per pass.
+  const given = typeof ordering === "object" ? ordering.positions : null;
+  const swept = given ? byBand.map((members) => members.filter((key) => !pinned || key !== pinned.key)
+      .sort((a, b) => (given.get(a) ?? 1e15) - (given.get(b) ?? 1e15) || rank.get(a)! - rank.get(b)!))
+    : ordering === "median-sweep" && bandCount > 1
+    ? orderLayers({ layers: byBand.map((members, b) => b ? members : [...(pinned ? [pinned.key] : []), ...firstBand]), parents: parentsOf, rank: (key) => rank.get(key)! }).map((layer) => layer.filter((key) => !pinned || key !== pinned.key))
+    : null;
   const { joinFacts, ordered, targetsOf } = plan.joins.length ? junctionFacts(plan, bands) : NO_JOINS;
   // Route ids join endpoint keys with ">" (and trunk ids with "~"); while no key holds
   // either, the plan's routes (distinct by their ends) have ids distinct from each other and
@@ -582,7 +620,7 @@ function prepare(request: LayoutRequest) {
   let plainKeys = true;
   for (const key of keys) if (typeof key !== "string" || key.includes(">") || key.includes("~")) { plainKeys = false; break; }
   return {
-    space, items, keys, parentsOf, bandCount, byBand, pinnedViolation, plan, joinFacts, ordered, targetsOf, plainKeys,
+    space, items, keys, parentsOf, bandCount, byBand, pinnedViolation, plan, joinFacts, ordered, targetsOf, plainKeys, swept, passing,
     gap, margin, budget, pinned, contentWidth, rank, firstBand, firstRows: wrapRow(firstBand.map((key) => items.get(key)!.width), contentWidth, gap),
   };
 }
@@ -651,7 +689,7 @@ function junctionFacts(plan: ReturnType<typeof buildInputJunctions>, bands: Read
  * stops there instead of drawing what would be thrown away.
  */
 function layoutPass(prepared: Prepared, extra: { readonly left: number; readonly right: number }, minWidth: number, last: boolean): { layout: GraphLayout | null; shortfall: { left: number; right: number } } {
-  const { space, items, parentsOf, bandCount, byBand, pinnedViolation, plan, joinFacts, ordered, targetsOf, plainKeys, gap, margin, budget, pinned, contentWidth, rank } = prepared;
+  const { space, items, parentsOf, bandCount, byBand, pinnedViolation, plan, joinFacts, ordered, targetsOf, plainKeys, gap, margin, budget, pinned, contentWidth, rank, passing } = prepared;
   // A pinned band already spans the pane. Spend its unused horizontal room
   // on extra routing margins before widening it; centred legacy canvases
   // start tightly around their content and still widen by the full shortfall.
@@ -676,7 +714,12 @@ function layoutPass(prepared: Prepared, extra: { readonly left: number; readonly
     }
     let members: NodeKey[], wrapped: number[][];
     if (bandIndex === 0) ({ firstBand: members, firstRows: wrapped } = prepared);
-    else {
+    else if (prepared.swept) {
+      members = prepared.swept[bandIndex];
+      const widths: number[] = [];
+      for (const key of members) widths.push(items.get(key)!.width);
+      wrapped = wrapRow(widths, contentWidth, gap);
+    } else {
       // Barycenter of parents in reading order (row first, then x) keeps
       // children near their parents even when parent rows wrapped. Parents
       // lie in earlier bands, already placed, so each score is computed once.
@@ -817,7 +860,8 @@ function layoutPass(prepared: Prepared, extra: { readonly left: number; readonly
   }
 
   // 3. Lanes. A route crosses each intermediate row through a gap between
-  // tiles or an outer margin. Gaps are identified by their geometry, so rows
+  // tiles or an outer margin: the open one nearest its straight line at that
+  // row (`Passing`). Gaps are identified by their geometry, so rows
   // with the same gap share one lane assignment and a route continuing
   // through both never meets another route's lane. Routes from one source
   // share a lane, so a fan-out reads as one trunk that branches; different
@@ -855,11 +899,35 @@ function layoutPass(prepared: Prepared, extra: { readonly left: number; readonly
   // found no column of their own. The next pass widens them by this much.
   const shortfall = { left: 0, right: 0 };
   const slotsInRow = new Map<number, Set<string>>();
+  /** The rows each inner gap's lanes pass, by gap id. */
+  const rowsOfSlot = new Map<string, Set<number>>();
   /** The rows each source passes through in each outer margin, by margin. */
   const marginRows = new Map<string, Map<string, number[]>>();
+  /** Stems in the channels either side of a row: other sources' exits from the row above, entries into the row below. */
+  const stemCache = new Map<number, { readonly x: number; readonly exit?: NodeKey; readonly entry?: NodeKey }[]>();
+  const stemsAround = (row: number) => {
+    let cached = stemCache.get(row);
+    if (!cached) stemCache.set(row, cached = [
+      ...spans(row - 1).filter((box) => targetsOf.has(endpointKey({ kind: "node", id: box.key }))).map((box) => ({ x: box.x + box.width / 2, exit: box.key })),
+      ...spans(row + 1).filter((box) => parentsOf(box.key).length > 0).map((box) => ({ x: box.x + box.width / 2, entry: box.key })),
+    ]);
+    return cached;
+  };
+  /** Whether a stem belongs to `source`: its own exit, or an entry it feeds directly. */
+  const ownStem = (source: string, stem: { readonly exit?: NodeKey; readonly entry?: NodeKey }) =>
+    stem.exit !== undefined ? source === endpointKey({ kind: "node", id: stem.exit }) : !!targetsOf.get(source)?.has(endpointKey({ kind: "node", id: stem.entry! }));
+  /** An inner gap leaves `source` a lane only if some x in it keeps MIN_LANE from every other source's stem. */
+  const clearFor = (slot: Slot, row: number, source: string) => {
+    if (slot.margin) return true;
+    const blocked = stemsAround(row).filter((stem) => stem.x > slot.low - MIN_LANE && stem.x < slot.high + MIN_LANE && !ownStem(source, stem)).map((stem) => [stem.x - MIN_LANE, stem.x + MIN_LANE] as const);
+    return !blocked.length || nearestFree(slot.x, blocked, slot.low, slot.high) !== null;
+  };
   const claim = (row: number, desired: number, source: string, sourceX: number): string | null => {
-    const slots = gapsOf(row);
-    if (!slots.length) return null;
+    const all = gapsOf(row);
+    if (!all.length) return null;
+    // Straight passing skips gaps whose every x meets another source's stem, while any other is left.
+    const clear = passing === "straight" ? all.filter((slot) => clearFor(slot, row, source)) : all;
+    const slots = clear.length ? clear : all;
     // Slots are tried by cost, then x, then row order (a stable sort); the
     // first with room takes the source, else the least loaded. With finite
     // keys that order is total, so the first is a minimum and needs no sort.
@@ -893,6 +961,11 @@ function layoutPass(prepared: Prepared, extra: { readonly left: number; readonly
     let lane = lanes.get(open.id);
     if (!lane) lanes.set(open.id, lane = { slot: open, sources: new Map<string, number>(), xs: new Map<string, number>() });
     if (!lane.sources.has(source)) lane.sources.set(source, sourceX);
+    if (!open.margin) {
+      let rows = rowsOfSlot.get(open.id);
+      if (!rows) rowsOfSlot.set(open.id, rows = new Set());
+      rows.add(row);
+    }
     // Only deferred junctions read which lanes each row uses.
     if (deferred.length) {
       let used = slotsInRow.get(row);
@@ -933,6 +1006,8 @@ function layoutPass(prepared: Prepared, extra: { readonly left: number; readonly
   const sourceRoot = new Map<string, number>();
   /** Lane claims by source, then rounded end x, then row. */
   const claimed = new Map<string, Map<number, Map<number, string | null>>>();
+  /** Per inner gap, per source: the sum and count of the x its routes wanted there, which orders its lanes. */
+  const wanted = new Map<string, Map<string, { sum: number; count: number }>>();
   const pending: { node: number; slot: string | null; desired: number }[] = [];
   /** The trie root for a route's start; `source` is its endpoint key. */
   const rootOf = (endpoint: Endpoint, source: string): number => {
@@ -945,6 +1020,22 @@ function layoutPass(prepared: Prepared, extra: { readonly left: number; readonly
     sourceRoot.set(source, trie.length - 1);
     return trie.length - 1;
   };
+  // Straight passing follows each source's bundle, not each route: at every row
+  // its routes into tiles still passing head for the centroid of their ends, so a
+  // fan keeps one trunk (Gansner et al. 1993 likewise route a fan's long edges
+  // together until they part). Per source and row: sums of end x, end row, count.
+  const bundles = new Map<string, Map<number, { x: number; row: number; count: number }>>();
+  if (passing === "straight") for (const route of plan.routes) {
+    if (route.to.kind !== "node") continue;
+    const source = endpointKey(route.from), start = trie[rootOf(route.from, source)].row;
+    const endRow = columns.get(route.to.id)!.row, endX = center(route.to.id);
+    let byRow = bundles.get(source);
+    if (!byRow) bundles.set(source, byRow = new Map());
+    for (let row = start + 1; row < endRow; row++) {
+      const sum = byRow.get(row);
+      if (sum) { sum.x += endX; sum.row += endRow; sum.count++; } else byRow.set(row, { x: endX, row: endRow, count: 1 });
+    }
+  }
   const courses = plan.routes.map((route) => {
     const source = endpointKey(route.from);
     let node = rootOf(route.from, source);
@@ -963,9 +1054,20 @@ function layoutPass(prepared: Prepared, extra: { readonly left: number; readonly
       if (!byEnd) claimed.set(source, byEnd = new Map());
       let byRow = byEnd.get(endKey);
       if (!byRow) byEnd.set(endKey, byRow = new Map());
-      for (let row = trie[node].row + 1; row <= endChannel; row++) {
+      const startRow = trie[node].row, straight = passing === "straight" && route.to.kind === "node";
+      for (let row = startRow + 1; row <= endChannel; row++) {
         let slot = byRow.get(row);
-        if (slot === undefined) byRow.set(row, slot = claim(row, endX, source, sourceX));
+        if (slot === undefined) {
+          const bundle = straight ? bundles.get(source)?.get(row) : undefined;
+          const want = bundle ? sourceX + (bundle.x / bundle.count - sourceX) * Math.min(1, (row - startRow) / (bundle.row / bundle.count - startRow)) : endX;
+          byRow.set(row, slot = claim(row, want, source, sourceX));
+          if (slot && straight) {
+            let bySource = wanted.get(slot);
+            if (!bySource) wanted.set(slot, bySource = new Map());
+            const sum = bySource.get(source);
+            if (sum) { sum.sum += want; sum.count++; } else bySource.set(source, { sum: want, count: 1 });
+          }
+        }
         const key = slot ?? endKey;
         let child = childOf(node, key);
         if (child === undefined) {
@@ -1038,14 +1140,28 @@ function layoutPass(prepared: Prepared, extra: { readonly left: number; readonly
     entries.forEach((entry, index) => lane.xs.set(entry.source, chosen.xs[index]));
   }
 
-  // Lane positions, once every source in a gap is known: ordered by where the
-  // sources sit (fewer crossings), centered on the gap and kept inside it.
+  // Lane positions, once every source in a gap is known: ordered by where
+  // their routes' straight lines cross the row (or, `nearest-end`, by where
+  // the sources sit), centered on the gap and kept inside it.
   for (const { slot, sources, xs } of lanes.values()) {
     if (slot.margin) continue;
-    const order = [...sources].sort((a, b) => a[1] - b[1] || a[0].localeCompare(b[0]));
+    const at = (source: string, sourceX: number) => { const w = wanted.get(slot.id)?.get(source); return w ? w.sum / w.count : sourceX; };
+    const order = [...sources].map(([source, sourceX]) => [source, at(source, sourceX)] as const).sort((a, b) => a[1] - b[1] || a[0].localeCompare(b[0]));
     const spacing = order.length > 1 ? Math.min(space.lane, (slot.high - slot.low) / (order.length - 1)) : 0;
     const span = spacing * (order.length - 1);
-    const first = Math.min(slot.high - span, Math.max(slot.low, slot.x - span / 2));
+    const centred = Math.min(slot.high - span, Math.max(slot.low, slot.x - span / 2));
+    // A lane runs on through the channels above and below its row, where other
+    // sources' stems leave the tiles above (at their centres) and enter the
+    // tiles below: keep each lane MIN_LANE clear of those stems where the gap
+    // has room, else stay centred.
+    const blocked: Interval[] = [];
+    for (const row of passing === "straight" ? rowsOfSlot.get(slot.id) ?? [] : []) {
+      const stems = stemsAround(row).filter((stem) => stem.x > slot.low - MIN_LANE && stem.x < slot.high + MIN_LANE);
+      order.forEach(([source], index) => {
+        for (const stem of stems) if (!ownStem(source, stem)) blocked.push([stem.x - index * spacing - MIN_LANE, stem.x - index * spacing + MIN_LANE]);
+      });
+    }
+    const first = blocked.length ? nearestFree(centred, blocked, slot.low, slot.high - span) ?? centred : centred;
     order.forEach(([source], index) => xs.set(source, first + index * spacing));
   }
   for (const { node, slot, desired } of pending) trie[node].x = slot ? laneX(slot, trie[node].source)! : desired;
@@ -1109,7 +1225,12 @@ function layoutPass(prepared: Prepared, extra: { readonly left: number; readonly
     readonly channel: number; readonly source: string; readonly target: string | null;
     readonly x1: number; readonly x2: number; readonly from: Anchor; readonly to: Anchor;
     readonly own: ReadonlySet<string>; readonly lo: number; readonly hi: number;
+    /** The bend's zone and its (lowest) track. */
     zone: number; track: number;
+    /** Tracks its curve spans, up to and including `track` (one unless it crosses a swapping partner). */
+    span?: number;
+    /** A dogleg (a swap's, or one breaking a cycle of turn orders): the bend first curves to column `x` in track `track`, then on in its own. */
+    dogleg?: { readonly track: number; readonly x: number };
   }
   const leg = (channel: number, source: string, target: string | null, x1: number, x2: number, from: Anchor, to: Anchor, own: ReadonlySet<string>): Leg => {
     const lo = "junction" in from ? placed.get(from.junction)!.level : 0;
@@ -1167,7 +1288,8 @@ function layoutPass(prepared: Prepared, extra: { readonly left: number; readonly
     const levelsNear = (item: Leg, x: number) => {
       const found: number[] = [];
       const home = Math.floor(x / JUNCTION_BERTH);
-      for (let key = home - 1; key <= home + 1; key++) {
+      for (let offset = -1; offset <= 1; offset++) {
+        const key = home + offset;
         const list = junctionAt.get(key);
         if (list) for (const join of list) if (!item.own.has(join.id) && Math.abs(join.x - x) < JUNCTION_BERTH) found.push(join.level);
       }
@@ -1200,7 +1322,8 @@ function layoutPass(prepared: Prepared, extra: { readonly left: number; readonly
      */
     const clashes = (item: Leg, x: number, from: number, to: number, bend: number | null, found: { near: number; shared: number }) => {
       const home = bucket(x), source = item.source;
-      for (let key = home - 1; key <= home + 1; key++) {
+      for (let offset = -1; offset <= 1; offset++) {
+        const key = home + offset;
         const list = runsAt.get(key);
         if (list) for (const other of list) {
           if (other.leg.source === source || !near(other.x, x)) continue;
@@ -1244,14 +1367,76 @@ function layoutPass(prepared: Prepared, extra: { readonly left: number; readonly
     for (const item of bending) if (item.lo !== item.hi) { unregister(item); choose(item); }
   }
 
+  // Fan-in. Inputs of one junction meet only at its dot: each bending input ends its bend a
+  // little to its own side of the junction's column and reaches the dot along its own slope,
+  // so no two share a final stretch (a lane shared between sources). Nearer inputs keep closer
+  // to the column, so inputs from one side do not cross before the dot. Offsets stay within
+  // the berth other routes and junctions keep from the column, and within half of what the
+  // nearest other dot's column on that side leaves beyond LANE_SEPARATION: that dot's inputs
+  // may fan out towards this one, and the two must not read as one line.
+  const fanIn = new Map<Leg, number>();
+  const intoJunction = new Map<string, Leg[]>();
+  for (const item of finalLegs) if ("junction" in item.to && bends(item)) append(intoJunction, item.to.junction, item);
+  const columnsByChannel = new Map<number, number[]>();
+  for (const id of intoJunction.keys()) { const spot = placed.get(id)!; append(columnsByChannel, spot.channel, spot.x); }
+  const fanWidth = (id: string, side: number) => {
+    const { x, channel } = placed.get(id)!;
+    let room = Infinity;
+    for (const other of columnsByChannel.get(channel)!) if (Math.sign(other - x) === side) room = Math.min(room, Math.abs(other - x));
+    return Math.min(FAN_IN, Math.max(0, (room - LANE_SEPARATION) / 2));
+  };
+  for (const [id, inputs] of intoJunction) for (const side of [-1, 1]) {
+    const group = inputs.filter((item) => Math.sign(item.x1 - item.x2) === side)
+      .sort((a, b) => Math.abs(a.x1 - a.x2) - Math.abs(b.x1 - b.x2) || (a.source < b.source ? -1 : a.source > b.source ? 1 : 0));
+    if (!group.length) continue;
+    const widest = fanWidth(id, side);
+    group.forEach((item, rank) => fanIn.set(item, side * widest * (rank + 1) / group.length));
+  }
+
   // 5. Tracks. Bends in one zone whose spans overlap bend in separate
   // horizontal slices of it (left-edge channel routing), so two routes never
   // run side by side at a shallow angle: wherever they cross, one of them runs
   // vertically. Within a direction the bend reaching furthest turns first, so
   // parallel routes never cross; and a route leaving a column bends before
   // another route arriving in it, so their vertical runs never overlap.
+  // Two bends trading columns (a swap) are a cycle of that rule: in slices one after the other,
+  // one would leave a column exactly where the other arrives, the two lines meeting end to end
+  // there, so each would seem to continue as the other. Channel routers break such a cycle with
+  // a dogleg (Deutsch 1976; Yoshimura and Kuh 1982): one bend first curves to a free column
+  // between the two in a slice of its own, runs down it across the other's curve, and curves on
+  // in a third. Bends trading columns closer than `CROSSING_SWAP` instead cross in one shared
+  // slice twice as tall, steeply enough to read as a crossing.
   // Track counts and zone boxes by channel, then zone.
   const trackCount: number[][] = [];
+  // Every column a vertical run of the channel occupies, for choosing dogleg columns.
+  const columnsIn: number[][] = [];
+  for (const item of allLegs) (columnsIn[item.channel] ??= []).push(item.x1, item.x2, item.x2 + (fanIn.get(item) ?? 0));
+  /**
+   * How two swapping bends cross: in one shared slice ("cross"), with a dogleg of one of them
+   * (the bend, and the free column between the two it doglegs through), or not at all (null:
+   * no free column, or both end in a junction's fan-in, whose bends keep their own shape).
+   */
+  const swapCrossing = (channel: number, first: Leg, second: Leg): "cross" | { leg: Leg; x: number } | null => {
+    const lo = Math.max(Math.min(first.x1, first.x2), Math.min(second.x1, second.x2)), hi = Math.min(Math.max(first.x1, first.x2), Math.max(second.x1, second.x2));
+    // Columns other runs occupy between the two: the crossing (or the dogleg's run) keeps off them.
+    const busy: [number, number][] = [];
+    for (const x of columnsIn[channel] ?? []) if (x > lo && x < hi) busy.push([x - MIN_LANE, x + MIN_LANE]);
+    if (Math.max(Math.abs(first.x1 - first.x2), Math.abs(second.x1 - second.x2)) <= CROSSING_SWAP) {
+      // They cross midway; a run of another source there would meet both at one point.
+      const middle = (lo + hi) / 2;
+      if (!busy.some(([low, high]) => middle > low && middle < high)) return "cross";
+    }
+    const leg = [first, second].find((item) => !("junction" in item.to));
+    if (!leg) return null;
+    let x = lo + MIN_LANE <= hi - MIN_LANE ? nearestFree((lo + hi) / 2, busy, lo + MIN_LANE, hi - MIN_LANE) : null;
+    if (x === null) {
+      // A blocked swap cannot use consecutive inset curves: their vertical stems would
+      // share the gap between slices. Try a bounded detour, clear of every actual stem.
+      const occupied: [number, number][] = (columnsIn[channel] ?? []).map(x => [x - MIN_LANE, x + MIN_LANE]);
+      x = nearestFree((lo + hi) / 2, occupied, Math.max(0, lo - DOGLEG_REACH), Math.min(width, hi + DOGLEG_REACH));
+    }
+    return x === null ? null : { leg, x };
+  };
   // Bends by channel, then zone (both small non-negative integers), in leg order.
   // Groups are independent (each sets only its own bends' tracks and count), so
   // the order they are visited in is free.
@@ -1307,14 +1492,55 @@ function layoutPass(prepared: Prepared, extra: { readonly left: number; readonly
       later.add(unitOf[j]);
       pending[unitOf[j]]++;
     }
-    // Turn order: the forced constraints, otherwise the sort order above (a
-    // cycle of forced constraints is broken in sort order).
+    // Turn order: the forced constraints, otherwise the sort order above.
     const sequenced: boolean[] = [];
     // Bends already given a track, in turn order.
     const done: number[] = [];
+    // A cycle of forced constraints (three or more bends, each leaving a column beside where the
+    // next arrives) has no order: whichever turns first meets the last one's line along a column
+    // pair closer than a lane, between their tracks. Channel routers break such a cycle by
+    // splitting one of its nets with a dogleg (Deutsch 1976; ELK's orthogonal router splits a
+    // segment of a critical cycle, Schulze et al.): the bend first curves from its column to a
+    // free one, in a slice before any of the bends arriving beside its column, runs down the
+    // free column, and curves on in a later slice of its own. The first pieces, by bend index.
+    const pieces = new Map<number, { readonly x: number; readonly track: number; readonly low: number; readonly high: number }>();
+    /** The first slice a piece reaching from `low` to `high` can take, after every bend and piece so far it would meet. */
+    const firstTrack = (low: number, high: number, item: Leg) => {
+      let track = 0;
+      for (const earlier of done) if (ordered[earlier].track + 1 > track && reachLow[earlier] < high && low < reachHigh[earlier] && !compatible(ordered[earlier], item)) track = ordered[earlier].track + 1;
+      for (const [index, piece] of pieces) if (piece.track + 1 > track && piece.low < high && low < piece.high && !compatible(ordered[index], item)) track = piece.track + 1;
+      return track;
+    };
+    /** Splits one bend of a cycle with a dogleg, if one can take a free column; whether it did. */
+    const splitCycle = (): boolean => {
+      for (const id of units) {
+        const later = forced[id];
+        if (sequenced[id] || members[id].length !== 1 || !later?.size) continue;
+        const index = members[id][0], item = ordered[index];
+        // A junction's input keeps its fan-in shape.
+        if ("junction" in item.to) continue;
+        const busy: [number, number][] = [];
+        for (const x of columnsIn[channel] ?? []) busy.push([x - MIN_LANE, x + MIN_LANE]);
+        const lo = Math.min(item.x1, item.x2), hi = Math.max(item.x1, item.x2);
+        const x = nearestFree((lo + hi) / 2, busy, Math.max(0, lo - DOGLEG_REACH), Math.min(width, hi + DOGLEG_REACH));
+        if (x === null) continue;
+        const low = Math.min(item.x1, x) - MIN_LANE, high = Math.max(item.x1, x) + MIN_LANE;
+        pieces.set(index, { x, track: firstTrack(low, high, item), low, high });
+        (columnsIn[channel] ??= []).push(x);
+        // The bend leaves its column in the piece, so the bends arriving beside that column
+        // need no longer wait for it; what remains of it runs from the free column.
+        for (const unit of later) pending[unit]--;
+        later.clear();
+        reachLow[index] = Math.min(x, item.x2) - MIN_LANE; reachHigh[index] = Math.max(x, item.x2) + MIN_LANE;
+        return true;
+      }
+      return false;
+    };
+    const ready = () => { for (const id of units) if (!sequenced[id] && pending[id] === 0) return id; return -1; };
     for (let step = 0; step < units.length; step++) {
-      let next = -1;
-      for (const id of units) if (!sequenced[id] && pending[id] === 0) { next = id; break; }
+      let next = ready();
+      while (next < 0 && splitCycle()) next = ready();
+      // No bend of the cycle can dogleg: it is broken in sort order.
       if (next < 0) for (const id of units) if (!sequenced[id]) { next = id; break; }
       sequenced[next] = true;
       const later = forced[next];
@@ -1327,29 +1553,58 @@ function layoutPass(prepared: Prepared, extra: { readonly left: number; readonly
         if (!(ordered[earlier].track + 1 > track)) continue;
         for (const index of group) if (conflict(earlier, index)) { track = ordered[earlier].track + 1; break; }
       }
-      // Swapping bends take consecutive slices: each leaves its column just
-      // as the other arrives, so they neither overlap nor cross at a shallow angle.
+      // After the pieces it would meet, and a split bend after its own first piece.
+      for (const [index, piece] of pieces) for (const member of group) {
+        if (member === index || (piece.low < reachHigh[member] && reachLow[member] < piece.high && !compatible(ordered[index], ordered[member]))) track = Math.max(track, piece.track + 1);
+      }
+      const crossing = group.length === 2 ? swapCrossing(channel, ordered[group[0]], ordered[group[1]]) : null;
+      if (crossing === "cross") {
+        for (const index of group) { ordered[index].track = track + 1; ordered[index].span = 2; done.push(index); }
+        continue;
+      }
+      if (crossing) {
+        const index = group.find(i => ordered[i] === crossing.leg)!;
+        // An outside detour occupies more of the channel than the original bend. Reserve
+        // that reach against earlier tracks/pieces and against the units assigned next.
+        reachLow[index] = Math.min(reachLow[index], crossing.x - MIN_LANE);
+        reachHigh[index] = Math.max(reachHigh[index], crossing.x + MIN_LANE);
+        track = Math.max(track, firstTrack(reachLow[index], reachHigh[index], crossing.leg));
+        (columnsIn[channel] ??= []).push(crossing.x);
+        // The dogleg leaves its column before the other bend arrives there and reaches the
+        // other's column after that one has left it: first slice, third slice; the other between.
+        for (const index of group) {
+          const item = ordered[index];
+          if (item === crossing.leg) { item.dogleg = { track, x: crossing.x }; item.track = track + 2; } else item.track = track + 1;
+          done.push(index);
+        }
+        continue;
+      }
+      // Otherwise swapping bends take consecutive slices: each leaves its column just as the
+      // other arrives, so they do not cross at a shallow angle (but meet end to end there).
       for (let offset = 0; offset < group.length; offset++) { ordered[group[offset]].track = track + offset; done.push(group[offset]); }
     }
     let most = 1;
     for (const item of ordered) most = Math.max(most, item.track + 1);
+    for (const [index, piece] of pieces) { ordered[index].dogleg = { track: piece.track, x: piece.x }; most = Math.max(most, piece.track + 1); }
     (trackCount[channel] ??= [])[zone] = most;
   }
   const tracksIn = (channel: number, zone: number) => trackCount[channel]?.[zone] ?? 1;
 
-  // Fan-in. Inputs of one junction meet only at its dot: each bending input ends its bend a
-  // little to its own side of the junction's column and reaches the dot along its own slope,
-  // so no two share a final stretch (a lane shared between sources). Nearer inputs keep closer
-  // to the column, so inputs from one side do not cross before the dot. Offsets stay within
-  // the berth other routes and junctions keep from the column.
-  const fanIn = new Map<Leg, number>();
-  const intoJunction = new Map<string, Leg[]>();
-  for (const item of finalLegs) if ("junction" in item.to && bends(item)) append(intoJunction, item.to.junction, item);
-  for (const inputs of intoJunction.values()) for (const side of [-1, 1]) {
-    const group = inputs.filter((item) => Math.sign(item.x1 - item.x2) === side)
-      .sort((a, b) => Math.abs(a.x1 - a.x2) - Math.abs(b.x1 - b.x2) || (a.source < b.source ? -1 : a.source > b.source ? 1 : 0));
-    group.forEach((item, rank) => fanIn.set(item, side * FAN_IN * (rank + 1) / group.length));
+  // Port berths. A tile's outputs leave its bottom edge at its centre; another source bending
+  // under that port within the stem's first PORT_BERTH crosses the stem so close to the tile that
+  // the stem seems to branch off the passing line. A channel whose first zone holds a bend passing
+  // under another source's port (strictly between the bend's ends: a bend ending on a port's
+  // column is a lane matter) starts that zone's tracks a berth below the row; the zone grows only
+  // where its tracks then need more room.
+  const portBerth: number[] = [];
+  const portsByRow = new Map<number, { x: number; source: string }[]>();
+  for (const item of trie) if (item.parent < 0 && item.tile !== undefined) append(portsByRow, item.row, { x: item.x, source: item.source });
+  for (const item of allLegs) {
+    if (item.zone !== 0 || portBerth[item.channel] || !bends(item)) continue;
+    const lo = Math.min(item.x1, item.x2, item.dogleg?.x ?? Infinity) + .5, hi = Math.max(item.x1, item.x2, item.dogleg?.x ?? -Infinity) - .5;
+    for (const port of portsByRow.get(item.channel) ?? []) if (port.source !== item.source && port.x > lo && port.x < hi) { portBerth[item.channel] = PORT_BERTH; break; }
   }
+  const berthAt = (channel: number, zone: number) => zone === 0 ? portBerth[channel] ?? 0 : 0;
 
   // 6. Vertical placement. Each zone is as tall as its tracks need (crowded
   // channels grow instead of squeezing bends), and junction levels sit
@@ -1370,7 +1625,7 @@ function layoutPass(prepared: Prepared, extra: { readonly left: number; readonly
     const count = levelCount(index);
     const boxes: { top: number; bottom: number }[] = zoneBoxes[index] = [];
     for (let zone = 0; zone <= count; zone++) {
-      const tall = Math.max(defaultZone(index, zone), tracksIn(index, zone) * TRACK_HEIGHT);
+      const tall = Math.max(defaultZone(index, zone), berthAt(index, zone) + tracksIn(index, zone) * TRACK_HEIGHT);
       boxes[zone] = { top: y, bottom: y + tall };
       y += tall + (zone < count ? 2 * JUNCTION_BERTH : 0);
     }
@@ -1390,7 +1645,8 @@ function layoutPass(prepared: Prepared, extra: { readonly left: number; readonly
     return anchor.edge === "bottom" ? row.bottom : anchor.edge === "top" ? row.top : row.top - ARROW.length;
   };
 
-  // 7. Paths: vertical to the bend's slice, an S-curve within it, vertical on.
+  // 7. Paths: vertical to the bend's slice, an S-curve within it (inset from the slice's edges
+  // where it has neighbours), vertical on.
   // Bend zones end `approach` above the next row, so a route into a tile ends
   // in a straight, vertical stem at least as long as its arrowhead.
   const draw = (item: Leg): string => {
@@ -1404,10 +1660,19 @@ function layoutPass(prepared: Prepared, extra: { readonly left: number; readonly
       return `${stem} L${right} ${round(y2)}`;
     }
     const box = zoneBoxes[item.channel][item.zone];
-    const top = Math.max(box.top, y1), bottom = Math.min(box.bottom, y2);
-    const slice = (bottom - top) / tracksIn(item.channel, item.zone);
-    const start = top + slice * item.track, end = start + slice;
+    const top = Math.max(box.top + berthAt(item.channel, item.zone), y1), bottom = Math.min(box.bottom, y2);
+    const tracks = tracksIn(item.channel, item.zone), slice = (bottom - top) / tracks;
+    // Each S-curve fills its slice diagonally, so curves in neighbouring slices would converge
+    // where one ends and the next begins and read as one line there: with neighbours, a curve
+    // keeps half of LANE_SEPARATION inside either edge of its slice, running vertically there.
+    const inset = tracks > 1 ? LANE_SEPARATION / 2 : 0;
+    const span = item.span ?? 1, start = top + slice * (item.track + 1 - span) + inset, end = top + slice * (item.track + 1) - inset;
     const left = `${round(x1)}`, middle = `${round((start + end) / 2)}`;
+    if (item.dogleg) {
+      // Curve to the dogleg's column in its first slice, down that column, then on in its own.
+      const first = top + slice * item.dogleg.track + inset, last = first + slice - 2 * inset, column = `${round(item.dogleg.x)}`, upper = `${round((first + last) / 2)}`;
+      return `${first > y1 ? ` L${left} ${round(first)}` : ""} C${left} ${upper},${column} ${upper},${column} ${round(last)} L${column} ${round(start)} C${column} ${middle},${right} ${middle},${right} ${round(end)}${end < y2 ? ` L${right} ${round(y2)}` : ""}`;
+    }
     const fan = fanIn.get(item);
     if (fan) {
       // Into a junction: down its own side of the column to the berth, then a short S-curve
