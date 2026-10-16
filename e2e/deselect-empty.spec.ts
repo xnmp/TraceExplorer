@@ -48,11 +48,11 @@ for (const host of [{ name: "fallback tiles", query: "" }, { name: "host tiles",
 
     // The next tile click still selects through the host.
     await click(page, "warm");
-    await expect(await card(page, "warm")).toHaveAttribute("aria-pressed", "true");
+    await expect(await card(page, "warm")).toHaveAttribute("aria-selected", "true");
     expect((await state(page)).selected).toEqual(["/pictures/warm.png"]);
 
     await selectImages(page);
-    // The host's Tiles view is a grid of gridcells with aria-selected; the fallback is a list of buttons with aria-pressed.
+    // Host and fallback tiles both expose gridcell selection through aria-selected.
     const list = page.getByRole("grid", { name: "Folder" });
     const ordinaryImage = list.locator('[data-entry-path="/pictures/plain.png"]');
     await ordinaryImage.click({ modifiers: ["Control"] });
@@ -152,7 +152,7 @@ test("native scrollbar press keeps selection and Preview inputs", async ({ page 
   expect(await pane.evaluate((element) => element.scrollTop)).toBe(scrollTop);
   expect((await state(page)).selected).toEqual(before.selected);
   expect((await state(page)).inputs).toEqual(before.inputs);
-  await expect(await card(page, "warm")).toHaveAttribute("aria-pressed", "true");
+  await expect(await card(page, "warm")).toHaveAttribute("aria-selected", "true");
 });
 
 test("wheel during an empty-background press keeps selection and Preview inputs", async ({ page }) => {
@@ -176,7 +176,7 @@ test("wheel during an empty-background press keeps selection and Preview inputs"
   await settle(page);
   expect((await state(page)).selected).toEqual(before.selected);
   expect((await state(page)).inputs).toEqual(before.inputs);
-  await expect(await card(page, "warm")).toHaveAttribute("aria-pressed", "true");
+  await expect(await card(page, "warm")).toHaveAttribute("aria-selected", "true");
 });
 
 for (const zoom of ["125%", "80%"]) {

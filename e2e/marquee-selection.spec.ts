@@ -47,7 +47,7 @@ for (const query of ["", "?fileTile=1&tileSize=medium"]) {
     await expect.poll(async () => (await state(page)).selected.sort()).toEqual(expected);
     await expect.poll(async () => (await state(page)).inputs.sort()).toEqual(expected);
     await expect(page.getByTestId("trace-view").locator(".selected")).toHaveCount(3);
-    for (const cover of await covers.all()) await expect(cover).toHaveAttribute("aria-pressed", "true");
+    for (const cover of await covers.all()) await expect(cover).toHaveAttribute("aria-selected", "true");
     const before = await notifications(page);
     const end = (await dragBounds(covers)).end;
     await page.mouse.move(end.x + 1, end.y + 1);
@@ -171,7 +171,7 @@ for (const loaded of [false, true]) {
     await expect.poll(async () => (await state(page)).inputs).toEqual([]);
     await finishDrag(page);
     expect((await state(page)).selected).toEqual([]);
-    await expect(cover).toHaveAttribute("aria-pressed", "false");
+    await expect(cover).toHaveAttribute("aria-selected", "false");
   });
 }
 
@@ -213,7 +213,7 @@ for (const loaded of [false, true]) {
     await startDrag(page, await dragBounds(cover));
     await expect.poll(async () => (await state(page)).inputs).toEqual(["/managed/draft.png"]);
     expect((await state(page)).selected).toEqual([]);
-    await expect(cover).toHaveAttribute("aria-pressed", "true");
+    await expect(cover).toHaveAttribute("aria-selected", "true");
     await finishDrag(page);
     expect((await state(page)).inputs).toEqual(["/managed/draft.png"]);
   });
@@ -313,7 +313,7 @@ for (const merge of [false, true]) {
     await expect.poll(async () => (await state(page)).inputs).toEqual(["/managed/draft.png"]);
     expect((await state(page)).selected).toEqual([]);
     if (!merge) {
-      await expect(await card(page, "draft")).toHaveAttribute("aria-pressed", "true");
+      await expect(await card(page, "draft")).toHaveAttribute("aria-selected", "true");
       await finishDrag(page);
       expect((await state(page)).inputs).toEqual(["/managed/draft.png"]);
     }

@@ -601,13 +601,17 @@ test("End reaches the final virtualized row and arrows can cross the mounted win
   expect(await uncaught(page)).toEqual([]);
 });
 
-test("keyboard focus remains on the cover across opening and chevron closing", async ({ page }) => {
+test("keyboard focus remains on the cover across Preview toggling and on the disclosure across closing", async ({ page }) => {
   await openView(page, 420, "?grouping=two-chains", false);
   const keyA = await key(page, "photo-a"), section = stack(page, "photo-a");
   await section.locator(".cover-press").focus();
   await page.keyboard.press("Space"); await settle(page);
   await expect(section.locator(`[data-node-key="${keyA}"]`)).toBeFocused();
-  await section.getByRole("button", { name: "Collapse stack" }).focus();
+  await expect(section.locator("[data-stack-toggle]")).toHaveAttribute("aria-expanded", "false");
+  await page.keyboard.press("Tab");
+  await expect(section.getByRole("button", { name: "Expand stack" })).toBeFocused();
+  await page.keyboard.press("Enter"); await settle(page);
+  await expect(section.getByRole("button", { name: "Collapse stack" })).toBeFocused();
   await page.keyboard.press("Enter"); await settle(page);
   await expect(section.locator("[data-stack-toggle]")).toBeFocused();
   await page.keyboard.press("ArrowRight"); await settle(page);
@@ -700,7 +704,7 @@ test("a cold unsaved cover double-click retains its Preview selection while leav
   await page.evaluate(() => (window as any).trace.backend.releaseNodeReads());
   await settle(page);
   await expect(section.locator("[data-stack-toggle]")).toHaveAttribute("aria-expanded", "false");
-  await expect(section.locator(".cover-press")).toHaveAttribute("aria-pressed", "true");
+  await expect(section.locator(".cover-press")).toHaveAttribute("aria-selected", "true");
   expect((await state(page)).target).toMatchObject({ id: "trace:o:11:0", badge: "Unsaved" });
   expect((await state(page)).opened).toEqual([]);
   await expect(page.getByTestId("host-toast")).toHaveText("Double-click isn't available in Trace view");

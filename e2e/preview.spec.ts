@@ -54,7 +54,7 @@ test.describe("references and unsaved outputs open in Preview without navigating
     expect(after.navigations).toEqual([]);
     expect(after.selected).toEqual([]);
     expect(after.target?.badge).toBe("Unsaved");
-    await expect(await card(page, "merge")).toHaveAttribute("aria-pressed", "true");
+    await expect(await card(page, "merge")).toHaveAttribute("aria-selected", "true");
     expect(await rendered(page, "tone", "focus")).toEqual(["merge"]);
   });
 
@@ -241,7 +241,7 @@ test.describe("Preview info", () => {
     await click(page, "warm");
     await trace(page).getByRole("button", { name: /Preview input .*lantern/ }).click();
     await settle(page);
-    await expect(await card(page, "lantern")).toHaveAttribute("aria-pressed", "true");
+    await expect(await card(page, "lantern")).toHaveAttribute("aria-selected", "true");
     await expect(await tile(page, "warm")).toHaveAttribute("data-tone", "related");
     expect((await state(page)).navigations).toEqual([]);
   });

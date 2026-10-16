@@ -7,7 +7,7 @@
 </script>
 
 <div style:--entry-image="{tile.image}px" style:width="{tile.width}px" style:margin="0 auto">
-        <button type="button" class="entry" role="gridcell" aria-selected={selected} aria-colindex={column} tabindex={focused ? 0 : -1} {onfocus} {onkeydown} class:selected={selected} data-entry-path={entry.path}
+        <div class="entry" role="gridcell" aria-selected={selected} aria-colindex={column} tabindex={focused ? 0 : -1} {onfocus} {onkeydown} class:selected={selected} data-entry-path={entry.path}
           title={entry.name}
           onclick={(event) => onselect(entry, event)} ondblclick={() => onopen(entry)} oncontextmenu={(event) => onmenu(entry, event)}>
           <span class="icon">
@@ -20,7 +20,7 @@
             {/if}
           </span>
           <span class="name">{entry.name}</span>
-        </button>
+        </div>
 
 </div>
 <style>

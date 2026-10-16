@@ -12,7 +12,7 @@
 import { expect, test, type Page } from "@playwright/test";
 import { clearSceneEvents, samplePaintedFrames as sampleFrames, sceneBusy, sceneEvents } from "./helpers/scene-events";
 import { drawn, expectHeldThenSnapped, expectSnapped, navigateRemounting as navigate, now, scene, sceneFrame, setExpanded, toggleOf, type SceneFrame } from "./helpers/scene-frames";
-import { key, openView, settle, tile, uncaught } from "./support";
+import { card, key, openView, settle, tile, uncaught } from "./support";
 
 const DIRECTORY = "/pictures", MIRROR = "/pictures-mirror";
 
@@ -222,7 +222,7 @@ test("a click while a widened pane waits for the worker commits the click and th
   await page.evaluate(() => (window as any).trace.releaseLayoutReplies());
   await settle(page);
   expect((await now(page)).width).toBeGreaterThan(narrow);
-  expect(await page.locator(`[data-tile-key="${await key(page, "daylight")}"]`).getAttribute("aria-selected")).toBe("true");
+  expect(await (await card(page, "daylight")).getAttribute("aria-selected")).toBe("true");
   expect(await sceneEvents(page, "motion-start")).toEqual([]);
   expect(await uncaught(page)).toEqual([]);
 });

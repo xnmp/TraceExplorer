@@ -88,8 +88,8 @@ test.describe("selection neighborhood", () => {
     await openView(page);
     await click(page, "warm");
     await click(page, "rain", { modifiers: ["Control"] });
-    await expect(await card(page, "warm")).toHaveAttribute("aria-pressed", "true");
-    await expect(await card(page, "rain")).toHaveAttribute("aria-pressed", "true");
+    await expect(await card(page, "warm")).toHaveAttribute("aria-selected", "true");
+    await expect(await card(page, "rain")).toHaveAttribute("aria-selected", "true");
     expect(await rendered(page, "tone", "focus")).toEqual(["rain"]);
     expect((await state(page)).selected.sort()).toEqual(["/pictures/rain.png", "/pictures/warm.png"]);
   });

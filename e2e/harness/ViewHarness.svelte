@@ -67,6 +67,8 @@
   let menus = $state.raw<Array<string | null>>([]);
   let navigations = $state.raw<string[]>([]);
   let actionError = $state("");
+  let previewVisible = $state(true);
+  const previewCommands: string[] = [];
   // The pane's tile size, as a host with the "tileSize" capability reports it; null simulates an older host.
   let tilePreset = $state<TileSizePreset | null>(initialTileSize);
   // `?ai=1` also activates the AI image plugin, with dialogs and a jobs service.
@@ -179,6 +181,23 @@
    */
   function shortcut(event: KeyboardEvent): void {
     if (opened_dialogs.length || editorSource || configureOpen || event.isComposing || event.repeat) return;
+    // Mirror origin/dev state/window-keyboard.ts inputContext/handleKeydown and
+    // domain/window-keys.ts isNativeControlActivation: accepted grid keys stay
+    // local; unmodified Enter/Space on other native buttons become clicks.
+    const element = event.target instanceof HTMLElement ? event.target : null;
+    const fileEntry = element?.matches('.file-list .entry-item, .file-list .virtual-viewport[role="grid"]') ?? false;
+    if ((fileEntry || element?.closest('[role="grid"], [role="button"], [role="separator"], .video-preview')) && event.defaultPrevented) return;
+    const plain = !event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey;
+    if (element?.tagName === "BUTTON" && !fileEntry && plain && (event.key === "Enter" || event.key === " ")) return;
+    if (element?.matches("input, textarea") || element?.isContentEditable) return;
+    // settings.svelte.ts TOGGLE_SETTINGS: pane-scoped view.togglePreviewPane,
+    // default shortcut Space. Dispatch consumes the key before native activation.
+    if (event.key === " " && plain) {
+      event.preventDefault();
+      previewCommands.push("view.togglePreviewPane");
+      previewVisible = !previewVisible;
+      return;
+    }
     // The host's selection.clearSelection command is bound to Escape (it does not roll back a marquee).
     if (event.key === "Escape" && !event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey && selected.length) { event.preventDefault(); pane.clearSelection(); return; }
     const key = `${event.ctrlKey ? "Ctrl+" : ""}${event.altKey ? "Alt+" : ""}${event.shiftKey ? "Shift+" : ""}${event.key.length === 1 ? event.key.toUpperCase() : event.key}`;
@@ -279,6 +298,7 @@
 
   export const harness = {
     backend,
+    previewCommands: () => [...previewCommands],
     listing: () => [...entries],
     /** The host re-reads status when Show image is clicked, then dispatches the current reveal. */
     async showJob(jobId: number, signal = new AbortController().signal) {
@@ -365,6 +385,7 @@
       </ul>
     {/if}
   </section>
+  {#if previewVisible}
   <aside class="preview" aria-label="Preview">
     <header>
       {#if target}
@@ -401,6 +422,7 @@
       {/if}
     {/if}
   </aside>
+  {/if}
 </main>
 <div class="toasts" aria-label="Notifications">
   {#each toasts as toast}
