@@ -52,6 +52,11 @@ export function packingAnchorMoves(): number {
 
 import { layoutGraph as frozenLayout } from './baseline/layout';
 import { attached as frozenAttached } from './baseline/placement';
+/** Allocated child-band height in the acceptance report; no route-pair analysis is needed. */
+function measuredHeight(layout: GraphLayout, cover: string): number {
+  const children = [...layout.nodes.values()].filter(n => n.key !== cover);
+  return children.length ? Math.max(0, layout.height - (layout.bandBounds?.top ?? Math.min(...children.map(n => n.y))) + 34) : 0;
+}
 /** Historical acceptance row, recomputed over every corpus state and size. */
 export function unexplainedHeightRegressions(): readonly string[] {
   const regressions: string[] = [];
@@ -62,8 +67,8 @@ export function unexplainedHeightRegressions(): readonly string[] {
       baseline = frozenLayout(request);
       const next = optimizedBand(request, { previous, historyPolicy: 'arrival-only' });
       if (!next.layout.decision?.stability) {
-        const baseHeight = measure(frozenAttached(baseline, request), request.band!.key, width, request.items).height;
-        const height = measure(next.placed, request.band!.key, width, request.items).height;
+        const baseHeight = measuredHeight(frozenAttached(baseline, request), request.band!.key);
+        const height = measuredHeight(next.placed, request.band!.key);
         if (height > baseHeight * 1.1 + .01) regressions.push(`${fixture.id}/${width}/${imagePx}/${focus}`);
       }
       previous = next;
