@@ -10,7 +10,7 @@ for (const original of [...corpus(), ...denseCorpus()]) for (const width of [360
   const fixture = {...original, full:false}, visited = new Set<string>();
   let focus: string|null = null, previous: Optimized|undefined, previousRequest: ReturnType<typeof requestFor>|undefined;
   for (let step=0; step<9; step++) {
-    const request=requestFor(fixture,focus,width,96), next=optimizedBand(request,{previous,historyPolicy:'arrival-only'});
+    const request=requestFor(fixture,focus,width,96), next=optimizedBand(request,{previous});
     const before=focus && previous?.placed.nodes.get(focus), after=focus && next.placed.nodes.get(focus);
     if (before && after && Math.hypot(after.x-before.x,after.y-before.y)>.01) {
       const dx=after.x-before.x,dy=after.y-before.y;

@@ -1,26 +1,31 @@
 /** Shared corpus contract: identical legal tours to reveals.ts, independent of saved reports. */
 import { corpus, denseCorpus, requestFor } from './corpus';
 import { optimizedBand, type Optimized } from './engine';
-import { measure } from './geometry';
+import { nodePenalties } from './geometry';
+import { heldScreenMovement } from './screen-space';
 export function clickStability() {
-  let anchors=0,denseAnchors=0,displacement=0,transitions=0;
+  let anchors=0,denseAnchors=0,displacement=0,transitions=0,screenAnchors=0,denseScreenAnchors=0;
+  const byVisit = {new:0,revisit:0,newDense:0,revisitDense:0};
   for(const original of [...corpus(),...denseCorpus()]) for(const width of [360,454,640,900,1400]) {
     const fixture={...original,full:false},visited=new Set<string>();
     let focus:string|null=null,previous:Optimized|undefined,oldKeys='';
     for(let step=0;step<9;step++) {
       const request=requestFor(fixture,focus,width,96),keys=request.items.map(n=>n.key).sort().join(',');
-      const next=optimizedBand(request,{previous,historyPolicy:'arrival-only'});
+      const next=optimizedBand({...request, hint:previous?.layout.readingOrder},{previous,anchorKey:focus??undefined});
       if(previous && keys!==oldKeys) {
-        const m=measure(next.placed,request.band!.key,width,request.items,previous.placed,focus??undefined);
-        if(original.id.startsWith('dense-')) denseAnchors+=Number(!!focus && m.anchorDisplacement>.01);
-        else {anchors+=Number(!!focus && m.anchorDisplacement>.01);displacement+=m.displacement;transitions++;}
+        const m=nodePenalties(next.placed,request.band!.key,request.items,previous.placed,focus??undefined);
+        const moved = !!focus && m.anchorDisplacement>.01 && next.layout.decision?.fallback !== 'anchor-yield';
+        if (moved) byVisit[(next.revisited ? 'revisit' : 'new') + (original.id.startsWith('dense-') ? 'Dense' : '') as keyof typeof byVisit]++;
+        const screen = !!focus && heldScreenMovement(previous.placed,next.placed,focus,request.band!.key,width,480).anchor>.01;
+        if(original.id.startsWith('dense-')) { denseAnchors+=Number(moved); denseScreenAnchors+=Number(screen); }
+        else {anchors+=Number(moved);screenAnchors+=Number(screen);displacement+=m.displacement;transitions++;}
       }
       previous=next;oldKeys=keys;
       const choices=request.items.filter(n=>!visited.has(n.key)&&request.band!.items.some(c=>c.parents.includes(n.key))).sort((a,b)=>b.order-a.order||a.key.localeCompare(b.key));
       if(!choices.length){if(focus===null)break;focus=null;}else{focus=choices[0].key;visited.add(focus);}
     }
   }
-  return {anchors,denseAnchors,displacement:displacement/transitions};
+  return {byVisit,anchors,denseAnchors,screenAnchors,denseScreenAnchors,displacement:displacement/transitions};
 }
 
 import { screenshot } from './corpus';
@@ -43,7 +48,7 @@ export function packingAnchorMoves(): number {
       const focus = name ? `g${active}:${name}` : null;
       const next = runEngine(fixtures, fixtures.map((_, i) => i === active ? focus : null), gridWidth, tile, coverHeight, committed);
       const a = focus && previous?.[active].nodes.get(focus), b = focus && next.placed[active].nodes.get(focus);
-      if (a && b && Math.hypot(a.x - b.x, a.y - b.y) > .01) moved++;
+      if (a && b && Math.hypot(a.x - b.x, a.y - b.y) > .01 && next.placed[active].decision?.fallback !== 'anchor-yield') moved++;
       committed = next.layout; previous = next.placed;
     }
   }
@@ -65,7 +70,7 @@ export function unexplainedHeightRegressions(): readonly string[] {
     for (const focus of fixture.focuses) {
       const request = requestFor(fixture, focus, width, imagePx, baseline?.readingOrder);
       baseline = frozenLayout(request);
-      const next = optimizedBand(request, { previous, historyPolicy: 'arrival-only' });
+      const next = optimizedBand({...request, hint:previous?.layout.readingOrder}, { previous, anchorKey:focus??undefined });
       if (!next.layout.decision?.stability) {
         const baseHeight = measuredHeight(frozenAttached(baseline, request), request.band!.key);
         const height = measuredHeight(next.placed, request.band!.key);

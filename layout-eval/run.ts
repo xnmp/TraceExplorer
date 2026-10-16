@@ -6,6 +6,7 @@ import { optimizedBand } from './engine';
 import { measure } from './geometry';
 import { layoutGraph as baselineLayout } from './baseline/layout';
 import { attached as baselineAttached } from './baseline/placement';
+import main from './main-reference.json';
 const out = 'layout-eval/out';
 // `--engine=<name>` picks the registered folder layout engine the packing cases run through the seam.
 const engineArgs = process.argv.slice(2).filter(a => a.startsWith('--engine='));
@@ -13,6 +14,7 @@ await mkdir(out, { recursive: true });
 for (const name of ['bench', 'reveals', 'packing', 'perf']) {
   console.log(`Running ${name}...`);
   const file = Bun.file(`${out}/${name}.log`);
+  await writeFile(`${out}/${name}.log`, '');
   const child = Bun.spawn([process.execPath, `layout-eval/${name}.ts`, ...(name === 'packing' ? engineArgs : [])], { stdout: file, stderr: 'inherit', env: process.env });
   const status = await child.exited;
   if (status) { console.error(`${name} failed with exit ${status}; see ${out}/${name}.log`); process.exit(status); }
@@ -72,12 +74,43 @@ const acceptance = [
 ];
 const gates = acceptance.find(r => r.target.startsWith('Hard gate'))!;
 gates.pass = gates.proposed === 0;
+// The older frozen engine remains diagnostic. These are the current product gates
+// against the re-measured origin/main revision, independent of that older baseline.
+const screen = (rows: any[], height: number) => rows.filter(r => r.changed && r.focus && r.screen[height].anchor > .01).length;
+const geometryFallback = (r: any) => ['geometry-fallback', 'isolated-rows', 'safe-rows', 'pin-search-exhausted'].includes(r.decision?.fallback);
+const fallbackRows = { corpus: newRows, tours: tours.rows, packing: packing.filter((r: any) => r.engine === 'proposed') };
+const fallbacks = Object.fromEntries(Object.entries(fallbackRows).map(([name, rows]) => [name, {
+  states: rows.length, count: rows.filter(geometryFallback).length,
+  outsidePane: rows.filter((r: any) => geometryFallback(r) && (r.metrics?.overflow ?? r.proposed?.overflow ?? r.overflow ?? 0) > .01).length,
+}]));
+const taskAcceptance = [
+  { target: 'Click anchor moves, including packing', main: main.acceptance[2].proposed, proposed: acceptance[2].proposed, limit: 32 },
+  { target: 'Dense-tour anchor moves', main: main.acceptance[3].proposed, proposed: denseMoved.length, limit: 101 },
+  { target: 'Mean legal displacement, px', main: main.summary.displacement, proposed: tours.summary.proposed.displacement, limit: 17.5 },
+  { target: 'Unexplained height regressions', main: 0, proposed: unpricedHeight.length, limit: 0 },
+  ...[false, true].map(dense => ({ target: `Held-screen moves at 480 px (${dense ? 'dense' : 'broad'})`, main: main.screen['480'][dense ? 'dense' : 'broad'],
+    proposed: screen(dense ? denseTours : broadTours, 480), limit: main.screen['480'][dense ? 'dense' : 'broad'] })),
+  { target: 'Hard violations/errors', main: 0, proposed: gates.proposed, limit: 0 },
+  { target: 'Main-thread maximum p95, ms', main: main.acceptance[12].proposed, proposed: maxSmall('proposed'), limit: 5 },
+  { target: 'Full folder engine maximum inline p95, ms (no saved main measurement)', main: NaN, proposed: Math.max(...timing.folders.map((r: any)=>r.p95)), limit: 5 },
+  ...['height','width','area','tileArea','whitespace','paneWhitespace','length','bends','crossings','mixedDirections','siblingInversions','unaligned','overflow'].map(metric => ({
+    target: `Mean ${metric}`, main: (main.mean as Record<string, number>)[metric], proposed: broad.summary.proposed.mean[metric],
+    limit: (main.mean as Record<string, number>)[metric] * (['height','overflow'].includes(metric) ? 1 : 1.1),
+  })),
+  ...Object.entries(fallbacks).flatMap(([name, f]) => [
+    { target: `${name} geometry fallback rate, %`, main: main.fallbacks[name as keyof typeof main.fallbacks].count / main.fallbacks[name as keyof typeof main.fallbacks].states * 100,
+      proposed: f.count / f.states * 100, limit: name === 'packing' ? 0 : .5 },
+    { target: `${name} geometry fallbacks outside pane`, main: 0, proposed: f.outsidePane, limit: 0 },
+  ]),
+].map(row => ({ ...row, pass: row.proposed <= row.limit + 1e-9 }));
+const taskTable = ['| Current target | Main 75e46b0 | This pass | Limit | Result |', '|---|---:|---:|---:|---|',
+  ...taskAcceptance.map(r => `| ${r.target} | ${r.main.toFixed(3)} | ${r.proposed.toFixed(3)} | ${r.limit.toFixed(3)} | ${r.pass ? 'PASS' : 'FAIL'} |`)].join('\n');
 const laneList = laneCases.length ? ['| Source | Case | Width / image | Step | Candidate | Shared lane px | Reason |', '|---|---|---|---:|---|---:|---|',
   ...laneCases.map((r: any) => `| ${r.source} | ${r.case} | ${r.width} / ${r.imagePx} | ${r.step} | ${r.candidate} | ${r.sharedLanePx.toFixed(1)} | ${r.reason ?? '**unexplained**'} |`)].join('\n') : 'None.';
 const table = ['| Acceptance target | Baseline | New | Result |', '|---|---:|---:|---|', ...acceptance.map(r => `| ${r.target} | ${Number(r.baseline).toFixed(3)} | ${r.proposed.toFixed(3)} | ${r.pass ? 'PASS' : 'FAIL'} |`)].join('\n');
 const metrics = ['| Metric (mean per layout) | Baseline | New |', '|---|---:|---:|', ...Object.keys(broad.summary.baseline.mean).map(k => `| ${k} | ${broad.summary.baseline.mean[k].toFixed(3)} | ${broad.summary.proposed.mean[k].toFixed(3)} |`)].join('\n');
 const report = `${table}\n\n${metrics}\n\nExplicit anchor fallbacks (anchor-infeasible): ${moved.length}. Anchors yielded to the crossing cap (anchor-yield): ${yields.length}${yields.length ? ` (${yields.map((r: any) => `${r.case} ${r.width} step ${r.step}`).join('; ')})` : ''}. Height exceptions selected for stability: ${heightExceptions.length - unpricedHeight.length}.\n\n### Dense tours\n\n| Fan-in | Steps | Clicks | Anchors moved (baseline) | Anchors moved (new, not yielded) | anchor-infeasible | anchor-yield | lane-infeasible | gate-infeasible |\n|---:|---:|---:|---:|---:|---:|---:|---:|---:|\n${denseBreakdown.map(d => `| ≤${d.fanIn} | ${d.steps} | ${d.clicks} | ${d.baselineMoved} | ${d.moved} | ${d.anchorInfeasible} | ${d.anchorYield} | ${d.laneInfeasible} | ${d.gateInfeasible} |`).join('\n')}\n\nDense tours, mean height ${tours.denseSummary.baseline.height.toFixed(1)} → ${tours.denseSummary.proposed.height.toFixed(1)} px, mean displacement ${tours.denseSummary.baseline.displacement.toFixed(2)} → ${tours.denseSummary.proposed.displacement.toFixed(2)} px.\n\n### Shared lanes shown (listed fallbacks)\n\n${laneList}\n\n${await readFile(`${out}/readability.md`, 'utf8')}\n${await readFile(`${out}/perf.log`, 'utf8')}`;
-await writeFile(`${out}/acceptance.md`, report);
-await writeFile(`${out}/acceptance.json`, JSON.stringify({ acceptance, moved, yields, denseMoved, denseBreakdown, heightExceptions, perfRegressions, smallSlow, laneCases }, null, 2));
-console.log(report);
-if (acceptance.some(r => !r.pass)) process.exitCode = 1;
+await writeFile(`${out}/acceptance.md`, `${taskTable}\n\nHistorical frozen-baseline diagnostics (retain their original thresholds):\n\n${report}`);
+await writeFile(`${out}/acceptance.json`, JSON.stringify({ taskAcceptance, fallbacks, acceptance, moved, yields, denseMoved, denseBreakdown, heightExceptions, perfRegressions, smallSlow, laneCases }, null, 2));
+console.log(taskTable + '\n\n' + report);
+if (acceptance.some(r => !r.pass) || taskAcceptance.some(r => !r.pass)) process.exitCode = 1;

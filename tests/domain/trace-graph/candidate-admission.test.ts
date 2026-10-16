@@ -12,7 +12,7 @@ it('admits normal candidates within the pane or the measured main allowance acro
   let states = 0, fallbacks = 0;
   for (const fixture of corpus()) for (const width of [360, 640]) {
     const request = requestFor(fixture, fixture.focuses.at(-1) ?? null, width, 96);
-    const result = optimizedBand(request, {historyPolicy:'arrival-only'});
+    const result = optimizedBand(request, {});
     states++;
     if (result.layout.decision?.fallback === 'geometry-fallback') fallbacks++;
     const gate = geometryGate(result.placed, request.items, request.band!.key, width);
@@ -66,7 +66,7 @@ it('does not add overflow beyond main on the smaller-preset and reveal states', 
   const failures: unknown[] = [];
   for (const [id, width, imagePx, step, allowance] of mainStateBounds) {
     const fixture = fixtures.get(id)!, request = requestFor(fixture, fixture.focuses[step], width, imagePx);
-    const result = optimizedBand(request, { historyPolicy: 'arrival-only' });
+    const result = optimizedBand(request, { });
     const overflow = measure(result.placed, request.band!.key, width, request.items).overflow;
     if (overflow > allowance) failures.push({id,width,imagePx,step,allowance,overflow});
   }

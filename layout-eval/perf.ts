@@ -6,6 +6,7 @@ import { layoutGraph } from './baseline/layout';
 import { performanceWorkloads } from './perf-workloads';
 import { layoutGraph as productionLayout, type LayoutRequest } from '../src/lib/domain/trace-graph/layout';
 import { canLayoutInline } from '../src/lib/domain/trace-graph/layout-workload';
+import { timeInlineFolders } from './perf-folder';
 const quantile = (xs: number[], q: number) => [...xs].sort((a, b) => a - b)[Math.max(0, Math.ceil(xs.length * q) - 1)] ?? 0;
 const rows = [];
 const workloads = performanceWorkloads();
@@ -33,7 +34,9 @@ for (const workload of workloads) {
 }
 await mkdir('layout-eval/out', { recursive: true });
 const load = { cpus: cpus().length, before: loadBefore, after: loadavg() };
-await writeFile('layout-eval/out/perf.json', JSON.stringify({ bun: Bun.version, iterations: '40-400 paired, ~2 s per case', warmup: 12, load, rows }, null, 2));
+const folders = timeInlineFolders();
+await writeFile('layout-eval/out/perf.json', JSON.stringify({ bun: Bun.version, iterations: '40-400 paired, ~2 s per case; folders: 100 samples', warmup: 12, load, rows, folders }, null, 2));
 const fmt = (xs: number[]) => xs.map(x => x.toFixed(2)).join(' / ');
 console.log(`Load average (1 / 5 / 15 min) on ${load.cpus} CPUs: before ${fmt(load.before)}, after ${fmt(load.after)}\n`);
 console.log(['| Case | Visible | Baseline p50 / p95 ms | New p50 / p95 ms |', '|---|---:|---:|---:|', ...rows.map(r => `| ${r.case} | ${r.visible} | ${r.baseline.p50.toFixed(3)} / ${r.baseline.p95.toFixed(3)} | ${r.proposed.p50.toFixed(3)} / ${r.proposed.p95.toFixed(3)} |`)].join('\n'));
+console.log(`\nFull folder engine, ${folders.length} inline workloads: maximum p95 ${Math.max(...folders.map(r=>r.p95)).toFixed(3)} ms.`);

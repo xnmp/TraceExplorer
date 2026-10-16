@@ -60,7 +60,7 @@ for (const c of cases)
                             result = base;
                         }
                         else {
-                            proposed = optimizedBand({ ...request, hint: prevPrototype?.layout.readingOrder }, { previous: prevPrototype, stability, anchorKey: focus ?? undefined, historyPolicy: "arrival-only" });
+                            proposed = optimizedBand({ ...request, hint: prevPrototype?.layout.readingOrder }, { previous: prevPrototype, stability, anchorKey: focus ?? undefined });
                             result = proposed.layout;
                             candidate = proposed.candidate;
                         }
@@ -121,7 +121,7 @@ const replay = (id: string, width: number, imagePx: number, at: number) => {
     let prevBaseline: GraphLayout | undefined, prevPrototype: Optimized | undefined;
     for (const [step, focus] of c.focuses.entries()) {
         const request = requestFor(c, focus, width, imagePx, prevBaseline?.readingOrder);
-        const base = layoutGraph(request), proposed = optimizedBand({ ...request, hint: prevPrototype?.layout.readingOrder }, { previous: prevPrototype, stability, anchorKey: focus ?? undefined, historyPolicy: "arrival-only" });
+        const base = layoutGraph(request), proposed = optimizedBand({ ...request, hint: prevPrototype?.layout.readingOrder }, { previous: prevPrototype, stability, anchorKey: focus ?? undefined });
         if (step === at) return { request, baseline: attached(base, request), proposed: attachSingleBand(proposed.layout, request), candidate: proposed.candidate };
         prevBaseline = base; prevPrototype = proposed;
     }
