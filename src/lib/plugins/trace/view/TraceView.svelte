@@ -526,14 +526,16 @@
    * so pressing a pending stack's disclosure cancels its opening.
    */
   function activateStack(cell: FolderCell, event: MouseEvent, toggle: boolean): void {
-    const summary = cell.summary;
-    if (!summary) return;
+    if (!cell.summary) return;
+    // The stack's component is found again by its cover's key when each action runs: it may have
+    // merged since this cell was published, which changes its id.
+    const componentId = () => summaries.find((candidate) => candidate.coverKey === cell.id)?.id ?? cell.summary!.id;
     if (toggle && openKeys.has(cell.id)) {
-      void controller.action({ kind: "collapse", target: cell.id, anchor: "hold" }, () => setExpanded(summary.id, false));
+      void controller.action({ kind: "collapse", target: cell.id, anchor: "hold" }, () => setExpanded(componentId(), false));
       return;
     }
     if (toggle) {
-      void controller.action({ kind: "expand", target: cell.id, anchor: "hold" }, () => { supersedeReveal(); releaseAnchors(); setExpanded(summary.id, true); });
+      void controller.action({ kind: "expand", target: cell.id, anchor: "hold" }, () => { supersedeReveal(); releaseAnchors(); setExpanded(componentId(), true); });
       return;
     }
     const selecting = requestedFocus?.key === cell.id && requestedFocus.plain && requestedFocus.current();
@@ -542,8 +544,8 @@
       // toggling only expansion. Close before requesting focus: a close invalidates older reads.
       const opening = !openKeys.has(cell.id);
       void controller.action({ kind: opening ? "expand" : "collapse", target: cell.id, anchor: "hold" }, (lease) => {
-        setExpanded(summary.id, opening);
-        return reachAndFocus(lease, cell.id, summary.id, {}, "hold", true);
+        setExpanded(componentId(), opening);
+        return reachAndFocus(lease, cell.id, componentId(), {}, "hold", true);
       });
       return;
     }
@@ -557,8 +559,8 @@
       const index = controller.committedIndex;
       if (cell.entry && index?.members.get(cell.entry.path)?.key === cell.coverKey) {
         supersedeReveal(); releaseAnchors(); keepFocusedOpen(); selectListed(cell.entry, modifiersOf(event));
-      } else pending = reachAndFocus(lease, cell.id, summary.id, modifiersOf(event), "hold", !modified(event));
-      if (opens) setExpanded(summary.id, true);
+      } else pending = reachAndFocus(lease, cell.id, componentId(), modifiersOf(event), "hold", !modified(event));
+      if (opens) setExpanded(componentId(), true);
       return pending;
     });
   }
