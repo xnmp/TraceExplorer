@@ -1,19 +1,26 @@
 /** Serial fallback with early binary meetings and reusable source lanes. */
 import type { GraphLayout, LayoutRequest, PlacedJunction, PlacedNode, PlacedRoute, RowBox } from './layout';
-import { buildInputJunctions, endpointKey, type Consumer, type Endpoint, type Route } from './junctions';
+import { buildInputJunctions, endpointKey, type Endpoint } from './junctions';
 import { boundedJunctions } from './bounded-junctions';
 import { fallbackOrder, fallbackLanes } from './fallback-order';
+import { streamingJunctions, type SharedRoute } from './streaming-junctions';
+import { routeConsumers, consumerCount, type ConsumerSet } from './route-consumers';
 import { safeChain } from './safe-chain';
 import { ARROW } from './metrics';
 
 export function safeLayout(request: LayoutRequest): GraphLayout {
+  return serialLayout(request, false);
+}
+
+function serialLayout(request: LayoutRequest, streaming: boolean, arrivalRank?: ReadonlyMap<string, number>): GraphLayout {
   const items = [...request.items].sort((a, b) => a.order - b.order || a.key.localeCompare(b.key));
   const byKey = new Map(items.map(n => [n.key, n]));
-  const plan = boundedJunctions(buildInputJunctions(items.map(n => ({ child: n.key, parents: [...new Set(n.parents)].filter(p => byKey.has(p)) }))), 2);
+  const original = buildInputJunctions(items.map(n => ({ child: n.key, parents: [...new Set(n.parents)].filter(p => byKey.has(p)) })));
+  const plan = streaming ? streamingJunctions(original, arrivalRank!) : boundedJunctions(original, 2);
   const endpoints: Endpoint[] = [...items.map(n => ({ kind: 'node' as const, id: n.key })), ...plan.joins.map(j => ({ kind: 'junction' as const, id: j.id }))];
   const byEnd = new Map(endpoints.map(end => [endpointKey(end), end]));
   const children = new Map<string, string[]>(), parents = new Map(endpoints.map(end => [endpointKey(end), [] as string[]]));
-  const incoming = new Map<string, Route[]>();
+  const incoming = new Map<string, SharedRoute[]>();
   for (const route of plan.routes) {
     const from = endpointKey(route.from), to = endpointKey(route.to);
     const outputs = children.get(from) ?? []; outputs.push(to); children.set(from, outputs);
@@ -32,6 +39,7 @@ export function safeLayout(request: LayoutRequest): GraphLayout {
   if (right > request.maxWidth) {
     const chain = safeChain(request);
     if (chain && chain.width <= request.maxWidth) return chain;
+    if (!streaming) return serialLayout(request, true, new Map(order.map((key, i) => [key, i])));
     // This is a limit of this construction, not a proof that the graph cannot fit.
     // Never disguise exhausted lane capacity by publishing a wider fallback.
     throw new RangeError('Bounded fallback lane capacity exhausted; feasibility unknown');
@@ -53,7 +61,7 @@ export function safeLayout(request: LayoutRequest): GraphLayout {
       positions.set(key, { x: center, y }); bottom = y;
     }
   }
-  const branches = new Map<string, { y: number; consumers: readonly Consumer[] }[]>();
+  const branches = new Map<string, { y: number; consumers: ConsumerSet }[]>();
   for (const key of order) {
     const end = byEnd.get(key)!, inputs = incoming.get(key) ?? [];
     const targetY = end.kind === 'node' ? nodes.get(end.id)!.y : junctions.get(end.id)!.y;
@@ -70,15 +78,18 @@ export function safeLayout(request: LayoutRequest): GraphLayout {
   // Each source trunk is drawn once; suffix consumer ranges avoid copying fans.
   for (const [key, exits] of branches) {
     exits.sort((a, b) => a.y - b.y);
-    const entries = exits.flatMap(exit => exit.consumers), source = positions.get(key)!, x = lanes.get(key)!, end = byEnd.get(key)!;
-    let start = 0;
+    const consumers = exits.length === 1 ? exits[0].consumers : exits.flatMap(routeConsumers);
+    const table = Array.isArray(consumers) ? { entries: consumers, start: 0, end: consumers.length }
+      : consumers as Exclude<ConsumerSet, readonly unknown[]>;
+    const source = positions.get(key)!, x = lanes.get(key)!, end = byEnd.get(key)!;
+    let start = table.start;
     for (let i = 0; i < exits.length; i++) {
       const points = i ? [[x, exits[i - 1].y], [x, exits[i].y]]
         : [[source.x, source.y], [source.x, source.y + 12], [x, source.y + 12], [x, exits[i].y]];
       routes.push({ id: JSON.stringify(['safe-trunk', key, i]), from: end, to: end,
-        terminal: false, consumers: { entries, start, end: entries.length },
+        terminal: false, consumers: { entries: table.entries, start, end: table.end },
         path: points.map(([px, py], j) => `${j ? 'L' : 'M'}${px} ${py}`).join(' ') });
-      start += exits[i].consumers.length;
+      start += consumerCount(exits[i]);
     }
   }
   return { orientation: 'down', width: Math.max(request.maxWidth, right), height: bottom + 14,

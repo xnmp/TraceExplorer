@@ -46,3 +46,14 @@ it('uses a single vertical column when a chain tile fits but standard gutters do
   expect(raw.width).toBeLessThanOrEqual(120);
   expect(geometryGate(attachSingleBand(raw,request),items,'0',120)).toBeNull();
 });
+
+it.each([16,32,100].flatMap(count => [true,false].map(padded => ({count,padded}))))('streams $count merge inputs with padded=$padded within the pane capacity', ({count,padded}) => {
+  const inputs=Array.from({length:count},(_,i)=>({key:`p${padded?String(i).padStart(3,'0'):i}`,order:i+1,width:96,height:96,parents:['root']}));
+  const items=[{key:'root',order:0,width:96,height:96,parents:[]},...inputs,{key:'out',order:count+1,width:96,height:96,parents:inputs.map(n=>n.key)}];
+  const request={items,maxWidth:108,band:{key:'root',items},pinned:{key:'root',x:54}};
+  const raw=safeLayout(request);
+  expect(raw.width).toBeLessThanOrEqual(108);
+  expect(geometryGate(attachSingleBand(raw,request),items,'root',108)).toBeNull();
+  const tables=new Set(raw.routes.map(r=>Array.isArray(r.consumers)?r.consumers:(r.consumers as {entries:readonly unknown[]}).entries));
+  expect([...tables].reduce((sum,entries)=>sum+entries.length,0)).toBeLessThanOrEqual(count*8);
+});
