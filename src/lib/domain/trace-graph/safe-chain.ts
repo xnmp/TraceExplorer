@@ -29,7 +29,9 @@ export function safeChain(request: LayoutRequest): GraphLayout | null {
   const descendants = ordered.slice(1), gutter = 24, columnGap = 32, rowGap = 48;
   const widest = descendants.reduce((value, item) => Math.max(value, item.width), 1);
   const tallest = descendants.reduce((value, item) => Math.max(value, item.height), 1);
-  const columns = Math.max(1, Math.ceil(Math.sqrt(descendants.length * (tallest + rowGap) / (widest + columnGap))));
+  const compactColumns = Math.max(1, Math.ceil(Math.sqrt(descendants.length * (tallest + rowGap) / (widest + columnGap))));
+  const fittingColumns = Math.floor((request.maxWidth - 2 * gutter + columnGap) / (widest + columnGap));
+  const columns = fittingColumns > 0 ? Math.min(compactColumns, fittingColumns) : compactColumns;
   const rowCount = Math.ceil(descendants.length / columns);
   const coverX = request.pinned?.x ?? Math.max(cover.width / 2, request.maxWidth / 2);
   if (!inReach(coverX) || coverX < cover.width / 2) return null;

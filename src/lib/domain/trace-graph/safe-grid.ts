@@ -17,7 +17,9 @@ export function safeFanGrid(request: LayoutRequest): GraphLayout | null {
   const widest = children.reduce((value, item) => Math.max(value, item.width), 1);
   const tallest = children.reduce((value, item) => Math.max(value, item.height), 1);
   const gutter = 24, columnGap = 32, rowGap = 48;
-  const columns = Math.max(1, Math.min(children.length, Math.ceil(Math.sqrt(children.length * (tallest + rowGap) / (widest + columnGap)))));
+  const compactColumns = Math.max(1, Math.min(children.length, Math.ceil(Math.sqrt(children.length * (tallest + rowGap) / (widest + columnGap)))));
+  const fittingColumns = Math.floor((request.maxWidth - 2 * gutter + columnGap) / (widest + columnGap));
+  const columns = fittingColumns > 0 ? Math.min(compactColumns, fittingColumns) : compactColumns;
   const rowCount = Math.ceil(children.length / columns), firstY = cover.height + STACK_STEM_ROOM;
   const width = Math.max(request.maxWidth, cover.width + 2 * gutter,
     2 * gutter + columns * widest + (columns - 1) * columnGap);

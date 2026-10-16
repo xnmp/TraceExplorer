@@ -28,6 +28,7 @@ it.each([1, 2, 7, 43, 100])('preserves all %i unequal fan tiles and parent edges
   const request = { items, band: { key: '0', items }, maxWidth: 640, tileWidth: 92, pinned: { key: '0', x: 320 } };
   const raw = safeFanGrid(request)!;
   expect(raw).not.toBeNull();
+  expect(raw.width).toBeLessThanOrEqual(request.maxWidth);
   const placed = attachSingleBand(raw, request);
   expect(placed.nodes.size).toBe(count);
   expect(placed.routes).toHaveLength(count - 1);

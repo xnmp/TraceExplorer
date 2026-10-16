@@ -29,6 +29,7 @@ it.each([2, 3, 7, 16, 43, 100])('keeps all %i unequal chain tiles and routes wit
   const request = { items, maxWidth: 640, tileWidth: 92, band: { key: '0', items }, pinned: { key: '0', x: 320 } };
   const raw = safeChain(request)!;
   expect(raw).not.toBeNull();
+  expect(raw.width).toBeLessThanOrEqual(request.maxWidth);
   const result = attachSingleBand(raw, request);
   expect(geometryGate(result, items, '0', 640)).toBeNull();
   expect(measure(result, '0', 640, items).crossings).toBe(0);
