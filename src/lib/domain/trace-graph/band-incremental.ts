@@ -15,7 +15,7 @@
  * tail leaves downward; more parents nest further junctions on a spine above it. Where no
  * lane-free placement exists the candidate is withheld (null) rather than drawn with a shared lane.
  */
-import { nearestFree, type GraphLayout, type LayoutRequest, type PlacedNode, type PlacedRoute, type PlacedJunction } from "./layout";
+import { nearestFree, type GraphLayout, type LayoutItem, type LayoutRequest, type PlacedNode, type PlacedRoute, type PlacedJunction } from "./layout";
 import { ARROW, JUNCTION_BERTH, LANE_SEPARATION, PORT_BERTH, spacingFor, STACK_STEM_ROOM } from "./metrics";
 import { axisOf, berthsOf, distanceToTile, entersBerth, grazesTile, INTO_JUNCTION, INTO_TILE, leavingRunFrom, routeEnds, shallowRun, SHALLOW_RUN, TILE_GRAZE, type Berth, type Ends } from "./route-contacts";
 import { bandExtent } from "./band-geometry";
@@ -42,6 +42,14 @@ const TRAVEL_ROWS = [0, -1, 1] as const;
 const HEADER_ROWS = [6, 9, 3, 15] as const;
 /** Junction rows tried above a multi-parent tile, relative to the default (two arrow lengths above it). */
 const JOIN_SHIFTS = [0] as const;
+/**
+ * Lane-free routes a search weighs, after the first, for one crossing fewer other lines: the
+ * shortest route crossing none is taken at once; failing that, the fewest crossings among the
+ * first this many.
+ */
+const CROSSING_SCAN = 8;
+/** Placements adding no more height wired, after the first direct one that crosses other lines, for one crossing fewer. */
+const CROSSING_PROBES = 8;
 /** Clear fallback slots routed with the grid router before the candidate is withheld. */
 const FALLBACK_SLOTS = 3;
 /** Rows of placed tiles (nearest below the parent first) probed for holes a new tile fits in. */
@@ -118,6 +126,12 @@ const path = (points: readonly Point[]) => {
 };
 const point = (x: number, y: number): Point => ({ x, y });
 /** `overlap(a, b, gap)` = `overlapX(a, b, gap) && overlapY(a, b, gap)`; the halves let one row's vertical test be shared. */
+const orient = (a: Point, b: Point, c: Point) => (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
+/** Whether two segments cross at a point inside both (touching at an end, or running along each other, is no crossing). */
+function properlyCross([p, q]: Segment, [r, t]: Segment): boolean {
+  const d1 = orient(r, t, p), d2 = orient(r, t, q), d3 = orient(p, q, r), d4 = orient(p, q, t);
+  return ((d1 > 1e-9 && d2 < -1e-9) || (d1 < -1e-9 && d2 > 1e-9)) && ((d3 > 1e-9 && d4 < -1e-9) || (d3 < -1e-9 && d4 > 1e-9));
+}
 const overlapX = (a: PlacedNode, b: PlacedNode, gap: number) => a.x < b.x + b.width + gap && b.x < a.x + a.width + gap;
 const overlapY = (a: { y: number; height: number }, b: PlacedNode, gap: number) => a.y < b.y + b.height + gap && b.y < a.y + a.height + gap;
 
@@ -442,6 +456,21 @@ class LaneIndex {
       if (Math.max(a.x, b.x) < left || Math.min(a.x, b.x) > right || Math.max(a.y, b.y) < top || Math.min(a.y, b.y) > bottom) return false;
       return distanceToTile(segment, tile) < TILE_GRAZE - 1e-9;
     });
+  }
+
+  /** How many segments of sources other than `source` the segments of `list` cross, each at a point inside both. */
+  crossings(list: readonly Segment[], source: string): number {
+    let count = this.base?.crossings(list, source) ?? 0;
+    for (const segment of list) {
+      const [a, b] = segment, query = ++this.query;
+      this.cells.some(Math.min(a.x, b.x), Math.min(a.y, b.y), Math.max(a.x, b.x), Math.max(a.y, b.y), index => {
+        if (this.visited[index] === query) return false;
+        this.visited[index] = query;
+        if (this.sources[index] !== source && properlyCross(segment, this.all[index])) count++;
+        return false;
+      });
+    }
+    return count;
   }
 
   /**
@@ -825,6 +854,8 @@ interface Route {
   readonly arrival: Arrival;
   /** Taken from the detours: no direct route was lane-free (`RouteSearch.find`). */
   readonly detour?: true;
+  /** Other sources' segments it crosses (`LaneIndex.crossings`), when the search counted them. */
+  readonly crossings?: number;
 }
 /** A route's ends by where it arrives: a tile's port (an arrowhead) or a junction's dot. */
 const endsInto = (arrival: Arrival): Ends => arrival.level < 0 ? INTO_TILE : INTO_JUNCTION;
@@ -904,19 +935,32 @@ class RouteSearch {
    */
   find(lanes: LaneIndex, record = false, taken?: ReadonlySet<Arrival>, directOnly = false): Route | null {
     for (let index = 0; index < (directOnly ? 1 : 2); index++) {
-      const { families, owner, order, bases, variants } = this.tier(index), crowded: number[] = [];
+      const { families, owner, order, bases, variants } = this.tier(index), crowded: number[] = [], crossing: number[] = [];
+      // The lane-free route crossing the fewest other lines (`crossingRoute`): the shortest that
+      // crosses none, else, of those met by the end of the scan, the fewest crossings, then the shortest.
+      const found: { best: Weighed | null; scan: number } = { best: null, scan: CROSSING_SCAN };
+      const consider = (c: Candidate, f: number): boolean => {
+        const crossings = lanes.crossings(c.lanes, this.source), best = found.best;
+        if (!best || crossings < best.crossings || (crossings === best.crossings && c.length < best.c.length)) found.best = { c, f, crossings };
+        return crossings === 0 || !(--found.scan > 0);
+      };
       for (const f of order) {
         if (taken?.has(owner[f])) continue;
         const c = bases[f] ??= this.candidate(families[f].base);
         if (!this.isClear(c)) continue;
         if (!c.crowded) {
-          if (!lanes.conflicts(c.lanes, this.source, endsInto(owner[f]))) return route(c, owner[f], index);
+          if (!lanes.conflicts(c.lanes, this.source, endsInto(owner[f]))) {
+            if (consider(c, f)) return crossingRoute(found.best!, owner, index);
+            crossing.push(f);
+            continue;
+          }
           if (record) c.crowded = true;
         }
         crowded.push(f);
       }
+      // Other lanes of the families whose base ran along another source's lane, or crossed another line.
       const options: Candidate[] = [], from: number[] = [];
-      for (const f of crowded.sort((a, b) => a - b)) {
+      for (const f of [...crowded, ...crossing].sort((a, b) => a - b)) {
         let list = variants.get(f);
         if (!list) { list = families[f].variants().map(points => this.candidate(points)); variants.set(f, list); }
         for (const c of list) { options.push(c); from.push(f); }
@@ -924,17 +968,21 @@ class RouteSearch {
       const ranked = options.map((_, i) => i).sort((a, b) => options[a].length - options[b].length || a - b);
       for (const i of ranked) {
         const c = options[i];
-        if (c.crowded) continue;
-        if (!lanes.conflicts(c.lanes, this.source, endsInto(owner[from[i]]))) { if (this.isClear(c)) return route(c, owner[from[i]], index); }
+        if (c.crowded || c === found.best?.c) continue;
+        if (!lanes.conflicts(c.lanes, this.source, endsInto(owner[from[i]]))) { if (this.isClear(c) && consider(c, from[i])) return crossingRoute(found.best!, owner, index); }
         else if (record) c.crowded = true;
       }
+      if (found.best) return crossingRoute(found.best, owner, index);
     }
     return null;
   }
 }
 
 /** The route a search found in tier `tier` (0: direct, 1: detours). */
-const route = (c: Candidate, arrival: Arrival, tier: number): Route => tier ? { points: c.points, ss: c.ss, arrival, detour: true } : { points: c.points, ss: c.ss, arrival };
+const route = (c: Candidate, arrival: Arrival, tier: number, crossings?: number): Route => tier ? { points: c.points, ss: c.ss, arrival, detour: true, crossings } : { points: c.points, ss: c.ss, arrival, crossings };
+/** A lane-free candidate of family `f`, with the other lines it crosses. */
+interface Weighed { readonly c: Candidate; readonly f: number; readonly crossings: number }
+const crossingRoute = (best: Weighed, owner: readonly Arrival[], tier: number): Route => route(best.c, owner[best.f], tier, best.crossings);
 
 /** Junction points above tile `n` for `count` parents: level 0 lowest, `LEVEL_GAP` apart. */
 function joinLevels(n: PlacedNode, count: number, shift: number): Point[] {
@@ -1131,7 +1179,7 @@ function coverStemFor(request: LayoutRequest, cover: PlacedNode): (points: reado
 export function incrementalTree(request: LayoutRequest, previous: GraphLayout, budget: IncrementalBudget = incrementalBudget()): GraphLayout | null {
   const key = request.band!.key, s = spacingFor(request.tileWidth), wanted = new Set(request.items.map(n => n.key));
   if (request.items.length > INCREMENTAL_LIMIT || !wanted.has(key)) return null;
-  if (!previous.nodes.has(key) || request.items.some(n => n.key !== key && n.parents.length === 0 && !previous.nodes.has(n.key))) return null;
+  if (!previous.nodes.has(key)) return null;
   // Geometry beyond the lane index's reach (or not finite) cannot be searched in bounded time; lay out afresh.
   if (!inReach(request.maxWidth) || request.items.some(n => !inReach(n.width) || !inReach(n.height))) return null;
   const nodes = new Map<string, PlacedNode>();
@@ -1154,6 +1202,10 @@ export function incrementalTree(request: LayoutRequest, previous: GraphLayout, b
   if (lanes.tooLarge()) return null;
   const remaining = request.items.filter(n => !nodes.has(n.key));
   if (!remaining.length) return null;
+  /** Items by their set of inputs (as `siblingInversions` groups them). */
+  const parentSet = (parents: readonly string[]) => parents.length === 1 ? parents[0] : [...new Set(parents)].sort().join("\u0000");
+  const siblingsOf = new Map<string, LayoutItem[]>();
+  for (const n of request.items) if (n.parents.length) { const k = parentSet(n.parents), list = siblingsOf.get(k); if (list) list.push(n); else siblingsOf.set(k, [n]); }
   const width = request.maxWidth, cover = nodes.get(key)!;
   const coverStem = coverStemFor(request, cover);
   // Placed boxes in `nodes` order and their lowest edge, kept in step with `nodes` below.
@@ -1169,10 +1221,46 @@ export function incrementalTree(request: LayoutRequest, previous: GraphLayout, b
   };
   let second: Effort | undefined;
   const plain = fallbackEffort(budget);
+  /**
+   * Where a new image without inputs in the band goes: it needs no connector, only room clear of
+   * the tiles and of every line. The first such place within the band's height, topmost then
+   * leftmost (`rankProbes`), at the top of the band's first generation or in a row of placed
+   * tiles; null when there is none. A band that must grow for a new image is laid out again:
+   * it grows anyway, and a fresh layout leaves the room later growth needs (placed under the
+   * lowest tile, new images put more selected inputs in the way of growth pushes).
+   */
+  const rootPlace = (item: { readonly key: string; readonly width: number; readonly height: number }): PlacedNode | null => {
+    const top = cover.height + STACK_STEM_ROOM, xs: number[] = [], seen = new Set<number>();
+    const column = (x: number) => {
+      if (seen.has(x)) return;
+      seen.add(x);
+      if (x >= 24 && x + item.width <= width - 24) xs.push(x);
+    };
+    column(24); column(width - item.width - 24);
+    for (const b of boxes) if (b.key !== key) { column(b.x); column(b.x + b.width + s.column); }
+    const ys = [...new Set([top, ...boxes.filter(b => b.key !== key && b.y >= top).map(b => b.y)])];
+    const ny = ys.length;
+    for (const probe of rankProbes(xs, ys, bottom, item.height)) {
+      const x = xs[(probe - probe % ny) / ny], y = ys[probe % ny];
+      // Probes come least added height first: from the first that adds some, none fits within the band.
+      if (y + item.height > bottom) return null;
+      const n: PlacedNode = { key: item.key, x, y, width: item.width, height: item.height, row: 0, band: 1 };
+      if (boxes.some(b => overlapY(n, b, s.clearance) && overlapX(n, b, s.clearance)) || lanes.hits(n) || lanes.grazed(n)) continue;
+      const level = boxes.find(b => b.key !== key && b.y === y);
+      return { ...n, row: level ? level.row : 1 + Math.max(0, ...boxes.filter(b => b.key !== key && b.y < y).map(b => b.row)), band: level ? level.band : 1 };
+    }
+    return null;
+  };
   // Each node gets at most 96 primary placement probes; fallback uses visible row corners and up to 32 columns. Order is topological, with stable sibling ties.
   while (remaining.length) {
     const index = remaining.findIndex(n => n.parents.every(p => nodes.has(p)));
     if (index < 0) return null;
+    if (!remaining[index].parents.length) {
+      const [item] = remaining.splice(index, 1), placed = rootPlace(item);
+      if (!placed) return null;
+      nodes.set(item.key, placed); boxes.push(placed); tiles.add(placed); bottom = Math.max(bottom, placed.y + placed.height);
+      continue;
+    }
     const [item] = remaining.splice(index, 1), parents = item.parents.map(p => nodes.get(p)!), parent = parents.reduce((a, b) => a.y + a.height > b.y + b.height ? a : b);
     const multi = parents.length > 1, levelCount = multi ? Math.max(1, Math.ceil((parents.length - 1) / 2)) : 0;
     // A junction's spine needs its levels' room above the default arrival gap.
@@ -1211,6 +1299,13 @@ export function incrementalTree(request: LayoutRequest, previous: GraphLayout, b
     // only a detour reaches (round other tiles, through the header or the outer gutters) is
     // taken only if no probe adding no more height has a direct route: a detour costs length
     // and turns, and the layout that holds still must not lose to a fresh one on them.
+    // Placed siblings (the same inputs) keep their reading order (`siblingInversions`): earlier ones before, later ones after.
+    const family = siblingsOf.get(parentSet(item.parents))?.filter(n => n.key !== item.key && nodes.has(n.key)) ?? [];
+    const before = (n: { readonly order: number; readonly key: string }) => n.order < item.order || (n.order === item.order && n.key.localeCompare(item.key) < 0);
+    const inverts = family.length ? (x: number, y: number) => family.some(n => {
+      const at = nodes.get(n.key)!, value = y * 1e5 + x, theirs = at.y * 1e5 + at.x;
+      return before(n) ? value < theirs - 1e-6 : value > theirs + 1e-6;
+    }) : undefined;
     const ny = ys.length, ranked = rankProbes(xs, ys, bottom, item.height);
     // With `blocked`, a pass records the probes a touch turned down (lanes, dots and curves clear):
     // with touches allowed only those can wire differently, so a later pass is given them as `only`
@@ -1221,26 +1316,39 @@ export function incrementalTree(request: LayoutRequest, previous: GraphLayout, b
       // The first placement routed only by a detour, kept while probes adding no more height
       // are wired for a direct route (at most DETOUR_SCAN of them).
       let detoured: { readonly found: { node: PlacedNode; wiring: Wiring }; readonly reach: number } | undefined, scan = DETOUR_SCAN;
+      // The first directly wired placement whose routes cross other lines, or that reads out of
+      // order with its siblings, kept while probes adding no more height are wired for one crossing
+      // fewer, or as few in order (at most CROSSING_PROBES of them): crossings first, then order.
+      let crossed: { found: { node: PlacedNode; wiring: Wiring }; readonly reach: number; rank: number } | undefined, crossScan = CROSSING_PROBES;
       for (const probe of ranked) {
         const x = xs[(probe - probe % ny) / ny], y = ys[probe % ny], hole = (probe % ny) >= base;
         if (hole && !holeTries) continue;
         const n: PlacedNode = { key: item.key, x, y, width: item.width, height: item.height, row: y === parent.y ? parent.row : parent.row + 1, band: parent.band + 1 };
         if (!free(n)) continue;
-        if (detoured && (Math.max(bottom, n.y + n.height) > detoured.reach || !(scan-- > 0))) return detoured.found;
+        if (crossed && (Math.max(bottom, n.y + n.height) > crossed.reach || !(crossScan-- > 0))) return crossed.found;
+        if (!crossed && detoured && (Math.max(bottom, n.y + n.height) > detoured.reach || !(scan-- > 0))) return detoured.found;
         if (only && !only.has(probe)) { if (hole) holeTries--; continue; }
-        if (!(budget.probes > 0)) return detoured?.found;
+        if (!(budget.probes > 0)) return crossed?.found ?? detoured?.found;
         budget.probes--;
         lanes.touchBlocked = false;
-        // Once a detour is in hand, only a direct route can replace it.
-        const wiring = wire(parents, n, sceneFor(n), lanes, item.key, hardest, !!detoured);
-        if (wiring && !wiring.routes.some(r => r.detour)) return { node: n, wiring };
+        // Once a detour (or a crossing direct route) is in hand, only a direct route can replace it.
+        const wiring = wire(parents, n, sceneFor(n), lanes, item.key, hardest, !!detoured || !!crossed);
+        if (wiring && !wiring.routes.some(r => r.detour)) {
+          let crossings = 0;
+          for (const r of wiring.routes) crossings += r.crossings ?? 0;
+          const rank = 2 * crossings + (inverts?.(x, y) ? 1 : 0);
+          if (!rank) return { node: n, wiring };
+          if (!crossed) crossed = { found: { node: n, wiring }, reach: Math.max(bottom, n.y + n.height), rank };
+          else if (rank < crossed.rank) { crossed.found = { node: n, wiring }; crossed.rank = rank; }
+          continue;
+        }
         if (wiring) detoured ??= { found: { node: n, wiring }, reach: Math.max(bottom, n.y + n.height) };
         else {
           if (hole) holeTries--;
           if (lanes.touchBlocked) blocked?.push(probe);
         }
       }
-      return detoured?.found;
+      return crossed?.found ?? detoured?.found;
     };
     // Placements whose routes touch no other source's line come first; failing those, the
     // probes again with touches allowed (contacts are a cost, not a reason to lay out afresh).

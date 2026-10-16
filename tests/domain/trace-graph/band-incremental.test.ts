@@ -147,6 +147,50 @@ describe("incremental tree: compactness", () => {
   });
 });
 
+describe("incremental tree: images without inputs in the band", () => {
+  it("places a new one beside the first generation, every tile shown staying where it was", () => {
+    const items = [item("root"), item("a", ["root"], 1), item("b", ["root"], 2), item("c", [], 3)];
+    const previous = committed(items), next = request([...items, item("r", [], 4)]);
+    const result = incrementalTree(next, previous)!;
+    expect(result).not.toBeNull();
+    for (const [key, n] of previous.nodes) expect(result.nodes.get(key)).toMatchObject({ x: n.x, y: n.y });
+    expect(result.nodes.get("r")!.y).toBe(previous.nodes.get("c")!.y);
+    expect(bandExtent(result, "root").height).toBe(bandExtent(previous, "root").height);
+    expect(verdict(result, next)).toEqual({ sharedLanePx: 0, gates: clean });
+  });
+
+  it("gives way to a fresh layout when a new one would make the band taller", () => {
+    // One tile per row at 200 px: the only room for another is under the lowest tile.
+    const items = [item("root"), item("a", ["root"], 1)];
+    const previous = committed(items, 200), next = request([...items, item("r", [], 2)], 200);
+    expect(incrementalTree(next, previous)).toBeNull();
+  });
+
+  it("places one with the outputs arriving with it, wired to them", () => {
+    const items = [item("root"), item("a", ["root"], 1)];
+    const previous = committed(items, 454), next = request([...items, item("r", [], 2), item("r0", ["r"], 3)], 454);
+    const result = incrementalTree(next, previous)!;
+    expect(result).not.toBeNull();
+    for (const [key, n] of previous.nodes) expect(result.nodes.get(key)).toMatchObject({ x: n.x, y: n.y });
+    expect(result.routes.some(r => r.from.kind === "node" && r.from.id === "r" && r.to.kind === "node" && r.to.id === "r0")).toBe(true);
+    expect(verdict(result, next)).toEqual({ sharedLanePx: 0, gates: clean });
+  });
+});
+
+describe("incremental tree: sibling order", () => {
+  it("places a new output after its input's earlier outputs in reading order, where that adds no height", () => {
+    const items = [item("root"), item("p", ["root"], 1), item("q", ["root"], 2), item("c0", ["p"], 3), item("c1", ["p"], 4)];
+    const previous = committed(items), next = request([...items, item("c2", ["p"], 5)]);
+    const result = incrementalTree(next, previous)!;
+    expect(result).not.toBeNull();
+    const reading = (key: string) => { const n = result.nodes.get(key)!; return [n.y, n.x]; };
+    const [y1, x1] = reading("c1"), [y2, x2] = reading("c2");
+    expect(y2 > y1 || (y2 === y1 && x2 > x1)).toBe(true);
+    expect(bandExtent(result, "root").height).toBe(bandExtent(previous, "root").height);
+    expect(verdict(result, next)).toEqual({ sharedLanePx: 0, gates: clean });
+  });
+});
+
 describe("incremental tree: chains", () => {
   // 64 px images: the column gap (19 px) leaves the arrow's lane 1.5 px from a's edge, where a
   // line that turned would run along a's border; a straight one only leaves a's port.

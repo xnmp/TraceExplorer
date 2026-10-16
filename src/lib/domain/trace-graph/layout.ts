@@ -19,6 +19,7 @@ import type { NodeKey } from "./model";
 import { buildInputJunctions, endpointKey, type Consumer, type Endpoint, type Junction } from "./junctions";
 import { ARROW, bendZones, JUNCTION_BERTH, LANE_SEPARATION, PORT_BERTH, spacingFor, TRACK_HEIGHT } from "./metrics";
 import { orderLayers } from "./layer-order";
+import { packRuns, passageRuns, planPassage, runCrossings, type ChannelRun, type ChannelRuns, type Passage, type RunPrice } from "./passing-plan";
 
 export interface LayoutItem {
   readonly key: NodeKey;
@@ -132,7 +133,8 @@ export interface BandDecision {
   /**
    * `gate-infeasible`: no candidate passed the hard gates (e.g. a cover that is not a root); the downward layout is shown as is.
    * `lane-infeasible`: every candidate ran connectors from different sources along a shared lane; the best of them, priced, is shown.
-   * `anchor-yield`: an anchor-preserving layout existed, but crossed far more than the best unanchored one (the crossing cap); the anchors moved.
+   * `anchor-yield`: an anchor-preserving layout existed, but crossed far more than the best unanchored one (the crossing cap), or,
+   * as the component grew, was far taller (the height cap) or moved the other tiles more than an unanchored one moves any (the stability cap); the anchors moved.
    */
   readonly fallback?: "anchor-infeasible" | "anchor-yield" | "packing-infeasible" | "gate-infeasible" | "lane-infeasible";
 }
@@ -157,6 +159,30 @@ export interface GraphLayout {
   readonly rows: readonly RowBox[];
   /** Reading order of the tiles, usable as the next layout's hint. */
   readonly readingOrder: ReadonlyMap<NodeKey, number>;
+  /** The latest growth of a tile in place (`band-history`), so shrinking it back can undo it exactly. */
+  readonly resized?: ResizeRecord;
+}
+
+/**
+ * A tile's growth in place, as recorded on the layout it gave (`resizedLayout`): what it changed,
+ * as it was before. Shrinking the tile back restores it, when growing it again confirms that
+ * nothing else changed since.
+ */
+export interface ResizeRecord {
+  readonly key: NodeKey;
+  /** The tile's height before it grew, and after. */
+  readonly from: number;
+  readonly to: number;
+  readonly nodes: readonly PlacedNode[];
+  readonly junctions: readonly (readonly [string, PlacedJunction])[];
+  /** Routes by index, with their paths. */
+  readonly routes: readonly (readonly [number, string])[];
+  /** All rows, when any changed. */
+  readonly rows?: readonly RowBox[];
+  readonly height: number;
+  readonly bandBounds?: GraphLayout["bandBounds"];
+  /** The growth before this one, undone next. */
+  readonly previous?: ResizeRecord;
 }
 
 const round = (value: number) => Math.round(value * 100) / 100;
@@ -189,6 +215,22 @@ const DOGLEG_REACH = 4 * MIN_LANE;
 const FAN_IN = 3;
 /** Distance kept outside a forbidden interval when stepping past it. */
 const FREE_STEP = 0.5;
+/** Beyond any tile: where `fewest-crossings` passing counts an outer margin's lanes as running. */
+const MARGIN_ORDER = 1e9;
+/**
+ * What `fewest-crossings` passing pays, in crossings, for a bend that makes its channel a track
+ * taller: 8, the price `layout:eval` puts on a crossing in height (0.00625 tile widths of
+ * 120 px each, so 0.75 px a crossing) applied to one track (TRACK_HEIGHT, 6 px).
+ */
+const PASSING_TRACK = 8;
+/** Run reads (`fewest-crossings` passing) a layout's re-planning may take, keeping very large graphs fast. */
+const PASSING_WORK = 3_000_000;
+/** Rounds of re-planning the courses that cross others (`fewest-crossings` passing); most settle in one. */
+const PASSING_ROUNDS = 3;
+/** A slot's cost per px away from the route's straight line (in crossings: one crossing is worth a 100 px detour in one row). */
+const PASSING_DETOUR = 0.01;
+/** The cost of a slot whose lane the route's source does not hold yet (its trunk splits there), in crossings. */
+const PASSING_NEW_LANE = 0.1;
 /** No tile is anywhere near this big; larger sizes are clamped so coordinates stay exact. */
 const MAX_TILE = 100_000;
 /** A tile size as geometry uses it: not a finite, positive number counts as zero; capped at MAX_TILE. */
@@ -318,14 +360,16 @@ export type Ordering = "barycenter" | "median-sweep" | {
 
 /**
  * Which gap a route takes through each display row it passes, and its lane's place in the gap.
- * `straight` (the default): the gap nearest the straight line from the route's source to its end,
- * at that row, and lanes ordered by where those lines cross the row. Two straight segments cross
- * at most once, and only where their ends are in opposite orders, so following them adds no
- * crossings of its own; it is the usual placement of a long edge's dummy nodes (Sugiyama, Tagawa
- * and Toda 1981; Gansner et al. 1993, §4) with tiles as the fixed obstacles. `nearest-end`, as
- * merged in plan phase 3: the gap nearest the route's end at every row, lanes ordered by source x.
+ * `straight`: the open gap nearest the straight line from the route's source to its end, at that
+ * row, and lanes ordered by where those lines cross the row; it is the usual placement of a long
+ * edge's dummy nodes (Sugiyama, Tagawa and Toda 1981; Gansner et al. 1993, §4) with tiles as the
+ * fixed obstacles. Snapping to the nearest gap can still cross other routes where a gap a little
+ * further away would not: `fewest-crossings` (the default) starts from the straight choice and
+ * then re-plans every route that crosses another to the slots crossing the others least, its
+ * straight line breaking ties (`passing-plan.ts`). `nearest-end`, as merged in plan phase 3: the
+ * gap nearest the route's end at every row, lanes ordered by source x.
  */
-export type Passing = "straight" | "nearest-end";
+export type Passing = "fewest-crossings" | "straight" | "nearest-end";
 
 export interface LayeredOptions { readonly ordering?: Ordering; readonly passing?: Passing }
 
@@ -395,7 +439,20 @@ function layoutDown(request: LayoutRequest, minWidth: number, options: LayeredOp
   // dots stack. Legacy placement needs two retries. A pinned band can first
   // consume spare pane width; moving rows within that width changes gap slots,
   // so allow two further routing passes to settle the new slot choices.
-  const prepared = prepare(request, options.ordering ?? "barycenter", options.passing ?? "straight");
+  const ordering = options.ordering ?? "barycenter", passing = options.passing ?? "fewest-crossings";
+  const prepared = prepare(request, ordering, passing);
+  // Rows wrapped within narrower side margins hold more tiles when the pane has room for them;
+  // kept only if every lane then still fits beside the rows within the pane.
+  const narrow = narrowerRows(prepared) ? prepare(request, ordering, passing, tightMargin(prepared.space)) : null;
+  if (narrow) {
+    const layout = settle(narrow, minWidth);
+    if (layout.width <= prepared.budget + 1e-6) return layout;
+  }
+  return settle(prepared, minWidth);
+}
+
+/** Every routing pass of a prepared layout, widening the margins until the lanes fit (the last pass draws regardless). */
+function settle(prepared: Prepared, minWidth: number): GraphLayout {
   let extra = { left: 0, right: 0 };
   const attempts = prepared.pinned ? 4 : 2;
   for (let attempt = 0; ; attempt++) {
@@ -403,6 +460,30 @@ function layoutDown(request: LayoutRequest, minWidth: number, options: LayeredOp
     if (layout) return layout;
     extra = { left: extra.left + Math.max(0, Math.ceil(shortfall.left)), right: extra.right + Math.max(0, Math.ceil(shortfall.right)) };
   }
+}
+
+/**
+ * The narrowest side margin a row of a pinned band may keep: room for the one outer lane the
+ * passing slots open beside a row (twice the clearance). The usual margin (`Spacing.margin`)
+ * reserves room for several; a layout whose lanes need more than this one widens past the pane
+ * and is not kept (`layoutDown`).
+ */
+export const tightMargin = (space: ReturnType<typeof spacingFor>) => 2 * space.clearance;
+
+/** Whether wrapping a pinned band's generations within {@link tightMargin} would put some generation on fewer display rows. */
+function narrowerRows(prepared: Prepared): boolean {
+  const { space, items, byBand, gap, margin, budget, pinned, contentWidth } = prepared;
+  if (!pinned || !Number.isFinite(budget)) return false;
+  const tight = tightMargin(space);
+  if (tight >= margin) return false;
+  for (let band = 0; band < byBand.length; band++) {
+    const widths: number[] = [];
+    let widest = 0;
+    for (const key of byBand[band]) if (band || key !== pinned.key) { const width = items.get(key)!.width; widths.push(width); widest = Math.max(widest, width); }
+    if (widths.length < 2) continue;
+    if (countWrapped(widths, Math.max(widest, budget - 2 * tight), gap) < countWrapped(widths, Math.max(widest, contentWidth), gap)) return true;
+  }
+  return false;
 }
 
 /**
@@ -474,7 +555,10 @@ export function downwardBandBound(request: LayoutRequest, coverKey: NodeKey, ste
     natural = Math.max(natural, sum + Math.max(0, members.length - 1) * gap);
   }
   const budget = Number.isFinite(request.maxWidth) && request.maxWidth > 0 ? Math.floor(request.maxWidth) : Infinity;
-  const limit = Math.max(widest, Math.min(natural, Math.max(widest, budget - 2 * space.margin)));
+  // A pinned layout may wrap its rows within the narrowest side margin it keeps (`layoutDown`) or
+  // the usual one: heights are bounded with the first (fewer rows), widths with the second (fuller rows).
+  const limitFor = (margin: number) => Math.max(widest, Math.min(natural, Math.max(widest, budget - 2 * margin)));
+  const limit = limitFor(request.pinned ? tightMargin(space) : space.margin), wideLimit = limitFor(space.margin);
   let height = 0, width = 0;
   for (let b = 1; b < byBand.length; b++) {
     const members = byBand[b], size = members.length, first = widths[members[0]];
@@ -486,15 +570,18 @@ export function downwardBandBound(request: LayoutRequest, coverKey: NodeKey, ste
       if (heights[at] > tallest) tallest = heights[at];
       if (heights[at] < shortest) shortest = heights[at];
     }
-    let perRow = 1;
-    if (uniform) for (let used = first; perRow < size && used + gap + first <= limit; perRow++) used += gap + first;
-    let rows: number;
-    if (uniform) rows = Math.ceil(size / perRow);
-    else {
+    const perRowWithin = (bound: number) => {
+      let perRow = 1;
+      if (uniform) for (let used = first; perRow < size && used + gap + first <= bound; perRow++) used += gap + first;
+      return perRow;
+    };
+    const rowsWithin = (bound: number) => {
+      if (uniform) return Math.ceil(size / perRowWithin(bound));
       let sum = 0;
       for (const at of members) sum = sum + widths[at] + gap;
-      rows = Math.max(1, Math.ceil(sum / (limit + gap)));
-    }
+      return Math.max(1, Math.ceil(sum / (bound + gap)));
+    };
+    const perRow = perRowWithin(limit), rows = rowsWithin(limit), wideRows = rowsWithin(wideLimit);
     // The i-th tallest row is at least as tall as the (i·perRow+1)-th tallest tile.
     if (uniform && rows > 1) {
       const sorted = members.map((at) => heights[at]).sort((x, y) => y - x);
@@ -502,7 +589,7 @@ export function downwardBandBound(request: LayoutRequest, coverKey: NodeKey, ste
     } else for (let row = 0; row < rows; row++) height += row ? shortest : tallest;
     height += (rows - 1) * space.rowChannel + (b < byBand.length - 1 ? space.bandChannel : 0);
     // Balanced or not, some row holds at least the average number of tiles.
-    const fullest = uniform ? Math.ceil(size / rows) : 1;
+    const fullest = uniform ? Math.ceil(size / Math.max(rows, wideRows)) : 1;
     width = Math.max(width, uniform ? fullest * first + (fullest - 1) * gap : widest);
   }
   let tree = true, sources = 0;
@@ -520,7 +607,7 @@ export function downwardBandBound(request: LayoutRequest, coverKey: NodeKey, ste
  * Everything about a request that does not depend on a pass's extra margins:
  * computed once and shared by every pass of {@link layoutDown}.
  */
-function prepare(request: LayoutRequest, ordering: Ordering = "barycenter", passing: Passing = "straight") {
+function prepare(request: LayoutRequest, ordering: Ordering = "barycenter", passing: Passing = "fewest-crossings", sideMargin?: number) {
   // Malformed input never spreads through the geometry: a size that is not a
   // finite, non-negative number counts as zero, sizes are capped far above
   // any tile, and an order that is not a number sorts first (ties by key).
@@ -574,7 +661,7 @@ function prepare(request: LayoutRequest, ordering: Ordering = "barycenter", pass
   for (const child of keys) relationships.push({ child, parents: parentsOf(child) });
   const plan = buildInputJunctions(relationships);
   const gap = space.column;
-  const margin = space.margin;
+  const margin = sideMargin ?? space.margin;
   const widest = keys.reduce((most, key) => Math.max(most, items.get(key)!.width), 0);
   const byBand: NodeKey[][] = Array.from({ length: bandCount }, () => []);
   for (const key of keys) byBand[bands.get(key)!].push(key);
@@ -690,6 +777,8 @@ function junctionFacts(plan: ReturnType<typeof buildInputJunctions>, bands: Read
  */
 function layoutPass(prepared: Prepared, extra: { readonly left: number; readonly right: number }, minWidth: number, last: boolean): { layout: GraphLayout | null; shortfall: { left: number; right: number } } {
   const { space, items, parentsOf, bandCount, byBand, pinnedViolation, plan, joinFacts, ordered, targetsOf, plainKeys, gap, margin, budget, pinned, contentWidth, rank, passing } = prepared;
+  /** Whether routes head along their straight lines (`fewest-crossings` starts from them too). */
+  const straightLines = passing !== "nearest-end";
   // A pinned band already spans the pane. Spend its unused horizontal room
   // on extra routing margins before widening it; centred legacy canvases
   // start tightly around their content and still widen by the full shortfall.
@@ -922,34 +1011,52 @@ function layoutPass(prepared: Prepared, extra: { readonly left: number; readonly
     const blocked = stemsAround(row).filter((stem) => stem.x > slot.low - MIN_LANE && stem.x < slot.high + MIN_LANE && !ownStem(source, stem)).map((stem) => [stem.x - MIN_LANE, stem.x + MIN_LANE] as const);
     return !blocked.length || nearestFree(slot.x, blocked, slot.low, slot.high) !== null;
   };
-  const claim = (row: number, desired: number, source: string, sourceX: number): string | null => {
+  /** The sources each slot's lane holds so far, with how many of their claims (a source's routes to one end column, at one row) use it. */
+  const held = new Map<string, Map<string, number>>();
+  const hold = (slot: Slot, source: string, delta: number) => {
+    let bySource = held.get(slot.id);
+    if (!bySource) held.set(slot.id, bySource = new Map());
+    const count = (bySource.get(source) ?? 0) + delta;
+    if (count > 0) bySource.set(source, count); else bySource.delete(source);
+  };
+  const hasRoom = (slot: Slot, source: string) => {
+    const holders = held.get(slot.id);
+    return !holders || !holders.size || holders.has(source) || holders.size < capacity(slot);
+  };
+  /** The slots `source` may pass `row` through: straight passing skips gaps whose every x meets another source's stem, while any other is left. */
+  const slotsKnown = new Map<number, Map<string, readonly Slot[]>>();
+  const slotsFor = (row: number, source: string): readonly Slot[] => {
+    let bySource = slotsKnown.get(row);
+    if (!bySource) slotsKnown.set(row, bySource = new Map());
+    const known = bySource.get(source);
+    if (known) return known;
     const all = gapsOf(row);
-    if (!all.length) return null;
-    // Straight passing skips gaps whose every x meets another source's stem, while any other is left.
-    const clear = passing === "straight" ? all.filter((slot) => clearFor(slot, row, source)) : all;
+    const clear = straightLines ? all.filter((slot) => clearFor(slot, row, source)) : all;
     const slots = clear.length ? clear : all;
+    bySource.set(source, slots);
+    return slots;
+  };
+  /** The open slot nearest `desired` for `source` at `row` (a margin costs a little extra); with none open, the least loaded. */
+  const choose = (row: number, desired: number, source: string): Slot | null => {
+    if (!gapsOf(row).length) return null;
+    const slots = slotsFor(row, source);
     // Slots are tried by cost, then x, then row order (a stable sort); the
     // first with room takes the source, else the least loaded. With finite
     // keys that order is total, so the first is a minimum and needs no sort.
     // Outer margins cost a little extra: a gap between tiles keeps the route nearer the graph.
     const cost = (slot: Slot) => Math.abs(slot.x - desired) + (slot.margin ? 8 : 0);
-    const load = (slot: Slot) => (lanes.get(slot.id)?.sources.size ?? 0) / capacity(slot);
-    const hasRoom = (slot: Slot) => {
-      const lane = lanes.get(slot.id);
-      return !lane || lane.sources.has(source) || lane.sources.size < capacity(slot);
-    };
+    const load = (slot: Slot) => (held.get(slot.id)?.size ?? 0) / capacity(slot);
     let open: Slot | undefined, finite = true, openCost = 0;
     for (const slot of slots) {
       const value = cost(slot);
       if (!Number.isFinite(value) || !Number.isFinite(slot.x)) { finite = false; break; }
       if (open && (value > openCost || (value === openCost && !(slot.x < open.x)))) continue;
-      const lane = lanes.get(slot.id);
-      if (!lane || lane.sources.has(source) || lane.sources.size < capacity(slot)) { open = slot; openCost = value; }
+      if (hasRoom(slot, source)) { open = slot; openCost = value; }
     }
     if (!finite) {
       const costs = slots.map(cost);
       const options = slots.map((_, index) => index).sort((a, b) => costs[a] - costs[b] || slots[a].x - slots[b].x).map((index) => slots[index]);
-      open = options.find(hasRoom) ?? options.reduce((best, slot) => load(slot) < load(best) ? slot : best);
+      open = options.find((slot) => hasRoom(slot, source)) ?? options.reduce((best, slot) => load(slot) < load(best) ? slot : best);
     } else if (!open) {
       let bestLoad = 0, bestCost = 0;
       for (const slot of slots) {
@@ -957,7 +1064,10 @@ function layoutPass(prepared: Prepared, extra: { readonly left: number; readonly
         if (!open || used < bestLoad || (used === bestLoad && (value < bestCost || (value === bestCost && slot.x < open.x)))) { open = slot; bestLoad = used; bestCost = value; }
       }
     }
-    open = open!;
+    return open!;
+  };
+  /** Registers `source` in `slot`'s lane at `row`. */
+  const take = (row: number, open: Slot, source: string, sourceX: number) => {
     let lane = lanes.get(open.id);
     if (!lane) lanes.set(open.id, lane = { slot: open, sources: new Map<string, number>(), xs: new Map<string, number>() });
     if (!lane.sources.has(source)) lane.sources.set(source, sourceX);
@@ -978,7 +1088,6 @@ function layoutPass(prepared: Prepared, extra: { readonly left: number; readonly
       const rowsUsed = bySource.get(source);
       if (rowsUsed) rowsUsed.push(row); else bySource.set(source, [row]);
     }
-    return open.id;
   };
 
   // Courses. Routes from one source that cross a row through the same lane
@@ -1004,18 +1113,21 @@ function layoutPass(prepared: Prepared, extra: { readonly left: number; readonly
     more.set(key, child);
   };
   const sourceRoot = new Map<string, number>();
-  /** Lane claims by source, then rounded end x, then row. */
-  const claimed = new Map<string, Map<number, Map<number, string | null>>>();
   /** Per inner gap, per source: the sum and count of the x its routes wanted there, which orders its lanes. */
   const wanted = new Map<string, Map<string, { sum: number; count: number }>>();
   const pending: { node: number; slot: string | null; desired: number }[] = [];
+  /** Where a route from `endpoint` starts: its tile's row and centre, or its junction's channel and x. */
+  const routeStart = (endpoint: Endpoint): { readonly row: number; readonly x: number } => endpoint.kind === "node"
+    ? { row: columns.get(endpoint.id)!.row, x: center(endpoint.id) }
+    : { row: placed.get(endpoint.id)!.channel, x: placed.get(endpoint.id)!.x };
   /** The trie root for a route's start; `source` is its endpoint key. */
   const rootOf = (endpoint: Endpoint, source: string): number => {
     const known = sourceRoot.get(source);
     if (known !== undefined) return known;
+    const { row, x } = routeStart(endpoint);
     const node: PassNode = endpoint.kind === "node"
-      ? { parent: -1, source, row: columns.get(endpoint.id)!.row, x: center(endpoint.id), from: { row: columns.get(endpoint.id)!.row, edge: "bottom" }, own: NO_JUNCTIONS, tile: `${endpoint.id}` }
-      : { parent: -1, source, row: placed.get(endpoint.id)!.channel, x: placed.get(endpoint.id)!.x, from: { junction: endpoint.id }, own: new Set([endpoint.id]) };
+      ? { parent: -1, source, row, x, from: { row, edge: "bottom" }, own: NO_JUNCTIONS, tile: `${endpoint.id}` }
+      : { parent: -1, source, row, x, from: { junction: endpoint.id }, own: new Set([endpoint.id]) };
     trie.push(node);
     sourceRoot.set(source, trie.length - 1);
     return trie.length - 1;
@@ -1025,7 +1137,7 @@ function layoutPass(prepared: Prepared, extra: { readonly left: number; readonly
   // fan keeps one trunk (Gansner et al. 1993 likewise route a fan's long edges
   // together until they part). Per source and row: sums of end x, end row, count.
   const bundles = new Map<string, Map<number, { x: number; row: number; count: number }>>();
-  if (passing === "straight") for (const route of plan.routes) {
+  if (straightLines) for (const route of plan.routes) {
     if (route.to.kind !== "node") continue;
     const source = endpointKey(route.from), start = trie[rootOf(route.from, source)].row;
     const endRow = columns.get(route.to.id)!.row, endX = center(route.to.id);
@@ -1036,39 +1148,280 @@ function layoutPass(prepared: Prepared, extra: { readonly left: number; readonly
       if (sum) { sum.x += endX; sum.row += endRow; sum.count++; } else byRow.set(row, { x: endX, row: endRow, count: 1 });
     }
   }
-  const courses = plan.routes.map((route) => {
+
+  // Each route's end, and its slot in every row it passes. Routes from one
+  // source to one end column share their slots (a claim per row): the first to
+  // reach a row claims the open slot nearest its straight line there.
+  /** `heading`: where the route heads at that row, which orders the lanes sharing its slot: its straight line, or for a re-planned course the mean of where it enters and leaves the row. */
+  interface Claim { slot: Slot | null; readonly want: number; heading: number; readonly straight: boolean; taken: boolean }
+  /** `id`: its source's endpoint id (`idOf`); `ends`: its routes' ends by channel, x and endpoint id, with the edges each carries. */
+  interface Course { readonly source: string; readonly id: number; readonly startRow: number; readonly sourceX: number; readonly endKey: number; readonly claims: Map<number, Claim>; readonly ends: { channel: number; x: number; end: number; weight: number }[] }
+  const coursesBySource = new Map<string, Map<number, Course>>();
+  /** Endpoint keys as small numbers, for passing plans. */
+  const endpointIds = new Map<string, number>();
+  const idOf = (key: string) => { let id = endpointIds.get(key); if (id === undefined) endpointIds.set(key, id = endpointIds.size); return id; };
+  const routeEnds = plan.routes.map((route) => {
+    const source = endpointKey(route.from), start = routeStart(route.from);
+    let x: number, channel: number, to: Anchor;
+    if (route.to.kind === "node") {
+      const row = columns.get(route.to.id)!.row;
+      x = center(route.to.id); channel = row - 1; to = { row, edge: "arrow" };
+    } else {
+      const join = placed.get(route.to.id)!;
+      x = join.x; channel = join.channel; to = { junction: route.to.id };
+    }
+    let course: Course | null = null;
+    if (start.row + 1 <= channel) {
+      const endKey = round(x);
+      let byEnd = coursesBySource.get(source);
+      if (!byEnd) coursesBySource.set(source, byEnd = new Map());
+      course = byEnd.get(endKey) ?? null;
+      if (!course) byEnd.set(endKey, course = { source, id: idOf(source), startRow: start.row, sourceX: start.x, endKey, claims: new Map(), ends: [] });
+      course.ends.push({ channel, x, end: idOf(endpointKey(route.to)), weight: Math.max(1, route.consumers.length) });
+      const straight = straightLines && route.to.kind === "node";
+      for (let row = start.row + 1; row <= channel; row++) {
+        if (course.claims.has(row)) continue;
+        const bundle = straight ? bundles.get(source)?.get(row) : undefined;
+        const want = bundle ? start.x + (bundle.x / bundle.count - start.x) * Math.min(1, (row - start.row) / (bundle.row / bundle.count - start.row)) : x;
+        const slot = choose(row, want, source);
+        if (slot) hold(slot, source, 1);
+        course.claims.set(row, { slot, want, heading: want, straight, taken: false });
+      }
+    }
+    return { x, channel, to, end: idOf(endpointKey(route.to)), weight: Math.max(1, route.consumers.length), course };
+  });
+  if (passing === "fewest-crossings") reducePassingCrossings([...coursesBySource.values()].flatMap((byEnd) => [...byEnd.values()]),
+    plan.routes.flatMap((route, index) => routeEnds[index].course ? [] : [{ source: idOf(endpointKey(route.from)), start: routeStart(route.from), end: routeEnds[index] }]));
+
+  /**
+   * Re-plans the courses that cross others (`passing-plan.ts`): each, in turn, takes the slots
+   * that cross the other courses' runs the fewest times, its straight line and its own lanes
+   * breaking ties, if that crosses less than its slots do now. `direct` routes pass no row.
+   */
+  function reducePassingCrossings(all: readonly Course[], direct: readonly { readonly source: number; readonly start: { readonly row: number; readonly x: number }; readonly end: { readonly x: number; readonly channel: number; readonly end: number; readonly weight: number } }[]): void {
+    // Runs by channel, each tagged with its course (null: a direct route) and the canvas x's it bends between.
+    type Tagged = ChannelRun & { readonly course: Course | null; readonly from: number; readonly to: number };
+    const runs = new Map<number, Tagged[]>();
+    const channelsOf = new Map<Course, number[]>();
+    /** Bumped whenever a channel's runs change. */
+    const version = new Map<number, number>();
+    // Where a course runs, for counting crossings: a gap's x, or for an outer margin a point
+    // beyond every tile, ordered among the margin's sources as their lanes are (below).
+    const order = (slot: Slot, course: Course) => slot.margin ? (slot.id === "L" ? -MARGIN_ORDER : MARGIN_ORDER) + course.sourceX : slot.x;
+    const passageOf = (course: Course, options: (row: number, claim: Claim) => { x: number; at: number; cost: number }[]): Passage => {
+      const rows: { options: { x: number; at: number; cost: number }[]; weight: number }[] = [];
+      const last = Math.max(...course.ends.map((end) => end.channel));
+      // The edges a run carries on from a row: those of the routes ending further down.
+      const beyond = (row: number) => course.ends.reduce((sum, end) => end.channel > row ? sum + end.weight : sum, 0);
+      for (let row = course.startRow + 1; row <= last; row++) rows.push({ options: options(row, course.claims.get(row)!), weight: beyond(row) });
+      return { source: course.id, start: { channel: course.startRow, x: course.sourceX, weight: beyond(course.startRow) }, rows, ends: course.ends };
+    };
+    const detour = (course: Course, slot: Slot, claim: Claim) =>
+      PASSING_DETOUR * (Math.abs(slot.x - claim.want) + (slot.margin ? 8 : 0)) + (held.get(slot.id)?.has(course.source) ? 0 : PASSING_NEW_LANE);
+    const current = (course: Course, costs = false) => passageOf(course, (_, claim) => [claim.slot
+      ? { x: order(claim.slot, course), at: claim.slot.x, cost: costs ? detour(course, claim.slot, claim) : 0 }
+      : { x: course.endKey, at: course.endKey, cost: 0 }]);
+    const touch = (channel: number) => version.set(channel, (version.get(channel) ?? 0) + 1);
+    const place = (course: Course) => {
+      const passage = current(course), channels: number[] = [];
+      for (const { channel, run, from, to } of passageRuns(passage, passage.rows.map(() => 0))) { append(runs, channel, { ...run, course, from, to }); channels.push(channel); touch(channel); }
+      channelsOf.set(course, channels);
+    };
+    const unplace = (course: Course) => {
+      for (const channel of new Set(channelsOf.get(course))) { runs.set(channel, runs.get(channel)!.filter((run) => run.course !== course)); touch(channel); }
+    };
+    for (const route of direct) append(runs, route.end.channel, { top: route.start.x, bottom: route.end.x, source: route.source, end: route.end.end, weight: route.end.weight, course: null, from: route.start.x, to: route.end.x });
+    for (const course of all) place(course);
+    const packed = new Map<number, { readonly version: number; readonly runs: ChannelRuns }>();
+    const others = (channel: number): ChannelRuns => {
+      const now = version.get(channel) ?? 0, known = packed.get(channel);
+      if (known && known.version === now) return known.runs;
+      const fresh = packRuns(runs.get(channel) ?? []);
+      packed.set(channel, { version: now, runs: fresh });
+      return fresh;
+    };
+    // Bend tracks a channel holds at its default height.
+    const freeTracks = (channel: number) => {
+      const band = rowKeys[channel].band, last = lastRowOfBand.get(band) === channel;
+      return bendZones(space, last ? bandLevels.get(band) ?? 0 : 0, last).reduce((sum, zone) => sum + Math.floor(zone / TRACK_HEIGHT), 0);
+    };
+    /**
+     * A bend's price in tracks: bends of different sources whose reaches overlap take separate
+     * tracks (left-edge channel routing, step 5), so a channel needs at least as many as overlap
+     * at any x. A bend reaching where the most other sources' bends already overlap, in a
+     * channel already holding more than its default height, makes the channel a track taller.
+     */
+    // The stretches where a channel's bends already need more tracks than it holds, for a source's
+    // new bend. Per channel, read at a version of its runs: each source's reaches, merged (its
+    // bends share tracks) and opened and closed in x order; then per source, the deepest overlap
+    // of the others'.
+    // Also, by the column they leave from (in MIN_LANE buckets), the bends a new one could trade
+    // columns with.
+    interface Crowding {
+      readonly version: number; readonly free: number; readonly sources: number; readonly xs: Float64Array; readonly steps: Int8Array; readonly owners: Int32Array;
+      readonly bySource: Map<number, readonly (readonly [number, number])[] | null>; readonly leaving: Map<number, Tagged[]>;
+    }
+    const crowded = new Map<number, Crowding>();
+    const crowdingOf = (channel: number, list: readonly Tagged[]): Crowding => {
+      const now = version.get(channel) ?? 0;
+      let cache = crowded.get(channel);
+      if (!cache || cache.version !== now) {
+        const spans: [number, number, number][] = [], leaving = new Map<number, Tagged[]>();
+        for (const run of list) if (Math.abs(run.from - run.to) >= 0.5) {
+          spans.push([Math.min(run.from, run.to) - MIN_LANE, Math.max(run.from, run.to) + MIN_LANE, run.source]);
+          append(leaving, Math.floor(run.from / MIN_LANE), run);
+        }
+        spans.sort((a, b) => a[2] - b[2] || a[0] - b[0]);
+        const events: [number, number, number][] = [];
+        let sources = 0;
+        for (let index = 0; index < spans.length;) {
+          let [low, high] = spans[index];
+          const owner = spans[index][2];
+          sources++;
+          for (index++; index < spans.length && spans[index][2] === owner; index++) {
+            if (spans[index][0] < high) high = Math.max(high, spans[index][1]);
+            else { events.push([low, 1, owner], [high, -1, owner]); [low, high] = spans[index]; }
+          }
+          events.push([low, 1, owner], [high, -1, owner]);
+        }
+        // Reaches are open: two that only touch do not overlap.
+        events.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+        crowded.set(channel, cache = {
+          version: now, free: freeTracks(channel), sources,
+          xs: Float64Array.from(events, (event) => event[0]), steps: Int8Array.from(events, (event) => event[1]), owners: Int32Array.from(events, (event) => event[2]),
+          bySource: new Map(), leaving,
+        });
+      }
+      return cache;
+    };
+    const crowdedFor = (cache: Crowding, source: number): readonly (readonly [number, number])[] | null => {
+      const known = cache.bySource.get(source);
+      if (known !== undefined) return known;
+      let hot: [number, number][] | null = null;
+      const { xs, steps, owners, free } = cache;
+      if (cache.sources - (owners.includes(source) ? 1 : 0) >= free) {
+        let depth = 0, most = 0;
+        for (let index = 0; index < xs.length; index++) if (owners[index] !== source) { depth += steps[index]; if (depth > most) most = depth; }
+        if (most >= free) {
+          hot = [];
+          depth = 0;
+          for (let index = 0; index < xs.length; index++) {
+            if (owners[index] === source) continue;
+            depth += steps[index];
+            if (depth !== most) continue;
+            let next = index + 1;
+            while (owners[next] === source) next++;
+            hot.push([xs[index], xs[next]]);
+          }
+        }
+      }
+      cache.bySource.set(source, hot);
+      return hot;
+    };
+    /**
+     * A bend trading columns with another source's (one leaving where the other arrives and
+     * arriving where it leaves) is a swap, which the tracks step draws with a dogleg in a track
+     * of its own (or crossing in a shared slice twice as tall): it costs a track wherever it is.
+     */
+    const swaps = (cache: Crowding, source: number, top: number, bottom: number) => {
+      const home = Math.floor(bottom / MIN_LANE);
+      for (let key = home - 1; key <= home + 1; key++) for (const run of cache.leaving.get(key) ?? []) {
+        if (run.source !== source && Math.abs(run.from - bottom) < MIN_LANE && Math.abs(run.to - top) < MIN_LANE) return true;
+      }
+      return false;
+    };
+    const priceFor = (course: Course): RunPrice => (channel, tops, bottoms) => {
+      const list = runs.get(channel);
+      if (!list) return null;
+      const cache = crowdingOf(channel, list), hot = crowdedFor(cache, course.id);
+      if (!hot && !cache.leaving.size) return null;
+      const table = new Float64Array(tops.length * bottoms.length);
+      for (let i = 0; i < tops.length; i++) for (let j = 0; j < bottoms.length; j++) {
+        if (Math.abs(tops[i] - bottoms[j]) < 0.5) continue;
+        let price = swaps(cache, course.id, tops[i], bottoms[j]) ? PASSING_TRACK : 0;
+        if (hot) {
+          const low = Math.min(tops[i], bottoms[j]) - MIN_LANE, high = Math.max(tops[i], bottoms[j]) + MIN_LANE;
+          // The first crowded stretch ending past `low` (they are sorted and disjoint).
+          let first = 0, past = hot.length;
+          while (first < past) { const middle = (first + past) >> 1; if (hot[middle][1] <= low) first = middle + 1; else past = middle; }
+          if (first < hot.length && hot[first][0] < high) price += PASSING_TRACK;
+        }
+        table[i * bottoms.length + j] = price;
+      }
+      return table;
+    };
+    // Every course's crossings, channel by channel.
+    const crossingsAt = new Map<Course, number>();
+    for (const [channel, list] of runs) {
+      const each = runCrossings(others(channel));
+      list.forEach((run, index) => { if (run.course && each[index]) crossingsAt.set(run.course, (crossingsAt.get(run.course) ?? 0) + run.weight * each[index]); });
+    }
+    let candidates = all.map((course, index) => ({ course, index, crossings: crossingsAt.get(course) ?? 0 })).filter((entry) => entry.crossings > 0);
+    // Re-planning reads every run of each channel a course passes; past PASSING_WORK such reads
+    // (only very large graphs get there) the courses left keep their slots.
+    let work = 0;
+    for (let round = 0; round < PASSING_ROUNDS && candidates.length; round++) {
+      candidates.sort((a, b) => b.crossings - a.crossings || a.index - b.index);
+      let changed = false;
+      for (const entry of candidates) {
+        const { course } = entry, source = course.source;
+        let reads = 0;
+        for (let channel = course.startRow, last = Math.max(...course.ends.map((end) => end.channel)); channel <= last; channel++) reads += runs.get(channel)?.length ?? 0;
+        if (work + reads > PASSING_WORK) continue;
+        work += reads;
+        for (const claim of course.claims.values()) if (claim.slot) hold(claim.slot, source, -1);
+        const slotsAt = new Map<number, (Slot | null)[]>(), taken: number[] = [];
+        const passage = passageOf(course, (row, claim) => {
+          const slots: (Slot | null)[] = claim.slot ? slotsFor(row, source).filter((slot) => slot === claim.slot || hasRoom(slot, source)) : [null];
+          if (claim.slot && !slots.includes(claim.slot)) slots.push(claim.slot);
+          slotsAt.set(row, slots);
+          taken.push(slots.indexOf(claim.slot));
+          return slots.map((slot) => slot ? { x: order(slot, course), at: slot.x, cost: detour(course, slot, claim) } : { x: course.endKey, at: course.endKey, cost: 0 });
+        });
+        const best = planPassage(passage, others, priceFor(course), taken), now = best?.taken;
+        entry.crossings = now?.crossings ?? 0;
+        if (best && now && now.crossings > 0) {
+          if (best.crossings < now.crossings && best.cost < now.cost) {
+            entry.crossings = best.crossings;
+            best.choice.forEach((option, index) => { const row = course.startRow + 1 + index; course.claims.get(row)!.slot = slotsAt.get(row)![option]; });
+            // Lanes sharing a slot are ordered by where their routes come from and go: the
+            // re-planned course heads from its x in the row above to its x in the row below.
+            const xs = [course.sourceX, ...best.choice.map((option, index) => passage.rows[index].options[option].at ?? passage.rows[index].options[option].x)];
+            const last = xs.length - 1, ends = course.ends.reduce((sum, end) => sum + end.x, 0) / course.ends.length;
+            for (let index = 1; index <= last; index++) course.claims.get(course.startRow + index)!.heading = (xs[index - 1] + (index < last ? xs[index + 1] : ends)) / 2;
+            unplace(course);
+            place(course);
+            changed = true;
+          }
+        }
+        for (const claim of course.claims.values()) if (claim.slot) hold(claim.slot, source, 1);
+      }
+      if (!changed) break;
+      // The next round re-plans those that crossed when last planned (others' moves since may
+      // have changed that; the rounds are a budget, not a fixed point).
+      candidates = candidates.filter((entry) => entry.crossings > 0);
+    }
+  }
+
+  const courses = plan.routes.map((route, index) => {
     const source = endpointKey(route.from);
     let node = rootOf(route.from, source);
     const sourceX = trie[node].x;
-    let endX: number; let endChannel: number; let to: Anchor;
-    if (route.to.kind === "node") {
-      const row = columns.get(route.to.id)!.row;
-      endX = center(route.to.id); endChannel = row - 1; to = { row, edge: "arrow" };
-    } else {
-      const join = placed.get(route.to.id)!;
-      endX = join.x; endChannel = join.channel; to = { junction: route.to.id };
-    }
-    if (trie[node].row + 1 <= endChannel) {
-      const endKey = round(endX);
-      let byEnd = claimed.get(source);
-      if (!byEnd) claimed.set(source, byEnd = new Map());
-      let byRow = byEnd.get(endKey);
-      if (!byRow) byEnd.set(endKey, byRow = new Map());
-      const startRow = trie[node].row, straight = passing === "straight" && route.to.kind === "node";
-      for (let row = startRow + 1; row <= endChannel; row++) {
-        let slot = byRow.get(row);
-        if (slot === undefined) {
-          const bundle = straight ? bundles.get(source)?.get(row) : undefined;
-          const want = bundle ? sourceX + (bundle.x / bundle.count - sourceX) * Math.min(1, (row - startRow) / (bundle.row / bundle.count - startRow)) : endX;
-          byRow.set(row, slot = claim(row, want, source, sourceX));
-          if (slot && straight) {
+    const { x: endX, to, course } = routeEnds[index];
+    if (course) {
+      for (let row = course.startRow + 1; row <= routeEnds[index].channel; row++) {
+        const claim = course.claims.get(row)!, slot = claim.slot?.id ?? null;
+        if (!claim.taken) {
+          claim.taken = true;
+          if (claim.slot) take(row, claim.slot, source, sourceX);
+          if (slot && claim.straight) {
             let bySource = wanted.get(slot);
             if (!bySource) wanted.set(slot, bySource = new Map());
             const sum = bySource.get(source);
-            if (sum) { sum.sum += want; sum.count++; } else bySource.set(source, { sum: want, count: 1 });
+            if (sum) { sum.sum += claim.heading; sum.count++; } else bySource.set(source, { sum: claim.heading, count: 1 });
           }
         }
-        const key = slot ?? endKey;
+        const key = slot ?? course.endKey;
         let child = childOf(node, key);
         if (child === undefined) {
           child = trie.length;
@@ -1155,7 +1508,7 @@ function layoutPass(prepared: Prepared, extra: { readonly left: number; readonly
     // tiles below: keep each lane MIN_LANE clear of those stems where the gap
     // has room, else stay centred.
     const blocked: Interval[] = [];
-    for (const row of passing === "straight" ? rowsOfSlot.get(slot.id) ?? [] : []) {
+    for (const row of straightLines ? rowsOfSlot.get(slot.id) ?? [] : []) {
       const stems = stemsAround(row).filter((stem) => stem.x > slot.low - MIN_LANE && stem.x < slot.high + MIN_LANE);
       order.forEach(([source], index) => {
         for (const stem of stems) if (!ownStem(source, stem)) blocked.push([stem.x - index * spacing - MIN_LANE, stem.x - index * spacing + MIN_LANE]);

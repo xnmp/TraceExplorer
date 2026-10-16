@@ -58,17 +58,29 @@ const layout = (nodes: PlacedNode[], routes: GraphLayout["routes"] = [], orienta
 const route = (from: string, to: string, path: string) => ({ id: `${from}>${to}`, from: { kind: "node" as const, id: from }, to: { kind: "node" as const, id: to }, consumers: [{ parent: from, child: to }], terminal: true, path });
 
 describe("resizedLayout", () => {
-  it("grows a tile in place and moves only what lies below it, by what it needs", () => {
-    const before = layout([node("root", 300, 0), node("a", 100, 150), node("b", 300, 150), node("c", 100, 300)],
-      [route("a", "c", "M146 250 L146 292")]);
+  it("grows a tile in place and moves only what lies under it, by what it needs", () => {
+    // d lies under b, c under a: b's growth moves d and the line into it, and leaves a's column where it was.
+    const before = layout([node("root", 300, 0), node("a", 100, 150), node("b", 300, 150), node("c", 100, 300), node("d", 300, 300)],
+      [route("a", "c", "M146 250 L146 292"), route("b", "d", "M346 250 L346 292")]);
     const after = resizedLayout(before, new Map([["b", 116]]))!;
     expect(after.nodes.get("b")).toMatchObject({ x: 300, y: 150, height: 116 });
+    for (const key of ["root", "a", "c"]) expect(after.nodes.get(key)).toEqual(before.nodes.get(key));
+    expect(after.nodes.get("d")!.y).toBe(316);
+    expect(after.routes[0].path).toBe(before.routes[0].path);
+    // The connector into d leaves b's new lower edge and still ends at d's arrow.
+    expect(pathNumbers(after.routes[1].path)).toEqual([346, 266, 346, 308]);
+    expect(after.height).toBe(before.height + 16);
+  });
+  it("moves a neighbouring column too when a line under the row joins it to what moves", () => {
+    // a's line to d runs under the row across both columns: c, under a, moves with d.
+    const before = layout([node("root", 300, 0), node("a", 100, 150), node("b", 300, 150), node("c", 100, 300), node("d", 300, 300)],
+      [route("a", "c", "M146 250 L146 292"), route("a", "d", "M146 250 L146 270 L346 270 L346 292")]);
+    const after = resizedLayout(before, new Map([["b", 116]]))!;
     expect(after.nodes.get("a")).toEqual(before.nodes.get("a"));
-    expect(after.nodes.get("root")).toEqual(before.nodes.get("root"));
     expect(after.nodes.get("c")!.y).toBe(316);
+    expect(after.nodes.get("d")!.y).toBe(316);
     // The connector into c keeps its start on a's bottom and still ends at c's arrow.
     expect(pathNumbers(after.routes[0].path)).toEqual([146, 250, 146, 308]);
-    expect(after.height).toBe(before.height + 16);
   });
   it("moves nothing when the row is already tall enough", () => {
     const before = layout([node("root", 300, 0), node("a", 100, 150, 116), node("b", 300, 150), node("c", 100, 300)]);
@@ -119,6 +131,18 @@ describe("resizedLayout", () => {
     const restored = resizedLayout(resizedLayout(right, new Map([["b", 112]]))!, new Map([["b", 100]]))!;
     expect(pathNumbers(restored.routes[0].path)).toEqual(pathNumbers(right.routes[0].path));
   });
+  it("undoes growths in turn, latest first, as each tile shrinks back to the height it grew from", () => {
+    const before = layout([node("root", 300, 0), node("a", 100, 150), node("b", 300, 150), node("c", 100, 300), node("d", 300, 300)],
+      [route("a", "c", "M146 250 L146 292"), route("b", "d", "M346 250 L346 292")]);
+    const one = resizedLayout(before, new Map([["b", 116]]))!, two = resizedLayout(one, new Map([["a", 116]]))!;
+    const undone = resizedLayout(two, new Map([["a", 100]]))!;
+    expect([...undone.nodes.values()]).toEqual([...one.nodes.values()]);
+    expect(undone.routes.map(r => r.path)).toEqual(one.routes.map(r => r.path));
+    const back = resizedLayout(undone, new Map([["b", 100]]))!;
+    expect([...back.nodes.values()]).toEqual([...before.nodes.values()]);
+    expect(back.routes.map(r => r.path)).toEqual(before.routes.map(r => r.path));
+    expect(back.height).toBe(before.height);
+  });
   it("running right, a tile of a stacked column keeps its stack gap to the tile below, whatever its neighbours' columns do", () => {
     // b's column stacks c 16 px under b; e, in the next column, ends exactly where c starts.
     const before = layout([node("root", 300, 0), node("b", 300, 150), node("c", 300, 266), node("e", 500, 140, 126), node("f", 500, 282)], [], "right");
@@ -147,13 +171,14 @@ describe("resizedLayout", () => {
     expect(held.routes).toEqual([]);
   });
   it("running right, a shrink never pulls a tile closer to the one above it, and growing again reuses the space it left", () => {
-    // b and c stack in one column, e and f in the next: f may not rise towards e because b shrank.
+    // b and c stack in one column, e and f in the next: c follows b up, keeping its stack gap;
+    // f may not rise towards e because b shrank.
     const before = layout([node("root", 300, 0), node("b", 300, 150, 116), node("c", 300, 282), node("e", 500, 150), node("f", 500, 266)], [], "right");
     let current = before;
     for (let cycle = 0; cycle < 3; cycle++) {
       current = resizedLayout(current, new Map([["b", 100]]))!;
       expect(current.nodes.get("f")).toEqual(before.nodes.get("f"));
-      expect(current.nodes.get("c")!.y).toBe(282);
+      expect(current.nodes.get("c")!.y).toBe(266);
       current = resizedLayout(current, new Map([["b", 116]]))!;
       expect(current.nodes.get("c")!.y).toBe(282);
     }
@@ -170,6 +195,17 @@ describe("resizedLayout", () => {
     // a's output runs straight into b, one arrowhead long: b's new centre can only be reached along a's edge.
     const before = layout([node("root", 300, 0), node("a", 100, 150), node("b", 208, 150)], [route("a", "b", "M192 200 L200 200")], "right");
     expect(resizedLayout(before, new Map([["b", 116]]))).toBeNull();
+  });
+  it("keeps the band's first child row with the rows when the cover itself grows, so the band attaches where it was", () => {
+    // The band attaches its first child row (`bandBounds.top`) under the cover's grid cell, whose
+    // height never changes: rows the cover's growth moves down must move that row with them.
+    const before: GraphLayout = { ...layout([node("root", 300, 0), node("a", 300, 134)], [route("root", "a", "M346 100 L346 126")]), bandBounds: { left: 292, width: 108, top: 134 } };
+    const after = resizedLayout(before, new Map([["root", 116]]))!;
+    expect(after.nodes.get("a")!.y).toBe(150);
+    expect(after.bandBounds).toEqual({ left: 292, width: 108, top: 150 });
+    expect(resizedTiles(before, new Map([["root", 116]])).bandBounds).toEqual({ left: 292, width: 108, top: 150 });
+    // A tile below the first row growing leaves it where it was.
+    expect(resizedLayout(before, new Map([["a", 116]]))!.bandBounds).toEqual(before.bandBounds);
   });
   it("declines geometry it cannot read", () => {
     const before = layout([node("root", 300, 0), node("a", 100, 150), node("b", 300, 150), node("d", 300, 300)], [route("a", "d", "M146 250 l0 42")]);

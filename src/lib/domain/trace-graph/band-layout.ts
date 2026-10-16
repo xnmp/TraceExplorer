@@ -3,7 +3,7 @@ import { downwardBandBound, layoutLayered, type GraphLayout, type LayoutItem, ty
 import { spacingFor, STACK_STEM_ROOM } from "./metrics";
 import { bandWidthBudget, columnsFor, partitions, buildShelves, validate } from "./band-shelves";
 import { attachSingleBand, attachPackedBand, localBandPlacement, bandExtent, withBandBounds, singleBandSkeleton } from "./band-geometry";
-import { measure, validateLayout, cost, routePlan, sharedLaneLength, type Measures, type Weights } from "./layout-quality";
+import { measure, validateLayout, cost, routePlan, sharedLaneLength, HEIGHT_WEIGHT, type Measures, type Weights } from "./layout-quality";
 import { incrementalBudget, incrementalTree } from "./band-incremental";
 import { forEachPathNumber, isPlainPathData, mapPathNumbers, pathNumbers } from "./path-data";
 import { extentCost, optimisticCost, rectangleCost } from "./layout-cost-bound";
@@ -24,7 +24,7 @@ export interface BandOptions {
   /** How the downward layout's routes pass the rows between their ends (`layout.ts`, `Passing`). */
   readonly passing: Passing;
 }
-export const BAND_DEFAULTS: BandOptions = Object.freeze({ growthHistory: true, anchorHeightRatio: 1.5, ordering: "barycenter" as const, passing: "straight" as const });
+export const BAND_DEFAULTS: BandOptions = Object.freeze({ growthHistory: true, anchorHeightRatio: 2, ordering: "barycenter" as const, passing: "fewest-crossings" as const });
 /** The engine as merged in plan phase 3 (#79), for A/B comparison. */
 export const BAND_PHASE3: BandOptions = Object.freeze({ growthHistory: false, anchorHeightRatio: Infinity, ordering: "barycenter" as const, passing: "nearest-end" as const });
 
@@ -55,6 +55,8 @@ interface Prepared extends Candidate {
   readonly height: number;
   /** Whether attachment keeps the clicked tile and its visible ancestors where they were. */
   readonly holds: boolean;
+  /** The largest move of a tile shown before, by attached rectangles (exact: connectors move with their tiles). */
+  readonly moves: number;
   /** Admissible objective lower bound from attached rectangles and allocation alone. */
   readonly floor: number;
 }
@@ -220,6 +222,19 @@ function downwardHeightFloor(items: readonly LayoutItem[], key: string): number 
 const ANCHOR_CROSSING_SLACK = 50;
 const ANCHOR_CROSSING_RATIO = .25;
 const PRICED_LANES: Weights = Object.freeze({ stability: 1.5, sharedLanes: "priced" });
+/**
+ * When the component grew, a layout moving tiles already shown wins over the best one keeping
+ * them all still only if its score is below this share of the still one's: the saving a
+ * direction switch must show too. Displacement up to `STILL` px (rounding) counts as still.
+ */
+const GROWTH_HYSTERESIS = .85;
+/**
+ * What a crossing costs in a tree beyond the objective's price (`CROSSING_WEIGHT`), in its units:
+ * a tile width of band height. A tree always has a drawing without crossings, so one there is a
+ * defect rather than the compromise between several inputs that the corpus calibration priced.
+ */
+const TREE_CROSSING_WEIGHT = HEIGHT_WEIGHT;
+const STILL = .01;
 
 const NO_COST: Measures = { height: 0, width: 0, area: 0, tileArea: 0, whitespace: 0, paneWhitespace: 0, length: 0, bends: 0, crossings: 0, sharedLanePx: 0,
   tileIntersections: 0, overlaps: 0, directionViolations: 0, mixedDirections: 0, siblingInversions: 0, unaligned: 0, overflow: 0, displacement: 0,
@@ -319,6 +334,9 @@ export function layoutBand(input: LayoutRequest, options: BandOptions = BAND_DEF
     if (retained) return { ...retained, preferredX: bandExtent(previous, key).left, anchorY: anchors.length && compatible?.attachment ? compatible.attachment.bandTop - compatible.attachment.placement.coverHeight : undefined, anchorX: anchors.length ? bandExtent(previous, key).left : undefined, decision: { candidate: fitted.resized ? "resized-visible" : "unchanged-visible", stability: true, partition: request.history?.layout.decision?.partition } };
   }
   const tileWidth = request.tileWidth ?? 92;
+  // A tree's crossings are priced as defects (`TREE_CROSSING_WEIGHT`).
+  const tree = request.items.every(n => n.parents.length <= 1);
+  const score = (m: Measures, weights?: Weights) => cost(m, tileWidth, weights) + (tree ? TREE_CROSSING_WEIGHT * m.crossings : 0);
   const prepare = (c: Candidate): Prepared => {
     // Rectangles and allocation translate exactly with attachment; connectors are
     // attached only for candidates whose rectangle-only bound survives pruning.
@@ -327,7 +345,12 @@ export function layoutBand(input: LayoutRequest, options: BandOptions = BAND_DEF
       const a = skeleton.nodes.get(id), b = previous?.nodes.get(id);
       return !!a && !!b && Math.hypot(a.x - b.x, a.y - b.y) < .01;
     });
-    return { ...c, height: bandExtent(skeleton, key).height, holds,
+    let moves = 0;
+    if (previous) for (const n of skeleton.nodes.values()) {
+      const was = n.key !== key ? previous.nodes.get(n.key) : undefined;
+      if (was) moves = Math.max(moves, Math.hypot(n.x - was.x, n.y - was.y));
+    }
+    return { ...c, height: bandExtent(skeleton, key).height, holds, moves,
       floor: rectangleCost(skeleton, key, request.maxWidth, tileWidth, request.items, previous, request.anchorKey) };
   };
   const byHeight = (a: { height: number }, b: { height: number }) => a.height - b.height;
@@ -381,8 +404,9 @@ export function layoutBand(input: LayoutRequest, options: BandOptions = BAND_DEF
         && (!fitted.resized || Number.isFinite(cost(validateLayout(retained, key, request.maxWidth, request.items), tileWidth))) ? retained : null);
       const compactShelf = Math.min(...shelves.map(c => bandExtent(c.layout, key).height));
       const height = warm ? bandExtent(warm, key).height : Infinity;
-      const repack = !warm || height > compactShelf * 1.1
-        || (wantsDown && height > rowsHeight * 1.1 && height > bandExtent(visibleDown().layout, key).height * 1.1);
+      // Growth keeps a warm embedding however tall (the height cap below bounds it): it repacks only without one.
+      const repack = !warm || (!fitted.grew && (height > compactShelf * 1.1
+        || (wantsDown && height > rowsHeight * 1.1 && height > bandExtent(visibleDown().layout, key).height * 1.1)));
       const subset = repack ? projected(previous, { ...request, items: request.items.filter(n => fixed.has(n.key)) }) : null;
       const compact = subset && incrementalTree(request, { ...subset, bandBounds: undefined, anchorX: undefined, anchorY: undefined }, budget);
       if (compact) history.push({ name: "anchored-repack", layout: compact });
@@ -488,17 +512,17 @@ export function layoutBand(input: LayoutRequest, options: BandOptions = BAND_DEF
     if (Number.isFinite(bestAnchored) && beaten(optimisticCost(placed, key, request.maxWidth, tileWidth, request.items, previous, request.anchorKey), c.layout.orientation)) return;
     const known = gates.get(c.layout);
     const metrics = known && (known.complete || !previous && !lazy.length && prepared.filter(eligible).length === 1) ? known.metrics : gate(c, true);
-    const score = cost(metrics, tileWidth);
-    if (!Number.isFinite(score)) {
-      const priced = cost(metrics, tileWidth, PRICED_LANES);
+    const value = score(metrics);
+    if (!Number.isFinite(value)) {
+      const priced = score(metrics, PRICED_LANES);
       if (Number.isFinite(priced)) laneScored.push({ ...c, placed, metrics, score: priced, anchors: c.holds });
       return;
     }
-    scored.push({ ...c, placed, metrics, score, anchors: c.holds });
+    scored.push({ ...c, placed, metrics, score: value, anchors: c.holds });
     minimumFeasibleHeight = Math.min(minimumFeasibleHeight, metrics.height);
     if (!c.holds) return;
-    bestAnchored = Math.min(bestAnchored, score);
-    if (previous && c.layout.orientation === previous.orientation) bestSame = Math.min(bestSame, score); else bestTurned = Math.min(bestTurned, score);
+    bestAnchored = Math.min(bestAnchored, value);
+    if (previous && c.layout.orientation === previous.orientation) bestSame = Math.min(bestSame, value); else bestTurned = Math.min(bestTurned, value);
   };
   const byFloor = (a: { floor: number; height: number }, b: { floor: number; height: number }) => a.floor - b.floor || a.height - b.height;
   // Anchor-preserving embeddings win whenever one is feasible, so the others are
@@ -533,7 +557,7 @@ export function layoutBand(input: LayoutRequest, options: BandOptions = BAND_DEF
     if (down && !prepared.some(c => c.layout === down!.layout)) prepared.push(prepare(down));
     for (const c of [...prepared].sort(byFloor)) {
       if (!Number.isFinite(c.floor)) continue;
-      const metrics = gate(c, true), priced = cost(metrics, tileWidth, PRICED_LANES);
+      const metrics = gate(c, true), priced = score(metrics, PRICED_LANES);
       if (Number.isFinite(priced)) laneScored.push({ ...c, placed: placementFor(c), metrics, score: priced, anchors: c.holds });
     }
   }
@@ -553,6 +577,37 @@ export function layoutBand(input: LayoutRequest, options: BandOptions = BAND_DEF
   // A direction switch must earn a visible quality saving, not a rounding-sized difference.
   const same = previous && pool.filter(c => c.layout.orientation === previous.orientation).sort((a, b) => a.score - b.score)[0];
   if (same && winner.layout.orientation !== same.layout.orientation && winner.score > same.score * .85) winner = same;
+  // A tree's crossing price never moves what is on screen: a layout moving tiles shown gives way to
+  // the best one keeping them all still if the objective without that price prefers the still one.
+  if (tree && previous && !lanesShared && winner.metrics.displacement > STILL) {
+    const base = (c: Scored) => cost(c.metrics, tileWidth);
+    const still = pool.filter(c => c.metrics.displacement <= STILL && c.metrics.anchorDisplacement <= STILL && c.layout.orientation === winner.layout.orientation)
+      .reduce<Scored | undefined>((best, c) => !best || base(c) < base(best) ? c : best, undefined);
+    if (still && base(still) <= base(winner) + 1e-9) winner = still;
+  }
+  // Growth keeps what is on screen (North 1995, "Incremental Layout in DynaDAG"): a layout that
+  // moves tiles already shown must earn a visible saving over the best one that keeps every one of
+  // them where it was, as a direction switch must. The still layout may be at most a tenth taller.
+  if (fitted.grew && previous && !lanesShared && winner.metrics.displacement > STILL) {
+    const still = stillest();
+    if (still && winner.score > still.score * GROWTH_HYSTERESIS) winner = still;
+  }
+  /** The best candidate keeping every tile shown where it was, no taller than the compact pool allows; scored here if it was pruned. */
+  function stillest(): Scored | undefined {
+    const tallest = Math.min(winner.metrics.height * 1.1, anchors.length && holding.length ? Infinity : minimumHeight * 1.1) + .01;
+    let best: Scored | undefined;
+    const take = (c: Scored) => {
+      if (c.metrics.displacement > STILL || c.metrics.anchorDisplacement > STILL || c.metrics.height > tallest || c.layout.orientation !== winner.layout.orientation || (winner.anchors && !c.anchors)) return;
+      if (!best || c.score < best.score) best = c;
+    };
+    for (const c of ranked) take(c);
+    for (const c of prepared) {
+      if (c.name !== "incremental-tree" || ranked.some(r => r.layout === c.layout) || !(c.floor <= winner.score / GROWTH_HYSTERESIS + 1e-7)) continue;
+      const metrics = gate(c, true), value = score(metrics);
+      if (Number.isFinite(value)) take({ ...c, placed: placementFor(c), metrics, score: value, anchors: c.holds });
+    }
+    return best;
+  }
   // Crossing cap: holding the clicked tile and its ancestors still must not cost a crossings
   // explosion. An anchored winner that crosses more than the best unanchored candidate by more
   // than the slack (absolute, or relative to that candidate) yields: the tile moves, flagged.
@@ -575,6 +630,33 @@ export function layoutBand(input: LayoutRequest, options: BandOptions = BAND_DEF
       if (free && winner.metrics.height > options.anchorHeightRatio * free.metrics.height + .01) { winner = free; yielded = true; }
     }
   }
+  // Stability cap: when the component grew, holding the anchors still is not stability if it
+  // moves the other tiles shown more than an unanchored layout moves any tile, anchors included
+  // (a repack around the anchors when no warm embedding exists, against a fresh layout that shifts
+  // everything a little). The calmer layout wins if it scores within the growth hysteresis; the
+  // anchors move, flagged.
+  if (fitted.grew && anchors.length && winner.anchors && !yielded && !lanesShared && winner.metrics.displacement > STILL) {
+    const calm = calmerUnanchored(winner);
+    if (calm) { winner = calm; yielded = true; }
+  }
+  /** The best unanchored candidate moving every tile shown less than `held` moves the average one, scoring within the growth hysteresis of it. */
+  function calmerUnanchored(held: Scored): Scored | undefined {
+    const limit = held.metrics.displacement - STILL, worst = held.score / GROWTH_HYSTERESIS + 1e-7;
+    let best: Scored | undefined;
+    const take = (c: Scored) => {
+      if (c.anchors || !(c.metrics.maxDisplacement < limit) || c.layout.orientation !== held.layout.orientation || c.score > worst) return;
+      if (!best || c.score < best.score) best = c;
+    };
+    for (const c of ranked) take(c);
+    const pending = lazy.find(p => p.name === "visible-down" && !realised.has(p));
+    if (pending && pending.orientation === held.layout.orientation && !(pending.floor > worst)) realise(pending);
+    for (const c of prepared) {
+      if (c.holds || !(c.moves < limit) || !(c.floor <= worst) || c.layout.orientation !== held.layout.orientation || ranked.some(r => r.layout === c.layout)) continue;
+      const metrics = gate(c, true), value = score(metrics);
+      if (Number.isFinite(value)) take({ ...c, placed: placementFor(c), metrics, score: value, anchors: false });
+    }
+    return best;
+  }
   /**
    * The candidate the engine would show if no tile were anchored: the same objective and
    * orientation rule over the unanchored family, found exactly by branch and bound (the
@@ -595,9 +677,9 @@ export function layoutBand(input: LayoutRequest, options: BandOptions = BAND_DEF
       if (!placements.has(c.layout) && beyond((c.floor + rigidConnectorCost(c.layout, key, tileWidth)) * (1 - 1e-9), c.layout.orientation)) continue;
       const placed = placementFor(c);
       if (beyond(optimisticCost(placed, key, request.maxWidth, tileWidth, request.items, previous, request.anchorKey), c.layout.orientation)) continue;
-      const metrics = gate(c, true), score = cost(metrics, tileWidth);
-      if (!Number.isFinite(score)) continue;
-      const scoredFree: Scored = { ...c, placed, metrics, score, anchors: false };
+      const metrics = gate(c, true), value = score(metrics);
+      if (!Number.isFinite(value)) continue;
+      const scoredFree: Scored = { ...c, placed, metrics, score: value, anchors: false };
       free.push(scoredFree);
       note(scoredFree);
     }

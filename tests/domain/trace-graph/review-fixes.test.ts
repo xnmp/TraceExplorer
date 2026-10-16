@@ -48,10 +48,11 @@ describe("lane-infeasible requests without history", () => {
   // the best of them with its lanes priced, flagged lane-infeasible, not the raw downward
   // layout flagged as malformed input.
   // (Found by a seeded search; the earlier 7-node fixture gained a lane-free layout once routes
-  // passed rows along their straight lines, and the 10-node one after it once a cycle of turn
-  // orders took a dogleg.)
-  const nodes = [node("root"), node("n1", ["root"], 1), node("n2", ["n1"], 2), node("n3", ["n1", "root", "n2"], 3), node("n4", ["n1"], 4),
-    node("n5", ["n3", "n4", "root"], 5)];
+  // passed rows along their straight lines, the 10-node one after it once a cycle of turn
+  // orders took a dogleg, and the 6-node one after that once routes passed rows in the slots
+  // crossing fewest. Of 40,000 seeded DAGs of 6 to 12 tiles, two are still lane-infeasible.)
+  const nodes = [node("root"), node("n1", ["root"], 1), node("n2", ["n1"], 2), node("n3", ["n2"], 3), node("n4", ["n2"], 4), node("n5", ["root"], 5),
+    node("n6", ["root", "n5", "n4"], 6), node("n7", ["n3", "n5", "n6", "root"], 7), node("n8", ["n2"], 8), node("n9", ["n8"], 9), node("n10", ["n5", "n4", "n3"], 10)];
   const request = requestFor({ id: "lane-infeasible", nodes, focuses: [null] }, null, 900, 96);
 
   it("shows the best priced candidate, flagged lane-infeasible", () => {
@@ -80,15 +81,16 @@ describe("lane-infeasible requests without history", () => {
 });
 
 describe("crossing cap on anchored layouts", () => {
-  // A bench reveal (random-dag-40-7502, 454 px, 128 px images): holding n26 still at step 2 costs a
+  // A bench reveal (random-dag-40-7502, 640 px, 128 px images): holding n26 still at step 2 costs a
   // crossings explosion. (The case was random-dag-100-8101 at 360 px until explicit expansion
-  // changed the tours' visible sets; this is the corpus step that yields now.)
+  // changed the tours' visible sets, then this one at 454 px until routes passed rows in the
+  // slots crossing fewest; this is the corpus step that yields now.)
   it("lets the anchors yield, flagged, when holding them still costs a crossings explosion", () => {
     const c = corpus().find(c => c.id === "random-dag-40-7502")!;
     let previous: Optimized | undefined, fresh = 0, layout: GraphLayout | undefined;
-    const crossings = (l: GraphLayout, r: LayoutRequest) => measure(attachSingleBand(l, r), r.band!.key, 454, r.items).crossings;
+    const crossings = (l: GraphLayout, r: LayoutRequest) => measure(attachSingleBand(l, r), r.band!.key, 640, r.items).crossings;
     for (const focus of c.focuses.slice(0, 3)) {
-      const request = requestFor(c, focus, 454, 128);
+      const request = requestFor(c, focus, 640, 128);
       previous = optimizedBand({ ...request, hint: previous?.layout.readingOrder }, { previous, anchorKey: focus ?? undefined });
       layout = previous.layout;
       fresh = crossings(layoutGraph({ ...request, hint: layout.readingOrder }), request);

@@ -6,7 +6,7 @@ import { attachSingleBand, bandExtent, packedGridFlow, bandPlacements, attachPac
 import { tileMetrics } from "$lib/domain/trace-graph/metrics";
 import { optimisticCost } from "$lib/domain/trace-graph/layout-cost-bound";
 import { measure, cost, intersectsTile, crossing, overlapLength } from "$lib/domain/trace-graph/layout-quality";
-import { handCases, corpus, requestFor, screenshot, chain } from "../../../layout-eval/corpus";
+import { handCases, corpus, requestFor, screenshot, chain, node } from "../../../layout-eval/corpus";
 
 const placed = (request: LayoutRequest) => attachSingleBand(layoutGraph(request), request);
 const history = (request: LayoutRequest) => { const layout = layoutGraph(request); return { signature: bandHistorySignature(request), layout, placed: attachSingleBand(layout, request) }; };
@@ -81,6 +81,22 @@ describe("production band contracts", () => {
       else yields++;
     }
     expect(yields).toBeLessThanOrEqual(1);
+  });
+  it("does not hold the selected input still by moving every other tile", () => {
+    // A batch of eight from the cover with one of them selected, then a batch of eight from that
+    // one. Holding it still takes a repack of every other tile around it (hundreds of pixels); the
+    // fresh layout moves every tile, the selected one included, by less than a lane. The calmer
+    // layout is shown, and since the anchor moved, the decision says so (docs/trace-view-layout.md, "Growth").
+    const batch = [node("root"), ...Array.from({ length: 8 }, (_, i) => node(`c${i}`, ["root"], i + 1))];
+    for (const [width, px] of [[640, 48], [900, 96]] as const) {
+      const before = { id: "batch-under-batch", nodes: batch, focuses: ["c3"] };
+      const after = { ...before, nodes: [...batch, ...Array.from({ length: 8 }, (_, i) => node(`g${i}`, ["c3"], i + 9))] };
+      const previous = history(requestFor(before, "c3", width, px));
+      const next = { ...requestFor(after, "c3", width, px), anchorKey: "c3", history: previous };
+      const metrics = measure(safe(next), "root", width, next.items, previous.placed, "c3");
+      expect(metrics.maxDisplacement).toBeLessThan(32);
+      if (metrics.anchorDisplacement > 0) expect(layoutGraph(next).decision?.fallback).toBe("anchor-yield");
+    }
   });
   it("is deterministic under input permutation and does not mutate request or prior geometry", () => {
     const request = requestFor(screenshot, null, 640, 96), previous = history(request);

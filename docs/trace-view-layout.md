@@ -208,7 +208,12 @@ hard gates without computing soft diagnostics that cannot affect a choice.
 A reveal offers the retained subset, translated anchor embeddings and an incremental
 embedding with retained tiles/routes as obstacles. New edits try deterministic free
 positions in rank order, stopping at the first safe embedding with direct routes (across
-the gap below the parent, or down the gap beside it from its right port). Beside a parent
+the gap below the parent, or down the gap beside it from its right port) that cross no
+other line and keep the reading order of the edit's siblings (the same inputs). Failing
+that, up to 8 more positions adding no height are tried for one crossing fewer, or as few
+with the order kept (`CROSSING_PROBES`); and each route takes, of the lane-free routes into
+a position, the one crossing fewest other lines, looking up to 8 past a crossing one
+(`CROSSING_SCAN`). Beside a parent
 of another height the ports do not line up: a new edit is shorter than its parent, which
 now shows the expand hint, so the line between them must jog. At the default size the
 column gap (16 px) is only the arrowhead's approach, which leaves the jog nothing but the
@@ -401,6 +406,8 @@ orientation. Arrowheads enter tile tops or left sides and keep the same size and
 
 `spacingFor` and `ARROW` in `metrics.ts`; the numbers below are for the default tile (`SPACING`; see [Tile size](#tile-size) for larger ones). Tiles in one generation are `column` = 16 px apart (28 px before; the old gap left graphs looking sparse). That gap is also the lane routes take past a row: 16 px less 6 px clearance either side leaves room for two lanes, and further sources move to the next gap or an outer margin. Running right, the same gap separates the tiles stacked in a column.
 
+A pinned band in a narrow pane may keep narrower side margins (`narrowerRows` in `layout.ts`): when wrapping a generation within `tightMargin` (twice the clearance: room for the one outer lane the passing slots open beside a row) puts it on fewer display rows, the band is laid out that way too, and kept if its lanes still fit the pane. Against the same engine without it, height excess over the best reference falls from 0.74% to 0.07% on the real folder's shapes, 1.78% to 0.71% on `observed`, 1.83% to 1.58% on `chains` and 6.80% to 5.30% on `variations`. The price is in the narrowest panes: with two columns where one fitted before, a branch opened later under the inner column must cross the cover's line to a tile wrapped below it (two `chains` tours at 360 px with 96 px images: 13 more tree crossings over their steps).
+
 Generations are `bandChannel` = 34 px apart (46 px before), and wrapped rows of one generation `rowChannel` = 28 px (34 before). A channel holds only what its routes need, from the row above:
 
 - **Bend room**: three bend tracks (`TRACK_HEIGHT`, 6 px each) between generations, two between wrapped rows. Up to that many crossing sources bend in slices of their own before the channel grows; it grows by a track per further one.
@@ -457,6 +464,7 @@ The reusable layered algorithm is described top to bottom; a left-to-right shelf
      - Each outer margin is one slot for the whole graph, with unlimited capacity. A source keeps one x in it, just outside the rows it passes there, and stays at least `MIN_LANE` (preferably `lane`) from every other source whose rows, with the channel either side, overlap its own. Inner sources are placed first and nearest the tiles, which avoids most crossings. Lanes take the roomier `lane` spacing when all of a margin's lanes fit the canvas that way, and otherwise `MIN_LANE`. Two sources therefore never meet in a margin, whichever rows they pass, while sources at different heights reuse the same room.
      - When margin lanes or junctions need more room than a margin has, `layoutGraph` reruns the pass with that margin widened by the measured shortfall (at most twice). Lanes are placed relative to the tiles, so one retry fits them exactly; nothing is drawn off the canvas. The graph widens and scrolls horizontally instead of merging lanes.
      - How often this happens depends on how many independent lines must pass the same rows. Graphs whose parents sit close by rarely widen (3 of 900 random graphs, by at most 3%). Graphs that keep reusing a few inputs across many wrapped rows widen in narrow panes: one style applied to 24 photos at 384 px grows by about 20–30%, to 32 photos by about 60%, and the width can change with the selection. The alternative, merging lanes, would hide which input reaches which output.
+     - **Fewest crossings.** Once every route has claimed its slots, the courses that cross others are planned again one at a time (`passing-plan.ts`; `Passing: "fewest-crossings"`, the default): with the other courses held, the slots crossing the fewest of their runs, counted channel by channel as the layered count does (display rows as layers), are a shortest path over (row, slot) states, also priced by the detour from the straight line, a new lane in a gap, and a bend track a crowded channel would need. A course takes them if they cross less and cost less than its own; rounds repeat while one changes (rip-up and reroute, Nair 1987), within a work budget.
    - **Shared courses (trie).** The rows a source's routes cross form a trie per source: routes heading to the same place share a prefix of crossings, and each crossing is claimed once per source (memoised). A stretch shared by several routes is emitted once as a **trunk** route (`to === from`, never terminal, its consumers the union of the routes it carries, id: its source and a hash of the consumers it carries). Each route then starts where it branches off; chains follow `continuation`. A fan-out of n children across r rows therefore draws O(n + r) path data instead of O(n·r).
    - **Zone choice.** Each channel crossing bends inside one zone and runs vertically outside it. The zone is chosen cheapest first, in strict priority:
      1. fewest vertical runs along another source's run on the same column (a shared lane; two inputs of one junction running down its column count too, since inputs may meet only at the dot);
@@ -607,41 +615,79 @@ expired the history and each arriving output relaid the band, moving the selecte
   hint, by exactly its height (16 px): a tile's first output adds it, and its last output
   leaving (a failed or dismissed placeholder, a discard) takes it away. Any other change of
   height (a scope flip, say) lays the band out afresh. The tile is resized in place
-  (`resizedLayout`), a cut-and-stretch step as in incremental orthogonal drawing (Papakostas
-  and Tollis 1998): everything below a horizontal cut moves rigidly, and connectors crossing
-  the cut stretch along their vertical runs.
+  (`resizedLayout`).
+  - Growing, the tile shoves what lies under it no further than it must: one-dimensional
+    compaction by longest paths in a constraint graph, as layout compactors and interactive
+    routers' "shove" do (Hsueh and Pederson 1979). Tiles, junction dots and connector pieces
+    each belong to a body that moves as a unit: a horizontal or slanted run, or a curve, with
+    the dots and tiles its ends meet and the branches leaving it; vertical runs stretch. Of two
+    things one above the other that overlap horizontally, the lower keeps the room the drawing
+    needs below the upper, or what it had if that was less, and room to spare takes up the
+    growth. A tile shorter than its row grows into the row's spare room first, moving nothing.
+    So what lies under the tile in its column moves, by what it must, and a neighbouring
+    column only when a line under the row joins it to what moves. (A cut used to move
+    everything under the tile's row, every column by the whole growth.) The search for
+    pushes starts from the bodies that move, so its cost follows what moves, not the band.
+  - Where shoving cannot keep every connector on its ports and clear of tiles (a line held
+    where it meets the tile's top or sides would have to move), or does not apply (the cover,
+    whose growth moves the band's top; a band running right), the tile is resized by a
+    cut-and-stretch step as in incremental orthogonal drawing (Papakostas and Tollis 1998):
+    everything below a horizontal cut moves rigidly, and connectors crossing the cut stretch
+    along their vertical runs.
   - Tiles one above the other keep their gap, less only room the layout leaves spare: room
     beside a taller neighbour in the tile's row (the channel under the row stays), and, running
     right, room beyond the stack gap between the tiles of one column of a shelf.
-  - Growing, the cut is the first line under the tile that crosses no tile, and things below it
-    move down by what the tile and the gaps under it need: nothing, when a taller neighbour
-    already gives its row the room, or a shrink left room in its column. If that cut would leave
-    a tile of the tile's column in place too close under it, or bring a connector within 2 px of
+  - Cutting to grow, the cut is the first line under the tile that crosses no tile, and things
+    below it move down by what the tile and the gaps under it need. If that cut would leave a
+    tile of the tile's column in place too close under it, or bring a connector within 2 px of
     the tile (closer than it was), the cut is right under the tile instead, and the neighbours
     it passes stay. A connector leaving a staying tile's lower edge on the cut keeps its start
     and bridges down to what moved.
-  - Shrinking, things below the cut move back up as far as the freed space allows, and no
+  - A growth is recorded on the layout it returns (the latest four, `ResizeRecord`). Shrinking
+    the tile back to the height it grew from undoes the latest exactly, when growing it again
+    gives the same drawing (nothing else changed since): a failed edit leaves the band as it
+    was. Otherwise things below the cut move back up as far as the freed space allows, and no
     further than any tile's gap to the tile above it in its column allows: running right, a
     column beside the tile does not rise because the tile shrank. Otherwise the space stays,
     and the next growth reuses it, so repeated failed edits never drift.
   - Running right, a connector arriving at the tile's left side follows its new centre; if
     that would run it along another source's line, it steps across one arrow length before
     the tile instead.
-  - Every connector must meet its tiles where it did. When no cut manages that (a neighbour's
-    side port below the cut, a step that would run along the edge of the tile it leaves),
-    the band is laid out again, holding its tiles where the resize would have put them
-    (`resizedTiles`): the committed geometry without its connectors is never kept as it is.
+  - Every connector must meet its tiles where it did. When neither shoving nor a cut manages
+    that (a neighbour's side port below the cut, a step that would run along the edge of the
+    tile it leaves), the band is laid out again, holding its tiles where the resize would have
+    put them (`resizedTiles`): the committed geometry without its connectors is never kept as
+    it is.
   - When only hints changed, the committed layout shares no lane, and the resized geometry
     passes every hard gate, it is kept as it is (decision `resized-visible`): an output
     arriving out of sight moves tiles only straight down (by the hint, at most, per tile that
     grew), and one leaving only straight up.
+- New tiles are embedded into the resized drawing (`incremental-tree`): each output where its
+  inputs' routes reach it, and a new image without inputs in the band where there is room for
+  it among the rows already drawn, clear of every tile and line. One that would make the band
+  taller lays the band out again instead (the band grows anyway, and a fresh layout leaves the
+  room later growth needs; embedding it under everything put more selected inputs in the way
+  of growth pushes: merge-k8 288 unflagged moves against 177).
+- When the component grew, a layout that moves tiles already shown must score at least 15%
+  better than the best one keeping every tile shown where it was (`GROWTH_HYSTERESIS`, the
+  saving a direction switch must show too; the still one may be at most a tenth taller). A
+  warm embedding is kept through growth however tall; the height cap below bounds it.
 - When the component grew, anchors yield (`anchor-yield`) if holding them makes the band
-  more than `anchorHeightRatio` (1.5) times taller than the best unanchored layout: a chain
+  more than `anchorHeightRatio` (2) times taller than the best unanchored layout: a chain
   growing below a held column must still wrap. A click on an unchanged component never
-  yields to height; there the band only shows more of what was already there.
+  yields to height; there the band only shows more of what was already there. They yield
+  too, flagged, when holding them still moves the other tiles shown more than an unanchored
+  layout scoring within the growth hysteresis moves any tile, the anchors included (the
+  stability cap: a repack around the anchors against a fresh layout that shifts everything
+  a little).
+- A tree always has a drawing without crossings, so in a tree a crossing is priced as a
+  defect, a tile width of band height (`TREE_CROSSING_WEIGHT`), on top of the objective's
+  calibrated price. That price never moves what is on screen: a layout moving tiles shown
+  gives way to the best one keeping them all still if the objective without it prefers that.
 - The selected input still moves in two cases: a flagged yield, or the growth push, where
   a merge's other input above it gains its first output and grows (16 px at the default
-  size). `layout-properties.test.ts` admits exactly these.
+  size, less where the gaps between them have room to spare). `layout-properties.test.ts`
+  admits exactly these.
 
 The phase 3 policy (#79) stays registered as the `phase3` engine (`BAND_PHASE3`) for A/B.
 
@@ -751,6 +797,15 @@ Routes into junctions keep the old rule: on straight lines they cut North crossi
 but, in crowded junction channels, routes passed within 5 px of a foreign dot in 11–13 of
 800 stress layouts instead of 7, and a route that seems to join a dot misstates provenance.
 
+**Fewest-crossings passing** (2026-10-16). Re-planning the courses that cross others
+([Algorithm](#algorithm), step 7), and choosing incremental positions and routes by the
+crossings they add, roughly halve the layered crossings above the tile-order-fixed optimum on
+the generated profiles (κ − optimum summed over the static click tours, 8da6c27 → now):
+variations 8,731 → 4,293, combinations 41,401 → 23,807, mixed 3,707 → 2,251, mj 84,433 →
+43,753, merge-k8 173,047 → 106,148, batch8 27,319 → 12,195; chains 290 → 295 (the narrow-pane
+margins, [Spacing](#spacing)). Tree crossings fall by 20–70% (variations 1,955 → 961, mixed
+280 → 223, mj 416 → 126, batch8 7,513 → 3,789, North 1,313 → 787), except on chains (62 → 74).
+
 #### Contacts
 
 Lines of different sources that touch read as joined, which states a parentage the folder
@@ -824,10 +879,10 @@ height (no slack) cut the contact rules' share by about a third (mixed 769 px, c
 **Remaining gap.**
 - On the real-shaped sources it is 0.01 crossings per layout, all in trees whose optimum
   is 0; stability on growth is within the flagged exceptions above.
-- On merge-heavy profiles passing routes still cross about ten times the tile-order-fixed
-  optimum. The next principled step is edge insertion: a shortest path per route over
-  (row, gap) states priced by crossings with segments already fixed. It is worth doing only
-  if real folders merge often.
+- On merge-heavy profiles passing routes still cross 3–11 times the tile-order-fixed
+  optimum (5–17 times before re-planning). Re-planning one course at a time is exact against
+  the others held fixed; planning them jointly, as the exact model does, is the remaining
+  step. It is worth doing only if real folders merge often.
 - Tree layouts that keep committed geometry cross more than fresh ones (variations 25% vs
   16%, mixed 15% vs 4%): the stability weight's price, a product trade-off.
 - Crossings at corners in crowded downward zones ([Contacts](#contacts)), and touching
