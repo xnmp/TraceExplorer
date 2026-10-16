@@ -70,3 +70,23 @@ for (const host of [false, true]) test(`Space previews an ordinary ${host ? "hos
   await settle(page);
   await expectPreviewKeys(page, ordinary);
 });
+
+test("double-clicking a tile never selects its title text", async ({ page }) => {
+  await openView(page, 900, "?selectionBlink=1");
+  const selectedText = () => page.evaluate(() => window.getSelection()?.toString() ?? "");
+  await (await card(page, "Saffron")).click();
+  await settle(page);
+  await (await card(page, "Blastoise")).dblclick();
+  await settle(page);
+  expect(await selectedText()).toBe("");
+  await (await card(page, "Saffron")).dblclick();
+  await settle(page);
+  expect(await selectedText()).toBe("");
+});
+
+test("double-clicking a stack cover never selects its name", async ({ page }) => {
+  await openView(page, 900, "?selectionBlink=1", false);
+  await page.locator(".cover-press").first().dblclick();
+  await settle(page);
+  expect(await page.evaluate(() => window.getSelection()?.toString() ?? "")).toBe("");
+});

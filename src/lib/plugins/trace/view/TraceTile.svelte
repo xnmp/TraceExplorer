@@ -102,7 +102,7 @@
 
 <style>
   .tile { position: absolute; box-sizing: border-box; }
-  .cover-press { position: absolute; inset: 0; width: 100%; height: 100%; padding: 0; border: 0; border-radius: inherit; background: none; cursor: pointer; }
+  .cover-press { position: absolute; inset: 0; width: 100%; height: 100%; padding: 0; border: 0; border-radius: inherit; background: none; cursor: pointer; user-select: none; -webkit-user-select: none; }
   .cover-press:focus-visible { outline: 2px solid var(--focus-stroke-outer); outline-offset: 2px; }
   /* The action chip sits in the image's top-right corner; status messages hang below it. */
   .actions { position: absolute; top: 9px; right: 9px; display: flex; flex-direction: column; align-items: flex-end; visibility: hidden; }

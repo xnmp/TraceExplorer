@@ -24,7 +24,7 @@
 
 </div>
 <style>
-  .entry { box-sizing: border-box; display: flex; flex-direction: column; align-items: center; gap: 4px; width: 100%; padding: 5px; font: inherit; color: var(--text-primary); background: none; border: 1px solid transparent; border-radius: var(--radius-sm); cursor: pointer; }
+  .entry { box-sizing: border-box; display: flex; flex-direction: column; align-items: center; gap: 4px; width: 100%; padding: 5px; font: inherit; color: var(--text-primary); background: none; border: 1px solid transparent; border-radius: var(--radius-sm); cursor: pointer; user-select: none; -webkit-user-select: none; }
   .entry:hover { background: var(--subtle-fill-secondary); }
   .entry.selected { background: color-mix(in srgb, var(--accent) 12%, transparent); border-color: var(--accent); }
   .entry:focus-visible { outline: 2px solid var(--focus-stroke-outer); outline-offset: 2px; }

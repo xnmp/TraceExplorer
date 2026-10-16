@@ -181,7 +181,7 @@
   .stack-disclosure.expanded svg { transform: rotate(90deg); }
   .stack-disclosure:hover, .stack-disclosure:focus-visible { background: color-mix(in srgb, var(--accent) 32%, var(--background-solid)); color: var(--accent); }
   .stack-disclosure:focus-visible { outline: 2px solid var(--focus-stroke-outer); outline-offset: 2px; }
-  .card { display: flex; flex-direction: column; align-items: stretch; box-sizing: border-box; width: 100%; padding: 5px; overflow: hidden; text-align: left; font: inherit; color: var(--text-primary); background: var(--background-card-secondary, var(--control-fill)); border: 1px solid var(--control-stroke); border-radius: var(--radius-sm); cursor: pointer; }
+  .card { display: flex; flex-direction: column; align-items: stretch; box-sizing: border-box; width: 100%; padding: 5px; overflow: hidden; text-align: left; font: inherit; color: var(--text-primary); background: var(--background-card-secondary, var(--control-fill)); border: 1px solid var(--control-stroke); border-radius: var(--radius-sm); cursor: pointer; user-select: none; -webkit-user-select: none; }
   .card:hover { background: var(--subtle-fill-secondary); }
   /* Selection shows in styling, never size: an accent border, and for the focus a ring and halo. */
   .card.selected { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 14%, var(--background-card-secondary)); }
