@@ -1,3 +1,4 @@
+import { filterRouteConsumers } from "./route-consumers";
 /**
  * Incremental tree embedding: retained rectangles and routes are fixed obstacles.
  *
@@ -1159,11 +1160,10 @@ export function incrementalTree(request: LayoutRequest, previous: GraphLayout, b
   // Retained routes carry only their visible consumers; the junctions they touch stay.
   const visible = (c: { readonly parent: string; readonly child: string }) => wanted.has(c.parent) && wanted.has(c.child);
   const kept: PlacedRoute[] = [], routes: PlacedRoute[] = [], referenced = new Set<string>();
-  for (const r of previous.routes) {
-    if (!r.consumers.some(visible)) continue;
+  for (const r of filterRouteConsumers(previous.routes, visible)) {
     if (!usableRetainedRoute(r)) return null;
     kept.push(r);
-    routes.push({ ...r, consumers: r.consumers.filter(visible) });
+    routes.push(r);
     if (r.from.kind === "junction") referenced.add(r.from.id);
     if (r.to.kind === "junction") referenced.add(r.to.id);
   }

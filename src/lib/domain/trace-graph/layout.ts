@@ -15,8 +15,9 @@
  * boundary instead; callers never depend on how it works.
  */
 import { layoutBand, type BandOptions } from "./band-layout";
+import type { ConsumerSet } from "./route-consumers";
 import type { NodeKey } from "./model";
-import { buildInputJunctions, endpointKey, type Consumer, type Endpoint, type Junction } from "./junctions";
+import { buildInputJunctions, endpointKey, edgeKey, type Consumer, type Endpoint, type Junction } from "./junctions";
 import { ARROW, bendZones, JUNCTION_BERTH, LANE_SEPARATION, PORT_BERTH, spacingFor, TRACK_HEIGHT } from "./metrics";
 import { orderLayers } from "./layer-order";
 
@@ -104,7 +105,7 @@ export interface PlacedRoute {
   readonly id: string;
   readonly from: Endpoint;
   readonly to: Endpoint;
-  readonly consumers: readonly Consumer[];
+  readonly consumers: ConsumerSet;
   readonly path: string;
   /** Ends at a tile (draws the single arrowhead for that output). */
   readonly terminal: boolean;
@@ -134,7 +135,7 @@ export interface BandDecision {
    * `lane-infeasible`: every candidate ran connectors from different sources along a shared lane; the best of them, priced, is shown.
    * `anchor-yield`: an anchor-preserving layout existed, but crossed far more than the best unanchored one (the crossing cap); the anchors moved.
    */
-  readonly fallback?: "anchor-infeasible" | "anchor-yield" | "packing-infeasible" | "gate-infeasible" | "lane-infeasible";
+  readonly fallback?: "geometry-fallback" | "invalid-history" | "anchor-infeasible" | "anchor-yield" | "packing-infeasible" | "gate-infeasible" | "lane-infeasible";
 }
 
 export interface GraphLayout {
@@ -295,11 +296,7 @@ export function nearestFree(preferred: number, intervals: readonly Interval[], l
 }
 
 /** A short, stable hash of a string (FNV-1a). */
-function hashOf(text: string): string {
-  let hash = 0x811c9dc5;
-  for (let index = 0; index < text.length; index++) hash = Math.imul(hash ^ text.charCodeAt(index), 0x01000193);
-  return (hash >>> 0).toString(36);
-}
+
 
 export function layoutGraph(request: LayoutRequest, options?: BandOptions): GraphLayout {
   if (!request || !Array.isArray(request.items)) throw new RangeError("malformed layout request");
@@ -1708,12 +1705,26 @@ function layoutPass(prepared: Prepared, extra: { readonly left: number; readonly
   const chainStart = (node: number) => shared(node) && (trie[node].parent < 0 || usage[trie[node].parent] !== usage[node]);
   // Usage never grows down the trie, so the shared nodes of a route's trail
   // (root to end) are a prefix of it: the route draws from the first unshared.
-  // Each trunk's consumers are listed by route, whatever the walk's direction.
-  const trunkConsumers = new Map<number, Consumer[]>();
-  for (const { route, last } of courses) {
-    for (let node = last; node >= 0; node = trie[node].parent) if (chainStart(node)) {
-      const list = trunkConsumers.get(node);
-      if (list) for (const entry of route.consumers) list.push(entry); else trunkConsumers.set(node, [...route.consumers]);
+  // DFS makes every subtree's consumers a contiguous range in one shared table.
+  // A route contributes once, regardless of how many trunk segments carry it.
+  const children = trie.map(() => [] as number[]), endings = trie.map(() => [] as number[]);
+  trie.forEach((item, node) => { if (item.parent >= 0) children[item.parent].push(node); });
+  courses.forEach((course, i) => endings[course.last].push(i));
+  const consumers: Consumer[] = [], ranges: { start: number; end: number }[] = [];
+  const visit: { node: number; leave: boolean }[] = [];
+  trie.forEach((item, node) => { if (item.parent < 0) visit.push({ node, leave: false }); });
+  while (visit.length) {
+    const { node, leave } = visit.pop()!;
+    if (leave) {
+      ranges[node].end = consumers.length;
+    } else {
+      ranges[node] = { start: consumers.length, end: consumers.length };
+      for (const i of endings[node]) for (const entry of courses[i].route.consumers) {
+        consumers.push(entry);
+
+      }
+      visit.push({ node, leave: true });
+      for (let i = children[node].length - 1; i >= 0; i--) visit.push({ node: children[node][i], leave: false });
     }
   }
   const routes: PlacedRoute[] = [];
@@ -1729,15 +1740,10 @@ function layoutPass(prepared: Prepared, extra: { readonly left: number; readonly
     // Follow the single continuation that keeps every route of this trunk.
     for (let current: number | undefined = node; current !== undefined; current = continuation[current]) path += piece(current);
     if (path.includes("L") || path.includes("C")) {
-      const distinct = new Map<string, Consumer>();
-      for (const entry of trunkConsumers.get(node)!) distinct.set(`${entry.parent}>${entry.child}`, entry);
-      const consumers = [...distinct.values()];
       if (!endpointOf) { endpointOf = new Map(); for (const { route, source } of courses) endpointOf.set(source, route.from); }
       const from = endpointOf.get(item.source)!;
-      // Named by what it carries, not where it runs, so a trunk keeps its id
-      // (and morphs) across relayouts that move it.
-      const carried = hashOf([...distinct.keys()].sort().join("|"));
-      routes.push({ id: unique(`${item.source}~${carried}`), from, to: from, consumers, path, terminal: false });
+      // Exact source and trie position identify this segment without a lossy hash.
+      routes.push({ id: JSON.stringify(["trunk", from.kind, from.id, node]), from, to: from, consumers: { entries: consumers, ...ranges[node] }, path, terminal: false });
     }
   });
   const unsharedTrail: number[] = [];
@@ -1754,7 +1760,7 @@ function layoutPass(prepared: Prepared, extra: { readonly left: number; readonly
     }
     path += draw(final);
     // The final leg's target is the route's end, as an endpoint key.
-    const id = `${source}>${final.target}`;
+    const id = edgeKey(route.from, route.to);
     routes.push({ id: plainKeys ? id : unique(id), from: route.from, to: route.to, consumers: route.consumers, path, terminal: route.to.kind === "node" });
   });
 

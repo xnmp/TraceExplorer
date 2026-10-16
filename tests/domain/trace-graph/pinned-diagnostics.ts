@@ -1,3 +1,4 @@
+import { routeConsumers } from "$lib/domain/trace-graph/route-consumers";
 import type { GraphLayout, LayoutItem, LayoutRequest } from "$lib/domain/trace-graph/layout";
 import { ARROW, spacingFor, SPACING } from "$lib/domain/trace-graph/metrics";
 import { arrowStemProblems, channelProblems, foreignJunctionContacts, junctionOverlaps, routeCollisions, samplePath, sharedLanes, sourcesReaching, tileOverlaps } from "./fixtures";
@@ -61,10 +62,10 @@ export function routeLength(path: string): number {
 }
 export function metrics(layout: GraphLayout, cover: string) {
   const lengths = new Map(layout.routes.map((route) => [route.id, routeLength(route.path)]));
-  const children = new Set(layout.routes.flatMap((route) => route.consumers.filter((consumer) => consumer.parent === cover).map((consumer) => consumer.child)));
+  const children = new Set(layout.routes.flatMap((route) => routeConsumers(route).filter((consumer) => consumer.parent === cover).map((consumer) => consumer.child)));
   // Complete cover→child course, including shared trunks and junction tails;
   // each consumer appears on precisely the drawn segments that carry it.
-  const coverLengths = [...children].map((child) => layout.routes.filter((route) => route.consumers.some((consumer) => consumer.parent === cover && consumer.child === child)).reduce((sum, route) => sum + lengths.get(route.id)!, 0) + ARROW.length);
+  const coverLengths = [...children].map((child) => layout.routes.filter((route) => routeConsumers(route).some((consumer) => consumer.parent === cover && consumer.child === child)).reduce((sum, route) => sum + lengths.get(route.id)!, 0) + ARROW.length);
   return {
     width: layout.width, height: layout.height,
     routeLength: [...lengths.values()].reduce((sum, length) => sum + length, 0),

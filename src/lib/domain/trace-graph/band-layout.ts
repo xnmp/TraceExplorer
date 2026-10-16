@@ -1,3 +1,4 @@
+import { filterRouteConsumers } from "./route-consumers";
 /** Visible-first, bounded band optimisation. Geometry and history are immutable inputs. */
 import { downwardBandBound, layoutLayered, type GraphLayout, type LayoutItem, type LayoutRequest, type Ordering, type Passing, type PlacedNode } from "./layout";
 import { spacingFor, STACK_STEM_ROOM } from "./metrics";
@@ -88,8 +89,7 @@ function projected(previous: GraphLayout, request: LayoutRequest): GraphLayout |
   const keys = new Set(request.items.map(n => n.key));
   if (!request.items.every(n => previous.nodes.has(n.key))) return null;
   const nodes = new Map([...previous.nodes].filter(([key]) => keys.has(key)));
-  const routes = previous.routes.filter(r => r.consumers.some(c => keys.has(c.parent) && keys.has(c.child)))
-    .map(r => ({ ...r, consumers: r.consumers.filter(c => keys.has(c.parent) && keys.has(c.child)) }));
+  const routes = filterRouteConsumers(previous.routes, c => keys.has(c.parent) && keys.has(c.child));
   const joins = new Set(routes.flatMap(r => [r.from, r.to].filter(e => e.kind === "junction").map(e => e.id)));
   const extent = bandExtent(previous, request.band!.key);
   const first = Math.min(...[...previous.nodes.values()].filter(n => n.key !== request.band!.key).map(n => n.y));

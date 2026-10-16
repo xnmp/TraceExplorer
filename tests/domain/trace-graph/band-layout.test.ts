@@ -1,3 +1,4 @@
+import { routeConsumers } from "$lib/domain/trace-graph/route-consumers";
 import { describe, expect, it } from "vitest";
 import { bandWidthBudget, bandHistorySignature } from "$lib/domain/trace-graph/band-layout";
 import { layoutGraph, type LayoutItem, type GraphLayout } from "$lib/domain/trace-graph/layout";
@@ -41,7 +42,7 @@ describe("compact band choice", () => {
       expect(Number.isFinite(graph.width) && Number.isFinite(graph.height)).toBe(true);
       expect(graph.nodes.size).toBe(items.length);
       assertClear(graph);
-      for (const route of graph.routes) expect(route.consumers.every(({ parent, child }) => items.find((item) => item.key === child)?.parents.includes(parent))).toBe(true);
+      for (const route of graph.routes) expect(routeConsumers(route).every(({ parent, child }) => items.find((item) => item.key === child)?.parents.includes(parent))).toBe(true);
     }
     const graph = band(chain, 420);
     expect(graph.orientation).toBe("right");

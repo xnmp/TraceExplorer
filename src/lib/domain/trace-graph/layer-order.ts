@@ -28,6 +28,7 @@ const TRANSPOSE_PASSES = 8;
 interface Proper {
   /** Element ids per layer: real keys, then virtual nodes `\u0000p\u0000c\u0000L`. */
   readonly layers: string[][];
+  readonly real: ReadonlySet<string>;
   readonly up: Map<string, string[]>;
   readonly down: Map<string, string[]>;
   /** Tie rank of every element: its own (real) or its edge's child's (virtual). */
@@ -37,6 +38,8 @@ interface Proper {
 function proper(input: LayerInput): Proper {
   const layerOf = new Map<string, number>();
   input.layers.forEach((layer, l) => layer.forEach(key => layerOf.set(key, l)));
+  const real = new Set(layerOf.keys()), used = new Set(real);
+  let virtual = 0;
   const layers = input.layers.map(layer => [...layer]);
   const up = new Map<string, string[]>(), down = new Map<string, string[]>(), rank = new Map<string, number>();
   const link = (a: string, b: string) => { (down.get(a) ?? down.set(a, []).get(a)!).push(b); (up.get(b) ?? up.set(b, []).get(b)!).push(a); };
@@ -49,14 +52,16 @@ function proper(input: LayerInput): Proper {
       seen.add(parent);
       let previous = parent;
       for (let k = from + 1; k < l; k++) {
-        const id = `\u0000${parent}\u0000${child}\u0000${k}`;
+        let id: string;
+        do { id = `\u0000virtual:${virtual++}`; } while (used.has(id));
+        used.add(id);
         layers[k].push(id); rank.set(id, input.rank(child)); up.set(id, []); down.set(id, []);
         link(previous, id); previous = id;
       }
       link(previous, child);
     }
   }
-  return { layers, up, down, rank };
+  return { layers, up, down, rank, real };
 }
 
 /** Crossings between consecutive layers `upper` and `lower` (edges from `up` of the lower layer), by inversion counting. */
@@ -164,5 +169,5 @@ export function orderLayers(input: LayerInput): string[][] {
     const count = total(g, pos);
     if (count < bestCount) { best = snapshot(); bestCount = count; stale = 0; } else stale++;
   }
-  return best.map(layer => layer.filter(v => !v.startsWith("\u0000")));
+  return best.map(layer => layer.filter(v => g.real.has(v)));
 }

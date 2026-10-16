@@ -1,3 +1,4 @@
+import { routeConsumers } from "$lib/domain/trace-graph/route-consumers";
 import { describe, expect, it } from "vitest";
 import { layoutGraph, nearestFree, nearestInDirection, wrapRow, type LayoutItem, type Orientation } from "$lib/domain/trace-graph/layout";
 import { connectedComponents, projectDag } from "$lib/domain/trace-graph/projection";
@@ -223,7 +224,7 @@ describe("width-aware layout", () => {
   it("names a trunk by the consumers it carries, so it keeps its id when relayout moves it", () => {
     const items = [item("p", [], wide), ...Array.from({ length: 12 }, (_, index) => item(`c${index}`, ["p"], small, index + 1))];
     const trunks = (width: number) => new Map(layoutGraph({ items, maxWidth: width }).routes.filter((route) => route.to === route.from)
-      .map((route) => [route.consumers.map((entry) => entry.child).sort().join(","), route] as const));
+      .map((route) => [routeConsumers(route).map((entry) => entry.child).sort().join(","), route] as const));
     const narrow = trunks(380), wider = trunks(392);
     let moved = 0;
     for (const [carried, route] of narrow) {
@@ -246,7 +247,7 @@ describe("width-aware layout", () => {
     const trunks = layout.routes.filter((route) => route.to === route.from);
     expect(trunks.length).toBeGreaterThan(0);
     for (const trunk of trunks) expect(trunk.terminal).toBe(false);
-    expect(new Set(trunks.flatMap((trunk) => trunk.consumers.map((consumer) => consumer.child))).size).toBeGreaterThan(900);
+    expect(new Set(trunks.flatMap((trunk) => routeConsumers(trunk).map((consumer) => consumer.child))).size).toBeGreaterThan(900);
   }, HEAVY);
 
   it("orders ties consistently when only some keys have a previous position", () => {

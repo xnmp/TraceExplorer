@@ -1,3 +1,4 @@
+import { eachConsumer } from "./route-consumers";
 import type { GraphLayout, LayoutItem, PlacedNode, PlacedRoute } from "./layout";
 import { ARROW, LANE_SEPARATION, STACK_STEM_ROOM } from "./metrics";
 import { flattenInto, flattened, flattenPath, type Point } from "./path-sampling";
@@ -566,7 +567,7 @@ function edgeIndex(layout: GraphLayout, items: readonly LayoutItem[], wanted: Re
             if (from !== undefined) record(from * keys + child, parent, item.key, true);
         }
     }
-    for (let i = 0; i < layout.routes.length; i++) for (const c of layout.routes[i].consumers) {
+    for (let i = 0; i < layout.routes.length; i++) for (const c of eachConsumer(layout.routes[i])) {
         const from = wanted.get(c.parent), to = wanted.get(c.child);
         if (from === undefined || to === undefined) continue;
         const slot = record(from * keys + to, c.parent, c.child, false), list = carriers[slot];
@@ -588,10 +589,10 @@ function edgeIndex(layout: GraphLayout, items: readonly LayoutItem[], wanted: Re
 /** The reference edge index, on string keys. */
 function keyedEdgeIndex(layout: GraphLayout, items: readonly LayoutItem[], wanted: ReadonlyMap<string, number>): EdgeIndex {
     const expected = new Set<string>(), drawn = new Set<string>(), carrying = new Map<string, number[]>();
-    for (const item of items) for (const parent of item.parents) if (wanted.has(parent)) expected.add(`${parent}\u0000${item.key}`);
+    for (const item of items) for (const parent of item.parents) if (wanted.has(parent)) expected.add(JSON.stringify([parent, item.key]));
     layout.routes.forEach((r, i) => {
-        for (const c of r.consumers) if (wanted.has(c.parent) && wanted.has(c.child)) {
-            const key = `${c.parent}\u0000${c.child}`; drawn.add(key);
+        for (const c of eachConsumer(r)) if (wanted.has(c.parent) && wanted.has(c.child)) {
+            const key = JSON.stringify([c.parent, c.child]); drawn.add(key);
             const list = carrying.get(key);
             if (!list) carrying.set(key, [i]); else if (list.at(-1) !== i) list.push(i);
         }
@@ -605,7 +606,7 @@ function keyedEdgeIndex(layout: GraphLayout, items: readonly LayoutItem[], wante
     for (const e of expected) if (!drawn.has(e)) missing++;
     for (const e of drawn) if (!expected.has(e)) extra++;
     const list: ExpectedEdge[] = [];
-    for (const edge of expected) { const [parent, child] = edge.split('\u0000'); list.push({ parent, child, carriers: carrying.get(edge) ?? [] }); }
+    for (const edge of expected) { const [parent, child] = JSON.parse(edge) as [string, string]; list.push({ parent, child, carriers: carrying.get(edge) ?? [] }); }
     return { expected: list, missing, extra, joinedRoutes, needsJoins };
 }
 
@@ -1356,9 +1357,14 @@ function gateInputs(layout: GraphLayout, items: readonly LayoutItem[]): unknown[
     out.push(layout.junctions.size);
     for (const j of layout.junctions.values()) out.push(j.x, j.y);
     out.push(layout.routes.length);
+    const tables = new Map<readonly unknown[], number>();
     for (const r of layout.routes) {
-        out.push(r.path, r.terminal, r.from.kind, r.from.id, r.to.kind, r.to.id, r.consumers.length);
-        for (const c of r.consumers) out.push(c.parent, c.child);
+        const c = r.consumers, range = Array.isArray(c) ? { entries: c, start: 0, end: c.length } : c as import('./route-consumers').ConsumerSet & { entries: readonly import('./junctions').Consumer[]; start: number; end: number };
+        let table = tables.get(range.entries);
+        const fresh = table === undefined;
+        if (fresh) { table = tables.size; tables.set(range.entries, table); }
+        out.push(r.path, r.terminal, r.from.kind, r.from.id, r.to.kind, r.to.id, table, range.start, range.end);
+        if (fresh) { out.push(range.entries.length); for (const entry of range.entries) out.push(entry.parent, entry.child); }
     }
     out.push(items.length);
     for (const item of items) {
@@ -1392,24 +1398,8 @@ const gateMemo = new WeakMap<GraphLayout, GateMemo>();
 
 /** Whether {@link gateInputs} of the layout and items would equal `known`, element by element, without building it. */
 function sameGateInputs(layout: GraphLayout, items: readonly LayoutItem[], known: readonly unknown[]): boolean {
-    let at = 0;
-    const same = (value: unknown) => Object.is(known[at++], value);
-    const bounds = layout.bandBounds;
-    if (!same(layout.width) || !same(layout.height) || !same(layout.orientation) || !same(bounds?.left) || !same(bounds?.width) || !same(bounds?.top) || !same(layout.nodes.size)) return false;
-    for (const [key, n] of layout.nodes) if (!same(key) || !same(n.key) || !same(n.x) || !same(n.y) || !same(n.width) || !same(n.height) || !same(n.row)) return false;
-    if (!same(layout.junctions.size)) return false;
-    for (const j of layout.junctions.values()) if (!same(j.x) || !same(j.y)) return false;
-    if (!same(layout.routes.length)) return false;
-    for (const r of layout.routes) {
-        if (!same(r.path) || !same(r.terminal) || !same(r.from.kind) || !same(r.from.id) || !same(r.to.kind) || !same(r.to.id) || !same(r.consumers.length)) return false;
-        for (const c of r.consumers) if (!same(c.parent) || !same(c.child)) return false;
-    }
-    if (!same(items.length)) return false;
-    for (const item of items) {
-        if (!same(item.key) || !same(item.width) || !same(item.height) || !same(item.parents.length)) return false;
-        for (const parent of item.parents) if (!same(parent)) return false;
-    }
-    return at === known.length;
+    const values = gateInputs(layout, items);
+    return values.length === known.length && values.every((value, i) => Object.is(value, known[i]));
 }
 
 function recallGates(layout: GraphLayout, coverKey: string, paneWidth: number, items: readonly LayoutItem[]): GateMemo | undefined {
@@ -1456,12 +1446,25 @@ function nearLaneLength(layout: GraphLayout, routeGeometry: readonly RouteData[]
             .filter(i => runs[4 * i + 2] - runs[4 * i + 1] > NEAR_RUN)
             .sort((a, b) => runs[4 * a + 1] - runs[4 * b + 1] || a - b);
         const ends = [...order].sort((a, b) => runs[4 * a + 2] - runs[4 * b + 2] || a - b);
-        const active = new Set<number>();
+        const active = new Map<number, Map<number, Set<number>>>();
+        const bin = (i: number) => Math.floor(runs[4 * i] / LANE_SEPARATION);
+        const change = (i: number, add: boolean) => {
+            const key = bin(i), source = of[runs[4 * i + 3]];
+            let bucket = active.get(key);
+            if (!bucket && add) active.set(key, bucket = new Map());
+            if (!bucket) return;
+            let set = bucket.get(source);
+            if (!set && add) bucket.set(source, set = new Set());
+            if (add) set!.add(i);
+            else if (set) { set.delete(i); if (!set.size) bucket.delete(source); if (!bucket.size) active.delete(key); }
+        };
         let expired = 0, total = 0;
         for (const a of order) {
             const lo = runs[4 * a + 1];
-            while (expired < ends.length && runs[4 * ends[expired] + 2] - lo <= NEAR_RUN) active.delete(ends[expired++]);
-            for (const b of active) {
+            while (expired < ends.length && runs[4 * ends[expired] + 2] - lo <= NEAR_RUN) change(ends[expired++], false);
+            for (let key = bin(a) - 1; key <= bin(a) + 1; key++) for (const [source, nearby] of active.get(key) ?? []) {
+              if (source === of[runs[4 * a + 3]]) continue;
+              for (const b of nearby) {
                 const d = Math.abs(runs[4 * b] - runs[4 * a]);
                 const ra = runs[4 * a + 3], rb = runs[4 * b + 3];
                 if (!(d > 1e-9 && d < LANE_SEPARATION - AXIS_SLACK) || of[ra] === of[rb]) continue;
@@ -1470,8 +1473,9 @@ function nearLaneLength(layout: GraphLayout, routeGeometry: readonly RouteData[]
                 const ta = layout.routes[ra].to, tb = layout.routes[rb].to;
                 if (ta.kind === "junction" && tb.kind === "junction" && ta.id === tb.id) continue;
                 total += overlap;
+              }
             }
-            active.add(a);
+            change(a, true);
         }
         return total;
     }

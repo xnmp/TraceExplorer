@@ -73,7 +73,13 @@ export function estimateLayoutBytes(layout: GraphLayout): number {
   let total = OBJECT * 4;
   for (const node of layout.nodes.values()) total += ENTRY + OBJECT + text(node.key);
   for (const junction of layout.junctions.values()) total += ENTRY + OBJECT + text(junction.id) + 16 * junction.parents.length;
-  for (const route of layout.routes) total += OBJECT * 3 + text(route.id) + text(route.path) + OBJECT * route.consumers.length;
+  const tables = new Set<readonly unknown[]>();
+  for (const route of layout.routes) {
+    total += OBJECT * 3 + text(route.id) + text(route.path);
+    const c = route.consumers;
+    const entries = Array.isArray(c) ? c : (c as { entries: readonly unknown[] }).entries;
+    if (!tables.has(entries)) { tables.add(entries); total += OBJECT * entries.length; }
+  }
   for (const row of layout.rows) total += OBJECT + 16 * row.keys.length;
   total += ENTRY * layout.readingOrder.size;
   return total;
