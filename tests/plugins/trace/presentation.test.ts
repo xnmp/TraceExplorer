@@ -401,10 +401,10 @@ describe("retargetPresentation", () => {
   });
 
   it("an unchanged destination continues its running motion exactly", () => {
-    const closed = sceneFor([]), open = sceneFor([A], { previous: closed.layout });
+    const closed = sceneFor([], { width: 200 }), open = sceneFor([A], { previous: closed.layout, width: 200 });
     const opening = step(staticPresentation(closed), closed, open, Infinity).presentation;
     // A restyle elsewhere would not publish geometry; open the second stack, which A's band does not depend on.
-    const both = sceneFor([A, B], { previous: open.layout });
+    const both = sceneFor([A, B], { previous: open.layout, width: 200 });
     const { presentation: p } = step(opening, open, both, 50);
     let continued = 0;
     for (const record of bandTiles(both, A)) {
@@ -766,7 +766,7 @@ describe("zero-blink packed band regressions", () => {
     const a = inputScene(of, { ...options, open: ids, width: 640 });
     const b = inputScene(of, { ...options, open: ids, width: 900, previous: a.layout });
     const c = inputScene(of, { ...options, open: ids.slice(1), width: 900, previous: b.layout });
-    const id = entityId("route", "s3:root", "node:s3:root>node:s3:n1"), cover = entityId("tile", "s3:root", "s3:root");
+    const id = entityId("route", "s3:root", JSON.stringify(["node", "s3:root", "node", "s3:n1"])), cover = entityId("tile", "s3:root", "s3:root");
     for (const scene of [a, b, c]) {
       const [head] = pathEnds(scene.routes.get(id)!.route.path), q = scene.records.get(cover)!.rect;
       expect(head.x).toBeCloseTo(q.x + q.width / 2, 5);

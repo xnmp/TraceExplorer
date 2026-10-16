@@ -146,6 +146,7 @@ export function extentSize(layout: GraphLayout, key: string): { readonly height:
   return { height: layout.nodes.size > Number(!!cover) ? Math.max(0, layout.height - bounds.top + STACK_STEM_ROOM) : 0, width: boundsField(bounds, "width")! };
 }
 
+const attachmentClearance = (count: number) => count > 1 ? LANE_SEPARATION + 1 : 0;
 const attachmentTrack = (count: number) => count > 1 ? 6 + LANE_SEPARATION + 1 : TRACK_HEIGHT;
 
 export interface StackGridFlow extends GridFlow { readonly rowBands: readonly GridBand[] }
@@ -166,8 +167,8 @@ export function packedGridFlow(items: readonly GridItem[], open: ReadonlyMap<str
       return size && kinds.get(cell.id) === "stack" ? [{ id: cell.id, center: cell.x + cell.width / 2, ...size, width: size.pending ? base.width : size.width, deferred: !!size.pending }] : [];
     });
     const step = attachmentTrack(groups.length);
-    const header = Math.max(STACK_STEM_ROOM, step * groups.length + 2 * ARROW.length);
-    const sized = groups.map((group, i) => ({ ...group, height: group.height + Math.max(header, step * (i + 1) + 2 * ARROW.length + step) - STACK_STEM_ROOM }));
+    const header = Math.max(STACK_STEM_ROOM, step * groups.length + 2 * ARROW.length + attachmentClearance(groups.length));
+    const sized = groups.map((group, i) => ({ ...group, height: group.height + Math.max(header, step * (i + 1) + 2 * ARROW.length + step + attachmentClearance(groups.length)) - STACK_STEM_ROOM }));
     const initial = packStackGroups(sized, base.width, 16, 0);
     // Existing margins usually suffice. Reserve an outer gutter only when the
     // actual stem envelopes need it; a later opening otherwise moves no group.
@@ -218,7 +219,7 @@ export function bandPlacements(flow: StackGridFlow, coverHeight: number): Readon
     // outside every earlier line's child footprint; never default to the pane's left edge.
     const gutter = gutters.get(band.row)?.get(band.id) ?? coverX;
     if (!gutters.get(band.row)) throw new RangeError("packed band has no cover routing lane");
-    return [band.id, { x: band.x, coverX, coverHeight, width: flow.width, track, bypassColumns: [...gutters.get(band.row)!].filter(([id]) => id !== band.id).map(([, x]) => x), coverColumns: [...flow.cells.values()].filter((cell) => cell.row === band.row && cell.id !== band.id).map((cell) => cell.x + cell.width / 2), stemRoom: Math.max(STACK_STEM_ROOM, step * siblings.length + 2 * ARROW.length, track + 2 * ARROW.length + step),
+    return [band.id, { x: band.x, coverX, coverHeight, width: flow.width, track, bypassColumns: [...gutters.get(band.row)!].filter(([id]) => id !== band.id).map(([, x]) => x), coverColumns: [...flow.cells.values()].filter((cell) => cell.row === band.row && cell.id !== band.id).map((cell) => cell.x + cell.width / 2), stemRoom: Math.max(STACK_STEM_ROOM, step * siblings.length + 2 * ARROW.length + attachmentClearance(siblings.length), track + 2 * ARROW.length + step + attachmentClearance(siblings.length)),
       left: Math.min(band.x, coverX, gutter), right: Math.max(band.x + band.width, coverX, gutter),
       ...(earlier.length ? { bridge: { top: coverHeight + track, gutter } } : {}) }];
   }));
