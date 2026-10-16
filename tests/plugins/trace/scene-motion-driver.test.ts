@@ -417,7 +417,7 @@ describe("the rAF motion driver", () => {
       attach: () => () => {},
       get: (key) => {
         if (key === GRID) return undefined;
-        if (!mounted.has(key)) mounted.set(key, { style: { ...RENDERED } });
+        if (!mounted.has(key)) mounted.set(key, { style: { ...RENDERED }, querySelector: () => null } as Fake);
         return mounted.get(key) as unknown as HTMLElement;
       },
     };

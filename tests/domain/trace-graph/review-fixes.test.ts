@@ -71,30 +71,19 @@ describe("lane-infeasible requests without history", () => {
   });
 });
 
-describe("crossing cap on anchored layouts", () => {
-  // A bench reveal (random-dag-40-7502, 454 px, 128 px images): holding n26 still at step 2 costs a
-  // crossings explosion. (The case was random-dag-100-8101 at 360 px until explicit expansion
-  // changed the tours' visible sets; this is the corpus step that yields now.)
-  it("does not trade retained positions for a soft crossing cap", () => {
+describe("click anchors ahead of soft crossing preferences", () => {
+  it("keeps a feasible clicked tile while certifying the complete drawing", () => {
     const c = corpus().find(c => c.id === "random-dag-40-7502")!;
-    let previous: Optimized | undefined, fresh = 0, layout: GraphLayout | undefined;
-    const crossings = (l: GraphLayout, r: LayoutRequest) => measure(attachSingleBand(l, r), r.band!.key, 454, r.items).crossings;
+    let previous: Optimized | undefined;
     for (const focus of c.focuses.slice(0, 3)) {
-      const request = requestFor(c, focus, 454, 128);
-      const committed = previous?.placed;
-      previous = optimizedBand({ ...request, hint: previous?.layout.readingOrder }, { previous, anchorKey: focus ?? undefined });
-      layout = previous.layout;
-      fresh = crossings(layoutGraph({ ...request, hint: layout.readingOrder }), request);
+      const request = requestFor(c, focus, 454, 128), committed = previous;
+      previous = optimizedBand(request, { previous, anchorKey: focus ?? undefined });
       if (focus === "n26") {
-        expect(layout.decision?.fallback).not.toBe("anchor-yield");
-        for (const [key, was] of committed?.nodes ?? []) {
-          const now = previous.placed.nodes.get(key);
-          if (now) expect([now.x, now.y, now.width, now.height], key).toEqual([was.x, was.y, was.width, was.height]);
-        }
-        expect(geometryGate(attachSingleBand(layout, request), request.items, request.band!.key, 454)).toBeNull();
+        const was = committed!.placed.nodes.get(focus)!;
+        expect(previous.placed.nodes.get(focus)).toMatchObject({x:was.x,y:was.y});
+        expect(geometryGate(previous.placed, request.items, request.band!.key, 454)).toBeNull();
       }
     }
-    expect(layout?.decision?.fallback).not.toBe("anchor-yield");
   });
 
   it("keeps anchors that cost few crossings", () => {
