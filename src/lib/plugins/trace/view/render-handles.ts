@@ -18,6 +18,7 @@ export interface RenderHandles {
 
 export const sectionKey = (graphId: string): string => `section:${graphId}`;
 export const layerKey = (id: string): string => `layer:${id}`;
+export const exitBodyKey = (id: string): string => `exit-body:${id}`;
 export const GRID = "grid";
 
 export function createRenderHandles(): RenderHandles {

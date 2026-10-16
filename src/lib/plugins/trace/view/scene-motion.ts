@@ -30,10 +30,10 @@
  */
 import type { GridRect } from "$lib/domain/trace-graph/grid-flow";
 import type { Point } from "$lib/domain/trace-graph/path-sampling";
-import { EASE, posePath, easeAt, sameEase, samplePresentation, sampleTrack, samePose, sliceEase, trackEnd, type DisplayedPresentation, type Ease, type Pose, type Presentation, type Track } from "./presentation";
+import { EASE, exitBodyClip, posePath, easeAt, sameEase, samplePresentation, sampleTrack, samePose, sliceEase, trackEnd, type DisplayedPresentation, type Ease, type Pose, type Presentation, type Track } from "./presentation";
 import { presentationView, ridesSection, sectionFrame, type SectionFrame } from "./presentation-view";
 import { prefersReducedMotion, zoomOf } from "./motion";
-import { GRID, layerKey, sectionKey, type RenderHandles } from "./render-handles";
+import { GRID, exitBodyKey, layerKey, sectionKey, type RenderHandles } from "./render-handles";
 import { afterWrite, onFrame, reportFrameError, requestFrame } from "./frame-loop";
 import type { SceneMotion } from "./scene-controller.svelte";
 
@@ -516,8 +516,14 @@ export function createSceneMotion({ handles, scroller = () => null, reduced = pr
       for (const retiree of presentation.retiring.values()) {
         if (!retiree.track || retiree.group !== null) continue;
         const { record } = retiree;
-        if (record.kind === "band") play(retiree.renderId, retiree.track, record.rect, null, "layer", "forwards");
-        else {
+        if (record.kind === "band") {
+          play(retiree.renderId, retiree.track, record.rect, null, "layer", "forwards");
+          const body = handles.get(exitBodyKey(retiree.renderId)) as Styled | undefined;
+          if (body && retiree.bodyFloor !== undefined) effects.push({ element: body, fill: "forwards", style: at => {
+            const pose = sampleTrack(retiree.track!, at), clip = exitBodyClip(pose, retiree.bodyFloor!);
+            return { clipPath: polygon({ ...clip, x: clip.x - pose.rect.x, y: clip.y - pose.rect.y }) };
+          } });
+        } else {
           // A retiree whose band closed is drawn by the grid, in folder coordinates.
           const frame = drawn.orphaned.has(retiree.renderId) ? null : inSection(sectionFrame(presentation, record));
           play(retiree.renderId, retiree.track, record.rect, frame, record.kind === "tile" ? "box" : "layer", "forwards");

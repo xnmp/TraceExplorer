@@ -12,6 +12,7 @@
  * so the continuation follows the original trajectory exactly.
  */
 import type { GridRect } from "$lib/domain/trace-graph/grid-flow";
+import { addCoordinates, constantCoordinate, movingCoordinate, curveClearsBox, type MotionCoordinate, type MotionPoint } from "$lib/domain/trace-graph/motion-clearance";
 import type { Orientation } from "$lib/domain/trace-graph/layout";
 import { bandRouteStem, roundedStem } from "$lib/domain/trace-graph/band-geometry";
 import { endpointKey } from "$lib/domain/trace-graph/junctions";
@@ -38,7 +39,22 @@ export interface PoseFrame {
   /** Interpolation to the next frame. */
   readonly easing: Ease;
 }
-export interface Track { readonly frames: readonly PoseFrame[] }
+export interface Track {
+  readonly frames: readonly PoseFrame[];
+  /** Deformation and endpoint trajectories are independent; none may restart the other's clock. */
+  readonly routeMotion?: RouteMotion;
+}
+interface EndpointMotion {
+  readonly actual: Track | null;
+  readonly assumed: Track | null;
+  readonly target: GridRect;
+}
+interface RouteMotion {
+  readonly geometry: Track;
+  readonly head: EndpointMotion;
+  readonly tail: EndpointMotion;
+  readonly elapsed: number;
+}
 /** Stable semantic stem points (including a collapsed gutter detour) and the child-side curve. */
 export interface StemPose { readonly points: readonly Point[]; readonly tail: RouteShape; readonly bridge: boolean }
 export interface PresentedRecord {
@@ -54,6 +70,8 @@ export interface PresentedRecord {
 }
 export interface RetiringRecord extends PresentedRecord {
   readonly sourceTransaction: TransactionId;
+  /** A closing shared-row band's body clips below its source-attachment header. */
+  readonly bodyFloor?: number;
   /** The exit group whose fade and clip this record shares (it has no track of its own), or null. */
   readonly group: RenderId | null;
   readonly reason: "exit" | "old-route";
@@ -251,6 +269,7 @@ export const finalPose = (track: Track): Pose => track.frames[track.frames.lengt
 
 /** A track's pose at epoch time `at` (before it, its first pose; after it, its last). */
 export function sampleTrack(track: Track, at: number): Pose {
+  if (track.routeMotion) return sampleRouteMotion(track.routeMotion, at);
   const { frames } = track;
   if (!(at > frames[0].at)) return frames[0].pose;
   const last = frames[frames.length - 1];
@@ -261,6 +280,33 @@ export function sampleTrack(track: Track, at: number): Pose {
   return mixPose(a.pose, b.pose, easeAt(a.easing, (at - a.at) / (b.at - a.at)));
 }
 
+/** Move a curve's head and tail with their actual endpoint tracks, including residual easing. */
+function sampleRouteMotion(motion: RouteMotion, at: number): Pose {
+  const time = Math.max(0, Number.isNaN(at) ? 0 : at) + motion.elapsed;
+  const pose = sampleTrack(motion.geometry, time);
+  const correction = ({ actual, assumed, target }: EndpointMotion): Point => {
+    const a = actual ? sampleTrack(actual, time).rect : target;
+    const b = assumed ? sampleTrack(assumed, time).rect : target;
+    return { x: a.x - b.x, y: a.y - b.y };
+  };
+  const head = correction(motion.head), tail = correction(motion.tail);
+  const shiftShape = (shape: RouteShape, delta: (progress: number) => Point): RouteShape => shape.map((segment, i) =>
+    segment.map((n, j) => {
+      const progress = i ? (i - 1 + (Math.floor(j / 2) + 1) / 3) / (shape.length - 1) : 0;
+      const d = delta(progress);
+      return n + (j % 2 ? d.y : d.x);
+    }));
+  return { ...pose,
+    ...(pose.stem ? { stem: { ...pose.stem,
+      // The header belongs to the cover, the lower lane and exact tail to the child.
+      // Gutter x is common to both vertical corners, preserving orthogonality.
+      points: pose.stem.points.map((p, i) => ({ x: p.x + (i < 2 ? head.x : i < 4 ? 0 : tail.x), y: p.y + (i < 3 ? head.y : tail.y) })),
+      tail: shiftShape(pose.stem.tail, () => tail),
+    } } : {}),
+    ...(pose.shape ? { shape: shiftShape(pose.shape, k => ({ x: mix(head.x, tail.x, k), y: mix(head.y, tail.y, k) })) } : {}),
+  };
+}
+
 /**
  * What remains of `track` from epoch time `at`, on a clock restarted there: the sampled pose at
  * zero with the current segment's remaining easing, later frames shifted by `at`. Null once the
@@ -269,12 +315,14 @@ export function sampleTrack(track: Track, at: number): Pose {
 export function sliceTrack(track: Track, at: number): Track | null {
   if (Number.isNaN(at) || at >= trackEnd(track)) return null;
   const { frames } = track;
-  if (at <= frames[0].at) return at === 0 ? track : { frames: frames.map((frame) => ({ ...frame, at: frame.at - at })) };
+  if (at <= frames[0].at) return at === 0 ? track : { frames: frames.map((frame) => ({ ...frame, at: frame.at - at })),
+    ...(track.routeMotion ? { routeMotion: { ...track.routeMotion, elapsed: track.routeMotion.elapsed + at } } : {}) };
   let i = 0;
   while (frames[i + 1].at <= at) i++;
   const a = frames[i], b = frames[i + 1], u = (at - a.at) / (b.at - a.at);
   const first: PoseFrame = { at: 0, pose: sampleTrack(track, at), easing: sliceEase(a.easing, u, 1) };
-  return { frames: [first, ...frames.slice(i + 1).map((frame) => ({ ...frame, at: frame.at - at }))] };
+  return { frames: [first, ...frames.slice(i + 1).map((frame) => ({ ...frame, at: frame.at - at }))],
+    ...(track.routeMotion ? { routeMotion: { ...track.routeMotion, elapsed: track.routeMotion.elapsed + at } } : {}) };
 }
 
 /** Clips on every pose or none, so interpolation never switches between clipped and unclipped. */
@@ -386,6 +434,115 @@ function continuingFade(from: Pose, to: Pose, fade: Track, duration: number): Tr
   }), duration);
 }
 
+/** Exact piecewise-affine coordinate, including sliced arrival/fade windows. */
+function motionCoordinate(track: Track | null, target: GridRect, read: (pose: Pose) => number, elapsed = 0): MotionCoordinate | null {
+  const remaining = track ? sliceTrack(track, elapsed) : null;
+  if (!remaining) return constantCoordinate(read(track ? finalPose(track) : { rect: target, opacity: 1, clip: null }));
+  if (remaining.frames[0].at !== 0) return null;
+  let coordinate = constantCoordinate(read(remaining.frames[0].pose));
+  for (let i = 1; i < remaining.frames.length; i++) {
+    const a = remaining.frames[i - 1], b = remaining.frames[i];
+    if (!(b.at > a.at)) return null;
+    const delta = read(b.pose) - read(a.pose);
+    if (delta === 0) continue;
+    // A segment clock holds at zero before its window and at one afterwards. Summing the
+    // segment deltas reconstructs the complete track, rather than rejecting residual fades.
+    coordinate = addCoordinates(coordinate, movingCoordinate(0, delta, JSON.stringify([a.at, b.at, a.easing])));
+  }
+  return coordinate;
+}
+
+/**
+ * Certify retained paths against retained tiles/cells when an expansion changes internal routing.
+ * Coordinates retain shared-clock correlation. Cubics use exact control hulls; re-rounded stems
+ * use a conservative 6px tube. Unproven corridors replace the whole packing atomically.
+ */
+function clearCurveCorridors(live: ReadonlyMap<RenderId, PresentedRecord>, next: FolderScene, before: Presentation): boolean {
+  const clocks = new Map<string, readonly [number, number, Ease]>();
+  const bounds = (clock: string, from: number, to: number): readonly [number, number] => {
+    let definition = clocks.get(clock);
+    if (!definition) { definition = JSON.parse(clock) as [number, number, Ease]; clocks.set(clock, definition); }
+    const [start, end, ease] = definition;
+    return [easeAt(ease, (from - start) / (end - start)), easeAt(ease, (to - start) / (end - start))];
+  };
+  const duration = Math.max(0, ...[...live.values()].map(r => r.track ? trackEnd(r.track) : 0));
+  // An interrupted arrival can retain an initial, exactly transparent window. Certify from
+  // the start of its first nonzero segment, including every arbitrarily faint painted frame.
+  const visibleFrom = (track: Track | null): number => {
+    if (!track) return 0;
+    const first = track.frames.findIndex(frame => frame.pose.opacity > 0);
+    return first < 0 ? Infinity : track.frames[Math.max(0, first - 1)].at;
+  };
+  const obstacles = [...next.records.values()].filter(tile => (tile.kind === "tile" || tile.kind === "entry") && before.live.has(tile.id)).map(tile => {
+    const edge = (read: (p: Pose) => number) => motionCoordinate(live.get(tile.id)?.track ?? null, tile.rect, read);
+    const left = edge(p => p.rect.x), right = edge(p => p.rect.x + p.rect.width);
+    const top = edge(p => p.rect.y), bottom = edge(p => p.rect.y + p.rect.height);
+    return { tile, box: left && right && top && bottom ? { left, right, top, bottom } : null };
+  });
+  for (const { record, track } of live.values()) {
+    if (record.kind !== "route" || !before.live.has(record.id)) continue;
+    const motion = track?.routeMotion, geometry = motion?.geometry ?? track, elapsed = motion?.elapsed ?? 0;
+    const stem = geometry?.frames[0].pose.stem;
+    const fallback = routeShape(record.route.path, record.rect)!;
+    const shapeOf = (pose: Pose) => pose.stem?.tail ?? pose.shape ?? fallback;
+    const length = Math.max(...(geometry?.frames ?? [{ pose: settledPose(record) }]).map(f => shapeOf(f.pose).length));
+    const coordinate = (read: (pose: Pose) => number, axis: "x" | "y", headWeight: number, tailWeight: number): MotionCoordinate | null => {
+      let value = motionCoordinate(geometry, record.rect, read, elapsed);
+      if (!value || !motion) return value;
+      for (const [end, weight] of [[motion.head, headWeight], [motion.tail, tailWeight]] as const) {
+        if (!weight) continue;
+        const position = (p: Pose) => p.rect[axis];
+        const actual = motionCoordinate(end.actual, end.target, position, elapsed);
+        const assumed = motionCoordinate(end.assumed, end.target, position, elapsed);
+        if (!actual || !assumed) return null;
+        value = addCoordinates(addCoordinates(value, actual, weight), assumed, -weight);
+      }
+      return value;
+    };
+    const shapePoint = (i: number, j: number): MotionPoint | null => {
+      const progress = stem ? 1 : i ? (i - 1 + (Math.floor(j / 2) + 1) / 3) / (length - 1) : 0;
+      const read = (index: number) => (pose: Pose) => {
+        const shape = shapeOf(pose), segment = shape[i] ?? Array.from({ length: 6 }, (_, k) => shape.at(-1)!.at(-2 + k % 2)!);
+        return segment[index] + (index % 2 ? pose.rect.y : pose.rect.x);
+      };
+      const x = coordinate(read(j), "x", 1 - progress, progress), y = coordinate(read(j + 1), "y", 1 - progress, progress);
+      return x && y ? { x, y } : null;
+    };
+    const curves: { controls: MotionPoint[]; padding: number }[] = [];
+    if (stem) {
+      const points = stem.points.map((_, i): MotionPoint | null => {
+        const x = coordinate(p => p.stem!.points[i].x + p.rect.x, "x", i < 2 ? 1 : 0, i >= 4 ? 1 : 0);
+        const y = coordinate(p => p.stem!.points[i].y + p.rect.y, "y", i < 3 ? 1 : 0, i >= 3 ? 1 : 0);
+        return x && y ? { x, y } : null;
+      });
+      for (let i = 1; i < points.length; i++) {
+        const a = points[i - 1], b = points[i];
+        if (!a || !b) return false;
+        // Re-rounded corners stay within 6px of the semantic polyline, including radius clamps.
+        curves.push({ controls: [a, a, b, b], padding: 6 });
+      }
+    }
+    let start = shapePoint(0, 0);
+    for (let i = 1; i < length; i++) {
+      const a = shapePoint(i, 0), b = shapePoint(i, 2), end = shapePoint(i, 4);
+      if (!start || !a || !b || !end) return false;
+      curves.push({ controls: [start, a, b, end], padding: 0 }); start = end;
+    }
+    for (const { tile, box } of obstacles) {
+      if ((tile.kind === "tile" && ((record.route.from.kind === "node" && record.route.from.id === tile.tile.key)
+        || (record.route.to.kind === "node" && record.route.to.id === tile.tile.key)))) continue;
+      if (!box) return false;
+      for (const { controls, padding } of curves) {
+        const plus = (value: MotionCoordinate, by: number) => addCoordinates(value, constantCoordinate(by));
+        const expanded = { left: plus(box.left, -padding), right: plus(box.right, padding), top: plus(box.top, -padding), bottom: plus(box.bottom, padding) };
+        const paintedFrom = Math.max(visibleFrom(track), visibleFrom(live.get(tile.id)?.track ?? null));
+        if (!curveClearsBox(controls, expanded, duration, bounds, paintedFrom)) return false;
+      }
+    }
+  }
+  return true;
+}
+
 // ─── Presentations ──────────────────────────────────────────────────────────
 
 const settled = (record: SceneRecord, scene?: FolderScene): PresentedRecord => ({ renderId: record.id, record, initial: settledPose(record), track: null, attachment: scene ? attachmentOf(scene, record) : undefined });
@@ -454,9 +611,19 @@ export function samplePresentation(current: Presentation, at: number): Displayed
     if (!group || !base) { poses.set(id, { ...own, opacity: 0 }); continue; }
     // Members ride their group's container (a closing band slides up under its cover).
     const by = displacement(group, base);
-    poses.set(id, { rect: translate(own.rect, by), opacity: own.opacity * group.opacity, clip: intersect(own.clip ? translate(own.clip, by) : null, group.clip) });
+    const floor = current.retiring.get(retiree.group)?.bodyFloor;
+    const window = floor !== undefined && !exitsFromCover(retiree.record) ? exitBodyClip(group, floor) : group.clip;
+    poses.set(id, { rect: translate(own.rect, by), opacity: own.opacity * group.opacity, clip: intersect(own.clip ? translate(own.clip, by) : null, window) });
   }
   return { presentation: current, at, poses };
+}
+
+/** Root connectors leave through the cover; descendants leave through the child canvas. */
+export const exitsFromCover = (record: SceneRecord): boolean => record.kind === "route"
+  && record.route.from.kind === "node" && record.route.from.id === record.graphId;
+export function exitBodyClip(group: Pose, floor: number): GridRect {
+  const clip = group.clip ?? group.rect, y = Math.max(clip.y, floor);
+  return { ...clip, y, height: Math.max(0, clip.y + clip.height - y) };
 }
 
 /** The cover record that frames a band record: its graph's section moves with the cover's row. */
@@ -563,7 +730,7 @@ const isBandRecord = (record: SceneRecord) => record.kind === "route" || record.
  */
 export function retargetPresentation(displayed: DisplayedPresentation | null, next: FolderScene, diff: SceneDiff, participants: Participants): Presentation {
   const { epoch, transaction } = participants;
-  if (!displayed || diff.policy.reset || participants.reduced) return staticPresentation(next, epoch);
+  if (!displayed || diff.policy.reset || diff.policy.replacePacking || participants.reduced) return staticPresentation(next, epoch);
   const at = displayed.at, before = displayed.presentation, shown = displayed.poses;
   const D = MOTION_MS;
   const moves = (id: EntityId) => !participants.records || participants.records.has(id);
@@ -715,9 +882,20 @@ export function retargetPresentation(displayed: DisplayedPresentation | null, ne
       continue;
     }
     const tailTrack = tail ? tracks.get(tail.id) ?? null : null;
-    const deform = (a: Pose, b: Pose): Track | null =>
+    const deformGeometry = (a: Pose, b: Pose): Track | null =>
       tailTrack && tail && (!headTrack || (head && sharedProgress(headTrack, head.rect, tailTrack, tail.rect))) ? trackWithEndpoint(a, b, tailTrack, tail.rect)
         : !tailTrack && headTrack && head ? trackWithEndpoint(a, b, headTrack, head.rect) : retargetTrack(a, b, D);
+    const deform = (a: Pose, b: Pose): Track | null => {
+      const geometry = deformGeometry(a, b);
+      if (!geometry || !head || !tail) return geometry;
+      const binding = (end: SceneRecord): EndpointMotion => ({ actual: tracks.get(end.id) ?? null,
+        assumed: deformGeometry({ rect: start.get(end.id)!.rect, opacity: 1, clip: null }, settledPose(end)), target: end.rect });
+      const motion: RouteMotion = { geometry, head: binding(head), tail: binding(tail), elapsed: 0 };
+      const end = Math.max(trackEnd(geometry), headTrack ? trackEnd(headTrack) : 0, tailTrack ? trackEnd(tailTrack) : 0);
+      const frames = geometry.frames.map(f => ({ ...f, pose: sampleRouteMotion(motion, f.at) }));
+      if (end > trackEnd(geometry)) frames.push({ at: end, pose: sampleRouteMotion(motion, end), easing: "linear" });
+      return { routeMotion: motion, frames };
+    };
     // A retained connector changes shape when its band moves independently of its cover.
     // Keep the exact displayed curve and deform it on the tile clock; retiring and re-entering
     // it would leave a fully blank interval between the departure and arrival windows.
@@ -851,15 +1029,15 @@ export function retargetPresentation(displayed: DisplayedPresentation | null, ne
     // records' bounds are padded), and never below its first tile.
     const coverBottom = cover ? (shown.get(coverId)?.rect ?? cover.record.rect).height : -Infinity;
     const tileTops = members.flatMap(({ record, pose }) => record.kind === "tile" ? [pose.rect.y - top] : []);
-    // Retiring tiles slide under the child canvas when another cover's connector stays drawn
-    // across this row's header. They must not slide up through that persistent attachment.
+    // When a neighbor keeps its attachment, tiles and descendant routes collapse under the
+    // child canvas. Source stems still leave through their own cover's bottom edge.
     const stayingHeader = [...next.routes.values()].some(route => {
       if (route.graphId === graphId || !before.live.has(route.id)) return false;
       const root = next.tiles.get(entityId("tile", route.graphId, route.graphId!));
       return root && Math.abs(root.rect.y - top) < NEAR && tileTops.length > 0;
     });
-    const floor = Math.max(0, stayingHeader && tileTops.length ? Math.min(...tileTops)
-      : Math.min(cover ? coverBottom : Math.min(...members.map(({ pose }) => pose.rect.y)) - top, ...tileTops));
+    const headerFloor = Math.max(0, Math.min(cover ? coverBottom : Math.min(...members.map(({ pose }) => pose.rect.y)) - top, ...tileTops));
+    const floor = stayingHeader ? Math.min(...tileTops) : headerFloor;
     if (!(extent > floor)) continue;
     const lowest = Math.min(extent, Math.max(...members.map(({ pose }) => {
       const clip = effectiveClip(pose);
@@ -870,7 +1048,7 @@ export function retargetPresentation(displayed: DisplayedPresentation | null, ne
     const slide = Math.max(0, reclaimed - (extent - lowest));
     const collapsed = (progress: number, opacity: number): Pose => ({
       rect: translate(container, { x: 0, y: -slide * progress }), opacity,
-      clip: { ...container, y: top + floor, height: Math.max(0, extent - floor - reclaimed * progress) },
+      clip: { ...container, y: top + headerFloor, height: Math.max(0, extent - headerFloor - reclaimed * progress) },
     });
     const groupTrack = easedFrames([[0, collapsed(0, 1)], [COLLAPSE_FADE_FROM, collapsed(COLLAPSE_FADE_FROM, 1)], [1, collapsed(1, 0)]], D);
     if (!groupTrack) continue;
@@ -878,7 +1056,8 @@ export function retargetPresentation(displayed: DisplayedPresentation | null, ne
     const groupId = retireId(transaction, "exit", bandId);
     const groupRecord: SceneRecord = band ? { ...band, rect: container }
       : { kind: "band", id: bandId, graphId, rect: container, band: { id: graphId, row: 0, ...container } };
-    fresh.push({ renderId: groupId, record: groupRecord, initial: groupTrack.frames[0].pose, track: groupTrack, sourceTransaction: transaction, group: null, reason: "exit", branch: branch(graphId) });
+    fresh.push({ renderId: groupId, record: groupRecord, initial: groupTrack.frames[0].pose, track: groupTrack,
+      ...(stayingHeader ? { bodyFloor: top + floor } : {}), sourceTransaction: transaction, group: null, reason: "exit", branch: branch(graphId) });
     for (const { record, pose } of members) {
       const member = displaced(record, pose);
       fresh.push({ renderId: retireId(transaction, "exit", record.id), record: member, initial: { rect: member.rect, opacity: pose.opacity, clip: null }, track: null,
@@ -907,5 +1086,6 @@ export function retargetPresentation(displayed: DisplayedPresentation | null, ne
     const track = tracks.get(id) ?? null;
     live.set(id, { renderId: id, record, initial: track ? track.frames[0].pose : settledPose(record), track, attachment: attachmentOf(next, record) });
   }
+  if (diff.policy.validateCorridors && !clearCurveCorridors(live, next, before)) return staticPresentation(next, epoch);
   return presentation(epoch, live, retiring, riders);
 }

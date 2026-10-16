@@ -75,6 +75,16 @@ export interface AnchorOptions {
 
 const motionFrames = (listener: () => void) => onFrame("scroll", listener);
 
+/** Fractional engines preserve the request; integer engines choose the nearest available offset. */
+function setAnchorOffset(element: HTMLElement, axis: "scrollTop" | "scrollLeft", requested: number): void {
+  element[axis] = requested;
+  const actual = element[axis], error = requested - actual;
+  // A full pixel is a scroll bound, not fractional quantization.
+  if (Math.abs(error) <= .5 || Math.abs(error) >= 1) return;
+  element[axis] = actual + Math.sign(error);
+  if (Math.abs(requested - element[axis]) > Math.abs(error)) element[axis] = actual;
+}
+
 /**
  * Holds `element` where it is on screen: capture before changing selection. The owner calls
  * `update` once after each publication's motion starts (layout only changes by publication);
@@ -137,10 +147,10 @@ export function holdAnchor(scroller: HTMLElement, element: HTMLElement, { frames
     const zoom = zoomOf(scroller);
     const dy = anchorDelta(before.top, box.top, zoom), dx = anchorDelta(before.left, box.left, zoom);
     const requestedTop = expectedTop + dy;
-    if (dy) scroller.scrollTop = requestedTop;
+    if (dy) setAnchorOffset(scroller, "scrollTop", requestedTop);
     expectedTop = scroller.scrollTop;
     const requestedLeft = expectedLeft + dx;
-    if (horizontal && dx) horizontal.scrollLeft = requestedLeft;
+    if (horizontal && dx) setAnchorOffset(horizontal, "scrollLeft", requestedLeft);
     expectedLeft = horizontal?.scrollLeft ?? 0;
     if (dy) anchorOffsets.set(scroller, { top: scroller.scrollTop, left: scroller.scrollLeft });
     if (horizontal && dx) anchorOffsets.set(horizontal, { top: horizontal.scrollTop, left: horizontal.scrollLeft });

@@ -1,17 +1,18 @@
+import { routeShape } from "$lib/domain/trace-graph/path-sampling";
 /**
  * The rAF motion driver against fake render handles and a fake frame clock: what it writes on
  * each frame, what it gives back, and when it settles. No DOM: elements are inline-style bags.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { engines, type FolderLayout } from "$lib/domain/trace-graph/folder-layout";
-import { buildFolderScene, diffScenes, type FolderScene, type SceneScope, type SceneStyling } from "$lib/domain/trace-graph/folder-scene";
+import { buildFolderScene, diffScenes, type FolderScene, type SceneRecord, type SceneScope, type SceneStyling } from "$lib/domain/trace-graph/folder-scene";
 import { tileMetrics } from "$lib/domain/trace-graph/metrics";
-import { MOTION_MS, retargetPresentation, samplePresentation, staticPresentation, type Presentation } from "$lib/plugins/trace/view/presentation";
+import { MOTION_MS, posePath, retargetTrack, retargetPresentation, samplePresentation, staticPresentation, type Presentation } from "$lib/plugins/trace/view/presentation";
 import v8 from "node:v8";
 import vm from "node:vm";
 import { createSceneMotion, FIRST_INTERVAL, sceneMotionTesting } from "$lib/plugins/trace/view/scene-motion";
 import { onFrame } from "$lib/plugins/trace/view/frame-loop";
-import { GRID, type RenderHandles } from "$lib/plugins/trace/view/render-handles";
+import { GRID, layerKey, type RenderHandles } from "$lib/plugins/trace/view/render-handles";
 import { folderInput, handCase, makeFolder, sourcesOf, type Folder } from "../../domain/trace-graph/folder-layout-fixtures";
 
 const scope: SceneScope = { paneId: "p", directory: "/f", generation: 1 };
@@ -493,5 +494,60 @@ describe("the rAF motion driver", () => {
     expect(await settled).toBe(true);
     for (const [key, element] of elements) expect(element.style, key).toEqual(RENDERED);
     expect(sceneMotionTesting.state().running).toEqual([]);
+  });
+});
+
+
+describe("SVG path ownership", () => {
+  const base = { x: 0, y: 0, width: 100, height: 100 };
+  const original = "M0 0 L100 100", target = "M0 0 L100 50";
+  const routePose = (path: string) => ({ rect: base, opacity: 1, clip: null, shape: routeShape(path, base)! });
+  const track = retargetTrack(routePose(original), routePose(target))!;
+  const record = { kind: "route", id: "r", graphId: "g", rect: base, route: { path: target } } as SceneRecord;
+  const presentation = (epoch: number): Presentation => ({ epoch, duration: MOTION_MS,
+    live: new Map([["r", { renderId: "r", record, initial: track.frames[0].pose, track }]]), retiring: new Map(), pinned: new Set(["r"]) });
+  function setup() {
+    let d = target;
+    const path = { style: {}, getAttribute: () => d, setAttribute: (_key: string, value: string) => { d = value; } };
+    const layer = { style: {}, querySelector: () => path };
+    const driver = createSceneMotion({ reduced: () => false, handles: {
+      get: key => key === layerKey("r") ? layer as unknown as HTMLElement : undefined, attach: () => () => {},
+    } });
+    return { driver, get: () => d, set: (value: string) => { d = value; } };
+  }
+
+  it("owns and restores SVG d on snap, interruption and completion", async () => {
+    sceneMotionTesting.hold();
+    const { driver, get } = setup();
+    try {
+      const first = driver.start(presentation(1));
+      expect(get()).toBe(posePath(track.frames[0].pose, base));
+      sceneMotionTesting.seek(40);
+      expect(get()).not.toBe(target);
+      const second = driver.start(presentation(2));
+      await expect(first.settled).resolves.toBe(false);
+      expect(get()).toBe(posePath(track.frames[0].pose, base));
+      sceneMotionTesting.finish();
+      await expect(second.settled).resolves.toBe(true);
+      expect(get()).toBe(posePath(track.frames[1].pose, base));
+      driver.snap();
+      expect(get()).toBe(target);
+    } finally { driver.snap(); sceneMotionTesting.release(); }
+  });
+
+  it("preserves renderer d committed during motion", () => {
+    sceneMotionTesting.hold();
+    const { driver, get, set } = setup();
+    try {
+      driver.start(presentation(3));
+      set("M9 9 L10 10");
+      driver.snap();
+      expect(get()).toBe("M9 9 L10 10");
+      driver.start(presentation(4));
+      set("M8 8 L11 11");
+      sceneMotionTesting.seek(40);
+      driver.snap();
+      expect(get()).toBe("M8 8 L11 11");
+    } finally { driver.snap(); sceneMotionTesting.release(); }
   });
 });

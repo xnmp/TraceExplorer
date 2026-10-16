@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { routeShape, samplePathString } from "$lib/domain/trace-graph/path-sampling";
+import { routeShape, samplePathString, translatePath } from "$lib/domain/trace-graph/path-sampling";
 import { engines, type FolderLayout } from "$lib/domain/trace-graph/folder-layout";
 import { buildFolderScene, diffScenes, entityId, type FolderScene, type SceneRecord, type SceneScope, type SceneStyling } from "$lib/domain/trace-graph/folder-scene";
 import { tileMetrics } from "$lib/domain/trace-graph/metrics";
@@ -8,7 +8,7 @@ import {
   samplePresentation, sampleTrack, settledPresentation, sliceEase, sliceTrack, staticPresentation, restylePresentation, type Ease, type Pose,
   type Presentation, type Track,
 } from "$lib/plugins/trace/view/presentation";
-import { folderInput, handCase, makeFolder, sourcesOf, type Folder } from "../../domain/trace-graph/folder-layout-fixtures";
+import { folderInput, handCase, makeFolder, sourcesOf, cellsOf, corpusNode as n, randomFolder, type InputOptions, type Folder } from "../../domain/trace-graph/folder-layout-fixtures";
 import { presentationView } from "$lib/plugins/trace/view/presentation-view";
 import { motionParticipants } from "$lib/plugins/trace/view/participants";
 import { toggleNode, type Expansion } from "$lib/domain/trace-graph/expansion";
@@ -625,7 +625,7 @@ describe("moving attachment stems", () => {
 
 
 describe("interrupted connector geometry", () => {
-  it("keeps both ports attached when endpoints share residual timing but move different distances", () => {
+  it.each([200, 250])("keeps curve ports attached with residual timing and a child destination of %i", (childDestination) => {
     const base = sceneFor([A]), cover = base.tiles.get(entityId("tile", A, A))!;
     const child = bandTiles(base, A)[0] as Extract<SceneRecord, { kind: "tile" }>;
     const route = routesOf(base, A)[0] as Extract<SceneRecord, { kind: "route" }>;
@@ -638,7 +638,7 @@ describe("interrupted connector geometry", () => {
         path: `M25 ${head + 40} C${25 + bend} ${head + 45} ${25 + bend} ${tail - 5} 25 ${tail}` } };
       return { ...base, records: new Map([[h.id, h], [t.id, t], [id, r]]), routes: new Map([[id, r]]), tiles: new Map([[h.id, h], [t.id, t]]) };
     };
-    const a = at(50, 100), b = at(100, 200), c = at(100, 200, 25);
+    const a = at(50, 100), b = at(100, 200), c = at(100, childDestination, 25);
     const moving = step(staticPresentation(a), a, b, Infinity).presentation;
     const interrupted = step(moving, b, c, 40).presentation;
     for (const dt of [0, 20, 60, 100, 160]) {
@@ -681,4 +681,137 @@ it('closing a shared-row band keeps retiring tiles out of the retained cover-att
       expect(Math.max(pose.rect.y, clip?.y ?? -Infinity)).toBeGreaterThanOrEqual(firstRow - .001);
     }
   }
+});
+
+
+/** Two packed bands whose second attachment crosses the first band's vertical extent. */
+const bridgeFolder = makeFolder({ stacks: [
+  [n("a"), n("a1", ["a"], 1), n("a2", ["a"], 2), n("a3", ["a"], 3), n("a4", ["a1", "a3"], 4), n("a5", ["a4"], 5), n("a6", ["a4"], 6)],
+  [n("b"), n("b1", ["b"], 1), n("b2", ["b"], 2)],
+], files: 4 });
+const [bridgeA, bridgeB] = [...bridgeFolder.stacks.keys()];
+const bridgeCells = cellsOf(bridgeFolder);
+const bridgeItems = [bridgeCells[0], bridgeCells[2], bridgeCells[1], ...bridgeCells.slice(3)];
+function inputScene(of: Folder, options: InputOptions): FolderScene {
+  const input = folderInput(of, options);
+  return buildFolderScene({ scope, layoutInput: input, layout: engines.default(input), sources: sourcesOf(of), styling: plain });
+}
+const bridgeScene = (open: string[], options: InputOptions = {}) => inputScene(bridgeFolder, { open, width: 390, items: bridgeItems, ...options });
+const displayedPath = (pose: Pose, record: Extract<SceneRecord, { kind: "route" }>) => posePath(pose, pose.rect)
+  ?? translatePath(record.route.path, { x: pose.rect.x - record.rect.x, y: pose.rect.y - record.rect.y })!;
+const pathEnds = (path: string) => { const points = samplePathString(path, 300)!; return [points[0], points.at(-1)!]; };
+
+describe("zero-blink packed band regressions", () => {
+  it("a shared-row close retains the visible source connector on its first frame", () => {
+    const a = bridgeScene([bridgeA, bridgeB]), b = bridgeScene([bridgeB], { previous: a.layout });
+    const p = step(staticPresentation(a), a, b, Infinity).presentation;
+    const group = [...p.retiring.values()].find(r => r.record.kind === "band")!;
+    const route = [...p.retiring.values()].find(r => r.group === group.renderId && r.record.kind === "route"
+      && r.record.route.from.kind === "node" && r.record.route.from.id === bridgeA)!;
+    if (route.record.kind !== "route") throw new Error("expected route");
+    const clip = samplePresentation(p, 0).poses.get(route.renderId)!.clip!;
+    expect(clip.y).toBe(97);
+    const [head] = pathEnds(route.record.route.path);
+    expect(head.y).toBeGreaterThanOrEqual(clip.y);
+  });
+
+  it("a reordered retained route stays outside an unrelated tile", () => {
+    const a = bridgeScene([bridgeA, bridgeB], { width: 330 });
+    const b = bridgeScene([bridgeA, bridgeB], { width: 330, items: bridgeItems.toReversed(), previous: a.layout });
+    const p = step(staticPresentation(a), a, b, Infinity).presentation;
+    const route = [...b.routes.values()].find(r => r.route.from.kind === "node" && r.route.from.id === bridgeB
+      && r.route.to.kind === "node" && r.route.to.id === "s1:b1")!;
+    const tile = entityId("tile", bridgeA, "s0:a3");
+    const hits = (path: string, q: Pose["rect"]) => samplePathString(path, 300)!.filter(pt =>
+      pt.x > q.x + 3 && pt.x < q.x + q.width - 3 && pt.y > q.y + 3 && pt.y < q.y + q.height - 3);
+    expect(hits(a.routes.get(route.id)!.route.path, a.tiles.get(tile)!.rect)).toEqual([]);
+    expect(hits(route.route.path, b.tiles.get(tile)!.rect)).toEqual([]);
+    for (let at = 0; at <= MOTION_MS; at += 2) {
+      const poses = samplePresentation(p, at).poses;
+      expect(poses.get(route.id)!.opacity).toBe(1);
+      expect(poses.get(tile)!.opacity).toBe(1);
+      expect(hits(displayedPath(poses.get(route.id)!, route), poses.get(tile)!.rect)).toEqual([]);
+      // A reordered listing replaces its packing atomically, matching geometryMotion.
+      expect(p.duration).toBe(0);
+      expect(p.retiring.size).toBe(0);
+      for (const [id, record] of b.records) expect(poses.get(id)).toEqual({ rect: record.rect, opacity: 1, clip: null });
+    }
+  });
+
+  it("replaces an active packing atomically when the listing changes", () => {
+    const a = bridgeScene([bridgeA, bridgeB], { width: 330 });
+    const b = bridgeScene([bridgeB], { width: 330, previous: a.layout });
+    const c = bridgeScene([bridgeB], { width: 330, items: bridgeItems.toReversed(), previous: b.layout });
+    const moving = step(staticPresentation(a), a, b, Infinity).presentation;
+    expect(moving.duration).toBeGreaterThan(0);
+    const replacement = step(moving, b, c, 40).presentation;
+    expect(replacement.duration).toBe(0);
+    expect(replacement.retiring.size).toBe(0);
+    for (const [id, record] of c.records) {
+      expect(replacement.live.get(id)!.renderId).toBe(id);
+      expect(samplePresentation(replacement, 0).poses.get(id)).toEqual({ rect: record.rect, opacity: 1, clip: null });
+    }
+  });
+
+  it.each([[36, "s0:n4"], [96, "s0:n1"], [12, "s0:long7"]] as const)("certifies the complete route corridor for expansion seed %i (%s)", (seed, key) => {
+    const { folder: of, options } = randomFolder(seed), ids = [...of.stacks.keys()];
+    const stack = [...of.stacks.values()].find(s => s.graph.dag.nodes.has(key))!;
+    const a = inputScene(of, { ...options, open: ids });
+    const expansion = toggleNode(focusExpansion(options.focus ?? null), { graph: stack.graph, members: stack.graph.dag.order, cover: stack.cover }, key);
+    const b = inputScene(of, { ...options, open: ids, expansion, previous: a.layout });
+    const moving = step(staticPresentation(a), a, b, Infinity).presentation;
+    for (const at of [0, 8, 16, 33, 80, 159, 160]) {
+      const poses = samplePresentation(moving, at).poses;
+      for (const [id, route] of b.routes) {
+        if (!a.routes.has(id)) continue;
+        const shown = poses.get(id)!;
+        expect(shown.opacity).toBe(1);
+        const points = samplePathString(displayedPath(shown, route), 300)!;
+        for (const [tileId, tile] of b.tiles) {
+          if (!a.tiles.has(tileId) || (route.route.from.kind === "node" && route.route.from.id === tile.tile.key)
+            || (route.route.to.kind === "node" && route.route.to.id === tile.tile.key)) continue;
+          const q = poses.get(tileId)!.rect;
+          expect(points.filter(p => p.x > q.x + 3 && p.x < q.x + q.width - 3 && p.y > q.y + 3 && p.y < q.y + q.height - 3), `${id} through ${tileId} at ${at}`).toEqual([]);
+        }
+      }
+    }
+  });
+
+  it("closing another band during resize keeps a retained route on its cover", () => {
+    const { folder: of, options } = randomFolder(15838), ids = [...of.stacks.keys()];
+    const a = inputScene(of, { ...options, open: ids, width: 640 });
+    const b = inputScene(of, { ...options, open: ids, width: 900, previous: a.layout });
+    const c = inputScene(of, { ...options, open: ids.slice(1), width: 900, previous: b.layout });
+    const id = entityId("route", "s3:root", "node:s3:root>node:s3:n1"), cover = entityId("tile", "s3:root", "s3:root");
+    for (const scene of [a, b, c]) {
+      const [head] = pathEnds(scene.routes.get(id)!.route.path), q = scene.records.get(cover)!.rect;
+      expect(head.x).toBeCloseTo(q.x + q.width / 2, 5);
+      expect(head.y).toBeCloseTo(q.y + q.height, 5);
+    }
+    const moving = step(staticPresentation(a), a, b, Infinity).presentation;
+    const p = step(moving, b, c, 40).presentation;
+    const record = c.routes.get(id)!;
+    const endpointIds = [cover, entityId("tile", record.graphId, record.route.to.id)];
+    const finalEnds = pathEnds(record.route.path);
+    const before = samplePresentation(moving, 40).poses.get(id)!;
+    expect(samplePathString(displayedPath(samplePresentation(p, 0).poses.get(id)!, record), 300))
+      .toEqual(samplePathString(displayedPath(before, b.routes.get(id)!), 300));
+    for (const at of [0, 8, 8.3, 16, 33, 50, 80, 120, 160]) {
+      const poses = samplePresentation(p, at).poses, route = poses.get(id)!;
+      const ends = pathEnds(displayedPath(route, record));
+      expect(route.opacity).toBe(1);
+      endpointIds.forEach((endpoint, i) => {
+        const q = poses.get(endpoint)!.rect, target = c.records.get(endpoint)!.rect;
+        expect(Math.hypot(ends[i].x - q.x - (finalEnds[i].x - target.x), ends[i].y - q.y - (finalEnds[i].y - target.y))).toBeLessThan(.01);
+      });
+    }
+    const continued = step(p, c, c, 17.25).presentation;
+    for (const dt of [0, 3.7, 25, 90, 160]) {
+      const actual = samplePresentation(continued, dt).poses.get(id)!;
+      const expected = samplePresentation(p, 17.25 + dt).poses.get(id)!;
+      const a = samplePathString(displayedPath(actual, record), 300)!;
+      const b = samplePathString(displayedPath(expected, record), 300)!;
+      a.forEach((point, i) => expect(Math.hypot(point.x - b[i].x, point.y - b[i].y)).toBeLessThan(.001));
+    }
+  });
 });

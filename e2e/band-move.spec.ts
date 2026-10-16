@@ -1,6 +1,7 @@
 import { test, expect } from '@playwright/test';
 import { card, caret, key, openView, settle, uncaught } from './support';
 import { samplePaintedFrames, sceneBusy } from './helpers/scene-events';
+import { awaitMotionStarted, holdMotion, releaseMotion, seekMotion } from './animation-control';
 
 /** All route instances (live and motion), with their displayed geometry and effective opacity. */
 function frame() {
@@ -21,7 +22,7 @@ function frame() {
   // Remove only the settled selection tone (.unrelated); retain every motion opacity multiplier.
   const tiles = Object.fromEntries([...grid.querySelectorAll<HTMLElement>('[data-tile-key]')]
     .map(tile => [tile.dataset.tileKey!, { geometry: box(tile), opacity: opacity(tile.querySelector('.card') ?? tile) / (tile.classList.contains('unrelated') ? .78 : 1) }]));
-  const routes: Record<string, { geometry: number[]; opacity: number; path: string; from: string; to: string }[]> = {};
+  const routes: Record<string, { geometry: number[]; opacity: number; path: string; from: string; to: string; points: { x: number; y: number }[]; clipTop: number }[]> = {};
   for (const path of grid.querySelectorAll<SVGPathElement>('path[data-route], path[data-motion-route]')) {
     const id = path.dataset.route ?? path.dataset.motionRoute!;
     const matrix = path.getScreenCTM()!;
@@ -29,7 +30,17 @@ function frame() {
       const p = path.getPointAtLength(length), shown = new DOMPoint(p.x, p.y).matrixTransform(matrix);
       return [shown.x - origin.x, shown.y - origin.y];
     });
-    (routes[id] ??= []).push({ geometry: [...box(path), ...endpoints], opacity: opacity(path) / (path.classList.contains('unrelated') ? .4 : 1), path: path.getAttribute('d')!,
+    let clipTop = -Infinity;
+    for (let at = path.parentElement; at; at = at.parentElement) {
+      const clip = /^polygon\(([^)]*)\)/.exec(getComputedStyle(at).clipPath);
+      if (clip) clipTop = Math.max(clipTop, at.getBoundingClientRect().top - origin.top
+        + Math.min(...clip[1].split(',').map(p => parseFloat(p.trim().split(/\s+/)[1]))));
+    }
+    const points = Array.from({ length: 301 }, (_, i) => {
+      const p = path.getPointAtLength(path.getTotalLength() * i / 300), q = new DOMPoint(p.x, p.y).matrixTransform(matrix);
+      return { x: q.x - origin.x, y: q.y - origin.y };
+    });
+    (routes[id] ??= []).push({ points, clipTop, geometry: [...box(path), ...endpoints], opacity: opacity(path) / (path.classList.contains('unrelated') ? .4 : 1), path: path.getAttribute('d')!,
       from: path.dataset.from ?? path.dataset.motionFrom!, to: path.dataset.to ?? path.dataset.motionTo! });
   }
   return { tiles, routes, running: (window as any).trace.motion.state().running.length };
@@ -94,5 +105,64 @@ for (const height of [480, 1500]) test(`growing a band keeps every persistent ti
     }
   }
   expect(faults).toEqual([]);
+  expect(await uncaught(page)).toEqual([]);
+});
+
+
+test('a shared-row close preserves its outgoing source connector on the first frame', async ({ page }) => {
+  await page.setViewportSize({ width: 1000, height: 1300 });
+  await openView(page, 390, '?bandMotion=bridge', false);
+  const toggle = (name: string) => page.locator(`section[aria-label="stack-${name}"] [data-stack-toggle]`).evaluate((e: HTMLElement) => e.click());
+  for (const name of ['a', 'b']) { await toggle(name); await settle(page); }
+  const source = `node:${await key(page, 'stack-a')}`;
+  const before = await page.evaluate(frame);
+  const outgoing = Object.entries(before.routes).filter(([, routes]) => routes.some(r => r.from === source));
+  expect(outgoing.length).toBeGreaterThan(0);
+  await holdMotion(page);
+  try {
+    await toggle('a'); await awaitMotionStarted(page); await seekMotion(page, 0);
+    const first = await page.evaluate(frame);
+    for (const [id, old] of outgoing) {
+      const shown = first.routes[id].find(r => r.opacity > .99)!;
+      expect(shown).toBeDefined();
+      expect(shown.geometry[5], id).toBeGreaterThanOrEqual(shown.clipTop - .01);
+      expect(shown.geometry.slice(4)).toEqual(old.find(r => r.opacity > .99)!.geometry.slice(4));
+    }
+  } finally { await releaseMotion(page); }
+  await settle(page);
+  expect(await uncaught(page)).toEqual([]);
+});
+
+test('reordering packed bands replaces one complete clear scene without blinking', async ({ page }) => {
+  await page.setViewportSize({ width: 1000, height: 1300 });
+  await openView(page, 330, '?bandMotion=bridge', false);
+  for (const name of ['a', 'b']) {
+    await page.locator(`section[aria-label="stack-${name}"] [data-stack-toggle]`).evaluate((e: HTMLElement) => e.click());
+    await settle(page);
+  }
+  const before = await page.evaluate(frame);
+  const frames = await samplePaintedFrames(page, frame, 400, () => page.evaluate(() => (window as any).trace.resort()), sceneBusy);
+  await settle(page);
+  const after = await page.evaluate(frame);
+  expect(Object.values(after.tiles).map(t => t.geometry)).not.toEqual(Object.values(before.tiles).map(t => t.geometry));
+  for (const f of [...frames, after]) {
+    expect(f.running).toBe(0); // Listing changes are atomic under geometryMotion's input policy.
+    const matches = (scene: ReturnType<typeof frame>) => Object.entries(before.tiles).every(([key]) =>
+      f.tiles[key]?.geometry.every((n, axis) => Math.abs(n - scene.tiles[key].geometry[axis]) < .02));
+    const target = matches(before) ? before : after;
+    expect(matches(target), 'each painted frame shows a complete packing').toBe(true);
+    for (const id of Object.keys(before.routes)) {
+      const route = f.routes[id]?.find(r => r.opacity > .999);
+      expect(route, id).toBeDefined();
+      for (const [key, tile] of Object.entries(f.tiles)) {
+        if (`node:${key}` === route!.from || `node:${key}` === route!.to || tile.opacity < .99) continue;
+        const [x, y, width, height] = tile.geometry;
+        expect(route!.points.filter(p => p.x > x + 3 && p.x < x + width - 3 && p.y > y + 3 && p.y < y + height - 3), `${id} through ${key}`).toEqual([]);
+      }
+      const expected = target.routes[id].find(r => r.opacity > .999)!;
+      route!.geometry.forEach((n, axis) => expect(n).toBeCloseTo(expected.geometry[axis], 1));
+    }
+    for (const [key, tile] of Object.entries(before.tiles)) expect(f.tiles[key]?.opacity, key).toBe(tile.opacity);
+  }
   expect(await uncaught(page)).toEqual([]);
 });
