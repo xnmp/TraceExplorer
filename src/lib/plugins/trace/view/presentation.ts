@@ -12,7 +12,7 @@
  * so the continuation follows the original trajectory exactly.
  */
 import type { GridRect } from "$lib/domain/trace-graph/grid-flow";
-import type { Orientation } from "$lib/domain/trace-graph/layout";
+import type { Orientation, PlacedRoute } from "$lib/domain/trace-graph/layout";
 import { bandRouteStem, roundedStem } from "$lib/domain/trace-graph/band-geometry";
 import { endpointKey } from "$lib/domain/trace-graph/junctions";
 import { pathTranslation, translatePath, routeShape, routeShapePath, mixRouteShape, sameRouteShape, type RouteShape, type Point } from "$lib/domain/trace-graph/path-sampling";
@@ -227,11 +227,34 @@ export function posePath(pose: Pose, base: GridRect): string | null {
   return pose.shape ? routeShapePath(pose.shape, base) : null;
 }
 
+/** Per-scene lookups for `attachmentOf`, built once: scanning bands and raw routes per record is quadratic in large folders. */
+interface AttachmentIndex {
+  readonly bands: ReadonlyMap<string, FolderScene["layout"]["bands"][number]>;
+  routes(graphId: string, raw: readonly PlacedRoute[]): ReadonlyMap<string, PlacedRoute>;
+}
+const attachmentIndices = new WeakMap<FolderScene, AttachmentIndex>();
+function attachmentIndex(scene: FolderScene): AttachmentIndex {
+  let index = attachmentIndices.get(scene);
+  if (!index) {
+    const byGraph = new Map<string, ReadonlyMap<string, PlacedRoute>>();
+    index = {
+      bands: new Map(scene.layout.bands.map(band => [band.id, band])),
+      routes(graphId, raw) {
+        let routes = byGraph.get(graphId);
+        if (!routes) byGraph.set(graphId, routes = new Map(raw.map(route => [route.id, route])));
+        return routes;
+      },
+    };
+    attachmentIndices.set(scene, index);
+  }
+  return index;
+}
+
 /** Capture attachment semantics with each live route; interruptions never reconstruct them from SVG. */
 function attachmentOf(scene: FolderScene, record: SceneRecord): StemPose | undefined {
   if (record.kind !== "route" || record.graphId === null) return undefined;
-  const graph = scene.graphs.get(record.graphId), band = scene.layout.bands.find(b => b.id === record.graphId);
-  const raw = graph?.layout.routes.find(r => r.id === record.route.id);
+  const graph = scene.graphs.get(record.graphId), band = attachmentIndex(scene).bands.get(record.graphId);
+  const raw = graph && attachmentIndex(scene).routes(record.graphId, graph.layout.routes).get(record.route.id);
   if (!graph || !raw || !band) return undefined;
   const stem = bandRouteStem(graph.layout, record.graphId, band.y - graph.origin.y, graph.placement, raw);
   if (!stem) return undefined;
