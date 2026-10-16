@@ -481,11 +481,11 @@ export function createSceneMotion({ handles, scroller = () => null, reduced = pr
       const shift = rect && sampled ? { x: (sampled.left - rect.left) / sampled.zoom, y: (sampled.top - rect.top) / sampled.zoom } : { x: 0, y: 0 };
       const effects: Effect[] = [];
       const play = (key: string, track: Track, base: GridRect, frame: MotionFrame | null, kind: MotionKind, fill: Effect["fill"], map?: (f: CompiledFrame) => CompiledFrame) => {
-        const element = handles.get(key) as Styled | undefined;
-        if (!element) return;
+        const elements = handles.all?.(key) ?? [handles.get(key)].filter((e): e is HTMLElement | SVGElement => !!e);
+        if (!elements.length) return;
         const compiled = compileTrack(track, base, frame, duration), frames = map ? compiled.map(map) : compiled;
         const properties = animatedProperties(frames, base, kind);
-        if (properties.length) effects.push({ element, fill, style: (at) => styleOf(frameAt(frames, at), base, kind, properties) });
+        if (properties.length) for (const element of elements as Styled[]) effects.push({ element, fill, style: (at) => styleOf(frameAt(frames, at), base, kind, properties) });
       };
       const inSection = (frame: SectionFrame | null): MotionFrame | null => frame ? { track: frame.track, base: frame.base, x: false } : null;
       const drawn = presentationView(presentation);
@@ -518,8 +518,8 @@ export function createSceneMotion({ handles, scroller = () => null, reduced = pr
         const { record } = retiree;
         if (record.kind === "band") {
           play(retiree.renderId, retiree.track, record.rect, null, "layer", "forwards");
-          const body = handles.get(exitBodyKey(retiree.renderId)) as Styled | undefined;
-          if (body && retiree.bodyFloor !== undefined) effects.push({ element: body, fill: "forwards", style: at => {
+          const bodies = handles.all?.(exitBodyKey(retiree.renderId)) ?? [handles.get(exitBodyKey(retiree.renderId))].filter((e): e is HTMLElement | SVGElement => !!e);
+          for (const body of bodies as Styled[]) if (retiree.bodyFloor !== undefined) effects.push({ element: body, fill: "forwards", style: at => {
             const pose = sampleTrack(retiree.track!, at), clip = exitBodyClip(pose, retiree.bodyFloor!);
             return { clipPath: polygon({ ...clip, x: clip.x - pose.rect.x, y: clip.y - pose.rect.y }) };
           } });

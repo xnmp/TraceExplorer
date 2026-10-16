@@ -110,7 +110,7 @@ export interface GeometryInputs {
   /** The focus the scene was laid out for. */
   readonly focus: string | null;
   /**
-   * Each open stack's expanded keys as laid out (an order-independent signature): what its band
+   * Each open stack's expanded keys in visibility order: what its band
    * shows. Changed only by the user (a caret, a second click on the selected tile, a selection).
    * Absent in inputs from before expansion existed: compared as unchanged.
    */

@@ -11,7 +11,7 @@ import {
 import { folderInput, handCase, makeFolder, sourcesOf, cellsOf, corpusNode as n, randomFolder, type InputOptions, type Folder } from "../../domain/trace-graph/folder-layout-fixtures";
 import { presentationView } from "$lib/plugins/trace/view/presentation-view";
 import { motionParticipants } from "$lib/plugins/trace/view/participants";
-import { toggleNode, type Expansion } from "$lib/domain/trace-graph/expansion";
+import { expandNode, toggleNode, type Expansion } from "$lib/domain/trace-graph/expansion";
 import { focusExpansion } from "../../../layout-eval/corpus";
 
 // ─── Easing ─────────────────────────────────────────────────────────────────
@@ -174,7 +174,16 @@ function expectContinuous(displayed: ReturnType<typeof samplePresentation>, next
     const candidates = [first.get(id), ...[...next.retiring.values()].filter((r) => r.record.id === identity && r.reason === "exit").map((r) => first.get(r.renderId))]
       .filter((p): p is Pose => !!p);
     if (!candidates.length) continue; // Snapped away (an entry or cover leaving the listing).
-    expect(candidates.some((p) => close(p, was)), `${id}: ${JSON.stringify({ was, candidates })}`).toBe(true);
+    const record = (displayed.presentation.live.get(id) ?? displayed.presentation.retiring.get(id))!.record;
+    const shownPath = (pose: Pose, record: Extract<SceneRecord, { kind: "route" }>) => posePath(pose, pose.rect)
+      ?? translatePath(record.route.path, { x: pose.rect.x - record.rect.x, y: pose.rect.y - record.rect.y })!;
+    const target = next.live.get(identity!)?.record;
+    const continuous = record.kind === "route" && target?.kind === "route" ? candidates.some(p => {
+      if (Math.abs(p.opacity - was.opacity) > .01) return false;
+      const a = samplePathString(shownPath(was, record), 100)!, b = samplePathString(shownPath(p, target), 100)!;
+      return a.every((point, i) => Math.hypot(point.x - b[i].x, point.y - b[i].y) < .01);
+    }) : candidates.some(p => close(p, was));
+    expect(continuous, `${id}: ${JSON.stringify({ was, candidates })}`).toBe(true);
     checked++;
   }
   return checked;
@@ -715,51 +724,25 @@ describe("zero-blink packed band regressions", () => {
     expect(head.y).toBeGreaterThanOrEqual(clip.y);
   });
 
-  it("a reordered retained route stays outside an unrelated tile", () => {
+  it("diffing keeps packing reorders continuous; the controller owns listing snaps", () => {
     const a = bridgeScene([bridgeA, bridgeB], { width: 330 });
     const b = bridgeScene([bridgeA, bridgeB], { width: 330, items: bridgeItems.toReversed(), previous: a.layout });
-    const p = step(staticPresentation(a), a, b, Infinity).presentation;
-    const route = [...b.routes.values()].find(r => r.route.from.kind === "node" && r.route.from.id === bridgeB
-      && r.route.to.kind === "node" && r.route.to.id === "s1:b1")!;
-    const tile = entityId("tile", bridgeA, "s0:a3");
-    const hits = (path: string, q: Pose["rect"]) => samplePathString(path, 300)!.filter(pt =>
-      pt.x > q.x + 3 && pt.x < q.x + q.width - 3 && pt.y > q.y + 3 && pt.y < q.y + q.height - 3);
-    expect(hits(a.routes.get(route.id)!.route.path, a.tiles.get(tile)!.rect)).toEqual([]);
-    expect(hits(route.route.path, b.tiles.get(tile)!.rect)).toEqual([]);
-    for (let at = 0; at <= MOTION_MS; at += 2) {
-      const poses = samplePresentation(p, at).poses;
-      expect(poses.get(route.id)!.opacity).toBe(1);
-      expect(poses.get(tile)!.opacity).toBe(1);
-      expect(hits(displayedPath(poses.get(route.id)!, route), poses.get(tile)!.rect)).toEqual([]);
-      // A reordered listing replaces its packing atomically, matching geometryMotion.
-      expect(p.duration).toBe(0);
-      expect(p.retiring.size).toBe(0);
-      for (const [id, record] of b.records) expect(poses.get(id)).toEqual({ rect: record.rect, opacity: 1, clip: null });
-    }
-  });
-
-  it("replaces an active packing atomically when the listing changes", () => {
-    const a = bridgeScene([bridgeA, bridgeB], { width: 330 });
-    const b = bridgeScene([bridgeB], { width: 330, previous: a.layout });
-    const c = bridgeScene([bridgeB], { width: 330, items: bridgeItems.toReversed(), previous: b.layout });
     const moving = step(staticPresentation(a), a, b, Infinity).presentation;
-    expect(moving.duration).toBeGreaterThan(0);
-    const replacement = step(moving, b, c, 40).presentation;
-    expect(replacement.duration).toBe(0);
-    expect(replacement.retiring.size).toBe(0);
-    for (const [id, record] of c.records) {
-      expect(replacement.live.get(id)!.renderId).toBe(id);
-      expect(samplePresentation(replacement, 0).poses.get(id)).toEqual({ rect: record.rect, opacity: 1, clip: null });
+    expect(moving.duration).toBe(MOTION_MS);
+    expect(expectContinuous(samplePresentation(staticPresentation(a), Infinity), moving)).toBeGreaterThan(0);
+    for (const at of [0, 8, 33, 80, 160]) for (const [id] of b.routes) {
+      if (a.routes.has(id)) expect(samplePresentation(moving, at).poses.get(id)!.opacity).toBe(1);
     }
   });
 
-  it.each([[36, "s0:n4"], [96, "s0:n1"], [12, "s0:long7"]] as const)("certifies the complete route corridor for expansion seed %i (%s)", (seed, key) => {
+  it.each([[36, "s0:n4"], [96, "s0:n1"], [12, "s0:long7"]] as const)("glides retained routes through expansion seed %i (%s), settling clear", (seed, key) => {
     const { folder: of, options } = randomFolder(seed), ids = [...of.stacks.keys()];
     const stack = [...of.stacks.values()].find(s => s.graph.dag.nodes.has(key))!;
     const a = inputScene(of, { ...options, open: ids });
     const expansion = toggleNode(focusExpansion(options.focus ?? null), { graph: stack.graph, members: stack.graph.dag.order, cover: stack.cover }, key);
     const b = inputScene(of, { ...options, open: ids, expansion, previous: a.layout });
     const moving = step(staticPresentation(a), a, b, Infinity).presentation;
+    expect(moving.duration).toBe(MOTION_MS);
     for (const at of [0, 8, 16, 33, 80, 159, 160]) {
       const poses = samplePresentation(moving, at).poses;
       for (const [id, route] of b.routes) {
@@ -767,6 +750,7 @@ describe("zero-blink packed band regressions", () => {
         const shown = poses.get(id)!;
         expect(shown.opacity).toBe(1);
         const points = samplePathString(displayedPath(shown, route), 300)!;
+        if (at !== 0 && at !== MOTION_MS) continue; // Occlusion during motion is a browser paint contract.
         for (const [tileId, tile] of b.tiles) {
           if (!a.tiles.has(tileId) || (route.route.from.kind === "node" && route.route.from.id === tile.tile.key)
             || (route.route.to.kind === "node" && route.route.to.id === tile.tile.key)) continue;
@@ -814,4 +798,71 @@ describe("zero-blink packed band regressions", () => {
       a.forEach((point, i) => expect(Math.hypot(point.x - b[i].x, point.y - b[i].y)).toBeLessThan(.001));
     }
   });
+});
+
+
+it("expansion order changes visibility and glides from the displayed scene", () => {
+  const of = makeFolder({ stacks: [handCase("overlapping-merges"), handCase("fan-8")], files: 3 });
+  const ids = [...of.stacks.keys()], stack = of.stacks.get(ids[0])!;
+  const scope = { graph: stack.graph, members: stack.graph.dag.order, cover: stack.cover };
+  const full: Expansion = { choices: new Map(stack.graph.dag.order.filter(k => k !== stack.cover && stack.graph.dag.children.get(k)?.length).map(k => [k, true])), reveals: [] };
+  const expansion = toggleNode(full, scope, "s0:p3"), nextExpansion = expandNode(expansion, scope, "s0:p2");
+  const a = inputScene(of, { open: ids, width: 390, expansion });
+  const b = inputScene(of, { open: ids, width: 390, expansion: nextExpansion, previous: a.layout });
+  expect(new Map([...expansion.choices].sort())).toEqual(new Map([...nextExpansion.choices].sort()));
+  expect([...expansion.choices]).not.toEqual([...nextExpansion.choices]);
+  expect(b.tiles.size).toBe(a.tiles.size + 1);
+  const moving = step(staticPresentation(a), a, b, Infinity).presentation;
+  expect(moving.duration).toBe(MOTION_MS);
+  expect(expectContinuous(samplePresentation(staticPresentation(a), Infinity), moving)).toBeGreaterThan(0);
+  for (const at of [1, 16, 33, 80, 159]) {
+    const reversed = step(moving, b, a, at);
+    expect(reversed.presentation.duration).toBe(MOTION_MS);
+    expect(expectContinuous(reversed.displayed, reversed.presentation)).toBeGreaterThan(0);
+    for (const id of a.routes.keys()) if (b.routes.has(id)) {
+      for (const dt of [0, 8, 16, 33, 80, 160]) expect(samplePresentation(reversed.presentation, dt).poses.get(id)!.opacity).toBe(1);
+    }
+  }
+});
+
+
+it("reopening takes over the displayed orthogonal attachment stem and preserves it through another interruption", () => {
+  const a = bridgeScene([bridgeA, bridgeB]), b = bridgeScene([bridgeB], { previous: a.layout });
+  const closing = step(staticPresentation(a), a, b, Infinity).presentation;
+  const reopened = bridgeScene([bridgeA, bridgeB], { previous: b.layout });
+  const p = step(closing, b, reopened, 1).presentation;
+  const attachments = [...p.live.values()].filter(r => r.record.graphId === bridgeA && r.attachment);
+  expect(attachments.length).toBeGreaterThan(0);
+  for (const live of attachments) {
+    expect(live.track!.frames[0].pose.stem).toBeDefined();
+    for (const at of [0, 8, 16, 33, 80, 160]) {
+      const pose = samplePresentation(p, at).poses.get(live.renderId)!;
+      expect(pose.opacity).toBe(1);
+      const points = pose.stem!.points;
+      for (let i = 1; i < points.length; i++) expect(Math.min(Math.abs(points[i].x - points[i-1].x), Math.abs(points[i].y - points[i-1].y))).toBeLessThan(.001);
+    }
+  }
+  const q = step(p, reopened, reopened, 17).presentation;
+  for (const at of [0, 8, 33, 100, 160]) for (const live of attachments) {
+    const actual = samplePresentation(q, at).poses.get(live.renderId)!, expected = samplePresentation(p, at + 17).poses.get(live.renderId)!;
+    const a = samplePathString(posePath(actual, actual.rect)!, 300)!, b = samplePathString(posePath(expected, expected.rect)!, 300)!;
+    a.forEach((point, i) => expect(Math.hypot(point.x - b[i].x, point.y - b[i].y)).toBeLessThan(.001));
+  }
+});
+
+
+it("packing cell insertion, removal and kind changes do not override the caller's animation policy", () => {
+  const cells = cellsOf(bridgeFolder), entry = cells.find(cell => cell.kind !== "stack")!;
+  const without = cells.filter(cell => cell.id !== entry.id);
+  const reordered = [entry, ...without];
+  const a = inputScene(bridgeFolder, { open: [bridgeA, bridgeB], width: 330, items: without });
+  const b = inputScene(bridgeFolder, { open: [bridgeA, bridgeB], width: 330, items: reordered, previous: a.layout });
+  const inserted = step(staticPresentation(a), a, b, Infinity).presentation;
+  expect(inserted.duration).toBe(MOTION_MS);
+  expect(step(staticPresentation(b), b, a, Infinity).presentation.duration).toBe(MOTION_MS);
+  const changed = inputScene(bridgeFolder, { open: [bridgeA, bridgeB], width: 330,
+    items: reordered.map(cell => cell.id === entry.id ? { ...cell, kind: "directory", entry: { ...cell.entry!, kind: "directory" } } : cell), previous: b.layout });
+  const continued = step(inserted, b, changed, 33).presentation;
+  expect(continued.duration).toBeGreaterThan(0);
+  for (const id of b.routes.keys()) for (const at of [0, 8, 33, 100, 160]) expect(samplePresentation(continued, at).poses.get(id)!.opacity).toBe(1);
 });

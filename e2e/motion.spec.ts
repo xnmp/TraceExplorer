@@ -385,7 +385,7 @@ test.describe("bands expand and collapse quickly", () => {
     const frames = await page.evaluate(async () => {
       const view = document.querySelector<HTMLElement>("[data-testid=trace-view]")!;
       const section = document.querySelector<HTMLElement>('section.component[aria-label="m0"]')!;
-      const watched = [section.previousElementSibling as HTMLElement, section, section.nextElementSibling as HTMLElement];
+      const watched = [view.querySelector<HTMLElement>('[role="grid"]')!, section, section.nextElementSibling as HTMLElement];
       const sample = () => watched.map((element) => element.getBoundingClientRect().top);
       const frames = [sample()];
       section.querySelector<HTMLElement>("[data-stack-toggle]")!.click();
@@ -393,7 +393,7 @@ test.describe("bands expand and collapse quickly", () => {
       return { frames, overflow: view.scrollHeight - view.clientHeight - view.scrollTop };
     });
     expect(frames.overflow).toBeLessThan(1);
-    // Every watched element (the one before, the section, the one after) moves straight to where it ends.
+    // The grid camera, section and following cell move straight to where they end.
     for (let element = 0; element < 3; element++) {
       const path = frames.frames.map((frame) => frame[element]);
       const end = path.at(-1)!;

@@ -49,6 +49,7 @@
     onbadgehover: (key: string | null) => void; onretry: (coverKey: string) => void;
     captureSelection: () => () => boolean; onsaved: (key: string, path: string, select: boolean) => void; ondiscarded: (key: string) => void;
   } = $props();
+  const PLANES = ["routes", "tiles"] as const;
   const host = hostFileTile();
   const HostTile = host?.default;
   /** Cells within this of the viewport stay mounted (the same margin selects motion participants). */
@@ -178,6 +179,8 @@
   {#each layout.rowBands as row (row.id)}
     <div class="row-band" data-grid-row-band={row.row} {@attach handles.attach(entityId("row", null, String(row.row)))} style:top="{row.y}px" style:width="{row.width}px" style:height="{row.height}px"></div>
   {/each}
+  {#each PLANES as plane (plane)}
+  <div class="paint-plane" class:tiles={plane === "tiles"} data-paint-plane={plane} aria-hidden={plane === "routes" ? "true" : undefined}>
   {#each visible as cell (cell.id)}
     {@const rect = layout.cells.get(cell.id)!}
     {@const band = bandById.get(cell.id)}
@@ -188,8 +191,9 @@
       {@const nodes = componentNodes(scene, cell.id)}
       {@const notice = notices.get(cell.id)}
       {@const placement = graph?.placement}
-      <section class="component" class:dimmed={focus !== null && focus.componentId !== summary.id} data-stack-count={`${summary.imageCount} images`} data-component={summary.id} data-grid-motion={cell.id} aria-label={summary.title} {@attach handles.attach(sectionKey(cell.id))}
+      <section class:component={plane === "tiles"} class:route-component={plane === "routes"} class:dimmed={focus !== null && focus.componentId !== summary.id} data-stack-count={`${summary.imageCount} images`} data-component={plane === "tiles" ? summary.id : undefined} data-grid-motion={plane === "tiles" ? cell.id : undefined} aria-label={plane === "tiles" ? summary.title : undefined} {@attach handles.attach(sectionKey(cell.id))}
         style:top="{rect.y}px" style:height="{band ? band.y + band.height - rect.y : rect.height}px">
+        {#if plane === "tiles"}
         <div class="cell stack" role="row" aria-rowindex={rect.row + 1} data-grid-cell={cell.id} data-stack-key={cell.id} {@attach handles.attach(record.id)}
           style:left="{rect.x}px" style:width="{rect.width}px" style:height="{rect.height}px">
           <TraceTile {toast} tile={record.tile} placed={record.placed}
@@ -203,11 +207,12 @@
             onkey={(event) => keydown(cell.id, event)} {captureSelection} onsaved={(path, select) => onsaved(cell.id, path, select)} ondiscarded={() => ondiscarded(cell.id)}
             onretry={() => onretry(cell.id)} />
         </div>
+        {/if}
         {#if band && graph && placement && nodes}
-          <div class="content" data-grid-band={cell.id} data-grid-band-row={band.row} data-group-left={placement.left} data-group-width={placement.right - placement.left} data-child-group-left={band.x} data-child-group-width={band.width} data-horizontal-scroll style:height="{band.y + band.height - rect.y}px">
+          <div class="content" data-grid-band={plane === "tiles" ? cell.id : undefined} data-route-band={plane === "routes" ? cell.id : undefined} data-grid-band-row={band.row} data-group-left={placement.left} data-group-width={placement.right - placement.left} data-child-group-left={band.x} data-child-group-width={band.width} data-horizontal-scroll style:height="{band.y + band.height - rect.y}px">
             {#if nearRect(band.y, band.height) || focus?.componentId === summary.id || holdsStop(cell.id) || presented.pinnedGraphs.has(cell.id)}
               {@const span = bandSpan(cell.id, graph.origin.y)}
-              <TraceGraph {toast} {graph} focus={styling.focus} records={grouped.get(cell.id)!} presented={presented.graphs.get(cell.id) ?? NO_GRAPH} {pinned} {handles} {nodes} focusedKey={stop ?? undefined} onfocuskey={(key) => tabStop = key} {onbadgehover} selected={styling.selectedKeys} {revision}
+              <TraceGraph {plane} {toast} {graph} focus={styling.focus} records={grouped.get(cell.id)!} presented={presented.graphs.get(cell.id) ?? NO_GRAPH} {pinned} {handles} {nodes} focusedKey={stop ?? undefined} onfocuskey={(key) => tabStop = key} {onbadgehover} selected={styling.selectedKeys} {revision}
                 windowTop={span?.top ?? null} windowBottom={span?.bottom ?? null}
                 ongridkey={keydown} onactivate={(key, event) => onactivate(key, event, summary.id)} {onopen}
                 onmenu={(key, event) => onmenu(key, event, summary.id)} ontoggle={(key) => ontoggle(key, summary.id)} {captureSelection} {onsaved} {ondiscarded} />
@@ -215,7 +220,7 @@
           </div>
         {/if}
       </section>
-    {:else if cell.entry}
+    {:else if cell.entry && plane === "tiles"}
       {@const entry = scene.entries.get(cell.entry.path)}
       <div class="cell" role="row" aria-rowindex={rect.row + 1} data-grid-cell={cell.id} data-grid-motion={cell.id} {@attach handles.attach(entityId("entry", null, cell.entry.path))}
         style:left="{rect.x}px" style:top="{rect.y}px" style:width="{rect.width}px" style:height="{rect.height}px">
@@ -229,16 +234,22 @@
     {/if}
   {/each}
   {#each presented.exits as exit (exit.group.renderId)}
-    <RetiringBand {exit} {handles} {revision} />
+    <RetiringBand {plane} {exit} {handles} {revision} />
   {/each}
-  {#if presented.orphans.length}<RetiringRecords retirees={presented.orphans} {handles} {revision} />{/if}
+  {#if presented.orphans.length}<RetiringRecords {plane} retirees={presented.orphans} {handles} {revision} />{/if}
+  </div>
+  {/each}
 </div>
 <style>
   /* Motion travels tiles and ghosts outside the grid mid-flight; that must not toggle the view's horizontal scrollbar. */
   .grid { position: relative; overflow-x: clip; }
-  .component { position: absolute; left: 0; width: 100%; pointer-events: none; }
-  .cell { position: absolute; top: 0; pointer-events: auto; z-index: 2; }
-  .content { position: absolute; top: 0; left: 0; width: 100%; pointer-events: none; }
+  /* Separate stacking contexts guarantee every route stays below every tile, even when
+     a moving section, exit group or individual record creates its own stacking context. */
+  .paint-plane { position: absolute; inset: 0; z-index: 0; pointer-events: none; }
+  .paint-plane.tiles { z-index: 1; }
+  .component, .route-component { position: absolute; left: 0; width: 100%; pointer-events: none; }
+  .cell { position: absolute; top: 0; pointer-events: auto; z-index: 2; background: var(--background-solid); }
+  .content { --trace-tile-surface: color-mix(in srgb, var(--accent) 3%, var(--background-solid)); position: absolute; top: 0; left: 0; width: 100%; pointer-events: none; }
   .content :global(.tile) { pointer-events: auto; }
   .row-band { position: absolute; left: 0; pointer-events: none; transform-origin: top left; background: color-mix(in srgb, var(--accent) 3%, transparent); }
 </style>

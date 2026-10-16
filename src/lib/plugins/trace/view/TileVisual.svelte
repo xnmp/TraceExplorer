@@ -140,9 +140,9 @@
 {#if hint && !explorer}<span class="hint" style:height="{TILE.hint}px">{hint}</span>{/if}
 
 <style>
-  :global(.explorer-cover) .card { position: relative; align-items: center; overflow: visible; background: none; border-color: transparent; }
-  :global(.explorer-cover) .card:hover { background: var(--subtle-fill-secondary); }
-  :global(.explorer-cover) .card.selected { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, transparent); }
+  :global(.explorer-cover) .card { position: relative; align-items: center; overflow: visible; background: var(--background-solid); border-color: transparent; }
+  :global(.explorer-cover) .card:hover { background: linear-gradient(var(--subtle-fill-secondary), var(--subtle-fill-secondary)), var(--background-solid); }
+  :global(.explorer-cover) .card.selected { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, var(--background-solid)); }
   :global(.explorer-cover) .image { position: relative; isolation: isolate; overflow: visible; width: 100%; background: none; }
   /* At most two static sheets. Filters or extra composited decoration stall cold
      opens in the host's software renderer; the thumbnail keeps its ordinary bounds. */
@@ -181,10 +181,10 @@
   .stack-disclosure.expanded svg { transform: rotate(90deg); }
   .stack-disclosure:hover, .stack-disclosure:focus-visible { background: color-mix(in srgb, var(--accent) 32%, var(--background-solid)); color: var(--accent); }
   .stack-disclosure:focus-visible { outline: 2px solid var(--focus-stroke-outer); outline-offset: 2px; }
-  .card { display: flex; flex-direction: column; align-items: stretch; box-sizing: border-box; width: 100%; padding: 5px; overflow: hidden; text-align: left; font: inherit; color: var(--text-primary); background: var(--background-card-secondary, var(--control-fill)); border: 1px solid var(--control-stroke); border-radius: var(--radius-sm); cursor: pointer; user-select: none; -webkit-user-select: none; }
-  .card:hover { background: var(--subtle-fill-secondary); }
+  .card { display: flex; flex-direction: column; align-items: stretch; box-sizing: border-box; width: 100%; padding: 5px; overflow: hidden; text-align: left; font: inherit; color: var(--text-primary); background: linear-gradient(var(--background-card-secondary), var(--background-card-secondary)), var(--trace-tile-surface, var(--background-solid)); border: 1px solid var(--control-stroke); border-radius: var(--radius-sm); cursor: pointer; user-select: none; -webkit-user-select: none; }
+  .card:hover { background: linear-gradient(var(--subtle-fill-secondary), var(--subtle-fill-secondary)), var(--trace-tile-surface, var(--background-solid)); }
   /* Selection shows in styling, never size: an accent border, and for the focus a ring and halo. */
-  .card.selected { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 14%, var(--background-card-secondary)); }
+  .card.selected { border-color: var(--accent); background: linear-gradient(color-mix(in srgb, var(--accent) 14%, var(--background-card-secondary)), color-mix(in srgb, var(--accent) 14%, var(--background-card-secondary))), var(--trace-tile-surface, var(--background-solid)); }
   .card.focus { box-shadow: 0 0 0 1px var(--accent), 0 0 0 4px color-mix(in srgb, var(--accent) 24%, transparent); }
   .card:focus-visible { outline: 2px solid var(--focus-stroke-outer); outline-offset: 2px; }
   .card.discarded { border-style: dashed; }

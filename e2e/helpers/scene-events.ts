@@ -44,6 +44,7 @@ export async function sampleFrames<T>(page: Page, sample: () => T, duration: num
     w.__frames = []; w.__framesDone = false;
     const start = performance.now(), channel = new MessageChannel();
     channel.port1.onmessage = () => {
+      w.__checkOcclusion?.();
       w.__frames.push(read());
       if (performance.now() - start < duration) requestAnimationFrame(() => channel.port2.postMessage(null));
       else { channel.port1.close(); channel.port2.close(); w.__framesDone = true; }
@@ -98,6 +99,7 @@ export async function samplePaintedFrames<T>(page: Page, sample: () => T, durati
     const observer = new ResizeObserver(() => {
       if (sampled === frame) return;
       sampled = frame;
+      w.__checkOcclusion?.();
       w.__frames.push(read());
       const time = performance.now();
       if (isBusy()) quietSince = time;

@@ -29,5 +29,5 @@
 </div>
 
 <style>
-  .tile { position: absolute; box-sizing: border-box; pointer-events: none; }
+  .tile { position: absolute; box-sizing: border-box; background: var(--trace-tile-surface, var(--background-solid)); pointer-events: none; }
 </style>

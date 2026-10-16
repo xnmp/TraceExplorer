@@ -1,10 +1,14 @@
+import { checkRouteOcclusionFrames } from "./helpers/route-occlusion";
 import { test, expect } from '@playwright/test';
 import { card, caret, key, openView, settle, uncaught } from './support';
 import { samplePaintedFrames, sceneBusy } from './helpers/scene-events';
 import { awaitMotionStarted, holdMotion, releaseMotion, seekMotion } from './animation-control';
 
+checkRouteOcclusionFrames();
+
 /** All route instances (live and motion), with their displayed geometry and effective opacity. */
 function frame() {
+  (window as any).__checkOcclusion?.();
   const grid = document.querySelector<HTMLElement>('[role="grid"]')!;
   const origin = grid.getBoundingClientRect();
   const opacity = (element: Element) => {
@@ -165,4 +169,48 @@ test('reordering packed bands replaces one complete clear scene without blinking
     for (const [key, tile] of Object.entries(before.tiles)) expect(f.tiles[key]?.opacity, key).toBe(tile.opacity);
   }
   expect(await uncaught(page)).toEqual([]);
+});
+
+
+for (const theme of ['light', 'dark']) test(`opaque cards occlude routes across bands and stack cells (${theme})`, async ({ page }) => {
+  await page.setViewportSize({ width: 1000, height: 1800 });
+  await openView(page, 390, `?bandMotion=bridge&theme=${theme}`, false);
+  for (const name of ['a', 'b']) {
+    await page.locator(`section[aria-label="stack-${name}"] [data-stack-toggle]`).evaluate((e: HTMLElement) => e.click());
+    await settle(page);
+  }
+  const result = await page.evaluate(() => {
+    const w = window as any, plane = document.querySelector<HTMLElement>('[data-paint-plane=routes]')!;
+    const path = document.querySelector<SVGPathElement>('[data-route-band] path[data-route]')!;
+    const original = path.getAttribute('d')!;
+    const targets = [document.querySelector<HTMLElement>('[data-grid-cell].stack [data-tile-key]')!,
+      document.querySelector<HTMLElement>('[data-grid-band] [data-tile-key]')!,
+      document.querySelector<HTMLElement>('[data-grid-cell]:not(.stack)')!];
+    const checks = targets.map(target => {
+      const b = target.getBoundingClientRect(), inverse = path.getScreenCTM()!.inverse();
+      const a = new DOMPoint(b.left + 2, b.top + b.height / 2).matrixTransform(inverse);
+      const z = new DOMPoint(b.right - 2, b.top + b.height / 2).matrixTransform(inverse);
+      path.setAttribute('d', `M${a.x} ${a.y} L${z.x} ${z.y}`);
+      const before = w.__occlusionOverlaps;
+      w.__checkOcclusion();
+      const faults = [...w.__occlusionFaults], overlaps = w.__occlusionOverlaps - before;
+      // Prove this is a paint-order assertion: elevating the route plane must fail it.
+      plane.style.zIndex = '2'; w.__checkOcclusion();
+      const reversed = w.__occlusionFaults.some((f: any) => f.fault === 'route above tile');
+      plane.style.zIndex = ''; w.__occlusionFaults = [];
+      const background = target.style.backgroundColor;
+      target.style.backgroundColor = 'transparent'; w.__checkOcclusion();
+      const translucent = w.__occlusionFaults.some((f: any) => f.fault === 'translucent tile surface');
+      target.style.backgroundColor = background; w.__occlusionFaults = [];
+      path.setAttribute('d', original);
+      return { faults, overlaps, reversed, translucent };
+    });
+    return checks;
+  });
+  for (const check of result) {
+    expect(check.faults).toEqual([]);
+    expect(check.overlaps, 'sampled actual route/tile intersections').toBeGreaterThan(0);
+    expect(check.reversed, 'probe rejects routes painted above tiles').toBe(true);
+    expect(check.translucent, 'probe rejects transparent tile backdrops').toBe(true);
+  }
 });

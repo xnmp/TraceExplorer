@@ -24,6 +24,7 @@
   import type { PluginToast } from "../../../../../integration/plugin-sdk";
 
   interface Props {
+    plane: "routes" | "tiles";
     toast?: PluginToast;
     graph: FolderSceneGraph;
     /** The scene's focus (styling): it pins its tile mounted and draws the selected branch with more contrast. */
@@ -59,7 +60,7 @@
     ondiscarded: (key: NodeKey) => void;
   }
 
-  let { graph, toast, focus, ontoggle, records, presented, pinned, handles, nodes, selected, revision, windowTop, windowBottom, onactivate, onopen, onmenu, onsaved, ondiscarded, captureSelection, ongridkey, focusedKey, onfocuskey, onbadgehover }: Props = $props();
+  let { plane, graph, toast, focus, ontoggle, records, presented, pinned, handles, nodes, selected, revision, windowTop, windowBottom, onactivate, onopen, onmenu, onsaved, ondiscarded, captureSelection, ongridkey, focusedKey, onfocuskey, onbadgehover }: Props = $props();
 
   /** Tile windowing only pays off for very large neighborhoods. */
   const WINDOW_MIN = 120;
@@ -111,6 +112,7 @@
 </script>
 
 <div class="graph" data-orientation={graph.layout.orientation} style:width="{attached.width}px" style:height="{attached.height}px">
+  {#if plane === "routes"}
   <svg class="edges trace-edges" width={attached.width} height={attached.height} aria-hidden="true">
     <EdgeMarkers {uid} />
     {#each routes as { id, route, style } (route.id)}
@@ -136,6 +138,7 @@
       </svg>
     </div>
   {/each}
+  {:else}
   {#each retiringTiles as retiree (retiree.renderId)}
     {@const record = retiree.record as TileRecord}
     <RetiringTile {record} x={record.rect.x - graph.origin.x} y={record.rect.y - graph.origin.y} {revision} orientation={record.orientation ?? graph.layout.orientation} handle={handles.attach(retiree.renderId)} />
@@ -147,6 +150,7 @@
       onmenu={(event) => onmenu(record.tile.key, event)} oncaret={() => ontoggle(record.tile.key)} onkey={(event) => keydown(record.tile.key, event)}
       {captureSelection} onsaved={(path, select) => onsaved(record.tile.key, path, select)} ondiscarded={() => ondiscarded(record.tile.key)} />
   {/each}
+  {/if}
 </div>
 
 <style>

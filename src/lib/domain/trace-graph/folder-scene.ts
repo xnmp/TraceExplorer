@@ -274,10 +274,6 @@ export interface SceneDiff {
   readonly policy: {
     /** Scope change or first publication: present the next scene as is. */
     readonly reset: boolean;
-    /** Ordered listing changed: replace the complete packing atomically (geometryMotion policy). */
-    readonly replacePacking: boolean;
-    /** Same metrics: certify continuous user-driven curve changes before interpolating them. */
-    readonly validateCorridors: boolean;
     /** Raw plan/layout classification per graph; added and removed graphs reflow. */
     readonly graphs: ReadonlyMap<GraphId, SceneChange>;
     /** For every next record and every exiting one. */
@@ -344,7 +340,7 @@ export function diffScenes(previous: FolderScene | null, next: FolderScene): Sce
     for (const [id, record] of next.records) { enter.set(id, record); records.set(id, "snap"); }
     for (const [id, record] of previous?.records ?? []) if (!next.records.has(id)) { exit.set(id, record); records.set(id, "snap"); }
     for (const id of next.graphs.keys()) graphs.set(id, "reflow");
-    return { enter, update, exit, policy: { reset: true, replacePacking: true, validateCorridors: false, graphs, records } };
+    return { enter, update, exit, policy: { reset: true, graphs, records } };
   }
   for (const [id, graph] of next.graphs) graphs.set(id, classifySceneChange(previous.graphs.get(id) ?? null, graph));
   for (const id of previous.graphs.keys()) if (!next.graphs.has(id)) graphs.set(id, "reflow");
@@ -365,14 +361,5 @@ export function diffScenes(previous: FolderScene | null, next: FolderScene): Sce
     records.set(id, geometryOf(before) === geometryOf(after) ? "carry" : owned(after) || displacedByReveal(id, before) ? "snap" : "animate");
   }
   for (const [id, before] of previous.records) if (!next.records.has(id)) { exit.set(id, before); records.set(id, owned(before) ? "snap" : "animate"); }
-  const replacePacking = previous.cells.length !== next.cells.length
-    || previous.cells.some((cell, i) => cell.id !== next.cells[i].id || cell.kind !== next.cells[i].kind);
-  const validateCorridors = previous.inputs.layoutInput.width === next.inputs.layoutInput.width
-    && deepEqual(previous.inputs.layoutInput.tile, next.inputs.layoutInput.tile)
-    && deepEqual(previous.inputs.layoutInput.grid, next.inputs.layoutInput.grid)
-    && [...next.inputs.layoutInput.open].some(([id, stack]) => {
-      const was = previous.inputs.layoutInput.open.get(id);
-      return was && !deepEqual(was.expanded, stack.expanded);
-    });
-  return { enter, update, exit, policy: { reset: false, replacePacking, validateCorridors, graphs, records } };
+  return { enter, update, exit, policy: { reset: false, graphs, records } };
 }

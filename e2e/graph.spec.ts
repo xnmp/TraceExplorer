@@ -259,9 +259,10 @@ async function arrowheads(page: Page, index = 0): Promise<Head[]> {
       const py = Math.round(((graphBox.top - sectionBox.top) + y * zoom) * (bitmap.height / sectionBox.height));
       return [...context.getImageData(px, py, 1, 1).data];
     };
-    return [...element.querySelectorAll<SVGPathElement>("path[data-route][marker-end]")].map((path) => {
+    const routeBand = document.querySelector(`[data-route-band="${CSS.escape((element as HTMLElement).dataset.gridMotion!)}"]`)!;
+    return [...routeBand.querySelectorAll<SVGPathElement>("path[data-route][marker-end]")].map((path) => {
       const id = path.getAttribute("marker-end")!.match(/url\(#(.+)\)/)![1];
-      const marker = element.querySelector<SVGMarkerElement>(`marker[id="${CSS.escape(id)}"]`)!;
+      const marker = routeBand.querySelector<SVGMarkerElement>(`marker[id="${CSS.escape(id)}"]`)!;
       const polygon = marker.querySelector("polygon")!;
       const length = path.getTotalLength();
       const end = path.getPointAtLength(length);
@@ -559,16 +560,17 @@ test.describe("motion", () => {
       const section = document.querySelector("section[data-component]")!;
       const graph = () => section.querySelector<HTMLElement>(".graph")!;
       const boxes = () => new Map([...section.querySelectorAll<HTMLElement>("[data-tile-key]")].map((element) => [element.dataset.tileKey!, element.getBoundingClientRect()]));
-      const routes = () => new Set([...section.querySelectorAll<SVGPathElement>("path[data-route]")].map((path) => path.dataset.route!));
+      const routeBand = document.querySelector(`[data-route-band="${CSS.escape((section as HTMLElement).dataset.gridMotion!)}"]`)!;
+      const routes = () => new Set([...routeBand.querySelectorAll<SVGPathElement>("path[data-route]")].map((path) => path.dataset.route!));
       const before = boxes(), shownRoutes = routes(), widthBefore = graph().getBoundingClientRect().width;
       section.querySelector<HTMLElement>(`[data-node-key="${CSS.escape(target)}"]`)!.click();
       await new Promise((resolve) => setTimeout(resolve, 0));
       const first = boxes();
       const jumps = [...first].filter(([k, box]) => before.has(k) && Math.max(Math.abs(box.left - before.get(k)!.left), Math.abs(box.top - before.get(k)!.top)) > 2).map(([k]) => k);
-      const paths = [...section.querySelectorAll<SVGPathElement>("path[data-route]")];
+      const paths = [...routeBand.querySelectorAll<SVGPathElement>("path[data-route]")];
       // A connector already shown is faded when the motion driver writes an opacity to it or to a layer holding it.
       const fading = (element: Element) => { for (let at: Element | null = element; at && at !== section; at = at.parentElement) if ((window as any).trace.motion.owns(at) && (at as HTMLElement).style.opacity !== "") return true; return false; };
-      const instances = [...section.querySelectorAll<SVGPathElement>("path[data-route], path[data-motion-route]")];
+      const instances = [...routeBand.querySelectorAll<SVGPathElement>("path[data-route], path[data-motion-route]")];
       const refaded = instances.filter((path) => shownRoutes.has(path.dataset.route ?? path.dataset.motionRoute!) && fading(path)).length;
       const undimmed = paths.filter((path) => shownRoutes.has(path.dataset.route!) && path.classList.contains("unrelated") && Number(getComputedStyle(path).opacity) > 0.5).length;
       await new Promise((resolve) => setTimeout(resolve, 400));
@@ -764,16 +766,17 @@ test.describe("theme colours", () => {
         const accent = getComputedStyle(probe).color;
         probe.remove();
         const section = document.querySelector("section.component[data-component]")!;
-        const lines = [...section.querySelectorAll<SVGPathElement>("path[data-route]")].map((path) => {
+        const routeBand = document.querySelector(`[data-route-band="${CSS.escape((section as HTMLElement).dataset.gridMotion!)}"]`)!;
+        const lines = [...routeBand.querySelectorAll<SVGPathElement>("path[data-route]")].map((path) => {
           const style = getComputedStyle(path);
           const marker = path.getAttribute("marker-end")?.match(/url\(#(.+)\)/)?.[1];
-          const head = marker ? section.querySelector<SVGPolygonElement>(`marker[id="${marker}"] polygon`) : null;
+          const head = marker ? routeBand.querySelector<SVGPolygonElement>(`marker[id="${marker}"] polygon`) : null;
           return {
             tone: path.classList.contains("highlight") ? "highlight" : path.classList.contains("branch") ? "branch" : "other",
             stroke: style.stroke, width: parseFloat(style.strokeWidth), head: head ? getComputedStyle(head).fill : null,
           };
         });
-        const dots = [...section.querySelectorAll<SVGCircleElement>("circle.junction.highlight")].map((dot) => getComputedStyle(dot).fill);
+        const dots = [...routeBand.querySelectorAll<SVGCircleElement>("circle.junction.highlight")].map((dot) => getComputedStyle(dot).fill);
         return { accent, lines, dots };
       });
       const { accent, lines, dots } = result;

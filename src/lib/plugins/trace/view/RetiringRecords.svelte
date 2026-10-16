@@ -13,7 +13,7 @@
   import EdgePath from "./EdgePath.svelte";
   import RetiringTile from "./RetiringTile.svelte";
 
-  let { retirees, handles, revision }: { retirees: readonly RetiringRecord[]; handles: RenderHandles; revision: number } = $props();
+  let { plane, retirees, handles, revision }: { plane: "routes" | "tiles"; retirees: readonly RetiringRecord[]; handles: RenderHandles; revision: number } = $props();
   const uid = $props.id();
 </script>
 
@@ -21,9 +21,9 @@
 <svg class="markers" width="0" height="0" aria-hidden="true"><EdgeMarkers {uid} /></svg>
 {#each retirees as retiree (retiree.renderId)}
   {@const record = retiree.record}
-  {#if record.kind === "tile"}
+  {#if record.kind === "tile" && plane === "tiles"}
     <RetiringTile record={record as TileRecord} x={record.rect.x} y={record.rect.y} {revision} orientation={record.orientation} handle={handles.attach(retiree.renderId)} />
-  {:else if record.kind === "route" || record.kind === "junction"}
+  {:else if plane === "routes" && (record.kind === "route" || record.kind === "junction")}
     {@const rect = record.rect}
     <div class="route-layer" data-motion-route-layer="" aria-hidden="true" inert {@attach handles.attach(retiree.renderId)}
       style:left="{rect.x}px" style:top="{rect.y}px" style:width="{rect.width}px" style:height="{rect.height}px" style:opacity={retiree.initial.opacity}>
@@ -43,7 +43,7 @@
 <style>
   /* Transient: zero size, and layout containment makes its contents ink overflow, so retirees never
      hold the view's scroll extent (as RetiringBand). */
-  .retiring { position: absolute; left: 0; top: 0; width: 0; height: 0; contain: layout; pointer-events: none; }
+  .retiring { --trace-tile-surface: color-mix(in srgb, var(--accent) 3%, var(--background-solid)); position: absolute; left: 0; top: 0; width: 0; height: 0; contain: layout; pointer-events: none; }
   .markers { position: absolute; overflow: hidden; pointer-events: none; }
   .route-layer { position: absolute; overflow: visible; pointer-events: none; }
   .route-layer .edges { position: absolute; left: 0; top: 0; overflow: visible; pointer-events: none; }

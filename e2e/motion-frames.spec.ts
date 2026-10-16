@@ -1,3 +1,4 @@
+import { checkRouteOcclusionFrames } from "./helpers/route-occlusion";
 /**
  * Painted frames around camera motion and its interruption, at frame rate with no held clock
  * (docs/scene-transactions.md, "Motion driver (rAF)", review fixes b7673b1 H1). Scrolled to the
@@ -12,6 +13,8 @@
 import { test, expect, type Page } from "@playwright/test";
 import { openView, settle, uncaught } from "./support";
 import { awaitMotionStarted, holdMotion, releaseMotion, seekMotion } from "./animation-control";
+
+checkRouteOcclusionFrames();
 
 type Item = [x: number, y: number, opacity: number, height?: number];
 interface Frame { running: number; items: Record<string, Item>; grid: [number, number] }
@@ -29,6 +32,7 @@ const record = (page: Page) => page.evaluate(() => {
     return Math.max(0, Math.min(box.bottom, origin + Math.max(...ys)) - Math.max(box.top, origin + Math.min(...ys))) / box.height;
   };
   const shown = () => {
+    w.__checkOcclusion?.();
     const frame = view.getBoundingClientRect();
     const items: Record<string, [number, number, number, number]> = {};
     const counts = new Map<string, number>();
@@ -40,7 +44,8 @@ const record = (page: Page) => page.evaluate(() => {
       const n = counts.get(base) ?? 0; counts.set(base, n + 1);
       const key = base.startsWith("route:") ? base : n ? `${base}#${n}` : base;
       // A retiring tile: how much of it shows, its opacity and the part its clip shows.
-      const o = opacity(element) * (d.ghostTileKey ? unclipped(element, box) : 1);
+      const o = opacity(element) * (d.ghostTileKey ? unclipped(element, box) : 1)
+        / (key.startsWith("route:") && element.classList.contains("unrelated") ? .4 : 1);
       // A connector: its most opaque instance (the live path, or its motion copy).
       if (items[key] && key.startsWith("route:")) { if (o > items[key][2]) items[key] = [box.x, box.y, o, box.height]; continue; }
       items[key] = [box.x, box.y, o, box.height];
@@ -97,8 +102,7 @@ const PX = 1;
  * What a run of painted frames does wrong: a position (per axis) that leaves the span between its
  * first and last value or turns back from its last value; an opacity that turns back; a retiree
  * that disappears while visible (unless its record takes over where it is: a reopening); a
- * connector shown at both ends on one path that dips below .4 (a rerouted connector crossfades
- * between its exact old and new paths: a path is never interpolated).
+ * connector retained at both ends that fades during motion, including while its path deforms.
  */
 function faults(painted: Frame[], from = 0, to = painted.length): string[] {
   const frames = painted.slice(from, to), out: string[] = [];
@@ -119,8 +123,7 @@ function faults(painted: Frame[], from = 0, to = painted.length): string[] {
     let previous = first[2];
     for (const { i, v } of values) {
       if (name.startsWith("route:")) {
-        const rerouted = Math.abs((first[3] ?? 0) - (last[3] ?? 0)) > PX;
-        if (!rerouted && first[2] > .9 && last[2] > .9 && v[2] < .4) out.push(`${name} dips to ${v[2].toFixed(2)} at ${i}`);
+        if (first[2] > .999 && last[2] > .999 && v[2] < .999) out.push(`${name} dips to ${v[2].toFixed(2)} at ${i}`);
         continue;
       }
       if (Math.abs(v[2] - last[2]) > Math.abs(previous - last[2]) + .02) out.push(`${name} opacity turns back ${previous.toFixed(2)}→${v[2].toFixed(2)} at ${i}`);

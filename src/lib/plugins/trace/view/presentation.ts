@@ -12,11 +12,11 @@
  * so the continuation follows the original trajectory exactly.
  */
 import type { GridRect } from "$lib/domain/trace-graph/grid-flow";
-import { addCoordinates, constantCoordinate, movingCoordinate, curveClearsBox, type MotionCoordinate, type MotionPoint } from "$lib/domain/trace-graph/motion-clearance";
 import type { Orientation } from "$lib/domain/trace-graph/layout";
 import { bandRouteStem, roundedStem } from "$lib/domain/trace-graph/band-geometry";
 import { endpointKey } from "$lib/domain/trace-graph/junctions";
 import { pathTranslation, translatePath, routeShape, routeShapePath, mixRouteShape, sameRouteShape, type RouteShape, type Point } from "$lib/domain/trace-graph/path-sampling";
+import { routeBounds } from "$lib/domain/trace-graph/folder-layout/route-bounds";
 import { entityId, type EntityId, type FolderScene, type GraphId, type SceneDiff, type SceneRecord } from "$lib/domain/trace-graph/folder-scene";
 
 export type TransactionId = number;
@@ -43,6 +43,8 @@ export interface Track {
   readonly frames: readonly PoseFrame[];
   /** Deformation and endpoint trajectories are independent; none may restart the other's clock. */
   readonly routeMotion?: RouteMotion;
+  /** Stationary reopen window, applied after sampling endpoint deformation. */
+  readonly below?: GridRect;
 }
 interface EndpointMotion {
   readonly actual: Track | null;
@@ -269,6 +271,7 @@ export const finalPose = (track: Track): Pose => track.frames[track.frames.lengt
 
 /** A track's pose at epoch time `at` (before it, its first pose; after it, its last). */
 export function sampleTrack(track: Track, at: number): Pose {
+  if (track.below) return belowWindow(sampleTrack({ ...track, below: undefined }, at), track.below);
   if (track.routeMotion) return sampleRouteMotion(track.routeMotion, at);
   const { frames } = track;
   if (!(at > frames[0].at)) return frames[0].pose;
@@ -315,13 +318,13 @@ function sampleRouteMotion(motion: RouteMotion, at: number): Pose {
 export function sliceTrack(track: Track, at: number): Track | null {
   if (Number.isNaN(at) || at >= trackEnd(track)) return null;
   const { frames } = track;
-  if (at <= frames[0].at) return at === 0 ? track : { frames: frames.map((frame) => ({ ...frame, at: frame.at - at })),
+  if (at <= frames[0].at) return at === 0 ? track : { ...track, frames: frames.map((frame) => ({ ...frame, at: frame.at - at })),
     ...(track.routeMotion ? { routeMotion: { ...track.routeMotion, elapsed: track.routeMotion.elapsed + at } } : {}) };
   let i = 0;
   while (frames[i + 1].at <= at) i++;
   const a = frames[i], b = frames[i + 1], u = (at - a.at) / (b.at - a.at);
   const first: PoseFrame = { at: 0, pose: sampleTrack(track, at), easing: sliceEase(a.easing, u, 1) };
-  return { frames: [first, ...frames.slice(i + 1).map((frame) => ({ ...frame, at: frame.at - at }))],
+  return { ...track, frames: [first, ...frames.slice(i + 1).map((frame) => ({ ...frame, at: frame.at - at }))],
     ...(track.routeMotion ? { routeMotion: { ...track.routeMotion, elapsed: track.routeMotion.elapsed + at } } : {}) };
 }
 
@@ -407,12 +410,17 @@ function collapsing(from: Pose, edge: number, rise: number, duration = MOTION_MS
  * edge and by its own size on the other sides (what it draws past its box, such as a selection
  * ring), so the edge stays still and the clip never cuts anything else, whatever its motion.
  */
+function belowWindow(pose: Pose, window: GridRect): Pose {
+  const path = posePath(pose, pose.rect);
+  // A deformed route can extend well outside its target bounds during a takeover.
+  // Only the stationary top edge clips it; include its displayed control hull and marker.
+  const bounds = path ? routeBounds(path) : null;
+  const rect = bounds ? union(pose.rect, bounds) : pose.rect;
+  return { ...pose, clip: { x: rect.x - rect.width, y: window.y, width: 3 * rect.width,
+    height: Math.max(0, rect.y + 2 * rect.height - window.y) } };
+}
 function belowEdge(track: Track, window: GridRect): Track {
-  return { frames: track.frames.map((frame) => {
-    const { rect } = frame.pose, x = rect.x - rect.width;
-    const clip = { x, y: window.y, width: 3 * rect.width, height: Math.max(0, rect.y + 2 * rect.height - window.y) };
-    return { ...frame, pose: { ...frame.pose, clip } };
-  }) };
+  return { ...track, below: window, frames: track.frames.map(frame => ({ ...frame, pose: belowWindow(frame.pose, window) })) };
 }
 
 const ALPHA_EPSILON = .001;
@@ -432,115 +440,6 @@ function continuingFade(from: Pose, to: Pose, fade: Track, duration: number): Tr
     const pose = mixPose({ ...from, opacity: 0 }, { ...to, opacity: 0 }, progress);
     return [progress, { ...pose, opacity: sampleTrack(fade, easeTimeAt(EASE, progress) * duration).opacity }] as const;
   }), duration);
-}
-
-/** Exact piecewise-affine coordinate, including sliced arrival/fade windows. */
-function motionCoordinate(track: Track | null, target: GridRect, read: (pose: Pose) => number, elapsed = 0): MotionCoordinate | null {
-  const remaining = track ? sliceTrack(track, elapsed) : null;
-  if (!remaining) return constantCoordinate(read(track ? finalPose(track) : { rect: target, opacity: 1, clip: null }));
-  if (remaining.frames[0].at !== 0) return null;
-  let coordinate = constantCoordinate(read(remaining.frames[0].pose));
-  for (let i = 1; i < remaining.frames.length; i++) {
-    const a = remaining.frames[i - 1], b = remaining.frames[i];
-    if (!(b.at > a.at)) return null;
-    const delta = read(b.pose) - read(a.pose);
-    if (delta === 0) continue;
-    // A segment clock holds at zero before its window and at one afterwards. Summing the
-    // segment deltas reconstructs the complete track, rather than rejecting residual fades.
-    coordinate = addCoordinates(coordinate, movingCoordinate(0, delta, JSON.stringify([a.at, b.at, a.easing])));
-  }
-  return coordinate;
-}
-
-/**
- * Certify retained paths against retained tiles/cells when an expansion changes internal routing.
- * Coordinates retain shared-clock correlation. Cubics use exact control hulls; re-rounded stems
- * use a conservative 6px tube. Unproven corridors replace the whole packing atomically.
- */
-function clearCurveCorridors(live: ReadonlyMap<RenderId, PresentedRecord>, next: FolderScene, before: Presentation): boolean {
-  const clocks = new Map<string, readonly [number, number, Ease]>();
-  const bounds = (clock: string, from: number, to: number): readonly [number, number] => {
-    let definition = clocks.get(clock);
-    if (!definition) { definition = JSON.parse(clock) as [number, number, Ease]; clocks.set(clock, definition); }
-    const [start, end, ease] = definition;
-    return [easeAt(ease, (from - start) / (end - start)), easeAt(ease, (to - start) / (end - start))];
-  };
-  const duration = Math.max(0, ...[...live.values()].map(r => r.track ? trackEnd(r.track) : 0));
-  // An interrupted arrival can retain an initial, exactly transparent window. Certify from
-  // the start of its first nonzero segment, including every arbitrarily faint painted frame.
-  const visibleFrom = (track: Track | null): number => {
-    if (!track) return 0;
-    const first = track.frames.findIndex(frame => frame.pose.opacity > 0);
-    return first < 0 ? Infinity : track.frames[Math.max(0, first - 1)].at;
-  };
-  const obstacles = [...next.records.values()].filter(tile => (tile.kind === "tile" || tile.kind === "entry") && before.live.has(tile.id)).map(tile => {
-    const edge = (read: (p: Pose) => number) => motionCoordinate(live.get(tile.id)?.track ?? null, tile.rect, read);
-    const left = edge(p => p.rect.x), right = edge(p => p.rect.x + p.rect.width);
-    const top = edge(p => p.rect.y), bottom = edge(p => p.rect.y + p.rect.height);
-    return { tile, box: left && right && top && bottom ? { left, right, top, bottom } : null };
-  });
-  for (const { record, track } of live.values()) {
-    if (record.kind !== "route" || !before.live.has(record.id)) continue;
-    const motion = track?.routeMotion, geometry = motion?.geometry ?? track, elapsed = motion?.elapsed ?? 0;
-    const stem = geometry?.frames[0].pose.stem;
-    const fallback = routeShape(record.route.path, record.rect)!;
-    const shapeOf = (pose: Pose) => pose.stem?.tail ?? pose.shape ?? fallback;
-    const length = Math.max(...(geometry?.frames ?? [{ pose: settledPose(record) }]).map(f => shapeOf(f.pose).length));
-    const coordinate = (read: (pose: Pose) => number, axis: "x" | "y", headWeight: number, tailWeight: number): MotionCoordinate | null => {
-      let value = motionCoordinate(geometry, record.rect, read, elapsed);
-      if (!value || !motion) return value;
-      for (const [end, weight] of [[motion.head, headWeight], [motion.tail, tailWeight]] as const) {
-        if (!weight) continue;
-        const position = (p: Pose) => p.rect[axis];
-        const actual = motionCoordinate(end.actual, end.target, position, elapsed);
-        const assumed = motionCoordinate(end.assumed, end.target, position, elapsed);
-        if (!actual || !assumed) return null;
-        value = addCoordinates(addCoordinates(value, actual, weight), assumed, -weight);
-      }
-      return value;
-    };
-    const shapePoint = (i: number, j: number): MotionPoint | null => {
-      const progress = stem ? 1 : i ? (i - 1 + (Math.floor(j / 2) + 1) / 3) / (length - 1) : 0;
-      const read = (index: number) => (pose: Pose) => {
-        const shape = shapeOf(pose), segment = shape[i] ?? Array.from({ length: 6 }, (_, k) => shape.at(-1)!.at(-2 + k % 2)!);
-        return segment[index] + (index % 2 ? pose.rect.y : pose.rect.x);
-      };
-      const x = coordinate(read(j), "x", 1 - progress, progress), y = coordinate(read(j + 1), "y", 1 - progress, progress);
-      return x && y ? { x, y } : null;
-    };
-    const curves: { controls: MotionPoint[]; padding: number }[] = [];
-    if (stem) {
-      const points = stem.points.map((_, i): MotionPoint | null => {
-        const x = coordinate(p => p.stem!.points[i].x + p.rect.x, "x", i < 2 ? 1 : 0, i >= 4 ? 1 : 0);
-        const y = coordinate(p => p.stem!.points[i].y + p.rect.y, "y", i < 3 ? 1 : 0, i >= 3 ? 1 : 0);
-        return x && y ? { x, y } : null;
-      });
-      for (let i = 1; i < points.length; i++) {
-        const a = points[i - 1], b = points[i];
-        if (!a || !b) return false;
-        // Re-rounded corners stay within 6px of the semantic polyline, including radius clamps.
-        curves.push({ controls: [a, a, b, b], padding: 6 });
-      }
-    }
-    let start = shapePoint(0, 0);
-    for (let i = 1; i < length; i++) {
-      const a = shapePoint(i, 0), b = shapePoint(i, 2), end = shapePoint(i, 4);
-      if (!start || !a || !b || !end) return false;
-      curves.push({ controls: [start, a, b, end], padding: 0 }); start = end;
-    }
-    for (const { tile, box } of obstacles) {
-      if ((tile.kind === "tile" && ((record.route.from.kind === "node" && record.route.from.id === tile.tile.key)
-        || (record.route.to.kind === "node" && record.route.to.id === tile.tile.key)))) continue;
-      if (!box) return false;
-      for (const { controls, padding } of curves) {
-        const plus = (value: MotionCoordinate, by: number) => addCoordinates(value, constantCoordinate(by));
-        const expanded = { left: plus(box.left, -padding), right: plus(box.right, padding), top: plus(box.top, -padding), bottom: plus(box.bottom, padding) };
-        const paintedFrom = Math.max(visibleFrom(track), visibleFrom(live.get(tile.id)?.track ?? null));
-        if (!curveClearsBox(controls, expanded, duration, bounds, paintedFrom)) return false;
-      }
-    }
-  }
-  return true;
 }
 
 // ─── Presentations ──────────────────────────────────────────────────────────
@@ -613,7 +512,7 @@ export function samplePresentation(current: Presentation, at: number): Displayed
     const by = displacement(group, base);
     const floor = current.retiring.get(retiree.group)?.bodyFloor;
     const window = floor !== undefined && !exitsFromCover(retiree.record) ? exitBodyClip(group, floor) : group.clip;
-    poses.set(id, { rect: translate(own.rect, by), opacity: own.opacity * group.opacity, clip: intersect(own.clip ? translate(own.clip, by) : null, window) });
+    poses.set(id, { ...own, rect: translate(own.rect, by), opacity: own.opacity * group.opacity, clip: intersect(own.clip ? translate(own.clip, by) : null, window) });
   }
   return { presentation: current, at, poses };
 }
@@ -730,7 +629,7 @@ const isBandRecord = (record: SceneRecord) => record.kind === "route" || record.
  */
 export function retargetPresentation(displayed: DisplayedPresentation | null, next: FolderScene, diff: SceneDiff, participants: Participants): Presentation {
   const { epoch, transaction } = participants;
-  if (!displayed || diff.policy.reset || diff.policy.replacePacking || participants.reduced) return staticPresentation(next, epoch);
+  if (!displayed || diff.policy.reset || participants.reduced) return staticPresentation(next, epoch);
   const at = displayed.at, before = displayed.presentation, shown = displayed.poses;
   const D = MOTION_MS;
   const moves = (id: EntityId) => !participants.records || participants.records.has(id);
@@ -899,9 +798,9 @@ export function retargetPresentation(displayed: DisplayedPresentation | null, ne
     // A retained connector changes shape when its band moves independently of its cover.
     // Keep the exact displayed curve and deform it on the tile clock; retiring and re-entering
     // it would leave a fully blank interval between the departure and arrival windows.
-    if (was && from.kind === "route") {
-      if ((pose.stem || (!pose.shape && was.attachment)) && attachment) {
-        const [oldStem, newStem] = alignStems(pose.stem ?? was.attachment!, from.rect, attachment, record.rect);
+    if (source && from.kind === "route") {
+      if ((pose.stem || (!pose.shape && source.attachment)) && attachment) {
+        const [oldStem, newStem] = alignStems(pose.stem ?? source.attachment!, from.rect, attachment, record.rect);
         const a = { ...pose, shape: undefined, rect: from.rect, stem: oldStem }, b = { ...target, stem: newStem };
         tracks.set(id, deform(a, b));
         continue;
@@ -994,7 +893,7 @@ export function retargetPresentation(displayed: DisplayedPresentation | null, ne
       for (const { record, pose } of leaving) {
         const clear = holds && !sweeps.some((sweep) => overlapping(sweep, pose.rect));
         const track = clear ? collapsing(pose, edge, rise, D) : rigid ? departure(pose, w, D) : null;
-        if (track) fresh.push({ renderId: retireId(transaction, "exit", record.id), record: displaced(record, pose), initial: track.frames[0].pose, track,
+        if (track) fresh.push({ renderId: retireId(transaction, "exit", record.id), record: displaced(record, pose), initial: track.frames[0].pose, track, attachment: pose.stem ?? before.live.get(record.id)?.attachment,
           sourceTransaction: transaction, group: null, reason: "exit", branch: branch(graphId) });
       }
       continue;
@@ -1060,7 +959,8 @@ export function retargetPresentation(displayed: DisplayedPresentation | null, ne
       ...(stayingHeader ? { bodyFloor: top + floor } : {}), sourceTransaction: transaction, group: null, reason: "exit", branch: branch(graphId) });
     for (const { record, pose } of members) {
       const member = displaced(record, pose);
-      fresh.push({ renderId: retireId(transaction, "exit", record.id), record: member, initial: { rect: member.rect, opacity: pose.opacity, clip: null }, track: null,
+      fresh.push({ renderId: retireId(transaction, "exit", record.id), record: member, attachment: pose.stem ?? before.live.get(record.id)?.attachment,
+        initial: { ...pose, rect: member.rect, clip: null }, track: null,
         sourceTransaction: transaction, group: groupId, reason: "exit", branch: branch(graphId) });
     }
   }
@@ -1086,6 +986,5 @@ export function retargetPresentation(displayed: DisplayedPresentation | null, ne
     const track = tracks.get(id) ?? null;
     live.set(id, { renderId: id, record, initial: track ? track.frames[0].pose : settledPose(record), track, attachment: attachmentOf(next, record) });
   }
-  if (diff.policy.validateCorridors && !clearCurveCorridors(live, next, before)) return staticPresentation(next, epoch);
   return presentation(epoch, live, retiring, riders);
 }

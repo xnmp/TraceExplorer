@@ -57,6 +57,7 @@ export async function settle(page: Page): Promise<void> {
     const laying = ((window as any).trace?.layoutsPending?.() ?? 0) > 0;
     const w = window as any;
     w.__settleStreak = animating || laying ? 0 : w.__settleStreak + 1;
+    if (w.__settleStreak >= 4) w.__checkOcclusion?.(true);
     return w.__settleStreak >= 4;
   }, undefined, { polling: "raf" });
 }

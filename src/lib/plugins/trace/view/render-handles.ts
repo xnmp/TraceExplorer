@@ -12,6 +12,8 @@ import type { Attachment } from "svelte/attachments";
 export interface RenderHandles {
   /** Registers the element it is attached to under `key` while that element is mounted. */
   attach(key: string): Attachment<HTMLElement | SVGElement>;
+  /** All copies of a shared motion container (route and tile paint planes). */
+  all?(key: string): readonly (HTMLElement | SVGElement)[];
   /** The mounted element for `key`, if any. */
   get(key: string): HTMLElement | SVGElement | undefined;
 }
@@ -22,12 +24,14 @@ export const exitBodyKey = (id: string): string => `exit-body:${id}`;
 export const GRID = "grid";
 
 export function createRenderHandles(): RenderHandles {
-  const elements = new Map<string, HTMLElement | SVGElement>();
+  const elements = new Map<string, Set<HTMLElement | SVGElement>>();
   return {
     attach: (key) => (element) => {
-      elements.set(key, element);
-      return () => { if (elements.get(key) === element) elements.delete(key); };
+      const copies = elements.get(key) ?? new Set<HTMLElement | SVGElement>();
+      copies.add(element); elements.set(key, copies);
+      return () => { copies.delete(element); if (!copies.size) elements.delete(key); };
     },
-    get: (key) => elements.get(key),
+    get: (key) => elements.get(key)?.values().next().value,
+    all: (key) => [...elements.get(key) ?? []],
   };
 }
