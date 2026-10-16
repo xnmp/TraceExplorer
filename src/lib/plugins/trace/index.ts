@@ -50,6 +50,7 @@ export const tracePlugin: Plugin = {
       id: TRACE_VIEW_ID,
       title: "Trace",
       component: TraceView,
+      props: { toast: ctx.toast },
       reveal: async (targetId, pane, signal) => {
         const view = await tracePanes.waitFor(pane.paneId, pane.directory, signal);
         signal.throwIfAborted();

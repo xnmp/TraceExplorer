@@ -189,15 +189,22 @@ test("an open stack that can no longer be read fails in its cover; the rest of t
   expect(await uncaught(page)).toEqual([]);
 });
 
-test("a second press on a cover that is still opening selects it and keeps it opening", async ({ page }) => {
+test("double-clicking a cover still opening cancels it and toasts without a partial scene", async ({ page }) => {
   await openView(page, 900, "?grouping=two-chains", false);
-  await trace(page, (t) => t.backend.setFolderLatency(400));
-  await stack(page, "photo-b").locator(".cover-press").dblclick();
+  const before = await page.evaluate(drawn);
+  await trace(page, (t) => t.backend.holdNodeReads());
+  const frames = await sampleFrames(page, drawn, 400, async () => {
+    await stack(page, "photo-b").locator(".cover-press").dblclick();
+  });
+  expect(new Set(frames), "no partial expansion is painted while data is held").toEqual(new Set([before]));
+  await trace(page, (t) => t.backend.releaseNodeReads());
   await settle(page);
-  await expect(stack(page, "photo-b").locator("[data-grid-band] [data-tile-key]").first()).toBeVisible();
-  await expect(page.locator("[data-grid-band]")).toHaveCount(1);
+  expect(await page.evaluate(drawn), "a late read cannot reopen the cancelled stack").toBe(before);
+  await expect(page.locator("[data-grid-band]")).toHaveCount(0);
   expect((await state(page)).selected).toEqual(["/pictures/photo-b.png"]);
-  // Only the disclosure cancels a pending open.
+  expect((await state(page)).opened).toEqual([]);
+  await expect(page.getByTestId("host-toast")).toHaveText("Double-click isn't available in Trace view");
+  // A first click on a cover already opening through its disclosure only selects it.
   await trace(page, (t) => t.backend.holdNodeReads());
   await toggle(page, "photo-a").click();
   await expect(toggle(page, "photo-a")).toHaveAttribute("aria-label", "Cancel opening stack");
@@ -205,7 +212,7 @@ test("a second press on a cover that is still opening selects it and keeps it op
   await expect(toggle(page, "photo-a")).toHaveAttribute("aria-label", "Cancel opening stack");
   await trace(page, (t) => t.backend.releaseNodeReads());
   await settle(page);
-  await expect(page.locator("[data-grid-band]")).toHaveCount(2);
+  await expect(page.locator("[data-grid-band]")).toHaveCount(1);
   expect(await uncaught(page)).toEqual([]);
 });
 
