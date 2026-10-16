@@ -76,9 +76,18 @@ interface Pending {
 }
 interface Scored extends Prepared { readonly placed: GraphLayout; readonly metrics: Measures; readonly score: number; readonly anchors: boolean }
 
-/** Every retained arrival rectangle is a pin; selection and click ancestry are irrelevant. */
+/** Click ancestry is a hard preference among the feasible constructive candidates. */
 function anchorKeys(request: LayoutRequest, previous: GraphLayout): readonly string[] {
-  return request.items.filter(n => previous.nodes.has(n.key)).map(n => n.key);
+  const byKey = new Map(request.items.map(n => [n.key, n]));
+  const found = new Set<string>();
+  const pending = request.anchorKey && previous.nodes.has(request.anchorKey) ? [request.anchorKey] : [];
+  for (let i = 0; i < pending.length; i++) {
+    const key = pending[i];
+    if (found.has(key) || !byKey.has(key)) continue;
+    found.add(key);
+    pending.push(...byKey.get(key)!.parents);
+  }
+  return [...found];
 }
 
 /** Keep a subset's embedding and trim trailing space; retained leading space has an explicit price. */
@@ -323,7 +332,7 @@ function layoutBandCandidates(input: LayoutRequest, options: BandOptions): Graph
   }
   const compatible = request.history;
   const previous = compatible?.attachment ? normalizedHistory(compatible, request) : compatible?.placed;
-  const anchors = previous ? anchorKeys(request, previous) : [];
+  const anchors = previous ? fitted.grew ? request.items.filter(n => previous.nodes.has(n.key)).map(n => n.key) : anchorKeys(request, previous) : [];
   // Unchanged geometry is kept as is, unless it shares lanes between sources (an
   // earlier fallback): then the search below looks for a layout that does not. When the
   // visible tiles are the same but some gained or lost their expansion hint (an output arrived
@@ -437,7 +446,7 @@ function layoutBandCandidates(input: LayoutRequest, options: BandOptions): Graph
     });
     const pinned = history.filter(c => pins(placementFor(c)) && !geometryGate(placementFor(c), request.items, key, request.maxWidth));
     const added = request.items.filter(n => !previous.nodes.has(n.key));
-    if (added.length && !pinned.length) {
+    if (fitted.grew && added.length && !pinned.length) {
       const edge = [...previous.nodes.values()].reduce((right, n) => Math.max(right, n.x + n.width), request.maxWidth);
       const extra = added.reduce((sum, n) => sum + n.width + 48, 48);
       const extended = incrementalTree({ ...request, maxWidth: Math.min(100_000, edge + extra) }, previous, incrementalBudget());

@@ -339,14 +339,15 @@ describe("incremental tree: opening a second branch", () => {
   };
   const tiles = (layout: FolderLayout) => new Map([...layout.graphs.get("stack")!.attached.nodes].map(([key, n]) => [key, [n.x, n.y, n.width, n.height]]));
 
-  it.each([48, 64, 96, 128])("reaches the same safe branch layout regardless of click path (%i px images)", imagePx => {
+  it.each([48, 64, 96, 128])("restores a displayed branch after a real collapse/reopen (%i px images)", imagePx => {
     for (const width of [500, 900]) {
       const opened = openStack(NO_EXPANSION, "stack"), saffron = expandNode(opened, scope, "Saffron"), both = expandNode(saffron, scope, "Cerulean");
       const before = laidOut(saffron, imagePx, width, laidOut(opened, imagePx, width, null));
       const after = laidOut(both, imagePx, width, before);
       const was = tiles(before), now = tiles(after);
       expect(now.has("Pikachu's Ball"), `${width} px`).toBe(true);
-      expect(now).toEqual(tiles(laidOut(both, imagePx, width, null)));
+      const closed = laidOut(saffron, imagePx, width, after);
+      expect(tiles(laidOut(both, imagePx, width, closed))).toEqual(now);
       const g = after.graphs.get("stack")!;
       expect(measure(g.attached, "stack", after.size.width, g.plan.request.items).sharedLanePx, `${width} px`).toBe(0);
     }

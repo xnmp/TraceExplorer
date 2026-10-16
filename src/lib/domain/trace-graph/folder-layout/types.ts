@@ -16,8 +16,8 @@
  *
  * Geometry only: tones, selection, badge highlighting and route emphasis are derived from the
  * output. Visibility comes from explicit expansion (`OpenStack.expanded`); the last click anchor
- * is ignored. History is committed only on folder contents changes. Any click sequence reaching
- * the same expansion state therefore uses the same arrival history and placement inputs.
+ * holds the new layout near the click. Displayed states are committed history, so revisits restore
+ * exactly while never-seen states may depend on the path taken to them.
  *
  * Coordinates are folder coordinates: (0, 0) is the grid's top-left inside
  * the pane's grid padding.
@@ -52,7 +52,7 @@ export interface OpenStack {
   readonly members: readonly NodeKey[];
   /**
    * The node last toggled, retained for callers that also use it for viewport navigation.
-   * The default layout ignores it; click history and selection cannot change geometry.
+   * New states use it for click-time anchoring. Selection is never an input.
    */
   readonly anchor: NodeKey | null;
   /**
@@ -65,6 +65,9 @@ export interface OpenStack {
 }
 
 export interface FolderLayoutInput {
+  readonly folderKey?: string;
+  /** Contents identity from the folder index/listing, including closed stacks. */
+  readonly contents?: string;
   /** Backend observation epoch, stable across clicks. It is not proof of a contents change:
    * status-only updates may advance it. Complete member facts still decide arrivals. */
   readonly dataRevision?: string;
@@ -80,9 +83,9 @@ export interface FolderLayoutInput {
   readonly tile: TileMetrics;
   readonly grid: FolderGridMetrics;
   /**
-   * The previous complete output carries arrival-only history and canonical cache entries.
-   * The current displayed geometry becomes a new arrival snapshot only when folder contents
-   * change. Clicks reuse the existing snapshot. Validate any geometry before reuse: this value
+   * The previous displayed output carries click history and the bounded revisit ledger.
+   * Speculative results are not committed until displayed and passed here. Folder content
+   * changes clear the ledger and pin retained rectangles from this drawing. Validate any geometry before reuse: this value
    * can be malformed or belong to another width/tile/grid basis.
    */
   readonly previous?: FolderLayout | null;
@@ -121,6 +124,9 @@ export interface FolderPlacementHistory {
 }
 
 export interface FolderLayout {
+  /** Recalled geometry must never seed a band cache under its new request. */
+  readonly revisited?: true;
+  readonly displays?: import("./display-memory").DisplayMemory;
   /** Physical tile obstacles; allocations in cells retain their independent pinning contract. */
   readonly cellFootprints?: ReadonlyMap<GridItemId, GridRect>;
   /** Observation epoch used to distinguish freshly loaded facts from a new arrival. */

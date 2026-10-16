@@ -48,7 +48,7 @@ import { corpus, rng } from '../../../layout-eval/corpus';
 import { expandForOutputs } from '$lib/domain/trace-graph/expansion';
 import { folderGeometryGate } from '$lib/domain/trace-graph/folder-layout/geometry-gate';
 
-it('is path-independent over seeded click walks on the corpus', () => {
+it('restores revisited states over seeded click walks on the corpus', () => {
   for (const fixture of corpus().filter(c => c.nodes.length > 2 && c.nodes.length <= 16).slice(0, 16)) {
     const folder = makeFolder({ stacks: [fixture.nodes] }), stack = [...folder.stacks.values()][0];
     const scope = { graph: stack.graph, members: stack.graph.dag.order, cover: stack.cover };

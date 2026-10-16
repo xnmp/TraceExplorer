@@ -101,6 +101,10 @@ export function estimateFolderLayoutBytes(layout: FolderLayout, seen = new Set<o
   if (seen.has(layout)) return 0;
   seen.add(layout);
   let total = OBJECT * 4 + (ENTRY + OBJECT) * (layout.cells.size + layout.bands.length + layout.rowBands.length);
+  if (layout.displays) {
+    total += text(layout.displays.folder) + text(layout.displays.contents);
+    for (const [key, value] of [...layout.displays.members, ...layout.displays.entries]) total += ENTRY + text(key) + text(value);
+  }
   if (layout.cellFootprints) total += OBJECT + (ENTRY + OBJECT) * layout.cellFootprints.size;
   for (const graph of layout.graphs.values()) {
     total += OBJECT * 3 + estimatePlanBytes(graph.plan) + estimateLayoutBytes(graph.layout) + estimateLayoutBytes(graph.attached);

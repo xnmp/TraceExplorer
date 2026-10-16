@@ -3,8 +3,8 @@
  *
  * 1. Columns and cell size from the width, tile and grid metrics (`folderGridGeometry`).
  * 2. Each open stack is planned (`planBandScene`, pinned at its cover's column by `gridPins`,
- *    with history committed only when folder contents change) and laid out (`layoutGraph`).
- *    Selection and click anchors never enter the request. Every band is complete before packing.
+ *    with the displayed drawing and click anchor) and laid out (`layoutGraph`).
+ *    Selection never enters the request. Displayed states restore from committed history. Every band is complete before packing.
  * 3. The rows are packed once with the exact band extents (`packedGridFlow`, `bandExtent`),
  *    and every band is attached below its cover (`bandPlacements`, `attachPackedBand`).
  * 4. If packing moves retained arrival rectangles, extend the committed folder drawing with
@@ -18,7 +18,7 @@
  * - open ids that are not stack items, and stacks whose cover is not a drawable member of their
  *   graph, are laid out closed; member keys missing from the graph and repeated keys are dropped;
  * - history from a malformed drawing is ignored; a width/tile/grid change starts a new placement
- *   basis. Expansion/collapse reuses the same arrival snapshot rather than committing click history.
+ *   basis. A bounded per-folder ledger restores previously displayed geometry exactly.
  *
  * Output is plain data, never mutated afterwards; treat it as readonly (it may share objects
  * with earlier outputs, the band cache and `previous`). Canonical raw band cache entries are kept
@@ -33,6 +33,7 @@ import { folderGridGeometry, gridPins, type FolderGridGeometry } from "../folder
 import { layoutGraph, type BandHistory, type GraphLayout, type LayoutRequest } from "../layout";
 import { layoutSignature } from "../layout-signature";
 import { isLayoutShape } from "../history-boundary";
+import { recallDisplay, rememberDisplay, displayIdentity } from "./display-memory";
 import { withCellFootprints } from "./cell-footprints";
 import { folderGeometryGate } from "./geometry-gate";
 import { safeLayout } from "../safe-layout";
@@ -52,7 +53,7 @@ export interface PlannedBand {
 export const gridMetricsOf = (geometry: FolderGridGeometry): GridMetrics =>
   ({ cellWidth: geometry.cellWidth, cellHeight: geometry.cellHeight, columnGap: geometry.gap, rowGap: geometry.gap });
 
-/** Geometry available to commit when this component's contents change. */
+/** Geometry from the currently displayed component. */
 interface Prior {
   readonly history?: BandHistory;
   readonly hint?: ReadonlyMap<NodeKey, number>;
@@ -153,20 +154,15 @@ export function planBands(input: FolderLayoutInput, geometry: FolderGridGeometry
   const base = gridFlow(input.items, new Map(), geometry.columns, gridMetricsOf(geometry));
   const open = openStacks(input);
   const pins = gridPins(base, open.map(([id]) => id));
-  const arrivals = arrivalsFor(input);
+  const priors = priorsOf(input.previous);
   const width = Math.max(0, input.width);
   const plans = new Map<GraphId, BandPlan>();
   for (const [id, stack, members] of open) {
-    const history = arrivals.get(id)?.history;
-    const plan = planBandScene(stack.graph, members, null, width,
-      { pinned: pins.get(id)!, expanded: expandedOf(stack, id), history, tile: input.tile });
-    const graph = input.previous?.graphs instanceof Map ? input.previous.graphs.get(id) : undefined;
-    const canonical = graph?.canonical ?? (graph && isObject(graph.plan) && { request: graph.plan.request, layout: graph.layout });
-    let kept: GraphLayout | null = null;
-    try {
-      if (graph && isLayoutShape(graph.layout) && canonical && isLayoutShape(canonical.layout)
-        && layoutSignature(canonical.request) === layoutSignature(plan.request)) kept = canonical.layout;
-    } catch { /* malformed cache metadata cannot bypass normal history validation */ }
+    const prior = priors.get(id);
+    const plan = planBandScene(stack.graph, members, typeof stack.anchor === "string" ? stack.anchor : null, width,
+      { pinned: pins.get(id)!, expanded: expandedOf(stack, id), history: prior?.history, hint: prior?.hint, tile: input.tile });
+    const kept = prior?.committed && isLayoutShape(prior.committed.layout)
+      && prior.committed.basis === requestBasis(plan.request) ? prior.committed.layout : null;
     plans.set(id, { plan, kept });
   }
   return plans;
@@ -184,7 +180,7 @@ interface Planned {
   readonly fields: readonly unknown[];
 }
 const planned = new WeakMap<FolderLayoutInput, Planned>();
-const fieldsOf = (input: FolderLayoutInput): readonly unknown[] => [input.items, input.open, input.width, input.tile, input.grid, input.previous, input.dataRevision];
+const fieldsOf = (input: FolderLayoutInput): readonly unknown[] => [input.items, input.open, input.width, input.tile, input.grid, input.previous, input.dataRevision, input.folderKey, input.contents];
 function plansOf(input: FolderLayoutInput): Planned {
   const known = planned.get(input), fields = fieldsOf(input);
   if (known && known.fields.every((value, index) => Object.is(value, fields[index]))) return known;
@@ -228,6 +224,8 @@ export function uncachedBandRequests(input: FolderLayoutInput, cache: BoundedCac
 
 /** Seeds `cache` with the bands of a layout computed elsewhere (a worker), keyed by their exact requests. */
 export function rememberBands(layout: FolderLayout, cache: BoundedCache<GraphLayout>): void {
+  // Restored geometry was chosen under an earlier history, not the current request.
+  if (layout.revisited) return;
   for (const graph of layout.graphs.values()) {
     const canonical = graph.canonical ?? { request: graph.plan.request, layout: graph.layout };
     cache.set(signatureOf(canonical.request), canonical.layout);
@@ -298,15 +296,20 @@ function folderPlacementHistory(input: FolderLayoutInput, arrivals: ReadonlyMap<
       && (input.dataRevision === undefined || previous.dataRevision !== input.dataRevision);
   });
   if ((changedItems || changedContents) && previous.geometryBasis === basis) {
-    const { arrivalPlacement: _placement, arrivals: _arrivals, ...layout } = previous;
+    const { arrivalPlacement: _placement, arrivals: _arrivals, displays: _displays, ...layout } = previous;
     return { basis, layout };
   }
-  return previous.arrivalPlacement?.basis === basis ? previous.arrivalPlacement : undefined;
+  return undefined;
 }
 
 export function createDefaultEngine(options: DefaultEngineOptions = {}): FolderLayoutEngine {
   const cache = options.bandCache === undefined ? createBoundedCache(estimateLayoutBytes) : options.bandCache;
-  return (input) => {
+  return (given) => {
+    const prior = given.previous;
+    const malformed = prior && (!(prior.graphs instanceof Map) || [...prior.graphs.values()].some(g =>
+      !g || !isLayoutShape(g.layout) || !isLayoutShape(g.attached)));
+    const foreign = prior?.displays && prior.displays.folder !== undefined && prior.displays.folder !== (given.folderKey ?? '');
+    const input = malformed || foreign ? { ...given, previous: undefined } : given;
     const { geometry, plans } = plansOf(input);
     const arrivals = arrivalsFor(input), geometryBasis = JSON.stringify([Math.max(0, input.width), input.tile, input.grid]);
     let relayout: 'pane-width' | 'tile-size' | undefined;
@@ -314,6 +317,18 @@ export function createDefaultEngine(options: DefaultEngineOptions = {}): FolderL
       try { relayout = JSON.parse(input.previous.geometryBasis)[0] !== Math.max(0,input.width) ? 'pane-width' : 'tile-size'; }
       catch { /* Malformed history supplies no basis to compare. */ }
     }
+    const identity = displayIdentity(input, plans, options.band);
+    let restored: FolderLayout | undefined;
+    try {
+      const recalled = recallDisplay(input.previous?.displays, identity);
+      if (recalled) {
+        const rebound = { ...recalled, graphs: new Map([...recalled.graphs].map(([id, graph]) =>
+          [id, { ...graph, plan: plans.get(id)?.plan ?? graph.plan }])) };
+        if (rebound.graphs.size === plans.size && [...rebound.graphs.keys()].every(id => plans.has(id)) && !folderGeometryGate(rebound)) restored = rebound;
+      }
+    } catch { /* Invalid stored geometry is never an authority. Rebuild through the normal gate. */ }
+    if (restored) return { ...restored, revisited: true, arrivals, geometryBasis, dataRevision: input.dataRevision,
+      displays: rememberDisplay(input.previous?.displays, identity, restored, true) };
     const arrivalPlacement = folderPlacementHistory(input, arrivals, geometryBasis);
     const bands = layoutPlanned(plans, cache, options.band);
     let result = withCellFootprints(composeFolderLayout(input.items, geometry, bands), input);
@@ -345,8 +360,9 @@ export function createDefaultEngine(options: DefaultEngineOptions = {}): FolderL
       if (failure) throw new RangeError("No certified folder layout: " + failure);
     }
     if (relayout) result = {...result,decision:{requestedColumns:geometry.columns,...result.decision,relayout}};
-    return { ...result, ...(pinningFailed ? { decision: { ...(result.decision ?? { fallback: "pin-search-exhausted" as const, requestedColumns: geometry.columns }), pinning: "search-exhausted" as const } } : {}),
+    const completed: FolderLayout = { ...result, ...(pinningFailed ? { decision: { ...(result.decision ?? { fallback: "pin-search-exhausted" as const, requestedColumns: geometry.columns }), pinning: "search-exhausted" as const } } : {}),
       geometryBasis, arrivalPlacement, arrivals, ...(input.dataRevision === undefined ? {} : { dataRevision: input.dataRevision }) };
+    return { ...completed, displays: rememberDisplay(input.previous?.displays, identity, completed) };
   };
 }
 
