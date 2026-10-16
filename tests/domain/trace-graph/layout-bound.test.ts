@@ -8,9 +8,9 @@ const rng = (seed: number) => () => { seed ^= seed << 13; seed ^= seed >>> 17; s
 const item = (key: string, parents: string[] = [], order = 0, width = 92, height = 97): LayoutItem => ({ key, parents, order, width, height });
 
 /** The downward candidate exactly as the band engine builds it, measured the way it is scored. */
-function actual(items: readonly LayoutItem[], maxWidth: number) {
+function actual(items: readonly LayoutItem[], maxWidth: number, channelStyle: "scaled" | "orthogonal" = "scaled") {
   const request: LayoutRequest = { items, maxWidth, tileWidth: 92, orientation: "down", pinned: { key: "root", x: Math.min(maxWidth, 400) / 2 } };
-  const layout = withBandBounds(layoutLayered(request), "root"), extent = bandExtent(layout, "root");
+  const layout = withBandBounds(layoutLayered(request, { channelStyle }), "root"), extent = bandExtent(layout, "root");
   const length = layout.routes.filter(r => r.from.id !== "root").reduce((sum, r) => sum + routePlan(r).length, 0);
   return { request, height: extent.height, width: extent.width, length };
 }
@@ -28,12 +28,12 @@ function randomGraph(seed: number, n: number, shape: "tree" | "dag", mixed: bool
 }
 
 describe("downward band bound", () => {
-  it("never exceeds the built downward layout's height, width or tree ink", () => {
+  it.each(["scaled", "orthogonal"] as const)("never exceeds the %s layout's height, width or tree ink", channelStyle => {
     let checked = 0;
     for (const shape of ["tree", "dag"] as const) for (const mixed of [false, true]) for (let seed = 1; seed <= 12; seed++)
       for (const n of [2, 5, 13, 40]) for (const maxWidth of [128, 360, 454, 900, 1400]) {
-        const items = randomGraph(seed * 7919 + n, n, shape, mixed), built = actual(items, maxWidth);
-        const bound = downwardBandBound(built.request, "root", STACK_STEM_ROOM);
+        const items = randomGraph(seed * 7919 + n, n, shape, mixed), built = actual(items, maxWidth, channelStyle);
+        const bound = downwardBandBound(built.request, "root", STACK_STEM_ROOM, { channelStyle });
         expect(bound, `${shape} ${seed} ${n} ${maxWidth}`).not.toBeNull();
         expect(bound!.height).toBeLessThanOrEqual(built.height);
         expect(bound!.width).toBeLessThanOrEqual(built.width);

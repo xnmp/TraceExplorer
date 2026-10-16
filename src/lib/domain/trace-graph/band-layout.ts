@@ -271,7 +271,7 @@ export function layoutBand(input: LayoutRequest, options: BandOptions = BAND_DEF
   if (request.items.length && geometryGate(attachSingleBand(result, request), request.items, request.band!.key, request.maxWidth)) {
     let replacement: GraphLayout | undefined;
     for (const scale of [1.5, 2, 3]) {
-      const candidate = withBandBounds(layoutLayered({ ...request, history: undefined, band: undefined, tileWidth: (request.tileWidth ?? 92) * scale, orientation: "down" }, { ordering: options.ordering, passing: options.passing }), request.band!.key);
+      const candidate = withBandBounds(layoutLayered({ ...request, history: undefined, band: undefined, tileWidth: (request.tileWidth ?? 92) * scale, orientation: "down" }, { ordering: options.ordering, passing: options.passing, channelStyle: "orthogonal" }), request.band!.key);
       if (!geometryGate(attachSingleBand(candidate, request), request.items, request.band!.key, request.maxWidth)) {
         replacement = { ...candidate, decision: { candidate: "wide-channels", stability: false, fallback: "geometry-fallback" } }; break;
       }
@@ -371,14 +371,14 @@ function layoutBandCandidates(input: LayoutRequest, options: BandOptions): Graph
   // routed. An anchored translation keeps width and ink; its first row can rise only into
   // stem room beyond the default, so its height bound gives up exactly that.
   // Bounds of the downward layout as built below: at the band's own width budget.
-  const rows = wantsDown ? downwardBandBound({ ...request, maxWidth: width }, key, STACK_STEM_ROOM) : null;
+  const rows = wantsDown ? downwardBandBound({ ...request, maxWidth: width }, key, STACK_STEM_ROOM, { channelStyle: "orthogonal" }) : null;
   const rowsHeight = rows ? Math.max(downFloor, rows.height) : downFloor;
   const shiftedRowsHeight = rows ? Math.max(downFloor, rows.height - Math.max(0, (request.history?.attachment?.placement.stemRoom ?? STACK_STEM_ROOM) - STACK_STEM_ROOM) - .01) : downFloor;
   let down: Candidate | undefined;
   const visibleDown = (): Candidate => down ??= (() => {
     const half = (request.items.find(n => n.key === request.pinned?.key)?.width ?? 0) / 2;
     const pin = request.pinned ? { ...request.pinned, x: Math.max(half, Math.min(width - half, request.pinned.x)) } : undefined;
-    const layout = layoutLayered({ ...request, pinned: pin, history: undefined, band: undefined, maxWidth: width, orientation: "down" }, { ordering: options.ordering, passing: options.passing });
+    const layout = layoutLayered({ ...request, pinned: pin, history: undefined, band: undefined, maxWidth: width, orientation: "down" }, { ordering: options.ordering, passing: options.passing, channelStyle: "orthogonal" });
     return { name: "visible-down", layout: withBandBounds(request.items.length === 2 && request.items.some(n => n.key !== key && n.parents.length === 1 && n.parents[0] === key) ? { ...layout, preferredX: 0 } : layout, key) };
   })();
   const history: Candidate[] = [];
