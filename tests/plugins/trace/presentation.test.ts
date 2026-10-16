@@ -1,16 +1,17 @@
 import { describe, expect, it } from "vitest";
+import { routeShape, samplePathString, translatePath } from "$lib/domain/trace-graph/path-sampling";
 import { engines, type FolderLayout } from "$lib/domain/trace-graph/folder-layout";
 import { buildFolderScene, diffScenes, entityId, type FolderScene, type SceneRecord, type SceneScope, type SceneStyling } from "$lib/domain/trace-graph/folder-scene";
 import { tileMetrics } from "$lib/domain/trace-graph/metrics";
 import {
-  EASE, MOTION_MS, PAINTED, RETIREE_LIMIT, easeAt, easeTimeAt, effectiveClip, retargetPresentation, retargetTrack, ridesWithSection, samePose,
+  EASE, posePath, trackWithEndpoint, MOTION_MS, PAINTED, RETIREE_LIMIT, easeAt, easeTimeAt, effectiveClip, retargetPresentation, retargetTrack, ridesWithSection, samePose,
   samplePresentation, sampleTrack, settledPresentation, sliceEase, sliceTrack, staticPresentation, restylePresentation, type Ease, type Pose,
   type Presentation, type Track,
 } from "$lib/plugins/trace/view/presentation";
-import { folderInput, handCase, makeFolder, sourcesOf, type Folder } from "../../domain/trace-graph/folder-layout-fixtures";
+import { folderInput, handCase, makeFolder, sourcesOf, cellsOf, corpusNode as n, randomFolder, type InputOptions, type Folder } from "../../domain/trace-graph/folder-layout-fixtures";
 import { presentationView } from "$lib/plugins/trace/view/presentation-view";
 import { motionParticipants } from "$lib/plugins/trace/view/participants";
-import { toggleNode, type Expansion } from "$lib/domain/trace-graph/expansion";
+import { expandNode, toggleNode, type Expansion } from "$lib/domain/trace-graph/expansion";
 import { focusExpansion } from "../../../layout-eval/corpus";
 
 // ─── Easing ─────────────────────────────────────────────────────────────────
@@ -173,7 +174,16 @@ function expectContinuous(displayed: ReturnType<typeof samplePresentation>, next
     const candidates = [first.get(id), ...[...next.retiring.values()].filter((r) => r.record.id === identity && r.reason === "exit").map((r) => first.get(r.renderId))]
       .filter((p): p is Pose => !!p);
     if (!candidates.length) continue; // Snapped away (an entry or cover leaving the listing).
-    expect(candidates.some((p) => close(p, was)), `${id}: ${JSON.stringify({ was, candidates })}`).toBe(true);
+    const record = (displayed.presentation.live.get(id) ?? displayed.presentation.retiring.get(id))!.record;
+    const shownPath = (pose: Pose, record: Extract<SceneRecord, { kind: "route" }>) => posePath(pose, pose.rect)
+      ?? translatePath(record.route.path, { x: pose.rect.x - record.rect.x, y: pose.rect.y - record.rect.y })!;
+    const target = next.live.get(identity!)?.record;
+    const continuous = record.kind === "route" && target?.kind === "route" ? candidates.some(p => {
+      if (Math.abs(p.opacity - was.opacity) > .01) return false;
+      const a = samplePathString(shownPath(was, record), 100)!, b = samplePathString(shownPath(p, target), 100)!;
+      return a.every((point, i) => Math.hypot(point.x - b[i].x, point.y - b[i].y) < .01);
+    }) : candidates.some(p => close(p, was));
+    expect(continuous, `${id}: ${JSON.stringify({ was, candidates })}`).toBe(true);
     checked++;
   }
   return checked;
@@ -425,9 +435,9 @@ describe("retargetPresentation", () => {
     const p = retargetPresentation(samplePresentation(staticPresentation(base), Infinity), focused, diff, participants());
     for (const [id, policy] of diff.policy.records) if (policy === "snap") expect(p.live.get(id)!.track).toBeNull();
     expect(p.retiring.size).toBe(0);
-    // A resize reroutes connectors (their old paths retire as crossfades); a reveal right after
+    // Collapsing descendants leaves in-band retirees; a reveal right after
     // snaps the revealed graph and drops its retirees at once.
-    const narrow = sceneFor([A, B], { width: 640 }), wide = sceneFor([A, B], { width: 900, previous: narrow.layout });
+    const narrow = sceneFor([A, B], { width: 900, focus: "s0:Saffron" }), wide = sceneFor([A, B], { width: 900, previous: narrow.layout });
     const resizing = step(staticPresentation(narrow), narrow, wide, Infinity).presentation;
     expect([...resizing.retiring.values()].filter((r) => r.record.graphId === A).length).toBeGreaterThan(0);
     const revealed = sceneFor([A, B], { width: 900, focus: "s0:Saffron", previous: wide.layout });
@@ -437,26 +447,14 @@ describe("retargetPresentation", () => {
     for (const [id, policy] of revealDiff.policy.records) if (policy === "snap") expect(q.live.get(id)!.track).toBeNull();
   });
 
-  it("rerouted connectors crossfade between their exact displayed and new paths", () => {
-    const narrow = sceneFor([A, B], { width: 640 }), wide = sceneFor([A, B], { width: 900, previous: narrow.layout });
-    const { displayed, presentation: p } = step(staticPresentation(narrow), narrow, wide, Infinity);
-    let rerouted = 0, travelled = 0;
-    for (const route of [...wide.records.values()].filter((r): r is Extract<SceneRecord, { kind: "route" }> => r.kind === "route")) {
-      const old = [...p.retiring.values()].find((r) => r.reason === "old-route" && r.record.id === route.id);
-      const live = p.live.get(route.id)!;
-      if (old) {
-        rerouted++;
-        const before = narrow.records.get(route.id)!;
-        expect(old.record.kind === "route" && old.record.route.path).toBe(before.kind === "route" && before.route.path);
-        expect(old.initial.opacity).toBeCloseTo(displayed.poses.get(route.id)!.opacity, 6);
-        expect(sampleTrack(old.track!, MOTION_MS).opacity).toBe(0);
-        expect(sampleTrack(live.track!, 0).opacity).toBe(0);
-        expect(sampleTrack(live.track!, MOTION_MS).opacity).toBe(1);
-        // Never both partly shown: the old path is gone before the new one appears.
-        for (let t = 0; t <= MOTION_MS; t += 4) expect(Math.min(sampleTrack(old.track!, t).opacity, sampleTrack(live.track!, t).opacity)).toBe(0);
-      } else if (live.track) travelled++;
-    }
-    expect(rerouted + travelled).toBeGreaterThan(0);
+  it("retained connectors deform between their displayed and new paths without retiring or fading", () => {
+    const a = sceneFor([A, B], { width: 640 }), b = sceneFor([A, B], { width: 900, previous: a.layout });
+    const p = step(staticPresentation(a), a, b, Infinity).presentation;
+    const paths = [...p.live.values()].filter(r => r.record.kind === "route" && a.records.has(r.renderId));
+    expect(paths.length).toBeGreaterThan(0);
+    expect(paths.some(r => r.track?.frames[0].pose.stem || r.track?.frames[0].pose.shape)).toBe(true);
+    expect([...p.retiring.values()].filter(r => r.reason === "old-route")).toEqual([]);
+    for (const route of paths) for (let t = 0; t <= MOTION_MS; t += 4) expect(opacityAt(p, route.renderId, t)).toBe(1);
   });
 
   it("more than RETIREE_LIMIT paintable departures snap", () => {
@@ -525,33 +523,26 @@ describe("retargetPresentation: review fixes (099e72f)", () => {
     return ids;
   }
 
-  it("a rerouted connector whose old path the retiree limit dropped stays shown instead of blinking out", () => {
+  it("retained connectors stay opaque when the retiree limit drops a large band's departures", () => {
     const big = makeFolder({ stacks: [handCase("fan-200"), handCase("screenshot"), handCase("merges-3")], files: 12 });
     const [F, S, M] = [...big.stacks.keys()];
-    let overLimit = 0;
+    let checked = 0;
     for (const [w1, w2] of [[1400, 900], [1400, 640], [900, 640], [640, 1400]]) {
-      // Closing the 200-tile stack while the others reflow: more than RETIREE_LIMIT departures.
       const open = sceneFor([F, S, M], { of: big, width: w1 });
       const next = sceneFor([S, M], { of: big, width: w2, previous: open.layout });
       const { displayed, presentation: p } = step(staticPresentation(open), open, next, Infinity);
       expect(blinking(displayed, p), `${w1} → ${w2}`).toEqual([]);
-      // The same reflow without the large exit crossfades: the limit is what dropped the old paths.
-      const control = sceneFor([S, M], { of: big, width: w1 }), controlNext = sceneFor([S, M], { of: big, width: w2, previous: control.layout });
-      const reference = step(staticPresentation(control), control, controlNext, Infinity).presentation;
-      if (p.retiring.size === 0 && [...reference.retiring.values()].some((r) => r.reason === "old-route")) {
-        overLimit++;
-        // Every connector the reference crossfades is shown whole throughout instead.
-        for (const old of [...reference.retiring.values()].filter((r) => r.reason === "old-route")) {
-          const live = p.live.get(old.record.id)!;
-          for (let t = 0; t <= MOTION_MS; t += 8) expect(samplePresentation(p, t).poses.get(live.renderId)!.opacity, `${old.record.id} at ${t}`).toBe(1);
-        }
+      expect(p.retiring.size).toBe(0);
+      for (const live of p.live.values()) if (live.record.kind === "route" && open.records.has(live.record.id)) {
+        for (let t = 0; t <= MOTION_MS; t += 8) expect(opacityAt(p, live.renderId, t)).toBe(1);
+        checked++;
       }
     }
-    expect(overLimit).toBeGreaterThan(0);
+    expect(checked).toBeGreaterThan(0);
   });
 
   it("in-band retirees of a band that closes keep their own fade, drawn by the grid", () => {
-    const narrow = sceneFor([A, B], { width: 640 }), wide = sceneFor([A, B], { width: 900, previous: narrow.layout });
+    const narrow = sceneFor([A, B], { width: 900, focus: "s0:Saffron" }), wide = sceneFor([A, B], { width: 900, previous: narrow.layout });
     const resizing = step(staticPresentation(narrow), narrow, wide, Infinity).presentation;
     const inBand = [...resizing.retiring.values()].filter((r) => r.group === null && r.record.graphId === A && r.record.kind !== "band");
     expect(inBand.length).toBeGreaterThan(0);
@@ -597,4 +588,281 @@ describe("retargetPresentation: review fixes (099e72f)", () => {
       if (member.record.kind === "tile") expect(close(first.get(p.live.get(member.record.id)!.renderId)!, displayed.poses.get(member.renderId)!), member.record.id).toBe(true);
     }
   });
+});
+
+
+describe("moving attachment stems", () => {
+  it("follows an endpoint's residual motion instead of restarting its clock", () => {
+    const whole = retargetTrack(pose(0, 100), pose(0, 200))!;
+    const endpoint = sliceTrack(whole, 40)!;
+    const from: Pose = { ...pose(0, 0), stem: { points: [{ x: 0, y: 0 }, { x: 0, y: sampleTrack(whole, 40).rect.y }], tail: [[0, sampleTrack(whole, 40).rect.y]], bridge: false } };
+    const to: Pose = { ...pose(0, 0), stem: { points: [{ x: 0, y: 0 }, { x: 0, y: 200 }], tail: [[0, 200]], bridge: false } };
+    const route = trackWithEndpoint(from, to, endpoint, pose(0, 200).rect)!;
+    for (const dt of [0, 10, 20, 60, 120, 160]) {
+      const end = sampleTrack(route, dt).stem!.points.at(-1)!;
+      expect(end.y).toBeCloseTo(sampleTrack(whole, 40 + dt).rect.y, 6);
+      expect(sampleTrack(route, dt).opacity).toBe(1);
+    }
+  });
+
+  it("keeps the displayed stem when a moving attachment is interrupted or its destination stays unchanged", () => {
+    const a = sceneFor([A, B], { width: 640 }), b = sceneFor([A, B], { width: 900, previous: a.layout });
+    const moving = step(staticPresentation(a), a, b, Infinity).presentation;
+    const stems = [...moving.live.values()].filter(r => r.record.kind === "route" && r.track?.frames[0].pose.stem);
+    expect(stems.length).toBeGreaterThan(0);
+    for (const at of [0, 40, 100, 159]) {
+      const interrupted = step(moving, b, a, at).presentation;
+      const continued = step(moving, b, b, at).presentation;
+      for (const live of stems) {
+        const shown = samplePresentation(moving, at).poses.get(live.renderId)!;
+        const first = samplePresentation(interrupted, 0).poses.get(live.renderId)!;
+        const closePath = (a: string, b: string) => {
+          const first = samplePathString(a, 48)!, last = samplePathString(b, 48)!;
+          for (let i = 0; i < first.length; i++) expect(Math.hypot(first[i].x - last[i].x, first[i].y - last[i].y)).toBeLessThan(.001);
+        };
+        closePath(posePath(first, first.rect)!, posePath(shown, shown.rect)!);
+        for (const dt of [0, 20, 100, 160]) {
+          const next = samplePresentation(continued, dt).poses.get(live.renderId)!;
+          const original = samplePresentation(moving, at + dt).poses.get(live.renderId)!;
+          closePath(posePath(next, next.rect)!, posePath(original, original.rect)!);
+          expect(next.opacity).toBe(1);
+        }
+      }
+    }
+  });
+});
+
+
+describe("interrupted connector geometry", () => {
+  it.each([200, 250])("keeps curve ports attached with residual timing and a child destination of %i", (childDestination) => {
+    const base = sceneFor([A]), cover = base.tiles.get(entityId("tile", A, A))!;
+    const child = bandTiles(base, A)[0] as Extract<SceneRecord, { kind: "tile" }>;
+    const route = routesOf(base, A)[0] as Extract<SceneRecord, { kind: "route" }>;
+    const id = entityId("route", A, "timing");
+    const at = (head: number, tail: number, bend = 0): FolderScene => {
+      const h = { ...cover, rect: { x: 0, y: head, width: 50, height: 40 } };
+      const t = { ...child, rect: { x: 0, y: tail, width: 50, height: 40 } };
+      const r = { ...route, id, rect: { x: 0, y: head, width: 100, height: tail - head + 10 }, route: { ...route.route,
+        id: "timing", from: { kind: "node" as const, id: A }, to: { kind: "node" as const, id: child.tile.key },
+        path: `M25 ${head + 40} C${25 + bend} ${head + 45} ${25 + bend} ${tail - 5} 25 ${tail}` } };
+      return { ...base, records: new Map([[h.id, h], [t.id, t], [id, r]]), routes: new Map([[id, r]]), tiles: new Map([[h.id, h], [t.id, t]]) };
+    };
+    const a = at(50, 100), b = at(100, 200), c = at(100, childDestination, 25);
+    const moving = step(staticPresentation(a), a, b, Infinity).presentation;
+    const interrupted = step(moving, b, c, 40).presentation;
+    for (const dt of [0, 20, 60, 100, 160]) {
+      const poses = samplePresentation(interrupted, dt).poses;
+      const routePose = poses.get(id)!, points = samplePathString(posePath(routePose, routePose.rect)!, 24)!;
+      expect(points[0].y).toBeCloseTo(poses.get(cover.id)!.rect.y + 40, 6);
+      expect(points.at(-1)!.y).toBeCloseTo(poses.get(child.id)!.rect.y, 6);
+    }
+  });
+
+  it("preserves a displayed curve instead of substituting its cached target attachment", () => {
+    const a = sceneFor([A, B]), b = sceneFor([A, B], { width: 900, previous: a.layout });
+    const original = staticPresentation(a), source = [...original.live.values()].find(r => r.attachment)!;
+    if (source.record.kind !== "route") throw new Error("expected route");
+    const shape = routeShape(source.record.route.path, source.record.rect)!;
+    const bent = shape.map((segment, i) => i === 1 ? segment.map((n, j) => j === 0 ? n + 12 : n) : segment);
+    const track = retargetTrack({ ...source.initial, shape: bent }, { ...source.initial, shape })!;
+    const moving = { ...original, duration: MOTION_MS, live: new Map(original.live).set(source.renderId, { ...source, track }) };
+    const shown = samplePresentation(moving, 40).poses.get(source.renderId)!;
+    const next = step(moving, a, b, 40).presentation;
+    const first = samplePresentation(next, 0).poses.get(source.renderId)!;
+    const from = samplePathString(posePath(shown, shown.rect)!, 48)!, to = samplePathString(posePath(first, first.rect)!, 48)!;
+    for (let i = 0; i < from.length; i++) expect(Math.hypot(from[i].x - to[i].x, from[i].y - to[i].y)).toBeLessThan(.001);
+  });
+});
+
+it('closing a shared-row band keeps retiring tiles out of the retained cover-attachment header', () => {
+  const open = sceneFor([A, B]), closed = sceneFor([B], { previous: open.layout });
+  const p = step(staticPresentation(open), open, closed, Infinity).presentation;
+  const retirees = [...p.retiring.values()].filter(r => r.record.kind === 'tile' && r.record.graphId === A);
+  const firstRow = Math.min(...bandTiles(open, A).map(r => r.rect.y));
+  expect(retirees.length).toBeGreaterThan(0);
+  for (const retiree of retirees) {
+    const initial = samplePresentation(p, 0).poses.get(retiree.renderId)!;
+    expect(effectiveClip(initial)).toBeNull();
+    for (let at = 0; at < MOTION_MS; at += 4) {
+      const pose = samplePresentation(p, at).poses.get(retiree.renderId)!;
+      if (pose.opacity <= PAINTED) continue;
+      const clip = effectiveClip(pose);
+      expect(Math.max(pose.rect.y, clip?.y ?? -Infinity)).toBeGreaterThanOrEqual(firstRow - .001);
+    }
+  }
+});
+
+
+/** Two packed bands whose second attachment crosses the first band's vertical extent. */
+const bridgeFolder = makeFolder({ stacks: [
+  [n("a"), n("a1", ["a"], 1), n("a2", ["a"], 2), n("a3", ["a"], 3), n("a4", ["a1", "a3"], 4), n("a5", ["a4"], 5), n("a6", ["a4"], 6)],
+  [n("b"), n("b1", ["b"], 1), n("b2", ["b"], 2)],
+], files: 4 });
+const [bridgeA, bridgeB] = [...bridgeFolder.stacks.keys()];
+const bridgeCells = cellsOf(bridgeFolder);
+const bridgeItems = [bridgeCells[0], bridgeCells[2], bridgeCells[1], ...bridgeCells.slice(3)];
+function inputScene(of: Folder, options: InputOptions): FolderScene {
+  const input = folderInput(of, options);
+  return buildFolderScene({ scope, layoutInput: input, layout: engines.default(input), sources: sourcesOf(of), styling: plain });
+}
+const bridgeScene = (open: string[], options: InputOptions = {}) => inputScene(bridgeFolder, { open, width: 390, items: bridgeItems, ...options });
+const displayedPath = (pose: Pose, record: Extract<SceneRecord, { kind: "route" }>) => posePath(pose, pose.rect)
+  ?? translatePath(record.route.path, { x: pose.rect.x - record.rect.x, y: pose.rect.y - record.rect.y })!;
+const pathEnds = (path: string) => { const points = samplePathString(path, 300)!; return [points[0], points.at(-1)!]; };
+
+describe("zero-blink packed band regressions", () => {
+  it("a shared-row close retains the visible source connector on its first frame", () => {
+    const a = bridgeScene([bridgeA, bridgeB]), b = bridgeScene([bridgeB], { previous: a.layout });
+    const p = step(staticPresentation(a), a, b, Infinity).presentation;
+    const group = [...p.retiring.values()].find(r => r.record.kind === "band")!;
+    const route = [...p.retiring.values()].find(r => r.group === group.renderId && r.record.kind === "route"
+      && r.record.route.from.kind === "node" && r.record.route.from.id === bridgeA)!;
+    if (route.record.kind !== "route") throw new Error("expected route");
+    const clip = samplePresentation(p, 0).poses.get(route.renderId)!.clip!;
+    expect(clip.y).toBe(97);
+    const [head] = pathEnds(route.record.route.path);
+    expect(head.y).toBeGreaterThanOrEqual(clip.y);
+  });
+
+  it("diffing keeps packing reorders continuous; the controller owns listing snaps", () => {
+    const a = bridgeScene([bridgeA, bridgeB], { width: 330 });
+    const b = bridgeScene([bridgeA, bridgeB], { width: 330, items: bridgeItems.toReversed(), previous: a.layout });
+    const moving = step(staticPresentation(a), a, b, Infinity).presentation;
+    expect(moving.duration).toBe(MOTION_MS);
+    expect(expectContinuous(samplePresentation(staticPresentation(a), Infinity), moving)).toBeGreaterThan(0);
+    for (const at of [0, 8, 33, 80, 160]) for (const [id] of b.routes) {
+      if (a.routes.has(id)) expect(samplePresentation(moving, at).poses.get(id)!.opacity).toBe(1);
+    }
+  });
+
+  it.each([[36, "s0:n4"], [96, "s0:n1"], [12, "s0:long7"]] as const)("glides retained routes through expansion seed %i (%s), settling clear", (seed, key) => {
+    const { folder: of, options } = randomFolder(seed), ids = [...of.stacks.keys()];
+    const stack = [...of.stacks.values()].find(s => s.graph.dag.nodes.has(key))!;
+    const a = inputScene(of, { ...options, open: ids });
+    const expansion = toggleNode(focusExpansion(options.focus ?? null), { graph: stack.graph, members: stack.graph.dag.order, cover: stack.cover }, key);
+    const b = inputScene(of, { ...options, open: ids, expansion, previous: a.layout });
+    const moving = step(staticPresentation(a), a, b, Infinity).presentation;
+    expect(moving.duration).toBe(MOTION_MS);
+    for (const at of [0, 8, 16, 33, 80, 159, 160]) {
+      const poses = samplePresentation(moving, at).poses;
+      for (const [id, route] of b.routes) {
+        if (!a.routes.has(id)) continue;
+        const shown = poses.get(id)!;
+        expect(shown.opacity).toBe(1);
+        const points = samplePathString(displayedPath(shown, route), 300)!;
+        if (at !== 0 && at !== MOTION_MS) continue; // Occlusion during motion is a browser paint contract.
+        for (const [tileId, tile] of b.tiles) {
+          if (!a.tiles.has(tileId) || (route.route.from.kind === "node" && route.route.from.id === tile.tile.key)
+            || (route.route.to.kind === "node" && route.route.to.id === tile.tile.key)) continue;
+          const q = poses.get(tileId)!.rect;
+          expect(points.filter(p => p.x > q.x + 3 && p.x < q.x + q.width - 3 && p.y > q.y + 3 && p.y < q.y + q.height - 3), `${id} through ${tileId} at ${at}`).toEqual([]);
+        }
+      }
+    }
+  });
+
+  it("closing another band during resize keeps a retained route on its cover", () => {
+    const { folder: of, options } = randomFolder(15838), ids = [...of.stacks.keys()];
+    const a = inputScene(of, { ...options, open: ids, width: 640 });
+    const b = inputScene(of, { ...options, open: ids, width: 900, previous: a.layout });
+    const c = inputScene(of, { ...options, open: ids.slice(1), width: 900, previous: b.layout });
+    const id = entityId("route", "s3:root", "node:s3:root>node:s3:n1"), cover = entityId("tile", "s3:root", "s3:root");
+    for (const scene of [a, b, c]) {
+      const [head] = pathEnds(scene.routes.get(id)!.route.path), q = scene.records.get(cover)!.rect;
+      expect(head.x).toBeCloseTo(q.x + q.width / 2, 5);
+      expect(head.y).toBeCloseTo(q.y + q.height, 5);
+    }
+    const moving = step(staticPresentation(a), a, b, Infinity).presentation;
+    const p = step(moving, b, c, 40).presentation;
+    const record = c.routes.get(id)!;
+    const endpointIds = [cover, entityId("tile", record.graphId, record.route.to.id)];
+    const finalEnds = pathEnds(record.route.path);
+    const before = samplePresentation(moving, 40).poses.get(id)!;
+    expect(samplePathString(displayedPath(samplePresentation(p, 0).poses.get(id)!, record), 300))
+      .toEqual(samplePathString(displayedPath(before, b.routes.get(id)!), 300));
+    for (const at of [0, 8, 8.3, 16, 33, 50, 80, 120, 160]) {
+      const poses = samplePresentation(p, at).poses, route = poses.get(id)!;
+      const ends = pathEnds(displayedPath(route, record));
+      expect(route.opacity).toBe(1);
+      endpointIds.forEach((endpoint, i) => {
+        const q = poses.get(endpoint)!.rect, target = c.records.get(endpoint)!.rect;
+        expect(Math.hypot(ends[i].x - q.x - (finalEnds[i].x - target.x), ends[i].y - q.y - (finalEnds[i].y - target.y))).toBeLessThan(.01);
+      });
+    }
+    const continued = step(p, c, c, 17.25).presentation;
+    for (const dt of [0, 3.7, 25, 90, 160]) {
+      const actual = samplePresentation(continued, dt).poses.get(id)!;
+      const expected = samplePresentation(p, 17.25 + dt).poses.get(id)!;
+      const a = samplePathString(displayedPath(actual, record), 300)!;
+      const b = samplePathString(displayedPath(expected, record), 300)!;
+      a.forEach((point, i) => expect(Math.hypot(point.x - b[i].x, point.y - b[i].y)).toBeLessThan(.001));
+    }
+  });
+});
+
+
+it("expansion order changes visibility and glides from the displayed scene", () => {
+  const of = makeFolder({ stacks: [handCase("overlapping-merges"), handCase("fan-8")], files: 3 });
+  const ids = [...of.stacks.keys()], stack = of.stacks.get(ids[0])!;
+  const scope = { graph: stack.graph, members: stack.graph.dag.order, cover: stack.cover };
+  const full: Expansion = { choices: new Map(stack.graph.dag.order.filter(k => k !== stack.cover && stack.graph.dag.children.get(k)?.length).map(k => [k, true])), reveals: [] };
+  const expansion = toggleNode(full, scope, "s0:p3"), nextExpansion = expandNode(expansion, scope, "s0:p2");
+  const a = inputScene(of, { open: ids, width: 390, expansion });
+  const b = inputScene(of, { open: ids, width: 390, expansion: nextExpansion, previous: a.layout });
+  expect(new Map([...expansion.choices].sort())).toEqual(new Map([...nextExpansion.choices].sort()));
+  expect([...expansion.choices]).not.toEqual([...nextExpansion.choices]);
+  expect(b.tiles.size).toBe(a.tiles.size + 1);
+  const moving = step(staticPresentation(a), a, b, Infinity).presentation;
+  expect(moving.duration).toBe(MOTION_MS);
+  expect(expectContinuous(samplePresentation(staticPresentation(a), Infinity), moving)).toBeGreaterThan(0);
+  for (const at of [1, 16, 33, 80, 159]) {
+    const reversed = step(moving, b, a, at);
+    expect(reversed.presentation.duration).toBe(MOTION_MS);
+    expect(expectContinuous(reversed.displayed, reversed.presentation)).toBeGreaterThan(0);
+    for (const id of a.routes.keys()) if (b.routes.has(id)) {
+      for (const dt of [0, 8, 16, 33, 80, 160]) expect(samplePresentation(reversed.presentation, dt).poses.get(id)!.opacity).toBe(1);
+    }
+  }
+});
+
+
+it("reopening takes over the displayed orthogonal attachment stem and preserves it through another interruption", () => {
+  const a = bridgeScene([bridgeA, bridgeB]), b = bridgeScene([bridgeB], { previous: a.layout });
+  const closing = step(staticPresentation(a), a, b, Infinity).presentation;
+  const reopened = bridgeScene([bridgeA, bridgeB], { previous: b.layout });
+  const p = step(closing, b, reopened, 1).presentation;
+  const attachments = [...p.live.values()].filter(r => r.record.graphId === bridgeA && r.attachment);
+  expect(attachments.length).toBeGreaterThan(0);
+  for (const live of attachments) {
+    expect(live.track!.frames[0].pose.stem).toBeDefined();
+    for (const at of [0, 8, 16, 33, 80, 160]) {
+      const pose = samplePresentation(p, at).poses.get(live.renderId)!;
+      expect(pose.opacity).toBe(1);
+      const points = pose.stem!.points;
+      for (let i = 1; i < points.length; i++) expect(Math.min(Math.abs(points[i].x - points[i-1].x), Math.abs(points[i].y - points[i-1].y))).toBeLessThan(.001);
+    }
+  }
+  const q = step(p, reopened, reopened, 17).presentation;
+  for (const at of [0, 8, 33, 100, 160]) for (const live of attachments) {
+    const actual = samplePresentation(q, at).poses.get(live.renderId)!, expected = samplePresentation(p, at + 17).poses.get(live.renderId)!;
+    const a = samplePathString(posePath(actual, actual.rect)!, 300)!, b = samplePathString(posePath(expected, expected.rect)!, 300)!;
+    a.forEach((point, i) => expect(Math.hypot(point.x - b[i].x, point.y - b[i].y)).toBeLessThan(.001));
+  }
+});
+
+
+it("packing cell insertion, removal and kind changes do not override the caller's animation policy", () => {
+  const cells = cellsOf(bridgeFolder), entry = cells.find(cell => cell.kind !== "stack")!;
+  const without = cells.filter(cell => cell.id !== entry.id);
+  const reordered = [entry, ...without];
+  const a = inputScene(bridgeFolder, { open: [bridgeA, bridgeB], width: 330, items: without });
+  const b = inputScene(bridgeFolder, { open: [bridgeA, bridgeB], width: 330, items: reordered, previous: a.layout });
+  const inserted = step(staticPresentation(a), a, b, Infinity).presentation;
+  expect(inserted.duration).toBe(MOTION_MS);
+  expect(step(staticPresentation(b), b, a, Infinity).presentation.duration).toBe(MOTION_MS);
+  const changed = inputScene(bridgeFolder, { open: [bridgeA, bridgeB], width: 330,
+    items: reordered.map(cell => cell.id === entry.id ? { ...cell, kind: "directory", entry: { ...cell.entry!, kind: "directory" } } : cell), previous: b.layout });
+  const continued = step(inserted, b, changed, 33).presentation;
+  expect(continued.duration).toBeGreaterThan(0);
+  for (const id of b.routes.keys()) for (const at of [0, 8, 33, 100, 160]) expect(samplePresentation(continued, at).poses.get(id)!.opacity).toBe(1);
 });

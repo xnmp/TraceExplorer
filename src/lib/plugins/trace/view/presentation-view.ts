@@ -56,6 +56,7 @@ export function sectionFrame(presentation: Presentation, record: SceneRecord): S
 
 /** Whether a band record's track moves exactly with its section (so it needs no effect of its own). */
 export function ridesSection(presentation: Presentation, record: SceneRecord, track: Track | null): boolean {
+  if (track?.frames[0].pose.stem || track?.frames[0].pose.shape) return false;
   const frame = sectionFrame(presentation, record);
   return frame ? ridesWithSection(track, record.rect, frame.track, frame.base) : !track;
 }

@@ -1,6 +1,9 @@
+import { checkRouteOcclusionFrames } from "./helpers/route-occlusion";
 import { test, expect } from '@playwright/test';
 import { card, key, openView, rendered, settle, uncaught } from './support';
 import { holdMotion, awaitMotionStarted, releaseMotion, motionState } from './animation-control';
+
+checkRouteOcclusionFrames();
 
 /**
  * Sample after all frame callbacks, beginning with the click's first presented frame. With both
@@ -15,7 +18,7 @@ test('alternating selection between open branches moves nothing and draws no ret
   await settle(page);
   // First clicks open each branch.
   for (const name of ['Saffron', 'Cerulean']) { await (await card(page, name)).click(); await settle(page); }
-  const orientation = await page.locator('.graph').getAttribute('data-orientation');
+  const orientation = await page.locator('[data-grid-band] .graph').getAttribute('data-orientation');
   expect(orientation).toMatch(/^(right|down)$/);
   const names = ['stack', 'Cerulean', 'Saffron', "Pikachu's Ball", 'Blastoise', 'Ash'];
   const keys = Object.fromEntries(await Promise.all(names.map(async name => [name, await key(page, name)])));
@@ -24,13 +27,13 @@ test('alternating selection between open branches moves nothing and draws no ret
     await page.evaluate(({ keys, edges, name }) => {
       const w = window as any;
       const box = (el: Element | null) => { if (!el) return null; const r = el.getBoundingClientRect(); return [Math.round(r.x * 10) / 10, Math.round(r.y * 10) / 10, Math.round(r.width * 10) / 10, Math.round(r.height * 10) / 10]; };
-      const sample = () => ({
+      const sample = () => { w.__checkOcclusion?.(); return ({
         tiles: Object.fromEntries(Object.entries(keys).map(([n, k]) => [n, box(document.querySelector(`[data-tile-key="${k}"]`))])),
         connectors: Object.fromEntries(edges.map(([from, to]) => [`${from}>${to}`, [...document.querySelectorAll(`path[data-from="node:${keys[from]}"][data-to="node:${keys[to]}"], path[data-motion-from="node:${keys[from]}"][data-motion-to="node:${keys[to]}"]`)].map(box)])),
         ghosts: document.querySelectorAll('[data-motion-ghost], [data-ghost-tile-key]').length,
         running: w.trace.motion.state().running.length,
         styling: document.querySelector(`[data-node-key="${keys[name]}"]`)!.getAnimations({ subtree: true }).some(a => 'transitionProperty' in a && a.playState === 'running'),
-      });
+      }); };
       w.__selectionFrames = [sample()];
       document.addEventListener('click', () => {
         const start = performance.now(), channel = new MessageChannel();
@@ -60,7 +63,7 @@ test('alternating selection between open branches moves nothing and draws no ret
     }
     await settle(page);
     expect(await rendered(page, 'tone', 'focus'), `${name} is the focus`).toHaveLength(1);
-    expect(await page.locator('.graph').getAttribute('data-orientation'), `${name}: orientation kept`).toBe(orientation);
+    expect(await page.locator('[data-grid-band] .graph').getAttribute('data-orientation'), `${name}: orientation kept`).toBe(orientation);
   }
   expect((await uncaught(page)).filter(e => e !== 'ResizeObserver loop completed with undelivered notifications.')).toEqual([]);
 });
@@ -99,7 +102,7 @@ for (const interrupt of [false, true]) test(`reflow entrances keep tile and conn
         await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
         const tile = document.querySelector(`[data-tile-key="${child}"]`)!;
         const routes = [...document.querySelectorAll(`path[data-from="node:${parent}"][data-to="node:${child}"], path[data-motion-from="node:${parent}"][data-motion-to="node:${child}"]`)];
-        frames.push({ tile: opacity(tile), connector: Math.max(0, ...routes.map(opacity)) });
+        (window as any).__checkOcclusion?.(); frames.push({ tile: opacity(tile), connector: Math.max(0, ...routes.map(opacity)) });
       }
       return { frames, clocks };
     }, { parent, child });

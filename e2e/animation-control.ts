@@ -35,6 +35,7 @@ export async function releaseMotion(page: Page): Promise<void> {
 export async function seekMotion(page: Page, at: number): Promise<void> {
   await page.evaluate(async (at) => {
     (window as any).trace.motion.seek(at);
+    (window as any).__checkOcclusion?.();
     await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
   }, at);
 }

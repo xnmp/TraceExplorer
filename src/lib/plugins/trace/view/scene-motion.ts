@@ -30,10 +30,10 @@
  */
 import type { GridRect } from "$lib/domain/trace-graph/grid-flow";
 import type { Point } from "$lib/domain/trace-graph/path-sampling";
-import { EASE, easeAt, sameEase, samplePresentation, sampleTrack, samePose, sliceEase, trackEnd, type DisplayedPresentation, type Ease, type Pose, type Presentation, type Track } from "./presentation";
+import { EASE, exitBodyClip, posePath, easeAt, sameEase, samplePresentation, sampleTrack, samePose, sliceEase, trackEnd, type DisplayedPresentation, type Ease, type Pose, type Presentation, type Track } from "./presentation";
 import { presentationView, ridesSection, sectionFrame, type SectionFrame } from "./presentation-view";
 import { prefersReducedMotion, zoomOf } from "./motion";
-import { GRID, layerKey, sectionKey, type RenderHandles } from "./render-handles";
+import { GRID, exitBodyKey, layerKey, sectionKey, type RenderHandles } from "./render-handles";
 import { afterWrite, onFrame, reportFrameError, requestFrame } from "./frame-loop";
 import type { SceneMotion } from "./scene-controller.svelte";
 
@@ -167,7 +167,7 @@ export function frameAt(frames: readonly CompiledFrame[], t: number): FrameValue
 }
 
 /** The inline properties the driver writes. */
-export type MotionProperty = "transform" | "opacity" | "clipPath" | "width" | "height";
+export type MotionProperty = "transform" | "opacity" | "clipPath" | "width" | "height" | "d";
 /**
  * How an element shows its frames: `move` translates only (cells, covers, sections), `box` also
  * fades, clips and resizes (tiles), `layer` fades and clips (motion layers, exit groups), `row`
@@ -400,13 +400,13 @@ export function createSceneMotion({ handles, scroller = () => null, reduced = pr
     if (!own) { owned.set(element, own = { previous: new Map(), written: new Map() }); writing.add(element); }
     moving.add(element);
     for (const property in style) {
-      const key = property as MotionProperty, value = style[key]!, shown = element.style[key];
+      const key = property as MotionProperty, value = style[key]!, shown = key === "d" ? element.getAttribute("d") ?? "" : element.style[key];
       const mine = own.written.get(key);
       // The renderer's value: before the first write, or whatever it committed since the last.
       if (mine === undefined || shown !== mine) own.previous.set(key, shown);
       if (shown === value && mine !== undefined) continue;
-      element.style[key] = value;
-      own.written.set(key, element.style[key]);
+      if (key === "d") element.setAttribute("d", value); else element.style[key] = value;
+      own.written.set(key, key === "d" ? element.getAttribute("d") ?? "" : element.style[key]);
     }
   }
   /** Gives `element`'s properties back to the renderer (keeping any value it committed meanwhile). */
@@ -416,7 +416,10 @@ export function createSceneMotion({ handles, scroller = () => null, reduced = pr
     owned.delete(element);
     writing.delete(element);
     moving.delete(element);
-    for (const [property, previous] of own.previous) if (element.style[property] === own.written.get(property)) element.style[property] = previous;
+    for (const [property, previous] of own.previous) {
+      if (property === "d") { if (element.getAttribute("d") === own.written.get(property)) element.setAttribute("d", previous); }
+      else if (element.style[property] === own.written.get(property)) element.style[property] = previous;
+    }
   }
 
   /** Gives every owned property back: the running epoch's and the kept final values of elements still alive. */
@@ -478,11 +481,11 @@ export function createSceneMotion({ handles, scroller = () => null, reduced = pr
       const shift = rect && sampled ? { x: (sampled.left - rect.left) / sampled.zoom, y: (sampled.top - rect.top) / sampled.zoom } : { x: 0, y: 0 };
       const effects: Effect[] = [];
       const play = (key: string, track: Track, base: GridRect, frame: MotionFrame | null, kind: MotionKind, fill: Effect["fill"], map?: (f: CompiledFrame) => CompiledFrame) => {
-        const element = handles.get(key) as Styled | undefined;
-        if (!element) return;
+        const elements = handles.all?.(key) ?? [handles.get(key)].filter((e): e is HTMLElement | SVGElement => !!e);
+        if (!elements.length) return;
         const compiled = compileTrack(track, base, frame, duration), frames = map ? compiled.map(map) : compiled;
         const properties = animatedProperties(frames, base, kind);
-        if (properties.length) effects.push({ element, fill, style: (at) => styleOf(frameAt(frames, at), base, kind, properties) });
+        if (properties.length) for (const element of elements as Styled[]) effects.push({ element, fill, style: (at) => styleOf(frameAt(frames, at), base, kind, properties) });
       };
       const inSection = (frame: SectionFrame | null): MotionFrame | null => frame ? { track: frame.track, base: frame.base, x: false } : null;
       const drawn = presentationView(presentation);
@@ -501,6 +504,10 @@ export function createSceneMotion({ handles, scroller = () => null, reduced = pr
           case "route": case "junction":
             if (record.graphId !== null && drawn.graphs.get(record.graphId)?.layered.has(record.id)) {
               play(layerKey(record.id), track, record.rect, inSection(sectionFrame(presentation, record)), "layer", "forwards");
+              if (record.kind === "route" && (track.frames[0].pose.stem || track.frames[0].pose.shape)) {
+                const path = handles.get(layerKey(record.id))?.querySelector("path") as Styled | null;
+                if (path) effects.push({ element: path, fill: "forwards", style: at => ({ d: posePath(sampleTrack(track, at), record.rect)! }) });
+              }
             }
             break;
           default: break;
@@ -509,8 +516,14 @@ export function createSceneMotion({ handles, scroller = () => null, reduced = pr
       for (const retiree of presentation.retiring.values()) {
         if (!retiree.track || retiree.group !== null) continue;
         const { record } = retiree;
-        if (record.kind === "band") play(retiree.renderId, retiree.track, record.rect, null, "layer", "forwards");
-        else {
+        if (record.kind === "band") {
+          play(retiree.renderId, retiree.track, record.rect, null, "layer", "forwards");
+          const bodies = handles.all?.(exitBodyKey(retiree.renderId)) ?? [handles.get(exitBodyKey(retiree.renderId))].filter((e): e is HTMLElement | SVGElement => !!e);
+          for (const body of bodies as Styled[]) if (retiree.bodyFloor !== undefined) effects.push({ element: body, fill: "forwards", style: at => {
+            const pose = sampleTrack(retiree.track!, at), clip = exitBodyClip(pose, retiree.bodyFloor!);
+            return { clipPath: polygon({ ...clip, x: clip.x - pose.rect.x, y: clip.y - pose.rect.y }) };
+          } });
+        } else {
           // A retiree whose band closed is drawn by the grid, in folder coordinates.
           const frame = drawn.orphaned.has(retiree.renderId) ? null : inSection(sectionFrame(presentation, record));
           play(retiree.renderId, retiree.track, record.rect, frame, record.kind === "tile" ? "box" : "layer", "forwards");

@@ -305,16 +305,31 @@ export function attachPackedBand(layout: GraphLayout, key: string, bandTop: numb
       if (!(Math.abs(mapY(startY) - root.height) <= .1)) return { ...route, path };
       // Only the outgoing stem changes. Branches, junctions and descendant routes keep their
       // graph-engine geometry. Its bend is entirely above this group's first child row.
-      const cut = pathTailAtY(path, bandTop + stemRoom - 16);
-      const lane = bandTop + (placement.track ?? 12);
-      const dropX = nearestFree(cut.point.x, [...(placement.coverColumns ?? []), ...(placement.bypassColumns ?? [])].map((x): [number, number] => [x - 3.5, x + 3.5]), placement.left, placement.right) ?? cut.point.x;
-      const points = [{ x: placement.coverX, y: placement.coverHeight },
-        ...(placement.bridge ? [{ x: placement.coverX, y: placement.bridge.top },
-          { x: placement.bridge.gutter, y: placement.bridge.top }, { x: placement.bridge.gutter, y: lane }] : [{ x: placement.coverX, y: lane }]),
-        { x: dropX, y: lane }, { x: dropX, y: cut.point.y }, cut.point];
-      return { ...route, path: `${roundedStem(points)} ${cut.tail}` };
+      const stem = attachedStem(path, bandTop, stemRoom, placement);
+      return { ...route, path: `${roundedStem(stem.points)} ${stem.tail}` };
     }),
   };
+}
+
+/** The unrounded attachment skeleton and exact child-side tail, also used by scene motion. */
+export interface AttachedStem { readonly points: readonly { readonly x: number; readonly y: number }[]; readonly tail: string }
+export function attachedStem(path: string, bandTop: number, stemRoom: number, placement: BandPlacement): AttachedStem {
+  const cut = pathTailAtY(path, bandTop + stemRoom - 16);
+  const lane = bandTop + (placement.track ?? 12);
+  const dropX = nearestFree(cut.point.x, [...(placement.coverColumns ?? []), ...(placement.bypassColumns ?? [])].map((x): [number, number] => [x - 3.5, x + 3.5]), placement.left, placement.right) ?? cut.point.x;
+  const points = [{ x: placement.coverX, y: placement.coverHeight },
+    ...(placement.bridge ? [{ x: placement.coverX, y: placement.bridge.top },
+      { x: placement.bridge.gutter, y: placement.bridge.top }, { x: placement.bridge.gutter, y: lane }] : [{ x: placement.coverX, y: lane }]),
+    { x: dropX, y: lane }, { x: dropX, y: cut.point.y }, cut.point];
+  return { points, tail: cut.tail };
+}
+
+/** A root route's attachment, before corners are rounded. Non-root routes have no stem. */
+export function bandRouteStem(layout: GraphLayout, key: string, bandTop: number, placement: BandPlacement, route: import("./layout").PlacedRoute): AttachedStem | null {
+  const t = bandTransform(layout, key, bandTop, placement);
+  if (!t || route.from.kind !== "node" || route.from.id !== key) return null;
+  const path = translatePath(route.path, t);
+  return Math.abs(t.mapY(translatedStart[0]) - t.root.height) <= .1 ? attachedStem(path, bandTop, t.stemRoom, placement) : null;
 }
 
 /** Round orthogonal stem corners, clamping the radius for short runs. */

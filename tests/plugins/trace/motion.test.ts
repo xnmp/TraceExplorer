@@ -54,7 +54,7 @@ describe("holding a scroll anchor", () => {
     for (const shift of [14.59, 21.83, 70.16, 115]) {
       fixture.position.top = 300 - shift;
       hold.update();
-      expect(Math.abs(fixture.element.getBoundingClientRect().top - captured)).toBeLessThan(1);
+      expect(Math.abs(fixture.element.getBoundingClientRect().top - captured)).toBeLessThanOrEqual(.5);
       expect(released).not.toHaveBeenCalled();
     }
     // Actual bounds still release the hold.

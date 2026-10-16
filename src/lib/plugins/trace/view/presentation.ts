@@ -12,15 +12,20 @@
  * so the continuation follows the original trajectory exactly.
  */
 import type { GridRect } from "$lib/domain/trace-graph/grid-flow";
-import type { Orientation } from "$lib/domain/trace-graph/layout";
+import type { Orientation, PlacedRoute } from "$lib/domain/trace-graph/layout";
+import { bandRouteStem, roundedStem } from "$lib/domain/trace-graph/band-geometry";
 import { endpointKey } from "$lib/domain/trace-graph/junctions";
-import { pathTranslation, translatePath, type Point } from "$lib/domain/trace-graph/path-sampling";
+import { pathTranslation, translatePath, routeShape, routeShapePath, mixRouteShape, sameRouteShape, type RouteShape, type Point } from "$lib/domain/trace-graph/path-sampling";
+import { routeBounds } from "$lib/domain/trace-graph/folder-layout/route-bounds";
 import { entityId, type EntityId, type FolderScene, type GraphId, type SceneDiff, type SceneRecord } from "$lib/domain/trace-graph/folder-scene";
 
 export type TransactionId = number;
 export type RenderId = string;
 export type Ease = "linear" | readonly [number, number, number, number];
 export interface Pose {
+  /** Exact connector geometry relative to rect, sampled on the same clock as its endpoints. */
+  readonly stem?: StemPose;
+  readonly shape?: RouteShape;
   readonly rect: GridRect;
   /** Motion multiplier; settled = 1. */
   readonly opacity: number;
@@ -34,8 +39,28 @@ export interface PoseFrame {
   /** Interpolation to the next frame. */
   readonly easing: Ease;
 }
-export interface Track { readonly frames: readonly PoseFrame[] }
+export interface Track {
+  readonly frames: readonly PoseFrame[];
+  /** Deformation and endpoint trajectories are independent; none may restart the other's clock. */
+  readonly routeMotion?: RouteMotion;
+  /** Stationary reopen window, applied after sampling endpoint deformation. */
+  readonly below?: GridRect;
+}
+interface EndpointMotion {
+  readonly actual: Track | null;
+  readonly assumed: Track | null;
+  readonly target: GridRect;
+}
+interface RouteMotion {
+  readonly geometry: Track;
+  readonly head: EndpointMotion;
+  readonly tail: EndpointMotion;
+  readonly elapsed: number;
+}
+/** Stable semantic stem points (including a collapsed gutter detour) and the child-side curve. */
+export interface StemPose { readonly points: readonly Point[]; readonly tail: RouteShape; readonly bridge: boolean }
 export interface PresentedRecord {
+  readonly attachment?: StemPose;
   readonly renderId: RenderId;
   /**
    * Live records: the scene record. Retirees: the record where it was displayed when it retired
@@ -47,6 +72,8 @@ export interface PresentedRecord {
 }
 export interface RetiringRecord extends PresentedRecord {
   readonly sourceTransaction: TransactionId;
+  /** A closing shared-row band's body clips below its source-attachment header. */
+  readonly bodyFloor?: number;
   /** The exit group whose fade and clip this record shares (it has no track of its own), or null. */
   readonly group: RenderId | null;
   readonly reason: "exit" | "old-route";
@@ -187,14 +214,78 @@ const displacement = (pose: Pose, base: GridRect): Point => ({ x: pose.rect.x - 
 /** A clip that leaves the whole rect visible is no clip. */
 export const effectiveClip = (pose: Pose): GridRect | null => pose.clip && !contains(pose.clip, pose.rect) ? pose.clip : null;
 
+const sameStem = (a: StemPose | undefined, b: StemPose | undefined): boolean => a === b || (!!a && !!b
+  && a.points.length === b.points.length && a.points.every((p, i) => Math.hypot(p.x - b.points[i].x, p.y - b.points[i].y) < .001) && sameRouteShape(a.tail, b.tail));
+
+/** The exact displayed connector path, in the coordinates of its element's base rectangle. */
+export function posePath(pose: Pose, base: GridRect): string | null {
+  if (pose.stem) {
+    const points = pose.stem.points.map(p => ({ x: p.x + base.x, y: p.y + base.y }));
+    const tail = pose.stem.tail.slice(1).map(segment => `C${segment.map((n, j) => n + (j % 2 ? base.y : base.x)).join(" ")}`).join(" ");
+    return `${roundedStem(points)} ${tail}`;
+  }
+  return pose.shape ? routeShapePath(pose.shape, base) : null;
+}
+
+/** Per-scene lookups for `attachmentOf`, built once: scanning bands and raw routes per record is quadratic in large folders. */
+interface AttachmentIndex {
+  readonly bands: ReadonlyMap<string, FolderScene["layout"]["bands"][number]>;
+  routes(graphId: string, raw: readonly PlacedRoute[]): ReadonlyMap<string, PlacedRoute>;
+}
+const attachmentIndices = new WeakMap<FolderScene, AttachmentIndex>();
+function attachmentIndex(scene: FolderScene): AttachmentIndex {
+  let index = attachmentIndices.get(scene);
+  if (!index) {
+    const byGraph = new Map<string, ReadonlyMap<string, PlacedRoute>>();
+    index = {
+      bands: new Map(scene.layout.bands.map(band => [band.id, band])),
+      routes(graphId, raw) {
+        let routes = byGraph.get(graphId);
+        if (!routes) byGraph.set(graphId, routes = new Map(raw.map(route => [route.id, route])));
+        return routes;
+      },
+    };
+    attachmentIndices.set(scene, index);
+  }
+  return index;
+}
+
+/** Capture attachment semantics with each live route; interruptions never reconstruct them from SVG. */
+function attachmentOf(scene: FolderScene, record: SceneRecord): StemPose | undefined {
+  if (record.kind !== "route" || record.graphId === null) return undefined;
+  const graph = scene.graphs.get(record.graphId), band = attachmentIndex(scene).bands.get(record.graphId);
+  const raw = graph && attachmentIndex(scene).routes(record.graphId, graph.layout.routes).get(record.route.id);
+  if (!graph || !raw || !band) return undefined;
+  const stem = bandRouteStem(graph.layout, record.graphId, band.y - graph.origin.y, graph.placement, raw);
+  if (!stem) return undefined;
+  const local = (p: Point) => ({ x: p.x + graph.origin.x - record.rect.x, y: p.y + graph.origin.y - record.rect.y });
+  const points = stem.points.map(local);
+  const tail = routeShape(`M${stem.points.at(-1)!.x} ${stem.points.at(-1)!.y} ${stem.tail}`,
+    { x: record.rect.x - graph.origin.x, y: record.rect.y - graph.origin.y });
+  if (!tail) return undefined;
+  // Always retain the bridge's semantic points; without a bridge its gutter is collapsed.
+  const full = graph.placement.bridge ? points : [points[0], points[1], points[1], points[1], ...points.slice(2)];
+  return { points: full, tail, bridge: !!graph.placement.bridge };
+}
+
+/** Keep the bridged scene's gutter while its detour collapses to a horizontal run. */
+function alignStems(a: StemPose, aRect: GridRect, b: StemPose, bRect: GridRect): readonly [StemPose, StemPose] {
+  const gutter = a.bridge || !b.bridge ? a.points[2].x + aRect.x : b.points[2].x + bRect.x;
+  const align = (s: StemPose, rect: GridRect): StemPose => s.bridge ? s : { ...s, points: s.points.map((p, i) => i === 2 || i === 3 ? { ...p, x: gutter - rect.x } : p) };
+  return [align(a, aRect), align(b, bRect)];
+}
+
 export function mixPose(a: Pose, b: Pose, k: number): Pose {
   const clip = a.clip && b.clip ? mixRect(a.clip, b.clip, k) : k >= 1 ? b.clip : a.clip;
-  return { rect: mixRect(a.rect, b.rect, k), opacity: mix(a.opacity, b.opacity, k), clip };
+  return { rect: mixRect(a.rect, b.rect, k), opacity: mix(a.opacity, b.opacity, k), clip,
+    ...(a.shape && b.shape ? { shape: mixRouteShape(a.shape, b.shape, k) } : {}),
+    ...(a.stem && b.stem ? { stem: { points: a.stem.points.map((p, i) => ({ x: mix(p.x, b.stem!.points[i].x, k), y: mix(p.y, b.stem!.points[i].y, k) })),
+      tail: mixRouteShape(a.stem.tail, b.stem.tail, k), bridge: a.stem.bridge || b.stem.bridge } } : {}) };
 }
 
 export function samePose(a: Pose, b: Pose): boolean {
   const ca = effectiveClip(a), cb = effectiveClip(b);
-  return sameRect(a.rect, b.rect) && Math.abs(a.opacity - b.opacity) <= .001 && (ca === null ? cb === null : cb !== null && sameRect(ca, cb));
+  return sameStem(a.stem, b.stem) && sameRouteShape(a.shape, b.shape) && sameRect(a.rect, b.rect) && Math.abs(a.opacity - b.opacity) <= .001 && (ca === null ? cb === null : cb !== null && sameRect(ca, cb));
 }
 
 export const settledPose = (record: SceneRecord): Pose => ({ rect: record.rect, opacity: 1, clip: null });
@@ -203,6 +294,8 @@ export const finalPose = (track: Track): Pose => track.frames[track.frames.lengt
 
 /** A track's pose at epoch time `at` (before it, its first pose; after it, its last). */
 export function sampleTrack(track: Track, at: number): Pose {
+  if (track.below) return belowWindow(sampleTrack({ ...track, below: undefined }, at), track.below);
+  if (track.routeMotion) return sampleRouteMotion(track.routeMotion, at);
   const { frames } = track;
   if (!(at > frames[0].at)) return frames[0].pose;
   const last = frames[frames.length - 1];
@@ -213,6 +306,33 @@ export function sampleTrack(track: Track, at: number): Pose {
   return mixPose(a.pose, b.pose, easeAt(a.easing, (at - a.at) / (b.at - a.at)));
 }
 
+/** Move a curve's head and tail with their actual endpoint tracks, including residual easing. */
+function sampleRouteMotion(motion: RouteMotion, at: number): Pose {
+  const time = Math.max(0, Number.isNaN(at) ? 0 : at) + motion.elapsed;
+  const pose = sampleTrack(motion.geometry, time);
+  const correction = ({ actual, assumed, target }: EndpointMotion): Point => {
+    const a = actual ? sampleTrack(actual, time).rect : target;
+    const b = assumed ? sampleTrack(assumed, time).rect : target;
+    return { x: a.x - b.x, y: a.y - b.y };
+  };
+  const head = correction(motion.head), tail = correction(motion.tail);
+  const shiftShape = (shape: RouteShape, delta: (progress: number) => Point): RouteShape => shape.map((segment, i) =>
+    segment.map((n, j) => {
+      const progress = i ? (i - 1 + (Math.floor(j / 2) + 1) / 3) / (shape.length - 1) : 0;
+      const d = delta(progress);
+      return n + (j % 2 ? d.y : d.x);
+    }));
+  return { ...pose,
+    ...(pose.stem ? { stem: { ...pose.stem,
+      // The header belongs to the cover, the lower lane and exact tail to the child.
+      // Gutter x is common to both vertical corners, preserving orthogonality.
+      points: pose.stem.points.map((p, i) => ({ x: p.x + (i < 2 ? head.x : i < 4 ? 0 : tail.x), y: p.y + (i < 3 ? head.y : tail.y) })),
+      tail: shiftShape(pose.stem.tail, () => tail),
+    } } : {}),
+    ...(pose.shape ? { shape: shiftShape(pose.shape, k => ({ x: mix(head.x, tail.x, k), y: mix(head.y, tail.y, k) })) } : {}),
+  };
+}
+
 /**
  * What remains of `track` from epoch time `at`, on a clock restarted there: the sampled pose at
  * zero with the current segment's remaining easing, later frames shifted by `at`. Null once the
@@ -221,12 +341,14 @@ export function sampleTrack(track: Track, at: number): Pose {
 export function sliceTrack(track: Track, at: number): Track | null {
   if (Number.isNaN(at) || at >= trackEnd(track)) return null;
   const { frames } = track;
-  if (at <= frames[0].at) return at === 0 ? track : { frames: frames.map((frame) => ({ ...frame, at: frame.at - at })) };
+  if (at <= frames[0].at) return at === 0 ? track : { ...track, frames: frames.map((frame) => ({ ...frame, at: frame.at - at })),
+    ...(track.routeMotion ? { routeMotion: { ...track.routeMotion, elapsed: track.routeMotion.elapsed + at } } : {}) };
   let i = 0;
   while (frames[i + 1].at <= at) i++;
   const a = frames[i], b = frames[i + 1], u = (at - a.at) / (b.at - a.at);
   const first: PoseFrame = { at: 0, pose: sampleTrack(track, at), easing: sliceEase(a.easing, u, 1) };
-  return { frames: [first, ...frames.slice(i + 1).map((frame) => ({ ...frame, at: frame.at - at }))] };
+  return { ...track, frames: [first, ...frames.slice(i + 1).map((frame) => ({ ...frame, at: frame.at - at }))],
+    ...(track.routeMotion ? { routeMotion: { ...track.routeMotion, elapsed: track.routeMotion.elapsed + at } } : {}) };
 }
 
 /** Clips on every pose or none, so interpolation never switches between clipped and unclipped. */
@@ -240,6 +362,25 @@ export function retargetTrack(from: Pose, to: Pose, duration = MOTION_MS, easing
   if (!(duration > 0) || samePose(from, to)) return null;
   const [a, b] = withClips([from, to]);
   return { frames: [{ at: 0, pose: a, easing }, { at: duration, pose: b, easing: "linear" }] };
+}
+
+/** Both endpoints may travel different distances while sharing one normalized motion clock. */
+function sharedProgress(a: Track, aTarget: GridRect, b: Track, bTarget: GridRect): boolean {
+  const progress = (track: Track, target: GridRect, index: number) => {
+    const start = track.frames[0].pose.rect, at = track.frames[index].pose.rect;
+    const dx = target.x - start.x, dy = target.y - start.y, squared = dx * dx + dy * dy;
+    return squared > NEAR * NEAR ? ((at.x - start.x) * dx + (at.y - start.y) * dy) / squared : 0;
+  };
+  return a.frames.length === b.frames.length && a.frames.every((f, i) => Math.abs(f.at - b.frames[i].at) < 1e-6
+    && sameEase(f.easing, b.frames[i].easing) && Math.abs(progress(a, aTarget, i) - progress(b, bTarget, i)) < 1e-6);
+}
+
+/** A deformation carried by one moving endpoint while the other stays still, including residual easing. */
+export function trackWithEndpoint(from: Pose, to: Pose, endpoint: Track, target: GridRect): Track | null {
+  const start = endpoint.frames[0].pose.rect, dx = target.x - start.x, dy = target.y - start.y, length2 = dx * dx + dy * dy;
+  if (!(length2 > NEAR * NEAR)) return retargetTrack(from, to);
+  return { frames: endpoint.frames.map(f => ({ ...f, pose: mixPose(from, to,
+    Math.max(0, Math.min(1, ((f.pose.rect.x - start.x) * dx + (f.pose.rect.y - start.y) * dy) / length2))) })) };
 }
 
 /**
@@ -292,12 +433,17 @@ function collapsing(from: Pose, edge: number, rise: number, duration = MOTION_MS
  * edge and by its own size on the other sides (what it draws past its box, such as a selection
  * ring), so the edge stays still and the clip never cuts anything else, whatever its motion.
  */
+function belowWindow(pose: Pose, window: GridRect): Pose {
+  const path = posePath(pose, pose.rect);
+  // A deformed route can extend well outside its target bounds during a takeover.
+  // Only the stationary top edge clips it; include its displayed control hull and marker.
+  const bounds = path ? routeBounds(path) : null;
+  const rect = bounds ? union(pose.rect, bounds) : pose.rect;
+  return { ...pose, clip: { x: rect.x - rect.width, y: window.y, width: 3 * rect.width,
+    height: Math.max(0, rect.y + 2 * rect.height - window.y) } };
+}
 function belowEdge(track: Track, window: GridRect): Track {
-  return { frames: track.frames.map((frame) => {
-    const { rect } = frame.pose, x = rect.x - rect.width;
-    const clip = { x, y: window.y, width: 3 * rect.width, height: Math.max(0, rect.y + 2 * rect.height - window.y) };
-    return { ...frame, pose: { ...frame.pose, clip } };
-  }) };
+  return { ...track, below: window, frames: track.frames.map(frame => ({ ...frame, pose: belowWindow(frame.pose, window) })) };
 }
 
 const ALPHA_EPSILON = .001;
@@ -321,7 +467,7 @@ function continuingFade(from: Pose, to: Pose, fade: Track, duration: number): Tr
 
 // ─── Presentations ──────────────────────────────────────────────────────────
 
-const settled = (record: SceneRecord): PresentedRecord => ({ renderId: record.id, record, initial: settledPose(record), track: null });
+const settled = (record: SceneRecord, scene?: FolderScene): PresentedRecord => ({ renderId: record.id, record, initial: settledPose(record), track: null, attachment: scene ? attachmentOf(scene, record) : undefined });
 
 /** `riders` move only with their section (no motion of their own): they are not pinned. */
 function presentation(epoch: number, live: ReadonlyMap<RenderId, PresentedRecord>, retiring: ReadonlyMap<RenderId, RetiringRecord> = new Map(),
@@ -342,14 +488,14 @@ function presentation(epoch: number, live: ReadonlyMap<RenderId, PresentedRecord
 /** Every record at its target pose, nothing retiring: a snapped presentation. */
 export function staticPresentation(scene: FolderScene, epoch = 0): Presentation {
   const live = new Map<RenderId, PresentedRecord>();
-  for (const [id, record] of scene.records) live.set(id, settled(record));
+  for (const [id, record] of scene.records) live.set(id, settled(record, scene));
   return presentation(epoch, live);
 }
 
 /** The same epoch once its motion has finished: every live record at its target, no retirees. */
 export function settledPresentation(current: Presentation): Presentation {
   const live = new Map<RenderId, PresentedRecord>();
-  for (const [id, presented] of current.live) live.set(id, presented.track ? settled(presented.record) : presented);
+  for (const [id, presented] of current.live) live.set(id, presented.track ? { ...settled(presented.record), attachment: presented.attachment } : presented);
   return presentation(current.epoch, live);
 }
 
@@ -387,9 +533,19 @@ export function samplePresentation(current: Presentation, at: number): Displayed
     if (!group || !base) { poses.set(id, { ...own, opacity: 0 }); continue; }
     // Members ride their group's container (a closing band slides up under its cover).
     const by = displacement(group, base);
-    poses.set(id, { rect: translate(own.rect, by), opacity: own.opacity * group.opacity, clip: intersect(own.clip ? translate(own.clip, by) : null, group.clip) });
+    const floor = current.retiring.get(retiree.group)?.bodyFloor;
+    const window = floor !== undefined && !exitsFromCover(retiree.record) ? exitBodyClip(group, floor) : group.clip;
+    poses.set(id, { ...own, rect: translate(own.rect, by), opacity: own.opacity * group.opacity, clip: intersect(own.clip ? translate(own.clip, by) : null, window) });
   }
   return { presentation: current, at, poses };
+}
+
+/** Root connectors leave through the cover; descendants leave through the child canvas. */
+export const exitsFromCover = (record: SceneRecord): boolean => record.kind === "route"
+  && record.route.from.kind === "node" && record.route.from.id === record.graphId;
+export function exitBodyClip(group: Pose, floor: number): GridRect {
+  const clip = group.clip ?? group.rect, y = Math.max(clip.y, floor);
+  return { ...clip, y, height: Math.max(0, clip.y + clip.height - y) };
 }
 
 /** The cover record that frames a band record: its graph's section moves with the cover's row. */
@@ -449,10 +605,10 @@ function withOpacityOf(track: Track, rect: GridRect): Track | null {
 /** A retired record as displayed: moved to where its pose shows it (a connector's path and a junction with it). */
 function displaced(record: SceneRecord, pose: Pose): SceneRecord {
   const shift = displacement(pose, record.rect);
-  if (Math.hypot(shift.x, shift.y) <= 1e-9) return record;
+  if (Math.hypot(shift.x, shift.y) <= 1e-9 && !pose.stem && !pose.shape) return record;
   const rect = translate(record.rect, shift);
   switch (record.kind) {
-    case "route": return { ...record, rect, route: { ...record.route, path: translatePath(record.route.path, shift) ?? record.route.path } };
+    case "route": return { ...record, rect, route: { ...record.route, path: posePath(pose, rect) ?? translatePath(record.route.path, shift) ?? record.route.path } };
     case "junction": return { ...record, rect, junction: { ...record.junction, x: record.junction.x + shift.x, y: record.junction.y + shift.y } };
     default: return { ...record, rect };
   }
@@ -483,8 +639,8 @@ const isBandRecord = (record: SceneRecord) => record.kind === "route" || record.
  * - Entering band tiles slide in and, with their connectors, appear in their band's arrival window
  *   at the end of the motion; a record that reappears while it is still retiring takes over the
  *   retiree's displayed pose instead (reopening), and the retiree is dropped.
- * - Connectors whose endpoints move rigidly with them travel along; rerouted ones crossfade
- *   between their exact displayed and new paths (a path is never interpolated).
+ * - Retained connectors travel with rigid endpoints or deform from their exact displayed
+ *   geometry; packed cover attachments retain their orthogonal stem and rounded corners.
  * - A closed stack's displayed tiles and connectors retire as one exit group that collapses like
  *   an accordion over the whole motion: it slides up under its cover, clipped between the band's
  *   top and the rising rows below, and fades in the second half. Departures inside an open band
@@ -600,7 +756,7 @@ export function retargetPresentation(displayed: DisplayedPresentation | null, ne
     tracks.set(id, kept !== undefined ? kept : move(record, start.get(id)!, target));
   }
 
-  // 4. Connectors: travel with endpoints that move rigidly with them, else crossfade exact paths.
+  // 4. Retained connectors travel or deform continuously; only entering connectors fade in.
   const fresh: RetiringRecord[] = [];
   /** Connectors that appear exactly with an arriving tile, by that tile. */
   const follows = new Map<EntityId, EntityId>();
@@ -616,7 +772,11 @@ export function retargetPresentation(displayed: DisplayedPresentation | null, ne
     const arriving = [endpoint(record.graphId!, endpointKey(record.route.to)), endpoint(record.graphId!, endpointKey(record.route.from))]
       .find((tile) => tile?.kind === "tile" && !tile.cover && start.get(tile.id)!.opacity <= PAINTED && tracks.get(tile.id));
     if (arriving) { tracks.set(id, withOpacityOf(tracks.get(arriving.id)!, record.rect)); follows.set(id, arriving.id); continue; }
-    const kept = continued(id, target);
+    const previousPose = before.live.get(id)?.track?.frames.at(-1)?.pose;
+    const attachment = attachmentOf(next, record);
+    const destination = previousPose?.stem && attachment ? { ...target, stem: alignStems(previousPose.stem, record.rect, attachment, record.rect)[1] }
+      : previousPose?.shape ? { ...target, shape: routeShape(record.route.path, record.rect) ?? undefined } : target;
+    const kept = continued(id, destination);
     if (kept !== undefined) { tracks.set(id, kept); continue; }
     const was = before.live.get(id), source = was ?? takeovers.get(id);
     const pose = source ? shown.get(source.renderId) : undefined;
@@ -642,6 +802,38 @@ export function retargetPresentation(displayed: DisplayedPresentation | null, ne
     if (compatible) {
       tracks.set(id, headTrack ? carry(headTrack, head!.rect, record.rect) : retargetTrack(pose, target, D));
       continue;
+    }
+    const tailTrack = tail ? tracks.get(tail.id) ?? null : null;
+    const deformGeometry = (a: Pose, b: Pose): Track | null =>
+      tailTrack && tail && (!headTrack || (head && sharedProgress(headTrack, head.rect, tailTrack, tail.rect))) ? trackWithEndpoint(a, b, tailTrack, tail.rect)
+        : !tailTrack && headTrack && head ? trackWithEndpoint(a, b, headTrack, head.rect) : retargetTrack(a, b, D);
+    const deform = (a: Pose, b: Pose): Track | null => {
+      const geometry = deformGeometry(a, b);
+      if (!geometry || !head || !tail) return geometry;
+      const binding = (end: SceneRecord): EndpointMotion => ({ actual: tracks.get(end.id) ?? null,
+        assumed: deformGeometry({ rect: start.get(end.id)!.rect, opacity: 1, clip: null }, settledPose(end)), target: end.rect });
+      const motion: RouteMotion = { geometry, head: binding(head), tail: binding(tail), elapsed: 0 };
+      const end = Math.max(trackEnd(geometry), headTrack ? trackEnd(headTrack) : 0, tailTrack ? trackEnd(tailTrack) : 0);
+      const frames = geometry.frames.map(f => ({ ...f, pose: sampleRouteMotion(motion, f.at) }));
+      if (end > trackEnd(geometry)) frames.push({ at: end, pose: sampleRouteMotion(motion, end), easing: "linear" });
+      return { routeMotion: motion, frames };
+    };
+    // A retained connector changes shape when its band moves independently of its cover.
+    // Keep the exact displayed curve and deform it on the tile clock; retiring and re-entering
+    // it would leave a fully blank interval between the departure and arrival windows.
+    if (source && from.kind === "route") {
+      if ((pose.stem || (!pose.shape && source.attachment)) && attachment) {
+        const [oldStem, newStem] = alignStems(pose.stem ?? source.attachment!, from.rect, attachment, record.rect);
+        const a = { ...pose, shape: undefined, rect: from.rect, stem: oldStem }, b = { ...target, stem: newStem };
+        tracks.set(id, deform(a, b));
+        continue;
+      }
+      const oldShape = routeShape(from.route.path, from.rect), newShape = routeShape(record.route.path, record.rect);
+      if (oldShape && newShape) {
+        const a = { ...pose, stem: undefined, rect: from.rect, shape: oldShape }, b = { ...target, shape: newShape };
+        tracks.set(id, deform(a, b));
+        continue;
+      }
     }
     // The displayed path fades out at the start of the motion; the new one arrives at its end.
     const old = departure({ ...pose, rect: from.rect }, w, D);
@@ -724,7 +916,7 @@ export function retargetPresentation(displayed: DisplayedPresentation | null, ne
       for (const { record, pose } of leaving) {
         const clear = holds && !sweeps.some((sweep) => overlapping(sweep, pose.rect));
         const track = clear ? collapsing(pose, edge, rise, D) : rigid ? departure(pose, w, D) : null;
-        if (track) fresh.push({ renderId: retireId(transaction, "exit", record.id), record: displaced(record, pose), initial: track.frames[0].pose, track,
+        if (track) fresh.push({ renderId: retireId(transaction, "exit", record.id), record: displaced(record, pose), initial: track.frames[0].pose, track, attachment: pose.stem ?? before.live.get(record.id)?.attachment,
           sourceTransaction: transaction, group: null, reason: "exit", branch: branch(graphId) });
       }
       continue;
@@ -759,7 +951,15 @@ export function retargetPresentation(displayed: DisplayedPresentation | null, ne
     // records' bounds are padded), and never below its first tile.
     const coverBottom = cover ? (shown.get(coverId)?.rect ?? cover.record.rect).height : -Infinity;
     const tileTops = members.flatMap(({ record, pose }) => record.kind === "tile" ? [pose.rect.y - top] : []);
-    const floor = Math.max(0, Math.min(cover ? coverBottom : Math.min(...members.map(({ pose }) => pose.rect.y)) - top, ...tileTops));
+    // When a neighbor keeps its attachment, tiles and descendant routes collapse under the
+    // child canvas. Source stems still leave through their own cover's bottom edge.
+    const stayingHeader = [...next.routes.values()].some(route => {
+      if (route.graphId === graphId || !before.live.has(route.id)) return false;
+      const root = next.tiles.get(entityId("tile", route.graphId, route.graphId!));
+      return root && Math.abs(root.rect.y - top) < NEAR && tileTops.length > 0;
+    });
+    const headerFloor = Math.max(0, Math.min(cover ? coverBottom : Math.min(...members.map(({ pose }) => pose.rect.y)) - top, ...tileTops));
+    const floor = stayingHeader ? Math.min(...tileTops) : headerFloor;
     if (!(extent > floor)) continue;
     const lowest = Math.min(extent, Math.max(...members.map(({ pose }) => {
       const clip = effectiveClip(pose);
@@ -770,7 +970,7 @@ export function retargetPresentation(displayed: DisplayedPresentation | null, ne
     const slide = Math.max(0, reclaimed - (extent - lowest));
     const collapsed = (progress: number, opacity: number): Pose => ({
       rect: translate(container, { x: 0, y: -slide * progress }), opacity,
-      clip: { ...container, y: top + floor, height: Math.max(0, extent - floor - reclaimed * progress) },
+      clip: { ...container, y: top + headerFloor, height: Math.max(0, extent - headerFloor - reclaimed * progress) },
     });
     const groupTrack = easedFrames([[0, collapsed(0, 1)], [COLLAPSE_FADE_FROM, collapsed(COLLAPSE_FADE_FROM, 1)], [1, collapsed(1, 0)]], D);
     if (!groupTrack) continue;
@@ -778,10 +978,12 @@ export function retargetPresentation(displayed: DisplayedPresentation | null, ne
     const groupId = retireId(transaction, "exit", bandId);
     const groupRecord: SceneRecord = band ? { ...band, rect: container }
       : { kind: "band", id: bandId, graphId, rect: container, band: { id: graphId, row: 0, ...container } };
-    fresh.push({ renderId: groupId, record: groupRecord, initial: groupTrack.frames[0].pose, track: groupTrack, sourceTransaction: transaction, group: null, reason: "exit", branch: branch(graphId) });
+    fresh.push({ renderId: groupId, record: groupRecord, initial: groupTrack.frames[0].pose, track: groupTrack,
+      ...(stayingHeader ? { bodyFloor: top + floor } : {}), sourceTransaction: transaction, group: null, reason: "exit", branch: branch(graphId) });
     for (const { record, pose } of members) {
       const member = displaced(record, pose);
-      fresh.push({ renderId: retireId(transaction, "exit", record.id), record: member, initial: { rect: member.rect, opacity: pose.opacity, clip: null }, track: null,
+      fresh.push({ renderId: retireId(transaction, "exit", record.id), record: member, attachment: pose.stem ?? before.live.get(record.id)?.attachment,
+        initial: { ...pose, rect: member.rect, clip: null }, track: null,
         sourceTransaction: transaction, group: groupId, reason: "exit", branch: branch(graphId) });
     }
   }
@@ -805,7 +1007,7 @@ export function retargetPresentation(displayed: DisplayedPresentation | null, ne
   const live = new Map<RenderId, PresentedRecord>();
   for (const [id, record] of next.records) {
     const track = tracks.get(id) ?? null;
-    live.set(id, { renderId: id, record, initial: track ? track.frames[0].pose : settledPose(record), track });
+    live.set(id, { renderId: id, record, initial: track ? track.frames[0].pose : settledPose(record), track, attachment: attachmentOf(next, record) });
   }
   return presentation(epoch, live, retiring, riders);
 }

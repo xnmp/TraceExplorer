@@ -1,3 +1,4 @@
+import { checkRouteOcclusionFrames } from "./helpers/route-occlusion";
 /**
  * The scene transaction contract (docs/scene-transactions.md §4–5), against the real view and the
  * mock backend's gates: the previous scene stays displayed while the next is prepared, an action
@@ -6,6 +7,8 @@
 import { test, expect, type Page } from "@playwright/test";
 import { openView, settle, uncaught, key, state } from "./support";
 import { sceneEvents, clearSceneEvents, expectActionContract, sampleFrames, byTransaction } from "./helpers/scene-events";
+
+checkRouteOcclusionFrames();
 
 const stack = (page: Page, name: string) => page.locator(`section[data-component][aria-label="${name}"]`);
 const toggle = (page: Page, name: string) => stack(page, name).locator("[data-stack-toggle]");

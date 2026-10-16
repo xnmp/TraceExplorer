@@ -4,7 +4,7 @@
  * (`flattenPath`, `flattenInto`); presentation recognises and applies rigid
  * translations (`pathTranslation`, `translatePath`). `resample` and
  * `samplePathString` space points evenly along a path: the layout geometry
- * tests sample routes with them (connectors are never morphed).
+ * tests sample routes with them. Presentation also keeps exact cubic route shapes for continuous deformation.
  */
 import { isLetter, isSpace, scanNumber, scanned } from "./path-data";
 
@@ -168,3 +168,44 @@ export function translatePath(path: string, shift: Point): string | null {
   return commands && commands.every(c => c.values.every(Number.isFinite))
     ? commands.map(c => `${c.kind}${c.values.join(" ")}`).join(" ") : null;
 }
+
+/** Cubic segments in record-local coordinates. Lines are exact degenerate cubics. */
+export type RouteShape = readonly (readonly number[])[];
+
+export function routeShape(path: string, origin: Point): RouteShape | null {
+  const commands = pathCommands(path);
+  if (!commands || !Number.isFinite(origin.x) || !Number.isFinite(origin.y)) return null;
+  let x = commands[0].values[0], y = commands[0].values[1];
+  const shape: number[][] = [[x - origin.x, y - origin.y]];
+  for (const command of commands.slice(1)) {
+    if (command.kind === 'M') return null;
+    const v = command.values;
+    const cubic = command.kind === 'C' ? v : [x + (v[0] - x) / 3, y + (v[1] - y) / 3,
+      x + 2 * (v[0] - x) / 3, y + 2 * (v[1] - y) / 3, v[0], v[1]];
+    shape.push(cubic.map((n, i) => n - (i % 2 ? origin.y : origin.x)));
+    x = cubic[4]; y = cubic[5];
+  }
+  return shape.every(segment => segment.every(Number.isFinite)) ? shape : null;
+}
+
+/** Pad at the endpoint: every original curve is exact at either end, even when topology changes. */
+export function mixRouteShape(a: RouteShape, b: RouteShape, progress: number): RouteShape {
+  if (progress <= 0) return a;
+  if (progress >= 1) return b;
+  const segment = (shape: RouteShape, index: number) => {
+    if (index < shape.length) return shape[index];
+    const end = shape.at(-1)!.slice(-2);
+    return [...end, ...end, ...end];
+  };
+  return Array.from({ length: Math.max(a.length, b.length) }, (_, i) => {
+    const from = segment(a, i), to = segment(b, i);
+    return from.map((n, j) => n * (1 - progress) + to[j] * progress);
+  });
+}
+
+export const sameRouteShape = (a: RouteShape | undefined, b: RouteShape | undefined): boolean =>
+  a === b || (!!a && !!b && a.length === b.length && a.every((segment, i) => segment.length === b[i].length
+    && segment.every((n, j) => Math.abs(n - b[i][j]) < .001)));
+
+export const routeShapePath = (shape: RouteShape, origin: Point): string => shape.map((segment, i) =>
+  `${i ? 'C' : 'M'}${segment.map((n, j) => n + (j % 2 ? origin.y : origin.x)).join(' ')}`).join(' ');

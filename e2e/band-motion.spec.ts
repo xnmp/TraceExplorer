@@ -1,6 +1,9 @@
+import { checkRouteOcclusionFrames } from "./helpers/route-occlusion";
 import { test, expect, type Page } from '@playwright/test';
 import { holdMotion, releaseMotion, awaitMotionStarted } from './animation-control';
 import { openView, settle, key, uncaught } from './support';
+
+checkRouteOcclusionFrames();
 
 /** Screen-space rectangles, including every ancestor clip, sampled after the frame callbacks. */
 async function sampleBand(page: Page, selector: string, ms = 700, actions: Array<{ at: number; selector: string }> = [], speed = 1) {
@@ -55,7 +58,7 @@ async function sampleBand(page: Page, selector: string, ms = 700, actions: Array
         return { key: element.dataset.tileKey ?? 'exit', full, visible, opacity, clips };
       });
       return { t, tiles, rows: [...document.querySelectorAll<HTMLElement>('[data-grid-cell]')].filter(e => Number(e.getAttribute('aria-rowindex')) > 1).map(rect),
-        routes: [...document.querySelectorAll<SVGPathElement>('[data-grid-band] path[data-route]')].map(e => {
+        routes: [...document.querySelectorAll<SVGPathElement>('[data-route-band] path[data-route]')].map(e => {
           const point = e.getPointAtLength(e.getTotalLength()), matrix = e.getScreenCTM()!;
           const end = new DOMPoint(point.x, point.y).matrixTransform(matrix);
           return { opacity: Number(getComputedStyle(e).opacity), id: e.dataset.route, to: e.dataset.to?.slice(5), end: { x: end.x, y: end.y }, rect: rect(e), path: getComputedStyle(e).getPropertyValue('d').replace(/^none$/, '') || e.getAttribute('d') };
@@ -191,26 +194,32 @@ async function routeFrame(page: Page) {
       return value;
     };
     const tileElements = [...document.querySelectorAll<HTMLElement>('[data-tile-key], [data-ghost-tile-key], [data-grid-cell] [data-entry-path], [data-grid-band] [data-motion-ghost].tile')];
+    (window as any).__checkOcclusion?.();
     const tiles = tileElements.map(element => {
       const b = element.getBoundingClientRect();
       // Exit tiles are clipped together with their connectors. Test the visible rectangle.
-      let bottom = b.bottom;
+      let bottom = b.bottom, visibleTop = b.top;
       for (let at: Element | null = element; at; at = at.parentElement) {
         const clip = /^inset\(([^)]*)\)/.exec(getComputedStyle(at).clipPath);
         if (clip) {
           const v = clip[1].split(/\s+/).map(parseFloat);
           bottom = Math.min(bottom, at.getBoundingClientRect().bottom - v[2 % v.length]);
+          visibleTop = Math.max(visibleTop, at.getBoundingClientRect().top + v[0]);
         }
         const polygon = /^polygon\(([^)]*)\)/.exec(getComputedStyle(at).clipPath);
         if (polygon) {
           const points = polygon[1].split(',').map(p => p.trim().split(/\s+/).map(parseFloat));
           bottom = Math.min(bottom, at.getBoundingClientRect().top + Math.max(...points.map(p => p[1])));
+          visibleTop = Math.max(visibleTop, at.getBoundingClientRect().top + Math.min(...points.map(p => p[1])));
         }
-        if (/hidden|clip|auto|scroll/.test(getComputedStyle(at).overflowY)) bottom = Math.min(bottom, at.getBoundingClientRect().bottom);
+        if (/hidden|clip|auto|scroll/.test(getComputedStyle(at).overflowY)) {
+          bottom = Math.min(bottom, at.getBoundingClientRect().bottom);
+          visibleTop = Math.max(visibleTop, at.getBoundingClientRect().top);
+        }
       }
-      return { key: element.dataset.tileKey ?? element.dataset.ghostTileKey ?? element.dataset.entryPath ?? 'departed tile', x: b.x, y: b.y, right: b.right, bottom, opacity: opacity(element), exit: element.closest<HTMLElement>('[data-grid-exit]')?.dataset.gridExit };
+      return { key: element.dataset.tileKey ?? element.dataset.ghostTileKey ?? element.dataset.entryPath ?? 'departed tile', x: b.x, y: b.y, right: b.right, bottom, visibleTop, opacity: opacity(element), exit: element.closest<HTMLElement>('[data-grid-exit]')?.dataset.gridExit };
     });
-    const routes = [...document.querySelectorAll<SVGPathElement>('[data-grid-band] path[data-route], [data-grid-exit] path[data-route], [data-grid-band] path[data-motion-ghost], [data-grid-exit] path[data-motion-ghost]')].map(path => {
+    const routes = [...document.querySelectorAll<SVGPathElement>('[data-route-band] path[data-route], [data-route-exit] path[data-route], [data-route-band] path[data-motion-ghost], [data-route-exit] path[data-motion-ghost]')].map(path => {
       // Accelerated WebKit geometry advances even within one JS task. Read
       // opacity, CTM and each actual endpoint box adjacently, before probing
       // the SVG path; a scene-wide early tile snapshot is not atomic.
@@ -225,7 +234,7 @@ async function routeFrame(page: Page) {
       });
       const endpointDots = [source, target].flatMap(endpoint => {
         if (!endpoint?.startsWith('junction:')) return [];
-        const id = endpoint.slice(9), owner = path.closest('[data-grid-band], [data-grid-exit]')!;
+        const id = endpoint.slice(9), owner = path.closest('[data-route-band], [data-route-exit]')!;
         const dot = owner.querySelector<SVGCircleElement>(`[data-motion-junction="${CSS.escape(id)}"]`)
           ?? owner.querySelector<SVGCircleElement>(`[data-junction="${CSS.escape(id)}"]`);
         if (!dot) return [];
@@ -234,7 +243,7 @@ async function routeFrame(page: Page) {
       });
       const obstacles = tileElements.map((element, i) => {
         const b = element.getBoundingClientRect(), old = tiles[i];
-        return { ...old, x: b.x, y: b.y, right: b.right, bottom: Math.min(b.bottom, old.bottom + b.y - old.y) };
+        return { ...old, x: b.x, y: Math.max(b.y, old.visibleTop + b.y - old.y), right: b.right, bottom: Math.min(b.bottom, old.bottom + b.y - old.y) };
       });
       const length = path.getTotalLength() * scale;
       const point = (distance: number) => {
@@ -258,7 +267,7 @@ async function routeFrame(page: Page) {
             right: box.x + Math.max(...points.map(p => p[0])), bottom: box.y + Math.max(...points.map(p => p[1])) };
           // A closing band slides up under its cover: what its window's top edge hides is under the
           // cover, where its connectors attach. Only the bottom edge (the rising rows) must never cut a port.
-          clips.push(bounds); motionClips.push(at.matches('[data-grid-exit]') ? { ...bounds, y: -Infinity } : bounds);
+          clips.push(bounds); motionClips.push(at.matches('[data-route-exit]') ? { ...bounds, y: -Infinity } : bounds);
         }
         const id = style.clipPath.match(/#([^"')]+)/)?.[1];
         if (id) {
@@ -298,21 +307,28 @@ async function routeFrame(page: Page) {
         return visible(p) && Math.abs(p.x - a.x) > 1 && Math.abs(p.y - a.y) > 1 ? [{ at: i * 2, dx: p.x - a.x, dy: p.y - a.y, curves: curves.filter(c => i * 2 <= c.to && i * 2 + 4 >= c.from).map(c => c.shape), bend: bends.some(b => i * 2 <= b && i * 2 + 4 >= b) }] : [];
       });
       const hits = samples.filter(visible).flatMap(p => obstacles.filter(t => t.opacity > 0 && p.x > t.x + 1 && p.x < t.right - 1 && p.y > t.y + 1 && p.y < t.bottom - 1).map(t => t.key));
-      const exit = path.closest('[data-grid-exit]');
-      const exitTiles = exit ? tiles.filter(t => t.exit === (exit as HTMLElement).dataset.gridExit) : [];
+      const exit = path.closest<HTMLElement>('[data-route-exit]');
+      const exitTiles = exit ? tiles.filter(t => t.exit === exit.dataset.routeExit) : [];
       const from = point(0), end = point(length), near = point(Math.max(0, length - 1));
       const arrow = path.hasAttribute('marker-end') ? 8 * scale : 0;
       const tangent = Math.hypot(end.x - near.x, end.y - near.y) || 1;
       const tip = { x: end.x + arrow * (end.x - near.x) / tangent, y: end.y + arrow * (end.y - near.y) / tangent };
-      return { id: path.dataset.route ?? path.dataset.motionRoute ?? 'ghost', d, curves, opacity: shown, hits, diagonals, endpointTiles, endpointDots,
-        from, tip, source, target, painted: samples.some(visible),
-        portsVisible: [from, tip].every(p => motionClips.every(c => p.x >= c.x && p.x <= c.right && p.y >= c.y && p.y <= c.bottom)),
-        // Moved by the motion driver (the path or its motion layer), and any path it wrote inline (it never should: a path is never interpolated).
+      return { id: path.dataset.route ?? path.dataset.motionRoute ?? 'ghost', d, curves, opacity: shown, motionOpacity: shown / (path.classList.contains("unrelated") ? .4 : 1), hits, diagonals, endpointTiles, endpointDots,
+        from, tip, source, target, motionClips, retiring: !!exit, painted: samples.some(visible),
+        // During reopening, the source uncovers from under its own stationary cover.
+        // A clipped fraction wholly inside that cover is occluded, with no visible gap.
+        portsVisible: [from, tip].every((p, index) => motionClips.every(c => {
+          const sourceCover = index === 0 && tileElements.find(e => e.dataset.tileKey === source?.slice(5) && e.closest('[data-grid-cell]'));
+          const cover = sourceCover ? sourceCover.getBoundingClientRect() : null;
+          const underCover = cover && p.x >= cover.left && p.x <= cover.right && p.y >= cover.top && p.y <= cover.bottom;
+          return p.x >= c.x && p.x <= c.right && p.y <= c.bottom && (p.y >= c.y || underCover);
+        })),
+        // The driver owns SVG d attributes; CSS d must remain unset.
         driven: [path, path.closest("[data-motion-route-layer]")].some(element => !!element && (window as any).trace.motion.owns(element)),
         inlinePath: path.style.getPropertyValue('d'),
         orphan: !!exit && samples.some(visible) && exitTiles.every(t => t.opacity === 0 || t.bottom <= t.y) && opacity(path) > 0 };
     });
-    const dots = [...document.querySelectorAll<SVGCircleElement>('[data-grid-band] [data-junction], [data-grid-exit] [data-junction], [data-grid-band] [data-motion-junction]')].map(dot => {
+    const dots = [...document.querySelectorAll<SVGCircleElement>('[data-route-band] [data-junction], [data-route-exit] [data-junction], [data-route-band] [data-motion-junction]')].map(dot => {
       const b = dot.getBoundingClientRect();
       return { id: dot.dataset.junction ?? dot.dataset.motionJunction!, x: b.x + b.width / 2, y: b.y + b.height / 2, opacity: opacity(dot) };
     });
@@ -320,7 +336,7 @@ async function routeFrame(page: Page) {
   });
 }
 
-for (const fixture of ['1', 'bridge', 'native-large', 'junction', 'junction-collapse', 'trunks']) for (const scenario of ['close A', 'open A', 'B alone', 'close B alone', 'interrupt close A']) test(`connectors stay outside tiles and preserve orthogonal routes (${fixture}, ${scenario})`, async ({ page }, testInfo) => {
+for (const fixture of ['1', 'bridge', 'native-large', 'junction', 'junction-collapse', 'trunks']) for (const scenario of ['close A', 'open A', 'B alone', 'close B alone', 'interrupt close A']) test(`tiles occlude crossing connectors and routes stay orthogonal (${fixture}, ${scenario})`, async ({ page }, testInfo) => {
   await page.setViewportSize({ width: 1000, height: 1300 });
   await openView(page, fixture === 'native-large' ? 640 : 390, `?bandMotion=${fixture === 'native-large' ? 'bridge&fileTiles=1&tileSize=xlarge' : fixture}`, false);
   await expect(page.getByRole('grid', { name: 'Folder', exact: true })).toHaveAttribute('aria-colcount', '3');
@@ -328,9 +344,9 @@ for (const fixture of ['1', 'bridge', 'native-large', 'junction', 'junction-coll
   if (scenario.includes('close A') || scenario === 'open A' || scenario === 'close B alone') { await page.locator(toggle('b')).click(); await settle(page); }
   if (fixture === 'junction-collapse' && scenario === 'open A') { await page.locator(`[data-node-key="${await key(page, 'stack-b-1')}"]`).click(); await settle(page); }
   if (fixture === 'junction' && scenario !== 'B alone') {
-    await expect(page.locator('[data-grid-band] [data-junction]').first()).toBeVisible();
+    await expect(page.locator('[data-route-band] [data-junction]').first()).toBeVisible();
   }
-  if (fixture === 'trunks' && scenario !== 'B alone') expect(await page.locator('[data-grid-band] path[data-route]').evaluateAll(paths => paths.some(p => p.getAttribute('data-from') === p.getAttribute('data-to')))).toBe(true);
+  if (fixture === 'trunks' && scenario !== 'B alone') expect(await page.locator('[data-route-band] path[data-route]').evaluateAll(paths => paths.some(p => p.getAttribute('data-from') === p.getAttribute('data-to')))).toBe(true);
   if (scenario.includes('close A')) { await page.locator(toggle('a')).click(); await settle(page); }
   const start = await routeFrame(page);
   if (scenario.includes('close A')) {
@@ -368,18 +384,34 @@ for (const fixture of ['1', 'bridge', 'native-large', 'junction', 'junction-coll
   await settle(page);
   const end = await routeFrame(page);
   await testInfo.attach('route-frames', { body: JSON.stringify({ start, frames, end }), contentType: 'application/json' });
+  // A close/reopen tour contains two transitions: routes retired by its first
+  // epoch keep their exit checks even if the second epoch brings the identity back.
+  const retired = new Set(frames.flatMap(f => f.scene.routes.filter(r => r.retiring).map(r => r.id)));
   const violations = frames.flatMap(({ time, scene }) => scene.routes.filter(r => r.opacity > 0).flatMap(route => {
     const allowedCurves = new Set([start, end].flatMap(f => f.routes.filter(r => r.id === route.id).flatMap(r => r.curves.map(c => c.shape))));
     // A 4px window across a sharp orthogonal join is diagonal even though
     // neither segment is. Exempt that join, and exact settled cubic shapes;
     // never exempt a straight diagonal just because it matches a curve tangent.
-    const newDiagonals = route.diagonals.filter(d => !d.bend && !d.curves.some(c => allowedCurves.has(c)));
-    return [route.hits.length ? `${time}ms ${route.id} cuts tiles ${[...new Set(route.hits)]}` : '',
+    // A moving attachment re-rounds its orthogonal corners as short runs grow/shrink.
+    // Admit only circular quarter-turn controls (radius <= 6), never an arbitrary diagonal.
+    const roundedCorner = (shape: string) => {
+      const [ax, ay, bx, by, x, y] = shape.split(',').map(Number), k = .5522847498;
+      const near = (a: number, b: number) => Math.abs(a - b) <= .15;
+      return Math.abs(x) <= 6.1 && Math.abs(y) <= 6.1 && near(Math.abs(x), Math.abs(y))
+        && ((near(ax, x * k) && near(ay, 0) && near(bx, x) && near(by, y * (1 - k)))
+          || (near(ax, 0) && near(ay, y * k) && near(bx, x * (1 - k)) && near(by, y)));
+    };
+    const newDiagonals = route.diagonals.filter(d => !d.bend && !d.curves.some(c => allowedCurves.has(c) || roundedCorner(c)));
+    const retained = !retired.has(route.id) && start.routes.some(r => r.id === route.id) && end.routes.some(r => r.id === route.id);
+    return [!retained && route.hits.length ? `${time}ms ${route.id} cuts tiles ${[...new Set(route.hits)]}` : '',
       newDiagonals.length ? `${time}ms ${route.id} has ${newDiagonals.length} diagonal samples outside layout curves` : '',
       route.orphan ? `${time}ms orphan ${route.id}` : ''].filter(Boolean);
   }));
   expect(violations).toEqual([]);
-  expect(end.routes.every(r => !r.orphan)).toBe(true);
+  for (const id of new Set(start.routes.map(r => r.id).filter(id => !retired.has(id) && end.routes.some(r => r.id === id)))) {
+    for (const { time, scene } of frames) expect(Math.max(0, ...scene.routes.filter(r => r.id === id).map(r => r.motionOpacity)), `${id} stays drawn at ${time}ms`).toBeCloseTo(1, 3);
+  }
+  expect(end.routes.every(r => !r.orphan && !r.hits.length), 'settled routes stay clear').toBe(true);
   expect(await page.locator('[data-grid-exit], [data-motion-ghost]').count()).toBe(0);
   expect(await uncaught(page)).toEqual([]);
 });
@@ -470,7 +502,7 @@ for (const interrupt of [false, true]) test(`inline FLIP holds the painted start
   }
   expect(await page.locator('[data-grid-motion], [data-grid-row-band], [data-grid-band] [data-tile-key]').evaluateAll(elements => elements.every(e => !(e as HTMLElement).style.transform))).toBe(true);
   expect(await page.locator('[data-motion-route-layer]').count()).toBe(0);
-  expect(await page.locator('[data-grid-band] .graph').evaluateAll(graphs => graphs.every(graph => {
+  expect(await page.locator('[data-route-band] .graph').evaluateAll(graphs => graphs.every(graph => {
     const svg = graph.querySelector('svg.edges')!;
     return parseFloat((graph as HTMLElement).style.height) === Number(svg.getAttribute('height'))
       && parseFloat((graph as HTMLElement).style.width) === Number(svg.getAttribute('width'));
@@ -621,6 +653,7 @@ for (const returnAt of [0, .01]) test(`closing a travelling group preserves its 
     const captured = beforeReturn.tiles.find(t => t.key === child)!;
     expect(returned.y).toBeCloseTo(captured.y, 1);
     expect(returned.bottom).toBeCloseTo(captured.bottom, 1);
+    await testInfo.attach('reopened-ports', { body: JSON.stringify({ start, beforeReturn, reopened }), contentType: 'application/json' });
     const visible = expectAttached(reopened, [start]);
     if (!returnAt) expect(visible).toBeGreaterThan(0);
     expect(await page.locator(`[data-grid-exit="${b}"]`).count()).toBe(0);
@@ -656,7 +689,7 @@ for (const returnAt of [0, .01]) test(`closing a travelling group preserves its 
 
 // Review 099e72f: old connector paths fading inside a band were dropped from the page, mid-fade,
 // when a publication closed that band (no band was left to draw them).
-test('old connector paths fading in a band keep fading when the band closes', async ({ page }) => {
+test('a retained motion connector survives closing its band', async ({ page }) => {
   await openView(page, 1400);
   /** Connector copies shown (effective opacity > .05) in `scope`: their route ids. Self-contained: it runs in the page. */
   const shown = (scope: string) => page.evaluate(scope => {
@@ -665,19 +698,19 @@ test('old connector paths fading in a band keep fading when the band closes', as
   }, scope);
   await holdMotion(page);
   try {
-    // Closing the first stack repacks its row and reroutes the connectors of the bands that stay
-    // open: their old paths fade out in those bands. (A resize would snap.)
+    // Closing the first stack repacks its row. Retained connectors of the remaining
+    // bands morph on motion layers; closing one then retires its displayed path.
     await page.locator('section[data-component]').first().locator('[data-stack-toggle]').evaluate((e: HTMLElement) => e.click());
     await awaitMotionStarted(page);
-    const cover = await page.evaluate(() => [...document.querySelectorAll<HTMLElement>('[data-grid-band]')].find(band => band.querySelector('path[data-motion-ghost]'))?.dataset.gridBand ?? null);
-    expect(cover, 'a band with old connector paths fading').not.toBeNull();
-    const fading = await shown(`[data-grid-band="${cover}"]`);
+    const cover = await page.evaluate(() => [...document.querySelectorAll<HTMLElement>('[data-route-band]')].find(band => band.querySelector('path[data-motion-ghost]'))?.dataset.routeBand ?? null);
+    expect(cover, 'a band with moving connectors').not.toBeNull();
+    const fading = await shown(`[data-route-band="${cover}"]`);
     expect(fading.length).toBeGreaterThan(0);
     await page.locator(`[data-grid-cell="${cover}"]`).locator('xpath=ancestor::section[1]').locator('[data-stack-toggle]').evaluate((e: HTMLElement) => e.click());
     await awaitMotionStarted(page);
     expect(await page.locator(`[data-grid-band="${cover}"]`).count()).toBe(0);
     const after = new Set(await shown('[role="grid"]'));
-    expect(fading.filter(id => !after.has(id)), 'old paths that vanished mid-fade').toEqual([]);
+    expect(fading.filter(id => !after.has(id)), 'displayed paths that vanished on close').toEqual([]);
   } finally { await releaseMotion(page); }
   await settle(page);
   await expect(page.locator('[data-grid-exit], [data-grid-retiring], [data-motion-ghost], [data-motion-route-layer]')).toHaveCount(0);

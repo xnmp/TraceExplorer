@@ -1,7 +1,10 @@
+import { checkRouteOcclusionFrames } from "./helpers/route-occlusion";
 import { test, expect, type Page } from "@playwright/test";
 import { awaitMotionStarted, holdMotion, releaseMotion, seekMotion } from "./animation-control";
 import { byTransaction, clearSceneEvents, sampleFrames, sceneEvents } from "./helpers/scene-events";
 import { openView, settle, uncaught } from "./support";
+
+checkRouteOcclusionFrames();
 
 /**
  * Interrupting motion (docs/scene-transactions.md §6): a publication that arrives while another
@@ -19,6 +22,7 @@ interface Displayed { tiles: Shown[]; routes: Connector[] }
 
 /** What is displayed: every tile and connector instance, live or retiring, in screen pixels, with its effective opacity and clip. */
 const displayed = (page: Page): Promise<Displayed> => page.evaluate(() => {
+  (window as any).__checkOcclusion?.();
   const opacity = (element: Element) => { let value = 1; for (let at: Element | null = element; at; at = at.parentElement) value *= Number(getComputedStyle(at).opacity); return value; };
   /** The visible span under its own clip and every clipping ancestor's (clip paths are inset() or absolute polygon()). */
   const clipped = (element: Element, top: number, bottom: number, from: Element | null = element) => {

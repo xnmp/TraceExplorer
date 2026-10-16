@@ -90,7 +90,8 @@ const connectorCoverClearance = (page: Page) => page.evaluate(() => {
       if (covers.some((box) => screen.x > box.left + 1 && screen.x < box.right - 1 && screen.y > box.top + 1 && screen.y < box.bottom - 1)) crossings.push(route.dataset.route!);
       if (previous && Math.abs(screen.x - previous.x) > .1 && Math.abs(screen.y - previous.y) < Math.abs(screen.x - previous.x) * .05) {
         horizontalRuns++;
-        const own = route.closest("section")!.querySelector<HTMLElement>("[data-grid-cell]")!.getBoundingClientRect();
+        const graph = route.closest<HTMLElement>("[data-route-band]")!.dataset.routeBand!;
+        const own = document.querySelector<HTMLElement>(`[data-grid-cell="${CSS.escape(graph)}"]`)!.getBoundingClientRect();
         if (Math.min(screen.y, previous.y) < own.bottom + .5) highRuns.push(route.dataset.route!);
       }
       previous = screen;
@@ -122,13 +123,14 @@ test("#58 two same-row stacks share one band and connectors stay in their own gr
     const children = [...graph.querySelectorAll<HTMLElement>("[data-tile-key]")].map((tile) => tile.getBoundingClientRect());
     const parent = element.closest("section")!.querySelector<HTMLElement>("[data-grid-cell] [data-tile-key]")!;
     const parentBox = parent.getBoundingClientRect();
-    const source = graph.querySelector<SVGPathElement>(`path[data-from="node:${parent.dataset.tileKey}"]`)!;
+    const routeGraph = document.querySelector<HTMLElement>(`[data-route-band="${CSS.escape(element.dataset.gridBand!)}"] .graph`)!;
+    const source = routeGraph.querySelector<SVGPathElement>(`path[data-from="node:${parent.dataset.tileKey}"]`)!;
     const point = source.getPointAtLength(0), matrix = source.getScreenCTM()!;
     const port = new DOMPoint(point.x, point.y).matrixTransform(matrix);
     return { left, right, sourceX: port.x, parentX: parentBox.x + parentBox.width / 2, row: element.dataset.gridBandRow, childTop: Math.min(...children.map((child) => child.y)),
       childCenter: children.reduce((sum, child) => sum + child.x + child.width / 2, 0) / children.length,
       parentCenter: element.closest("section")!.querySelector("[data-grid-cell]")!.getBoundingClientRect().x + element.closest("section")!.querySelector("[data-grid-cell]")!.getBoundingClientRect().width / 2,
-      routes: [...graph.querySelectorAll<SVGPathElement>("path[data-route]")].map((route) => { const box = route.getBBox(); return { left: box.x, right: box.x + box.width }; }),
+      routes: [...routeGraph.querySelectorAll<SVGPathElement>("path[data-route]")].map((route) => { const box = route.getBBox(); return { left: box.x, right: box.x + box.width }; }),
       childLeft: Math.min(...children.map((child) => child.x - origin.x)), childRight: Math.max(...children.map((child) => child.right - origin.x)) };
   }));
   expect(groups).toHaveLength(2);
@@ -162,7 +164,7 @@ for (const width of [620, 350]) {
         return { element, graph, origin, children: [...graph.querySelectorAll<HTMLElement>("[data-tile-key]")].map((tile) => tile.getBoundingClientRect()) };
       });
       const crossings: string[] = [], outside: string[] = [];
-      for (const group of groups) for (const route of group.graph.querySelectorAll<SVGPathElement>("path[data-route]")) {
+      for (const group of groups) for (const route of document.querySelector<HTMLElement>(`[data-route-band="${CSS.escape(group.element.dataset.gridBand!)}"]`)!.querySelectorAll<SVGPathElement>("path[data-route]")) {
         const matrix = route.getScreenCTM()!, left = Number(group.element.dataset.groupLeft), right = left + Number(group.element.dataset.groupWidth);
         const bounds = route.getBBox();
         if (bounds.x < left - .5 || bounds.x + bounds.width > right + .5) outside.push(route.dataset.route!);

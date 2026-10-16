@@ -101,7 +101,8 @@
 </div>
 
 <style>
-  .tile { position: absolute; box-sizing: border-box; }
+  .tile { position: absolute; box-sizing: border-box; background: var(--trace-tile-surface, var(--background-solid)); }
+  .explorer-cover { background: var(--background-solid); }
   .cover-press { position: absolute; inset: 0; width: 100%; height: 100%; padding: 0; border: 0; border-radius: inherit; background: none; cursor: pointer; user-select: none; -webkit-user-select: none; }
   .cover-press:focus-visible { outline: 2px solid var(--focus-stroke-outer); outline-offset: 2px; }
   /* The action chip sits in the image's top-right corner; status messages hang below it. */

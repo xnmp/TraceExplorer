@@ -1,17 +1,18 @@
+import { routeShape } from "$lib/domain/trace-graph/path-sampling";
 /**
  * The rAF motion driver against fake render handles and a fake frame clock: what it writes on
  * each frame, what it gives back, and when it settles. No DOM: elements are inline-style bags.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { engines, type FolderLayout } from "$lib/domain/trace-graph/folder-layout";
-import { buildFolderScene, diffScenes, type FolderScene, type SceneScope, type SceneStyling } from "$lib/domain/trace-graph/folder-scene";
+import { buildFolderScene, diffScenes, type FolderScene, type SceneRecord, type SceneScope, type SceneStyling } from "$lib/domain/trace-graph/folder-scene";
 import { tileMetrics } from "$lib/domain/trace-graph/metrics";
-import { MOTION_MS, retargetPresentation, samplePresentation, staticPresentation, type Presentation } from "$lib/plugins/trace/view/presentation";
+import { MOTION_MS, posePath, retargetTrack, retargetPresentation, samplePresentation, staticPresentation, type Presentation } from "$lib/plugins/trace/view/presentation";
 import v8 from "node:v8";
 import vm from "node:vm";
 import { createSceneMotion, FIRST_INTERVAL, sceneMotionTesting } from "$lib/plugins/trace/view/scene-motion";
 import { onFrame } from "$lib/plugins/trace/view/frame-loop";
-import { GRID, type RenderHandles } from "$lib/plugins/trace/view/render-handles";
+import { createRenderHandles, sectionKey, GRID, layerKey, type RenderHandles } from "$lib/plugins/trace/view/render-handles";
 import { folderInput, handCase, makeFolder, sourcesOf, type Folder } from "../../domain/trace-graph/folder-layout-fixtures";
 
 const scope: SceneScope = { paneId: "p", directory: "/f", generation: 1 };
@@ -39,7 +40,7 @@ function fakeHandles() {
     attach: () => () => {},
     get: (key) => {
       if (key === GRID) return undefined;
-      if (!elements.has(key)) elements.set(key, { style: { ...RENDERED } });
+      if (!elements.has(key)) elements.set(key, { style: { ...RENDERED }, querySelector: () => null } as Fake);
       return elements.get(key) as unknown as HTMLElement;
     },
   };
@@ -494,4 +495,81 @@ describe("the rAF motion driver", () => {
     for (const [key, element] of elements) expect(element.style, key).toEqual(RENDERED);
     expect(sceneMotionTesting.state().running).toEqual([]);
   });
+});
+
+
+describe("SVG path ownership", () => {
+  const base = { x: 0, y: 0, width: 100, height: 100 };
+  const original = "M0 0 L100 100", target = "M0 0 L100 50";
+  const routePose = (path: string) => ({ rect: base, opacity: 1, clip: null, shape: routeShape(path, base)! });
+  const track = retargetTrack(routePose(original), routePose(target))!;
+  const record = { kind: "route", id: "r", graphId: "g", rect: base, route: { path: target } } as SceneRecord;
+  const presentation = (epoch: number): Presentation => ({ epoch, duration: MOTION_MS,
+    live: new Map([["r", { renderId: "r", record, initial: track.frames[0].pose, track }]]), retiring: new Map(), pinned: new Set(["r"]) });
+  function setup() {
+    let d = target;
+    const path = { style: {}, getAttribute: () => d, setAttribute: (_key: string, value: string) => { d = value; } };
+    const layer = { style: {}, querySelector: () => path };
+    const driver = createSceneMotion({ reduced: () => false, handles: {
+      get: key => key === layerKey("r") ? layer as unknown as HTMLElement : undefined, attach: () => () => {},
+    } });
+    return { driver, get: () => d, set: (value: string) => { d = value; } };
+  }
+
+  it("owns and restores SVG d on snap, interruption and completion", async () => {
+    sceneMotionTesting.hold();
+    const { driver, get } = setup();
+    try {
+      const first = driver.start(presentation(1));
+      expect(get()).toBe(posePath(track.frames[0].pose, base));
+      sceneMotionTesting.seek(40);
+      expect(get()).not.toBe(target);
+      const second = driver.start(presentation(2));
+      await expect(first.settled).resolves.toBe(false);
+      expect(get()).toBe(posePath(track.frames[0].pose, base));
+      sceneMotionTesting.finish();
+      await expect(second.settled).resolves.toBe(true);
+      expect(get()).toBe(posePath(track.frames[1].pose, base));
+      driver.snap();
+      expect(get()).toBe(target);
+    } finally { driver.snap(); sceneMotionTesting.release(); }
+  });
+
+  it("preserves renderer d committed during motion", () => {
+    sceneMotionTesting.hold();
+    const { driver, get, set } = setup();
+    try {
+      driver.start(presentation(3));
+      set("M9 9 L10 10");
+      driver.snap();
+      expect(get()).toBe("M9 9 L10 10");
+      driver.start(presentation(4));
+      set("M8 8 L11 11");
+      sceneMotionTesting.seek(40);
+      driver.snap();
+      expect(get()).toBe("M8 8 L11 11");
+    } finally { driver.snap(); sceneMotionTesting.release(); }
+  });
+});
+
+
+it("keeps the route and tile copies of a section on the same motion clock and releases both", () => {
+  const handles = createRenderHandles();
+  const copies = [{ style: { ...RENDERED } }, { style: { ...RENDERED } }];
+  const record = open.tiles.get(JSON.stringify(["tile", A, A]))!;
+  const to = { rect: record.rect, opacity: 1, clip: null };
+  const track = retargetTrack({ ...to, rect: { ...to.rect, y: to.rect.y + 100 } }, to)!;
+  const presented = { renderId: record.id, record, initial: track.frames[0].pose, track };
+  const p: Presentation = { epoch: ++epochs, duration: MOTION_MS, live: new Map([[record.id, presented]]), retiring: new Map(), pinned: new Set([record.id]) };
+  const detach = copies.map(copy => handles.attach(sectionKey(A))(copy as unknown as HTMLElement));
+  const motion = createSceneMotion({ handles, reduced: () => false });
+  motion.start(p);
+  expect(copies[0].style.transform).not.toBe("");
+  for (const ms of [0, 8, 25, 40]) { frame(ms); expect(copies[0].style).toEqual(copies[1].style); }
+  motion.snap();
+  for (const copy of copies) expect(copy.style).toEqual(RENDERED);
+  detach[0]?.();
+  expect(handles.get(sectionKey(A))).toBe(copies[1]);
+  detach[1]?.();
+  expect(handles.get(sectionKey(A))).toBeUndefined();
 });
