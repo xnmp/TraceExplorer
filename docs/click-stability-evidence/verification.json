@@ -1,0 +1,119 @@
+{
+  "mergeBase": "6a3ac0466c61fc6549b40b93c0b18b1dcd88313e",
+  "check": {
+    "exit": 0,
+    "errors": 0,
+    "warnings": 0
+  },
+  "test": {
+    "exit": 1,
+    "passed": 1942,
+    "failed": 2,
+    "skipped": 1
+  },
+  "evaluation": {
+    "exit": 1,
+    "acceptance": [
+      {
+        "target": "Reported band \u2264350 px",
+        "baseline": 480,
+        "proposed": 326,
+        "pass": true
+      },
+      {
+        "target": "Cover \u2192 first child =34 px",
+        "baseline": 110,
+        "proposed": 34,
+        "pass": true
+      },
+      {
+        "target": "All legal click anchors stationary (including real packing)",
+        "baseline": 411,
+        "proposed": 925,
+        "pass": false
+      },
+      {
+        "target": "Legal click anchors stationary, dense tours (fan-in \u22644 and \u226410)",
+        "baseline": 426,
+        "proposed": 429,
+        "pass": false
+      },
+      {
+        "target": "Mean legal displacement \u2264baseline px",
+        "baseline": 31.253397215421003,
+        "proposed": 77.83040757073178,
+        "pass": false
+      },
+      {
+        "target": "Mean legal height \u226515% lower px",
+        "baseline": 1976.2,
+        "proposed": 1476.4505747126436,
+        "pass": true
+      },
+      {
+        "target": ">10% height regressions without stability reason",
+        "baseline": 0,
+        "proposed": 5,
+        "pass": false
+      },
+      {
+        "target": "Hard gate violations/errors (corpus + tours incl. dense + packing)",
+        "baseline": 0,
+        "proposed": 0,
+        "pass": true
+      },
+      {
+        "target": "Shared lanes between sources, not a listed fallback (corpus + tours incl. dense)",
+        "baseline": 1365,
+        "proposed": 0,
+        "pass": true
+      },
+      {
+        "target": "Mean crossings \u2264 baseline",
+        "baseline": 381.1643564356436,
+        "proposed": 324.31237623762377,
+        "pass": true
+      },
+      {
+        "target": "Crossing regressions not paid for by 0.00625 tile widths of height per extra crossing",
+        "baseline": 0,
+        "proposed": 29,
+        "pass": false
+      },
+      {
+        "target": "Cases with worse p95 than baseline",
+        "baseline": 0,
+        "proposed": 31,
+        "pass": false
+      },
+      {
+        "target": "Maximum p95 for main-thread requests (dispatch rule: \u226420 current+history tiles, \u226420 edges) \u22645ms",
+        "baseline": 46.87327199999709,
+        "proposed": 0.8201910000061616,
+        "pass": true
+      },
+      {
+        "target": "Maximum p95 for requests with \u226430 visible tiles (any thread) \u22645ms",
+        "baseline": 48.54784899999504,
+        "proposed": 4.768907000019681,
+        "pass": true
+      }
+    ]
+  },
+  "perfEnvironment": {
+    "bun": "1.3.8",
+    "load": {
+      "cpus": 24,
+      "before": [
+        6.11,
+        7.35,
+        7.99
+      ],
+      "after": [
+        3.08,
+        4.54,
+        6.49
+      ]
+    }
+  }
+}

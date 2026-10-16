@@ -1,0 +1,83 @@
+{
+  "main": "6a3ac0466c61fc6549b40b93c0b18b1dcd88313e",
+  "zoom": 1,
+  "initialScroll": "click centred, clamped to content bounds",
+  "rows": [
+    {
+      "height": 480,
+      "dense": false,
+      "main": {
+        "moves": 82,
+        "mean": 27.80014803601264,
+        "clicks": 2145
+      },
+      "previous": {
+        "moves": 767,
+        "mean": 92.25275928769861,
+        "clicks": 2145
+      },
+      "thisPass": {
+        "moves": 767,
+        "mean": 92.2527592876988,
+        "clicks": 2145
+      }
+    },
+    {
+      "height": 480,
+      "dense": true,
+      "main": {
+        "moves": 116,
+        "mean": 154.98720715427118,
+        "clicks": 460
+      },
+      "previous": {
+        "moves": 329,
+        "mean": 212.9163865257427,
+        "clicks": 460
+      },
+      "thisPass": {
+        "moves": 329,
+        "mean": 212.9163865257426,
+        "clicks": 460
+      }
+    },
+    {
+      "height": 800,
+      "dense": false,
+      "main": {
+        "moves": 127,
+        "mean": 29.756471294651718,
+        "clicks": 2145
+      },
+      "previous": {
+        "moves": 809,
+        "mean": 92.67363724454835,
+        "clicks": 2145
+      },
+      "thisPass": {
+        "moves": 809,
+        "mean": 92.67363724454854,
+        "clicks": 2145
+      }
+    },
+    {
+      "height": 800,
+      "dense": true,
+      "main": {
+        "moves": 134,
+        "mean": 157.77728156475888,
+        "clicks": 460
+      },
+      "previous": {
+        "moves": 338,
+        "mean": 215.48752598891988,
+        "clicks": 460
+      },
+      "thisPass": {
+        "moves": 338,
+        "mean": 215.4875259889198,
+        "clicks": 460
+      }
+    }
+  ]
+}
