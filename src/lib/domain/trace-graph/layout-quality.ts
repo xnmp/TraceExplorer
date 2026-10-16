@@ -46,6 +46,10 @@ export function overlapLength([a, b]: Segment, [c, d]: Segment): number { return
 /** {@link overlapLength} of segments (ax, ay)-(bx, by) and (cx, cy)-(ex, ey), on plain coordinates for the hot joins. */
 function collinearOverlap(ax: number, ay: number, bx: number, by: number, cx: number, cy: number, ex: number, ey: number): number {
     const dx = bx - ax, dy = by - ay;
+    // Flattening an almost-zero cubic can leave roundoff-sized fragments. Neither
+    // operand then defines a line; testing only the first made overlap asymmetric
+    // and reported perpendicular cover stems as shared lanes after translation.
+    if ((ex - cx) ** 2 + (ey - cy) ** 2 < EPS * EPS) return 0;
     if (Math.abs(dx * (cy - ay) - dy * (cx - ax)) > EPS || Math.abs(dx * (ey - ay) - dy * (ex - ax)) > EPS) return 0;
     const length = distance(dx, dy);
     if (length < EPS) return 0;
