@@ -13,7 +13,7 @@ const routeSignature = (layout: GraphLayout) => {
   });
   return [routes, tables];
 };
-const geometrySignature = (layout: GraphLayout) => [layout.orientation, layout.width, layout.height, layout.bandBounds, layout.preferredX, layout.anchorX, layout.anchorY, layout.decision,
+export const geometrySignature = (layout: GraphLayout) => [layout.orientation, layout.width, layout.height, layout.bandBounds, layout.preferredX, layout.anchorX, layout.anchorY, layout.decision,
   [...layout.nodes], [...layout.junctions], routeSignature(layout), layout.rows, [...layout.readingOrder]];
 
 export function layoutSignature(request: LayoutRequest): string {

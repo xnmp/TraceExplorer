@@ -4,7 +4,7 @@ import { nearestFree, type GraphLayout, type PlacedNode } from "./layout";
 import { packStackGroups, coverGutters } from "./stack-packing";
 import { pathTailAtY } from "./path-geometry";
 import { numberStart, pathNumbers, scanNumber, scanned } from "./path-data";
-import { ARROW, STACK_STEM_ROOM, TRACK_HEIGHT, tileSize, spacingFor, type TileMetrics } from "./metrics";
+import { ARROW, STACK_STEM_ROOM, TRACK_HEIGHT, LANE_SEPARATION, tileSize, spacingFor, type TileMetrics } from "./metrics";
 /** Reserve one child generation until a committed layout supplies the actual footprint.
  * Counts include hidden descendants/references, so they cannot predict the number of visible rows.
  * Use the current tile metrics and routing channel; the final layout may settle either way. */
@@ -139,6 +139,8 @@ export function extentSize(layout: GraphLayout, key: string): { readonly height:
   return { height: layout.nodes.size > Number(!!cover) ? Math.max(0, layout.height - bounds.top + STACK_STEM_ROOM) : 0, width: boundsField(bounds, "width")! };
 }
 
+const attachmentTrack = (count: number) => count > 1 ? 6 + LANE_SEPARATION + 1 : TRACK_HEIGHT;
+
 export interface StackGridFlow extends GridFlow { readonly rowBands: readonly GridBand[] }
 /** One physical band per folder row; each group's footprint reserves only its own interval. */
 export function packedGridFlow(items: readonly GridItem[], open: ReadonlyMap<string, { width: number; height: number; preferredX?: number; anchorX?: number; anchorY?: number; pending?: boolean }>, columns: number, metrics: GridMetrics): StackGridFlow {
@@ -156,8 +158,9 @@ export function packedGridFlow(items: readonly GridItem[], open: ReadonlyMap<str
       // neither a speculative sideways squeeze nor a move of a committed band.
       return size && kinds.get(cell.id) === "stack" ? [{ id: cell.id, center: cell.x + cell.width / 2, ...size, width: size.pending ? base.width : size.width, deferred: !!size.pending }] : [];
     });
-    const header = Math.max(STACK_STEM_ROOM, TRACK_HEIGHT * groups.length + 2 * ARROW.length);
-    const sized = groups.map((group, i) => ({ ...group, height: group.height + Math.max(header, TRACK_HEIGHT * (i + 1) + 2 * ARROW.length + TRACK_HEIGHT) - STACK_STEM_ROOM }));
+    const step = attachmentTrack(groups.length);
+    const header = Math.max(STACK_STEM_ROOM, step * groups.length + 2 * ARROW.length);
+    const sized = groups.map((group, i) => ({ ...group, height: group.height + Math.max(header, step * (i + 1) + 2 * ARROW.length + step) - STACK_STEM_ROOM }));
     const initial = packStackGroups(sized, base.width, 16, 0);
     // Existing margins usually suffice. Reserve an outer gutter only when the
     // actual stem envelopes need it; a later opening otherwise moves no group.
@@ -201,13 +204,14 @@ export function bandPlacements(flow: StackGridFlow, coverHeight: number): Readon
   return new Map(flow.bands.map((band) => {
     const cell = flow.cells.get(band.id)!, coverX = cell.x + cell.width / 2;
     const siblings = rows.get(band.row)!;
-    const track = TRACK_HEIGHT * (siblings.indexOf(band) + 1);
+    const step = attachmentTrack(siblings.length);
+    const track = step * (siblings.indexOf(band) + 1);
     const earlier = siblings.filter((other) => other.y < band.y);
     // The padding inside each packed interval is empty. Pick the nearest column which stays
     // outside every earlier line's child footprint; never default to the pane's left edge.
     const gutter = gutters.get(band.row)?.get(band.id) ?? coverX;
     if (!gutters.get(band.row)) throw new RangeError("packed band has no cover routing lane");
-    return [band.id, { x: band.x, coverX, coverHeight, width: flow.width, track, bypassColumns: [...gutters.get(band.row)!].filter(([id]) => id !== band.id).map(([, x]) => x), coverColumns: [...flow.cells.values()].filter((cell) => cell.row === band.row && cell.id !== band.id).map((cell) => cell.x + cell.width / 2), stemRoom: Math.max(STACK_STEM_ROOM, TRACK_HEIGHT * siblings.length + 2 * ARROW.length, track + 2 * ARROW.length + TRACK_HEIGHT),
+    return [band.id, { x: band.x, coverX, coverHeight, width: flow.width, track, bypassColumns: [...gutters.get(band.row)!].filter(([id]) => id !== band.id).map(([, x]) => x), coverColumns: [...flow.cells.values()].filter((cell) => cell.row === band.row && cell.id !== band.id).map((cell) => cell.x + cell.width / 2), stemRoom: Math.max(STACK_STEM_ROOM, step * siblings.length + 2 * ARROW.length, track + 2 * ARROW.length + step),
       left: Math.min(band.x, coverX, gutter), right: Math.max(band.x + band.width, coverX, gutter),
       ...(earlier.length ? { bridge: { top: coverHeight + track, gutter } } : {}) }];
   }));
@@ -400,6 +404,7 @@ function singleBandPlacement(layout: GraphLayout, request: import("./layout").La
 }
 
 export function attachSingleBand(layout: GraphLayout, request: import("./layout").LayoutRequest): GraphLayout {
+  if (layout.pinnedViolation) return layout;
   const placement = singleBandPlacement(layout, request);
   return placement ? attachPackedBand(layout, request.band!.key, placement.coverHeight, placement) : layout;
 }

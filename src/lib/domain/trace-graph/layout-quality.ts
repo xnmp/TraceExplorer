@@ -1462,7 +1462,7 @@ function nearLaneLength(layout: GraphLayout, routeGeometry: readonly RouteData[]
         for (const a of order) {
             const lo = runs[4 * a + 1];
             while (expired < ends.length && runs[4 * ends[expired] + 2] - lo <= NEAR_RUN) change(ends[expired++], false);
-            for (let key = bin(a) - 1; key <= bin(a) + 1; key++) for (const [source, nearby] of active.get(key) ?? []) {
+            for (const key of new Set([bin(a) - 1, bin(a), bin(a) + 1])) for (const [source, nearby] of active.get(key) ?? []) {
               if (source === of[runs[4 * a + 3]]) continue;
               for (const b of nearby) {
                 const d = Math.abs(runs[4 * b] - runs[4 * a]);
