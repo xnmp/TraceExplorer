@@ -1,5 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
-import { card, caret, click, openView, settle, state, tile } from "./support";
+import { card, caret, click, openView, settle, state, tile, selectedOf } from "./support";
 
 const SHOTS = process.env.ROUND4_SHOTS;
 const path = (page: Page, name: string) => page.evaluate((n) => (window as any).trace.backend.path(n) as string, name);
@@ -184,7 +184,8 @@ test.describe("the view's own clicks", () => {
     expect(await editInputs(page)).toEqual(picked);
     await page.evaluate(() => (window as any).trace.backend.setPrompt("merge", "a new prompt"));
     await settle(page);
-    await expect(await card(page, "mist")).toHaveAttribute("aria-selected", "true");
+    const mistCard = await card(page, "mist");
+    await expect.poll(() => selectedOf(mistCard)).toBe("true");
     expect(await editInputs(page)).toEqual(picked);
   });
 

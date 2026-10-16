@@ -1,5 +1,5 @@
 import { test, expect, type Page } from "@playwright/test";
-import { openView, click, key, tile, card, state, uncaught, settle, rendered, ensureExpanded } from "./support";
+import { openView, click, key, tile, card, state, uncaught, settle, rendered, ensureExpanded, selectedOf } from "./support";
 
 const previewTitle = (page: Page) => page.getByTestId("preview-title");
 const preview = (page: Page) => page.getByRole("complementary", { name: "Preview" });
@@ -241,7 +241,8 @@ test.describe("Preview info", () => {
     await click(page, "warm");
     await trace(page).getByRole("button", { name: /Preview input .*lantern/ }).click();
     await settle(page);
-    await expect(await card(page, "lantern")).toHaveAttribute("aria-selected", "true");
+    const lanternCard = await card(page, "lantern");
+    await expect.poll(() => selectedOf(lanternCard)).toBe("true");
     await expect(await tile(page, "warm")).toHaveAttribute("data-tone", "related");
     expect((await state(page)).navigations).toEqual([]);
   });
