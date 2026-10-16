@@ -26,16 +26,20 @@ export function safeChain(request: LayoutRequest): GraphLayout | null {
   }
   if (ordered.length !== request.items.length) return null;
 
-  const descendants = ordered.slice(1), gutter = 24, columnGap = 32, rowGap = 48;
+  const descendants = ordered.slice(1), columnGap = 32, rowGap = 48;
   const widest = descendants.reduce((value, item) => Math.max(value, item.width), 1);
   const tallest = descendants.reduce((value, item) => Math.max(value, item.height), 1);
+  const gutter = Math.max(0, Math.min(24, (request.maxWidth - widest) / 2));
   const compactColumns = Math.max(1, Math.ceil(Math.sqrt(descendants.length * (tallest + rowGap) / (widest + columnGap))));
   const fittingColumns = Math.floor((request.maxWidth - 2 * gutter + columnGap) / (widest + columnGap));
-  const columns = fittingColumns > 0 ? Math.min(compactColumns, fittingColumns) : compactColumns;
+  // Existing giant-tile contract requires a finite drawing even when its total
+  // tile area cannot fit inside paneWidth × the coordinate cap.
+  const areaCannotFit = !inReach(ordered.reduce((area, n) => area + n.width * n.height, 0) / request.maxWidth);
+  const columns = fittingColumns > 0 && !areaCannotFit ? Math.min(compactColumns, fittingColumns) : compactColumns;
   const rowCount = Math.ceil(descendants.length / columns);
   const coverX = request.pinned?.x ?? Math.max(cover.width / 2, request.maxWidth / 2);
   if (!inReach(coverX) || coverX < cover.width / 2) return null;
-  const width = Math.max(request.maxWidth, coverX + cover.width / 2 + gutter, descendants.length ? 2 * gutter + columns * widest + (columns - 1) * columnGap : 0);
+  const width = Math.max(request.maxWidth, coverX + cover.width / 2, descendants.length ? 2 * gutter + columns * widest + (columns - 1) * columnGap : 0);
   const firstY = cover.height + STACK_STEM_ROOM;
   const height = descendants.length ? firstY + rowCount * tallest + (rowCount - 1) * rowGap + gutter : cover.height;
   if (![width, height].every(inReach)) return null;

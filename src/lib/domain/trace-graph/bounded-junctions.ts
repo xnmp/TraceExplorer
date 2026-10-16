@@ -1,7 +1,7 @@
 import type { JunctionPlan, Junction, Route, Endpoint } from './junctions';
 
 /** Factor wide meetings into balanced groups of at most four inputs before routing. */
-export function boundedJunctions(plan: JunctionPlan): JunctionPlan {
+export function boundedJunctions(plan: JunctionPlan, maxInputs: 2 | 4 = 4): JunctionPlan {
   const joins: Junction[] = [], spines: Route[] = [];
   const replacements = new Map<Route, Route>();
   const byId = new Map(plan.joins.map(j => [j.id,j]));
@@ -11,12 +11,12 @@ export function boundedJunctions(plan: JunctionPlan): JunctionPlan {
   }
   for (const [ordinal, join] of plan.joins.entries()) {
     const inputs = incoming.get(join.id) ?? [];
-    if (inputs.length <= 4) { joins.push(join); continue; }
+    if (inputs.length <= maxInputs) { joins.push(join); continue; }
     let serial = 0;
     const build = (list: readonly Route[], id: string): { end: Endpoint; parents: readonly string[]; consumers: Route['consumers'] } => {
       const end: Endpoint = {kind:'junction',id};
       const pieces: Route[][] = [];
-      for (let start = 0, groups = Math.min(4, list.length); groups > 0; groups--) {
+      for (let start = 0, groups = Math.min(maxInputs, list.length); groups > 0; groups--) {
         const end = start + Math.ceil((list.length - start) / groups);
         pieces.push(list.slice(start, end)); start = end;
       }
