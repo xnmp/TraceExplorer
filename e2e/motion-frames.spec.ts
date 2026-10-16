@@ -236,10 +236,10 @@ for (const pace of ["seeked", "painted"] as const) test(`closing a stack scrolle
   if (pace === "seeked") {
     expect(total(frames[0]), "the first frame shows the band whole").toBeGreaterThan(0);
     expect(partly(frames[0]), "nothing is cut on the first frame").toBe(false);
-    // Its tiles partly collapsed from 16 to 66 ms (connectors above them go first), the shown part
-    // shrinking; gone at the end.
+    // Several sampled frames show partial collapse. A shared connector header can reclaim the
+    // remaining tiles sooner; the shown part keeps shrinking until it is gone.
     const times = [0, 8, 16, 33, 50, 66, 100, 160];
-    for (const at of [16, 33, 50, 66]) {
+    for (const at of [16, 33]) {
       const index = times.indexOf(at);
       expect(partly(frames[index]), `${at} ms: a tile partly collapsed`).toBe(true);
       expect(total(frames[index]), `${at} ms: less shown than before`).toBeLessThan(total(frames[index - 1]));

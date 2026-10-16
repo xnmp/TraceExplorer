@@ -194,21 +194,26 @@ async function routeFrame(page: Page) {
     const tiles = tileElements.map(element => {
       const b = element.getBoundingClientRect();
       // Exit tiles are clipped together with their connectors. Test the visible rectangle.
-      let bottom = b.bottom;
+      let bottom = b.bottom, visibleTop = b.top;
       for (let at: Element | null = element; at; at = at.parentElement) {
         const clip = /^inset\(([^)]*)\)/.exec(getComputedStyle(at).clipPath);
         if (clip) {
           const v = clip[1].split(/\s+/).map(parseFloat);
           bottom = Math.min(bottom, at.getBoundingClientRect().bottom - v[2 % v.length]);
+          visibleTop = Math.max(visibleTop, at.getBoundingClientRect().top + v[0]);
         }
         const polygon = /^polygon\(([^)]*)\)/.exec(getComputedStyle(at).clipPath);
         if (polygon) {
           const points = polygon[1].split(',').map(p => p.trim().split(/\s+/).map(parseFloat));
           bottom = Math.min(bottom, at.getBoundingClientRect().top + Math.max(...points.map(p => p[1])));
+          visibleTop = Math.max(visibleTop, at.getBoundingClientRect().top + Math.min(...points.map(p => p[1])));
         }
-        if (/hidden|clip|auto|scroll/.test(getComputedStyle(at).overflowY)) bottom = Math.min(bottom, at.getBoundingClientRect().bottom);
+        if (/hidden|clip|auto|scroll/.test(getComputedStyle(at).overflowY)) {
+          bottom = Math.min(bottom, at.getBoundingClientRect().bottom);
+          visibleTop = Math.max(visibleTop, at.getBoundingClientRect().top);
+        }
       }
-      return { key: element.dataset.tileKey ?? element.dataset.ghostTileKey ?? element.dataset.entryPath ?? 'departed tile', x: b.x, y: b.y, right: b.right, bottom, opacity: opacity(element), exit: element.closest<HTMLElement>('[data-grid-exit]')?.dataset.gridExit };
+      return { key: element.dataset.tileKey ?? element.dataset.ghostTileKey ?? element.dataset.entryPath ?? 'departed tile', x: b.x, y: b.y, right: b.right, bottom, visibleTop, opacity: opacity(element), exit: element.closest<HTMLElement>('[data-grid-exit]')?.dataset.gridExit };
     });
     const routes = [...document.querySelectorAll<SVGPathElement>('[data-grid-band] path[data-route], [data-grid-exit] path[data-route], [data-grid-band] path[data-motion-ghost], [data-grid-exit] path[data-motion-ghost]')].map(path => {
       // Accelerated WebKit geometry advances even within one JS task. Read
@@ -234,7 +239,7 @@ async function routeFrame(page: Page) {
       });
       const obstacles = tileElements.map((element, i) => {
         const b = element.getBoundingClientRect(), old = tiles[i];
-        return { ...old, x: b.x, y: b.y, right: b.right, bottom: Math.min(b.bottom, old.bottom + b.y - old.y) };
+        return { ...old, x: b.x, y: Math.max(b.y, old.visibleTop + b.y - old.y), right: b.right, bottom: Math.min(b.bottom, old.bottom + b.y - old.y) };
       });
       const length = path.getTotalLength() * scale;
       const point = (distance: number) => {
@@ -305,8 +310,15 @@ async function routeFrame(page: Page) {
       const tangent = Math.hypot(end.x - near.x, end.y - near.y) || 1;
       const tip = { x: end.x + arrow * (end.x - near.x) / tangent, y: end.y + arrow * (end.y - near.y) / tangent };
       return { id: path.dataset.route ?? path.dataset.motionRoute ?? 'ghost', d, curves, opacity: shown, hits, diagonals, endpointTiles, endpointDots,
-        from, tip, source, target, painted: samples.some(visible),
-        portsVisible: [from, tip].every(p => motionClips.every(c => p.x >= c.x && p.x <= c.right && p.y >= c.y && p.y <= c.bottom)),
+        from, tip, source, target, motionClips, painted: samples.some(visible),
+        // During reopening, the source uncovers from under its own stationary cover.
+        // A clipped fraction wholly inside that cover is occluded, with no visible gap.
+        portsVisible: [from, tip].every((p, index) => motionClips.every(c => {
+          const sourceCover = index === 0 && tileElements.find(e => e.dataset.tileKey === source?.slice(5) && e.closest('[data-grid-cell]'));
+          const cover = sourceCover ? sourceCover.getBoundingClientRect() : null;
+          const underCover = cover && p.x >= cover.left && p.x <= cover.right && p.y >= cover.top && p.y <= cover.bottom;
+          return p.x >= c.x && p.x <= c.right && p.y <= c.bottom && (p.y >= c.y || underCover);
+        })),
         // Moved by the motion driver (the path or its motion layer), and any path it wrote inline (it never should: a path is never interpolated).
         driven: [path, path.closest("[data-motion-route-layer]")].some(element => !!element && (window as any).trace.motion.owns(element)),
         inlinePath: path.style.getPropertyValue('d'),
@@ -373,7 +385,16 @@ for (const fixture of ['1', 'bridge', 'native-large', 'junction', 'junction-coll
     // A 4px window across a sharp orthogonal join is diagonal even though
     // neither segment is. Exempt that join, and exact settled cubic shapes;
     // never exempt a straight diagonal just because it matches a curve tangent.
-    const newDiagonals = route.diagonals.filter(d => !d.bend && !d.curves.some(c => allowedCurves.has(c)));
+    // A moving attachment re-rounds its orthogonal corners as short runs grow/shrink.
+    // Admit only circular quarter-turn controls (radius <= 6), never an arbitrary diagonal.
+    const roundedCorner = (shape: string) => {
+      const [ax, ay, bx, by, x, y] = shape.split(',').map(Number), k = .5522847498;
+      const near = (a: number, b: number) => Math.abs(a - b) <= .15;
+      return Math.abs(x) <= 6.1 && Math.abs(y) <= 6.1 && near(Math.abs(x), Math.abs(y))
+        && ((near(ax, x * k) && near(ay, 0) && near(bx, x) && near(by, y * (1 - k)))
+          || (near(ax, 0) && near(ay, y * k) && near(bx, x * (1 - k)) && near(by, y)));
+    };
+    const newDiagonals = route.diagonals.filter(d => !d.bend && !d.curves.some(c => allowedCurves.has(c) || roundedCorner(c)));
     return [route.hits.length ? `${time}ms ${route.id} cuts tiles ${[...new Set(route.hits)]}` : '',
       newDiagonals.length ? `${time}ms ${route.id} has ${newDiagonals.length} diagonal samples outside layout curves` : '',
       route.orphan ? `${time}ms orphan ${route.id}` : ''].filter(Boolean);
@@ -621,6 +642,7 @@ for (const returnAt of [0, .01]) test(`closing a travelling group preserves its 
     const captured = beforeReturn.tiles.find(t => t.key === child)!;
     expect(returned.y).toBeCloseTo(captured.y, 1);
     expect(returned.bottom).toBeCloseTo(captured.bottom, 1);
+    await testInfo.attach('reopened-ports', { body: JSON.stringify({ start, beforeReturn, reopened }), contentType: 'application/json' });
     const visible = expectAttached(reopened, [start]);
     if (!returnAt) expect(visible).toBeGreaterThan(0);
     expect(await page.locator(`[data-grid-exit="${b}"]`).count()).toBe(0);

@@ -3,6 +3,9 @@
 > **Amendment (2026-10-13):** section 3 is superseded where it splits planning, per-graph layout and composition across the controller. All geometry comes from one pure, swappable `FolderLayoutEngine = (input: FolderLayoutInput) => FolderLayout` (see `docs/trace-scene-plan.md`, phase 3 step 1). `planFolderScene`/`composeFolderScene` and per-graph `PreparedLayouts` become internals of the default engine; the controller runs the engine (inline or worker) on a complete, prepared `FolderLayoutInput` and commits its output. Per-band caching is the engine's concern (`memoizeEngine`). Everything else here stands.
 
 
+> **Zero-blink amendment (2026-10-16):** a retained connector never retires and enters merely because its geometry changes. Packed attachments retain their orthogonal stem points and child-side tail; the presentation interpolates those points and re-rounds the stem on the shared motion clock. A bridge collapses at its existing gutter when it becomes unnecessary. Other retained paths preserve their exact endpoint curves and deform continuously. Sampling and interruption retain the displayed geometry, including the moving endpoint's residual easing. The driver writes SVG `d` attributes inside the existing HTML motion layers; it owns and restores them like its other properties. This supersedes the old rerouted-connector fade-out/fade-in policy below. Closing groups sharing a cover row with retained connectors collapse below their original first child row, keeping retirees out of the retained cover-attachment header.
+
+
 Status: implementation design. Based on `scene-motion-policy`, commit `3573e20643e4953c98d3c402955a3acb4812be46`. Read-only investigation; no files changed.
 
 Throughout this document, `D/` means `src/lib/domain/trace-graph/`, and `V/` means `src/lib/plugins/trace/view/`. Line references describe the inspected commit.

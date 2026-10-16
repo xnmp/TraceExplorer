@@ -1,9 +1,10 @@
 import { describe, expect, it } from "vitest";
+import { routeShape, samplePathString } from "$lib/domain/trace-graph/path-sampling";
 import { engines, type FolderLayout } from "$lib/domain/trace-graph/folder-layout";
 import { buildFolderScene, diffScenes, entityId, type FolderScene, type SceneRecord, type SceneScope, type SceneStyling } from "$lib/domain/trace-graph/folder-scene";
 import { tileMetrics } from "$lib/domain/trace-graph/metrics";
 import {
-  EASE, MOTION_MS, PAINTED, RETIREE_LIMIT, easeAt, easeTimeAt, effectiveClip, retargetPresentation, retargetTrack, ridesWithSection, samePose,
+  EASE, posePath, trackWithEndpoint, MOTION_MS, PAINTED, RETIREE_LIMIT, easeAt, easeTimeAt, effectiveClip, retargetPresentation, retargetTrack, ridesWithSection, samePose,
   samplePresentation, sampleTrack, settledPresentation, sliceEase, sliceTrack, staticPresentation, restylePresentation, type Ease, type Pose,
   type Presentation, type Track,
 } from "$lib/plugins/trace/view/presentation";
@@ -425,9 +426,9 @@ describe("retargetPresentation", () => {
     const p = retargetPresentation(samplePresentation(staticPresentation(base), Infinity), focused, diff, participants());
     for (const [id, policy] of diff.policy.records) if (policy === "snap") expect(p.live.get(id)!.track).toBeNull();
     expect(p.retiring.size).toBe(0);
-    // A resize reroutes connectors (their old paths retire as crossfades); a reveal right after
+    // Collapsing descendants leaves in-band retirees; a reveal right after
     // snaps the revealed graph and drops its retirees at once.
-    const narrow = sceneFor([A, B], { width: 640 }), wide = sceneFor([A, B], { width: 900, previous: narrow.layout });
+    const narrow = sceneFor([A, B], { width: 900, focus: "s0:Saffron" }), wide = sceneFor([A, B], { width: 900, previous: narrow.layout });
     const resizing = step(staticPresentation(narrow), narrow, wide, Infinity).presentation;
     expect([...resizing.retiring.values()].filter((r) => r.record.graphId === A).length).toBeGreaterThan(0);
     const revealed = sceneFor([A, B], { width: 900, focus: "s0:Saffron", previous: wide.layout });
@@ -437,26 +438,14 @@ describe("retargetPresentation", () => {
     for (const [id, policy] of revealDiff.policy.records) if (policy === "snap") expect(q.live.get(id)!.track).toBeNull();
   });
 
-  it("rerouted connectors crossfade between their exact displayed and new paths", () => {
-    const narrow = sceneFor([A, B], { width: 640 }), wide = sceneFor([A, B], { width: 900, previous: narrow.layout });
-    const { displayed, presentation: p } = step(staticPresentation(narrow), narrow, wide, Infinity);
-    let rerouted = 0, travelled = 0;
-    for (const route of [...wide.records.values()].filter((r): r is Extract<SceneRecord, { kind: "route" }> => r.kind === "route")) {
-      const old = [...p.retiring.values()].find((r) => r.reason === "old-route" && r.record.id === route.id);
-      const live = p.live.get(route.id)!;
-      if (old) {
-        rerouted++;
-        const before = narrow.records.get(route.id)!;
-        expect(old.record.kind === "route" && old.record.route.path).toBe(before.kind === "route" && before.route.path);
-        expect(old.initial.opacity).toBeCloseTo(displayed.poses.get(route.id)!.opacity, 6);
-        expect(sampleTrack(old.track!, MOTION_MS).opacity).toBe(0);
-        expect(sampleTrack(live.track!, 0).opacity).toBe(0);
-        expect(sampleTrack(live.track!, MOTION_MS).opacity).toBe(1);
-        // Never both partly shown: the old path is gone before the new one appears.
-        for (let t = 0; t <= MOTION_MS; t += 4) expect(Math.min(sampleTrack(old.track!, t).opacity, sampleTrack(live.track!, t).opacity)).toBe(0);
-      } else if (live.track) travelled++;
-    }
-    expect(rerouted + travelled).toBeGreaterThan(0);
+  it("retained connectors deform between their displayed and new paths without retiring or fading", () => {
+    const a = sceneFor([A, B], { width: 640 }), b = sceneFor([A, B], { width: 900, previous: a.layout });
+    const p = step(staticPresentation(a), a, b, Infinity).presentation;
+    const paths = [...p.live.values()].filter(r => r.record.kind === "route" && a.records.has(r.renderId));
+    expect(paths.length).toBeGreaterThan(0);
+    expect(paths.some(r => r.track?.frames[0].pose.stem || r.track?.frames[0].pose.shape)).toBe(true);
+    expect([...p.retiring.values()].filter(r => r.reason === "old-route")).toEqual([]);
+    for (const route of paths) for (let t = 0; t <= MOTION_MS; t += 4) expect(opacityAt(p, route.renderId, t)).toBe(1);
   });
 
   it("more than RETIREE_LIMIT paintable departures snap", () => {
@@ -525,33 +514,26 @@ describe("retargetPresentation: review fixes (099e72f)", () => {
     return ids;
   }
 
-  it("a rerouted connector whose old path the retiree limit dropped stays shown instead of blinking out", () => {
+  it("retained connectors stay opaque when the retiree limit drops a large band's departures", () => {
     const big = makeFolder({ stacks: [handCase("fan-200"), handCase("screenshot"), handCase("merges-3")], files: 12 });
     const [F, S, M] = [...big.stacks.keys()];
-    let overLimit = 0;
+    let checked = 0;
     for (const [w1, w2] of [[1400, 900], [1400, 640], [900, 640], [640, 1400]]) {
-      // Closing the 200-tile stack while the others reflow: more than RETIREE_LIMIT departures.
       const open = sceneFor([F, S, M], { of: big, width: w1 });
       const next = sceneFor([S, M], { of: big, width: w2, previous: open.layout });
       const { displayed, presentation: p } = step(staticPresentation(open), open, next, Infinity);
       expect(blinking(displayed, p), `${w1} → ${w2}`).toEqual([]);
-      // The same reflow without the large exit crossfades: the limit is what dropped the old paths.
-      const control = sceneFor([S, M], { of: big, width: w1 }), controlNext = sceneFor([S, M], { of: big, width: w2, previous: control.layout });
-      const reference = step(staticPresentation(control), control, controlNext, Infinity).presentation;
-      if (p.retiring.size === 0 && [...reference.retiring.values()].some((r) => r.reason === "old-route")) {
-        overLimit++;
-        // Every connector the reference crossfades is shown whole throughout instead.
-        for (const old of [...reference.retiring.values()].filter((r) => r.reason === "old-route")) {
-          const live = p.live.get(old.record.id)!;
-          for (let t = 0; t <= MOTION_MS; t += 8) expect(samplePresentation(p, t).poses.get(live.renderId)!.opacity, `${old.record.id} at ${t}`).toBe(1);
-        }
+      expect(p.retiring.size).toBe(0);
+      for (const live of p.live.values()) if (live.record.kind === "route" && open.records.has(live.record.id)) {
+        for (let t = 0; t <= MOTION_MS; t += 8) expect(opacityAt(p, live.renderId, t)).toBe(1);
+        checked++;
       }
     }
-    expect(overLimit).toBeGreaterThan(0);
+    expect(checked).toBeGreaterThan(0);
   });
 
   it("in-band retirees of a band that closes keep their own fade, drawn by the grid", () => {
-    const narrow = sceneFor([A, B], { width: 640 }), wide = sceneFor([A, B], { width: 900, previous: narrow.layout });
+    const narrow = sceneFor([A, B], { width: 900, focus: "s0:Saffron" }), wide = sceneFor([A, B], { width: 900, previous: narrow.layout });
     const resizing = step(staticPresentation(narrow), narrow, wide, Infinity).presentation;
     const inBand = [...resizing.retiring.values()].filter((r) => r.group === null && r.record.graphId === A && r.record.kind !== "band");
     expect(inBand.length).toBeGreaterThan(0);
@@ -597,4 +579,106 @@ describe("retargetPresentation: review fixes (099e72f)", () => {
       if (member.record.kind === "tile") expect(close(first.get(p.live.get(member.record.id)!.renderId)!, displayed.poses.get(member.renderId)!), member.record.id).toBe(true);
     }
   });
+});
+
+
+describe("moving attachment stems", () => {
+  it("follows an endpoint's residual motion instead of restarting its clock", () => {
+    const whole = retargetTrack(pose(0, 100), pose(0, 200))!;
+    const endpoint = sliceTrack(whole, 40)!;
+    const from: Pose = { ...pose(0, 0), stem: { points: [{ x: 0, y: 0 }, { x: 0, y: sampleTrack(whole, 40).rect.y }], tail: [[0, sampleTrack(whole, 40).rect.y]], bridge: false } };
+    const to: Pose = { ...pose(0, 0), stem: { points: [{ x: 0, y: 0 }, { x: 0, y: 200 }], tail: [[0, 200]], bridge: false } };
+    const route = trackWithEndpoint(from, to, endpoint, pose(0, 200).rect)!;
+    for (const dt of [0, 10, 20, 60, 120, 160]) {
+      const end = sampleTrack(route, dt).stem!.points.at(-1)!;
+      expect(end.y).toBeCloseTo(sampleTrack(whole, 40 + dt).rect.y, 6);
+      expect(sampleTrack(route, dt).opacity).toBe(1);
+    }
+  });
+
+  it("keeps the displayed stem when a moving attachment is interrupted or its destination stays unchanged", () => {
+    const a = sceneFor([A, B], { width: 640 }), b = sceneFor([A, B], { width: 900, previous: a.layout });
+    const moving = step(staticPresentation(a), a, b, Infinity).presentation;
+    const stems = [...moving.live.values()].filter(r => r.record.kind === "route" && r.track?.frames[0].pose.stem);
+    expect(stems.length).toBeGreaterThan(0);
+    for (const at of [0, 40, 100, 159]) {
+      const interrupted = step(moving, b, a, at).presentation;
+      const continued = step(moving, b, b, at).presentation;
+      for (const live of stems) {
+        const shown = samplePresentation(moving, at).poses.get(live.renderId)!;
+        const first = samplePresentation(interrupted, 0).poses.get(live.renderId)!;
+        const closePath = (a: string, b: string) => {
+          const first = samplePathString(a, 48)!, last = samplePathString(b, 48)!;
+          for (let i = 0; i < first.length; i++) expect(Math.hypot(first[i].x - last[i].x, first[i].y - last[i].y)).toBeLessThan(.001);
+        };
+        closePath(posePath(first, first.rect)!, posePath(shown, shown.rect)!);
+        for (const dt of [0, 20, 100, 160]) {
+          const next = samplePresentation(continued, dt).poses.get(live.renderId)!;
+          const original = samplePresentation(moving, at + dt).poses.get(live.renderId)!;
+          closePath(posePath(next, next.rect)!, posePath(original, original.rect)!);
+          expect(next.opacity).toBe(1);
+        }
+      }
+    }
+  });
+});
+
+
+describe("interrupted connector geometry", () => {
+  it("keeps both ports attached when endpoints share residual timing but move different distances", () => {
+    const base = sceneFor([A]), cover = base.tiles.get(entityId("tile", A, A))!;
+    const child = bandTiles(base, A)[0] as Extract<SceneRecord, { kind: "tile" }>;
+    const route = routesOf(base, A)[0] as Extract<SceneRecord, { kind: "route" }>;
+    const id = entityId("route", A, "timing");
+    const at = (head: number, tail: number, bend = 0): FolderScene => {
+      const h = { ...cover, rect: { x: 0, y: head, width: 50, height: 40 } };
+      const t = { ...child, rect: { x: 0, y: tail, width: 50, height: 40 } };
+      const r = { ...route, id, rect: { x: 0, y: head, width: 100, height: tail - head + 10 }, route: { ...route.route,
+        id: "timing", from: { kind: "node" as const, id: A }, to: { kind: "node" as const, id: child.tile.key },
+        path: `M25 ${head + 40} C${25 + bend} ${head + 45} ${25 + bend} ${tail - 5} 25 ${tail}` } };
+      return { ...base, records: new Map([[h.id, h], [t.id, t], [id, r]]), routes: new Map([[id, r]]), tiles: new Map([[h.id, h], [t.id, t]]) };
+    };
+    const a = at(50, 100), b = at(100, 200), c = at(100, 200, 25);
+    const moving = step(staticPresentation(a), a, b, Infinity).presentation;
+    const interrupted = step(moving, b, c, 40).presentation;
+    for (const dt of [0, 20, 60, 100, 160]) {
+      const poses = samplePresentation(interrupted, dt).poses;
+      const routePose = poses.get(id)!, points = samplePathString(posePath(routePose, routePose.rect)!, 24)!;
+      expect(points[0].y).toBeCloseTo(poses.get(cover.id)!.rect.y + 40, 6);
+      expect(points.at(-1)!.y).toBeCloseTo(poses.get(child.id)!.rect.y, 6);
+    }
+  });
+
+  it("preserves a displayed curve instead of substituting its cached target attachment", () => {
+    const a = sceneFor([A, B]), b = sceneFor([A, B], { width: 900, previous: a.layout });
+    const original = staticPresentation(a), source = [...original.live.values()].find(r => r.attachment)!;
+    if (source.record.kind !== "route") throw new Error("expected route");
+    const shape = routeShape(source.record.route.path, source.record.rect)!;
+    const bent = shape.map((segment, i) => i === 1 ? segment.map((n, j) => j === 0 ? n + 12 : n) : segment);
+    const track = retargetTrack({ ...source.initial, shape: bent }, { ...source.initial, shape })!;
+    const moving = { ...original, duration: MOTION_MS, live: new Map(original.live).set(source.renderId, { ...source, track }) };
+    const shown = samplePresentation(moving, 40).poses.get(source.renderId)!;
+    const next = step(moving, a, b, 40).presentation;
+    const first = samplePresentation(next, 0).poses.get(source.renderId)!;
+    const from = samplePathString(posePath(shown, shown.rect)!, 48)!, to = samplePathString(posePath(first, first.rect)!, 48)!;
+    for (let i = 0; i < from.length; i++) expect(Math.hypot(from[i].x - to[i].x, from[i].y - to[i].y)).toBeLessThan(.001);
+  });
+});
+
+it('closing a shared-row band keeps retiring tiles out of the retained cover-attachment header', () => {
+  const open = sceneFor([A, B]), closed = sceneFor([B], { previous: open.layout });
+  const p = step(staticPresentation(open), open, closed, Infinity).presentation;
+  const retirees = [...p.retiring.values()].filter(r => r.record.kind === 'tile' && r.record.graphId === A);
+  const firstRow = Math.min(...bandTiles(open, A).map(r => r.rect.y));
+  expect(retirees.length).toBeGreaterThan(0);
+  for (const retiree of retirees) {
+    const initial = samplePresentation(p, 0).poses.get(retiree.renderId)!;
+    expect(effectiveClip(initial)).toBeNull();
+    for (let at = 0; at < MOTION_MS; at += 4) {
+      const pose = samplePresentation(p, at).poses.get(retiree.renderId)!;
+      if (pose.opacity <= PAINTED) continue;
+      const clip = effectiveClip(pose);
+      expect(Math.max(pose.rect.y, clip?.y ?? -Infinity)).toBeGreaterThanOrEqual(firstRow - .001);
+    }
+  }
 });

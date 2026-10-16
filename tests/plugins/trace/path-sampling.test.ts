@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { pathTranslation, translatePath, flattenPath, polyline, resample, samplePathString } from "$lib/domain/trace-graph/path-sampling";
+import { pathTranslation, translatePath, routeShape, routeShapePath, mixRouteShape, flattenPath, polyline, resample, samplePathString } from "$lib/domain/trace-graph/path-sampling";
 
 const close = (actual: { x: number; y: number }, expected: { x: number; y: number }) => {
   expect(actual.x).toBeCloseTo(expected.x, 6);
@@ -73,5 +73,39 @@ describe("native route translation", () => {
       expect(pathTranslation(bad, bad)).toBeNull();
       expect(translatePath(bad, { x: 0, y: 1 })).toBeNull();
     }
+  });
+});
+
+describe('continuous route shapes', () => {
+  it('keeps both exact curves and interpolates every endpoint when a band moves', () => {
+    const from = 'M100 10 L100 80 C100 86 90 90 84 90 L20 90';
+    const to = 'M100 10 L100 180 C100 186 90 190 84 190 L20 190';
+    const a = routeShape(from, { x: 8, y: 2 })!, b = routeShape(to, { x: 8, y: 2 })!;
+    expect(routeShapePath(mixRouteShape(a, b, 0), { x: 8, y: 2 })).toBe(routeShapePath(a, { x: 8, y: 2 }));
+    expect(routeShapePath(mixRouteShape(a, b, 1), { x: 8, y: 2 })).toBe(routeShapePath(b, { x: 8, y: 2 }));
+    for (const k of [0, .1, .5, .9, 1]) {
+      const points = flattenPath(routeShapePath(mixRouteShape(a, b, k), { x: 8, y: 2 }))!;
+      close(points[0], { x: 100, y: 10 });
+      close(points.at(-1)!, { x: 20, y: 90 + 100 * k });
+      expect(points.every(p => p.x >= 20 - 1e-9 && p.x <= 100 + 1e-9 && p.y >= 10 - 1e-9 && p.y <= 90 + 100 * k + 1e-9)).toBe(true);
+    }
+  });
+
+  it('preserves exact endpoints when command counts differ, including zero-length commands', () => {
+    const a = routeShape('M0 0 L0 10', { x: 0, y: 0 })!;
+    const b = routeShape('M0 0 L10 0 C10 5 5 10 0 10 L0 10', { x: 0, y: 0 })!;
+    for (const k of [0, .25, .5, .75, 1]) {
+      const shape = mixRouteShape(a, b, k);
+      close(flattenPath(routeShapePath(shape, { x: 0, y: 0 }))!.at(-1)!, { x: 0, y: 10 });
+      expect(shape.flat().every(Number.isFinite)).toBe(true);
+    }
+    expect(mixRouteShape(a, b, 0)).toEqual(a);
+    expect(mixRouteShape(a, b, 1)).toEqual(b);
+  });
+
+  it('rejects malformed, unsupported, non-finite and overflowing geometry', () => {
+    for (const path of ['', 'M0', 'M0 0 Q1 1 2 2', 'M0 0 M1 1', 'M0 0 L1e999 0', 'M-1e308 0 L1e308 0'])
+      expect(routeShape(path, { x: 0, y: 0 }), path).toBeNull();
+    expect(routeShape('M0 0 L1 1', { x: Infinity, y: 0 })).toBeNull();
   });
 });

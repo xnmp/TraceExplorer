@@ -50,6 +50,18 @@ function scenario(): { nodes: FolderNode[]; names: Map<string, string> } {
     nodes.push(node);
   };
   const query = new URLSearchParams(globalThis.location?.search ?? "");
+  // Three native-index stacks in one row. Growing A pushes C's already-open band down,
+  // stretching its connector from the stationary cover to the packed children below A.
+  if (query.has("bandMove")) {
+    for (const key of ["stack-a", "stack-b", "stack-c"]) add({ key });
+    for (const seed of [
+      { key: "Cerulean", parents: ["stack-a"] }, { key: "Saffron", parents: ["stack-a"] },
+      { key: "Blastoise", parents: ["Saffron"] }, { key: "Ash", parents: ["Saffron"] },
+      { key: "Charizard", parents: ["Ash"] }, { key: "middle-edit", parents: ["stack-b"] },
+      { key: "Visible Pikachu", parents: ["stack-c"] }, { key: "Daytime Scene", parents: ["stack-c"] },
+    ]) add(seed);
+    return { nodes, names };
+  }
   // Real folder index rules still derive components, covers and members below.
   // Ordinary sources set the cover's host-listing column; saved descendants collapse into it.
   if (query.has("selectionBlink")) {
