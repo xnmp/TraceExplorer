@@ -64,7 +64,17 @@ for (const height of [480, 1500]) test(`growing a band keeps every persistent ti
   const pikachu = await key(page, 'Visible Pikachu'), ash = await key(page, 'Ash');
   expect(before.tiles[pikachu].geometry[1]).toBeGreaterThan(before.tiles[ash].geometry[1]);
   expect(Math.max(...Object.values(before.routes).flat().map(route => route.geometry[3])), 'long connector to the lower band').toBeGreaterThan(200);
-  const frames = await samplePaintedFrames(page, frame, 600, () => caret(page, 'Ash').then(caret => caret.click()), sceneBusy);
+  // The held clock paints each epoch time exactly, so slow runners sample the same frames.
+  const frames: ReturnType<typeof frame>[] = [];
+  await holdMotion(page);
+  try {
+    await (await caret(page, 'Ash')).click();
+    await awaitMotionStarted(page);
+    for (const at of [0, 8, 16, 33, 50, 66, 83, 100, 133, 160]) {
+      await seekMotion(page, at);
+      frames.push(await page.evaluate(frame));
+    }
+  } finally { await releaseMotion(page); }
   await settle(page);
   const after = await page.evaluate(frame);
   await info.attach('band move frames', { body: JSON.stringify({ before, frames, after }), contentType: 'application/json' });
