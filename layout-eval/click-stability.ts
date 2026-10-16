@@ -22,3 +22,52 @@ export function clickStability() {
   }
   return {anchors,denseAnchors,displacement:displacement/transitions};
 }
+
+import { screenshot } from './corpus';
+import { runEngine, prefixCase } from './packing-fixtures';
+import { tileMetrics, tileSize } from '../src/lib/domain/trace-graph/metrics';
+import type { FolderLayout } from '../src/lib/domain/trace-graph/folder-layout';
+import type { GraphLayout } from '../src/lib/domain/trace-graph/layout';
+/** Same real folder packing and click sequence as packing.ts, with no report-file dependency. */
+export function packingAnchorMoves(): number {
+  let moved = 0;
+  for (const width of [360,454,640,900,1400]) for (const imagePx of [48,64,96,128]) {
+    const tile = tileMetrics(imagePx);
+    const columns = Math.max(1, Math.floor((width + 16) / (tile.width + 16)));
+    const gridWidth = columns * tile.width + (columns - 1) * 16;
+    const coverHeight = tileSize({ foreign: false, hint: true }, tile).height;
+    const fixtures = Array.from({ length: Math.min(2, columns) }, (_, i) => prefixCase(screenshot, i));
+    const active = fixtures.length - 1;
+    let committed: FolderLayout | null = null, previous: readonly GraphLayout[] | undefined;
+    for (const name of [null, 'Saffron', 'Ash', 'Cerulean', 'Saffron', null]) {
+      const focus = name ? `g${active}:${name}` : null;
+      const next = runEngine(fixtures, fixtures.map((_, i) => i === active ? focus : null), gridWidth, tile, coverHeight, committed);
+      const a = focus && previous?.[active].nodes.get(focus), b = focus && next.placed[active].nodes.get(focus);
+      if (a && b && Math.hypot(a.x - b.x, a.y - b.y) > .01) moved++;
+      committed = next.layout; previous = next.placed;
+    }
+  }
+  return moved;
+}
+
+import { layoutGraph as frozenLayout } from './baseline/layout';
+import { attached as frozenAttached } from './baseline/placement';
+/** Historical acceptance row, recomputed over every corpus state and size. */
+export function unexplainedHeightRegressions(): readonly string[] {
+  const regressions: string[] = [];
+  for (const fixture of corpus()) for (const imagePx of [48,64,96,128]) for (const width of [360,454,640,900,1400]) {
+    let previous: Optimized | undefined, baseline: ReturnType<typeof frozenLayout> | undefined;
+    for (const focus of fixture.focuses) {
+      const request = requestFor(fixture, focus, width, imagePx, baseline?.readingOrder);
+      baseline = frozenLayout(request);
+      const next = optimizedBand(request, { previous, historyPolicy: 'arrival-only' });
+      if (!next.layout.decision?.stability) {
+        const baseHeight = measure(frozenAttached(baseline, request), request.band!.key, width, request.items).height;
+        const height = measure(next.placed, request.band!.key, width, request.items).height;
+        if (height > baseHeight * 1.1 + .01) regressions.push(`${fixture.id}/${width}/${imagePx}/${focus}`);
+      }
+      previous = next;
+    }
+  }
+  return regressions;
+}

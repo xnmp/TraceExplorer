@@ -5,6 +5,7 @@ import { layoutGraph, type GraphLayout } from './baseline/layout';
 import { corpus, denseCorpus, requestFor } from './corpus';
 import { optimizedBand, type Optimized } from './engine';
 import { measure } from './geometry';
+import { heldScreenMovement } from './screen-space';
 import { attached } from './baseline/placement';
 import { fallbackReason } from '../src/lib/domain/trace-graph/band-layout';
 const rows=[],all=rows;
@@ -16,7 +17,8 @@ for(const original of [...corpus(),...denseCorpus()])for(const width of [360,454
     if(focus!==null&&previousKeys&&!previousKeys.split(',').includes(focus))throw new Error(`unavailable click ${c.id}/${focus}`);
     baseline=layoutGraph(req);const next=optimizedBand({...req,hint:proposed?.layout.readingOrder},{previous:proposed,anchorKey:focus??undefined,historyPolicy:"arrival-only"});
     const pb=attached(baseline,req),mb=measure(pb,req.band!.key,width,req.items,changed?placedB:undefined,focus??undefined),mp=measure(next.placed,req.band!.key,width,req.items,changed?proposed?.placed:undefined,focus??undefined);
-    rows.push({case:c.id,dense:dense.has(c.id),width,step,focus,visible:req.items.length,changed,decision:next.layout.decision,reason:fallbackReason(next.layout),baseline:mb,proposed:mp});placedB=pb;proposed=next;previousKeys=keys;
+    const screen = Object.fromEntries([480,800].map(height=>[height, changed && proposed && focus ? heldScreenMovement(proposed.placed,next.placed,focus,req.band!.key,width,height) : {anchor:0,displacement:mp.displacement}]));
+    rows.push({screen,case:c.id,dense:dense.has(c.id),width,step,focus,visible:req.items.length,changed,decision:next.layout.decision,reason:fallbackReason(next.layout),baseline:mb,proposed:mp});placedB=pb;proposed=next;previousKeys=keys;
     const expandable=req.items.filter(n=>!visited.has(n.key)&&req.band!.items.some(child=>child.parents.includes(n.key))).sort((a,b)=>b.order-a.order||a.key.localeCompare(b.key));
     const selected=expandable[0];if(!selected){if(focus===null)break;focus=null;}else{focus=selected.key;visited.add(focus);}
   }

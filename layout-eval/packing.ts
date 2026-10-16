@@ -13,33 +13,11 @@ import { projectDag, projectReferenceBadges } from '../src/lib/domain/trace-grap
 import { engines, type FolderLayout, type FolderLayoutEngine, type OpenStack } from '../src/lib/domain/trace-graph/folder-layout';
 import { focusExpanded, handCases, requestFor, screenshot, type Case } from './corpus';
 import { measure } from './geometry';
-import { mapPathNumbers } from '../src/lib/domain/trace-graph/path-data';
+import { runEngine, prefixCase as prefix } from './packing-fixtures';
 const engineName = process.argv.find(a => a.startsWith('--engine='))?.slice(9) ?? 'default';
 const folderEngine: FolderLayoutEngine | undefined = engines[engineName];
 if (!folderEngine) throw new Error(`unknown folder layout engine "${engineName}"; registered: ${Object.keys(engines).join(', ')}`);
-/** The candidate engine's folder: one stack per case, each pinned in its own column of a grid exactly `gridWidth` wide. */
-function runEngine(cases: readonly Case[], focuses: readonly (string | null)[], gridWidth: number, tile: TileMetrics, coverHeight: number, previous: FolderLayout | null) {
-  const open = new Map<string, OpenStack>(cases.map((c, i) => {
-    if (c.full) throw new Error(`${c.id}: full-lineage requests have no folder equivalent`);
-    const graph = projectReferenceBadges(projectDag(c.nodes)), members = graph.dag.order;
-    return [members[0], { id: members[0], graph, members, anchor: focuses[i], expanded: focusExpanded(graph, members, members[0], focuses[i]) }];
-  }));
-  const items = [...open.keys()].map(id => ({ id, kind: 'stack' as const }));
-  const layout = folderEngine!({ items, open, width: gridWidth, tile, grid: { cellWidth: tile.width, cellHeight: coverHeight, gap: 16 }, previous });
-  const ids = items.map(item => item.id), graphs = ids.map(id => layout.graphs.get(id)!);
-  // The grid box, as the packed flow reports it: rows end at their last band, columns span the input width.
-  const width = Math.max(gridWidth, ...layout.rowBands.map(b => b.x + b.width)), height = Math.max(0, ...[...layout.cells.values(), ...layout.rowBands].map(r => r.y + r.height));
-  // Attached drawings are cover-relative; measure the same world coordinates the view paints.
-  const placed = graphs.map(({attached,origin}) => ({...attached,
-    nodes:new Map([...attached.nodes].map(([id,n])=>[id,{...n,x:n.x+origin.x,y:n.y+origin.y}])),
-    junctions:new Map([...attached.junctions].map(([id,j])=>[id,{...j,x:j.x+origin.x,y:j.y+origin.y}])),
-    routes:attached.routes.map(r=>({...r,path:mapPathNumbers(r.path,(v,i)=>v+(i%2?origin.y:origin.x))})),
-  })), requests = graphs.map(g => g.plan.request);
-  const combined: GraphLayout = { orientation: 'down', width, height, nodes: new Map(placed.flatMap(l => [...l.nodes])), routes: placed.flatMap(l => l.routes), junctions: new Map(placed.flatMap(l => [...l.junctions])), rows: [], readingOrder: new Map() };
-  return { layout, placed, rowHeight: layout.rowBands[0]?.height ?? 0, metrics: measure(combined, 'no-cover', gridWidth, requests.flatMap(r => r.items)) };
-}
 const rows: any[] = [];
-const prefix = (c: Case, i: number): Case => ({ ...c, nodes: c.nodes.map(n => ({ ...n, key: `g${i}:${n.key}`, parents: n.parents.map(p => `g${i}:${p}`) })) });
 for (const width of [360, 454, 640, 900, 1400]) for (const imagePx of [48, 64, 96, 128]) for (const engine of ['baseline', 'proposed']) {
   const tile = tileMetrics(imagePx), columns = Math.max(1, Math.floor((width + 16) / (tile.width + 16))), gridWidth = columns * tile.width + (columns - 1) * 16;
   const coverHeight = tileSize({ foreign: false, hint: true }, tile).height;
@@ -60,7 +38,7 @@ for (const width of [360, 454, 640, 900, 1400]) for (const imagePx of [48, 64, 9
       const packed = pack(requests, requests.map(baselineLayout));
       rows.push({ width, imagePx, engine, kind: 'static', groups: fixtures.length, rowHeight: packed.rowHeight, metrics: packed.metrics });
     } else {
-      const packed = runEngine(fixtures, fixtures.map(focusOf), gridWidth, tile, coverHeight, null);
+      const packed = runEngine(fixtures, fixtures.map(focusOf), gridWidth, tile, coverHeight, null, folderEngine);
       rows.push({ width, imagePx, engine, kind: 'static', groups: fixtures.length, rowHeight: packed.rowHeight, metrics: packed.metrics });
     }
     const tour = Array.from({ length: Math.min(2, columns) }, (_, i) => prefix(screenshot, i));
@@ -72,7 +50,7 @@ for (const width of [360, 454, 640, 900, 1400]) for (const imagePx of [48, 64, 9
       const focuses = tour.map((_, i) => i === active ? focus : null);
       let scene: { placed: GraphLayout[]; rowHeight: number; metrics: ReturnType<typeof measure> };
       if (engine === 'baseline') { const rs = tour.map((c, i) => pin(requestFor(c, focuses[i], gridWidth, imagePx), i)); scene = pack(rs, rs.map(baselineLayout)); }
-      else { const run = runEngine(tour, focuses, gridWidth, tile, coverHeight, committed); committed = run.layout; scene = run; }
+      else { const run = runEngine(tour, focuses, gridWidth, tile, coverHeight, committed, folderEngine); committed = run.layout; scene = run; }
       const a = focus && previous?.[active].nodes.get(focus), b = focus && scene.placed[active].nodes.get(focus);
       const clickDisplacement = a && b ? Math.hypot(a.x - b.x, a.y - b.y) : 0;
       rows.push({ width, imagePx, engine, kind: 'tour', step, focus, groups: tour.length, rowHeight: scene.rowHeight, metrics: scene.metrics, clickDisplacement, decision: scene.placed[active].decision });
