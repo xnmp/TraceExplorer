@@ -662,7 +662,7 @@ function retainedIndex(previous: GraphLayout, kept: readonly PlacedRoute[]): Lan
   const cached = retainedIndexes.get(previous);
   if (cached && cached.routes.length === kept.length && kept.every((r, i) => r === cached.routes[i] && keys[i] === cached.keys[i])) return cached.index;
   const index = new LaneIndex();
-  for (const r of kept) { const ss = retainedSegments(r); index.add(ss, sourceKey(r.from.kind, r.from.id), routeEnds(r, ss, previous.nodes)); }
+  for (const r of kept) { const ss = retainedSegments(r); index.add(ss, sourceKey(r.from.kind, r.from.id), routeEnds(r, ss, previous.nodes, previous.junctions)); }
   // The dots the kept routes reach.
   const dots = new Set<string>();
   for (const r of kept) for (const end of [r.from, r.to]) if (end.kind === "junction") dots.add(end.id);

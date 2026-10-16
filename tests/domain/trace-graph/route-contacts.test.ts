@@ -80,16 +80,16 @@ describe("routeEnds and berthsOf", () => {
   const stem = polyline(p(50, 80), p(50, 120), p(50, 192));
 
   it("a route leaving its tile's edge starts at a port; one starting off it (a branch leaving its trunk) at a free end", () => {
-    expect(routeEnds(route({ kind: "node", id: "a" }, { kind: "node", id: "b" }, true), stem, nodes)).toEqual({ start: PORT_BERTH, end: PORT_BERTH, arrow: true });
+    expect(routeEnds(route({ kind: "node", id: "a" }, { kind: "node", id: "b" }, true), stem, nodes, new Map())).toEqual({ start: PORT_BERTH, end: PORT_BERTH, arrow: true });
     const branch = polyline(p(50, 120), p(80, 120), p(80, 192));
-    expect(routeEnds(route({ kind: "node", id: "a" }, { kind: "node", id: "b" }, true), branch, nodes).start).toBe(CORNER_BERTH);
+    expect(routeEnds(route({ kind: "node", id: "a" }, { kind: "node", id: "b" }, true), branch, nodes, new Map()).start).toBe(CORNER_BERTH);
   });
 
   it("a junction's dot keeps its own berth, and a trunk ending short of any tile ends free", () => {
-    expect(routeEnds(route({ kind: "node", id: "a" }, { kind: "junction", id: "j" }, false), stem, nodes)).toEqual({ start: PORT_BERTH, end: 0, arrow: false });
-    expect(routeEnds(route({ kind: "junction", id: "j" }, { kind: "node", id: "b" }, true), stem, nodes)).toEqual({ start: 0, end: PORT_BERTH, arrow: true });
-    expect(routeEnds(route({ kind: "node", id: "a" }, { kind: "node", id: "b" }, false), stem, nodes).end).toBe(CORNER_BERTH);
-    expect(routeEnds(route({ kind: "node", id: "a" }, { kind: "node", id: "b" }, true), [], nodes)).toEqual({ start: 0, end: 0 });
+    expect(routeEnds(route({ kind: "node", id: "a" }, { kind: "junction", id: "j" }, false), stem, nodes, new Map([['j',stem[stem.length-1][1]]]))).toEqual({ start: PORT_BERTH, end: 0, arrow: false });
+    expect(routeEnds(route({ kind: "junction", id: "j" }, { kind: "node", id: "b" }, true), stem, nodes, new Map([["j",stem[0][0]]]))).toEqual({ start: 0, end: PORT_BERTH, arrow: true });
+    expect(routeEnds(route({ kind: "node", id: "a" }, { kind: "node", id: "b" }, false), stem, nodes, new Map()).end).toBe(CORNER_BERTH);
+    expect(routeEnds(route({ kind: "node", id: "a" }, { kind: "node", id: "b" }, true), [], nodes, new Map())).toEqual({ start: 0, end: 0 });
   });
 
   it("a route's berths are its ends as given, its arrowhead's tip, and its corners", () => {

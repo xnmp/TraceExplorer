@@ -207,10 +207,16 @@ export const INTO_TILE: Ends = Object.freeze({ start: PORT_BERTH, end: PORT_BERT
  * leaving its trunk); an arrowhead's end is a port, a trunk's end short of any tile is free; a
  * junction's dot keeps its own berth.
  */
-export function routeEnds(route: PlacedRoute, ss: readonly Segment[], nodes: ReadonlyMap<string, PlacedNode>): Ends {
+export function routeEnds(route: PlacedRoute, ss: readonly Segment[], nodes: ReadonlyMap<string, PlacedNode>, junctions: ReadonlyMap<string, Point>): Ends {
   if (!ss.length) return { start: 0, end: 0 };
-  const start = route.from.kind === "junction" ? 0 : onOutline(nodes.get(route.from.id), ss[0][0]) ? PORT_BERTH : CORNER_BERTH;
-  const end = route.to.kind === "junction" ? 0 : route.terminal ? PORT_BERTH : CORNER_BERTH;
+  const atDot = (id: string, point: Point): boolean => {
+    const dot = junctions.get(id);
+    return !!dot && Math.hypot(dot.x - point.x, dot.y - point.y) <= BERTH_SLACK;
+  };
+  const start = route.from.kind === "junction" ? atDot(route.from.id, ss[0][0]) ? 0 : CORNER_BERTH
+    : onOutline(nodes.get(route.from.id), ss[0][0]) ? PORT_BERTH : CORNER_BERTH;
+  const end = route.to.kind === "junction" ? atDot(route.to.id, ss[ss.length-1][1]) ? 0 : CORNER_BERTH
+    : route.terminal ? PORT_BERTH : CORNER_BERTH;
   return { start, end, arrow: route.to.kind === "node" && route.terminal };
 }
 
