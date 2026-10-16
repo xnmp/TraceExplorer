@@ -10,7 +10,7 @@
    */
   import type { Component } from "svelte";
   import { onDestroy } from "svelte";
-  import type { FileViewContribution, FileViewPane, ImageEditorSource, PluginContext, PluginDialogOptions, PluginDialogPane, PluginFileDropSource, PreviewInfoContribution, PreviewSubject, PreviewTarget, TileSizePreset } from "../../integration/plugin-sdk";
+  import type { FileViewContribution, FileViewPane, ImageEditorSource, PluginContext, PluginDialogOptions, PluginDialogPane, PluginFileDropSource, PluginToast, PreviewInfoContribution, PreviewSubject, PreviewTarget, TileSizePreset } from "../../integration/plugin-sdk";
   import type { FileEntry } from "$lib/domain/file";
   import { tracePlugin } from "$lib/plugins/trace";
   import { forgetFolderSnapshots } from "$lib/plugins/trace/view/folder-session.svelte";
@@ -84,6 +84,12 @@
   let editorSource = $state.raw<ImageEditorSource | null>(null);
   let editorToolId: string | null = null;
   let toasts = $state.raw<Array<{ message: string; variant: string }>>([]);
+  // The host's PluginContext toast service, passed to registered view props.
+  const toast: PluginToast = {
+    show(message, variant = "info") { toasts = [...toasts, { message, variant }]; },
+    error(message) { toasts = [...toasts, { message, variant: "error" }]; },
+  };
+  const supportsToast = new URLSearchParams(location.search).get("toast") !== "0";
   /** `?editorApi=0` simulates a host without `presentation.openImageEditor`. */
   const editorApi = new URLSearchParams(location.search).get("editorApi") !== "0";
   const editorCalls: Array<{ path: string; tool: string }> = [];
@@ -111,6 +117,7 @@
     dialogPane = Object.freeze({ paneId: "pane-1" });
     views = []; sections = []; commands.clear(); conditions.clear(); shortcuts.clear(); listeners.clear(); fileListeners.length = 0; menuItems.clear(); editorToolId = null; disposed = false;
     const ctx = {
+      toast: supportsToast ? toast : undefined,
       registerSettingsSection: () => {},
       registerFileView: (view: FileViewContribution) => { views = [...views, view]; },
       registerPreviewInfo: (section: PreviewInfoContribution) => { sections = [...sections, section]; },
@@ -158,7 +165,6 @@
         return { reason: "closed" };
       } },
       saveSettings: async () => {},
-      toast: { show: (message: string, variant = "info") => { toasts = [...toasts, { message, variant }]; }, error: (message: string) => { toasts = [...toasts, { message, variant: "error" }]; } },
       jobs: { accept: async (registration: { label: string; detail: string }, start: () => Promise<{ ok: boolean }>) => {
         const result = await start();
         if (result.ok) accepted = [...accepted, { label: registration.label, detail: registration.detail }];
@@ -396,6 +402,11 @@
     {/if}
   </aside>
 </main>
+<div class="toasts" aria-label="Notifications">
+  {#each toasts as toast}
+    <div role="status" data-testid="host-toast" data-variant={toast.variant}>{toast.message}</div>
+  {/each}
+</div>
 {#if editorTool && editorSource}
   <div class="plugin-dialog" role="dialog" aria-label="AI edit">
     {#key editorTool}
@@ -413,6 +424,8 @@
   /* Theme tokens come from ./themes.ts (copies of host themes), set on the root element. */
   :global(body) { margin: 0; background: var(--background-solid); font: 13px system-ui; color: var(--text-primary); }
   main { display: flex; height: 100vh; }
+  .toasts { position: fixed; bottom: 16px; right: 16px; z-index: 1000; display: grid; gap: 8px; pointer-events: none; }
+  .toasts > div { padding: 10px 16px; background: var(--background-solid); border: 1px solid var(--control-stroke); border-radius: var(--radius-sm); }
   .explorer { display: flex; flex-direction: column; width: var(--view-width); min-width: 0; border-right: 1px solid var(--divider); background: var(--background-solid); }
   .file-view { display: flex; flex-direction: column; flex: 1; min-height: 0; }
   /* Mirrors the host's side-dock Preview (PreviewPane.svelte). */

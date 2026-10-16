@@ -11,7 +11,7 @@
   import type { ComponentFocus } from "$lib/domain/trace-graph/scene";
   import type { FolderCell } from "$lib/domain/trace-graph/folder-grid";
   import { entityId } from "$lib/domain/trace-graph/folder-scene";
-  import type { FileViewPane } from "../../../../../integration/plugin-sdk";
+  import type { FileViewPane, PluginToast } from "../../../../../integration/plugin-sdk";
   import { hostFileTile } from "../../../../sdk";
   import type { Publication, PreparationNotice, SceneController } from "./scene-controller.svelte";
   import { selectableSelector } from "./selectable";
@@ -30,9 +30,9 @@
   import TraceTile from "./TraceTile.svelte";
   import OrdinaryTile from "./OrdinaryTile.svelte";
 
-  let { pane, controller, publication, notices, gridPadding, focus, revision, scroller, onstack, onactivate, ontoggle, onnavigate, onopen, onmenu,
+  let { pane, toast, controller, publication, notices, gridPadding, focus, revision, scroller, onstack, onactivate, ontoggle, onnavigate, onopen, onmenu,
     onselect, onordinarymenu, onbadgehover, onretry, captureSelection, onsaved, ondiscarded }: {
-    pane: FileViewPane; controller: SceneController; publication: Publication; notices: ReadonlyMap<string, PreparationNotice>;
+    pane: FileViewPane; toast?: PluginToast; controller: SceneController; publication: Publication; notices: ReadonlyMap<string, PreparationNotice>;
     /** The host grid padding the published scene was laid out with. */
     gridPadding: number;
     /** The live focus, for the section's `dimmed` marker only. */
@@ -192,7 +192,7 @@
         style:top="{rect.y}px" style:height="{band ? band.y + band.height - rect.y : rect.height}px">
         <div class="cell stack" role="row" aria-rowindex={rect.row + 1} data-grid-cell={cell.id} data-stack-key={cell.id} {@attach handles.attach(record.id)}
           style:left="{rect.x}px" style:width="{rect.width}px" style:height="{rect.height}px">
-          <TraceTile tile={record.tile} placed={record.placed}
+          <TraceTile {toast} tile={record.tile} placed={record.placed}
             explorer={{ name: record.cover?.name ?? summary.title, count: record.cover?.count ?? summary.imageCount, expanded: !!graph, unsaved: record.cover?.unsaved ?? summary.unsaved, active: record.cover?.active ?? summary.active,
               imagePx: cover.imagePx ?? undefined, small: cover.small, progress: notice?.phase ?? null, error: notice?.message ?? null }}
             selected={record.selected} {revision} badgeNodes={nodes} badges={record.badges} badgeSelection={styling.selectedKeys}
@@ -207,7 +207,7 @@
           <div class="content" data-grid-band={cell.id} data-grid-band-row={band.row} data-group-left={placement.left} data-group-width={placement.right - placement.left} data-child-group-left={band.x} data-child-group-width={band.width} data-horizontal-scroll style:height="{band.y + band.height - rect.y}px">
             {#if nearRect(band.y, band.height) || focus?.componentId === summary.id || holdsStop(cell.id) || presented.pinnedGraphs.has(cell.id)}
               {@const span = bandSpan(cell.id, graph.origin.y)}
-              <TraceGraph {graph} focus={styling.focus} records={grouped.get(cell.id)!} presented={presented.graphs.get(cell.id) ?? NO_GRAPH} {pinned} {handles} {nodes} focusedKey={stop ?? undefined} onfocuskey={(key) => tabStop = key} {onbadgehover} selected={styling.selectedKeys} {revision}
+              <TraceGraph {toast} {graph} focus={styling.focus} records={grouped.get(cell.id)!} presented={presented.graphs.get(cell.id) ?? NO_GRAPH} {pinned} {handles} {nodes} focusedKey={stop ?? undefined} onfocuskey={(key) => tabStop = key} {onbadgehover} selected={styling.selectedKeys} {revision}
                 windowTop={span?.top ?? null} windowBottom={span?.bottom ?? null}
                 ongridkey={keydown} onactivate={(key, event) => onactivate(key, event, summary.id)} {onopen}
                 onmenu={(key, event) => onmenu(key, event, summary.id)} ontoggle={(key) => ontoggle(key, summary.id)} {captureSelection} {onsaved} {ondiscarded} />

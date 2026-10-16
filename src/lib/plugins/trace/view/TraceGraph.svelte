@@ -21,7 +21,10 @@
   import RetiringTile from "./RetiringTile.svelte";
   import TraceTile from "./TraceTile.svelte";
 
+  import type { PluginToast } from "../../../../../integration/plugin-sdk";
+
   interface Props {
+    toast?: PluginToast;
     graph: FolderSceneGraph;
     /** The scene's focus (styling): it pins its tile mounted and draws the selected branch with more contrast. */
     focus: NodeKey | null;
@@ -56,7 +59,7 @@
     ondiscarded: (key: NodeKey) => void;
   }
 
-  let { graph, focus, ontoggle, records, presented, pinned, handles, nodes, selected, revision, windowTop, windowBottom, onactivate, onopen, onmenu, onsaved, ondiscarded, captureSelection, ongridkey, focusedKey, onfocuskey, onbadgehover }: Props = $props();
+  let { graph, toast, focus, ontoggle, records, presented, pinned, handles, nodes, selected, revision, windowTop, windowBottom, onactivate, onopen, onmenu, onsaved, ondiscarded, captureSelection, ongridkey, focusedKey, onfocuskey, onbadgehover }: Props = $props();
 
   /** Tile windowing only pays off for very large neighborhoods. */
   const WINDOW_MIN = 120;
@@ -138,7 +141,7 @@
     <RetiringTile {record} x={record.rect.x - graph.origin.x} y={record.rect.y - graph.origin.y} {revision} orientation={record.orientation ?? graph.layout.orientation} handle={handles.attach(retiree.renderId)} />
   {/each}
   {#each visibleTiles as record (record.tile.key)}
-    <TraceTile tile={record.tile} badgeNodes={nodes} focused={focusedKey === undefined || focusedKey === record.tile.key} onfocus={() => onfocuskey?.(record.tile.key)} badges={record.badges} badgeSelection={selected} onbadge={onactivate} onbadgehover={(key) => onbadgehover?.(key)} placed={record.placed} orientation={graph.layout.orientation} selected={record.selected} {revision}
+    <TraceTile {toast} tile={record.tile} badgeNodes={nodes} focused={focusedKey === undefined || focusedKey === record.tile.key} onfocus={() => onfocuskey?.(record.tile.key)} badges={record.badges} badgeSelection={selected} onbadge={onactivate} onbadgehover={(key) => onbadgehover?.(key)} placed={record.placed} orientation={graph.layout.orientation} selected={record.selected} {revision}
       handle={handles.attach(record.id)}
       onactivate={(event) => onactivate(record.tile.key, event)} onopen={() => onopen(record.tile.key)}
       onmenu={(event) => onmenu(record.tile.key, event)} oncaret={() => ontoggle(record.tile.key)} onkey={(event) => keydown(record.tile.key, event)}

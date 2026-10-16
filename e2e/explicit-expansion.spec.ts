@@ -11,7 +11,6 @@ import { card, caret, key, openView, settle, state, uncaught } from "./support";
 import { samplePaintedFrames, sceneBusy } from "./helpers/scene-events";
 import { sceneFrame, type SceneFrame } from "./helpers/scene-frames";
 import { awaitMotionStarted, holdMotion, releaseMotion, seekMotion } from "./animation-control";
-import { DOUBLE_CLICK_MS } from "../src/lib/plugins/trace/view/reclick";
 
 const NAMES = ["stack", "Cerulean", "Saffron", "Pikachu's Ball", "Blastoise", "Ash", "Charizard"] as const;
 type Name = (typeof NAMES)[number];
@@ -156,12 +155,8 @@ test("the brief: branches stay open across selection; a second click, the caret 
   frames.forEach((frame, index) => expect(all(frame, children.Saffron), `Saffron's children at frame ${index}`).toBe(true));
   expect(all(frames.at(-1)!, children.Cerulean)).toBe(true);
 
-  // A second click on Cerulean (the selection) hides its children once no double click follows,
-  // with motion; the selection stays.
-  frames = await framesOf(page, press(page, "Cerulean"), 1100);
-  const due = frames.findIndex((frame) => frame.started > frames[0].started);
-  expect(due, "nothing moves within the double-click window").toBeGreaterThan(0);
-  frames.slice(0, due).forEach((frame, index) => expect(geometry(frame), `frame ${index}`).toEqual(geometry(frames[0])));
+  // A second click on Cerulean hides its children immediately, with motion; the selection stays.
+  frames = await framesOf(page, press(page, "Cerulean"));
   expectSteady(frames, "re-click Cerulean");
   expectAnimated(frames, "re-click Cerulean", leaving(children.Cerulean));
   expect(none(frames.at(-1)!, children.Cerulean)).toBe(true);
@@ -217,23 +212,84 @@ test("a stack's cover follows the same rules: a first click selects and opens, a
   expect(await uncaught(page)).toEqual([]);
 });
 
-test("a double click on the selected open tile or the selected open stack cover opens the file and moves nothing on any frame", async ({ page }) => {
+test("double-clicking an unselected expandable tile selects, opens then closes its children and shows the host toast without blinking", async ({ page }) => {
   const keys = await open(page);
+  const frames = await framesOf(page, async () => { await (await card(page, "Saffron")).dblclick({ delay: 80 }); });
+  expectSteady(frames, "double-click Saffron");
+  // The cover and sibling stay drawn throughout interrupted preparation/motion.
+  for (const frame of frames) for (const name of ["stack", "Cerulean", "Saffron"] as const)
+    expect(drawn(frame, keys[name]), name).toBe(true);
+  expect((await state(page)).selected).toEqual([path("Saffron")]);
+  expect((await state(page)).opened).toEqual([]);
+  await expect(page.getByTestId("host-toast")).toHaveText("Double-click isn't available in Trace view");
+  await expect(page.getByTestId("host-toast")).toHaveAttribute("data-variant", "info");
+  await expect(page.getByTestId("host-toast")).toBeVisible();
+  await expect(await caret(page, "Saffron")).toHaveAttribute("aria-expanded", "false");
+  for (const name of ["Blastoise", "Ash"] as const) await expect(page.locator(`[data-tile-key="${keys[name]}"]`)).toHaveCount(0);
+  // A subsequent re-click works, with no pending double-click state to undo it.
   await press(page, "Saffron")(); await settle(page);
-  let frames = await framesOf(page, async () => { await (await card(page, "Saffron")).dblclick(); }, DOUBLE_CLICK_MS + 500);
-  expect((await state(page)).opened).toContain(path("Saffron"));
-  expect(frames.at(-1)!.started, "no motion").toBe(frames[0].started);
-  frames.forEach((frame, index) => expect(geometry(frame), `Saffron: frame ${index}`).toEqual(geometry(frames[0])));
-  await expect(page.locator(`[data-tile-key="${keys.Blastoise}"]`)).toHaveCount(1);
+  await expect(page.locator(`[data-tile-key="${keys.Blastoise}"]`)).toBeVisible();
+  expect(await uncaught(page)).toEqual([]);
+});
 
+test("double-clicking a selected expandable tile or cover only toasts; Enter still opens", async ({ page }) => {
+  await open(page);
+  await press(page, "Saffron")(); await settle(page);
+  await (await card(page, "Saffron")).dblclick(); await settle(page);
+  expect((await state(page)).opened).toEqual([]);
+  await expect(page.getByTestId("host-toast")).toHaveCount(1);
+  await (await card(page, "Saffron")).press("Enter");
+  expect((await state(page)).opened).toEqual([path("Saffron")]);
   const cover = page.locator(".cover-press").first();
   await cover.click(); await settle(page);
-  expect((await state(page)).selected).toEqual([path("stack")]);
-  frames = await framesOf(page, async () => { await cover.dblclick(); }, DOUBLE_CLICK_MS + 500);
-  expect((await state(page)).opened).toContain(path("stack"));
-  expect(frames.at(-1)!.started, "no motion").toBe(frames[0].started);
-  frames.forEach((frame, index) => expect(geometry(frame), `cover: frame ${index}`).toEqual(geometry(frames[0])));
-  await expect(page.locator("[data-stack-toggle]")).toHaveAttribute("aria-expanded", "true");
+  await cover.dblclick(); await settle(page);
+  await expect(page.getByTestId("host-toast")).toHaveCount(2);
+  expect((await state(page)).opened).toEqual([path("Saffron")]);
+  await cover.press("Enter");
+  expect((await state(page)).opened).toEqual([path("Saffron"), path("stack")]);
+  expect(await uncaught(page)).toEqual([]);
+});
+
+test("a graph leaf double-click opens its file without a toast", async ({ page }) => {
+  await open(page);
+  await press(page, "Cerulean")(); await settle(page);
+  const leaf = await card(page, "Pikachu's Ball");
+  await expect(await caret(page, "Pikachu's Ball")).toHaveCount(0);
+  await leaf.dblclick(); await settle(page);
+  expect((await state(page)).opened).toEqual([path("Pikachu's Ball")]);
+  await expect(page.getByTestId("host-toast")).toHaveCount(0);
+  expect(await uncaught(page)).toEqual([]);
+});
+
+test("selected-tile re-clicks and carets show or hide children well before 500 ms", async ({ page }) => {
+  await open(page);
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  const parent = await card(page, "Cerulean"), disclosure = await caret(page, "Cerulean");
+  const child = page.locator(`[data-tile-key="${await key(page, "Pikachu's Ball")}"]`);
+  await parent.click(); await settle(page);
+  // Measure from the actual DOM click, excluding Playwright's actionability wait.
+  for (const [control, visible] of [[parent, false], [parent, true], [disclosure, false], [disclosure, true]] as const) {
+    await control.evaluate((element) => { element.addEventListener("click", () => { (window as any).__clickedAt = performance.now(); }, { once: true }); });
+    await control.click();
+    if (visible) await expect(child).toBeVisible({ timeout: 350 });
+    else await expect(child).toHaveCount(0, { timeout: 350 });
+    const elapsed = await page.evaluate(() => performance.now() - (window as any).__clickedAt);
+    expect(elapsed, "children change within 350 ms of the click").toBeLessThan(350);
+    expect((await state(page)).selected).toEqual([path("Cerulean")]);
+    await settle(page);
+  }
+  expect(await uncaught(page)).toEqual([]);
+});
+
+test("an older host without toasts ignores expandable double-clicks and still opens leaves", async ({ page }) => {
+  await openView(page, 900, "?selectionBlink=1&toast=0", false);
+  await page.locator("[data-stack-toggle]").click(); await settle(page);
+  await (await card(page, "Cerulean")).dblclick(); await settle(page);
+  expect((await state(page)).opened).toEqual([]);
+  await expect(page.getByTestId("host-toast")).toHaveCount(0);
+  await press(page, "Cerulean")(); await settle(page);
+  await (await card(page, "Pikachu's Ball")).dblclick(); await settle(page);
+  expect((await state(page)).opened).toEqual([path("Pikachu's Ball")]);
   expect(await uncaught(page)).toEqual([]);
 });
 
@@ -298,10 +354,10 @@ test("a child of two parents: both offer a caret, and the latest press of either
   await expect(charizard).toHaveCount(0);
   await expect(caretOf("Ash")).toHaveAttribute("aria-expanded", "false");
   await expect(caretOf("Blastoise")).toHaveAttribute("aria-expanded", "false");
-  // Ash's caret shows it again; a slow second click on the selected Blastoise hides it again.
+  // Ash's caret shows it again; a second click on the selected Blastoise hides it again.
   await caretOf("Ash").click(); await settle(page);
   await expect(charizard).toHaveCount(1);
-  frames = await framesOf(page, press(page, "Blastoise"), DOUBLE_CLICK_MS + 400);
+  frames = await framesOf(page, press(page, "Blastoise"), 600);
   expect(frames.at(-1)!.started, "the second click moves something").toBeGreaterThan(frames[0].started);
   await expect(charizard).toHaveCount(0);
   // And Blastoise's caret, now collapsed, shows it.
@@ -364,7 +420,6 @@ test("a second click on the selected cover of a stack still opening closes it", 
   await cover.click();
   await expect(toggle, "opening").toHaveAttribute("aria-label", "Cancel opening stack");
   expect((await state(page)).selected).toEqual([path("stack")]);
-  await page.waitForTimeout(DOUBLE_CLICK_MS + 100);
   await cover.click();
   await expect(toggle, "the second click cancels the opening").toHaveAttribute("aria-label", "Expand stack");
   await page.evaluate(() => (window as any).trace.backend.releaseNodeReads());
@@ -373,7 +428,7 @@ test("a second click on the selected cover of a stack still opening closes it", 
   expect(await uncaught(page)).toEqual([]);
 });
 
-test("a second click on a stack's cover toggles its stack when the toggle fires, even after its component merged", async ({ page }) => {
+test("a second click on a stack's cover toggles its stack after its component merged", async ({ page }) => {
   await openView(page, 900, "?grouping=two-chains", false);
   const coverKey = await key(page, "photo-a");
   const cell = page.locator(`[data-grid-cell="${coverKey}"]`);
@@ -381,12 +436,11 @@ test("a second click on a stack's cover toggles its stack when the toggle fires,
   await cover.click(); await settle(page);
   await expect(toggle, "a first click opens").toHaveAttribute("aria-expanded", "true");
   const before = await page.locator("section[data-component]").evaluateAll((sections) => sections.map((section) => (section as HTMLElement).dataset.component));
-  await cover.click();
-  // Within the double-click window, an edit of both chains merges their components (the toggle
-  // finds the stack again by its cover's key, as a merge can change a stack's id).
+  // An edit of both chains merges their components before the next re-click.
   await page.evaluate(() => (window as any).trace.backend.joinGeneration(["photo-a-edit", "photo-b-edit"], "joined"));
   await expect(page.locator("section[data-component]")).not.toHaveCount(before.length);
-  await page.waitForTimeout(DOUBLE_CLICK_MS + 200); await settle(page);
+  await settle(page);
+  await cover.click(); await settle(page);
   await expect(toggle, "the second click closes the merged stack").toHaveAttribute("aria-expanded", "false");
   expect(await uncaught(page)).toEqual([]);
 });

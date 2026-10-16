@@ -634,12 +634,14 @@ test("ordinary host tile editing keeps navigation keys in the editor", async ({ 
   }
 });
 
-test("double-clicking a closed stack opens the cover file", async ({ page }) => {
+test("double-clicking a closed stack toasts and leaves its selected cover closed", async ({ page }) => {
   await openView(page, 420, "?grouping=two-chains", false);
   await stack(page, "photo-a").locator(".cover-press").dblclick(); await settle(page);
-  expect((await state(page)).opened).toEqual(["/pictures/photo-a.png"]);
+  expect((await state(page)).opened).toEqual([]);
   expect((await state(page)).selected).toEqual(["/pictures/photo-a.png"]);
-  await expect(stack(page, "photo-a").locator("[data-grid-band]")).toHaveCount(1);
+  await expect(page.getByTestId("host-toast")).toHaveText("Double-click isn't available in Trace view");
+  await expect(stack(page, "photo-a").locator("[data-grid-band]")).toHaveCount(0);
+  expect(await uncaught(page)).toEqual([]);
 });
 
 test("reduced motion opens and closes bands without animations", async ({ page }) => {
@@ -663,14 +665,75 @@ test("clicking a closed in-place-edit stack selects its cover revision, as click
   expect(await uncaught(page)).toEqual([]);
 });
 
-test("double-clicking a closed in-place-edit stack opens the file at its path, as double-clicking its open cover does", async ({ page }) => {
+test("double-clicking an earlier-revision cover toasts while Enter opens its current file", async ({ page }) => {
   await openView(page, 420, "?grouping=in-place-edit", false);
-  await page.locator(".cover-press").dblclick(); await settle(page);
+  const cover = page.locator(".cover-press");
+  await page.evaluate(() => (window as any).trace.backend.holdNodeReads());
+  await cover.dblclick();
+  // Delayed data must preserve the requested selection and collapsed intent.
+  await page.waitForTimeout(650);
+  await page.evaluate(() => (window as any).trace.backend.releaseNodeReads());
+  await settle(page);
+  await expect(page.locator("[data-stack-toggle]")).toHaveAttribute("aria-expanded", "false");
+  expect((await state(page)).target).toMatchObject({ id: "trace:a:1", badge: "Earlier revision" });
+  expect((await state(page)).opened).toEqual([]);
+  await expect(page.getByTestId("host-toast")).toHaveCount(1);
+  await cover.press("Enter");
   expect((await state(page)).opened).toEqual(["/pictures/photo.png"]);
-  await expect(page.locator("[data-grid-band]")).toHaveCount(1);
-  // The open cover behaves the same.
-  await page.locator('[data-tile-key="a:1"]').dblclick(); await settle(page);
-  expect((await state(page)).opened).toEqual(["/pictures/photo.png", "/pictures/photo.png"]);
+  // Its open cover behaves the same.
+  const toggle = page.locator("[data-stack-toggle]");
+  if (await toggle.getAttribute("aria-expanded") === "false") await toggle.click();
+  await settle(page);
+  await cover.dblclick(); await settle(page);
+  expect((await state(page)).opened).toEqual(["/pictures/photo.png"]);
+  await expect(page.getByTestId("host-toast")).toHaveCount(2);
+  expect(await uncaught(page)).toEqual([]);
+});
+
+test("a cold unsaved cover double-click retains its Preview selection while leaving the stack closed", async ({ page }) => {
+  await openView(page, 420, "?grouping=unsaved-and-placeholder", false);
+  const section = stack(page, "out");
+  await page.evaluate(() => (window as any).trace.backend.holdNodeReads());
+  await section.locator(".cover-press").dblclick();
+  // Outlast the controller's 5000 ms preparation deadline before completing selection.
+  await page.waitForTimeout(5200);
+  await page.evaluate(() => (window as any).trace.backend.releaseNodeReads());
+  await settle(page);
+  await expect(section.locator("[data-stack-toggle]")).toHaveAttribute("aria-expanded", "false");
+  await expect(section.locator(".cover-press")).toHaveAttribute("aria-pressed", "true");
+  expect((await state(page)).target).toMatchObject({ id: "trace:o:11:0", badge: "Unsaved" });
+  expect((await state(page)).opened).toEqual([]);
+  await expect(page.getByTestId("host-toast")).toHaveText("Double-click isn't available in Trace view");
+  expect(await uncaught(page)).toEqual([]);
+});
+
+for (const modifier of ["Control", "Shift", "Alt"] as const) {
+  test(`a plain click after a loading ${modifier}-click selects an earlier revision without closing its stack`, async ({ page }) => {
+    await openView(page, 420, "?grouping=in-place-edit", false);
+    await page.evaluate(() => (window as any).trace.backend.holdNodeReads());
+    const toggle = page.locator("[data-stack-toggle]"), cover = page.locator(".cover-press");
+    await toggle.click();
+    await expect(toggle).toHaveAttribute("aria-label", "Cancel opening stack");
+    await cover.click({ modifiers: [modifier] });
+    await cover.click();
+    await page.evaluate(() => (window as any).trace.backend.releaseNodeReads());
+    await settle(page);
+    await expect(toggle).toHaveAttribute("aria-expanded", "true");
+    expect((await state(page)).target).toMatchObject({ id: "trace:a:1", badge: "Earlier revision" });
+    expect(await uncaught(page)).toEqual([]);
+  });
+}
+
+test("a newer selection cancels a cold cover's double-click selection request", async ({ page }) => {
+  await openView(page, 420, "?grouping=in-place-edit", false);
+  await page.evaluate(() => (window as any).trace.backend.holdNodeReads());
+  await page.locator(".cover-press").dblclick();
+  await page.getByTestId("trace-view").click({ position: { x: 2, y: 2 } });
+  await page.evaluate(() => (window as any).trace.backend.releaseNodeReads());
+  await settle(page);
+  await expect(page.locator("[data-stack-toggle]")).toHaveAttribute("aria-expanded", "false");
+  expect((await state(page)).target).toBeNull();
+  expect((await state(page)).selected).toEqual([]);
   expect(await uncaught(page)).toEqual([]);
 });
 

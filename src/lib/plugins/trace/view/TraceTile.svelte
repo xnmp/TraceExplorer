@@ -14,7 +14,11 @@
   import ReferenceBadges from "./ReferenceBadges.svelte";
   import TileVisual, { type CoverVisual } from "./TileVisual.svelte";
 
+  import type { PluginToast } from "../../../../../integration/plugin-sdk";
+  import { tileDoubleClick } from "./tile-click";
+
   interface Props {
+    toast?: PluginToast;
     /** Folder covers use the ordinary explorer thumbnail/name treatment, retaining graph actions. */
     explorer?: CoverVisual;
     /** Retries a failed open (the cover's in-cover error control). */
@@ -46,7 +50,9 @@
     captureSelection?: () => () => boolean;
   }
 
-  let { tile, placed, orientation = "down", selected, revision, handle, onactivate, onopen, onmenu, onkey, onsaved, ondiscarded, captureSelection, badges = [], badgeNodes, badgeSelection = new Set(), onbadge, onbadgehover, onstacktoggle, oncaret, focused = true, onfocus, explorer, onretry }: Props = $props();
+  let { tile, toast, placed, orientation = "down", selected, revision, handle, onactivate, onopen, onmenu, onkey, onsaved, ondiscarded, captureSelection, badges = [], badgeNodes, badgeSelection = new Set(), onbadge, onbadgehover, onstacktoggle, oncaret, focused = true, onfocus, explorer, onretry }: Props = $props();
+  // Stack covers always offer their disclosure; band tiles use TileVisual's caret predicate.
+  const doubleClick = () => tileDoubleClick(!!explorer || tile.togglable, onopen, toast);
   const node = $derived(tile.node);
   const title = $derived(promptTitles.labelFor(node.runId, node.prompt) || nodeTitle(node));
   const status = $derived(nodeStatus(node));
@@ -66,7 +72,7 @@
   const card = $derived(explorer ? null : {
     type: "button", tabindex: focused ? 0 : -1, onfocus, "data-node-key": node.key, "aria-pressed": selected, [tooltipKey]: tooltip,
     "aria-label": `${title}${status ? `, ${status}` : ""}${unsaved ? ", unsaved" : ""}${node.scope === "external" ? ", outside this folder" : node.scope === "subfolder" ? ", in a subfolder" : ""}`,
-    onclick: onactivate, ondblclick: onopen, oncontextmenu: onmenu, onkeydown: onkey,
+    onclick: onactivate, ondblclick: doubleClick, oncontextmenu: onmenu, onkeydown: onkey,
   });
 </script>
 
@@ -80,7 +86,7 @@
     {#if explorer}
       <button type="button" class="cover-press" tabindex={focused ? 0 : -1} {onfocus} data-node-key={node.key}
         aria-pressed={selected} aria-label="{explorer.name}, {explorer.count} images{status ? `, ${status}` : ''}{unsaved || explorer.unsaved ? ', unsaved' : ''}"
-        {@attach explorer.expanded ? tooltip : null} onclick={onactivate} ondblclick={onopen} oncontextmenu={onmenu} onkeydown={onkey}></button>
+        {@attach explorer.expanded ? tooltip : null} onclick={onactivate} ondblclick={doubleClick} oncontextmenu={onmenu} onkeydown={onkey}></button>
     {/if}
   {/snippet}
   <TileVisual {tile} {selected} {revision} {orientation} {explorer} {card} press={explorer ? press : undefined} {focused} {onfocus} {onstacktoggle} {oncaret} {onkey} {onretry} />
