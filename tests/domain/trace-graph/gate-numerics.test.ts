@@ -30,3 +30,13 @@ it('certifies packed cover stems without widening or replacing the normal candid
   }
   expect(fallbacks / states.length).toBe(0);
 });
+
+it('does not invent shared length at a translated collinear endpoint', () => {
+  for (const shift of [0, 1000, -300]) {
+    const a: Segment = [{x:290.5,y:303.67+shift},{x:290.5,y:316.5+shift}];
+    const b: Segment = [{x:290.5,y:316.5+shift},{x:290.5,y:332.75+shift}];
+    expect(overlapLength(a,b)).toBe(0);
+    expect(overlapLength(b,a)).toBe(0);
+    expect(overlapLength(a,[{x:290.5,y:316.499+shift},b[1]])).toBeCloseTo(.001,8);
+  }
+});

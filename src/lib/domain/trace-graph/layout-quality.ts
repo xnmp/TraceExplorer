@@ -53,8 +53,12 @@ function collinearOverlap(ax: number, ay: number, bx: number, by: number, cx: nu
     if (Math.abs(dx * (cy - ay) - dy * (cx - ax)) > EPS || Math.abs(dx * (ey - ay) - dy * (ex - ax)) > EPS) return 0;
     const length = distance(dx, dy);
     if (length < EPS) return 0;
-    const t1 = ((cx - ax) * dx + (cy - ay) * dy) / length, t2 = ((ex - ax) * dx + (ey - ay) * dy) / length;
-    return Math.max(0, Math.min(length, Math.max(t1, t2)) - Math.max(0, Math.min(t1, t2)));
+    // Intersect in a world coordinate before converting to arc length. Projecting
+    // each endpoint separately can turn an exactly shared endpoint into positive
+    // overlap through division roundoff (and depends on operand order).
+    const [a, b, c, d, span] = Math.abs(dx) >= Math.abs(dy)
+        ? [ax, bx, cx, ex, Math.abs(dx)] : [ay, by, cy, ey, Math.abs(dy)];
+    return Math.max(0, Math.min(Math.max(a, b), Math.max(c, d)) - Math.max(Math.min(a, b), Math.min(c, d))) * (length / span);
 }
 interface Bounds { readonly minX: number; readonly maxX: number; readonly minY: number; readonly maxY: number }
 const boundsOf = ([a, b]: Segment): Bounds => ({ minX: Math.min(a.x, b.x), maxX: Math.max(a.x, b.x), minY: Math.min(a.y, b.y), maxY: Math.max(a.y, b.y) });
