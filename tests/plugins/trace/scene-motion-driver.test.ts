@@ -453,7 +453,7 @@ describe("the rAF motion driver", () => {
           let transform = style.transform;
           Object.defineProperty(style, "transform", { enumerable: true, get: () => transform,
             set: (value: string) => { if (armed) { armed = false; throw new Error("renderer gone"); } transform = value; } });
-          elements.set(key, { style });
+          elements.set(key, { style, querySelector: () => null } as Fake);
         }
         return elements.get(key) as unknown as HTMLElement;
       },
