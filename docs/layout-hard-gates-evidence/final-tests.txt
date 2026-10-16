@@ -1,0 +1,10 @@
+$ vitest run
+
+ RUN  v5.0.3 /var/tmp/te-wt2/layout-gates
+
+
+ Test Files  126 passed (126)
+      Tests  1927 passed | 1 skipped (1928)
+   Start at  23:18:41
+   Duration  18.17s (tests 75%, transform 17%, import 7%)
+

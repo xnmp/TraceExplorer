@@ -1,0 +1,4426 @@
+{
+  "before": {
+    "columns": 1,
+    "size": {
+      "width": 200,
+      "height": 902
+    },
+    "bounds": {
+      "x": 0,
+      "y": 0,
+      "width": 200,
+      "height": 902
+    },
+    "cells": {
+      "$map": [
+        [
+          "s0:root",
+          {
+            "id": "s0:root",
+            "row": 0,
+            "col": 0,
+            "x": 0,
+            "y": 0,
+            "width": 200,
+            "height": 128
+          }
+        ],
+        [
+          "s1:root",
+          {
+            "id": "s1:root",
+            "row": 1,
+            "col": 0,
+            "x": 0,
+            "y": 462,
+            "width": 200,
+            "height": 128
+          }
+        ],
+        [
+          "/f/file-0.png",
+          {
+            "id": "/f/file-0.png",
+            "row": 2,
+            "col": 0,
+            "x": 0,
+            "y": 774,
+            "width": 200,
+            "height": 128
+          }
+        ]
+      ]
+    },
+    "bands": [
+      {
+        "id": "s0:root",
+        "row": 0,
+        "x": 16,
+        "y": 128,
+        "width": 168,
+        "height": 326
+      },
+      {
+        "id": "s1:root",
+        "row": 1,
+        "x": 0,
+        "y": 590,
+        "width": 156,
+        "height": 176
+      }
+    ],
+    "rowBands": [
+      {
+        "id": "row:0",
+        "row": 0,
+        "x": 0,
+        "y": 128,
+        "width": 200,
+        "height": 326
+      },
+      {
+        "id": "row:1",
+        "row": 1,
+        "x": 0,
+        "y": 590,
+        "width": 200,
+        "height": 176
+      }
+    ],
+    "graphs": {
+      "$map": [
+        [
+          "s0:root",
+          {
+            "id": "s0:root",
+            "plan": {
+              "lineage": {
+                "focus": null,
+                "related": {}
+              },
+              "tiles": {
+                "$map": [
+                  [
+                    "s0:root",
+                    {
+                      "key": "s0:root",
+                      "node": {
+                        "key": "s0:root",
+                        "parents": [],
+                        "order": 0,
+                        "artifactId": 0,
+                        "runId": null,
+                        "path": "/f/s0:root.png",
+                        "scope": "current",
+                        "location": "",
+                        "state": "present",
+                        "temporary": false,
+                        "discarded": false,
+                        "earlierRevision": false,
+                        "prompt": "root"
+                      },
+                      "tone": "neutral",
+                      "size": {
+                        "width": 140,
+                        "imageHeight": 82,
+                        "height": 128
+                      },
+                      "childCount": 2,
+                      "hiddenDescendants": 0,
+                      "expandable": true,
+                      "expanded": true,
+                      "togglable": true
+                    }
+                  ],
+                  [
+                    "s0:a",
+                    {
+                      "key": "s0:a",
+                      "node": {
+                        "key": "s0:a",
+                        "parents": [
+                          "s0:root"
+                        ],
+                        "order": 1,
+                        "artifactId": 1,
+                        "runId": null,
+                        "path": "/f/s0:a.png",
+                        "scope": "current",
+                        "location": "",
+                        "state": "present",
+                        "temporary": false,
+                        "discarded": false,
+                        "earlierRevision": false,
+                        "prompt": "a"
+                      },
+                      "tone": "neutral",
+                      "size": {
+                        "width": 140,
+                        "imageHeight": 82,
+                        "height": 128
+                      },
+                      "childCount": 0,
+                      "hiddenDescendants": 0,
+                      "expandable": false,
+                      "expanded": false,
+                      "togglable": false
+                    }
+                  ],
+                  [
+                    "s0:b",
+                    {
+                      "key": "s0:b",
+                      "node": {
+                        "key": "s0:b",
+                        "parents": [
+                          "s0:root"
+                        ],
+                        "order": 2,
+                        "artifactId": 2,
+                        "runId": null,
+                        "path": "/f/s0:b.png",
+                        "scope": "current",
+                        "location": "",
+                        "state": "present",
+                        "temporary": false,
+                        "discarded": false,
+                        "earlierRevision": false,
+                        "prompt": "b"
+                      },
+                      "tone": "neutral",
+                      "size": {
+                        "width": 140,
+                        "imageHeight": 82,
+                        "height": 128
+                      },
+                      "childCount": 0,
+                      "hiddenDescendants": 0,
+                      "expandable": false,
+                      "expanded": false,
+                      "togglable": false
+                    }
+                  ]
+                ]
+              },
+              "badges": {
+                "$map": []
+              },
+              "request": {
+                "items": [
+                  {
+                    "key": "s0:root",
+                    "width": 140,
+                    "height": 128,
+                    "order": 0,
+                    "parents": []
+                  },
+                  {
+                    "key": "s0:a",
+                    "width": 140,
+                    "height": 128,
+                    "order": 1,
+                    "parents": [
+                      "s0:root"
+                    ]
+                  },
+                  {
+                    "key": "s0:b",
+                    "width": 140,
+                    "height": 128,
+                    "order": 2,
+                    "parents": [
+                      "s0:root"
+                    ]
+                  }
+                ],
+                "maxWidth": 200,
+                "tileWidth": 140,
+                "orientation": "down",
+                "pinned": {
+                  "key": "s0:root",
+                  "x": 100,
+                  "obstacles": []
+                },
+                "band": {
+                  "key": "s0:root",
+                  "items": [
+                    {
+                      "key": "s0:root",
+                      "width": 140,
+                      "imageHeight": 82,
+                      "height": 128,
+                      "order": 0,
+                      "parents": []
+                    },
+                    {
+                      "key": "s0:a",
+                      "width": 140,
+                      "imageHeight": 82,
+                      "height": 128,
+                      "order": 1,
+                      "parents": [
+                        "s0:root"
+                      ]
+                    },
+                    {
+                      "key": "s0:b",
+                      "width": 140,
+                      "imageHeight": 82,
+                      "height": 128,
+                      "order": 2,
+                      "parents": [
+                        "s0:root"
+                      ]
+                    }
+                  ]
+                }
+              }
+            },
+            "layout": {
+              "orientation": "down",
+              "width": 200,
+              "height": 460,
+              "nodes": {
+                "$map": [
+                  [
+                    "s0:root",
+                    {
+                      "key": "s0:root",
+                      "x": 30,
+                      "y": 18,
+                      "width": 140,
+                      "height": 128,
+                      "band": 0,
+                      "row": 0
+                    }
+                  ],
+                  [
+                    "s0:a",
+                    {
+                      "key": "s0:a",
+                      "x": 30,
+                      "y": 168,
+                      "width": 140,
+                      "height": 128,
+                      "band": 1,
+                      "row": 1
+                    }
+                  ],
+                  [
+                    "s0:b",
+                    {
+                      "key": "s0:b",
+                      "x": 30,
+                      "y": 318,
+                      "width": 140,
+                      "height": 128,
+                      "band": 1,
+                      "row": 2
+                    }
+                  ]
+                ]
+              },
+              "rows": [
+                {
+                  "index": 0,
+                  "band": 0,
+                  "top": 18,
+                  "bottom": 146,
+                  "keys": [
+                    "s0:root"
+                  ]
+                },
+                {
+                  "index": 1,
+                  "band": 1,
+                  "top": 168,
+                  "bottom": 296,
+                  "keys": [
+                    "s0:a"
+                  ]
+                },
+                {
+                  "index": 2,
+                  "band": 1,
+                  "top": 318,
+                  "bottom": 446,
+                  "keys": [
+                    "s0:b"
+                  ]
+                }
+              ],
+              "routes": [
+                {
+                  "id": "[\"node\",\"s0:root\",\"node\",\"s0:a\"]",
+                  "from": {
+                    "kind": "node",
+                    "id": "s0:root"
+                  },
+                  "to": {
+                    "kind": "node",
+                    "id": "s0:a"
+                  },
+                  "consumers": [
+                    {
+                      "parent": "s0:root",
+                      "child": "s0:a"
+                    }
+                  ],
+                  "path": "M100 146 L100 160",
+                  "terminal": true
+                },
+                {
+                  "id": "[\"node\",\"s0:root\",\"node\",\"s0:b\"]",
+                  "from": {
+                    "kind": "node",
+                    "id": "s0:root"
+                  },
+                  "to": {
+                    "kind": "node",
+                    "id": "s0:b"
+                  },
+                  "consumers": [
+                    {
+                      "parent": "s0:root",
+                      "child": "s0:b"
+                    }
+                  ],
+                  "path": "M100 146 L100 149 L18 149 L18 168 L18 296 L18 299 L100 299 L100 310",
+                  "terminal": true
+                }
+              ],
+              "readingOrder": {
+                "$map": [
+                  [
+                    "s0:root",
+                    0
+                  ],
+                  [
+                    "s0:a",
+                    1
+                  ],
+                  [
+                    "s0:b",
+                    2
+                  ]
+                ]
+              },
+              "junctions": {
+                "$map": []
+              },
+              "bandBounds": {
+                "left": 10,
+                "width": 168,
+                "top": 168
+              },
+              "decision": {
+                "candidate": "visible-down",
+                "stability": false
+              }
+            },
+            "attached": {
+              "orientation": "down",
+              "width": 200,
+              "height": 454,
+              "nodes": {
+                "$map": [
+                  [
+                    "s0:root",
+                    {
+                      "key": "s0:root",
+                      "x": 30,
+                      "y": 0,
+                      "width": 140,
+                      "height": 128,
+                      "band": 0,
+                      "row": 0
+                    }
+                  ],
+                  [
+                    "s0:a",
+                    {
+                      "key": "s0:a",
+                      "x": 36,
+                      "y": 162,
+                      "width": 140,
+                      "height": 128,
+                      "band": 1,
+                      "row": 1
+                    }
+                  ],
+                  [
+                    "s0:b",
+                    {
+                      "key": "s0:b",
+                      "x": 36,
+                      "y": 312,
+                      "width": 140,
+                      "height": 128,
+                      "band": 1,
+                      "row": 2
+                    }
+                  ]
+                ]
+              },
+              "rows": [
+                {
+                  "index": 0,
+                  "band": 0,
+                  "top": 0,
+                  "bottom": 128,
+                  "keys": [
+                    "s0:root"
+                  ]
+                },
+                {
+                  "index": 1,
+                  "band": 1,
+                  "top": 162,
+                  "bottom": 290,
+                  "keys": [
+                    "s0:a"
+                  ]
+                },
+                {
+                  "index": 2,
+                  "band": 1,
+                  "top": 312,
+                  "bottom": 440,
+                  "keys": [
+                    "s0:b"
+                  ]
+                }
+              ],
+              "routes": [
+                {
+                  "id": "[\"node\",\"s0:root\",\"node\",\"s0:a\"]",
+                  "from": {
+                    "kind": "node",
+                    "id": "s0:root"
+                  },
+                  "to": {
+                    "kind": "node",
+                    "id": "s0:a"
+                  },
+                  "consumers": [
+                    {
+                      "parent": "s0:root",
+                      "child": "s0:a"
+                    }
+                  ],
+                  "path": "M100 128 L100 131 C100 132.6568542494 101.3431457506 134 103 134 L103 134 C104.6568542494 134 106 135.3431457506 106 137 L106 146 L106 154 ",
+                  "terminal": true
+                },
+                {
+                  "id": "[\"node\",\"s0:root\",\"node\",\"s0:b\"]",
+                  "from": {
+                    "kind": "node",
+                    "id": "s0:root"
+                  },
+                  "to": {
+                    "kind": "node",
+                    "id": "s0:b"
+                  },
+                  "consumers": [
+                    {
+                      "parent": "s0:root",
+                      "child": "s0:b"
+                    }
+                  ],
+                  "path": "M100 128 L100 131 C100 132.6568542494 98.6568542494 134 97 134 L30 134 C26.6862915012 134 24 136.6862915012 24 140 L24 146 L24 162 L 24 290 L 24 293 L 106 293 L 106 304",
+                  "terminal": true
+                }
+              ],
+              "readingOrder": {
+                "$map": [
+                  [
+                    "s0:root",
+                    0
+                  ],
+                  [
+                    "s0:a",
+                    1
+                  ],
+                  [
+                    "s0:b",
+                    2
+                  ]
+                ]
+              },
+              "junctions": {
+                "$map": []
+              },
+              "bandBounds": {
+                "left": 16,
+                "width": 168,
+                "top": 162
+              },
+              "decision": {
+                "candidate": "visible-down",
+                "stability": false
+              }
+            },
+            "origin": {
+              "x": 0,
+              "y": 0
+            },
+            "placement": {
+              "x": 16,
+              "coverX": 100,
+              "coverHeight": 128,
+              "width": 200,
+              "track": 6,
+              "bypassColumns": [],
+              "coverColumns": [],
+              "stemRoom": 34,
+              "left": 16,
+              "right": 184
+            }
+          }
+        ],
+        [
+          "s1:root",
+          {
+            "id": "s1:root",
+            "plan": {
+              "lineage": {
+                "focus": null,
+                "related": {}
+              },
+              "tiles": {
+                "$map": [
+                  [
+                    "s1:root",
+                    {
+                      "key": "s1:root",
+                      "node": {
+                        "key": "s1:root",
+                        "parents": [],
+                        "order": 0,
+                        "artifactId": 0,
+                        "runId": null,
+                        "path": "/f/s1:root.png",
+                        "scope": "current",
+                        "location": "",
+                        "state": "present",
+                        "temporary": false,
+                        "discarded": false,
+                        "earlierRevision": false,
+                        "prompt": "root"
+                      },
+                      "tone": "neutral",
+                      "size": {
+                        "width": 140,
+                        "imageHeight": 82,
+                        "height": 128
+                      },
+                      "childCount": 1,
+                      "hiddenDescendants": 0,
+                      "expandable": true,
+                      "expanded": true,
+                      "togglable": true
+                    }
+                  ],
+                  [
+                    "s1:child",
+                    {
+                      "key": "s1:child",
+                      "node": {
+                        "key": "s1:child",
+                        "parents": [
+                          "s1:root"
+                        ],
+                        "order": 1,
+                        "artifactId": 1,
+                        "runId": null,
+                        "path": "/f/s1:child.png",
+                        "scope": "current",
+                        "location": "",
+                        "state": "present",
+                        "temporary": false,
+                        "discarded": false,
+                        "earlierRevision": false,
+                        "prompt": "child"
+                      },
+                      "tone": "neutral",
+                      "size": {
+                        "width": 140,
+                        "imageHeight": 82,
+                        "height": 128
+                      },
+                      "childCount": 0,
+                      "hiddenDescendants": 0,
+                      "expandable": false,
+                      "expanded": false,
+                      "togglable": false
+                    }
+                  ]
+                ]
+              },
+              "badges": {
+                "$map": []
+              },
+              "request": {
+                "items": [
+                  {
+                    "key": "s1:root",
+                    "width": 140,
+                    "height": 128,
+                    "order": 0,
+                    "parents": []
+                  },
+                  {
+                    "key": "s1:child",
+                    "width": 140,
+                    "height": 128,
+                    "order": 1,
+                    "parents": [
+                      "s1:root"
+                    ]
+                  }
+                ],
+                "maxWidth": 200,
+                "tileWidth": 140,
+                "orientation": "down",
+                "pinned": {
+                  "key": "s1:root",
+                  "x": 100,
+                  "obstacles": []
+                },
+                "band": {
+                  "key": "s1:root",
+                  "items": [
+                    {
+                      "key": "s1:root",
+                      "width": 140,
+                      "imageHeight": 82,
+                      "height": 128,
+                      "order": 0,
+                      "parents": []
+                    },
+                    {
+                      "key": "s1:child",
+                      "width": 140,
+                      "imageHeight": 82,
+                      "height": 128,
+                      "order": 1,
+                      "parents": [
+                        "s1:root"
+                      ]
+                    }
+                  ]
+                }
+              }
+            },
+            "layout": {
+              "orientation": "down",
+              "width": 200,
+              "height": 310,
+              "nodes": {
+                "$map": [
+                  [
+                    "s1:root",
+                    {
+                      "key": "s1:root",
+                      "x": 30,
+                      "y": 18,
+                      "width": 140,
+                      "height": 128,
+                      "band": 0,
+                      "row": 0
+                    }
+                  ],
+                  [
+                    "s1:child",
+                    {
+                      "key": "s1:child",
+                      "x": 30,
+                      "y": 168,
+                      "width": 140,
+                      "height": 128,
+                      "band": 1,
+                      "row": 1
+                    }
+                  ]
+                ]
+              },
+              "rows": [
+                {
+                  "index": 0,
+                  "band": 0,
+                  "top": 18,
+                  "bottom": 146,
+                  "keys": [
+                    "s1:root"
+                  ]
+                },
+                {
+                  "index": 1,
+                  "band": 1,
+                  "top": 168,
+                  "bottom": 296,
+                  "keys": [
+                    "s1:child"
+                  ]
+                }
+              ],
+              "routes": [
+                {
+                  "id": "[\"node\",\"s1:root\",\"node\",\"s1:child\"]",
+                  "from": {
+                    "kind": "node",
+                    "id": "s1:root"
+                  },
+                  "to": {
+                    "kind": "node",
+                    "id": "s1:child"
+                  },
+                  "consumers": [
+                    {
+                      "parent": "s1:root",
+                      "child": "s1:child"
+                    }
+                  ],
+                  "path": "M100 146 L100 160",
+                  "terminal": true
+                }
+              ],
+              "readingOrder": {
+                "$map": [
+                  [
+                    "s1:root",
+                    0
+                  ],
+                  [
+                    "s1:child",
+                    1
+                  ]
+                ]
+              },
+              "junctions": {
+                "$map": []
+              },
+              "preferredX": 0,
+              "bandBounds": {
+                "left": 22,
+                "width": 156,
+                "top": 168
+              },
+              "decision": {
+                "candidate": "visible-down",
+                "stability": false
+              }
+            },
+            "attached": {
+              "orientation": "down",
+              "width": 200,
+              "height": 304,
+              "nodes": {
+                "$map": [
+                  [
+                    "s1:root",
+                    {
+                      "key": "s1:root",
+                      "x": 30,
+                      "y": 0,
+                      "width": 140,
+                      "height": 128,
+                      "band": 0,
+                      "row": 0
+                    }
+                  ],
+                  [
+                    "s1:child",
+                    {
+                      "key": "s1:child",
+                      "x": 8,
+                      "y": 162,
+                      "width": 140,
+                      "height": 128,
+                      "band": 1,
+                      "row": 1
+                    }
+                  ]
+                ]
+              },
+              "rows": [
+                {
+                  "index": 0,
+                  "band": 0,
+                  "top": 0,
+                  "bottom": 128,
+                  "keys": [
+                    "s1:root"
+                  ]
+                },
+                {
+                  "index": 1,
+                  "band": 1,
+                  "top": 162,
+                  "bottom": 290,
+                  "keys": [
+                    "s1:child"
+                  ]
+                }
+              ],
+              "routes": [
+                {
+                  "id": "[\"node\",\"s1:root\",\"node\",\"s1:child\"]",
+                  "from": {
+                    "kind": "node",
+                    "id": "s1:root"
+                  },
+                  "to": {
+                    "kind": "node",
+                    "id": "s1:child"
+                  },
+                  "consumers": [
+                    {
+                      "parent": "s1:root",
+                      "child": "s1:child"
+                    }
+                  ],
+                  "path": "M100 128 L100 131 C100 132.6568542494 98.6568542494 134 97 134 L84 134 C80.6862915012 134 78 136.6862915012 78 140 L78 146 L78 154 ",
+                  "terminal": true
+                }
+              ],
+              "readingOrder": {
+                "$map": [
+                  [
+                    "s1:root",
+                    0
+                  ],
+                  [
+                    "s1:child",
+                    1
+                  ]
+                ]
+              },
+              "junctions": {
+                "$map": []
+              },
+              "preferredX": 0,
+              "bandBounds": {
+                "left": 0,
+                "width": 156,
+                "top": 162
+              },
+              "decision": {
+                "candidate": "visible-down",
+                "stability": false
+              }
+            },
+            "origin": {
+              "x": 0,
+              "y": 462
+            },
+            "placement": {
+              "x": 0,
+              "coverX": 100,
+              "coverHeight": 128,
+              "width": 200,
+              "track": 6,
+              "bypassColumns": [],
+              "coverColumns": [],
+              "stemRoom": 34,
+              "left": 0,
+              "right": 156
+            }
+          }
+        ]
+      ]
+    },
+    "cellFootprints": {
+      "$map": [
+        [
+          "s0:root",
+          {
+            "x": 30,
+            "y": 0,
+            "width": 140,
+            "height": 128
+          }
+        ],
+        [
+          "s1:root",
+          {
+            "x": 30,
+            "y": 462,
+            "width": 140,
+            "height": 128
+          }
+        ],
+        [
+          "/f/file-0.png",
+          {
+            "id": "/f/file-0.png",
+            "row": 2,
+            "col": 0,
+            "x": 0,
+            "y": 774,
+            "width": 200,
+            "height": 128
+          }
+        ]
+      ]
+    },
+    "geometryBasis": "[200,{\"width\":140,\"image\":82},{\"cellWidth\":140,\"cellHeight\":0,\"gap\":8}]",
+    "arrivals": {
+      "$map": [
+        [
+          "s0:root",
+          {
+            "contents": "[[\"s0:root\",0,[]],[\"s0:a\",1,[\"s0:root\"]],[\"s0:b\",2,[\"s0:root\"]]]"
+          }
+        ],
+        [
+          "s1:root",
+          {
+            "contents": "[[\"s1:root\",0,[]],[\"s1:child\",1,[\"s1:root\"]]]"
+          }
+        ]
+      ]
+    }
+  },
+  "after": {
+    "columns": 1,
+    "size": {
+      "width": 444,
+      "height": 902
+    },
+    "bounds": {
+      "x": 0,
+      "y": 0,
+      "width": 444,
+      "height": 902
+    },
+    "cells": {
+      "$map": [
+        [
+          "s0:root",
+          {
+            "id": "s0:root",
+            "row": 0,
+            "col": 0,
+            "x": 0,
+            "y": 0,
+            "width": 200,
+            "height": 128
+          }
+        ],
+        [
+          "s1:root",
+          {
+            "id": "s1:root",
+            "row": 1,
+            "col": 0,
+            "x": 0,
+            "y": 462,
+            "width": 200,
+            "height": 128
+          }
+        ],
+        [
+          "/f/file-0.png",
+          {
+            "id": "/f/file-0.png",
+            "row": 2,
+            "col": 0,
+            "x": 0,
+            "y": 774,
+            "width": 200,
+            "height": 128
+          }
+        ]
+      ]
+    },
+    "bands": [
+      {
+        "x": 36,
+        "y": 162,
+        "width": 408,
+        "height": 278,
+        "id": "s0:root",
+        "row": 0
+      },
+      {
+        "key": "[\"node\",\"s1:root\",\"s1:child\"]",
+        "x": 8,
+        "y": 624,
+        "width": 140,
+        "height": 128,
+        "band": 1,
+        "row": 1,
+        "id": "s1:root"
+      }
+    ],
+    "rowBands": [
+      {
+        "x": 36,
+        "y": 162,
+        "width": 408,
+        "height": 278,
+        "id": "row:0",
+        "row": 0
+      },
+      {
+        "key": "[\"node\",\"s1:root\",\"s1:child\"]",
+        "x": 8,
+        "y": 624,
+        "width": 140,
+        "height": 128,
+        "band": 1,
+        "row": 1,
+        "id": "row:1"
+      }
+    ],
+    "graphs": {
+      "$map": [
+        [
+          "s0:root",
+          {
+            "id": "s0:root",
+            "plan": {
+              "lineage": {
+                "focus": null,
+                "related": {}
+              },
+              "tiles": {
+                "$map": [
+                  [
+                    "s0:root",
+                    {
+                      "key": "s0:root",
+                      "node": {
+                        "key": "s0:root",
+                        "parents": [],
+                        "order": 0,
+                        "artifactId": 0,
+                        "runId": null,
+                        "path": "/f/s0:root.png",
+                        "scope": "current",
+                        "location": "",
+                        "state": "present",
+                        "temporary": false,
+                        "discarded": false,
+                        "earlierRevision": false,
+                        "prompt": "root"
+                      },
+                      "tone": "neutral",
+                      "size": {
+                        "width": 140,
+                        "imageHeight": 82,
+                        "height": 128
+                      },
+                      "childCount": 2,
+                      "hiddenDescendants": 0,
+                      "expandable": true,
+                      "expanded": true,
+                      "togglable": true
+                    }
+                  ],
+                  [
+                    "s0:a",
+                    {
+                      "key": "s0:a",
+                      "node": {
+                        "key": "s0:a",
+                        "parents": [
+                          "s0:root"
+                        ],
+                        "order": 1,
+                        "artifactId": 1,
+                        "runId": null,
+                        "path": "/f/s0:a.png",
+                        "scope": "current",
+                        "location": "",
+                        "state": "present",
+                        "temporary": false,
+                        "discarded": false,
+                        "earlierRevision": false,
+                        "prompt": "a"
+                      },
+                      "tone": "neutral",
+                      "size": {
+                        "width": 140,
+                        "imageHeight": 82,
+                        "height": 128
+                      },
+                      "childCount": 1,
+                      "hiddenDescendants": 0,
+                      "expandable": true,
+                      "expanded": true,
+                      "togglable": true
+                    }
+                  ],
+                  [
+                    "s0:b",
+                    {
+                      "key": "s0:b",
+                      "node": {
+                        "key": "s0:b",
+                        "parents": [
+                          "s0:root"
+                        ],
+                        "order": 2,
+                        "artifactId": 2,
+                        "runId": null,
+                        "path": "/f/s0:b.png",
+                        "scope": "current",
+                        "location": "",
+                        "state": "present",
+                        "temporary": false,
+                        "discarded": false,
+                        "earlierRevision": false,
+                        "prompt": "b"
+                      },
+                      "tone": "neutral",
+                      "size": {
+                        "width": 140,
+                        "imageHeight": 82,
+                        "height": 128
+                      },
+                      "childCount": 1,
+                      "hiddenDescendants": 0,
+                      "expandable": true,
+                      "expanded": true,
+                      "togglable": true
+                    }
+                  ],
+                  [
+                    "s0:c",
+                    {
+                      "key": "s0:c",
+                      "node": {
+                        "key": "s0:c",
+                        "parents": [
+                          "s0:a",
+                          "s0:b"
+                        ],
+                        "order": 3,
+                        "artifactId": 3,
+                        "runId": null,
+                        "path": "/f/s0:c.png",
+                        "scope": "current",
+                        "location": "",
+                        "state": "present",
+                        "temporary": false,
+                        "discarded": false,
+                        "earlierRevision": false,
+                        "prompt": "c"
+                      },
+                      "tone": "neutral",
+                      "size": {
+                        "width": 140,
+                        "imageHeight": 82,
+                        "height": 128
+                      },
+                      "childCount": 0,
+                      "hiddenDescendants": 0,
+                      "expandable": false,
+                      "expanded": false,
+                      "togglable": false
+                    }
+                  ]
+                ]
+              },
+              "badges": {
+                "$map": []
+              },
+              "request": {
+                "items": [
+                  {
+                    "key": "s0:root",
+                    "width": 140,
+                    "height": 128,
+                    "order": 0,
+                    "parents": []
+                  },
+                  {
+                    "key": "s0:a",
+                    "width": 140,
+                    "height": 128,
+                    "order": 1,
+                    "parents": [
+                      "s0:root"
+                    ]
+                  },
+                  {
+                    "key": "s0:b",
+                    "width": 140,
+                    "height": 128,
+                    "order": 2,
+                    "parents": [
+                      "s0:root"
+                    ]
+                  },
+                  {
+                    "key": "s0:c",
+                    "width": 140,
+                    "height": 128,
+                    "order": 3,
+                    "parents": [
+                      "s0:a",
+                      "s0:b"
+                    ]
+                  }
+                ],
+                "maxWidth": 200,
+                "history": {
+                  "signature": "[200,140,{\"key\":\"s0:root\",\"x\":100,\"obstacles\":[]},[[\"s0:a\",140,128,1,[\"s0:root\"]],[\"s0:b\",140,128,2,[\"s0:root\"]],[\"s0:root\",140,128,0,[]]]]",
+                  "layout": {
+                    "orientation": "down",
+                    "width": 200,
+                    "height": 460,
+                    "nodes": {
+                      "$map": [
+                        [
+                          "s0:root",
+                          {
+                            "key": "s0:root",
+                            "x": 30,
+                            "y": 18,
+                            "width": 140,
+                            "height": 128,
+                            "band": 0,
+                            "row": 0
+                          }
+                        ],
+                        [
+                          "s0:a",
+                          {
+                            "key": "s0:a",
+                            "x": 30,
+                            "y": 168,
+                            "width": 140,
+                            "height": 128,
+                            "band": 1,
+                            "row": 1
+                          }
+                        ],
+                        [
+                          "s0:b",
+                          {
+                            "key": "s0:b",
+                            "x": 30,
+                            "y": 318,
+                            "width": 140,
+                            "height": 128,
+                            "band": 1,
+                            "row": 2
+                          }
+                        ]
+                      ]
+                    },
+                    "rows": [
+                      {
+                        "index": 0,
+                        "band": 0,
+                        "top": 18,
+                        "bottom": 146,
+                        "keys": [
+                          "s0:root"
+                        ]
+                      },
+                      {
+                        "index": 1,
+                        "band": 1,
+                        "top": 168,
+                        "bottom": 296,
+                        "keys": [
+                          "s0:a"
+                        ]
+                      },
+                      {
+                        "index": 2,
+                        "band": 1,
+                        "top": 318,
+                        "bottom": 446,
+                        "keys": [
+                          "s0:b"
+                        ]
+                      }
+                    ],
+                    "routes": [
+                      {
+                        "id": "[\"node\",\"s0:root\",\"node\",\"s0:a\"]",
+                        "from": {
+                          "kind": "node",
+                          "id": "s0:root"
+                        },
+                        "to": {
+                          "kind": "node",
+                          "id": "s0:a"
+                        },
+                        "consumers": [
+                          {
+                            "parent": "s0:root",
+                            "child": "s0:a"
+                          }
+                        ],
+                        "path": "M100 146 L100 160",
+                        "terminal": true
+                      },
+                      {
+                        "id": "[\"node\",\"s0:root\",\"node\",\"s0:b\"]",
+                        "from": {
+                          "kind": "node",
+                          "id": "s0:root"
+                        },
+                        "to": {
+                          "kind": "node",
+                          "id": "s0:b"
+                        },
+                        "consumers": [
+                          {
+                            "parent": "s0:root",
+                            "child": "s0:b"
+                          }
+                        ],
+                        "path": "M100 146 L100 149 L18 149 L18 168 L18 296 L18 299 L100 299 L100 310",
+                        "terminal": true
+                      }
+                    ],
+                    "readingOrder": {
+                      "$map": [
+                        [
+                          "s0:root",
+                          0
+                        ],
+                        [
+                          "s0:a",
+                          1
+                        ],
+                        [
+                          "s0:b",
+                          2
+                        ]
+                      ]
+                    },
+                    "junctions": {
+                      "$map": []
+                    },
+                    "bandBounds": {
+                      "left": 10,
+                      "width": 168,
+                      "top": 168
+                    },
+                    "decision": {
+                      "candidate": "visible-down",
+                      "stability": false
+                    }
+                  },
+                  "placed": {
+                    "orientation": "down",
+                    "width": 200,
+                    "height": 454,
+                    "nodes": {
+                      "$map": [
+                        [
+                          "s0:root",
+                          {
+                            "key": "s0:root",
+                            "x": 30,
+                            "y": 0,
+                            "width": 140,
+                            "height": 128,
+                            "band": 0,
+                            "row": 0
+                          }
+                        ],
+                        [
+                          "s0:a",
+                          {
+                            "key": "s0:a",
+                            "x": 36,
+                            "y": 162,
+                            "width": 140,
+                            "height": 128,
+                            "band": 1,
+                            "row": 1
+                          }
+                        ],
+                        [
+                          "s0:b",
+                          {
+                            "key": "s0:b",
+                            "x": 36,
+                            "y": 312,
+                            "width": 140,
+                            "height": 128,
+                            "band": 1,
+                            "row": 2
+                          }
+                        ]
+                      ]
+                    },
+                    "rows": [
+                      {
+                        "index": 0,
+                        "band": 0,
+                        "top": 0,
+                        "bottom": 128,
+                        "keys": [
+                          "s0:root"
+                        ]
+                      },
+                      {
+                        "index": 1,
+                        "band": 1,
+                        "top": 162,
+                        "bottom": 290,
+                        "keys": [
+                          "s0:a"
+                        ]
+                      },
+                      {
+                        "index": 2,
+                        "band": 1,
+                        "top": 312,
+                        "bottom": 440,
+                        "keys": [
+                          "s0:b"
+                        ]
+                      }
+                    ],
+                    "routes": [
+                      {
+                        "id": "[\"node\",\"s0:root\",\"node\",\"s0:a\"]",
+                        "from": {
+                          "kind": "node",
+                          "id": "s0:root"
+                        },
+                        "to": {
+                          "kind": "node",
+                          "id": "s0:a"
+                        },
+                        "consumers": [
+                          {
+                            "parent": "s0:root",
+                            "child": "s0:a"
+                          }
+                        ],
+                        "path": "M100 128 L100 131 C100 132.6568542494 101.3431457506 134 103 134 L103 134 C104.6568542494 134 106 135.3431457506 106 137 L106 146 L106 154 ",
+                        "terminal": true
+                      },
+                      {
+                        "id": "[\"node\",\"s0:root\",\"node\",\"s0:b\"]",
+                        "from": {
+                          "kind": "node",
+                          "id": "s0:root"
+                        },
+                        "to": {
+                          "kind": "node",
+                          "id": "s0:b"
+                        },
+                        "consumers": [
+                          {
+                            "parent": "s0:root",
+                            "child": "s0:b"
+                          }
+                        ],
+                        "path": "M100 128 L100 131 C100 132.6568542494 98.6568542494 134 97 134 L30 134 C26.6862915012 134 24 136.6862915012 24 140 L24 146 L24 162 L 24 290 L 24 293 L 106 293 L 106 304",
+                        "terminal": true
+                      }
+                    ],
+                    "readingOrder": {
+                      "$map": [
+                        [
+                          "s0:root",
+                          0
+                        ],
+                        [
+                          "s0:a",
+                          1
+                        ],
+                        [
+                          "s0:b",
+                          2
+                        ]
+                      ]
+                    },
+                    "junctions": {
+                      "$map": []
+                    },
+                    "bandBounds": {
+                      "left": 16,
+                      "width": 168,
+                      "top": 162
+                    },
+                    "decision": {
+                      "candidate": "visible-down",
+                      "stability": false
+                    }
+                  },
+                  "attachment": {
+                    "bandTop": 128,
+                    "placement": {
+                      "x": 16,
+                      "coverX": 100,
+                      "coverHeight": 128,
+                      "width": 200,
+                      "track": 6,
+                      "bypassColumns": [],
+                      "coverColumns": [],
+                      "stemRoom": 34,
+                      "left": 16,
+                      "right": 184
+                    }
+                  }
+                },
+                "tileWidth": 140,
+                "orientation": "down",
+                "pinned": {
+                  "key": "s0:root",
+                  "x": 100,
+                  "obstacles": []
+                },
+                "band": {
+                  "key": "s0:root",
+                  "items": [
+                    {
+                      "key": "s0:root",
+                      "width": 140,
+                      "imageHeight": 82,
+                      "height": 128,
+                      "order": 0,
+                      "parents": []
+                    },
+                    {
+                      "key": "s0:a",
+                      "width": 140,
+                      "imageHeight": 82,
+                      "height": 128,
+                      "order": 1,
+                      "parents": [
+                        "s0:root"
+                      ]
+                    },
+                    {
+                      "key": "s0:b",
+                      "width": 140,
+                      "imageHeight": 82,
+                      "height": 128,
+                      "order": 2,
+                      "parents": [
+                        "s0:root"
+                      ]
+                    },
+                    {
+                      "key": "s0:c",
+                      "width": 140,
+                      "imageHeight": 82,
+                      "height": 128,
+                      "order": 3,
+                      "parents": [
+                        "s0:a",
+                        "s0:b"
+                      ]
+                    }
+                  ]
+                }
+              }
+            },
+            "layout": {
+              "orientation": "down",
+              "width": 476,
+              "height": 916,
+              "nodes": {
+                "$map": [
+                  [
+                    "s0:root",
+                    {
+                      "key": "s0:root",
+                      "x": 30,
+                      "y": 0,
+                      "width": 140,
+                      "height": 128,
+                      "band": 0,
+                      "row": 0
+                    }
+                  ],
+                  [
+                    "s0:a",
+                    {
+                      "key": "s0:a",
+                      "x": 36,
+                      "y": 162,
+                      "width": 140,
+                      "height": 128,
+                      "band": 1,
+                      "row": 1
+                    }
+                  ],
+                  [
+                    "s0:b",
+                    {
+                      "key": "s0:b",
+                      "x": 36,
+                      "y": 312,
+                      "width": 140,
+                      "height": 128,
+                      "band": 1,
+                      "row": 2
+                    }
+                  ],
+                  [
+                    "s0:c",
+                    {
+                      "key": "s0:c",
+                      "x": 304,
+                      "y": 312,
+                      "width": 140,
+                      "height": 128,
+                      "row": 2,
+                      "band": 2
+                    }
+                  ]
+                ]
+              },
+              "rows": [],
+              "routes": [
+                {
+                  "id": "[\"node\",\"s0:root\",\"node\",\"s0:a\"]",
+                  "from": {
+                    "kind": "node",
+                    "id": "s0:root"
+                  },
+                  "to": {
+                    "kind": "node",
+                    "id": "s0:a"
+                  },
+                  "consumers": [
+                    {
+                      "parent": "s0:root",
+                      "child": "s0:a"
+                    }
+                  ],
+                  "path": "M100 128 L100 131 C100 132.6568542494 101.3431457506 134 103 134 L103 134 C104.6568542494 134 106 135.3431457506 106 137 L106 146 L106 154 ",
+                  "terminal": true
+                },
+                {
+                  "id": "[\"node\",\"s0:root\",\"node\",\"s0:b\"]",
+                  "from": {
+                    "kind": "node",
+                    "id": "s0:root"
+                  },
+                  "to": {
+                    "kind": "node",
+                    "id": "s0:b"
+                  },
+                  "consumers": [
+                    {
+                      "parent": "s0:root",
+                      "child": "s0:b"
+                    }
+                  ],
+                  "path": "M100 128 L100 131 C100 132.6568542494 98.6568542494 134 97 134 L30 134 C26.686291501200003 134 24 136.6862915012 24 140 L24 146 L24 162 L 24 290 L 24 293 L 106 293 L 106 304",
+                  "terminal": true
+                },
+                {
+                  "id": "[\"folder-route\",\"[\\\"incremental\\\",\\\"[\\\\\\\"node\\\\\\\",\\\\\\\"s0:root\\\\\\\",\\\\\\\"s0:a\\\\\\\"]\\\",\\\"[\\\\\\\"node\\\\\\\",\\\\\\\"s0:root\\\\\\\",\\\\\\\"s0:c\\\\\\\"]\\\"]\",\"\"]",
+                  "from": {
+                    "kind": "node",
+                    "id": "s0:a"
+                  },
+                  "to": {
+                    "kind": "junction",
+                    "id": "[\"folder-junction\",\"[\\\"incremental-join\\\",\\\"[\\\\\\\"node\\\\\\\",\\\\\\\"s0:root\\\\\\\",\\\\\\\"s0:c\\\\\\\"]\\\",0]\",\"\"]"
+                  },
+                  "consumers": [
+                    {
+                      "parent": "s0:a",
+                      "child": "s0:c"
+                    }
+                  ],
+                  "terminal": false,
+                  "path": "M176 226 L382 226 L382 296 L374 296"
+                },
+                {
+                  "id": "[\"folder-route\",\"[\\\"incremental\\\",\\\"[\\\\\\\"node\\\\\\\",\\\\\\\"s0:root\\\\\\\",\\\\\\\"s0:b\\\\\\\"]\\\",\\\"[\\\\\\\"node\\\\\\\",\\\\\\\"s0:root\\\\\\\",\\\\\\\"s0:c\\\\\\\"]\\\"]\",\"\"]",
+                  "from": {
+                    "kind": "node",
+                    "id": "s0:b"
+                  },
+                  "to": {
+                    "kind": "junction",
+                    "id": "[\"folder-junction\",\"[\\\"incremental-join\\\",\\\"[\\\\\\\"node\\\\\\\",\\\\\\\"s0:root\\\\\\\",\\\\\\\"s0:c\\\\\\\"]\\\",0]\",\"\"]"
+                  },
+                  "consumers": [
+                    {
+                      "parent": "s0:b",
+                      "child": "s0:c"
+                    }
+                  ],
+                  "terminal": false,
+                  "path": "M176 376 L275 376 L275 296 L374 296"
+                },
+                {
+                  "id": "[\"folder-route\",\"[\\\"incremental-tail\\\",\\\"[\\\\\\\"incremental-join\\\\\\\",\\\\\\\"[\\\\\\\\\\\\\\\"node\\\\\\\\\\\\\\\",\\\\\\\\\\\\\\\"s0:root\\\\\\\\\\\\\\\",\\\\\\\\\\\\\\\"s0:c\\\\\\\\\\\\\\\"]\\\\\\\",0]\\\",\\\"[\\\\\\\"node\\\\\\\",\\\\\\\"s0:root\\\\\\\",\\\\\\\"s0:c\\\\\\\"]\\\"]\",\"\"]",
+                  "from": {
+                    "kind": "junction",
+                    "id": "[\"folder-junction\",\"[\\\"incremental-join\\\",\\\"[\\\\\\\"node\\\\\\\",\\\\\\\"s0:root\\\\\\\",\\\\\\\"s0:c\\\\\\\"]\\\",0]\",\"\"]"
+                  },
+                  "to": {
+                    "kind": "node",
+                    "id": "s0:c"
+                  },
+                  "consumers": {
+                    "entries": [
+                      {
+                        "parent": "s0:a",
+                        "child": "s0:c"
+                      },
+                      {
+                        "parent": "s0:b",
+                        "child": "s0:c"
+                      }
+                    ],
+                    "start": 0,
+                    "end": 2
+                  },
+                  "terminal": true,
+                  "path": "M374 296 L374 304"
+                }
+              ],
+              "readingOrder": {
+                "$map": [
+                  [
+                    "s0:root",
+                    0
+                  ],
+                  [
+                    "s0:a",
+                    1
+                  ],
+                  [
+                    "s0:b",
+                    2
+                  ]
+                ]
+              },
+              "junctions": {
+                "$map": [
+                  [
+                    "[\"folder-junction\",\"[\\\"incremental-join\\\",\\\"[\\\\\\\"node\\\\\\\",\\\\\\\"s0:root\\\\\\\",\\\\\\\"s0:c\\\\\\\"]\\\",0]\",\"\"]",
+                    {
+                      "id": "[\"folder-junction\",\"[\\\"incremental-join\\\",\\\"[\\\\\\\"node\\\\\\\",\\\\\\\"s0:root\\\\\\\",\\\\\\\"s0:c\\\\\\\"]\\\",0]\",\"\"]",
+                      "x": 374,
+                      "y": 296,
+                      "parents": [
+                        "s0:a",
+                        "s0:b"
+                      ]
+                    }
+                  ]
+                ]
+              },
+              "decision": {
+                "candidate": "folder-pinned-extension",
+                "stability": true
+              }
+            },
+            "attached": {
+              "orientation": "down",
+              "width": 476,
+              "height": 916,
+              "nodes": {
+                "$map": [
+                  [
+                    "s0:root",
+                    {
+                      "key": "s0:root",
+                      "x": 30,
+                      "y": 0,
+                      "width": 140,
+                      "height": 128,
+                      "band": 0,
+                      "row": 0
+                    }
+                  ],
+                  [
+                    "s0:a",
+                    {
+                      "key": "s0:a",
+                      "x": 36,
+                      "y": 162,
+                      "width": 140,
+                      "height": 128,
+                      "band": 1,
+                      "row": 1
+                    }
+                  ],
+                  [
+                    "s0:b",
+                    {
+                      "key": "s0:b",
+                      "x": 36,
+                      "y": 312,
+                      "width": 140,
+                      "height": 128,
+                      "band": 1,
+                      "row": 2
+                    }
+                  ],
+                  [
+                    "s0:c",
+                    {
+                      "key": "s0:c",
+                      "x": 304,
+                      "y": 312,
+                      "width": 140,
+                      "height": 128,
+                      "row": 2,
+                      "band": 2
+                    }
+                  ]
+                ]
+              },
+              "rows": [],
+              "routes": [
+                {
+                  "id": "[\"node\",\"s0:root\",\"node\",\"s0:a\"]",
+                  "from": {
+                    "kind": "node",
+                    "id": "s0:root"
+                  },
+                  "to": {
+                    "kind": "node",
+                    "id": "s0:a"
+                  },
+                  "consumers": [
+                    {
+                      "parent": "s0:root",
+                      "child": "s0:a"
+                    }
+                  ],
+                  "path": "M100 128 L100 131 C100 132.6568542494 101.3431457506 134 103 134 L103 134 C104.6568542494 134 106 135.3431457506 106 137 L106 146 L106 154 ",
+                  "terminal": true
+                },
+                {
+                  "id": "[\"node\",\"s0:root\",\"node\",\"s0:b\"]",
+                  "from": {
+                    "kind": "node",
+                    "id": "s0:root"
+                  },
+                  "to": {
+                    "kind": "node",
+                    "id": "s0:b"
+                  },
+                  "consumers": [
+                    {
+                      "parent": "s0:root",
+                      "child": "s0:b"
+                    }
+                  ],
+                  "path": "M100 128 L100 131 C100 132.6568542494 98.6568542494 134 97 134 L30 134 C26.686291501200003 134 24 136.6862915012 24 140 L24 146 L24 162 L 24 290 L 24 293 L 106 293 L 106 304",
+                  "terminal": true
+                },
+                {
+                  "id": "[\"folder-route\",\"[\\\"incremental\\\",\\\"[\\\\\\\"node\\\\\\\",\\\\\\\"s0:root\\\\\\\",\\\\\\\"s0:a\\\\\\\"]\\\",\\\"[\\\\\\\"node\\\\\\\",\\\\\\\"s0:root\\\\\\\",\\\\\\\"s0:c\\\\\\\"]\\\"]\",\"\"]",
+                  "from": {
+                    "kind": "node",
+                    "id": "s0:a"
+                  },
+                  "to": {
+                    "kind": "junction",
+                    "id": "[\"folder-junction\",\"[\\\"incremental-join\\\",\\\"[\\\\\\\"node\\\\\\\",\\\\\\\"s0:root\\\\\\\",\\\\\\\"s0:c\\\\\\\"]\\\",0]\",\"\"]"
+                  },
+                  "consumers": [
+                    {
+                      "parent": "s0:a",
+                      "child": "s0:c"
+                    }
+                  ],
+                  "terminal": false,
+                  "path": "M176 226 L382 226 L382 296 L374 296"
+                },
+                {
+                  "id": "[\"folder-route\",\"[\\\"incremental\\\",\\\"[\\\\\\\"node\\\\\\\",\\\\\\\"s0:root\\\\\\\",\\\\\\\"s0:b\\\\\\\"]\\\",\\\"[\\\\\\\"node\\\\\\\",\\\\\\\"s0:root\\\\\\\",\\\\\\\"s0:c\\\\\\\"]\\\"]\",\"\"]",
+                  "from": {
+                    "kind": "node",
+                    "id": "s0:b"
+                  },
+                  "to": {
+                    "kind": "junction",
+                    "id": "[\"folder-junction\",\"[\\\"incremental-join\\\",\\\"[\\\\\\\"node\\\\\\\",\\\\\\\"s0:root\\\\\\\",\\\\\\\"s0:c\\\\\\\"]\\\",0]\",\"\"]"
+                  },
+                  "consumers": [
+                    {
+                      "parent": "s0:b",
+                      "child": "s0:c"
+                    }
+                  ],
+                  "terminal": false,
+                  "path": "M176 376 L275 376 L275 296 L374 296"
+                },
+                {
+                  "id": "[\"folder-route\",\"[\\\"incremental-tail\\\",\\\"[\\\\\\\"incremental-join\\\\\\\",\\\\\\\"[\\\\\\\\\\\\\\\"node\\\\\\\\\\\\\\\",\\\\\\\\\\\\\\\"s0:root\\\\\\\\\\\\\\\",\\\\\\\\\\\\\\\"s0:c\\\\\\\\\\\\\\\"]\\\\\\\",0]\\\",\\\"[\\\\\\\"node\\\\\\\",\\\\\\\"s0:root\\\\\\\",\\\\\\\"s0:c\\\\\\\"]\\\"]\",\"\"]",
+                  "from": {
+                    "kind": "junction",
+                    "id": "[\"folder-junction\",\"[\\\"incremental-join\\\",\\\"[\\\\\\\"node\\\\\\\",\\\\\\\"s0:root\\\\\\\",\\\\\\\"s0:c\\\\\\\"]\\\",0]\",\"\"]"
+                  },
+                  "to": {
+                    "kind": "node",
+                    "id": "s0:c"
+                  },
+                  "consumers": {
+                    "entries": [
+                      {
+                        "parent": "s0:a",
+                        "child": "s0:c"
+                      },
+                      {
+                        "parent": "s0:b",
+                        "child": "s0:c"
+                      }
+                    ],
+                    "start": 0,
+                    "end": 2
+                  },
+                  "terminal": true,
+                  "path": "M374 296 L374 304"
+                }
+              ],
+              "readingOrder": {
+                "$map": [
+                  [
+                    "s0:root",
+                    0
+                  ],
+                  [
+                    "s0:a",
+                    1
+                  ],
+                  [
+                    "s0:b",
+                    2
+                  ]
+                ]
+              },
+              "junctions": {
+                "$map": [
+                  [
+                    "[\"folder-junction\",\"[\\\"incremental-join\\\",\\\"[\\\\\\\"node\\\\\\\",\\\\\\\"s0:root\\\\\\\",\\\\\\\"s0:c\\\\\\\"]\\\",0]\",\"\"]",
+                    {
+                      "id": "[\"folder-junction\",\"[\\\"incremental-join\\\",\\\"[\\\\\\\"node\\\\\\\",\\\\\\\"s0:root\\\\\\\",\\\\\\\"s0:c\\\\\\\"]\\\",0]\",\"\"]",
+                      "x": 374,
+                      "y": 296,
+                      "parents": [
+                        "s0:a",
+                        "s0:b"
+                      ]
+                    }
+                  ]
+                ]
+              },
+              "decision": {
+                "candidate": "folder-pinned-extension",
+                "stability": true
+              }
+            },
+            "origin": {
+              "x": 0,
+              "y": 0
+            },
+            "placement": {
+              "x": 16,
+              "coverX": 100,
+              "coverHeight": 128,
+              "width": 200,
+              "track": 6,
+              "bypassColumns": [],
+              "coverColumns": [],
+              "stemRoom": 34,
+              "left": 16,
+              "right": 184
+            },
+            "worldPlaced": true,
+            "canonical": {
+              "request": {
+                "items": [
+                  {
+                    "key": "s0:root",
+                    "width": 140,
+                    "height": 128,
+                    "order": 0,
+                    "parents": []
+                  },
+                  {
+                    "key": "s0:a",
+                    "width": 140,
+                    "height": 128,
+                    "order": 1,
+                    "parents": [
+                      "s0:root"
+                    ]
+                  },
+                  {
+                    "key": "s0:b",
+                    "width": 140,
+                    "height": 128,
+                    "order": 2,
+                    "parents": [
+                      "s0:root"
+                    ]
+                  },
+                  {
+                    "key": "s0:c",
+                    "width": 140,
+                    "height": 128,
+                    "order": 3,
+                    "parents": [
+                      "s0:a",
+                      "s0:b"
+                    ]
+                  }
+                ],
+                "maxWidth": 200,
+                "history": {
+                  "signature": "[200,140,{\"key\":\"s0:root\",\"x\":100,\"obstacles\":[]},[[\"s0:a\",140,128,1,[\"s0:root\"]],[\"s0:b\",140,128,2,[\"s0:root\"]],[\"s0:root\",140,128,0,[]]]]",
+                  "layout": {
+                    "orientation": "down",
+                    "width": 200,
+                    "height": 460,
+                    "nodes": {
+                      "$map": [
+                        [
+                          "s0:root",
+                          {
+                            "key": "s0:root",
+                            "x": 30,
+                            "y": 18,
+                            "width": 140,
+                            "height": 128,
+                            "band": 0,
+                            "row": 0
+                          }
+                        ],
+                        [
+                          "s0:a",
+                          {
+                            "key": "s0:a",
+                            "x": 30,
+                            "y": 168,
+                            "width": 140,
+                            "height": 128,
+                            "band": 1,
+                            "row": 1
+                          }
+                        ],
+                        [
+                          "s0:b",
+                          {
+                            "key": "s0:b",
+                            "x": 30,
+                            "y": 318,
+                            "width": 140,
+                            "height": 128,
+                            "band": 1,
+                            "row": 2
+                          }
+                        ]
+                      ]
+                    },
+                    "rows": [
+                      {
+                        "index": 0,
+                        "band": 0,
+                        "top": 18,
+                        "bottom": 146,
+                        "keys": [
+                          "s0:root"
+                        ]
+                      },
+                      {
+                        "index": 1,
+                        "band": 1,
+                        "top": 168,
+                        "bottom": 296,
+                        "keys": [
+                          "s0:a"
+                        ]
+                      },
+                      {
+                        "index": 2,
+                        "band": 1,
+                        "top": 318,
+                        "bottom": 446,
+                        "keys": [
+                          "s0:b"
+                        ]
+                      }
+                    ],
+                    "routes": [
+                      {
+                        "id": "[\"node\",\"s0:root\",\"node\",\"s0:a\"]",
+                        "from": {
+                          "kind": "node",
+                          "id": "s0:root"
+                        },
+                        "to": {
+                          "kind": "node",
+                          "id": "s0:a"
+                        },
+                        "consumers": [
+                          {
+                            "parent": "s0:root",
+                            "child": "s0:a"
+                          }
+                        ],
+                        "path": "M100 146 L100 160",
+                        "terminal": true
+                      },
+                      {
+                        "id": "[\"node\",\"s0:root\",\"node\",\"s0:b\"]",
+                        "from": {
+                          "kind": "node",
+                          "id": "s0:root"
+                        },
+                        "to": {
+                          "kind": "node",
+                          "id": "s0:b"
+                        },
+                        "consumers": [
+                          {
+                            "parent": "s0:root",
+                            "child": "s0:b"
+                          }
+                        ],
+                        "path": "M100 146 L100 149 L18 149 L18 168 L18 296 L18 299 L100 299 L100 310",
+                        "terminal": true
+                      }
+                    ],
+                    "readingOrder": {
+                      "$map": [
+                        [
+                          "s0:root",
+                          0
+                        ],
+                        [
+                          "s0:a",
+                          1
+                        ],
+                        [
+                          "s0:b",
+                          2
+                        ]
+                      ]
+                    },
+                    "junctions": {
+                      "$map": []
+                    },
+                    "bandBounds": {
+                      "left": 10,
+                      "width": 168,
+                      "top": 168
+                    },
+                    "decision": {
+                      "candidate": "visible-down",
+                      "stability": false
+                    }
+                  },
+                  "placed": {
+                    "orientation": "down",
+                    "width": 200,
+                    "height": 454,
+                    "nodes": {
+                      "$map": [
+                        [
+                          "s0:root",
+                          {
+                            "key": "s0:root",
+                            "x": 30,
+                            "y": 0,
+                            "width": 140,
+                            "height": 128,
+                            "band": 0,
+                            "row": 0
+                          }
+                        ],
+                        [
+                          "s0:a",
+                          {
+                            "key": "s0:a",
+                            "x": 36,
+                            "y": 162,
+                            "width": 140,
+                            "height": 128,
+                            "band": 1,
+                            "row": 1
+                          }
+                        ],
+                        [
+                          "s0:b",
+                          {
+                            "key": "s0:b",
+                            "x": 36,
+                            "y": 312,
+                            "width": 140,
+                            "height": 128,
+                            "band": 1,
+                            "row": 2
+                          }
+                        ]
+                      ]
+                    },
+                    "rows": [
+                      {
+                        "index": 0,
+                        "band": 0,
+                        "top": 0,
+                        "bottom": 128,
+                        "keys": [
+                          "s0:root"
+                        ]
+                      },
+                      {
+                        "index": 1,
+                        "band": 1,
+                        "top": 162,
+                        "bottom": 290,
+                        "keys": [
+                          "s0:a"
+                        ]
+                      },
+                      {
+                        "index": 2,
+                        "band": 1,
+                        "top": 312,
+                        "bottom": 440,
+                        "keys": [
+                          "s0:b"
+                        ]
+                      }
+                    ],
+                    "routes": [
+                      {
+                        "id": "[\"node\",\"s0:root\",\"node\",\"s0:a\"]",
+                        "from": {
+                          "kind": "node",
+                          "id": "s0:root"
+                        },
+                        "to": {
+                          "kind": "node",
+                          "id": "s0:a"
+                        },
+                        "consumers": [
+                          {
+                            "parent": "s0:root",
+                            "child": "s0:a"
+                          }
+                        ],
+                        "path": "M100 128 L100 131 C100 132.6568542494 101.3431457506 134 103 134 L103 134 C104.6568542494 134 106 135.3431457506 106 137 L106 146 L106 154 ",
+                        "terminal": true
+                      },
+                      {
+                        "id": "[\"node\",\"s0:root\",\"node\",\"s0:b\"]",
+                        "from": {
+                          "kind": "node",
+                          "id": "s0:root"
+                        },
+                        "to": {
+                          "kind": "node",
+                          "id": "s0:b"
+                        },
+                        "consumers": [
+                          {
+                            "parent": "s0:root",
+                            "child": "s0:b"
+                          }
+                        ],
+                        "path": "M100 128 L100 131 C100 132.6568542494 98.6568542494 134 97 134 L30 134 C26.6862915012 134 24 136.6862915012 24 140 L24 146 L24 162 L 24 290 L 24 293 L 106 293 L 106 304",
+                        "terminal": true
+                      }
+                    ],
+                    "readingOrder": {
+                      "$map": [
+                        [
+                          "s0:root",
+                          0
+                        ],
+                        [
+                          "s0:a",
+                          1
+                        ],
+                        [
+                          "s0:b",
+                          2
+                        ]
+                      ]
+                    },
+                    "junctions": {
+                      "$map": []
+                    },
+                    "bandBounds": {
+                      "left": 16,
+                      "width": 168,
+                      "top": 162
+                    },
+                    "decision": {
+                      "candidate": "visible-down",
+                      "stability": false
+                    }
+                  },
+                  "attachment": {
+                    "bandTop": 128,
+                    "placement": {
+                      "x": 16,
+                      "coverX": 100,
+                      "coverHeight": 128,
+                      "width": 200,
+                      "track": 6,
+                      "bypassColumns": [],
+                      "coverColumns": [],
+                      "stemRoom": 34,
+                      "left": 16,
+                      "right": 184
+                    }
+                  }
+                },
+                "tileWidth": 140,
+                "orientation": "down",
+                "pinned": {
+                  "key": "s0:root",
+                  "x": 100,
+                  "obstacles": []
+                },
+                "band": {
+                  "key": "s0:root",
+                  "items": [
+                    {
+                      "key": "s0:root",
+                      "width": 140,
+                      "imageHeight": 82,
+                      "height": 128,
+                      "order": 0,
+                      "parents": []
+                    },
+                    {
+                      "key": "s0:a",
+                      "width": 140,
+                      "imageHeight": 82,
+                      "height": 128,
+                      "order": 1,
+                      "parents": [
+                        "s0:root"
+                      ]
+                    },
+                    {
+                      "key": "s0:b",
+                      "width": 140,
+                      "imageHeight": 82,
+                      "height": 128,
+                      "order": 2,
+                      "parents": [
+                        "s0:root"
+                      ]
+                    },
+                    {
+                      "key": "s0:c",
+                      "width": 140,
+                      "imageHeight": 82,
+                      "height": 128,
+                      "order": 3,
+                      "parents": [
+                        "s0:a",
+                        "s0:b"
+                      ]
+                    }
+                  ]
+                }
+              },
+              "layout": {
+                "orientation": "down",
+                "width": 200,
+                "height": 611,
+                "nodes": {
+                  "$map": [
+                    [
+                      "s0:root",
+                      {
+                        "key": "s0:root",
+                        "x": 30,
+                        "y": 0,
+                        "width": 140,
+                        "height": 128,
+                        "band": 0,
+                        "row": 0
+                      }
+                    ],
+                    [
+                      "s0:a",
+                      {
+                        "key": "s0:a",
+                        "x": 36,
+                        "y": 162,
+                        "width": 140,
+                        "height": 128,
+                        "band": 1,
+                        "row": 1
+                      }
+                    ],
+                    [
+                      "s0:b",
+                      {
+                        "key": "s0:b",
+                        "x": 36,
+                        "y": 312,
+                        "width": 140,
+                        "height": 128,
+                        "band": 1,
+                        "row": 2
+                      }
+                    ],
+                    [
+                      "s0:c",
+                      {
+                        "key": "s0:c",
+                        "x": 24,
+                        "y": 469,
+                        "width": 140,
+                        "height": 128,
+                        "row": 3,
+                        "band": 2
+                      }
+                    ]
+                  ]
+                },
+                "rows": [],
+                "routes": [
+                  {
+                    "id": "[\"node\",\"s0:root\",\"node\",\"s0:a\"]",
+                    "from": {
+                      "kind": "node",
+                      "id": "s0:root"
+                    },
+                    "to": {
+                      "kind": "node",
+                      "id": "s0:a"
+                    },
+                    "consumers": [
+                      {
+                        "parent": "s0:root",
+                        "child": "s0:a"
+                      }
+                    ],
+                    "path": "M100 128 L100 131 C100 132.6568542494 101.3431457506 134 103 134 L103 134 C104.6568542494 134 106 135.3431457506 106 137 L106 146 L106 154 ",
+                    "terminal": true
+                  },
+                  {
+                    "id": "[\"node\",\"s0:root\",\"node\",\"s0:b\"]",
+                    "from": {
+                      "kind": "node",
+                      "id": "s0:root"
+                    },
+                    "to": {
+                      "kind": "node",
+                      "id": "s0:b"
+                    },
+                    "consumers": [
+                      {
+                        "parent": "s0:root",
+                        "child": "s0:b"
+                      }
+                    ],
+                    "path": "M100 128 L100 131 C100 132.6568542494 98.6568542494 134 97 134 L30 134 C26.6862915012 134 24 136.6862915012 24 140 L24 146 L24 162 L 24 290 L 24 293 L 106 293 L 106 304",
+                    "terminal": true
+                  },
+                  {
+                    "id": "[\"incremental\",\"s0:a\",\"s0:c\"]",
+                    "from": {
+                      "kind": "node",
+                      "id": "s0:a"
+                    },
+                    "to": {
+                      "kind": "junction",
+                      "id": "[\"incremental-join\",\"s0:c\",0]"
+                    },
+                    "consumers": [
+                      {
+                        "parent": "s0:a",
+                        "child": "s0:c"
+                      }
+                    ],
+                    "terminal": false,
+                    "path": "M176 226 L184 226 L184 453 L94 453"
+                  },
+                  {
+                    "id": "[\"incremental\",\"s0:b\",\"s0:c\"]",
+                    "from": {
+                      "kind": "node",
+                      "id": "s0:b"
+                    },
+                    "to": {
+                      "kind": "junction",
+                      "id": "[\"incremental-join\",\"s0:c\",0]"
+                    },
+                    "consumers": [
+                      {
+                        "parent": "s0:b",
+                        "child": "s0:c"
+                      }
+                    ],
+                    "terminal": false,
+                    "path": "M106 440 L106 442.5 L94 442.5 L94 453"
+                  },
+                  {
+                    "id": "[\"incremental-tail\",\"[\\\"incremental-join\\\",\\\"s0:c\\\",0]\",\"s0:c\"]",
+                    "from": {
+                      "kind": "junction",
+                      "id": "[\"incremental-join\",\"s0:c\",0]"
+                    },
+                    "to": {
+                      "kind": "node",
+                      "id": "s0:c"
+                    },
+                    "consumers": {
+                      "entries": [
+                        {
+                          "parent": "s0:a",
+                          "child": "s0:c"
+                        },
+                        {
+                          "parent": "s0:b",
+                          "child": "s0:c"
+                        }
+                      ],
+                      "start": 0,
+                      "end": 2
+                    },
+                    "terminal": true,
+                    "path": "M94 453 L94 461"
+                  }
+                ],
+                "readingOrder": {
+                  "$map": [
+                    [
+                      "s0:root",
+                      0
+                    ],
+                    [
+                      "s0:a",
+                      1
+                    ],
+                    [
+                      "s0:b",
+                      2
+                    ],
+                    [
+                      "s0:c",
+                      3
+                    ]
+                  ]
+                },
+                "junctions": {
+                  "$map": [
+                    [
+                      "[\"incremental-join\",\"s0:c\",0]",
+                      {
+                        "id": "[\"incremental-join\",\"s0:c\",0]",
+                        "x": 94,
+                        "y": 453,
+                        "parents": [
+                          "s0:a",
+                          "s0:b"
+                        ]
+                      }
+                    ]
+                  ]
+                },
+                "bandBounds": {
+                  "left": 0,
+                  "width": 192,
+                  "top": 162
+                },
+                "decision": {
+                  "candidate": "incremental-tree",
+                  "stability": true
+                },
+                "preferredX": 0
+              }
+            }
+          }
+        ],
+        [
+          "s1:root",
+          {
+            "id": "s1:root",
+            "plan": {
+              "lineage": {
+                "focus": null,
+                "related": {}
+              },
+              "tiles": {
+                "$map": [
+                  [
+                    "s1:root",
+                    {
+                      "key": "s1:root",
+                      "node": {
+                        "key": "s1:root",
+                        "parents": [],
+                        "order": 0,
+                        "artifactId": 0,
+                        "runId": null,
+                        "path": "/f/s1:root.png",
+                        "scope": "current",
+                        "location": "",
+                        "state": "present",
+                        "temporary": false,
+                        "discarded": false,
+                        "earlierRevision": false,
+                        "prompt": "root"
+                      },
+                      "tone": "neutral",
+                      "size": {
+                        "width": 140,
+                        "imageHeight": 82,
+                        "height": 128
+                      },
+                      "childCount": 1,
+                      "hiddenDescendants": 0,
+                      "expandable": true,
+                      "expanded": true,
+                      "togglable": true
+                    }
+                  ],
+                  [
+                    "s1:child",
+                    {
+                      "key": "s1:child",
+                      "node": {
+                        "key": "s1:child",
+                        "parents": [
+                          "s1:root"
+                        ],
+                        "order": 1,
+                        "artifactId": 1,
+                        "runId": null,
+                        "path": "/f/s1:child.png",
+                        "scope": "current",
+                        "location": "",
+                        "state": "present",
+                        "temporary": false,
+                        "discarded": false,
+                        "earlierRevision": false,
+                        "prompt": "child"
+                      },
+                      "tone": "neutral",
+                      "size": {
+                        "width": 140,
+                        "imageHeight": 82,
+                        "height": 128
+                      },
+                      "childCount": 0,
+                      "hiddenDescendants": 0,
+                      "expandable": false,
+                      "expanded": false,
+                      "togglable": false
+                    }
+                  ]
+                ]
+              },
+              "badges": {
+                "$map": []
+              },
+              "request": {
+                "items": [
+                  {
+                    "key": "s1:root",
+                    "width": 140,
+                    "height": 128,
+                    "order": 0,
+                    "parents": []
+                  },
+                  {
+                    "key": "s1:child",
+                    "width": 140,
+                    "height": 128,
+                    "order": 1,
+                    "parents": [
+                      "s1:root"
+                    ]
+                  }
+                ],
+                "maxWidth": 200,
+                "tileWidth": 140,
+                "orientation": "down",
+                "pinned": {
+                  "key": "s1:root",
+                  "x": 100,
+                  "obstacles": []
+                },
+                "band": {
+                  "key": "s1:root",
+                  "items": [
+                    {
+                      "key": "s1:root",
+                      "width": 140,
+                      "imageHeight": 82,
+                      "height": 128,
+                      "order": 0,
+                      "parents": []
+                    },
+                    {
+                      "key": "s1:child",
+                      "width": 140,
+                      "imageHeight": 82,
+                      "height": 128,
+                      "order": 1,
+                      "parents": [
+                        "s1:root"
+                      ]
+                    }
+                  ]
+                }
+              }
+            },
+            "layout": {
+              "orientation": "down",
+              "width": 476,
+              "height": 454,
+              "nodes": {
+                "$map": [
+                  [
+                    "s1:root",
+                    {
+                      "key": "s1:root",
+                      "x": 30,
+                      "y": 0,
+                      "width": 140,
+                      "height": 128,
+                      "band": 0,
+                      "row": 0
+                    }
+                  ],
+                  [
+                    "s1:child",
+                    {
+                      "key": "s1:child",
+                      "x": 8,
+                      "y": 162,
+                      "width": 140,
+                      "height": 128,
+                      "band": 1,
+                      "row": 1
+                    }
+                  ]
+                ]
+              },
+              "rows": [],
+              "routes": [
+                {
+                  "id": "[\"node\",\"s1:root\",\"node\",\"s1:child\"]",
+                  "from": {
+                    "kind": "node",
+                    "id": "s1:root"
+                  },
+                  "to": {
+                    "kind": "node",
+                    "id": "s1:child"
+                  },
+                  "consumers": [
+                    {
+                      "parent": "s1:root",
+                      "child": "s1:child"
+                    }
+                  ],
+                  "path": "M100 128 L100 131 C100 132.6568542494 98.6568542494 134 97 134 L84 134 C80.6862915012 134 78 136.6862915012 78 140 L78 146 L78 154 ",
+                  "terminal": true
+                }
+              ],
+              "readingOrder": {
+                "$map": [
+                  [
+                    "s1:root",
+                    0
+                  ],
+                  [
+                    "s1:child",
+                    1
+                  ]
+                ]
+              },
+              "junctions": {
+                "$map": []
+              },
+              "preferredX": 0,
+              "decision": {
+                "candidate": "folder-pinned-extension",
+                "stability": true
+              }
+            },
+            "attached": {
+              "orientation": "down",
+              "width": 476,
+              "height": 454,
+              "nodes": {
+                "$map": [
+                  [
+                    "s1:root",
+                    {
+                      "key": "s1:root",
+                      "x": 30,
+                      "y": 0,
+                      "width": 140,
+                      "height": 128,
+                      "band": 0,
+                      "row": 0
+                    }
+                  ],
+                  [
+                    "s1:child",
+                    {
+                      "key": "s1:child",
+                      "x": 8,
+                      "y": 162,
+                      "width": 140,
+                      "height": 128,
+                      "band": 1,
+                      "row": 1
+                    }
+                  ]
+                ]
+              },
+              "rows": [],
+              "routes": [
+                {
+                  "id": "[\"node\",\"s1:root\",\"node\",\"s1:child\"]",
+                  "from": {
+                    "kind": "node",
+                    "id": "s1:root"
+                  },
+                  "to": {
+                    "kind": "node",
+                    "id": "s1:child"
+                  },
+                  "consumers": [
+                    {
+                      "parent": "s1:root",
+                      "child": "s1:child"
+                    }
+                  ],
+                  "path": "M100 128 L100 131 C100 132.6568542494 98.6568542494 134 97 134 L84 134 C80.6862915012 134 78 136.6862915012 78 140 L78 146 L78 154 ",
+                  "terminal": true
+                }
+              ],
+              "readingOrder": {
+                "$map": [
+                  [
+                    "s1:root",
+                    0
+                  ],
+                  [
+                    "s1:child",
+                    1
+                  ]
+                ]
+              },
+              "junctions": {
+                "$map": []
+              },
+              "preferredX": 0,
+              "decision": {
+                "candidate": "folder-pinned-extension",
+                "stability": true
+              }
+            },
+            "origin": {
+              "x": 0,
+              "y": 462
+            },
+            "placement": {
+              "x": 0,
+              "coverX": 100,
+              "coverHeight": 128,
+              "width": 200,
+              "track": 6,
+              "bypassColumns": [],
+              "coverColumns": [],
+              "stemRoom": 34,
+              "left": 0,
+              "right": 156
+            },
+            "worldPlaced": true,
+            "canonical": {
+              "request": {
+                "items": [
+                  {
+                    "key": "s1:root",
+                    "width": 140,
+                    "height": 128,
+                    "order": 0,
+                    "parents": []
+                  },
+                  {
+                    "key": "s1:child",
+                    "width": 140,
+                    "height": 128,
+                    "order": 1,
+                    "parents": [
+                      "s1:root"
+                    ]
+                  }
+                ],
+                "maxWidth": 200,
+                "tileWidth": 140,
+                "orientation": "down",
+                "pinned": {
+                  "key": "s1:root",
+                  "x": 100,
+                  "obstacles": []
+                },
+                "band": {
+                  "key": "s1:root",
+                  "items": [
+                    {
+                      "key": "s1:root",
+                      "width": 140,
+                      "imageHeight": 82,
+                      "height": 128,
+                      "order": 0,
+                      "parents": []
+                    },
+                    {
+                      "key": "s1:child",
+                      "width": 140,
+                      "imageHeight": 82,
+                      "height": 128,
+                      "order": 1,
+                      "parents": [
+                        "s1:root"
+                      ]
+                    }
+                  ]
+                }
+              },
+              "layout": {
+                "orientation": "down",
+                "width": 200,
+                "height": 310,
+                "nodes": {
+                  "$map": [
+                    [
+                      "s1:root",
+                      {
+                        "key": "s1:root",
+                        "x": 30,
+                        "y": 18,
+                        "width": 140,
+                        "height": 128,
+                        "band": 0,
+                        "row": 0
+                      }
+                    ],
+                    [
+                      "s1:child",
+                      {
+                        "key": "s1:child",
+                        "x": 30,
+                        "y": 168,
+                        "width": 140,
+                        "height": 128,
+                        "band": 1,
+                        "row": 1
+                      }
+                    ]
+                  ]
+                },
+                "rows": [
+                  {
+                    "index": 0,
+                    "band": 0,
+                    "top": 18,
+                    "bottom": 146,
+                    "keys": [
+                      "s1:root"
+                    ]
+                  },
+                  {
+                    "index": 1,
+                    "band": 1,
+                    "top": 168,
+                    "bottom": 296,
+                    "keys": [
+                      "s1:child"
+                    ]
+                  }
+                ],
+                "routes": [
+                  {
+                    "id": "[\"node\",\"s1:root\",\"node\",\"s1:child\"]",
+                    "from": {
+                      "kind": "node",
+                      "id": "s1:root"
+                    },
+                    "to": {
+                      "kind": "node",
+                      "id": "s1:child"
+                    },
+                    "consumers": [
+                      {
+                        "parent": "s1:root",
+                        "child": "s1:child"
+                      }
+                    ],
+                    "path": "M100 146 L100 160",
+                    "terminal": true
+                  }
+                ],
+                "readingOrder": {
+                  "$map": [
+                    [
+                      "s1:root",
+                      0
+                    ],
+                    [
+                      "s1:child",
+                      1
+                    ]
+                  ]
+                },
+                "junctions": {
+                  "$map": []
+                },
+                "preferredX": 0,
+                "bandBounds": {
+                  "left": 22,
+                  "width": 156,
+                  "top": 168
+                },
+                "decision": {
+                  "candidate": "visible-down",
+                  "stability": false
+                }
+              }
+            }
+          }
+        ]
+      ]
+    },
+    "cellFootprints": {
+      "$map": [
+        [
+          "s0:root",
+          {
+            "x": 30,
+            "y": 0,
+            "width": 140,
+            "height": 128
+          }
+        ],
+        [
+          "s1:root",
+          {
+            "x": 30,
+            "y": 462,
+            "width": 140,
+            "height": 128
+          }
+        ],
+        [
+          "/f/file-0.png",
+          {
+            "id": "/f/file-0.png",
+            "row": 2,
+            "col": 0,
+            "x": 0,
+            "y": 774,
+            "width": 200,
+            "height": 128
+          }
+        ]
+      ]
+    },
+    "geometryBasis": "[200,{\"width\":140,\"image\":82},{\"cellWidth\":140,\"cellHeight\":0,\"gap\":8}]",
+    "arrivalPlacement": {
+      "basis": "[200,{\"width\":140,\"image\":82},{\"cellWidth\":140,\"cellHeight\":0,\"gap\":8}]",
+      "layout": {
+        "columns": 1,
+        "size": {
+          "width": 200,
+          "height": 902
+        },
+        "bounds": {
+          "x": 0,
+          "y": 0,
+          "width": 200,
+          "height": 902
+        },
+        "cells": {
+          "$map": [
+            [
+              "s0:root",
+              {
+                "id": "s0:root",
+                "row": 0,
+                "col": 0,
+                "x": 0,
+                "y": 0,
+                "width": 200,
+                "height": 128
+              }
+            ],
+            [
+              "s1:root",
+              {
+                "id": "s1:root",
+                "row": 1,
+                "col": 0,
+                "x": 0,
+                "y": 462,
+                "width": 200,
+                "height": 128
+              }
+            ],
+            [
+              "/f/file-0.png",
+              {
+                "id": "/f/file-0.png",
+                "row": 2,
+                "col": 0,
+                "x": 0,
+                "y": 774,
+                "width": 200,
+                "height": 128
+              }
+            ]
+          ]
+        },
+        "bands": [
+          {
+            "id": "s0:root",
+            "row": 0,
+            "x": 16,
+            "y": 128,
+            "width": 168,
+            "height": 326
+          },
+          {
+            "id": "s1:root",
+            "row": 1,
+            "x": 0,
+            "y": 590,
+            "width": 156,
+            "height": 176
+          }
+        ],
+        "rowBands": [
+          {
+            "id": "row:0",
+            "row": 0,
+            "x": 0,
+            "y": 128,
+            "width": 200,
+            "height": 326
+          },
+          {
+            "id": "row:1",
+            "row": 1,
+            "x": 0,
+            "y": 590,
+            "width": 200,
+            "height": 176
+          }
+        ],
+        "graphs": {
+          "$map": [
+            [
+              "s0:root",
+              {
+                "id": "s0:root",
+                "plan": {
+                  "lineage": {
+                    "focus": null,
+                    "related": {}
+                  },
+                  "tiles": {
+                    "$map": [
+                      [
+                        "s0:root",
+                        {
+                          "key": "s0:root",
+                          "node": {
+                            "key": "s0:root",
+                            "parents": [],
+                            "order": 0,
+                            "artifactId": 0,
+                            "runId": null,
+                            "path": "/f/s0:root.png",
+                            "scope": "current",
+                            "location": "",
+                            "state": "present",
+                            "temporary": false,
+                            "discarded": false,
+                            "earlierRevision": false,
+                            "prompt": "root"
+                          },
+                          "tone": "neutral",
+                          "size": {
+                            "width": 140,
+                            "imageHeight": 82,
+                            "height": 128
+                          },
+                          "childCount": 2,
+                          "hiddenDescendants": 0,
+                          "expandable": true,
+                          "expanded": true,
+                          "togglable": true
+                        }
+                      ],
+                      [
+                        "s0:a",
+                        {
+                          "key": "s0:a",
+                          "node": {
+                            "key": "s0:a",
+                            "parents": [
+                              "s0:root"
+                            ],
+                            "order": 1,
+                            "artifactId": 1,
+                            "runId": null,
+                            "path": "/f/s0:a.png",
+                            "scope": "current",
+                            "location": "",
+                            "state": "present",
+                            "temporary": false,
+                            "discarded": false,
+                            "earlierRevision": false,
+                            "prompt": "a"
+                          },
+                          "tone": "neutral",
+                          "size": {
+                            "width": 140,
+                            "imageHeight": 82,
+                            "height": 128
+                          },
+                          "childCount": 0,
+                          "hiddenDescendants": 0,
+                          "expandable": false,
+                          "expanded": false,
+                          "togglable": false
+                        }
+                      ],
+                      [
+                        "s0:b",
+                        {
+                          "key": "s0:b",
+                          "node": {
+                            "key": "s0:b",
+                            "parents": [
+                              "s0:root"
+                            ],
+                            "order": 2,
+                            "artifactId": 2,
+                            "runId": null,
+                            "path": "/f/s0:b.png",
+                            "scope": "current",
+                            "location": "",
+                            "state": "present",
+                            "temporary": false,
+                            "discarded": false,
+                            "earlierRevision": false,
+                            "prompt": "b"
+                          },
+                          "tone": "neutral",
+                          "size": {
+                            "width": 140,
+                            "imageHeight": 82,
+                            "height": 128
+                          },
+                          "childCount": 0,
+                          "hiddenDescendants": 0,
+                          "expandable": false,
+                          "expanded": false,
+                          "togglable": false
+                        }
+                      ]
+                    ]
+                  },
+                  "badges": {
+                    "$map": []
+                  },
+                  "request": {
+                    "items": [
+                      {
+                        "key": "s0:root",
+                        "width": 140,
+                        "height": 128,
+                        "order": 0,
+                        "parents": []
+                      },
+                      {
+                        "key": "s0:a",
+                        "width": 140,
+                        "height": 128,
+                        "order": 1,
+                        "parents": [
+                          "s0:root"
+                        ]
+                      },
+                      {
+                        "key": "s0:b",
+                        "width": 140,
+                        "height": 128,
+                        "order": 2,
+                        "parents": [
+                          "s0:root"
+                        ]
+                      }
+                    ],
+                    "maxWidth": 200,
+                    "tileWidth": 140,
+                    "orientation": "down",
+                    "pinned": {
+                      "key": "s0:root",
+                      "x": 100,
+                      "obstacles": []
+                    },
+                    "band": {
+                      "key": "s0:root",
+                      "items": [
+                        {
+                          "key": "s0:root",
+                          "width": 140,
+                          "imageHeight": 82,
+                          "height": 128,
+                          "order": 0,
+                          "parents": []
+                        },
+                        {
+                          "key": "s0:a",
+                          "width": 140,
+                          "imageHeight": 82,
+                          "height": 128,
+                          "order": 1,
+                          "parents": [
+                            "s0:root"
+                          ]
+                        },
+                        {
+                          "key": "s0:b",
+                          "width": 140,
+                          "imageHeight": 82,
+                          "height": 128,
+                          "order": 2,
+                          "parents": [
+                            "s0:root"
+                          ]
+                        }
+                      ]
+                    }
+                  }
+                },
+                "layout": {
+                  "orientation": "down",
+                  "width": 200,
+                  "height": 460,
+                  "nodes": {
+                    "$map": [
+                      [
+                        "s0:root",
+                        {
+                          "key": "s0:root",
+                          "x": 30,
+                          "y": 18,
+                          "width": 140,
+                          "height": 128,
+                          "band": 0,
+                          "row": 0
+                        }
+                      ],
+                      [
+                        "s0:a",
+                        {
+                          "key": "s0:a",
+                          "x": 30,
+                          "y": 168,
+                          "width": 140,
+                          "height": 128,
+                          "band": 1,
+                          "row": 1
+                        }
+                      ],
+                      [
+                        "s0:b",
+                        {
+                          "key": "s0:b",
+                          "x": 30,
+                          "y": 318,
+                          "width": 140,
+                          "height": 128,
+                          "band": 1,
+                          "row": 2
+                        }
+                      ]
+                    ]
+                  },
+                  "rows": [
+                    {
+                      "index": 0,
+                      "band": 0,
+                      "top": 18,
+                      "bottom": 146,
+                      "keys": [
+                        "s0:root"
+                      ]
+                    },
+                    {
+                      "index": 1,
+                      "band": 1,
+                      "top": 168,
+                      "bottom": 296,
+                      "keys": [
+                        "s0:a"
+                      ]
+                    },
+                    {
+                      "index": 2,
+                      "band": 1,
+                      "top": 318,
+                      "bottom": 446,
+                      "keys": [
+                        "s0:b"
+                      ]
+                    }
+                  ],
+                  "routes": [
+                    {
+                      "id": "[\"node\",\"s0:root\",\"node\",\"s0:a\"]",
+                      "from": {
+                        "kind": "node",
+                        "id": "s0:root"
+                      },
+                      "to": {
+                        "kind": "node",
+                        "id": "s0:a"
+                      },
+                      "consumers": [
+                        {
+                          "parent": "s0:root",
+                          "child": "s0:a"
+                        }
+                      ],
+                      "path": "M100 146 L100 160",
+                      "terminal": true
+                    },
+                    {
+                      "id": "[\"node\",\"s0:root\",\"node\",\"s0:b\"]",
+                      "from": {
+                        "kind": "node",
+                        "id": "s0:root"
+                      },
+                      "to": {
+                        "kind": "node",
+                        "id": "s0:b"
+                      },
+                      "consumers": [
+                        {
+                          "parent": "s0:root",
+                          "child": "s0:b"
+                        }
+                      ],
+                      "path": "M100 146 L100 149 L18 149 L18 168 L18 296 L18 299 L100 299 L100 310",
+                      "terminal": true
+                    }
+                  ],
+                  "readingOrder": {
+                    "$map": [
+                      [
+                        "s0:root",
+                        0
+                      ],
+                      [
+                        "s0:a",
+                        1
+                      ],
+                      [
+                        "s0:b",
+                        2
+                      ]
+                    ]
+                  },
+                  "junctions": {
+                    "$map": []
+                  },
+                  "bandBounds": {
+                    "left": 10,
+                    "width": 168,
+                    "top": 168
+                  },
+                  "decision": {
+                    "candidate": "visible-down",
+                    "stability": false
+                  }
+                },
+                "attached": {
+                  "orientation": "down",
+                  "width": 200,
+                  "height": 454,
+                  "nodes": {
+                    "$map": [
+                      [
+                        "s0:root",
+                        {
+                          "key": "s0:root",
+                          "x": 30,
+                          "y": 0,
+                          "width": 140,
+                          "height": 128,
+                          "band": 0,
+                          "row": 0
+                        }
+                      ],
+                      [
+                        "s0:a",
+                        {
+                          "key": "s0:a",
+                          "x": 36,
+                          "y": 162,
+                          "width": 140,
+                          "height": 128,
+                          "band": 1,
+                          "row": 1
+                        }
+                      ],
+                      [
+                        "s0:b",
+                        {
+                          "key": "s0:b",
+                          "x": 36,
+                          "y": 312,
+                          "width": 140,
+                          "height": 128,
+                          "band": 1,
+                          "row": 2
+                        }
+                      ]
+                    ]
+                  },
+                  "rows": [
+                    {
+                      "index": 0,
+                      "band": 0,
+                      "top": 0,
+                      "bottom": 128,
+                      "keys": [
+                        "s0:root"
+                      ]
+                    },
+                    {
+                      "index": 1,
+                      "band": 1,
+                      "top": 162,
+                      "bottom": 290,
+                      "keys": [
+                        "s0:a"
+                      ]
+                    },
+                    {
+                      "index": 2,
+                      "band": 1,
+                      "top": 312,
+                      "bottom": 440,
+                      "keys": [
+                        "s0:b"
+                      ]
+                    }
+                  ],
+                  "routes": [
+                    {
+                      "id": "[\"node\",\"s0:root\",\"node\",\"s0:a\"]",
+                      "from": {
+                        "kind": "node",
+                        "id": "s0:root"
+                      },
+                      "to": {
+                        "kind": "node",
+                        "id": "s0:a"
+                      },
+                      "consumers": [
+                        {
+                          "parent": "s0:root",
+                          "child": "s0:a"
+                        }
+                      ],
+                      "path": "M100 128 L100 131 C100 132.6568542494 101.3431457506 134 103 134 L103 134 C104.6568542494 134 106 135.3431457506 106 137 L106 146 L106 154 ",
+                      "terminal": true
+                    },
+                    {
+                      "id": "[\"node\",\"s0:root\",\"node\",\"s0:b\"]",
+                      "from": {
+                        "kind": "node",
+                        "id": "s0:root"
+                      },
+                      "to": {
+                        "kind": "node",
+                        "id": "s0:b"
+                      },
+                      "consumers": [
+                        {
+                          "parent": "s0:root",
+                          "child": "s0:b"
+                        }
+                      ],
+                      "path": "M100 128 L100 131 C100 132.6568542494 98.6568542494 134 97 134 L30 134 C26.6862915012 134 24 136.6862915012 24 140 L24 146 L24 162 L 24 290 L 24 293 L 106 293 L 106 304",
+                      "terminal": true
+                    }
+                  ],
+                  "readingOrder": {
+                    "$map": [
+                      [
+                        "s0:root",
+                        0
+                      ],
+                      [
+                        "s0:a",
+                        1
+                      ],
+                      [
+                        "s0:b",
+                        2
+                      ]
+                    ]
+                  },
+                  "junctions": {
+                    "$map": []
+                  },
+                  "bandBounds": {
+                    "left": 16,
+                    "width": 168,
+                    "top": 162
+                  },
+                  "decision": {
+                    "candidate": "visible-down",
+                    "stability": false
+                  }
+                },
+                "origin": {
+                  "x": 0,
+                  "y": 0
+                },
+                "placement": {
+                  "x": 16,
+                  "coverX": 100,
+                  "coverHeight": 128,
+                  "width": 200,
+                  "track": 6,
+                  "bypassColumns": [],
+                  "coverColumns": [],
+                  "stemRoom": 34,
+                  "left": 16,
+                  "right": 184
+                }
+              }
+            ],
+            [
+              "s1:root",
+              {
+                "id": "s1:root",
+                "plan": {
+                  "lineage": {
+                    "focus": null,
+                    "related": {}
+                  },
+                  "tiles": {
+                    "$map": [
+                      [
+                        "s1:root",
+                        {
+                          "key": "s1:root",
+                          "node": {
+                            "key": "s1:root",
+                            "parents": [],
+                            "order": 0,
+                            "artifactId": 0,
+                            "runId": null,
+                            "path": "/f/s1:root.png",
+                            "scope": "current",
+                            "location": "",
+                            "state": "present",
+                            "temporary": false,
+                            "discarded": false,
+                            "earlierRevision": false,
+                            "prompt": "root"
+                          },
+                          "tone": "neutral",
+                          "size": {
+                            "width": 140,
+                            "imageHeight": 82,
+                            "height": 128
+                          },
+                          "childCount": 1,
+                          "hiddenDescendants": 0,
+                          "expandable": true,
+                          "expanded": true,
+                          "togglable": true
+                        }
+                      ],
+                      [
+                        "s1:child",
+                        {
+                          "key": "s1:child",
+                          "node": {
+                            "key": "s1:child",
+                            "parents": [
+                              "s1:root"
+                            ],
+                            "order": 1,
+                            "artifactId": 1,
+                            "runId": null,
+                            "path": "/f/s1:child.png",
+                            "scope": "current",
+                            "location": "",
+                            "state": "present",
+                            "temporary": false,
+                            "discarded": false,
+                            "earlierRevision": false,
+                            "prompt": "child"
+                          },
+                          "tone": "neutral",
+                          "size": {
+                            "width": 140,
+                            "imageHeight": 82,
+                            "height": 128
+                          },
+                          "childCount": 0,
+                          "hiddenDescendants": 0,
+                          "expandable": false,
+                          "expanded": false,
+                          "togglable": false
+                        }
+                      ]
+                    ]
+                  },
+                  "badges": {
+                    "$map": []
+                  },
+                  "request": {
+                    "items": [
+                      {
+                        "key": "s1:root",
+                        "width": 140,
+                        "height": 128,
+                        "order": 0,
+                        "parents": []
+                      },
+                      {
+                        "key": "s1:child",
+                        "width": 140,
+                        "height": 128,
+                        "order": 1,
+                        "parents": [
+                          "s1:root"
+                        ]
+                      }
+                    ],
+                    "maxWidth": 200,
+                    "tileWidth": 140,
+                    "orientation": "down",
+                    "pinned": {
+                      "key": "s1:root",
+                      "x": 100,
+                      "obstacles": []
+                    },
+                    "band": {
+                      "key": "s1:root",
+                      "items": [
+                        {
+                          "key": "s1:root",
+                          "width": 140,
+                          "imageHeight": 82,
+                          "height": 128,
+                          "order": 0,
+                          "parents": []
+                        },
+                        {
+                          "key": "s1:child",
+                          "width": 140,
+                          "imageHeight": 82,
+                          "height": 128,
+                          "order": 1,
+                          "parents": [
+                            "s1:root"
+                          ]
+                        }
+                      ]
+                    }
+                  }
+                },
+                "layout": {
+                  "orientation": "down",
+                  "width": 200,
+                  "height": 310,
+                  "nodes": {
+                    "$map": [
+                      [
+                        "s1:root",
+                        {
+                          "key": "s1:root",
+                          "x": 30,
+                          "y": 18,
+                          "width": 140,
+                          "height": 128,
+                          "band": 0,
+                          "row": 0
+                        }
+                      ],
+                      [
+                        "s1:child",
+                        {
+                          "key": "s1:child",
+                          "x": 30,
+                          "y": 168,
+                          "width": 140,
+                          "height": 128,
+                          "band": 1,
+                          "row": 1
+                        }
+                      ]
+                    ]
+                  },
+                  "rows": [
+                    {
+                      "index": 0,
+                      "band": 0,
+                      "top": 18,
+                      "bottom": 146,
+                      "keys": [
+                        "s1:root"
+                      ]
+                    },
+                    {
+                      "index": 1,
+                      "band": 1,
+                      "top": 168,
+                      "bottom": 296,
+                      "keys": [
+                        "s1:child"
+                      ]
+                    }
+                  ],
+                  "routes": [
+                    {
+                      "id": "[\"node\",\"s1:root\",\"node\",\"s1:child\"]",
+                      "from": {
+                        "kind": "node",
+                        "id": "s1:root"
+                      },
+                      "to": {
+                        "kind": "node",
+                        "id": "s1:child"
+                      },
+                      "consumers": [
+                        {
+                          "parent": "s1:root",
+                          "child": "s1:child"
+                        }
+                      ],
+                      "path": "M100 146 L100 160",
+                      "terminal": true
+                    }
+                  ],
+                  "readingOrder": {
+                    "$map": [
+                      [
+                        "s1:root",
+                        0
+                      ],
+                      [
+                        "s1:child",
+                        1
+                      ]
+                    ]
+                  },
+                  "junctions": {
+                    "$map": []
+                  },
+                  "preferredX": 0,
+                  "bandBounds": {
+                    "left": 22,
+                    "width": 156,
+                    "top": 168
+                  },
+                  "decision": {
+                    "candidate": "visible-down",
+                    "stability": false
+                  }
+                },
+                "attached": {
+                  "orientation": "down",
+                  "width": 200,
+                  "height": 304,
+                  "nodes": {
+                    "$map": [
+                      [
+                        "s1:root",
+                        {
+                          "key": "s1:root",
+                          "x": 30,
+                          "y": 0,
+                          "width": 140,
+                          "height": 128,
+                          "band": 0,
+                          "row": 0
+                        }
+                      ],
+                      [
+                        "s1:child",
+                        {
+                          "key": "s1:child",
+                          "x": 8,
+                          "y": 162,
+                          "width": 140,
+                          "height": 128,
+                          "band": 1,
+                          "row": 1
+                        }
+                      ]
+                    ]
+                  },
+                  "rows": [
+                    {
+                      "index": 0,
+                      "band": 0,
+                      "top": 0,
+                      "bottom": 128,
+                      "keys": [
+                        "s1:root"
+                      ]
+                    },
+                    {
+                      "index": 1,
+                      "band": 1,
+                      "top": 162,
+                      "bottom": 290,
+                      "keys": [
+                        "s1:child"
+                      ]
+                    }
+                  ],
+                  "routes": [
+                    {
+                      "id": "[\"node\",\"s1:root\",\"node\",\"s1:child\"]",
+                      "from": {
+                        "kind": "node",
+                        "id": "s1:root"
+                      },
+                      "to": {
+                        "kind": "node",
+                        "id": "s1:child"
+                      },
+                      "consumers": [
+                        {
+                          "parent": "s1:root",
+                          "child": "s1:child"
+                        }
+                      ],
+                      "path": "M100 128 L100 131 C100 132.6568542494 98.6568542494 134 97 134 L84 134 C80.6862915012 134 78 136.6862915012 78 140 L78 146 L78 154 ",
+                      "terminal": true
+                    }
+                  ],
+                  "readingOrder": {
+                    "$map": [
+                      [
+                        "s1:root",
+                        0
+                      ],
+                      [
+                        "s1:child",
+                        1
+                      ]
+                    ]
+                  },
+                  "junctions": {
+                    "$map": []
+                  },
+                  "preferredX": 0,
+                  "bandBounds": {
+                    "left": 0,
+                    "width": 156,
+                    "top": 162
+                  },
+                  "decision": {
+                    "candidate": "visible-down",
+                    "stability": false
+                  }
+                },
+                "origin": {
+                  "x": 0,
+                  "y": 462
+                },
+                "placement": {
+                  "x": 0,
+                  "coverX": 100,
+                  "coverHeight": 128,
+                  "width": 200,
+                  "track": 6,
+                  "bypassColumns": [],
+                  "coverColumns": [],
+                  "stemRoom": 34,
+                  "left": 0,
+                  "right": 156
+                }
+              }
+            ]
+          ]
+        },
+        "cellFootprints": {
+          "$map": [
+            [
+              "s0:root",
+              {
+                "x": 30,
+                "y": 0,
+                "width": 140,
+                "height": 128
+              }
+            ],
+            [
+              "s1:root",
+              {
+                "x": 30,
+                "y": 462,
+                "width": 140,
+                "height": 128
+              }
+            ],
+            [
+              "/f/file-0.png",
+              {
+                "id": "/f/file-0.png",
+                "row": 2,
+                "col": 0,
+                "x": 0,
+                "y": 774,
+                "width": 200,
+                "height": 128
+              }
+            ]
+          ]
+        },
+        "geometryBasis": "[200,{\"width\":140,\"image\":82},{\"cellWidth\":140,\"cellHeight\":0,\"gap\":8}]"
+      }
+    },
+    "arrivals": {
+      "$map": [
+        [
+          "s0:root",
+          {
+            "contents": "[[\"s0:root\",0,[]],[\"s0:a\",1,[\"s0:root\"]],[\"s0:b\",2,[\"s0:root\"]],[\"s0:c\",3,[\"s0:a\",\"s0:b\"]]]",
+            "history": {
+              "signature": "[200,140,{\"key\":\"s0:root\",\"x\":100,\"obstacles\":[]},[[\"s0:a\",140,128,1,[\"s0:root\"]],[\"s0:b\",140,128,2,[\"s0:root\"]],[\"s0:root\",140,128,0,[]]]]",
+              "layout": {
+                "orientation": "down",
+                "width": 200,
+                "height": 460,
+                "nodes": {
+                  "$map": [
+                    [
+                      "s0:root",
+                      {
+                        "key": "s0:root",
+                        "x": 30,
+                        "y": 18,
+                        "width": 140,
+                        "height": 128,
+                        "band": 0,
+                        "row": 0
+                      }
+                    ],
+                    [
+                      "s0:a",
+                      {
+                        "key": "s0:a",
+                        "x": 30,
+                        "y": 168,
+                        "width": 140,
+                        "height": 128,
+                        "band": 1,
+                        "row": 1
+                      }
+                    ],
+                    [
+                      "s0:b",
+                      {
+                        "key": "s0:b",
+                        "x": 30,
+                        "y": 318,
+                        "width": 140,
+                        "height": 128,
+                        "band": 1,
+                        "row": 2
+                      }
+                    ]
+                  ]
+                },
+                "rows": [
+                  {
+                    "index": 0,
+                    "band": 0,
+                    "top": 18,
+                    "bottom": 146,
+                    "keys": [
+                      "s0:root"
+                    ]
+                  },
+                  {
+                    "index": 1,
+                    "band": 1,
+                    "top": 168,
+                    "bottom": 296,
+                    "keys": [
+                      "s0:a"
+                    ]
+                  },
+                  {
+                    "index": 2,
+                    "band": 1,
+                    "top": 318,
+                    "bottom": 446,
+                    "keys": [
+                      "s0:b"
+                    ]
+                  }
+                ],
+                "routes": [
+                  {
+                    "id": "[\"node\",\"s0:root\",\"node\",\"s0:a\"]",
+                    "from": {
+                      "kind": "node",
+                      "id": "s0:root"
+                    },
+                    "to": {
+                      "kind": "node",
+                      "id": "s0:a"
+                    },
+                    "consumers": [
+                      {
+                        "parent": "s0:root",
+                        "child": "s0:a"
+                      }
+                    ],
+                    "path": "M100 146 L100 160",
+                    "terminal": true
+                  },
+                  {
+                    "id": "[\"node\",\"s0:root\",\"node\",\"s0:b\"]",
+                    "from": {
+                      "kind": "node",
+                      "id": "s0:root"
+                    },
+                    "to": {
+                      "kind": "node",
+                      "id": "s0:b"
+                    },
+                    "consumers": [
+                      {
+                        "parent": "s0:root",
+                        "child": "s0:b"
+                      }
+                    ],
+                    "path": "M100 146 L100 149 L18 149 L18 168 L18 296 L18 299 L100 299 L100 310",
+                    "terminal": true
+                  }
+                ],
+                "readingOrder": {
+                  "$map": [
+                    [
+                      "s0:root",
+                      0
+                    ],
+                    [
+                      "s0:a",
+                      1
+                    ],
+                    [
+                      "s0:b",
+                      2
+                    ]
+                  ]
+                },
+                "junctions": {
+                  "$map": []
+                },
+                "bandBounds": {
+                  "left": 10,
+                  "width": 168,
+                  "top": 168
+                },
+                "decision": {
+                  "candidate": "visible-down",
+                  "stability": false
+                }
+              },
+              "placed": {
+                "orientation": "down",
+                "width": 200,
+                "height": 454,
+                "nodes": {
+                  "$map": [
+                    [
+                      "s0:root",
+                      {
+                        "key": "s0:root",
+                        "x": 30,
+                        "y": 0,
+                        "width": 140,
+                        "height": 128,
+                        "band": 0,
+                        "row": 0
+                      }
+                    ],
+                    [
+                      "s0:a",
+                      {
+                        "key": "s0:a",
+                        "x": 36,
+                        "y": 162,
+                        "width": 140,
+                        "height": 128,
+                        "band": 1,
+                        "row": 1
+                      }
+                    ],
+                    [
+                      "s0:b",
+                      {
+                        "key": "s0:b",
+                        "x": 36,
+                        "y": 312,
+                        "width": 140,
+                        "height": 128,
+                        "band": 1,
+                        "row": 2
+                      }
+                    ]
+                  ]
+                },
+                "rows": [
+                  {
+                    "index": 0,
+                    "band": 0,
+                    "top": 0,
+                    "bottom": 128,
+                    "keys": [
+                      "s0:root"
+                    ]
+                  },
+                  {
+                    "index": 1,
+                    "band": 1,
+                    "top": 162,
+                    "bottom": 290,
+                    "keys": [
+                      "s0:a"
+                    ]
+                  },
+                  {
+                    "index": 2,
+                    "band": 1,
+                    "top": 312,
+                    "bottom": 440,
+                    "keys": [
+                      "s0:b"
+                    ]
+                  }
+                ],
+                "routes": [
+                  {
+                    "id": "[\"node\",\"s0:root\",\"node\",\"s0:a\"]",
+                    "from": {
+                      "kind": "node",
+                      "id": "s0:root"
+                    },
+                    "to": {
+                      "kind": "node",
+                      "id": "s0:a"
+                    },
+                    "consumers": [
+                      {
+                        "parent": "s0:root",
+                        "child": "s0:a"
+                      }
+                    ],
+                    "path": "M100 128 L100 131 C100 132.6568542494 101.3431457506 134 103 134 L103 134 C104.6568542494 134 106 135.3431457506 106 137 L106 146 L106 154 ",
+                    "terminal": true
+                  },
+                  {
+                    "id": "[\"node\",\"s0:root\",\"node\",\"s0:b\"]",
+                    "from": {
+                      "kind": "node",
+                      "id": "s0:root"
+                    },
+                    "to": {
+                      "kind": "node",
+                      "id": "s0:b"
+                    },
+                    "consumers": [
+                      {
+                        "parent": "s0:root",
+                        "child": "s0:b"
+                      }
+                    ],
+                    "path": "M100 128 L100 131 C100 132.6568542494 98.6568542494 134 97 134 L30 134 C26.6862915012 134 24 136.6862915012 24 140 L24 146 L24 162 L 24 290 L 24 293 L 106 293 L 106 304",
+                    "terminal": true
+                  }
+                ],
+                "readingOrder": {
+                  "$map": [
+                    [
+                      "s0:root",
+                      0
+                    ],
+                    [
+                      "s0:a",
+                      1
+                    ],
+                    [
+                      "s0:b",
+                      2
+                    ]
+                  ]
+                },
+                "junctions": {
+                  "$map": []
+                },
+                "bandBounds": {
+                  "left": 16,
+                  "width": 168,
+                  "top": 162
+                },
+                "decision": {
+                  "candidate": "visible-down",
+                  "stability": false
+                }
+              },
+              "attachment": {
+                "bandTop": 128,
+                "placement": {
+                  "x": 16,
+                  "coverX": 100,
+                  "coverHeight": 128,
+                  "width": 200,
+                  "track": 6,
+                  "bypassColumns": [],
+                  "coverColumns": [],
+                  "stemRoom": 34,
+                  "left": 16,
+                  "right": 184
+                }
+              }
+            }
+          }
+        ],
+        [
+          "s1:root",
+          {
+            "contents": "[[\"s1:root\",0,[]],[\"s1:child\",1,[\"s1:root\"]]]"
+          }
+        ]
+      ]
+    }
+  }
+}

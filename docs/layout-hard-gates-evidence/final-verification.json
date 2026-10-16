@@ -1,0 +1,179 @@
+{
+  "revision": "993763f",
+  "mergeBase": "25d7392887d013e2c13b881c378deb8f74ed9f86",
+  "means": {
+    "previous": {
+      "height": 2035.7136138613862,
+      "width": 3483.9022277227723,
+      "area": 4439559.991089109,
+      "tileArea": 592248.594059406,
+      "whitespace": 0.6437119573540315,
+      "paneWhitespace": 0.7109453959974043,
+      "length": 104945.07035718231,
+      "bends": 78.93467098803204,
+      "crossings": 348.68382838283827,
+      "sharedLanePx": 0,
+      "tileIntersections": 0,
+      "overlaps": 0,
+      "directionViolations": 0,
+      "mixedDirections": 6.648349834983498,
+      "siblingInversions": 0.2655115511551155,
+      "unaligned": 0.1443894389438944,
+      "displacement": 12.319414087803107,
+      "maxDisplacement": 40.230983141681115,
+      "movedFraction": 0.01055532636596993,
+      "anchorDisplacement": 0,
+      "overflow": 2839.0600660066007,
+      "missingEdges": 0,
+      "extraEdges": 0,
+      "missingNodes": 0,
+      "extraNodes": 0,
+      "invalidGeometry": 0,
+      "invalidPaths": 0,
+      "terminalViolations": 0,
+      "disconnectedEdges": 0
+    },
+    "current": {
+      "height": 2356.768481848185,
+      "width": 514.9097359735973,
+      "area": 1186010.6358910892,
+      "tileArea": 592248.594059406,
+      "whitespace": 0.4613602092768578,
+      "paneWhitespace": 0.624651878072969,
+      "length": 37990.39779957731,
+      "bends": 154.22816205651878,
+      "crossings": 324.31237623762377,
+      "sharedLanePx": 0,
+      "tileIntersections": 0,
+      "overlaps": 0,
+      "directionViolations": 0,
+      "mixedDirections": 1.3033003300330033,
+      "siblingInversions": 0,
+      "unaligned": 0.15594059405940594,
+      "displacement": 65.71229186478291,
+      "maxDisplacement": 112.91232513794799,
+      "movedFraction": 0.3037998033193249,
+      "anchorDisplacement": 16.127475606400903,
+      "overflow": 2.177392739273927,
+      "missingEdges": 0,
+      "extraEdges": 0,
+      "missingNodes": 0,
+      "extraNodes": 0,
+      "invalidGeometry": 0,
+      "invalidPaths": 0,
+      "terminalViolations": 0,
+      "disconnectedEdges": 0
+    }
+  },
+  "acceptance": [
+    {
+      "target": "Reported band \u2264350 px",
+      "baseline": 480,
+      "proposed": 326,
+      "pass": true
+    },
+    {
+      "target": "Cover \u2192 first child =34 px",
+      "baseline": 110,
+      "proposed": 34,
+      "pass": true
+    },
+    {
+      "target": "All legal click anchors stationary (including real packing)",
+      "baseline": 411,
+      "proposed": 925,
+      "pass": false
+    },
+    {
+      "target": "Legal click anchors stationary, dense tours (fan-in \u22644 and \u226410)",
+      "baseline": 426,
+      "proposed": 429,
+      "pass": false
+    },
+    {
+      "target": "Mean legal displacement \u2264baseline px",
+      "baseline": 31.253397215421003,
+      "proposed": 77.83040757073178,
+      "pass": false
+    },
+    {
+      "target": "Mean legal height \u226515% lower px",
+      "baseline": 1976.2,
+      "proposed": 1476.4505747126436,
+      "pass": true
+    },
+    {
+      "target": ">10% height regressions without stability reason",
+      "baseline": 0,
+      "proposed": 5,
+      "pass": false
+    },
+    {
+      "target": "Hard gate violations/errors (corpus + tours incl. dense + packing)",
+      "baseline": 0,
+      "proposed": 0,
+      "pass": true
+    },
+    {
+      "target": "Shared lanes between sources, not a listed fallback (corpus + tours incl. dense)",
+      "baseline": 1365,
+      "proposed": 0,
+      "pass": true
+    },
+    {
+      "target": "Mean crossings \u2264 baseline",
+      "baseline": 381.1643564356436,
+      "proposed": 324.31237623762377,
+      "pass": true
+    },
+    {
+      "target": "Crossing regressions not paid for by 0.00625 tile widths of height per extra crossing",
+      "baseline": 0,
+      "proposed": 29,
+      "pass": false
+    },
+    {
+      "target": "Cases with worse p95 than baseline",
+      "baseline": 0,
+      "proposed": 31,
+      "pass": false
+    },
+    {
+      "target": "Maximum p95 for main-thread requests (dispatch rule: \u226420 current+history tiles, \u226420 edges) \u22645ms",
+      "baseline": 91.72718000000168,
+      "proposed": 4.567960000000312,
+      "pass": true
+    },
+    {
+      "target": "Maximum p95 for requests with \u226430 visible tiles (any thread) \u22645ms",
+      "baseline": 102.98939199998858,
+      "proposed": 10.173581999988528,
+      "pass": false
+    }
+  ],
+  "timing": {
+    "bun": "1.3.8",
+    "iterations": "40-400 paired, ~2 s per case",
+    "warmup": 12,
+    "load": {
+      "cpus": 24,
+      "before": [
+        21.19,
+        20.18,
+        14.38
+      ],
+      "after": [
+        10.36,
+        15.22,
+        14.74
+      ]
+    }
+  },
+  "resultFiles": {
+    "results": "16a1426518dda20ac1398ef374b2ba5ca502f8a6fbf6e37564967d85ec62faa9",
+    "reveals": "6ed9f6079894c199781201eb6b9e9e75398cb9f9d74cfee4bba1f841981e34bc",
+    "packing": "e420bcb6a8ebfc175dc1edea9c64dd45771b586b71bd66600d417981b724ab79",
+    "perf": "9cbbc15fd70f1be916aa22ebf6e72b949175507061de26af434071b1fdd3c371",
+    "acceptance": "a4d39c0cacde147c4c9274f8b5d2b4d68f487d52de79539f30c64bd3c7c1b06f"
+  }
+}
