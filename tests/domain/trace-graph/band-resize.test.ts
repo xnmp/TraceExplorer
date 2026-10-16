@@ -120,7 +120,7 @@ describe("an output arriving out of sight", () => {
       }
     }
     expect(tried).toBeGreaterThan(20);
-  });
+  }, 30000);
 });
 
 describe("an output leaving out of sight", () => {

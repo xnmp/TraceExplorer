@@ -33,7 +33,7 @@ with `--out=before.json` before a performance-only change and `--compare=before.
 after: any differing case means the change altered geometry or decisions.
 
 The 5 ms target is reported twice. "Main-thread" requests follow the view's dispatch rule
-(`canLayoutInline`: at most 30 current plus committed-history tiles, and 40 current input
+(`canLayoutInline`: at most 20 current plus committed-history tiles, and 20 current input
 edges plus history routes); larger requests run in the worker. The table also checks every
 case with at most 30 visible tiles, whichever thread runs it.
 

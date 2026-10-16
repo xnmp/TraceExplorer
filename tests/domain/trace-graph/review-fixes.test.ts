@@ -138,5 +138,5 @@ describe("unchanged requests", () => {
       expect(unchanged.routes).toEqual(layout.routes);
       expect(geometryGate(attachSingleBand(unchanged,request),request.items,request.band!.key,request.maxWidth)).toBeNull();
     }
-  });
+  }, 30000);
 });

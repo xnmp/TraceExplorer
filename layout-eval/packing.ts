@@ -13,6 +13,7 @@ import { projectDag, projectReferenceBadges } from '../src/lib/domain/trace-grap
 import { engines, type FolderLayout, type FolderLayoutEngine, type OpenStack } from '../src/lib/domain/trace-graph/folder-layout';
 import { focusExpanded, handCases, requestFor, screenshot, type Case } from './corpus';
 import { measure } from './geometry';
+import { mapPathNumbers } from '../src/lib/domain/trace-graph/path-data';
 const engineName = process.argv.find(a => a.startsWith('--engine='))?.slice(9) ?? 'default';
 const folderEngine: FolderLayoutEngine | undefined = engines[engineName];
 if (!folderEngine) throw new Error(`unknown folder layout engine "${engineName}"; registered: ${Object.keys(engines).join(', ')}`);
@@ -28,7 +29,12 @@ function runEngine(cases: readonly Case[], focuses: readonly (string | null)[], 
   const ids = items.map(item => item.id), graphs = ids.map(id => layout.graphs.get(id)!);
   // The grid box, as the packed flow reports it: rows end at their last band, columns span the input width.
   const width = Math.max(gridWidth, ...layout.rowBands.map(b => b.x + b.width)), height = Math.max(0, ...[...layout.cells.values(), ...layout.rowBands].map(r => r.y + r.height));
-  const placed = graphs.map(g => g.attached), requests = graphs.map(g => g.plan.request);
+  // Attached drawings are cover-relative; measure the same world coordinates the view paints.
+  const placed = graphs.map(({attached,origin}) => ({...attached,
+    nodes:new Map([...attached.nodes].map(([id,n])=>[id,{...n,x:n.x+origin.x,y:n.y+origin.y}])),
+    junctions:new Map([...attached.junctions].map(([id,j])=>[id,{...j,x:j.x+origin.x,y:j.y+origin.y}])),
+    routes:attached.routes.map(r=>({...r,path:mapPathNumbers(r.path,(v,i)=>v+(i%2?origin.y:origin.x))})),
+  })), requests = graphs.map(g => g.plan.request);
   const combined: GraphLayout = { orientation: 'down', width, height, nodes: new Map(placed.flatMap(l => [...l.nodes])), routes: placed.flatMap(l => l.routes), junctions: new Map(placed.flatMap(l => [...l.junctions])), rows: [], readingOrder: new Map() };
   return { layout, placed, rowHeight: layout.rowBands[0]?.height ?? 0, metrics: measure(combined, 'no-cover', gridWidth, requests.flatMap(r => r.items)) };
 }

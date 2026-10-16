@@ -2,6 +2,45 @@
 
 How the Trace view arranges one connected component, which way it runs, which nodes it shows, and why it does not use ELK.
 
+## Current admission and history contract (2026-10-16)
+
+This section supersedes the historical click-history, lane fallback, and crossing-cap
+policies below. The folder engine derives geometry from folder contents, expansion, and
+committed **arrival** history. Selection and click anchors are not layout inputs. Expanding
+or collapsing does not replace geometric history; returning to the same expansion restores
+the same drawing. The backend token is an observation epoch, not evidence that membership
+changed: job status updates must not capture a new placement. Closed components do not
+expose complete membership; opening learns those facts while preserving their saved history.
+
+Output arrival captures the previous visible rectangles. The band and complete folder
+placement attempt to extend that drawing while retaining every common rectangle. Tile hint
+height is reserved before an output exists. Folder pinning includes other bands and ordinary
+grid cells as obstacles, and can extend the canvas. Search exhaustion is reported honestly
+as `pin-search-exhausted`; it is not a proof of geometric infeasibility.
+
+`history-boundary.ts` validates containers, finite bounded coordinates, consumers, and the
+exact raw-to-attached transform before reuse. Invalid history is discarded with
+`invalid-history`. Provisional cover stems are replaced during attachment: the global safety
+gate applies to the complete drawing that will actually be displayed.
+
+`geometry-gate.ts` independently reads path geometry, verifies source claims and connectivity,
+certifies curve/tile separation by bounded convex-hull subdivision, and checks unrelated
+corners, ports, arrow bases, and near lanes. It does not use router occupancy tables.
+`folder-layout/geometry-gate.ts` repeats admission in folder coordinates after packing.
+All fallback candidates are computed and admitted before the transaction publishes once.
+Wider channels, safe chains/fans, wide columns, and isolated rows replace unsafe candidates;
+unsafe geometry is never returned by the band/folder admission boundary. A construction
+outside the finite coordinate reach can still fail explicitly.
+
+Proper transverse interior crossings remain allowed by this implementation; they have no
+bridge rendering. Thus the literal requirement that unrelated routes never touch anywhere
+is stronger than the implemented clearance contract. Arbitrary nonplanar DAGs cannot satisfy
+that literal requirement with continuous planar connectors.
+
+Shared trunk consumers are immutable table ranges. Endpoint/edge IDs are encoded tuples;
+optional junction subset factoring has a fixed work budget. These seams do not consolidate
+the independent routing implementations.
+
 ## Grid bands and pinned covers
 
 The view uses one folder-order grid. `folderCells` collapses each lineage at

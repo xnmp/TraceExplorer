@@ -67,7 +67,7 @@ const acceptance = [
   { target: 'Mean crossings ≤ baseline', baseline: crossingMean('baseline'), proposed: crossingMean('proposed'), pass: crossingMean('proposed') <= crossingMean('baseline') },
   { target: `Crossing regressions not paid for by ${broad.readability.crossingHeightTiles} tile widths of height per extra crossing`, baseline: 0, proposed: broad.readability.unpricedCrossingRegressions, pass: broad.readability.unpricedCrossingRegressions === 0 },
   { target: 'Cases with worse p95 than baseline', baseline: 0, proposed: perfRegressions.length, pass: perfRegressions.length === 0 },
-  { target: 'Maximum p95 for main-thread requests (dispatch rule: ≤30 current+history tiles) ≤5ms', baseline: maxSmall('baseline'), proposed: maxSmall('proposed'), pass: smallSlow.length === 0 },
+  { target: 'Maximum p95 for main-thread requests (dispatch rule: ≤20 current+history tiles, ≤20 edges) ≤5ms', baseline: maxSmall('baseline'), proposed: maxSmall('proposed'), pass: smallSlow.length === 0 },
   { target: 'Maximum p95 for requests with ≤30 visible tiles (any thread) ≤5ms', baseline: maxVisible('baseline'), proposed: maxVisible('proposed'), pass: maxVisible('proposed') <= 5 },
 ];
 const gates = acceptance.find(r => r.target.startsWith('Hard gate'))!;
