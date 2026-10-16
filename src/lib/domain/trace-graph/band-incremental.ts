@@ -21,7 +21,7 @@ import { ARROW, JUNCTION_BERTH, LANE_SEPARATION, PORT_BERTH, spacingFor, STACK_S
 import { axisOf, berthsOf, distanceToTile, distanceToSegment, entersBerth, grazesTile, INTO_JUNCTION, INTO_TILE, leavingRunFrom, routeEnds, shallowRun, SHALLOW_RUN, TILE_GRAZE, type Berth, type Ends } from "./route-contacts";
 import { bandExtent } from "./band-geometry";
 import { intersectsTile, overlapLength, routeBounds, segments, type Segment } from "./layout-quality";
-import { orthogonalRoute, LANE_TOLERANCE, NEAR_LANE, type AxisRun, type ForeignLanes } from "./orthogonal-route";
+import { orthogonalRoute, LANE_TOLERANCE, NEAR_LANE, type AxisRun, type ForeignLanes, type GridSearch } from "./orthogonal-route";
 import { forEachPathNumber } from "./path-data";
 import type { Point } from "./path-sampling";
 
@@ -62,6 +62,8 @@ const DETOUR_SCAN = 8;
 const SIDE_LANE = 4;
 /** Grid points a fallback route search may expand before it gives up (a bounded failure). */
 const GRID_BUDGET = 5000;
+/** A grid route may discover this many missing port/corner obstacles before giving up. */
+const BERTH_RETRIES = 16;
 /** Most 64 px rows one segment may span in the lane index (about 4 million px): beyond it the history is not usable. */
 const MAX_INDEX_ROWS = 65_536;
 /** Whether a coordinate or size lies within the lane index's reach: finite, at most `MAX_INDEX_ROWS` rows from zero. */
@@ -377,17 +379,23 @@ class LaneIndex {
 
   /** Whether any of `list` passes within `JUNCTION_BERTH` of a dot. */
   private nearDot(list: readonly Segment[]): boolean {
-    if (this.base?.nearDot(list)) return true;
+    return list.some(([a, b]) => !indexRange(Math.floor((Math.min(a.y, b.y) - JUNCTION_BERTH) / 64), Math.floor((Math.max(a.y, b.y) + JUNCTION_BERTH) / 64)))
+      || this.dotNear(list) !== undefined;
+  }
+
+  private dotNear(list: readonly Segment[]): Berth | undefined {
+    const retained = this.base?.dotNear(list);
+    if (retained) return retained;
     for (const segment of list) {
       const [a, b] = segment, top = Math.floor((Math.min(a.y, b.y) - JUNCTION_BERTH) / 64), bottom = Math.floor((Math.max(a.y, b.y) + JUNCTION_BERTH) / 64);
-      if (!indexRange(top, bottom)) return true;
+      if (!indexRange(top, bottom)) return undefined;
       const left = Math.min(a.x, b.x) - JUNCTION_BERTH, right = Math.max(a.x, b.x) + JUNCTION_BERTH;
       for (let row = top; row <= bottom; row++) {
         const dots = this.dots[row];
-        if (dots) for (const dot of dots) if (dot.x > left && dot.x < right && entersBerth(segment, dot)) return true;
+        if (dots) for (const dot of dots) if (dot.x > left && dot.x < right && entersBerth(segment, dot)) return dot;
       }
     }
-    return false;
+    return undefined;
   }
 
   /**
@@ -484,17 +492,36 @@ class LaneIndex {
     return false;
   }
 
+  /** A forbidden meeting the visibility grid must route around, excluding shared source ink. */
+  blockingBerth(list: readonly Segment[], source: string): Berth | undefined {
+    const ink = list.flatMap(segment => this.newInk(segment, source));
+    const dot = this.dotNear(ink);
+    if (dot) return dot;
+    for (const segment of ink) {
+      const berth = this.berthNear(segment, source);
+      if (berth) return berth;
+    }
+    return undefined;
+  }
+
   /** Whether the segment passes within the berth of a port, corner or fork of a source other than `source`. */
   private nearBerth(segment: Segment, source: string): boolean {
-    if (this.base?.nearBerth(segment, source)) return true;
+    const [a, b] = segment;
+    return !indexRange(Math.floor((Math.min(a.y, b.y) - PORT_BERTH) / 64), Math.floor((Math.max(a.y, b.y) + PORT_BERTH) / 64))
+      || this.berthNear(segment, source) !== undefined;
+  }
+
+  private berthNear(segment: Segment, source: string): Berth | undefined {
+    const retained = this.base?.berthNear(segment, source);
+    if (retained) return retained;
     const [a, b] = segment, top = Math.floor((Math.min(a.y, b.y) - PORT_BERTH) / 64), bottom = Math.floor((Math.max(a.y, b.y) + PORT_BERTH) / 64);
-    if (!indexRange(top, bottom)) return true;
+    if (!indexRange(top, bottom)) return undefined;
     const left = Math.min(a.x, b.x) - PORT_BERTH, right = Math.max(a.x, b.x) + PORT_BERTH;
     for (let row = top; row <= bottom; row++) {
       const list = this.berths[row];
-      if (list) for (const berth of list) if (berth.source !== source && berth.x > left && berth.x < right && entersBerth(segment, berth)) return true;
+      if (list) for (const berth of list) if (berth.source !== source && berth.x > left && berth.x < right && entersBerth(segment, berth)) return berth;
     }
-    return false;
+    return undefined;
   }
 
   /** Whether a segment of a source other than `source` passes within the berth's radius of its point. */
@@ -1046,7 +1073,7 @@ function gridWire(parents: readonly PlacedNode[], n: PlacedNode, s: Scene, lanes
   }
   const routes: Route[] = [];
   for (const p of parents) {
-    const source = sourceKey("node", p.key), foreign = lanes.foreign(source);
+    const source = sourceKey("node", p.key);
     // The bottom port, then (except for the cover) the right port, each left by a short stub.
     const ports = [[point(p.x + p.width / 2, p.y + p.height), point(p.x + p.width / 2, p.y + p.height + 2)]];
     if (p.key !== s.cover) ports.push([point(p.x + p.width, p.y + p.height / 2), point(p.x + p.width + 2, p.y + p.height / 2)]);
@@ -1054,9 +1081,7 @@ function gridWire(parents: readonly PlacedNode[], n: PlacedNode, s: Scene, lanes
     let found: Route | undefined;
     search: for (const [port, start] of ports) for (const arrival of goals) {
       if (!(left(effort) > 0)) break search;
-      const spent = { cells: 0, pops: 0 };
-      const grid = orthogonalRoute(start, arrival.end, obstacles, s.width, foreign, { budget: Math.min(effort.budget, left(effort)), everyLane: effort.everyLane, spent, bounds: s.paneEdges });
-      spend(effort, spent);
+      const grid = routeAroundBerths(start, arrival.end, obstacles, s.width, lanes, source, effort, { bounds: s.paneEdges });
       if (!grid) continue;
       const points = [port, ...grid, ...(levels ? [] : [point(arrival.end.x, n.y - ARROW.length)])];
       const ss = pathSegments(points);
@@ -1070,6 +1095,34 @@ function gridWire(parents: readonly PlacedNode[], n: PlacedNode, s: Scene, lanes
   }
   lanes.rollback(before);
   return { routes, levels };
+}
+
+/**
+ * The grid knows parallel lanes, but its shortest path can still cross a foreign port or
+ * corner. Add that rejecting witness as an obstacle and search again. Adding every berth
+ * up front would form a much larger Cartesian grid, even when the first route is legal.
+ * Every attempt spends the same shared request budget; the final full lane check still
+ * rejects unsupported corner/curve conflicts rather than weakening the geometry contract.
+ */
+function routeAroundBerths(start: Point, goal: Point, obstacles: readonly PlacedNode[], width: number,
+  lanes: LaneIndex, source: string, effort: Effort, options: Pick<GridSearch, 'bounds' | 'column'>): readonly Point[] | null {
+  const foreign = lanes.foreign(source), avoided: PlacedNode[] = [], seen = new Set<string>();
+  for (let attempt = 0; attempt < BERTH_RETRIES && left(effort) > 0; attempt++) {
+    const spent = { cells: 0, pops: 0 };
+    const grid = orthogonalRoute(start, goal, avoided.length ? [...obstacles, ...avoided] : obstacles, width, foreign,
+      { ...options, budget: Math.min(effort.budget, left(effort)), everyLane: effort.everyLane, spent });
+    spend(effort, spent);
+    if (!grid) return null;
+    const berth = lanes.blockingBerth(pathSegments(grid), source);
+    if (!berth) return grid;
+    const key = JSON.stringify([berth.x, berth.y, berth.radius]);
+    if (seen.has(key)) return null;
+    seen.add(key);
+    // The grid expands rectangles by TILE_GRAZE; the resulting square contains the berth.
+    const radius = Math.max(0, berth.radius - TILE_GRAZE);
+    avoided.push({ key, x: berth.x - radius, y: berth.y - radius, width: radius * 2, height: radius * 2, row: 0, band: 0 });
+  }
+  return null;
 }
 
 /**
@@ -1092,15 +1145,13 @@ function gridWireAll(parents: readonly PlacedNode[], n: PlacedNode, s: Scene, la
   const goal = levels ? levels[0] : point(n.x + n.width / 2, n.y - 16), column = levels ? levels.slice(1).map(l => l.y) : undefined;
   const routes: Route[] = [];
   for (const i of order) {
-    const p = parents[i], source = sourceKey("node", p.key), foreign = lanes.foreign(source), cover = p.key === s.cover;
+    const p = parents[i], source = sourceKey("node", p.key), cover = p.key === s.cover;
     const ports = [[point(p.x + p.width / 2, p.y + p.height), point(p.x + p.width / 2, p.y + p.height + 2)]];
     if (!cover) ports.push([point(p.x + p.width, p.y + p.height / 2), point(p.x + p.width + 2, p.y + p.height / 2)]);
     let found: Route | undefined;
     for (const [port, start] of ports) {
       if (!(left(effort) > 0)) break;
-      const spent = { cells: 0, pops: 0 };
-      const grid = orthogonalRoute(start, goal, obstacles, s.width, foreign, { budget: Math.min(effort.budget, left(effort)), everyLane: true, spent, column, bounds: s.paneEdges });
-      spend(effort, spent);
+      const grid = routeAroundBerths(start, goal, obstacles, s.width, lanes, source, effort, { column, bounds: s.paneEdges });
       if (!grid) continue;
       const end = grid[grid.length - 1], level = levels ? levels.findIndex(l => l.y === end.y) : -1;
       const points = [port, ...grid, ...(levels ? [] : [point(goal.x, n.y - ARROW.length)])];
