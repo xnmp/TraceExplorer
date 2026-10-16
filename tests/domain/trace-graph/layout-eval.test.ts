@@ -42,7 +42,7 @@ describe("production band contracts", () => {
     expect([...result.nodes]).toEqual([...previous.placed.nodes]);
     expect(bandExtent(result, "root")).toMatchObject({ width: bandExtent(previous.placed, "root").width, height: bandExtent(previous.placed, "root").height });
   });
-  it("reports a height-for-stability choice even when a shorter embedding was pruned", () => {
+  it("keeps the clicked tile without claiming a stability tradeoff when the compact layout also holds it", () => {
     for (const [id, clicks] of [["mixed-depth", ["long0"]], ["random-tree-40-7402", ["n2", "n10"]]] as const) {
       const fixture = { ...corpus().find(c => c.id === id)!, full: false };
       let request = requestFor(fixture, null, 900, 96), previous = history(request);
@@ -54,8 +54,8 @@ describe("production band contracts", () => {
         expect(result.nodes.get(focus)).toMatchObject({ x: previous.placed.nodes.get(focus)!.x, y: previous.placed.nodes.get(focus)!.y });
         previous = { signature: bandHistorySignature(request), layout: raw, placed: result };
       }
-      // Pinning is required whether it costs height or a wider allocation.
-      expect(result.decision?.stability).toBe(true);
+      expect(bandExtent(result, "root").height).toBe(bandExtent(placed(request), "root").height);
+      expect(result.decision?.stability).toBe(false);
     }
   });
   it("expires incompatible history on width, metric and relationship changes", () => {

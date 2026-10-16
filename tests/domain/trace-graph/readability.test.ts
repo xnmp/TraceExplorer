@@ -336,18 +336,16 @@ describe("lines kept off tiles", () => {
     const component = sessionComponents(provenanceSession(profiles[profile], seed))[0];
     const shown = new Set(component.flatMap(n => n.parents));
     const focuses = [null, ...component.filter(n => n.scope === "current" && shown.has(n.key)).map(n => n.key).reverse().slice(0, 8), null];
-    let previous: { signature: string; layout: GraphLayout; placed: GraphLayout } | undefined, embedded = 0;
+    let previous: { signature: string; layout: GraphLayout; placed: GraphLayout } | undefined;
     for (const focus of focuses) {
       const request = requestFor({ id: `${profile}-${seed}`, nodes: component, focuses: [] }, focus, width, imagePx, previous?.layout.readingOrder);
       const layout = layoutGraph({ ...request, anchorKey: focus ?? undefined, history: previous });
       const placed = attachSingleBand(layout, request);
-      if (layout.decision?.candidate === "incremental-tree" || layout.decision?.candidate === "anchored-repack" || layout.decision?.candidate === "pinned-extension") {
-        embedded++;
-        expect(onPlacedTiles(layout, placed, previous?.layout), `focus ${focus}`).toEqual([]);
-      }
+      expect(onPlacedTiles(layout, placed, previous?.layout), `focus ${focus}`).toEqual([]);
       previous = { signature: bandHistorySignature(request), layout, placed };
     }
-    expect(embedded).toBeGreaterThan(0);
+    // The optimizer may choose a different certified candidate after routing changes.
+    // Clearance is asserted above for every layout, regardless of candidate name.
   });
 });
 

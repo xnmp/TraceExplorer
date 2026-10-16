@@ -321,7 +321,7 @@ export type Ordering = "barycenter" | "median-sweep" | {
  */
 export type Passing = "straight" | "nearest-end";
 
-export interface LayeredOptions { readonly ordering?: Ordering; readonly passing?: Passing; readonly channelStyle?: "scaled" | "orthogonal" }
+export interface LayeredOptions { readonly columnGap?: number; readonly ordering?: Ordering; readonly passing?: Passing; readonly channelStyle?: "scaled" | "orthogonal" }
 
 /** The reusable layered engine; band candidates call it without recursively planning bands. */
 export function layoutLayered(request: LayoutRequest, options: LayeredOptions = {}): GraphLayout {
@@ -389,7 +389,7 @@ function layoutDown(request: LayoutRequest, minWidth: number, options: LayeredOp
   // dots stack. Legacy placement needs two retries. A pinned band can first
   // consume spare pane width; moving rows within that width changes gap slots,
   // so allow two further routing passes to settle the new slot choices.
-  const prepared = { ...prepare(request, options.ordering ?? "barycenter", options.passing ?? "straight"), channelStyle: options.channelStyle };
+  const prepared = { ...prepare(request, options.ordering ?? "barycenter", options.passing ?? "straight", options.columnGap), channelStyle: options.channelStyle };
   let extra = { left: 0, right: 0 };
   const attempts = prepared.pinned ? 4 : 2;
   for (let attempt = 0; ; attempt++) {
@@ -414,7 +414,7 @@ function layoutDown(request: LayoutRequest, minWidth: number, options: LayeredOp
  * generation 0's only tile (otherwise its first child row is not known here).
  */
 export function downwardBandBound(request: LayoutRequest, coverKey: NodeKey, stemRoom: number, options: LayeredOptions = {}): { readonly height: number; readonly width: number; readonly length: number } | null {
-  const space = spacingFor(request.tileWidth), gap = space.column;
+  const space = spacingFor(request.tileWidth), gap = Number.isFinite(options.columnGap) ? Math.max(0, options.columnGap!) : space.column;
   // Index-based throughout (this runs on every band layout, mostly tiny ones):
   // item i's parents, children and generation live in arrays indexed by i.
   const list = request.items, count = list.length;
@@ -517,7 +517,7 @@ export function downwardBandBound(request: LayoutRequest, coverKey: NodeKey, ste
  * Everything about a request that does not depend on a pass's extra margins:
  * computed once and shared by every pass of {@link layoutDown}.
  */
-function prepare(request: LayoutRequest, ordering: Ordering = "barycenter", passing: Passing = "straight") {
+function prepare(request: LayoutRequest, ordering: Ordering = "barycenter", passing: Passing = "straight", columnGap?: number) {
   // Malformed input never spreads through the geometry: a size that is not a
   // finite, non-negative number counts as zero, sizes are capped far above
   // any tile, and an order that is not a number sorts first (ties by key).
@@ -570,7 +570,7 @@ function prepare(request: LayoutRequest, ordering: Ordering = "barycenter", pass
   const relationships: { child: NodeKey; parents: NodeKey[] }[] = [];
   for (const child of keys) relationships.push({ child, parents: parentsOf(child) });
   const plan = boundedJunctions(buildInputJunctions(relationships));
-  const gap = space.column;
+  const gap = Number.isFinite(columnGap) ? Math.max(0, columnGap!) : space.column;
   const margin = space.margin;
   const widest = keys.reduce((most, key) => Math.max(most, items.get(key)!.width), 0);
   const byBand: NodeKey[][] = Array.from({ length: bandCount }, () => []);

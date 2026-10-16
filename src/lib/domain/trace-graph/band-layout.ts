@@ -390,6 +390,16 @@ function layoutBandCandidates(input: LayoutRequest, options: BandOptions): Graph
     const layout = layoutLayered({ ...request, pinned: pin, history: undefined, band: undefined, maxWidth: width, orientation: "down" }, { ordering: options.ordering, passing: options.passing, channelStyle: "orthogonal" });
     return { name: "visible-down", layout: withPaneBandBounds(request.items.length === 2 && request.items.some(n => n.key !== key && n.parents.length === 1 && n.parents[0] === key) ? { ...layout, preferredX: 0 } : layout, key, request.maxWidth) };
   })();
+  // A small gutter reduction can avoid an entire wrapped row. Treat it as another
+  // certified construction, not a change to the normal spacing or its lower bound.
+  if (!anchors.length && wantsDown && rows) {
+    const compactOptions = { ordering: options.ordering, passing: options.passing, channelStyle: "orthogonal" as const,
+      columnGap: spacingFor(request.tileWidth).column * .75 };
+    const compactRequest = { ...request, history: undefined, band: undefined, maxWidth: width, orientation: "down" as const };
+    const bound = downwardBandBound(compactRequest, key, STACK_STEM_ROOM, compactOptions);
+    if (bound && bound.height < rows.height * .9) shelves.push({ name: "compact-down",
+      layout: withPaneBandBounds(layoutLayered(compactRequest, compactOptions), key, request.maxWidth) });
+  }
   const history: Candidate[] = [];
   if (previous) {
     // One grid-work budget for every incremental embedding this request tries.
@@ -405,7 +415,8 @@ function layoutBandCandidates(input: LayoutRequest, options: BandOptions): Graph
     // unchanged geometry must above. Build the downward layout only if its height decides.
     const fixed = new Set([...anchors, key]);
     if (anchors.length && fixed.size < previous.nodes.size) {
-      const warm = incremental ?? (retained && !(sharedLaneLength(retained) > 0)
+      const certifiedIncremental = incremental && !geometryGate(attachSingleBand(incremental, request), request.items, key, request.maxWidth) ? incremental : null;
+      const warm = certifiedIncremental ?? (retained && !(sharedLaneLength(retained) > 0)
         && (!fitted.resized || Number.isFinite(cost(validateLayout(retained, key, request.maxWidth, request.items), tileWidth))) ? retained : null);
       const compactShelf = Math.min(...shelves.map(c => bandExtent(c.layout, key).height));
       const height = warm ? bandExtent(warm, key).height : Infinity;
@@ -437,9 +448,9 @@ function layoutBandCandidates(input: LayoutRequest, options: BandOptions): Graph
   };
   const feasible = (m: Measures) => Number.isFinite(cost(m, tileWidth));
 
-  // A certified pinned solution wins before soft compactness/crossing objectives.
-  // Keep the pane-bounded construction whenever it can preserve the retained tiles.
-  if (previous) {
+  // Arrivals preserve every retained rectangle before soft quality objectives.
+  // New click states use the normal anchor-aware candidate ranking below.
+  if (previous && fitted.grew) {
     const pins = (layout: GraphLayout) => request.items.every(item => {
       const old = previous.nodes.get(item.key), now = layout.nodes.get(item.key);
       return !old || !!now && old.x === now.x && old.y === now.y && old.width === now.width && old.height === now.height;
@@ -455,7 +466,10 @@ function layoutBandCandidates(input: LayoutRequest, options: BandOptions): Graph
         if (pins(placementFor(c)) && !geometryGate(placementFor(c), request.items, key, request.maxWidth)) pinned.unshift(c);
       }
     }
-    if (pinned.length) return { ...pinned[0].layout, decision: { candidate: pinned[0].name, stability: true } };
+    if (pinned.length) return { ...pinned[0].layout,
+      anchorX: anchors.length ? bandExtent(placementFor(pinned[0]), key).left : undefined,
+      anchorY: anchors.length && compatible?.attachment ? compatible.attachment.bandTop - compatible.attachment.placement.coverHeight : undefined,
+      decision: { candidate: pinned[0].name, stability: true } };
   }
 
   const prepared: Prepared[] = [...shelves, ...history].map(prepare);
