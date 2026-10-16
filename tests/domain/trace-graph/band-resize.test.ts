@@ -102,7 +102,7 @@ describe("an output arriving out of sight", () => {
       }
     }
     expect(tried).toBeGreaterThan(40);
-  });
+  }, 15_000); // Exhaustive geometry corpus; request latency is gated separately by layout:eval.
 
   it("an edit on the selected image that fails leaves the selected tile where it was, unless a flagged fallback moved it", () => {
     let tried = 0;

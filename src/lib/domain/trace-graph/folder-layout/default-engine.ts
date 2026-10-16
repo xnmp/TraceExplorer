@@ -309,6 +309,8 @@ export function createDefaultEngine(options: DefaultEngineOptions = {}): FolderL
     const prior = given.previous;
     const malformed = prior && (!(prior.graphs instanceof Map) || [...prior.graphs.values()].some(g =>
       !g || !isLayoutShape(g.layout) || !isLayoutShape(g.attached)));
+    const rejectedDrawing = malformed && prior.graphs instanceof Map && [...prior.graphs.values()].some(g =>
+      g && isLayout(g.layout) && isLayout(g.attached) && (!isLayoutShape(g.layout) || !isLayoutShape(g.attached)));
     const foreign = prior?.displays && prior.displays.folder !== undefined && prior.displays.folder !== (given.folderKey ?? '');
     const input = malformed || foreign ? { ...given, previous: undefined } : given;
     const { geometry, plans } = plansOf(input);
@@ -364,7 +366,7 @@ export function createDefaultEngine(options: DefaultEngineOptions = {}): FolderL
       if (failure) throw new RangeError("No certified folder layout: " + failure);
     }
     if (relayout) result = {...result,decision:{requestedColumns:geometry.columns,...result.decision,relayout}};
-    if (malformed) result = { ...result, graphs: new Map([...result.graphs].map(([id, graph]) => [id, {
+    if (rejectedDrawing) result = { ...result, graphs: new Map([...result.graphs].map(([id, graph]) => [id, {
       ...graph,
       layout: { ...graph.layout, decision: { ...graph.layout.decision!, fallback: 'invalid-history' } },
       attached: { ...graph.attached, decision: { ...graph.attached.decision!, fallback: 'invalid-history' } },
