@@ -155,18 +155,21 @@ export interface GridSearch {
   readonly spent?: { cells: number; pops: number };
   /** Further goals on the goal's column (ignored if not): the path ends at whichever it reaches first. */
   readonly column?: readonly number[];
+  /** World-pane edges are legal lanes; allocation padding does not reserve them. */
+  readonly bounds?: { readonly left: number; readonly right: number };
 }
 export function orthogonalRoute(start: Point, goal: Point, boxes: readonly PlacedNode[], width: number, foreign?: ForeignLanes, search: GridSearch = {}): readonly Point[] | null {
   const { budget = Infinity, everyLane = false, spent } = search;
   const goalYs = [goal.y, ...(search.column ?? []).filter(y => y !== goal.y && Number.isFinite(y))];
+  const bounds = search.bounds ?? { left: 8, right: width - 8 };
   const clearance = 2, runsX = foreign?.vertical ?? [], runsY = foreign?.horizontal ?? [];
   // Grid lines: the distinct candidate coordinates in range, ascending.
   const xs = f64(0, 4 + 2 * boxes.length + 4 * runsX.length), ys = f64(1, 1 + (search.column?.length ?? 0) + 1 + 2 * boxes.length + 2 * runsY.length);
   let xn = 0, yn = 0;
-  const addX = (x: number) => { if (x >= 8 && x <= width - 8) xs[xn++] = x; };
+  const addX = (x: number) => { if (x >= bounds.left && x <= bounds.right) xs[xn++] = x; };
   // Zero is stored as +0, as a Set stores -0 (it can be returned in a point). x lines are >= 8.
   const addY = (y: number) => { if (y >= 0) ys[yn++] = y === 0 ? 0 : y; };
-  addX(8); addX(width - 8); addX(start.x); addX(goal.x); addY(start.y); for (const y of goalYs) addY(y);
+  addX(bounds.left); addX(bounds.right); addX(start.x); addX(goal.x); addY(start.y); for (const y of goalYs) addY(y);
   for (const b of boxes) { addX(b.x - clearance); addX(b.x + b.width + clearance); addY(b.y - clearance); addY(b.y + b.height + clearance); }
   let nx = distinctSorted(xs, xn), ny = distinctSorted(ys, yn);
   if (runsX.length || runsY.length) {
@@ -190,7 +193,9 @@ export function orthogonalRoute(start: Point, goal: Point, boxes: readonly Place
   const blocked = small ? pool.u8[0] : new Uint8Array(count), horizontal = small ? pool.u8[1] : new Uint8Array(count), vertical = small ? pool.u8[2] : new Uint8Array(count);
   if (small) { blocked.fill(0, 0, count); horizontal.fill(0, 0, count); vertical.fill(0, 0, count); }
   for (const b of boxes) {
-    const left = b.x - clearance, right = b.x + b.width + clearance, top = b.y - clearance, bottom = b.y + b.height + clearance;
+    const left = search.bounds && b.x >= bounds.left ? Math.max(bounds.left, b.x - clearance) : b.x - clearance;
+    const right = search.bounds && b.x + b.width <= bounds.right ? Math.min(bounds.right, b.x + b.width + clearance) : b.x + b.width + clearance;
+    const top = b.y - clearance, bottom = b.y + b.height + clearance;
     // Only grid lines within (or one step outside) the box can be blocked by it.
     const x0 = Math.max(0, lowerBound(xs, nx, left) - 1), x1 = Math.min(nx, lowerBound(xs, nx, right) + 1);
     for (let y = lowerBound(ys, ny, top); y < ny && ys[y] <= bottom; y++) {

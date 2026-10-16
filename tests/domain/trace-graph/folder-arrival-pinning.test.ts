@@ -75,3 +75,19 @@ it('seeds a newly arrived disconnected root before routing its joining output', 
   expect(after.graphs.get('s0:root')!.attached.nodes.has('s0:join')).toBe(true);
   expect(folderGeometryGate(after)).toBeNull();
 });
+
+it('routes a retained merge around a full-width cell boundary without widening the pane', () => {
+  const engine = createDefaultEngine(), tile = tileMetrics(96);
+  const initial=[node('root'),node('a',['root'],1),node('b',['root'],2)];
+  const input=(members: typeof initial, previous?: FolderLayout) => {
+    const folder=makeFolder({stacks:[members,[node('root'),node('child',['root'],1)]],files:1});
+    const base=folderInput(folder,{open:['s0:root','s1:root'],width:200,tile,grid:{cellWidth:200,cellHeight:128,gap:8},previous});
+    return {...base,open:new Map([...base.open].map(([id,stack])=>[id,{...stack,expanded:new Map(stack.members.map(key=>[key,true]))}]))};
+  };
+  const before=engine(input(initial)), after=engine(input([...initial,node('c',['a','b'],3)],before));
+  expect(after.size.width).toBeLessThanOrEqual(200);
+  for (const graph of after.graphs.values()) expect(graph.origin.x + graph.attached.width).toBeLessThanOrEqual(200);
+  const now=rectangles(after);
+  for(const [key,rect] of rectangles(before)) expect(now.get(key),key).toEqual(rect);
+  expect(folderGeometryGate(after)).toBeNull();
+});

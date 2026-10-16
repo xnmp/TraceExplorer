@@ -10,7 +10,7 @@ import type { BandScenePlan } from '../scene';
 import type { GridBand, GridCell, GridRect } from '../grid-flow';
 import { centeredCellFootprint, withCellFootprints } from './cell-footprints';
 import { folderGeometryGate } from './geometry-gate';
-import { routeBounds, unionRect } from './route-bounds';
+import { paneRouteBounds, unionRect } from './route-bounds';
 import type { FolderGraph, FolderLayout, FolderLayoutInput, GraphId, FolderPlacementHistory } from './types';
 
 type Plan = { readonly plan: BandScenePlan };
@@ -134,8 +134,8 @@ function place(input: FolderLayoutInput, plans: ReadonlyMap<GraphId, Plan>, snap
   const previous: GraphLayout = { nodes, junctions, routes: retainedRoutes, rows: [], readingOrder: new Map(), orientation: 'down',
     width: maxWidth, height: Math.max(snapshot.size.height, snapshot.bounds.y + snapshot.bounds.height, appendedY - MARGIN) };
   const request: LayoutRequest = { items, maxWidth, tileWidth: input.tile.width, band: { key: ROOT, items } };
-  const placed = missing.length ? incrementalWorld(request, previous)
-    ?? incrementalWorld({ ...request, maxWidth: Math.min(100_000, maxWidth + missing.reduce((sum,n) => sum + n.width + 64,64)) }, previous) : previous;
+  const placed = missing.length ? incrementalWorld(request, previous, undefined, ORIGIN_X)
+    ?? incrementalWorld({ ...request, maxWidth: Math.min(100_000, maxWidth + missing.reduce((sum,n) => sum + n.width + 64,64)) }, previous, undefined, ORIGIN_X) : previous;
   if (!placed) return null;
 
   const graphs = new Map<GraphId, FolderGraph>(), bands: GridBand[] = [];
@@ -169,12 +169,12 @@ function place(input: FolderLayoutInput, plans: ReadonlyMap<GraphId, Plan>, snap
     }
     const localRoutes = mapRouteConsumers(ownerRoutes.get(id) ?? [], c => ({ parent: localNode(c.parent), child: localNode(c.child) })).map(r => {
       const endpoint = (e: PlacedRoute['from']) => ({ ...e, id: e.kind === 'node' ? localNode(e.id) : localJoin(e.id) });
-      bounds = unionRect(bounds, routeBounds(r.path, -ORIGIN_X));
+      bounds = unionRect(bounds, paneRouteBounds(r.path, input.width, -ORIGIN_X));
       return { ...r, id: oldRoutes.get(r.id) ?? scope('folder-route', r.id), from: endpoint(r.from), to: endpoint(r.to),
         path: mapPathNumbers(r.path, (v, i) => v - (i % 2 ? origin.y : origin.x + ORIGIN_X)) };
     });
     const attached: GraphLayout = { ...old.attached, nodes: localNodes, junctions: localJoins, routes: localRoutes, rows: [],
-      width: Math.max(snapshot.size.width, placed.width), height: placed.height - origin.y, bandBounds: undefined,
+      width: Math.max(0, Math.max(snapshot.size.width, placed.width - ORIGIN_X) - origin.x), height: placed.height - origin.y, bandBounds: undefined,
       decision: { candidate: 'folder-pinned-extension', stability: true } };
     // The raw band cache remains keyed by its request. World placement is only the attached
     // drawing; caching it as a raw band would reattach it and make later clicks path-dependent.

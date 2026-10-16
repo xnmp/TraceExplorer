@@ -691,6 +691,7 @@ interface Scene {
   readonly extra: PlacedNode;
   readonly width: number;
   readonly clearance: number;
+  readonly paneEdges?: { readonly left: number; readonly right: number };
   /** Height of the cover row (the header the cover's side routes cross). */
   readonly header: number;
   /** Lowest edge of any tile above the probed tile (and of the parent). */
@@ -1054,7 +1055,7 @@ function gridWire(parents: readonly PlacedNode[], n: PlacedNode, s: Scene, lanes
     search: for (const [port, start] of ports) for (const arrival of goals) {
       if (!(left(effort) > 0)) break search;
       const spent = { cells: 0, pops: 0 };
-      const grid = orthogonalRoute(start, arrival.end, obstacles, s.width, foreign, { budget: Math.min(effort.budget, left(effort)), everyLane: effort.everyLane, spent });
+      const grid = orthogonalRoute(start, arrival.end, obstacles, s.width, foreign, { budget: Math.min(effort.budget, left(effort)), everyLane: effort.everyLane, spent, bounds: s.paneEdges });
       spend(effort, spent);
       if (!grid) continue;
       const points = [port, ...grid, ...(levels ? [] : [point(arrival.end.x, n.y - ARROW.length)])];
@@ -1098,7 +1099,7 @@ function gridWireAll(parents: readonly PlacedNode[], n: PlacedNode, s: Scene, la
     for (const [port, start] of ports) {
       if (!(left(effort) > 0)) break;
       const spent = { cells: 0, pops: 0 };
-      const grid = orthogonalRoute(start, goal, obstacles, s.width, foreign, { budget: Math.min(effort.budget, left(effort)), everyLane: true, spent, column });
+      const grid = orthogonalRoute(start, goal, obstacles, s.width, foreign, { budget: Math.min(effort.budget, left(effort)), everyLane: true, spent, column, bounds: s.paneEdges });
       spend(effort, spent);
       if (!grid) continue;
       const end = grid[grid.length - 1], level = levels ? levels.findIndex(l => l.y === end.y) : -1;
@@ -1235,12 +1236,12 @@ function freePortLanes(request: LayoutRequest, previous: GraphLayout, budget: In
   return repairs ? { ...previous, routes } : previous;
 }
 
-function insertWithPortRepair(request: LayoutRequest, previous: GraphLayout, budget: IncrementalBudget): GraphLayout | null {
+function insertWithPortRepair(request: LayoutRequest, previous: GraphLayout, budget: IncrementalBudget, paneEdges?: Scene["paneEdges"]): GraphLayout | null {
   const repaired = freeBlockedPorts(request, previous, budget);
-  const placed = insertTree(request, repaired, budget);
+  const placed = insertTree(request, repaired, budget, paneEdges);
   if (placed) return placed;
   const shifted = freePortLanes(request, repaired, budget);
-  return shifted === repaired ? null : insertTree(request, shifted, budget);
+  return shifted === repaired ? null : insertTree(request, shifted, budget, paneEdges);
 }
 
 export function incrementalTree(request: LayoutRequest, previous: GraphLayout, budget: IncrementalBudget = incrementalBudget()): GraphLayout | null {
@@ -1254,14 +1255,14 @@ export function incrementalTree(request: LayoutRequest, previous: GraphLayout, b
 }
 
 /** World coordinates already include packing. No child-band allocation padding applies. */
-export function incrementalWorld(request: LayoutRequest, previous: GraphLayout, budget: IncrementalBudget = incrementalBudget()): GraphLayout | null {
-  const placed = insertWithPortRepair(request, previous, budget);
+export function incrementalWorld(request: LayoutRequest, previous: GraphLayout, budget: IncrementalBudget = incrementalBudget(), paneLeft = 0): GraphLayout | null {
+  const placed = insertWithPortRepair(request, previous, budget, { left: paneLeft, right: request.maxWidth });
   if (!placed) return null;
   const extent = bandExtent({ ...placed, bandBounds: undefined }, request.band!.key, 0);
   return extent.left < 0 || extent.left + extent.width > request.maxWidth ? null : { ...placed, bandBounds: undefined };
 }
 
-function insertTree(request: LayoutRequest, previous: GraphLayout, budget: IncrementalBudget): GraphLayout | null {
+function insertTree(request: LayoutRequest, previous: GraphLayout, budget: IncrementalBudget, paneEdges?: Scene["paneEdges"]): GraphLayout | null {
   const key = request.band!.key, s = spacingFor(request.tileWidth), wanted = new Set(request.items.map(n => n.key));
   if (request.items.length > INCREMENTAL_LIMIT || !wanted.has(key)) return null;
   if (!previous.nodes.has(key) || request.items.some(n => n.key !== key && n.parents.length === 0 && !previous.nodes.has(n.key))) return null;
@@ -1302,7 +1303,7 @@ function insertTree(request: LayoutRequest, previous: GraphLayout, budget: Incre
   const sceneFor = (n: PlacedNode): Scene => {
     let bottomAbove = -Infinity;
     for (const b of boxes) if (b.y < n.y) bottomAbove = Math.max(bottomAbove, b.y + b.height);
-    return { tiles, extra: n, width, clearance: s.clearance, header: header || (n.band === 0 && n.row === 0 ? n.height : 0), bottomAbove, cover: key, coverStem, grain };
+    return { tiles, extra: n, width, paneEdges, clearance: s.clearance, header: header || (n.band === 0 && n.row === 0 ? n.height : 0), bottomAbove, cover: key, coverStem, grain };
   };
   let second: Effort | undefined;
   const plain = fallbackEffort(budget);
