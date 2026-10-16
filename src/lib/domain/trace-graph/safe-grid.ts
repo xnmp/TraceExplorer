@@ -16,12 +16,12 @@ export function safeFanGrid(request: LayoutRequest): GraphLayout | null {
   const children = request.items.filter(item => item.key !== cover.key).sort((a, b) => a.order - b.order || a.key.localeCompare(b.key));
   const widest = children.reduce((value, item) => Math.max(value, item.width), 1);
   const tallest = children.reduce((value, item) => Math.max(value, item.height), 1);
-  const gutter = 24, columnGap = 32, rowGap = 48;
+  const gutter = Math.max(0, Math.min(24, (request.maxWidth - widest) / 2)), columnGap = 32, rowGap = 48;
   const compactColumns = Math.max(1, Math.min(children.length, Math.ceil(Math.sqrt(children.length * (tallest + rowGap) / (widest + columnGap)))));
   const fittingColumns = Math.floor((request.maxWidth - 2 * gutter + columnGap) / (widest + columnGap));
   const columns = fittingColumns > 0 ? Math.min(compactColumns, fittingColumns) : compactColumns;
   const rowCount = Math.ceil(children.length / columns), firstY = cover.height + STACK_STEM_ROOM;
-  const width = Math.max(request.maxWidth, cover.width + 2 * gutter,
+  const width = Math.max(request.maxWidth, cover.width,
     2 * gutter + columns * widest + (columns - 1) * columnGap);
   const height = children.length ? firstY + rowCount * tallest + (rowCount - 1) * rowGap + gutter : cover.height;
   const coverX = request.pinned?.x ?? width / 2;
@@ -34,7 +34,7 @@ export function safeFanGrid(request: LayoutRequest): GraphLayout | null {
     const top = firstY + row * (tallest + rowGap), keys: string[] = [];
     for (let column = 0; column < columns && row * columns + column < children.length; column++) {
       const item = children[row * columns + column], x = gutter + column * (widest + columnGap);
-      const y = top + (tallest - item.height) / 2, center = x + item.width / 2, lane = x - 12;
+      const y = top + (tallest - item.height) / 2, center = x + item.width / 2, lane = Math.max(0, x - 12);
       nodes.set(item.key, { key: item.key, x, y, width: item.width, height: item.height, row: row + 1, band: 1 });
       keys.push(item.key);
       // Stay in the empty row channel until directly over the destination. Every route has
