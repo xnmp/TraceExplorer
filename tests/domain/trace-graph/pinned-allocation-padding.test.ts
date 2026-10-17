@@ -10,8 +10,10 @@ it('keeps a clicked tile when pinned connector ink fits but comfortable allocati
     const request = requestFor(fixture, focus, 454, 48);
     const next = optimizedBand({ ...request, hint: previous?.layout.readingOrder }, { previous, anchorKey: focus ?? undefined });
     if (focus === 'n66') {
-      const before = previous!.placed.nodes.get(focus)!;
-      expect(next.placed.nodes.get(focus)).toMatchObject({ x: before.x, y: before.y });
+      for (const [key, before] of previous!.placed.nodes) {
+        if (!next.placed.nodes.has(key)) continue;
+        expect(next.placed.nodes.get(key), key).toMatchObject({ x: before.x, y: before.y, width: before.width, height: before.height });
+      }
       expect(geometryGate(next.placed, request.items, request.band!.key, request.maxWidth)).toBeNull();
       expect(next.placed.width).toBeLessThanOrEqual(request.maxWidth);
     }

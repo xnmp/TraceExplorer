@@ -4,7 +4,7 @@ import { bandHistorySignature } from "$lib/domain/trace-graph/band-layout";
 import { packStackGroups } from "$lib/domain/trace-graph/stack-packing";
 import { attachSingleBand, bandExtent, packedGridFlow, bandPlacements, attachPackedBand, estimatedBandExtent } from "$lib/domain/trace-graph/band-geometry";
 import { tileMetrics } from "$lib/domain/trace-graph/metrics";
-import { optimisticCost } from "$lib/domain/trace-graph/layout-cost-bound";
+import { optimisticCost, rectangleCost } from "$lib/domain/trace-graph/layout-cost-bound";
 import { measure, cost, intersectsTile, crossing, overlapLength } from "$lib/domain/trace-graph/layout-quality";
 import { handCases, corpus, requestFor, screenshot, chain } from "../../../layout-eval/corpus";
 
@@ -282,6 +282,20 @@ describe("objective hard gates", () => {
       const complete = cost(measure(result, request.band!.key, width, request.items), request.tileWidth!);
       expect(optimisticCost(result, request.band!.key, width, request.tileWidth!, request.items)).toBeLessThanOrEqual(complete + 1e-7);
     }
+  });
+  it("keeps history-bearing bounds admissible when familiar tiles move", () => {
+    const fixture = corpus().find(c => c.id === "random-tree-100-8002")!;
+    const previous = placed(requestFor(fixture, null, 454, 96));
+    const request = requestFor(fixture, "n33", 454, 96), result = placed(request);
+    const metrics = measure(result, "root", 454, request.items, previous, "n33");
+    expect(metrics.movedFraction).toBeGreaterThan(0);
+    const complete = cost(metrics, request.tileWidth!);
+    expect(Number.isFinite(complete)).toBe(true);
+    const optimistic = optimisticCost(result, "root", 454, request.tileWidth!, request.items, previous, "n33");
+    const rectangles = rectangleCost(result, "root", 454, request.tileWidth!, request.items, previous, "n33");
+    expect(optimistic).toBeGreaterThan(0);
+    expect(rectangles).toBeLessThanOrEqual(optimistic + 1e-7);
+    expect(optimistic).toBeLessThanOrEqual(complete + 1e-7);
   });
   it("rejects a physical route gap even when a long segment makes its relative distance tiny", () => {
     const items = [
