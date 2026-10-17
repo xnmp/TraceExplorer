@@ -616,11 +616,18 @@ function layoutBandCandidates(input: LayoutRequest, options: BandOptions): Graph
     // Retry only after the ordinary anchor-preserving candidates are exhausted,
     // keeping successful click histories and all arrival behavior unchanged.
     if (previous && request.anchorKey && !fitted.grew) {
-      for (const policy of ["constrained", "repairable"] as const) {
+      const fixed = new Set([...anchors, key]);
+      const subset = projected(previous, { ...request, items: request.items.filter(n => fixed.has(n.key)) });
+      const repacked = subset && { ...subset, bandBounds: undefined, anchorX: undefined, anchorY: undefined };
+      // Fully pinned siblings can occupy the only usable corridor. Retrying the
+      // same routes around the ancestry-only embedding lets those siblings move.
+      for (const [base, policy] of [[previous, "constrained"], [previous, "repairable"],
+        [repacked, "constrained"], [repacked, "repairable"]] as const) {
         if (Number.isFinite(bestAnchored)) break;
+        if (!base) continue;
         // A repairable draft may contain contacts. Repair it on the pinned
         // placement; consider() and the independent gate still reject defects.
-        const alternative = repairPinned(incrementalTree(request, previous, incrementalBudget(), policy));
+        const alternative = repairPinned(incrementalTree(request, base, incrementalBudget(), policy));
         if (!alternative) continue;
         const candidate = prepare({ name: "incremental-tree", layout: alternative });
         if (candidate.holds) {
