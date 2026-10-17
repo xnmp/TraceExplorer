@@ -7,9 +7,10 @@ import type { Point } from './path-sampling';
 import { pathTokens } from './path-data';
 import { segments } from './layout-quality';
 import { arrowTip, BERTH_SLACK } from './route-contacts';
-import { ARROW, PORT_BERTH, TRACK_HEIGHT } from './metrics';
+import { ARROW, PORT_BERTH, TRACK_HEIGHT, LANE_SEPARATION } from './metrics';
 import { CONNECTOR_STROKE, CONNECTOR_FILLET_RADIUS, JUNCTION_RADIUS, JUNCTION_STROKE_WIDTH } from './connector-ink';
 import { solveSeparation, type CoordinateBounds, type CoordinatePin } from './separation';
+import { endpointKey, type Junction } from './junctions';
 
 export const STROKE_RADIUS = Math.max(...Object.values(CONNECTOR_STROKE)) / 2;
 export const FILLET_RADIUS = CONNECTOR_FILLET_RADIUS;
@@ -32,6 +33,23 @@ export interface RoutingPort {
   readonly side: PortSide;
   readonly offset: number;
   readonly point: Point;
+}
+/** A distinct approach column terminating inside one junction's convergence
+ * region. Semantic input identity is separate from geometric approach order. */
+export interface JunctionInputPort {
+  readonly id: string;
+  readonly junction: string;
+  readonly source: string;
+  readonly x: number;
+  readonly dotX: number;
+}
+export function junctionInputPorts(join: Junction, dotX: number, inputs: readonly { readonly source: string; readonly x: number }[]): readonly JunctionInputPort[] {
+  const expected = new Set(join.inputs.map(endpointKey));
+  if (!Number.isFinite(dotX) || inputs.length < 2 || inputs.length !== expected.size || new Set(inputs.map(p=>p.source)).size !== inputs.length
+    || inputs.some(p=>!expected.has(p.source) || !Number.isFinite(p.x))) throw new RangeError('Invalid junction inputs: ' + join.id);
+  const ordered = [...inputs].sort((a,b)=>a.x-b.x || a.source.localeCompare(b.source));
+  return ordered.map((input,i)=>({id:JSON.stringify(['junction-input',join.id,input.source]),junction:join.id,source:input.source,dotX,
+    x:dotX + (ordered.length === 2 ? (i ? LANE_SEPARATION : -LANE_SEPARATION) : (i-(ordered.length-1)/2)*LANE_SEPARATION)}));
 }
 export interface ArrowStub {
   readonly id: string;
