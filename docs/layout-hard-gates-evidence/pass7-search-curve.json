@@ -1,0 +1,344 @@
+{
+  "provenance": "Baseline source 5d3af5e; medium/max are isolated source copies with only search limits changed. Recovery means the same original case/width/step does not move in its new full history, not a frozen-input counterfactual. Paired main archive at 75e46b0 has compatibility planning as documented in pass6.",
+  "settings": [
+    {
+      "setting": "baseline",
+      "scale": 1,
+      "retryPairs": 1,
+      "repairProbes": 384,
+      "repairIterations": 12,
+      "insertionPool": {
+        "fallback": 200000,
+        "second": 200000,
+        "probes": 2000
+      },
+      "gridSlots": 16,
+      "gridPerSearch": 50000,
+      "retryPoolMultipliers": [
+        1
+      ],
+      "repackEffort": "same independent pool as insertion",
+      "summary": {
+        "broad": {
+          "main": 31,
+          "branch": 44,
+          "both": 19,
+          "added": 25,
+          "removed": 12,
+          "categories": {
+            "d": 3,
+            "e": 20,
+            "a": 2
+          }
+        },
+        "dense": {
+          "main": 101,
+          "branch": 119,
+          "both": 82,
+          "added": 37,
+          "removed": 19,
+          "categories": {
+            "a": 3,
+            "e": 24,
+            "d": 10
+          }
+        },
+        "packing": {
+          "main": 0,
+          "branch": 3,
+          "both": 0,
+          "added": 3,
+          "removed": 0,
+          "categories": {
+            "d": 3
+          }
+        }
+      },
+      "originalConstructionFailures": 44,
+      "recoveredOriginalRows": [],
+      "newDownstreamConstructionFailures": [],
+      "nonRestoreMoves": {
+        "broad": 41,
+        "dense": 109,
+        "packing": 0
+      },
+      "timing": {
+        "mainThreadP95": 1.690749000001233,
+        "smallP95": 7.629776000001584,
+        "mainBudget": 8,
+        "smallBudget": 100,
+        "workloads": 91,
+        "eligibleInlineWorkloads": 66,
+        "load": {
+          "cpus": 24,
+          "before": [
+            4.38,
+            5.77,
+            7.28
+          ],
+          "after": [
+            4.51,
+            5.49,
+            7.06
+          ]
+        },
+        "elapsedMs": 74544.695984,
+        "evidence": "pass7-search-baseline-perf.json"
+      }
+    },
+    {
+      "setting": "medium",
+      "scale": 2,
+      "retryPairs": 2,
+      "repairProbes": 768,
+      "repairIterations": 24,
+      "insertionPool": {
+        "fallback": 400000,
+        "second": 400000,
+        "probes": 4000
+      },
+      "gridSlots": 32,
+      "gridPerSearch": 100000,
+      "retryPoolMultipliers": [
+        1,
+        2
+      ],
+      "repackEffort": "same independent pool as insertion",
+      "summary": {
+        "broad": {
+          "main": 31,
+          "branch": 29,
+          "both": 13,
+          "added": 16,
+          "removed": 18,
+          "categories": {
+            "d": 3,
+            "e": 9,
+            "a": 4
+          }
+        },
+        "dense": {
+          "main": 101,
+          "branch": 102,
+          "both": 80,
+          "added": 22,
+          "removed": 21,
+          "categories": {
+            "e": 11,
+            "a": 2,
+            "d": 9
+          }
+        },
+        "packing": {
+          "main": 0,
+          "branch": 3,
+          "both": 0,
+          "added": 3,
+          "removed": 0,
+          "categories": {
+            "d": 3
+          }
+        }
+      },
+      "originalConstructionFailures": 44,
+      "recoveredOriginalRows": [
+        "broad/random-dag-40-7503/360//7",
+        "broad/random-dag-100-8101/454//4",
+        "broad/random-dag-100-8101/454//6",
+        "broad/random-dag-100-8103/360//3",
+        "broad/random-dag-100-8103/360//7",
+        "broad/random-dag-100-8103/454//1",
+        "broad/random-dag-100-8103/640//1",
+        "broad/random-dag-100-8103/1400//3",
+        "broad/random-dag-200-9101/360//3",
+        "broad/random-dag-200-9101/454//3",
+        "broad/random-dag-200-9102/1400//6",
+        "broad/random-dag-200-9103/900//2",
+        "dense/dense-f4-100-20501/640//3",
+        "dense/dense-f4-100-20502/1400//3",
+        "dense/dense-f4-100-20503/454//7",
+        "dense/dense-f4-100-20503/1400//4",
+        "dense/dense-f10-40-21041/360//4",
+        "dense/dense-f10-40-21041/900//4",
+        "dense/dense-f10-40-21041/1400//2",
+        "dense/dense-f10-40-21043/454//1",
+        "dense/dense-f10-40-21043/900//3",
+        "dense/dense-f10-40-21043/1400//7",
+        "dense/dense-f10-100-21102/640//1",
+        "dense/dense-f10-100-21102/900//1",
+        "dense/dense-f10-100-21102/1400//1",
+        "dense/dense-f10-100-21102/1400//7",
+        "dense/dense-f10-100-21103/1400//7"
+      ],
+      "newDownstreamConstructionFailures": [
+        "broad/random-dag-100-8103/360//2",
+        "broad/random-dag-100-8103/454//2",
+        "broad/random-dag-200-9101/360//4",
+        "dense/dense-f4-100-20501/454//3",
+        "dense/dense-f4-100-20502/1400//4"
+      ],
+      "nonRestoreMoves": {
+        "broad": 26,
+        "dense": 93,
+        "packing": 0
+      },
+      "timing": {
+        "mainThreadP95": 1.5947569999989355,
+        "smallP95": 6.579570000001695,
+        "mainBudget": 8,
+        "smallBudget": 100,
+        "workloads": 91,
+        "eligibleInlineWorkloads": 66,
+        "load": {
+          "cpus": 24,
+          "before": [
+            4.75,
+            5.5,
+            7.05
+          ],
+          "after": [
+            4.92,
+            5.42,
+            6.9
+          ]
+        },
+        "elapsedMs": 74186.05074,
+        "evidence": "pass7-search-medium-perf.json"
+      }
+    },
+    {
+      "setting": "maximum",
+      "scale": 8,
+      "retryPairs": 4,
+      "repairProbes": 3072,
+      "repairIterations": 96,
+      "insertionPool": {
+        "fallback": 1600000,
+        "second": 1600000,
+        "probes": 16000
+      },
+      "gridSlots": 128,
+      "gridPerSearch": 400000,
+      "retryPoolMultipliers": [
+        1,
+        2,
+        3,
+        4
+      ],
+      "repackEffort": "same independent pool as insertion",
+      "summary": {
+        "broad": {
+          "main": 31,
+          "branch": 18,
+          "both": 11,
+          "added": 7,
+          "removed": 20,
+          "categories": {
+            "d": 3,
+            "e": 3,
+            "a": 1
+          }
+        },
+        "dense": {
+          "main": 101,
+          "branch": 75,
+          "both": 58,
+          "added": 17,
+          "removed": 43,
+          "categories": {
+            "a": 3,
+            "e": 5,
+            "d": 9
+          }
+        },
+        "packing": {
+          "main": 0,
+          "branch": 3,
+          "both": 0,
+          "added": 3,
+          "removed": 0,
+          "categories": {
+            "d": 3
+          }
+        }
+      },
+      "originalConstructionFailures": 44,
+      "recoveredOriginalRows": [
+        "broad/random-dag-40-7503/360//7",
+        "broad/random-dag-100-8101/454//4",
+        "broad/random-dag-100-8101/454//6",
+        "broad/random-dag-100-8101/640//6",
+        "broad/random-dag-100-8103/360//3",
+        "broad/random-dag-100-8103/360//7",
+        "broad/random-dag-100-8103/454//1",
+        "broad/random-dag-100-8103/640//1",
+        "broad/random-dag-100-8103/640//3",
+        "broad/random-dag-100-8103/900//7",
+        "broad/random-dag-100-8103/1400//3",
+        "broad/random-dag-200-9101/360//3",
+        "broad/random-dag-200-9101/454//3",
+        "broad/random-dag-200-9101/640//3",
+        "broad/random-dag-200-9102/360//2",
+        "broad/random-dag-200-9102/1400//6",
+        "broad/random-dag-200-9103/454//2",
+        "broad/random-dag-200-9103/900//2",
+        "dense/dense-f4-100-20501/640//3",
+        "dense/dense-f4-100-20502/900//3",
+        "dense/dense-f4-100-20502/1400//3",
+        "dense/dense-f4-100-20503/454//7",
+        "dense/dense-f4-100-20503/1400//4",
+        "dense/dense-f10-40-21041/360//4",
+        "dense/dense-f10-40-21041/360//8",
+        "dense/dense-f10-40-21041/454//2",
+        "dense/dense-f10-40-21041/900//4",
+        "dense/dense-f10-40-21041/1400//2",
+        "dense/dense-f10-40-21043/454//1",
+        "dense/dense-f10-40-21043/640//3",
+        "dense/dense-f10-40-21043/900//3",
+        "dense/dense-f10-40-21043/1400//7",
+        "dense/dense-f10-100-21101/1400//6",
+        "dense/dense-f10-100-21102/640//1",
+        "dense/dense-f10-100-21102/900//1",
+        "dense/dense-f10-100-21102/1400//1",
+        "dense/dense-f10-100-21103/1400//5",
+        "dense/dense-f10-100-21103/1400//7"
+      ],
+      "newDownstreamConstructionFailures": [
+        "broad/random-dag-100-8103/360//2",
+        "broad/random-dag-100-8103/454//2",
+        "dense/dense-f4-100-20502/360//3",
+        "dense/dense-f4-100-20502/454//3"
+      ],
+      "nonRestoreMoves": {
+        "broad": 15,
+        "dense": 66,
+        "packing": 0
+      },
+      "timing": {
+        "mainThreadP95": 1.8324279999997088,
+        "smallP95": 6.9806380000009085,
+        "mainBudget": 8,
+        "smallBudget": 100,
+        "workloads": 91,
+        "eligibleInlineWorkloads": 66,
+        "load": {
+          "cpus": 24,
+          "before": [
+            4.6,
+            5.34,
+            6.86
+          ],
+          "after": [
+            4.48,
+            5.13,
+            6.67
+          ]
+        },
+        "elapsedMs": 74356.537996,
+        "evidence": "pass7-search-maximum-perf.json"
+      }
+    }
+  ],
+  "timingProvenance": "Fresh isolated sequential base/medium/maximum runs; all other agents idle. Exactly every standard performanceWorkloads request with canLayoutInline(proposed) OR visible items<=30 (91/184 total,66 inline), standard12warmup and40–400 alternating paired samples up to2seconds/case. Full final layout:eval remains canonical for the integrated candidate.",
+  "kneeAssessment": "The medium setting recovers27/44; maximum recovers38/44 for an observed +0.238ms mainThread p95 and +0.401ms <=30 p95. All far inside8/100ms; the measured curve supports trying maximum in final correctness rather than claiming medium has a decisive runtime knee. 6original added movement rows remain at maximum;8current construction-failure rows include downstream history changes. No exhausted row is proved infeasible."
+}
