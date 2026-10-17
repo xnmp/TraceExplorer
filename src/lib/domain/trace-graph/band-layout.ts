@@ -612,7 +612,20 @@ function layoutBandCandidates(input: LayoutRequest, options: BandOptions): Graph
   }
   if (!Number.isFinite(bestAnchored)) {
     for (let i = 0; i < lazy.length; i++) realise(lazy[i]);
-    for (const c of prepared.filter(c => !c.holds).sort(byFloor)) consider(c);
+    // A greedy insertion order is not proof that no pinned embedding exists.
+    // Retry only after the ordinary anchor-preserving candidates are exhausted,
+    // keeping successful click histories and all arrival behavior unchanged.
+    if (previous && request.anchorKey && !fitted.grew) {
+      const alternative = repairPinned(incrementalTree(request, previous, incrementalBudget(), "constrained"));
+      if (alternative) {
+        const candidate = prepare({ name: "incremental-tree", layout: alternative });
+        if (candidate.holds) {
+          prepared.push(candidate);
+          consider(candidate);
+        }
+      }
+    }
+    if (!Number.isFinite(bestAnchored)) for (const c of prepared.filter(c => !c.holds).sort(byFloor)) consider(c);
   }
   // No candidate is lane-free: the gates kept every one out, so none was ranked. Price the
   // lanes of those that fail on lanes alone and show the best of them (`lane-infeasible`).

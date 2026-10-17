@@ -110,8 +110,8 @@ const FALLBACK_WORK = 200_000;
 /**
  * Work a layout request may still spend on incremental embeddings: grid work (points
  * expanded, plus built points / 8) for the plain fallback and for the second chance, and
- * probe placements to wire. One budget serves every incremental embedding tried for one
- * layout request, so the incremental path's worst case is bounded however many tiles,
+ * probe placements to wire. Each attempted embedding receives one budget, so its worst
+ * case is bounded however many tiles,
  * parents, ports and slots it tries; once a pool is spent, its searches stop and the
  * embedding gives way to the full layout.
  */
@@ -1326,13 +1326,15 @@ function freePortLanes(request: LayoutRequest, previous: GraphLayout, budget: In
   return repairs ? { ...previous, routes } : previous;
 }
 
-function insertWithPortRepair(request: LayoutRequest, previous: GraphLayout, budget: IncrementalBudget, paneEdges?: Scene["paneEdges"]): GraphLayout | null {
+type InsertionOrder = "stable" | "constrained";
+
+function insertWithPortRepair(request: LayoutRequest, previous: GraphLayout, budget: IncrementalBudget, paneEdges?: Scene["paneEdges"], order: InsertionOrder = "stable"): GraphLayout | null {
   countLayoutWork("pinned-search");
   const repaired = freeBlockedPorts(request, previous, budget);
-  const placed = insertTree(request, repaired, budget, paneEdges);
+  const placed = insertTree(request, repaired, budget, paneEdges, order);
   if (placed) return placed;
   const shifted = freePortLanes(request, repaired, budget);
-  return shifted === repaired ? null : insertTree(request, shifted, budget, paneEdges);
+  return shifted === repaired ? null : insertTree(request, shifted, budget, paneEdges, order);
 }
 
 interface InsertionMemo { readonly layout: GraphLayout | null; readonly remaining: IncrementalBudget }
@@ -1340,24 +1342,24 @@ const insertionMemo = createBoundedCache<InsertionMemo>(entry => 64 + (entry.lay
 
 /** Content keys admit worker clones too. Cached objects stay private; budget effects are replayed
  * exactly, including failed searches. No rejected candidate acquires a geometry certificate. */
-export function incrementalTree(request: LayoutRequest, previous: GraphLayout, budget: IncrementalBudget = incrementalBudget()): GraphLayout | null {
+export function incrementalTree(request: LayoutRequest, previous: GraphLayout, budget: IncrementalBudget = incrementalBudget(), order: InsertionOrder = "stable"): GraphLayout | null {
   const endStage = layoutStage('pinned-band');
   try {
-    const memoKey = JSON.stringify([layoutSignature(request), geometrySignature(previous), previous.pinnedViolation, [budget.fallback, budget.second, budget.probes].map(String)]);
+    const memoKey = JSON.stringify([order, layoutSignature(request), geometrySignature(previous), previous.pinnedViolation, [budget.fallback, budget.second, budget.probes].map(String)]);
     const known = insertionMemo.get(memoKey);
     if (known) {
       Object.assign(budget, known.remaining);
       countLayoutWork('pinned-cache-hit');
       return structuredClone(known.layout);
     }
-    const result = buildIncrementalTree(request, previous, budget);
+    const result = buildIncrementalTree(request, previous, budget, order);
     insertionMemo.set(memoKey, { layout: structuredClone(result), remaining: { ...budget } });
     return result;
   } finally { endStage(); }
 }
 
-function buildIncrementalTree(request: LayoutRequest, previous: GraphLayout, budget: IncrementalBudget): GraphLayout | null {
-  const placed = insertWithPortRepair(request, previous, budget);
+function buildIncrementalTree(request: LayoutRequest, previous: GraphLayout, budget: IncrementalBudget, order: InsertionOrder): GraphLayout | null {
+  const placed = insertWithPortRepair(request, previous, budget, undefined, order);
   if (!placed) return null;
   const key = request.band!.key;
   const extent = bandExtent({ ...placed, bandBounds: undefined }, key);
@@ -1374,7 +1376,7 @@ export function incrementalWorld(request: LayoutRequest, previous: GraphLayout, 
   return extent.left < 0 || extent.left + extent.width > request.maxWidth ? null : { ...placed, bandBounds: undefined };
 }
 
-function insertTree(request: LayoutRequest, previous: GraphLayout, budget: IncrementalBudget, paneEdges?: Scene["paneEdges"]): GraphLayout | null {
+function insertTree(request: LayoutRequest, previous: GraphLayout, budget: IncrementalBudget, paneEdges?: Scene["paneEdges"], order: InsertionOrder = "stable"): GraphLayout | null {
   const key = request.band!.key, s = spacingFor(request.tileWidth), wanted = new Set(request.items.map(n => n.key));
   if (request.items.length > INCREMENTAL_LIMIT || !wanted.has(key)) return null;
   if (!previous.nodes.has(key) || request.items.some(n => n.key !== key && n.parents.length === 0 && !previous.nodes.has(n.key))) return null;
@@ -1404,6 +1406,9 @@ function insertTree(request: LayoutRequest, previous: GraphLayout, budget: Incre
   // The same complete membership keeps future sources out of leaf reordering.
   const futureSources = futureSourcesOf(request.band?.items ?? request.items);
   const remaining = request.items.filter(n => !nodes.has(n.key));
+  // Multi-parent nodes need more independent corridors. On a bounded retry, place
+  // them before easier siblings; readiness below still enforces topological order.
+  if (order === "constrained") remaining.sort((a, b) => b.parents.length - a.parents.length || b.order - a.order || b.key.localeCompare(a.key));
   if (!remaining.length) return null;
   for (const node of nodes.values()) if (futureSources.has(node.key)) lanes.reserveDeparture(node);
   // Retained routes may already occupy channels outside the pane or the tile
