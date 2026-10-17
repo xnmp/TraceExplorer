@@ -317,7 +317,7 @@ class Cells {
  * after a `mark` are withdrawn by `rollback` to it, so trial routes need no copies.
  */
 class LaneIndex {
-  constructor(private readonly base?: LaneIndex) {}
+  constructor(private readonly base?: LaneIndex, private readonly deferContacts = false) {}
   private readonly all: Segment[] = [];
   /** The source of each segment in `all`. */
   private readonly sources: string[] = [];
@@ -520,8 +520,10 @@ class LaneIndex {
     if (!ink.length) return false;
     if (this.nearDot(ink)) return true;
     for (const segment of ink) if (axisOf(segment) && this.shallowInto(segment, source, new Map())) return true;
-    for (const segment of ink) if (this.nearBerth(segment, source)) return true;
-    for (const berth of berthsOf(list, ends)) if (ink.some(segment => entersBerth(segment, berth)) && this.touched(berth, source)) return true;
+    if (!this.deferContacts) {
+      for (const segment of ink) if (this.nearBerth(segment, source)) return true;
+      for (const berth of berthsOf(list, ends)) if (ink.some(segment => entersBerth(segment, berth)) && this.touched(berth, source)) return true;
+    }
     return !!this.blockingDeparture(ink, source);
   }
 
@@ -1326,40 +1328,43 @@ function freePortLanes(request: LayoutRequest, previous: GraphLayout, budget: In
   return repairs ? { ...previous, routes } : previous;
 }
 
-type InsertionOrder = "stable" | "constrained";
+/** Repairable drafts defer contact admission to connector repair and independent certification. */
+type InsertionPolicy = "stable" | "constrained" | "repairable";
 
-function insertWithPortRepair(request: LayoutRequest, previous: GraphLayout, budget: IncrementalBudget, paneEdges?: Scene["paneEdges"], order: InsertionOrder = "stable"): GraphLayout | null {
+function insertWithPortRepair(request: LayoutRequest, previous: GraphLayout, budget: IncrementalBudget, paneEdges?: Scene["paneEdges"], policy: InsertionPolicy = "stable"): GraphLayout | null {
   countLayoutWork("pinned-search");
   const repaired = freeBlockedPorts(request, previous, budget);
-  const placed = insertTree(request, repaired, budget, paneEdges, order);
+  const placed = insertTree(request, repaired, budget, paneEdges, policy);
   if (placed) return placed;
   const shifted = freePortLanes(request, repaired, budget);
-  return shifted === repaired ? null : insertTree(request, shifted, budget, paneEdges, order);
+  return shifted === repaired ? null : insertTree(request, shifted, budget, paneEdges, policy);
 }
 
 interface InsertionMemo { readonly layout: GraphLayout | null; readonly remaining: IncrementalBudget }
 const insertionMemo = createBoundedCache<InsertionMemo>(entry => 64 + (entry.layout ? estimateLayoutBytes(entry.layout) : 0));
 
 /** Content keys admit worker clones too. Cached objects stay private; budget effects are replayed
- * exactly, including failed searches. No rejected candidate acquires a geometry certificate. */
-export function incrementalTree(request: LayoutRequest, previous: GraphLayout, budget: IncrementalBudget = incrementalBudget(), order: InsertionOrder = "stable"): GraphLayout | null {
+ * exactly, including failed searches. No rejected candidate acquires a geometry certificate.
+ * The repairable policy returns an uncertified draft: repair its connector contacts and
+ * run the independent geometry gate before admitting it as a displayed layout. */
+export function incrementalTree(request: LayoutRequest, previous: GraphLayout, budget: IncrementalBudget = incrementalBudget(), policy: InsertionPolicy = "stable"): GraphLayout | null {
   const endStage = layoutStage('pinned-band');
   try {
-    const memoKey = JSON.stringify([order, layoutSignature(request), geometrySignature(previous), previous.pinnedViolation, [budget.fallback, budget.second, budget.probes].map(String)]);
+    const memoKey = JSON.stringify([policy, layoutSignature(request), geometrySignature(previous), previous.pinnedViolation, [budget.fallback, budget.second, budget.probes].map(String)]);
     const known = insertionMemo.get(memoKey);
     if (known) {
       Object.assign(budget, known.remaining);
       countLayoutWork('pinned-cache-hit');
       return structuredClone(known.layout);
     }
-    const result = buildIncrementalTree(request, previous, budget, order);
+    const result = buildIncrementalTree(request, previous, budget, policy);
     insertionMemo.set(memoKey, { layout: structuredClone(result), remaining: { ...budget } });
     return result;
   } finally { endStage(); }
 }
 
-function buildIncrementalTree(request: LayoutRequest, previous: GraphLayout, budget: IncrementalBudget, order: InsertionOrder): GraphLayout | null {
-  const placed = insertWithPortRepair(request, previous, budget, undefined, order);
+function buildIncrementalTree(request: LayoutRequest, previous: GraphLayout, budget: IncrementalBudget, policy: InsertionPolicy): GraphLayout | null {
+  const placed = insertWithPortRepair(request, previous, budget, undefined, policy);
   if (!placed) return null;
   const key = request.band!.key;
   const extent = bandExtent({ ...placed, bandBounds: undefined }, key);
@@ -1376,7 +1381,7 @@ export function incrementalWorld(request: LayoutRequest, previous: GraphLayout, 
   return extent.left < 0 || extent.left + extent.width > request.maxWidth ? null : { ...placed, bandBounds: undefined };
 }
 
-function insertTree(request: LayoutRequest, previous: GraphLayout, budget: IncrementalBudget, paneEdges?: Scene["paneEdges"], order: InsertionOrder = "stable"): GraphLayout | null {
+function insertTree(request: LayoutRequest, previous: GraphLayout, budget: IncrementalBudget, paneEdges?: Scene["paneEdges"], policy: InsertionPolicy = "stable"): GraphLayout | null {
   const key = request.band!.key, s = spacingFor(request.tileWidth), wanted = new Set(request.items.map(n => n.key));
   if (request.items.length > INCREMENTAL_LIMIT || !wanted.has(key)) return null;
   if (!previous.nodes.has(key) || request.items.some(n => n.key !== key && n.parents.length === 0 && !previous.nodes.has(n.key))) return null;
@@ -1399,7 +1404,7 @@ function insertTree(request: LayoutRequest, previous: GraphLayout, budget: Incre
   previous.junctions.forEach((join, id) => { if (referenced.has(id)) joins.set(id, join); });
   for (const id of referenced) { const j = joins.get(id); if (!j || !inReach(j.x) || !inReach(j.y)) return null; }
   if (!inReach(previous.width) || !inReach(previous.height)) return null;
-  const lanes = new LaneIndex(retainedIndex(previous, kept));
+  const lanes = new LaneIndex(retainedIndex(previous, kept), policy === "repairable");
   // Retained geometry beyond any real band (millions of pixels) cannot be indexed; lay out afresh.
   if (lanes.tooLarge()) return null;
   // Hidden outputs need one usable departure, without occupying both ports.
@@ -1408,7 +1413,7 @@ function insertTree(request: LayoutRequest, previous: GraphLayout, budget: Incre
   const remaining = request.items.filter(n => !nodes.has(n.key));
   // Multi-parent nodes need more independent corridors. On a bounded retry, place
   // them before easier siblings; readiness below still enforces topological order.
-  if (order === "constrained") remaining.sort((a, b) => b.parents.length - a.parents.length || b.order - a.order || b.key.localeCompare(a.key));
+  if (policy === "constrained") remaining.sort((a, b) => b.parents.length - a.parents.length || b.order - a.order || b.key.localeCompare(a.key));
   if (!remaining.length) return null;
   for (const node of nodes.values()) if (futureSources.has(node.key)) lanes.reserveDeparture(node);
   // Retained routes may already occupy channels outside the pane or the tile

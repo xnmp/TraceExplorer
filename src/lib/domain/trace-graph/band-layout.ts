@@ -616,8 +616,12 @@ function layoutBandCandidates(input: LayoutRequest, options: BandOptions): Graph
     // Retry only after the ordinary anchor-preserving candidates are exhausted,
     // keeping successful click histories and all arrival behavior unchanged.
     if (previous && request.anchorKey && !fitted.grew) {
-      const alternative = repairPinned(incrementalTree(request, previous, incrementalBudget(), "constrained"));
-      if (alternative) {
+      for (const policy of ["constrained", "repairable"] as const) {
+        if (Number.isFinite(bestAnchored)) break;
+        // A repairable draft may contain contacts. Repair it on the pinned
+        // placement; consider() and the independent gate still reject defects.
+        const alternative = repairPinned(incrementalTree(request, previous, incrementalBudget(), policy));
+        if (!alternative) continue;
         const candidate = prepare({ name: "incremental-tree", layout: alternative });
         if (candidate.holds) {
           prepared.push(candidate);
