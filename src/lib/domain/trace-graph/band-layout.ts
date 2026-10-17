@@ -621,13 +621,17 @@ function layoutBandCandidates(input: LayoutRequest, options: BandOptions): Graph
       const repacked = subset && { ...subset, bandBounds: undefined, anchorX: undefined, anchorY: undefined };
       // Fully pinned siblings can occupy the only usable corridor. Retrying the
       // same routes around the ancestry-only embedding lets those siblings move.
-      for (const [base, policy] of [[previous, "constrained"], [previous, "repairable"],
-        [repacked, "constrained"], [repacked, "repairable"]] as const) {
+      for (const [base, policy, effort] of [[previous, "constrained", 1], [previous, "repairable", 1],
+        [previous, "constrained", 2], [previous, "repairable", 2],
+        [repacked, "constrained", 1], [repacked, "repairable", 1]] as const) {
         if (Number.isFinite(bestAnchored)) break;
         if (!base) continue;
         // A repairable draft may contain contacts. Repair it on the pinned
         // placement; consider() and the independent gate still reject defects.
-        const alternative = repairPinned(incrementalTree(request, base, incrementalBudget(), policy));
+        const budget = incrementalBudget();
+        const alternative = repairPinned(incrementalTree(request, base, {
+          fallback: budget.fallback * effort, second: budget.second * effort, probes: budget.probes * effort,
+        }, policy));
         if (!alternative) continue;
         const candidate = prepare({ name: "incremental-tree", layout: alternative });
         if (candidate.holds) {

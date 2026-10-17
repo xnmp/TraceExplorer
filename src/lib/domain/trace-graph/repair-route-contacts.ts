@@ -9,8 +9,8 @@ import { pathCommands, type Point } from './path-sampling';
 interface Line { readonly route: PlacedRoute; readonly pieces: readonly Segment[]; readonly berths: readonly Berth[] }
 interface Contact { readonly route: PlacedRoute; readonly other: PlacedRoute; readonly berth: Berth }
 const OFFSETS = [-3, 3, -6, 6, -9, 9, -12, 12, -18, 18] as const;
-const MAX_PROBES = 384;
-const MAX_REPAIRS = 12;
+const MAX_PROBES = 768;
+const MAX_REPAIRS = 24;
 
 function intentional(layout: GraphLayout, a: PlacedRoute, b: PlacedRoute, p: Point): boolean {
   return [a.from, a.to].some(end => {

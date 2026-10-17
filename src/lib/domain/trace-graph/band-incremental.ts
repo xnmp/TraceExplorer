@@ -97,15 +97,15 @@ export function usableRetainedRoute(route: PlacedRoute): boolean {
 const indexRange = (first: number, last: number) => Number.isSafeInteger(first) && Number.isSafeInteger(last) && last >= first && last - first <= MAX_INDEX_ROWS;
 
 /**
- * Grid work one layout request may spend on its second chance (~45 ms of grid search; the
- * finer probes come on top). It buys most of the remaining placements: more work finds a few
- * more, at a steep cost in time.
+ * Grid work one embedding may spend on its second chance (finer probes are
+ * separate). The measured search knee retains substantially more anchors;
+ * every retry still has an explicit finite pool.
  */
-const SECOND_CHANCE_WORK = 200_000;
+const SECOND_CHANCE_WORK = 400_000;
 /** Probe placements a layout request may try to wire (see `IncrementalBudget`). */
-const PROBE_WORK = 2000;
+const PROBE_WORK = 4000;
 /** Grid work the plain fallback may spend per layout request (see `IncrementalBudget`). */
-const FALLBACK_WORK = 200_000;
+const FALLBACK_WORK = 400_000;
 
 /**
  * Work a layout request may still spend on incremental embeddings: grid work (points
@@ -135,7 +135,7 @@ const fallbackEffort = (pool: IncrementalBudget): Effort => ({ slots: FALLBACK_S
  * The second chance, taken only when a tile has no placement otherwise (so layouts found
  * without it are unchanged): more slots, longer searches, and columns beside every lane.
  */
-const secondChance = (pool: IncrementalBudget): Effort => ({ slots: 16, budget: 50_000, everyLane: true, pool, spends: "second" });
+const secondChance = (pool: IncrementalBudget): Effort => ({ slots: 32, budget: 100_000, everyLane: true, pool, spends: "second" });
 
 /** The M/L path through `points`, written once per run of repeated points. */
 const path = (points: readonly Point[]) => {
