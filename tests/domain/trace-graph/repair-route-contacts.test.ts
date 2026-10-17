@@ -79,3 +79,44 @@ it.each([false, true])('bypasses a mixed-curve run without diagonal shortcuts (r
     .toEqual(original.routes.map(r=>[segments(r.path)[0][0],segments(r.path).at(-1)![1]]));
   expect(layout).toEqual(original);
 });
+
+function occupiedDeparture(blockBottom = false): {layout:GraphLayout;request:LayoutRequest} {
+  const coordinates:[string,number,number,number,number][]=[['a',40,40,20,40],['b',52,0,20,20],['a-out',60,180,20,20],['b-out',100,180,20,20],['wall',72,35,20,80]];
+  if(blockBottom)coordinates.push(['bottom-wall',40,82,20,20]);
+  const items:LayoutItem[]=coordinates.map(([key,,,width,height],order)=>({key,width,height,order,parents:key.endsWith('-out')?[key.slice(0,1)]:[]}));
+  const route=(id:string,path:string):PlacedRoute=>({id,path,from:{kind:'node',id},to:{kind:'node',id:id+'-out'},terminal:true,consumers:[{parent:id,child:id+'-out'}]});
+  const layout:GraphLayout={orientation:'down',width:140,height:200,rows:[],readingOrder:new Map(items.map(n=>[n.key,n.order])),junctions:new Map(),
+    nodes:new Map(coordinates.map(([key,x,y,width,height],row)=>[key,{key,x,y,width,height,row,band:0}])),
+    routes:[route('a','M60 60 L70 60 L70 130 C70 140 70 150 70 160 L70 172'),route('b','M62 20 L62 120 L110 120 L110 172')]};
+  return {layout,request:{items,maxWidth:140,tileWidth:20,band:{key:'a',items}}};
+}
+
+it('uses the other real source port when a fixed corridor blocks its departure',()=>{
+  const {layout,request}=occupiedDeparture(),before=structuredClone(layout);
+  expect(geometryGate(layout,request.items,'a',140)).toBe('route-contact');
+  const repaired=repairRouteContacts(layout,request);
+  expect(repaired).not.toBeNull();
+  expect(geometryGate(repaired!,request.items,'a',140)).toBeNull();
+  expect(segments(repaired!.routes[0].path)[0][0]).toEqual({x:50,y:80});
+  expect(repaired!.routes[0].path).toContain('C70 140 70 150 70 160');
+  expect(repaired!.routes.map(r=>segments(r.path).at(-1)![1])).toEqual(before.routes.map(r=>segments(r.path).at(-1)![1]));
+  expect(repaired!.nodes).toEqual(before.nodes);
+  expect(repaired!.junctions).toEqual(before.junctions);
+  expect(repaired!.routes.map(({path,...route})=>route)).toEqual(before.routes.map(({path,...route})=>route));
+  expect(layout).toEqual(before);
+});
+
+it('rejects a pinned drawing when both real source departures are blocked',()=>{
+  const {layout,request}=occupiedDeparture(true);
+  expect(geometryGate(layout,request.items,'a',140)).toBe('route-contact');
+  expect(repairRouteContacts(layout,request)).toBeNull();
+});
+
+it('does not replace an authored curved departure to switch source ports',()=>{
+  const {layout,request}=occupiedDeparture();
+  const curved={...layout,routes:[{...layout.routes[0],path:layout.routes[0].path.replace('L70 60','C63 60 67 60 70 60')},layout.routes[1]]};
+  const before=structuredClone(curved);
+  expect(geometryGate(curved,request.items,'a',140)).toBe('route-contact');
+  expect(repairRouteContacts(curved,request)).toBeNull();
+  expect(curved).toEqual(before);
+});

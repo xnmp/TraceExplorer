@@ -41,7 +41,8 @@ function contacts(lines: readonly Line[], layout: GraphLayout, changed?: PlacedR
 
 /**
  * Move internal orthogonal runs or bypass a contact on a short portion of one. Rectangles, junctions, route identities,
- * consumers, and both endpoints remain fixed. A bounded search may fail; failed drafts
+ * consumers, and target endpoints remain fixed. An occupied source port may use the
+ * same tile's other real departure. A bounded search may fail; failed drafts
  * never escape. Every accepted result passes the complete independent geometry gate.
  */
 export function repairRouteContacts(layout: GraphLayout, request: LayoutRequest): GraphLayout | null {
@@ -62,7 +63,7 @@ export function repairRouteContacts(layout: GraphLayout, request: LayoutRequest)
     let chosen: GraphLayout | undefined, score = witnesses.length;
     for (const route of [first.other, first.route]) {
       const unaffected = witnesses.filter(c => c.route !== route && c.other !== route).length;
-      for (const path of alternatives(route, first.berth)) {
+      for (const path of alternatives(route, first.berth, current)) {
         if (--probes < 0) break;
         const key = `${route.id}\u0000${path}`;
         if (seen.has(key)) continue;
@@ -87,7 +88,7 @@ export function repairRouteContacts(layout: GraphLayout, request: LayoutRequest)
 }
 
 /** Exact commands retain curve controls and endpoints; flattened curves are never rewritten. */
-function* alternatives(route: PlacedRoute, berth: Berth): Generator<string> {
+function* alternatives(route: PlacedRoute, berth: Berth, layout: GraphLayout): Generator<string> {
   const commands = pathCommands(route.path), raw = [...route.path.matchAll(/[MLC][^MLC]*/g)].map(m => m[0]);
   if (!commands || commands.length !== raw.length) return;
   const at = (i: number): Point => ({x:commands[i].values.at(-2)!, y:commands[i].values.at(-1)!});
@@ -124,6 +125,29 @@ function* alternatives(route: PlacedRoute, berth: Berth): Generator<string> {
         const c = {...p, [across]:p[across] + delta}, d = {...q, [across]:q[across] + delta};
         const bypass = [p, c, d, q, b].map(line).join(' ');
         yield raw.map((r, j) => j === i ? bypass : r).join(' ');
+      }
+    }
+  }
+  // A foreign run can occupy a source's port while its other departure is clear.
+  // Reconnect only to an early straight run; the retained suffix, including every
+  // cubic command and the target approach, stays authored exactly as before.
+  const source = route.from.kind === 'node' ? layout.nodes.get(route.from.id) : undefined;
+  if (!source || Math.hypot(at(0).x - berth.x, at(0).y - berth.y) > .01) return;
+  const ports = [{x:source.x + source.width / 2, y:source.y + source.height, axis:'y'},
+    {x:source.x + source.width, y:source.y + source.height / 2, axis:'x'}] as const;
+  if (!ports.some(p => Math.hypot(p.x - at(0).x, p.y - at(0).y) < .01)) return;
+  for (const start of ports) {
+    if (Math.hypot(start.x - at(0).x, start.y - at(0).y) < .01) continue;
+    for (const distance of [9, 12, 18]) {
+      const exit = {x:start.x + (start.axis === 'x' ? distance : 0), y:start.y + (start.axis === 'y' ? distance : 0)};
+      for (let i = 1; i < Math.min(commands.length, 5); i++) {
+        if (commands[i].kind !== 'L') break;
+        const a = at(i - 1), b = at(i);
+        const join = a.x === b.x ? {x:a.x, y:exit.y} : a.y === b.y ? {x:exit.x, y:a.y} : null;
+        if (!join || join.x < Math.min(a.x, b.x) || join.x > Math.max(a.x, b.x)
+          || join.y < Math.min(a.y, b.y) || join.y > Math.max(a.y, b.y)
+          || join.x === b.x && join.y === b.y) continue;
+        yield [`M${start.x} ${start.y}`, line(exit), line(join), ...raw.slice(i)].join(' ');
       }
     }
   }
