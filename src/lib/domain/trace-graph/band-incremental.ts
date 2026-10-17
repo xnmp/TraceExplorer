@@ -22,7 +22,7 @@ import { orderNewSiblingLeaves } from "./new-sibling-order";
  */
 import { nearestFree, type GraphLayout, type LayoutItem, type LayoutRequest, type PlacedNode, type PlacedRoute, type PlacedJunction } from "./layout";
 import { ARROW, JUNCTION_BERTH, LANE_SEPARATION, PORT_BERTH, spacingFor, STACK_STEM_ROOM } from "./metrics";
-import { axisOf, berthsOf, distanceToTile, distanceToSegment, entersBerth, grazesTile, INTO_JUNCTION, INTO_TILE, leavingRunFrom, routeEnds, shallowRun, SHALLOW_RUN, TILE_GRAZE, type Berth, type Ends } from "./route-contacts";
+import { axisOf, berthsOf, paintedSegments, distanceToTile, distanceToSegment, entersBerth, grazesTile, INTO_JUNCTION, INTO_TILE, leavingRunFrom, routeEnds, shallowRun, SHALLOW_RUN, TILE_GRAZE, type Berth, type Ends } from "./route-contacts";
 import { bandExtent } from "./band-geometry";
 import { intersectsTile, overlapLength, routeBounds, segments, type Segment } from "./layout-quality";
 import { orthogonalRoute, LANE_TOLERANCE, NEAR_LANE, type AxisRun, type ForeignLanes, type GridSearch } from "./orthogonal-route";
@@ -325,6 +325,8 @@ class LaneIndex {
   private readonly dots: Berth[][] = [];
   /** Ports, corners and forks other sources keep off (`route-contacts`), by 64 px row of their point. */
   private readonly berths: (Berth & { readonly source: string })[][] = [];
+  /** Alternative unpainted departures: preserve at least one, not both. */
+  private readonly departures = new Map<string, readonly Berth[]>();
   /** Segment indices by 64 px row (an index property for a negative row; NaN rows are never visited). */
   private readonly rows: number[][] = [];
   /** Every segment by cell, and the slanted ones (flattened curves: neither horizontal nor vertical) apart. */
@@ -349,7 +351,7 @@ class LaneIndex {
       const row = Math.floor(berth.y / 64);
       if (Number.isFinite(row) && Number.isFinite(berth.x)) this.log.push(push(this.berths, row, { ...berth, source }));
     }
-    for (const segment of list) {
+    for (const segment of paintedSegments(list, ends)) {
       const index = this.all.push(segment) - 1;
       this.sources.push(source);
       this.log.push(this.all, this.sources);
@@ -372,12 +374,20 @@ class LaneIndex {
       else if (dx <= LANE_TOLERANCE / 8 && dx < dy) this.log.push(file(this.vertical, { at: (a.x + b.x) / 2, lo: Math.min(a.y, b.y), hi: Math.max(a.y, b.y), source, segment }));
     }
   }
-  /** Future outputs need a usable departure even before this source has a visible route. */
-  reservePorts(node: PlacedNode): void {
-    const source = sourceKey('node', node.key);
-    for (const port of [point(node.x + node.width / 2, node.y + node.height), point(node.x + node.width, node.y + node.height / 2)]) {
-      this.log.push(push(this.berths, Math.floor(port.y / 64), { ...port, radius: PORT_BERTH, source }));
+  /** A future source needs one clear departure; either candidate port may serve it. */
+  reserveDeparture(node: PlacedNode): void {
+    this.departures.set(sourceKey('node', node.key), [
+      { x: node.x + node.width / 2, y: node.y + node.height, radius: PORT_BERTH },
+      { x: node.x + node.width, y: node.y + node.height / 2, radius: PORT_BERTH },
+    ]);
+  }
+  private blockingDeparture(ink: readonly Segment[], source: string): Berth | undefined {
+    for (const [owner, ports] of this.departures) {
+      if (owner === source) continue;
+      const clear = ports.filter(port => !this.touched(port, owner));
+      if (clear.length && clear.every(port => ink.some(segment => entersBerth(segment, port)))) return clear[0];
     }
+    return undefined;
   }
   /** Adds a junction dot: later routes keep `JUNCTION_BERTH` from it. */
   addDot(dot: Point): void {
@@ -504,14 +514,15 @@ class LaneIndex {
    */
   conflicts(list: readonly Segment[], source: string, ends: Ends = NO_ENDS): boolean {
     // Any order gives the same answer; a route's final approach is the likeliest to be taken.
-    for (let i = list.length - 1, n = 0; n < list.length; n++, i = n - 1) if (this.runsAlong(list[i], source)) return true;
-    const ink = list.flatMap(segment => this.newInk(segment, source));
+    const painted = paintedSegments(list, ends);
+    for (let i = painted.length - 1, n = 0; n < painted.length; n++, i = n - 1) if (this.runsAlong(painted[i], source)) return true;
+    const ink = painted.flatMap(segment => this.newInk(segment, source));
     if (!ink.length) return false;
     if (this.nearDot(ink)) return true;
     for (const segment of ink) if (axisOf(segment) && this.shallowInto(segment, source, new Map())) return true;
     for (const segment of ink) if (this.nearBerth(segment, source)) return true;
     for (const berth of berthsOf(list, ends)) if (ink.some(segment => entersBerth(segment, berth)) && this.touched(berth, source)) return true;
-    return false;
+    return !!this.blockingDeparture(ink, source);
   }
 
   /** A forbidden meeting the visibility grid must route around, excluding shared source ink. */
@@ -523,7 +534,13 @@ class LaneIndex {
       const berth = this.berthNear(segment, source);
       if (berth) return berth;
     }
-    return undefined;
+    // A legal crossing may become an accidental join when the new path turns
+    // beside it. Give the visibility search that witness too, so it can move
+    // the corner instead of repeatedly returning the same shortest path.
+    for (const berth of berthsOf(list, NO_ENDS)) {
+      if (ink.some(segment => entersBerth(segment, berth)) && this.touched(berth, source)) return berth;
+    }
+    return this.blockingDeparture(ink, source);
   }
 
   /** Whether the segment passes within the berth of a port, corner or fork of a source other than `source`. */
@@ -1383,12 +1400,12 @@ function insertTree(request: LayoutRequest, previous: GraphLayout, budget: Incre
   const lanes = new LaneIndex(retainedIndex(previous, kept));
   // Retained geometry beyond any real band (millions of pixels) cannot be indexed; lay out afresh.
   if (lanes.tooLarge()) return null;
-  // Complete membership, including hidden outputs, determines future sources. A route inserted
-  // now must not occlude a tile that will become a parent later in this insertion or another click.
+  // Hidden outputs need one usable departure, without occupying both ports.
+  // The same complete membership keeps future sources out of leaf reordering.
   const futureSources = futureSourcesOf(request.band?.items ?? request.items);
-  for (const node of nodes.values()) if (futureSources.has(node.key)) lanes.reservePorts(node);
   const remaining = request.items.filter(n => !nodes.has(n.key));
   if (!remaining.length) return null;
+  for (const node of nodes.values()) if (futureSources.has(node.key)) lanes.reserveDeparture(node);
   // Retained routes may already occupy channels outside the pane or the tile
   // envelope. Keep that certified allocation when extending the drawing.
   const width = Math.max(request.maxWidth, previous.width), cover = nodes.get(key)!;
@@ -1507,7 +1524,7 @@ function insertTree(request: LayoutRequest, previous: GraphLayout, budget: Incre
     if (nodes.has(item.key)) { nodes.set(item.key, placed); boxes = [...nodes.values()]; tiles = new TileIndex([...boxes]); bottom = Math.max(...boxes.map(n => n.y + n.height)); }
     else { nodes.set(item.key, placed); boxes.push(placed); tiles.add(placed); bottom = Math.max(bottom, placed.y + placed.height); }
     commit(item.key, item.parents, parents, placed, best.wiring);
-    if (futureSources.has(item.key)) lanes.reservePorts(placed);
+    if (futureSources.has(item.key)) lanes.reserveDeparture(placed);
   }
 
   /** Records a placed tile's routes, junctions and lanes. */

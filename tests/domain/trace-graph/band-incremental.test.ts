@@ -273,14 +273,17 @@ describe("incremental tree: second chance", () => {
     for (const [key, node] of previous.nodes) expect(result.nodes.get(key)).toMatchObject({ x: node.x, y: node.y, width: node.width, height: node.height });
   };
 
-  it("withholds the old narrow-pane candidate whose relaxed contact check produced a false join", () => {
+  it("routes around corner contacts without releasing the narrow-pane tile pins", () => {
     // random-tree-12-7121, 454 px, 64 px images. The old second chance accepted this
-    // by suppressing port/corner checks; its route-contact violates the global gate.
+    // by suppressing port/corner checks. Search must instead find a certified route.
     const scene = secondChanceScene as unknown as { request: LayoutRequest; previous: GraphLayout & { nodes: unknown; junctions: unknown; readingOrder: unknown } };
     const retained = { ...scene.previous, nodes: new Map(scene.previous.nodes as [string, never][]), junctions: new Map(scene.previous.junctions as [string, never][]), readingOrder: new Map(scene.previous.readingOrder as [string, number][]) } as GraphLayout;
     const before = structuredClone(retained), r = scene.request;
     expect(geometryGate(retained, r.items.filter(n => retained.nodes.has(n.key)), r.band!.key, retained.width)).toBeNull();
-    expect(incrementalTree(r, retained)).toBeNull();
+    const pinned = incrementalTree(r, retained);
+    expect(pinned).not.toBeNull();
+    expect(geometryGate(attachSingleBand(pinned!, r), r.items, r.band!.key, r.maxWidth)).toBeNull();
+    for (const [key, node] of retained.nodes) expect(pinned!.nodes.get(key)).toEqual(node);
     expect(retained).toEqual(before);
     const fallback = layoutGraph(r);
     expect(geometryGate(attachSingleBand(fallback, r), r.items, r.band!.key, fallback.width)).toBeNull();

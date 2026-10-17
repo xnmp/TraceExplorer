@@ -1,0 +1,6529 @@
+{
+  "request": {
+    "items": [
+      {
+        "key": "root",
+        "width": 140,
+        "height": 128,
+        "order": 0,
+        "parents": []
+      },
+      {
+        "key": "n1",
+        "width": 140,
+        "height": 128,
+        "order": 1,
+        "parents": [
+          "root"
+        ]
+      },
+      {
+        "key": "n2",
+        "width": 140,
+        "height": 128,
+        "order": 2,
+        "parents": [
+          "root"
+        ]
+      },
+      {
+        "key": "n3",
+        "width": 140,
+        "height": 128,
+        "order": 3,
+        "parents": [
+          "n2"
+        ]
+      },
+      {
+        "key": "n4",
+        "width": 140,
+        "height": 128,
+        "order": 4,
+        "parents": [
+          "n1"
+        ]
+      },
+      {
+        "key": "n5",
+        "width": 140,
+        "height": 128,
+        "order": 5,
+        "parents": [
+          "n3"
+        ]
+      },
+      {
+        "key": "n6",
+        "width": 140,
+        "height": 128,
+        "order": 6,
+        "parents": [
+          "n1"
+        ]
+      },
+      {
+        "key": "n7",
+        "width": 140,
+        "height": 128,
+        "order": 7,
+        "parents": [
+          "n5"
+        ]
+      },
+      {
+        "key": "n8",
+        "width": 140,
+        "height": 128,
+        "order": 8,
+        "parents": [
+          "n3"
+        ]
+      },
+      {
+        "key": "n9",
+        "width": 140,
+        "height": 128,
+        "order": 9,
+        "parents": [
+          "n8",
+          "n6"
+        ]
+      },
+      {
+        "key": "n11",
+        "width": 140,
+        "height": 128,
+        "order": 11,
+        "parents": [
+          "n2"
+        ]
+      },
+      {
+        "key": "n12",
+        "width": 140,
+        "height": 128,
+        "order": 12,
+        "parents": [
+          "n6"
+        ]
+      },
+      {
+        "key": "n13",
+        "width": 140,
+        "height": 128,
+        "order": 13,
+        "parents": [
+          "n5"
+        ]
+      },
+      {
+        "key": "n14",
+        "width": 140,
+        "height": 128,
+        "order": 14,
+        "parents": [
+          "n11",
+          "root"
+        ]
+      },
+      {
+        "key": "n15",
+        "width": 140,
+        "height": 128,
+        "order": 15,
+        "parents": [
+          "n13",
+          "n4",
+          "n5",
+          "n8",
+          "n12"
+        ]
+      },
+      {
+        "key": "n16",
+        "width": 140,
+        "height": 128,
+        "order": 16,
+        "parents": [
+          "n14",
+          "n1",
+          "n8",
+          "n7",
+          "n2"
+        ]
+      },
+      {
+        "key": "n17",
+        "width": 140,
+        "height": 128,
+        "order": 17,
+        "parents": [
+          "n13"
+        ]
+      },
+      {
+        "key": "n18",
+        "width": 140,
+        "height": 128,
+        "order": 18,
+        "parents": [
+          "n1",
+          "n7"
+        ]
+      },
+      {
+        "key": "n19",
+        "width": 140,
+        "height": 128,
+        "order": 19,
+        "parents": [
+          "root",
+          "n14"
+        ]
+      },
+      {
+        "key": "n20",
+        "width": 140,
+        "height": 128,
+        "order": 20,
+        "parents": [
+          "n15"
+        ]
+      },
+      {
+        "key": "n22",
+        "width": 140,
+        "height": 128,
+        "order": 22,
+        "parents": [
+          "n8"
+        ]
+      },
+      {
+        "key": "n23",
+        "width": 140,
+        "height": 128,
+        "order": 23,
+        "parents": [
+          "n22",
+          "n3",
+          "n13",
+          "n11",
+          "n5"
+        ]
+      },
+      {
+        "key": "n24",
+        "width": 140,
+        "height": 128,
+        "order": 24,
+        "parents": [
+          "n15",
+          "n12",
+          "n1",
+          "n20",
+          "n6"
+        ]
+      },
+      {
+        "key": "n25",
+        "width": 140,
+        "height": 128,
+        "order": 25,
+        "parents": [
+          "n16",
+          "n18"
+        ]
+      },
+      {
+        "key": "n26",
+        "width": 140,
+        "height": 128,
+        "order": 26,
+        "parents": [
+          "n5",
+          "n19",
+          "n6"
+        ]
+      },
+      {
+        "key": "n28",
+        "width": 140,
+        "height": 128,
+        "order": 28,
+        "parents": [
+          "n22",
+          "n14",
+          "n9",
+          "n17"
+        ]
+      },
+      {
+        "key": "n29",
+        "width": 140,
+        "height": 128,
+        "order": 29,
+        "parents": [
+          "root",
+          "n17"
+        ]
+      },
+      {
+        "key": "n32",
+        "width": 140,
+        "height": 128,
+        "order": 32,
+        "parents": [
+          "n12",
+          "n9"
+        ]
+      },
+      {
+        "key": "n33",
+        "width": 140,
+        "height": 128,
+        "order": 33,
+        "parents": [
+          "n29"
+        ]
+      }
+    ],
+    "maxWidth": 900,
+    "anchorKey": "n32",
+    "hint": {
+      "__map": [
+        [
+          "root",
+          0
+        ],
+        [
+          "n1",
+          1
+        ],
+        [
+          "n2",
+          2
+        ],
+        [
+          "n3",
+          3
+        ],
+        [
+          "n4",
+          4
+        ],
+        [
+          "n5",
+          5
+        ],
+        [
+          "n6",
+          6
+        ],
+        [
+          "n7",
+          7
+        ],
+        [
+          "n13",
+          8
+        ],
+        [
+          "n11",
+          9
+        ],
+        [
+          "n18",
+          10
+        ],
+        [
+          "n8",
+          11
+        ],
+        [
+          "n12",
+          12
+        ],
+        [
+          "n17",
+          13
+        ],
+        [
+          "n14",
+          14
+        ],
+        [
+          "n29",
+          15
+        ],
+        [
+          "n10",
+          16
+        ],
+        [
+          "n34",
+          17
+        ],
+        [
+          "n9",
+          18
+        ],
+        [
+          "n22",
+          19
+        ],
+        [
+          "n16",
+          20
+        ],
+        [
+          "n23",
+          21
+        ],
+        [
+          "n19",
+          22
+        ],
+        [
+          "n25",
+          23
+        ],
+        [
+          "n32",
+          24
+        ],
+        [
+          "n26",
+          25
+        ],
+        [
+          "n36",
+          26
+        ],
+        [
+          "n33",
+          27
+        ]
+      ]
+    },
+    "tileWidth": 140,
+    "orientation": "down",
+    "pinned": {
+      "key": "root",
+      "x": 675
+    },
+    "band": {
+      "key": "root",
+      "items": [
+        {
+          "key": "root",
+          "width": 140,
+          "height": 128,
+          "order": 0,
+          "parents": []
+        },
+        {
+          "key": "n1",
+          "width": 140,
+          "height": 128,
+          "order": 1,
+          "parents": [
+            "root"
+          ]
+        },
+        {
+          "key": "n2",
+          "width": 140,
+          "height": 128,
+          "order": 2,
+          "parents": [
+            "root"
+          ]
+        },
+        {
+          "key": "n3",
+          "width": 140,
+          "height": 128,
+          "order": 3,
+          "parents": [
+            "n2"
+          ]
+        },
+        {
+          "key": "n4",
+          "width": 140,
+          "height": 128,
+          "order": 4,
+          "parents": [
+            "n1"
+          ]
+        },
+        {
+          "key": "n5",
+          "width": 140,
+          "height": 128,
+          "order": 5,
+          "parents": [
+            "n3"
+          ]
+        },
+        {
+          "key": "n6",
+          "width": 140,
+          "height": 128,
+          "order": 6,
+          "parents": [
+            "n1"
+          ]
+        },
+        {
+          "key": "n7",
+          "width": 140,
+          "height": 128,
+          "order": 7,
+          "parents": [
+            "n5"
+          ]
+        },
+        {
+          "key": "n8",
+          "width": 140,
+          "height": 128,
+          "order": 8,
+          "parents": [
+            "n3"
+          ]
+        },
+        {
+          "key": "n9",
+          "width": 140,
+          "height": 128,
+          "order": 9,
+          "parents": [
+            "n8",
+            "n6"
+          ]
+        },
+        {
+          "key": "n11",
+          "width": 140,
+          "height": 128,
+          "order": 11,
+          "parents": [
+            "n2"
+          ]
+        },
+        {
+          "key": "n12",
+          "width": 140,
+          "height": 128,
+          "order": 12,
+          "parents": [
+            "n6"
+          ]
+        },
+        {
+          "key": "n13",
+          "width": 140,
+          "height": 128,
+          "order": 13,
+          "parents": [
+            "n5"
+          ]
+        },
+        {
+          "key": "n14",
+          "width": 140,
+          "height": 128,
+          "order": 14,
+          "parents": [
+            "n11",
+            "root"
+          ]
+        },
+        {
+          "key": "n15",
+          "width": 140,
+          "height": 128,
+          "order": 15,
+          "parents": [
+            "n13",
+            "n4",
+            "n5",
+            "n8",
+            "n12"
+          ]
+        },
+        {
+          "key": "n16",
+          "width": 140,
+          "height": 128,
+          "order": 16,
+          "parents": [
+            "n14",
+            "n1",
+            "n8",
+            "n7",
+            "n2"
+          ]
+        },
+        {
+          "key": "n17",
+          "width": 140,
+          "height": 128,
+          "order": 17,
+          "parents": [
+            "n13"
+          ]
+        },
+        {
+          "key": "n18",
+          "width": 140,
+          "height": 128,
+          "order": 18,
+          "parents": [
+            "n1",
+            "n7"
+          ]
+        },
+        {
+          "key": "n19",
+          "width": 140,
+          "height": 128,
+          "order": 19,
+          "parents": [
+            "root",
+            "n14"
+          ]
+        },
+        {
+          "key": "n20",
+          "width": 140,
+          "height": 128,
+          "order": 20,
+          "parents": [
+            "n15"
+          ]
+        },
+        {
+          "key": "n21",
+          "width": 140,
+          "imageHeight": 82,
+          "height": 128,
+          "order": 21,
+          "parents": [
+            "n13"
+          ]
+        },
+        {
+          "key": "n22",
+          "width": 140,
+          "height": 128,
+          "order": 22,
+          "parents": [
+            "n8"
+          ]
+        },
+        {
+          "key": "n23",
+          "width": 140,
+          "height": 128,
+          "order": 23,
+          "parents": [
+            "n22",
+            "n3",
+            "n13",
+            "n11",
+            "n5"
+          ]
+        },
+        {
+          "key": "n24",
+          "width": 140,
+          "height": 128,
+          "order": 24,
+          "parents": [
+            "n15",
+            "n12",
+            "n1",
+            "n20",
+            "n6"
+          ]
+        },
+        {
+          "key": "n25",
+          "width": 140,
+          "height": 128,
+          "order": 25,
+          "parents": [
+            "n16",
+            "n18"
+          ]
+        },
+        {
+          "key": "n26",
+          "width": 140,
+          "height": 128,
+          "order": 26,
+          "parents": [
+            "n5",
+            "n19",
+            "n6"
+          ]
+        },
+        {
+          "key": "n27",
+          "width": 140,
+          "imageHeight": 82,
+          "height": 128,
+          "order": 27,
+          "parents": [
+            "n7"
+          ]
+        },
+        {
+          "key": "n28",
+          "width": 140,
+          "height": 128,
+          "order": 28,
+          "parents": [
+            "n22",
+            "n14",
+            "n9",
+            "n17"
+          ]
+        },
+        {
+          "key": "n29",
+          "width": 140,
+          "height": 128,
+          "order": 29,
+          "parents": [
+            "root",
+            "n17"
+          ]
+        },
+        {
+          "key": "n30",
+          "width": 140,
+          "imageHeight": 82,
+          "height": 128,
+          "order": 30,
+          "parents": [
+            "n15",
+            "n13",
+            "n12",
+            "n28"
+          ]
+        },
+        {
+          "key": "n31",
+          "width": 140,
+          "imageHeight": 82,
+          "height": 128,
+          "order": 31,
+          "parents": [
+            "n1",
+            "n17",
+            "n7"
+          ]
+        },
+        {
+          "key": "n32",
+          "width": 140,
+          "height": 128,
+          "order": 32,
+          "parents": [
+            "n12",
+            "n9"
+          ]
+        },
+        {
+          "key": "n33",
+          "width": 140,
+          "height": 128,
+          "order": 33,
+          "parents": [
+            "n29"
+          ]
+        },
+        {
+          "key": "n34",
+          "width": 140,
+          "imageHeight": 82,
+          "height": 128,
+          "order": 34,
+          "parents": [
+            "n11",
+            "n13",
+            "n1"
+          ]
+        },
+        {
+          "key": "n35",
+          "width": 140,
+          "imageHeight": 82,
+          "height": 128,
+          "order": 35,
+          "parents": [
+            "n33"
+          ]
+        },
+        {
+          "key": "n36",
+          "width": 140,
+          "imageHeight": 82,
+          "height": 128,
+          "order": 36,
+          "parents": [
+            "n25",
+            "n13",
+            "n18",
+            "n2"
+          ]
+        },
+        {
+          "key": "n37",
+          "width": 140,
+          "imageHeight": 82,
+          "height": 128,
+          "order": 37,
+          "parents": [
+            "n12",
+            "n2"
+          ]
+        },
+        {
+          "key": "n38",
+          "width": 140,
+          "imageHeight": 82,
+          "height": 128,
+          "order": 38,
+          "parents": [
+            "n26"
+          ]
+        },
+        {
+          "key": "n39",
+          "width": 140,
+          "imageHeight": 82,
+          "height": 128,
+          "order": 39,
+          "parents": []
+        }
+      ]
+    }
+  },
+  "previous": {
+    "orientation": "down",
+    "width": 900,
+    "height": 2128,
+    "nodes": {
+      "__map": [
+        [
+          "root",
+          {
+            "key": "root",
+            "x": 605,
+            "y": 0,
+            "width": 140,
+            "height": 128,
+            "band": 0,
+            "row": 0
+          }
+        ],
+        [
+          "n1",
+          {
+            "key": "n1",
+            "x": 529,
+            "y": 162,
+            "width": 140,
+            "height": 128,
+            "band": 1,
+            "row": 1
+          }
+        ],
+        [
+          "n2",
+          {
+            "key": "n2",
+            "x": 693,
+            "y": 162,
+            "width": 140,
+            "height": 128,
+            "band": 1,
+            "row": 1
+          }
+        ],
+        [
+          "n3",
+          {
+            "key": "n3",
+            "x": 529,
+            "y": 345,
+            "width": 140,
+            "height": 128,
+            "band": 2,
+            "row": 2
+          }
+        ],
+        [
+          "n4",
+          {
+            "key": "n4",
+            "x": 693,
+            "y": 345,
+            "width": 140,
+            "height": 128,
+            "band": 2,
+            "row": 2
+          }
+        ],
+        [
+          "n5",
+          {
+            "key": "n5",
+            "x": 611,
+            "y": 546,
+            "width": 140,
+            "height": 128,
+            "band": 3,
+            "row": 3
+          }
+        ],
+        [
+          "n6",
+          {
+            "key": "n6",
+            "x": 404,
+            "y": 765,
+            "width": 140,
+            "height": 128,
+            "band": 4,
+            "row": 4
+          }
+        ],
+        [
+          "n7",
+          {
+            "key": "n7",
+            "x": 568,
+            "y": 765,
+            "width": 140,
+            "height": 128,
+            "band": 4,
+            "row": 4
+          }
+        ],
+        [
+          "n13",
+          {
+            "key": "n13",
+            "x": 732,
+            "y": 765,
+            "width": 140,
+            "height": 128,
+            "band": 4,
+            "row": 4
+          }
+        ],
+        [
+          "n11",
+          {
+            "key": "n11",
+            "x": 76,
+            "y": 975,
+            "width": 140,
+            "height": 128,
+            "band": 5,
+            "row": 5
+          }
+        ],
+        [
+          "n18",
+          {
+            "key": "n18",
+            "x": 240,
+            "y": 975,
+            "width": 140,
+            "height": 128,
+            "band": 5,
+            "row": 5
+          }
+        ],
+        [
+          "n8",
+          {
+            "key": "n8",
+            "x": 404,
+            "y": 975,
+            "width": 140,
+            "height": 128,
+            "band": 5,
+            "row": 5
+          }
+        ],
+        [
+          "n12",
+          {
+            "key": "n12",
+            "x": 568,
+            "y": 975,
+            "width": 140,
+            "height": 128,
+            "band": 5,
+            "row": 5
+          }
+        ],
+        [
+          "n17",
+          {
+            "key": "n17",
+            "x": 732,
+            "y": 975,
+            "width": 140,
+            "height": 128,
+            "band": 5,
+            "row": 5
+          }
+        ],
+        [
+          "n14",
+          {
+            "key": "n14",
+            "x": 404,
+            "y": 1227,
+            "width": 140,
+            "height": 128,
+            "band": 6,
+            "row": 6
+          }
+        ],
+        [
+          "n29",
+          {
+            "key": "n29",
+            "x": 568,
+            "y": 1227,
+            "width": 140,
+            "height": 128,
+            "band": 6,
+            "row": 6
+          }
+        ],
+        [
+          "n9",
+          {
+            "key": "n9",
+            "x": 568,
+            "y": 1416,
+            "width": 140,
+            "height": 128,
+            "band": 6,
+            "row": 7
+          }
+        ],
+        [
+          "n22",
+          {
+            "key": "n22",
+            "x": 732,
+            "y": 1416,
+            "width": 140,
+            "height": 128,
+            "band": 6,
+            "row": 7
+          }
+        ],
+        [
+          "n16",
+          {
+            "key": "n16",
+            "x": 529,
+            "y": 1608,
+            "width": 140,
+            "height": 128,
+            "band": 7,
+            "row": 8
+          }
+        ],
+        [
+          "n23",
+          {
+            "key": "n23",
+            "x": 693,
+            "y": 1608,
+            "width": 140,
+            "height": 128,
+            "band": 7,
+            "row": 8
+          }
+        ],
+        [
+          "n19",
+          {
+            "key": "n19",
+            "x": 404,
+            "y": 1803,
+            "width": 140,
+            "height": 128,
+            "band": 8,
+            "row": 9
+          }
+        ],
+        [
+          "n25",
+          {
+            "key": "n25",
+            "x": 568,
+            "y": 1803,
+            "width": 140,
+            "height": 128,
+            "band": 8,
+            "row": 9
+          }
+        ],
+        [
+          "n32",
+          {
+            "key": "n32",
+            "x": 732,
+            "y": 1803,
+            "width": 140,
+            "height": 128,
+            "band": 8,
+            "row": 9
+          }
+        ],
+        [
+          "n26",
+          {
+            "key": "n26",
+            "x": 404,
+            "y": 1986,
+            "width": 140,
+            "height": 128,
+            "band": 9,
+            "row": 10
+          }
+        ],
+        [
+          "n33",
+          {
+            "key": "n33",
+            "x": 732,
+            "y": 1986,
+            "width": 140,
+            "height": 128,
+            "band": 9,
+            "row": 10
+          }
+        ]
+      ]
+    },
+    "rows": [
+      {
+        "index": 0,
+        "band": 0,
+        "top": 0,
+        "bottom": 128,
+        "keys": [
+          "root"
+        ]
+      },
+      {
+        "index": 1,
+        "band": 1,
+        "top": 162,
+        "bottom": 290,
+        "keys": [
+          "n1",
+          "n2"
+        ]
+      },
+      {
+        "index": 2,
+        "band": 2,
+        "top": 345,
+        "bottom": 473,
+        "keys": [
+          "n3",
+          "n4"
+        ]
+      },
+      {
+        "index": 3,
+        "band": 3,
+        "top": 546,
+        "bottom": 674,
+        "keys": [
+          "n5"
+        ]
+      },
+      {
+        "index": 4,
+        "band": 4,
+        "top": 765,
+        "bottom": 893,
+        "keys": [
+          "n6",
+          "n7",
+          "n13"
+        ]
+      },
+      {
+        "index": 5,
+        "band": 5,
+        "top": 975,
+        "bottom": 1103,
+        "keys": [
+          "n11",
+          "n18",
+          "n8",
+          "n12",
+          "n17"
+        ]
+      },
+      {
+        "index": 6,
+        "band": 6,
+        "top": 1227,
+        "bottom": 1355,
+        "keys": [
+          "n14",
+          "n29",
+          "n10"
+        ]
+      },
+      {
+        "index": 7,
+        "band": 6,
+        "top": 1416,
+        "bottom": 1544,
+        "keys": [
+          "n34",
+          "n9",
+          "n22"
+        ]
+      },
+      {
+        "index": 8,
+        "band": 7,
+        "top": 1608,
+        "bottom": 1736,
+        "keys": [
+          "n16",
+          "n23"
+        ]
+      },
+      {
+        "index": 9,
+        "band": 8,
+        "top": 1803,
+        "bottom": 1931,
+        "keys": [
+          "n19",
+          "n25",
+          "n32"
+        ]
+      },
+      {
+        "index": 10,
+        "band": 9,
+        "top": 1986,
+        "bottom": 2114,
+        "keys": [
+          "n26",
+          "n36",
+          "n33"
+        ]
+      }
+    ],
+    "routes": [
+      {
+        "id": "[\"trunk\",\"node\",\"n1\",26]",
+        "from": {
+          "kind": "node",
+          "id": "n1"
+        },
+        "to": {
+          "kind": "node",
+          "id": "n1"
+        },
+        "consumers": {
+          "entries": [
+            {
+              "parent": "n3",
+              "child": "n23"
+            },
+            {
+              "parent": "n5",
+              "child": "n23"
+            },
+            {
+              "parent": "n11",
+              "child": "n23"
+            },
+            {
+              "parent": "n13",
+              "child": "n23"
+            },
+            {
+              "parent": "n6",
+              "child": "n9"
+            },
+            {
+              "parent": "n8",
+              "child": "n9"
+            },
+            {
+              "parent": "n29",
+              "child": "n33"
+            },
+            {
+              "parent": "n9",
+              "child": "n32"
+            },
+            {
+              "parent": "n12",
+              "child": "n32"
+            },
+            {
+              "parent": "n17",
+              "child": "n29"
+            },
+            {
+              "parent": "n19",
+              "child": "n26"
+            },
+            {
+              "parent": "n5",
+              "child": "n26"
+            },
+            {
+              "parent": "n6",
+              "child": "n26"
+            },
+            {
+              "parent": "n5",
+              "child": "n26"
+            },
+            {
+              "parent": "root",
+              "child": "n29"
+            },
+            {
+              "parent": "n18",
+              "child": "n25"
+            },
+            {
+              "parent": "n22",
+              "child": "n23"
+            },
+            {
+              "parent": "n11",
+              "child": "n23"
+            },
+            {
+              "parent": "n13",
+              "child": "n23"
+            },
+            {
+              "parent": "n3",
+              "child": "n23"
+            },
+            {
+              "parent": "n5",
+              "child": "n23"
+            },
+            {
+              "parent": "n16",
+              "child": "n25"
+            },
+            {
+              "parent": "n14",
+              "child": "n16"
+            },
+            {
+              "parent": "n14",
+              "child": "n19"
+            },
+            {
+              "parent": "n7",
+              "child": "n16"
+            },
+            {
+              "parent": "n8",
+              "child": "n16"
+            },
+            {
+              "parent": "n7",
+              "child": "n18"
+            },
+            {
+              "parent": "n7",
+              "child": "n16"
+            },
+            {
+              "parent": "n1",
+              "child": "n16"
+            },
+            {
+              "parent": "n2",
+              "child": "n16"
+            },
+            {
+              "parent": "n11",
+              "child": "n14"
+            },
+            {
+              "parent": "n11",
+              "child": "n23"
+            },
+            {
+              "parent": "n3",
+              "child": "n5"
+            },
+            {
+              "parent": "n3",
+              "child": "n23"
+            },
+            {
+              "parent": "n3",
+              "child": "n8"
+            },
+            {
+              "parent": "n3",
+              "child": "n5"
+            },
+            {
+              "parent": "root",
+              "child": "n14"
+            },
+            {
+              "parent": "n2",
+              "child": "n11"
+            },
+            {
+              "parent": "n2",
+              "child": "n11"
+            },
+            {
+              "parent": "n2",
+              "child": "n3"
+            },
+            {
+              "parent": "n2",
+              "child": "n16"
+            },
+            {
+              "parent": "n6",
+              "child": "n9"
+            },
+            {
+              "parent": "n8",
+              "child": "n9"
+            },
+            {
+              "parent": "n3",
+              "child": "n8"
+            },
+            {
+              "parent": "n5",
+              "child": "n7"
+            },
+            {
+              "parent": "n1",
+              "child": "n6"
+            },
+            {
+              "parent": "n3",
+              "child": "n5"
+            },
+            {
+              "parent": "n1",
+              "child": "n16"
+            },
+            {
+              "parent": "n1",
+              "child": "n4"
+            },
+            {
+              "parent": "n1",
+              "child": "n6"
+            },
+            {
+              "parent": "n1",
+              "child": "n18"
+            },
+            {
+              "parent": "n29",
+              "child": "n33"
+            },
+            {
+              "parent": "n12",
+              "child": "n32"
+            },
+            {
+              "parent": "n9",
+              "child": "n32"
+            },
+            {
+              "parent": "n2",
+              "child": "n3"
+            },
+            {
+              "parent": "root",
+              "child": "n14"
+            },
+            {
+              "parent": "n2",
+              "child": "n11"
+            },
+            {
+              "parent": "root",
+              "child": "n29"
+            },
+            {
+              "parent": "n17",
+              "child": "n29"
+            },
+            {
+              "parent": "n5",
+              "child": "n26"
+            },
+            {
+              "parent": "n6",
+              "child": "n26"
+            },
+            {
+              "parent": "n19",
+              "child": "n26"
+            },
+            {
+              "parent": "n16",
+              "child": "n25"
+            },
+            {
+              "parent": "n18",
+              "child": "n25"
+            },
+            {
+              "parent": "n3",
+              "child": "n23"
+            },
+            {
+              "parent": "n5",
+              "child": "n23"
+            },
+            {
+              "parent": "n11",
+              "child": "n23"
+            },
+            {
+              "parent": "n13",
+              "child": "n23"
+            },
+            {
+              "parent": "n22",
+              "child": "n23"
+            },
+            {
+              "parent": "n8",
+              "child": "n16"
+            },
+            {
+              "parent": "n8",
+              "child": "n9"
+            },
+            {
+              "parent": "n8",
+              "child": "n22"
+            },
+            {
+              "parent": "n14",
+              "child": "n19"
+            },
+            {
+              "parent": "root",
+              "child": "n19"
+            },
+            {
+              "parent": "n16",
+              "child": "n25"
+            },
+            {
+              "parent": "n1",
+              "child": "n18"
+            },
+            {
+              "parent": "n7",
+              "child": "n18"
+            },
+            {
+              "parent": "n13",
+              "child": "n17"
+            },
+            {
+              "parent": "n13",
+              "child": "n23"
+            },
+            {
+              "parent": "n1",
+              "child": "n16"
+            },
+            {
+              "parent": "n2",
+              "child": "n16"
+            },
+            {
+              "parent": "n7",
+              "child": "n16"
+            },
+            {
+              "parent": "n8",
+              "child": "n16"
+            },
+            {
+              "parent": "n14",
+              "child": "n16"
+            },
+            {
+              "parent": "root",
+              "child": "n14"
+            },
+            {
+              "parent": "n11",
+              "child": "n14"
+            },
+            {
+              "parent": "n5",
+              "child": "n13"
+            },
+            {
+              "parent": "n5",
+              "child": "n23"
+            },
+            {
+              "parent": "n5",
+              "child": "n26"
+            },
+            {
+              "parent": "n5",
+              "child": "n7"
+            },
+            {
+              "parent": "n6",
+              "child": "n12"
+            },
+            {
+              "parent": "n6",
+              "child": "n26"
+            },
+            {
+              "parent": "n6",
+              "child": "n9"
+            },
+            {
+              "parent": "n2",
+              "child": "n11"
+            },
+            {
+              "parent": "root",
+              "child": "n1"
+            },
+            {
+              "parent": "root",
+              "child": "n2"
+            },
+            {
+              "parent": "root",
+              "child": "n14"
+            },
+            {
+              "parent": "root",
+              "child": "n29"
+            },
+            {
+              "parent": "root",
+              "child": "n19"
+            }
+          ],
+          "start": 49,
+          "end": 50
+        },
+        "path": "M599 290 L599 305 L675 305 L675 345 L675 473 L675 479 L392 479 L392 546 L392 674",
+        "terminal": false
+      },
+      {
+        "id": "[\"trunk\",\"node\",\"n6\",31]",
+        "from": {
+          "kind": "node",
+          "id": "n6"
+        },
+        "to": {
+          "kind": "node",
+          "id": "n6"
+        },
+        "consumers": {
+          "entries": [
+            {
+              "parent": "n3",
+              "child": "n23"
+            },
+            {
+              "parent": "n5",
+              "child": "n23"
+            },
+            {
+              "parent": "n11",
+              "child": "n23"
+            },
+            {
+              "parent": "n13",
+              "child": "n23"
+            },
+            {
+              "parent": "n6",
+              "child": "n9"
+            },
+            {
+              "parent": "n8",
+              "child": "n9"
+            },
+            {
+              "parent": "n29",
+              "child": "n33"
+            },
+            {
+              "parent": "n9",
+              "child": "n32"
+            },
+            {
+              "parent": "n12",
+              "child": "n32"
+            },
+            {
+              "parent": "n17",
+              "child": "n29"
+            },
+            {
+              "parent": "n19",
+              "child": "n26"
+            },
+            {
+              "parent": "n5",
+              "child": "n26"
+            },
+            {
+              "parent": "n6",
+              "child": "n26"
+            },
+            {
+              "parent": "n5",
+              "child": "n26"
+            },
+            {
+              "parent": "root",
+              "child": "n29"
+            },
+            {
+              "parent": "n18",
+              "child": "n25"
+            },
+            {
+              "parent": "n22",
+              "child": "n23"
+            },
+            {
+              "parent": "n11",
+              "child": "n23"
+            },
+            {
+              "parent": "n13",
+              "child": "n23"
+            },
+            {
+              "parent": "n3",
+              "child": "n23"
+            },
+            {
+              "parent": "n5",
+              "child": "n23"
+            },
+            {
+              "parent": "n16",
+              "child": "n25"
+            },
+            {
+              "parent": "n14",
+              "child": "n16"
+            },
+            {
+              "parent": "n14",
+              "child": "n19"
+            },
+            {
+              "parent": "n7",
+              "child": "n16"
+            },
+            {
+              "parent": "n8",
+              "child": "n16"
+            },
+            {
+              "parent": "n7",
+              "child": "n18"
+            },
+            {
+              "parent": "n7",
+              "child": "n16"
+            },
+            {
+              "parent": "n1",
+              "child": "n16"
+            },
+            {
+              "parent": "n2",
+              "child": "n16"
+            },
+            {
+              "parent": "n11",
+              "child": "n14"
+            },
+            {
+              "parent": "n11",
+              "child": "n23"
+            },
+            {
+              "parent": "n3",
+              "child": "n5"
+            },
+            {
+              "parent": "n3",
+              "child": "n23"
+            },
+            {
+              "parent": "n3",
+              "child": "n8"
+            },
+            {
+              "parent": "n3",
+              "child": "n5"
+            },
+            {
+              "parent": "root",
+              "child": "n14"
+            },
+            {
+              "parent": "n2",
+              "child": "n11"
+            },
+            {
+              "parent": "n2",
+              "child": "n11"
+            },
+            {
+              "parent": "n2",
+              "child": "n3"
+            },
+            {
+              "parent": "n2",
+              "child": "n16"
+            },
+            {
+              "parent": "n6",
+              "child": "n9"
+            },
+            {
+              "parent": "n8",
+              "child": "n9"
+            },
+            {
+              "parent": "n3",
+              "child": "n8"
+            },
+            {
+              "parent": "n5",
+              "child": "n7"
+            },
+            {
+              "parent": "n1",
+              "child": "n6"
+            },
+            {
+              "parent": "n3",
+              "child": "n5"
+            },
+            {
+              "parent": "n1",
+              "child": "n16"
+            },
+            {
+              "parent": "n1",
+              "child": "n4"
+            },
+            {
+              "parent": "n1",
+              "child": "n6"
+            },
+            {
+              "parent": "n1",
+              "child": "n18"
+            },
+            {
+              "parent": "n29",
+              "child": "n33"
+            },
+            {
+              "parent": "n12",
+              "child": "n32"
+            },
+            {
+              "parent": "n9",
+              "child": "n32"
+            },
+            {
+              "parent": "n2",
+              "child": "n3"
+            },
+            {
+              "parent": "root",
+              "child": "n14"
+            },
+            {
+              "parent": "n2",
+              "child": "n11"
+            },
+            {
+              "parent": "root",
+              "child": "n29"
+            },
+            {
+              "parent": "n17",
+              "child": "n29"
+            },
+            {
+              "parent": "n5",
+              "child": "n26"
+            },
+            {
+              "parent": "n6",
+              "child": "n26"
+            },
+            {
+              "parent": "n19",
+              "child": "n26"
+            },
+            {
+              "parent": "n16",
+              "child": "n25"
+            },
+            {
+              "parent": "n18",
+              "child": "n25"
+            },
+            {
+              "parent": "n3",
+              "child": "n23"
+            },
+            {
+              "parent": "n5",
+              "child": "n23"
+            },
+            {
+              "parent": "n11",
+              "child": "n23"
+            },
+            {
+              "parent": "n13",
+              "child": "n23"
+            },
+            {
+              "parent": "n22",
+              "child": "n23"
+            },
+            {
+              "parent": "n8",
+              "child": "n16"
+            },
+            {
+              "parent": "n8",
+              "child": "n9"
+            },
+            {
+              "parent": "n8",
+              "child": "n22"
+            },
+            {
+              "parent": "n14",
+              "child": "n19"
+            },
+            {
+              "parent": "root",
+              "child": "n19"
+            },
+            {
+              "parent": "n16",
+              "child": "n25"
+            },
+            {
+              "parent": "n1",
+              "child": "n18"
+            },
+            {
+              "parent": "n7",
+              "child": "n18"
+            },
+            {
+              "parent": "n13",
+              "child": "n17"
+            },
+            {
+              "parent": "n13",
+              "child": "n23"
+            },
+            {
+              "parent": "n1",
+              "child": "n16"
+            },
+            {
+              "parent": "n2",
+              "child": "n16"
+            },
+            {
+              "parent": "n7",
+              "child": "n16"
+            },
+            {
+              "parent": "n8",
+              "child": "n16"
+            },
+            {
+              "parent": "n14",
+              "child": "n16"
+            },
+            {
+              "parent": "root",
+              "child": "n14"
+            },
+            {
+              "parent": "n11",
+              "child": "n14"
+            },
+            {
+              "parent": "n5",
+              "child": "n13"
+            },
+            {
+              "parent": "n5",
+              "child": "n23"
+            },
+            {
+              "parent": "n5",
+              "child": "n26"
+            },
+            {
+              "parent": "n5",
+              "child": "n7"
+            },
+            {
+              "parent": "n6",
+              "child": "n12"
+            },
+            {
+              "parent": "n6",
+              "child": "n26"
+            },
+            {
+              "parent": "n6",
+              "child": "n9"
+            },
+            {
+              "parent": "n2",
+              "child": "n11"
+            },
+            {
+              "parent": "root",
+              "child": "n1"
+            },
+            {
+              "parent": "root",
+              "child": "n2"
+            },
+            {
+              "parent": "root",
+              "child": "n14"
+            },
+            {
+              "parent": "root",
+              "child": "n29"
+            },
+            {
+              "parent": "root",
+              "child": "n19"
+            }
+          ],
+          "start": 92,
+          "end": 93
+        },
+        "path": "M474 893 L474 902 L717 902 L717 975 L717 1103",
+        "terminal": false
+      },
+      {
+        "id": "[\"trunk\",\"junction\",\"j:[\\\"n2\\\",\\\"root\\\"]\",33]",
+        "from": {
+          "kind": "junction",
+          "id": "j:[\"n2\",\"root\"]"
+        },
+        "to": {
+          "kind": "junction",
+          "id": "j:[\"n2\",\"root\"]"
+        },
+        "consumers": {
+          "entries": [
+            {
+              "parent": "n3",
+              "child": "n23"
+            },
+            {
+              "parent": "n5",
+              "child": "n23"
+            },
+            {
+              "parent": "n11",
+              "child": "n23"
+            },
+            {
+              "parent": "n13",
+              "child": "n23"
+            },
+            {
+              "parent": "n6",
+              "child": "n9"
+            },
+            {
+              "parent": "n8",
+              "child": "n9"
+            },
+            {
+              "parent": "n29",
+              "child": "n33"
+            },
+            {
+              "parent": "n9",
+              "child": "n32"
+            },
+            {
+              "parent": "n12",
+              "child": "n32"
+            },
+            {
+              "parent": "n17",
+              "child": "n29"
+            },
+            {
+              "parent": "n19",
+              "child": "n26"
+            },
+            {
+              "parent": "n5",
+              "child": "n26"
+            },
+            {
+              "parent": "n6",
+              "child": "n26"
+            },
+            {
+              "parent": "n5",
+              "child": "n26"
+            },
+            {
+              "parent": "root",
+              "child": "n29"
+            },
+            {
+              "parent": "n18",
+              "child": "n25"
+            },
+            {
+              "parent": "n22",
+              "child": "n23"
+            },
+            {
+              "parent": "n11",
+              "child": "n23"
+            },
+            {
+              "parent": "n13",
+              "child": "n23"
+            },
+            {
+              "parent": "n3",
+              "child": "n23"
+            },
+            {
+              "parent": "n5",
+              "child": "n23"
+            },
+            {
+              "parent": "n16",
+              "child": "n25"
+            },
+            {
+              "parent": "n14",
+              "child": "n16"
+            },
+            {
+              "parent": "n14",
+              "child": "n19"
+            },
+            {
+              "parent": "n7",
+              "child": "n16"
+            },
+            {
+              "parent": "n8",
+              "child": "n16"
+            },
+            {
+              "parent": "n7",
+              "child": "n18"
+            },
+            {
+              "parent": "n7",
+              "child": "n16"
+            },
+            {
+              "parent": "n1",
+              "child": "n16"
+            },
+            {
+              "parent": "n2",
+              "child": "n16"
+            },
+            {
+              "parent": "n11",
+              "child": "n14"
+            },
+            {
+              "parent": "n11",
+              "child": "n23"
+            },
+            {
+              "parent": "n3",
+              "child": "n5"
+            },
+            {
+              "parent": "n3",
+              "child": "n23"
+            },
+            {
+              "parent": "n3",
+              "child": "n8"
+            },
+            {
+              "parent": "n3",
+              "child": "n5"
+            },
+            {
+              "parent": "root",
+              "child": "n14"
+            },
+            {
+              "parent": "n2",
+              "child": "n11"
+            },
+            {
+              "parent": "n2",
+              "child": "n11"
+            },
+            {
+              "parent": "n2",
+              "child": "n3"
+            },
+            {
+              "parent": "n2",
+              "child": "n16"
+            },
+            {
+              "parent": "n6",
+              "child": "n9"
+            },
+            {
+              "parent": "n8",
+              "child": "n9"
+            },
+            {
+              "parent": "n3",
+              "child": "n8"
+            },
+            {
+              "parent": "n5",
+              "child": "n7"
+            },
+            {
+              "parent": "n1",
+              "child": "n6"
+            },
+            {
+              "parent": "n3",
+              "child": "n5"
+            },
+            {
+              "parent": "n1",
+              "child": "n16"
+            },
+            {
+              "parent": "n1",
+              "child": "n4"
+            },
+            {
+              "parent": "n1",
+              "child": "n6"
+            },
+            {
+              "parent": "n1",
+              "child": "n18"
+            },
+            {
+              "parent": "n29",
+              "child": "n33"
+            },
+            {
+              "parent": "n12",
+              "child": "n32"
+            },
+            {
+              "parent": "n9",
+              "child": "n32"
+            },
+            {
+              "parent": "n2",
+              "child": "n3"
+            },
+            {
+              "parent": "root",
+              "child": "n14"
+            },
+            {
+              "parent": "n2",
+              "child": "n11"
+            },
+            {
+              "parent": "root",
+              "child": "n29"
+            },
+            {
+              "parent": "n17",
+              "child": "n29"
+            },
+            {
+              "parent": "n5",
+              "child": "n26"
+            },
+            {
+              "parent": "n6",
+              "child": "n26"
+            },
+            {
+              "parent": "n19",
+              "child": "n26"
+            },
+            {
+              "parent": "n16",
+              "child": "n25"
+            },
+            {
+              "parent": "n18",
+              "child": "n25"
+            },
+            {
+              "parent": "n3",
+              "child": "n23"
+            },
+            {
+              "parent": "n5",
+              "child": "n23"
+            },
+            {
+              "parent": "n11",
+              "child": "n23"
+            },
+            {
+              "parent": "n13",
+              "child": "n23"
+            },
+            {
+              "parent": "n22",
+              "child": "n23"
+            },
+            {
+              "parent": "n8",
+              "child": "n16"
+            },
+            {
+              "parent": "n8",
+              "child": "n9"
+            },
+            {
+              "parent": "n8",
+              "child": "n22"
+            },
+            {
+              "parent": "n14",
+              "child": "n19"
+            },
+            {
+              "parent": "root",
+              "child": "n19"
+            },
+            {
+              "parent": "n16",
+              "child": "n25"
+            },
+            {
+              "parent": "n1",
+              "child": "n18"
+            },
+            {
+              "parent": "n7",
+              "child": "n18"
+            },
+            {
+              "parent": "n13",
+              "child": "n17"
+            },
+            {
+              "parent": "n13",
+              "child": "n23"
+            },
+            {
+              "parent": "n1",
+              "child": "n16"
+            },
+            {
+              "parent": "n2",
+              "child": "n16"
+            },
+            {
+              "parent": "n7",
+              "child": "n16"
+            },
+            {
+              "parent": "n8",
+              "child": "n16"
+            },
+            {
+              "parent": "n14",
+              "child": "n16"
+            },
+            {
+              "parent": "root",
+              "child": "n14"
+            },
+            {
+              "parent": "n11",
+              "child": "n14"
+            },
+            {
+              "parent": "n5",
+              "child": "n13"
+            },
+            {
+              "parent": "n5",
+              "child": "n23"
+            },
+            {
+              "parent": "n5",
+              "child": "n26"
+            },
+            {
+              "parent": "n5",
+              "child": "n7"
+            },
+            {
+              "parent": "n6",
+              "child": "n12"
+            },
+            {
+              "parent": "n6",
+              "child": "n26"
+            },
+            {
+              "parent": "n6",
+              "child": "n9"
+            },
+            {
+              "parent": "n2",
+              "child": "n11"
+            },
+            {
+              "parent": "root",
+              "child": "n1"
+            },
+            {
+              "parent": "root",
+              "child": "n2"
+            },
+            {
+              "parent": "root",
+              "child": "n14"
+            },
+            {
+              "parent": "root",
+              "child": "n29"
+            },
+            {
+              "parent": "root",
+              "child": "n19"
+            }
+          ],
+          "start": 55,
+          "end": 57
+        },
+        "path": "M629.7 314 L629.7 326 L678 326 L678 345 L678 473",
+        "terminal": false
+      },
+      {
+        "id": "[\"trunk\",\"node\",\"root\",37]",
+        "from": {
+          "kind": "node",
+          "id": "root"
+        },
+        "to": {
+          "kind": "node",
+          "id": "root"
+        },
+        "consumers": {
+          "entries": [
+            {
+              "parent": "n3",
+              "child": "n23"
+            },
+            {
+              "parent": "n5",
+              "child": "n23"
+            },
+            {
+              "parent": "n11",
+              "child": "n23"
+            },
+            {
+              "parent": "n13",
+              "child": "n23"
+            },
+            {
+              "parent": "n6",
+              "child": "n9"
+            },
+            {
+              "parent": "n8",
+              "child": "n9"
+            },
+            {
+              "parent": "n29",
+              "child": "n33"
+            },
+            {
+              "parent": "n9",
+              "child": "n32"
+            },
+            {
+              "parent": "n12",
+              "child": "n32"
+            },
+            {
+              "parent": "n17",
+              "child": "n29"
+            },
+            {
+              "parent": "n19",
+              "child": "n26"
+            },
+            {
+              "parent": "n5",
+              "child": "n26"
+            },
+            {
+              "parent": "n6",
+              "child": "n26"
+            },
+            {
+              "parent": "n5",
+              "child": "n26"
+            },
+            {
+              "parent": "root",
+              "child": "n29"
+            },
+            {
+              "parent": "n18",
+              "child": "n25"
+            },
+            {
+              "parent": "n22",
+              "child": "n23"
+            },
+            {
+              "parent": "n11",
+              "child": "n23"
+            },
+            {
+              "parent": "n13",
+              "child": "n23"
+            },
+            {
+              "parent": "n3",
+              "child": "n23"
+            },
+            {
+              "parent": "n5",
+              "child": "n23"
+            },
+            {
+              "parent": "n16",
+              "child": "n25"
+            },
+            {
+              "parent": "n14",
+              "child": "n16"
+            },
+            {
+              "parent": "n14",
+              "child": "n19"
+            },
+            {
+              "parent": "n7",
+              "child": "n16"
+            },
+            {
+              "parent": "n8",
+              "child": "n16"
+            },
+            {
+              "parent": "n7",
+              "child": "n18"
+            },
+            {
+              "parent": "n7",
+              "child": "n16"
+            },
+            {
+              "parent": "n1",
+              "child": "n16"
+            },
+            {
+              "parent": "n2",
+              "child": "n16"
+            },
+            {
+              "parent": "n11",
+              "child": "n14"
+            },
+            {
+              "parent": "n11",
+              "child": "n23"
+            },
+            {
+              "parent": "n3",
+              "child": "n5"
+            },
+            {
+              "parent": "n3",
+              "child": "n23"
+            },
+            {
+              "parent": "n3",
+              "child": "n8"
+            },
+            {
+              "parent": "n3",
+              "child": "n5"
+            },
+            {
+              "parent": "root",
+              "child": "n14"
+            },
+            {
+              "parent": "n2",
+              "child": "n11"
+            },
+            {
+              "parent": "n2",
+              "child": "n11"
+            },
+            {
+              "parent": "n2",
+              "child": "n3"
+            },
+            {
+              "parent": "n2",
+              "child": "n16"
+            },
+            {
+              "parent": "n6",
+              "child": "n9"
+            },
+            {
+              "parent": "n8",
+              "child": "n9"
+            },
+            {
+              "parent": "n3",
+              "child": "n8"
+            },
+            {
+              "parent": "n5",
+              "child": "n7"
+            },
+            {
+              "parent": "n1",
+              "child": "n6"
+            },
+            {
+              "parent": "n3",
+              "child": "n5"
+            },
+            {
+              "parent": "n1",
+              "child": "n16"
+            },
+            {
+              "parent": "n1",
+              "child": "n4"
+            },
+            {
+              "parent": "n1",
+              "child": "n6"
+            },
+            {
+              "parent": "n1",
+              "child": "n18"
+            },
+            {
+              "parent": "n29",
+              "child": "n33"
+            },
+            {
+              "parent": "n12",
+              "child": "n32"
+            },
+            {
+              "parent": "n9",
+              "child": "n32"
+            },
+            {
+              "parent": "n2",
+              "child": "n3"
+            },
+            {
+              "parent": "root",
+              "child": "n14"
+            },
+            {
+              "parent": "n2",
+              "child": "n11"
+            },
+            {
+              "parent": "root",
+              "child": "n29"
+            },
+            {
+              "parent": "n17",
+              "child": "n29"
+            },
+            {
+              "parent": "n5",
+              "child": "n26"
+            },
+            {
+              "parent": "n6",
+              "child": "n26"
+            },
+            {
+              "parent": "n19",
+              "child": "n26"
+            },
+            {
+              "parent": "n16",
+              "child": "n25"
+            },
+            {
+              "parent": "n18",
+              "child": "n25"
+            },
+            {
+              "parent": "n3",
+              "child": "n23"
+            },
+            {
+              "parent": "n5",
+              "child": "n23"
+            },
+            {
+              "parent": "n11",
+              "child": "n23"
+            },
+            {
+              "parent": "n13",
+              "child": "n23"
+            },
+            {
+              "parent": "n22",
+              "child": "n23"
+            },
+            {
+              "parent": "n8",
+              "child": "n16"
+            },
+            {
+              "parent": "n8",
+              "child": "n9"
+            },
+            {
+              "parent": "n8",
+              "child": "n22"
+            },
+            {
+              "parent": "n14",
+              "child": "n19"
+            },
+            {
+              "parent": "root",
+              "child": "n19"
+            },
+            {
+              "parent": "n16",
+              "child": "n25"
+            },
+            {
+              "parent": "n1",
+              "child": "n18"
+            },
+            {
+              "parent": "n7",
+              "child": "n18"
+            },
+            {
+              "parent": "n13",
+              "child": "n17"
+            },
+            {
+              "parent": "n13",
+              "child": "n23"
+            },
+            {
+              "parent": "n1",
+              "child": "n16"
+            },
+            {
+              "parent": "n2",
+              "child": "n16"
+            },
+            {
+              "parent": "n7",
+              "child": "n16"
+            },
+            {
+              "parent": "n8",
+              "child": "n16"
+            },
+            {
+              "parent": "n14",
+              "child": "n16"
+            },
+            {
+              "parent": "root",
+              "child": "n14"
+            },
+            {
+              "parent": "n11",
+              "child": "n14"
+            },
+            {
+              "parent": "n5",
+              "child": "n13"
+            },
+            {
+              "parent": "n5",
+              "child": "n23"
+            },
+            {
+              "parent": "n5",
+              "child": "n26"
+            },
+            {
+              "parent": "n5",
+              "child": "n7"
+            },
+            {
+              "parent": "n6",
+              "child": "n12"
+            },
+            {
+              "parent": "n6",
+              "child": "n26"
+            },
+            {
+              "parent": "n6",
+              "child": "n9"
+            },
+            {
+              "parent": "n2",
+              "child": "n11"
+            },
+            {
+              "parent": "root",
+              "child": "n1"
+            },
+            {
+              "parent": "root",
+              "child": "n2"
+            },
+            {
+              "parent": "root",
+              "child": "n14"
+            },
+            {
+              "parent": "root",
+              "child": "n29"
+            },
+            {
+              "parent": "root",
+              "child": "n19"
+            }
+          ],
+          "start": 96,
+          "end": 98
+        },
+        "path": "M675 128 L675 134 C675 137.3137084988 677.6862915012 140 681 140 L684 140 C685.6568542494 140 687 141.3431457506 687 143 L687 146 L687 162 L 687 290",
+        "terminal": false
+      },
+      {
+        "id": "[\"trunk\",\"junction\",\"j:[\\\"n2\\\",\\\"n3\\\",\\\"root\\\"]\",39]",
+        "from": {
+          "kind": "junction",
+          "id": "j:[\"n2\",\"n3\",\"root\"]"
+        },
+        "to": {
+          "kind": "junction",
+          "id": "j:[\"n2\",\"n3\",\"root\"]"
+        },
+        "consumers": {
+          "entries": [
+            {
+              "parent": "n3",
+              "child": "n23"
+            },
+            {
+              "parent": "n5",
+              "child": "n23"
+            },
+            {
+              "parent": "n11",
+              "child": "n23"
+            },
+            {
+              "parent": "n13",
+              "child": "n23"
+            },
+            {
+              "parent": "n6",
+              "child": "n9"
+            },
+            {
+              "parent": "n8",
+              "child": "n9"
+            },
+            {
+              "parent": "n29",
+              "child": "n33"
+            },
+            {
+              "parent": "n9",
+              "child": "n32"
+            },
+            {
+              "parent": "n12",
+              "child": "n32"
+            },
+            {
+              "parent": "n17",
+              "child": "n29"
+            },
+            {
+              "parent": "n19",
+              "child": "n26"
+            },
+            {
+              "parent": "n5",
+              "child": "n26"
+            },
+            {
+              "parent": "n6",
+              "child": "n26"
+            },
+            {
+              "parent": "n5",
+              "child": "n26"
+            },
+            {
+              "parent": "root",
+              "child": "n29"
+            },
+            {
+              "parent": "n18",
+              "child": "n25"
+            },
+            {
+              "parent": "n22",
+              "child": "n23"
+            },
+            {
+              "parent": "n11",
+              "child": "n23"
+            },
+            {
+              "parent": "n13",
+              "child": "n23"
+            },
+            {
+              "parent": "n3",
+              "child": "n23"
+            },
+            {
+              "parent": "n5",
+              "child": "n23"
+            },
+            {
+              "parent": "n16",
+              "child": "n25"
+            },
+            {
+              "parent": "n14",
+              "child": "n16"
+            },
+            {
+              "parent": "n14",
+              "child": "n19"
+            },
+            {
+              "parent": "n7",
+              "child": "n16"
+            },
+            {
+              "parent": "n8",
+              "child": "n16"
+            },
+            {
+              "parent": "n7",
+              "child": "n18"
+            },
+            {
+              "parent": "n7",
+              "child": "n16"
+            },
+            {
+              "parent": "n1",
+              "child": "n16"
+            },
+            {
+              "parent": "n2",
+              "child": "n16"
+            },
+            {
+              "parent": "n11",
+              "child": "n14"
+            },
+            {
+              "parent": "n11",
+              "child": "n23"
+            },
+            {
+              "parent": "n3",
+              "child": "n5"
+            },
+            {
+              "parent": "n3",
+              "child": "n23"
+            },
+            {
+              "parent": "n3",
+              "child": "n8"
+            },
+            {
+              "parent": "n3",
+              "child": "n5"
+            },
+            {
+              "parent": "root",
+              "child": "n14"
+            },
+            {
+              "parent": "n2",
+              "child": "n11"
+            },
+            {
+              "parent": "n2",
+              "child": "n11"
+            },
+            {
+              "parent": "n2",
+              "child": "n3"
+            },
+            {
+              "parent": "n2",
+              "child": "n16"
+            },
+            {
+              "parent": "n6",
+              "child": "n9"
+            },
+            {
+              "parent": "n8",
+              "child": "n9"
+            },
+            {
+              "parent": "n3",
+              "child": "n8"
+            },
+            {
+              "parent": "n5",
+              "child": "n7"
+            },
+            {
+              "parent": "n1",
+              "child": "n6"
+            },
+            {
+              "parent": "n3",
+              "child": "n5"
+            },
+            {
+              "parent": "n1",
+              "child": "n16"
+            },
+            {
+              "parent": "n1",
+              "child": "n4"
+            },
+            {
+              "parent": "n1",
+              "child": "n6"
+            },
+            {
+              "parent": "n1",
+              "child": "n18"
+            },
+            {
+              "parent": "n29",
+              "child": "n33"
+            },
+            {
+              "parent": "n12",
+              "child": "n32"
+            },
+            {
+              "parent": "n9",
+              "child": "n32"
+            },
+            {
+              "parent": "n2",
+              "child": "n3"
+            },
+            {
+              "parent": "root",
+              "child": "n14"
+            },
+            {
+              "parent": "n2",
+              "child": "n11"
+            },
+            {
+              "parent": "root",
+              "child": "n29"
+            },
+            {
+              "parent": "n17",
+              "child": "n29"
+            },
+            {
+              "parent": "n5",
+              "child": "n26"
+            },
+            {
+              "parent": "n6",
+              "child": "n26"
+            },
+            {
+              "parent": "n19",
+              "child": "n26"
+            },
+            {
+              "parent": "n16",
+              "child": "n25"
+            },
+            {
+              "parent": "n18",
+              "child": "n25"
+            },
+            {
+              "parent": "n3",
+              "child": "n23"
+            },
+            {
+              "parent": "n5",
+              "child": "n23"
+            },
+            {
+              "parent": "n11",
+              "child": "n23"
+            },
+            {
+              "parent": "n13",
+              "child": "n23"
+            },
+            {
+              "parent": "n22",
+              "child": "n23"
+            },
+            {
+              "parent": "n8",
+              "child": "n16"
+            },
+            {
+              "parent": "n8",
+              "child": "n9"
+            },
+            {
+              "parent": "n8",
+              "child": "n22"
+            },
+            {
+              "parent": "n14",
+              "child": "n19"
+            },
+            {
+              "parent": "root",
+              "child": "n19"
+            },
+            {
+              "parent": "n16",
+              "child": "n25"
+            },
+            {
+              "parent": "n1",
+              "child": "n18"
+            },
+            {
+              "parent": "n7",
+              "child": "n18"
+            },
+            {
+              "parent": "n13",
+              "child": "n17"
+            },
+            {
+              "parent": "n13",
+              "child": "n23"
+            },
+            {
+              "parent": "n1",
+              "child": "n16"
+            },
+            {
+              "parent": "n2",
+              "child": "n16"
+            },
+            {
+              "parent": "n7",
+              "child": "n16"
+            },
+            {
+              "parent": "n8",
+              "child": "n16"
+            },
+            {
+              "parent": "n14",
+              "child": "n16"
+            },
+            {
+              "parent": "root",
+              "child": "n14"
+            },
+            {
+              "parent": "n11",
+              "child": "n14"
+            },
+            {
+              "parent": "n5",
+              "child": "n13"
+            },
+            {
+              "parent": "n5",
+              "child": "n23"
+            },
+            {
+              "parent": "n5",
+              "child": "n26"
+            },
+            {
+              "parent": "n5",
+              "child": "n7"
+            },
+            {
+              "parent": "n6",
+              "child": "n12"
+            },
+            {
+              "parent": "n6",
+              "child": "n26"
+            },
+            {
+              "parent": "n6",
+              "child": "n9"
+            },
+            {
+              "parent": "n2",
+              "child": "n11"
+            },
+            {
+              "parent": "root",
+              "child": "n1"
+            },
+            {
+              "parent": "root",
+              "child": "n2"
+            },
+            {
+              "parent": "root",
+              "child": "n14"
+            },
+            {
+              "parent": "root",
+              "child": "n29"
+            },
+            {
+              "parent": "root",
+              "child": "n19"
+            }
+          ],
+          "start": 36,
+          "end": 37
+        },
+        "path": "M635.3 500 L635.3 527 L599 527 L599 546 L599 674",
+        "terminal": false
+      },
+      {
+        "id": "[\"trunk\",\"node\",\"n7\",52]",
+        "from": {
+          "kind": "node",
+          "id": "n7"
+        },
+        "to": {
+          "kind": "node",
+          "id": "n7"
+        },
+        "consumers": {
+          "entries": [
+            {
+              "parent": "n3",
+              "child": "n23"
+            },
+            {
+              "parent": "n5",
+              "child": "n23"
+            },
+            {
+              "parent": "n11",
+              "child": "n23"
+            },
+            {
+              "parent": "n13",
+              "child": "n23"
+            },
+            {
+              "parent": "n6",
+              "child": "n9"
+            },
+            {
+              "parent": "n8",
+              "child": "n9"
+            },
+            {
+              "parent": "n29",
+              "child": "n33"
+            },
+            {
+              "parent": "n9",
+              "child": "n32"
+            },
+            {
+              "parent": "n12",
+              "child": "n32"
+            },
+            {
+              "parent": "n17",
+              "child": "n29"
+            },
+            {
+              "parent": "n19",
+              "child": "n26"
+            },
+            {
+              "parent": "n5",
+              "child": "n26"
+            },
+            {
+              "parent": "n6",
+              "child": "n26"
+            },
+            {
+              "parent": "n5",
+              "child": "n26"
+            },
+            {
+              "parent": "root",
+              "child": "n29"
+            },
+            {
+              "parent": "n18",
+              "child": "n25"
+            },
+            {
+              "parent": "n22",
+              "child": "n23"
+            },
+            {
+              "parent": "n11",
+              "child": "n23"
+            },
+            {
+              "parent": "n13",
+              "child": "n23"
+            },
+            {
+              "parent": "n3",
+              "child": "n23"
+            },
+            {
+              "parent": "n5",
+              "child": "n23"
+            },
+            {
+              "parent": "n16",
+              "child": "n25"
+            },
+            {
+              "parent": "n14",
+              "child": "n16"
+            },
+            {
+              "parent": "n14",
+              "child": "n19"
+            },
+            {
+              "parent": "n7",
+              "child": "n16"
+            },
+            {
+              "parent": "n8",
+              "child": "n16"
+            },
+            {
+              "parent": "n7",
+              "child": "n18"
+            },
+            {
+              "parent": "n7",
+              "child": "n16"
+            },
+            {
+              "parent": "n1",
+              "child": "n16"
+            },
+            {
+              "parent": "n2",
+              "child": "n16"
+            },
+            {
+              "parent": "n11",
+              "child": "n14"
+            },
+            {
+              "parent": "n11",
+              "child": "n23"
+            },
+            {
+              "parent": "n3",
+              "child": "n5"
+            },
+            {
+              "parent": "n3",
+              "child": "n23"
+            },
+            {
+              "parent": "n3",
+              "child": "n8"
+            },
+            {
+              "parent": "n3",
+              "child": "n5"
+            },
+            {
+              "parent": "root",
+              "child": "n14"
+            },
+            {
+              "parent": "n2",
+              "child": "n11"
+            },
+            {
+              "parent": "n2",
+              "child": "n11"
+            },
+            {
+              "parent": "n2",
+              "child": "n3"
+            },
+            {
+              "parent": "n2",
+              "child": "n16"
+            },
+            {
+              "parent": "n6",
+              "child": "n9"
+            },
+            {
+              "parent": "n8",
+              "child": "n9"
+            },
+            {
+              "parent": "n3",
+              "child": "n8"
+            },
+            {
+              "parent": "n5",
+              "child": "n7"
+            },
+            {
+              "parent": "n1",
+              "child": "n6"
+            },
+            {
+              "parent": "n3",
+              "child": "n5"
+            },
+            {
+              "parent": "n1",
+              "child": "n16"
+            },
+            {
+              "parent": "n1",
+              "child": "n4"
+            },
+            {
+              "parent": "n1",
+              "child": "n6"
+            },
+            {
+              "parent": "n1",
+              "child": "n18"
+            },
+            {
+              "parent": "n29",
+              "child": "n33"
+            },
+            {
+              "parent": "n12",
+              "child": "n32"
+            },
+            {
+              "parent": "n9",
+              "child": "n32"
+            },
+            {
+              "parent": "n2",
+              "child": "n3"
+            },
+            {
+              "parent": "root",
+              "child": "n14"
+            },
+            {
+              "parent": "n2",
+              "child": "n11"
+            },
+            {
+              "parent": "root",
+              "child": "n29"
+            },
+            {
+              "parent": "n17",
+              "child": "n29"
+            },
+            {
+              "parent": "n5",
+              "child": "n26"
+            },
+            {
+              "parent": "n6",
+              "child": "n26"
+            },
+            {
+              "parent": "n19",
+              "child": "n26"
+            },
+            {
+              "parent": "n16",
+              "child": "n25"
+            },
+            {
+              "parent": "n18",
+              "child": "n25"
+            },
+            {
+              "parent": "n3",
+              "child": "n23"
+            },
+            {
+              "parent": "n5",
+              "child": "n23"
+            },
+            {
+              "parent": "n11",
+              "child": "n23"
+            },
+            {
+              "parent": "n13",
+              "child": "n23"
+            },
+            {
+              "parent": "n22",
+              "child": "n23"
+            },
+            {
+              "parent": "n8",
+              "child": "n16"
+            },
+            {
+              "parent": "n8",
+              "child": "n9"
+            },
+            {
+              "parent": "n8",
+              "child": "n22"
+            },
+            {
+              "parent": "n14",
+              "child": "n19"
+            },
+            {
+              "parent": "root",
+              "child": "n19"
+            },
+            {
+              "parent": "n16",
+              "child": "n25"
+            },
+            {
+              "parent": "n1",
+              "child": "n18"
+            },
+            {
+              "parent": "n7",
+              "child": "n18"
+            },
+            {
+              "parent": "n13",
+              "child": "n17"
+            },
+            {
+              "parent": "n13",
+              "child": "n23"
+            },
+            {
+              "parent": "n1",
+              "child": "n16"
+            },
+            {
+              "parent": "n2",
+              "child": "n16"
+            },
+            {
+              "parent": "n7",
+              "child": "n16"
+            },
+            {
+              "parent": "n8",
+              "child": "n16"
+            },
+            {
+              "parent": "n14",
+              "child": "n16"
+            },
+            {
+              "parent": "root",
+              "child": "n14"
+            },
+            {
+              "parent": "n11",
+              "child": "n14"
+            },
+            {
+              "parent": "n5",
+              "child": "n13"
+            },
+            {
+              "parent": "n5",
+              "child": "n23"
+            },
+            {
+              "parent": "n5",
+              "child": "n26"
+            },
+            {
+              "parent": "n5",
+              "child": "n7"
+            },
+            {
+              "parent": "n6",
+              "child": "n12"
+            },
+            {
+              "parent": "n6",
+              "child": "n26"
+            },
+            {
+              "parent": "n6",
+              "child": "n9"
+            },
+            {
+              "parent": "n2",
+              "child": "n11"
+            },
+            {
+              "parent": "root",
+              "child": "n1"
+            },
+            {
+              "parent": "root",
+              "child": "n2"
+            },
+            {
+              "parent": "root",
+              "child": "n14"
+            },
+            {
+              "parent": "root",
+              "child": "n29"
+            },
+            {
+              "parent": "root",
+              "child": "n19"
+            }
+          ],
+          "start": 27,
+          "end": 28
+        },
+        "path": "M638 893 L638 899 L559 899 L559 975 L559 1103",
+        "terminal": false
+      },
+      {
+        "id": "[\"trunk\",\"node\",\"n1\",56]",
+        "from": {
+          "kind": "node",
+          "id": "n1"
+        },
+        "to": {
+          "kind": "node",
+          "id": "n1"
+        },
+        "consumers": {
+          "entries": [
+            {
+              "parent": "n3",
+              "child": "n23"
+            },
+            {
+              "parent": "n5",
+              "child": "n23"
+            },
+            {
+              "parent": "n11",
+              "child": "n23"
+            },
+            {
+              "parent": "n13",
+              "child": "n23"
+            },
+            {
+              "parent": "n6",
+              "child": "n9"
+            },
+            {
+              "parent": "n8",
+              "child": "n9"
+            },
+            {
+              "parent": "n29",
+              "child": "n33"
+            },
+            {
+              "parent": "n9",
+              "child": "n32"
+            },
+            {
+              "parent": "n12",
+              "child": "n32"
+            },
+            {
+              "parent": "n17",
+              "child": "n29"
+            },
+            {
+              "parent": "n19",
+              "child": "n26"
+            },
+            {
+              "parent": "n5",
+              "child": "n26"
+            },
+            {
+              "parent": "n6",
+              "child": "n26"
+            },
+            {
+              "parent": "n5",
+              "child": "n26"
+            },
+            {
+              "parent": "root",
+              "child": "n29"
+            },
+            {
+              "parent": "n18",
+              "child": "n25"
+            },
+            {
+              "parent": "n22",
+              "child": "n23"
+            },
+            {
+              "parent": "n11",
+              "child": "n23"
+            },
+            {
+              "parent": "n13",
+              "child": "n23"
+            },
+            {
+              "parent": "n3",
+              "child": "n23"
+            },
+            {
+              "parent": "n5",
+              "child": "n23"
+            },
+            {
+              "parent": "n16",
+              "child": "n25"
+            },
+            {
+              "parent": "n14",
+              "child": "n16"
+            },
+            {
+              "parent": "n14",
+              "child": "n19"
+            },
+            {
+              "parent": "n7",
+              "child": "n16"
+            },
+            {
+              "parent": "n8",
+              "child": "n16"
+            },
+            {
+              "parent": "n7",
+              "child": "n18"
+            },
+            {
+              "parent": "n7",
+              "child": "n16"
+            },
+            {
+              "parent": "n1",
+              "child": "n16"
+            },
+            {
+              "parent": "n2",
+              "child": "n16"
+            },
+            {
+              "parent": "n11",
+              "child": "n14"
+            },
+            {
+              "parent": "n11",
+              "child": "n23"
+            },
+            {
+              "parent": "n3",
+              "child": "n5"
+            },
+            {
+              "parent": "n3",
+              "child": "n23"
+            },
+            {
+              "parent": "n3",
+              "child": "n8"
+            },
+            {
+              "parent": "n3",
+              "child": "n5"
+            },
+            {
+              "parent": "root",
+              "child": "n14"
+            },
+            {
+              "parent": "n2",
+              "child": "n11"
+            },
+            {
+              "parent": "n2",
+              "child": "n11"
+            },
+            {
+              "parent": "n2",
+              "child": "n3"
+            },
+            {
+              "parent": "n2",
+              "child": "n16"
+            },
+            {
+              "parent": "n6",
+              "child": "n9"
+            },
+            {
+              "parent": "n8",
+              "child": "n9"
+            },
+            {
+              "parent": "n3",
+              "child": "n8"
+            },
+            {
+              "parent": "n5",
+              "child": "n7"
+            },
+            {
+              "parent": "n1",
+              "child": "n6"
+            },
+            {
+              "parent": "n3",
+              "child": "n5"
+            },
+            {
+              "parent": "n1",
+              "child": "n16"
+            },
+            {
+              "parent": "n1",
+              "child": "n4"
+            },
+            {
+              "parent": "n1",
+              "child": "n6"
+            },
+            {
+              "parent": "n1",
+              "child": "n18"
+            },
+            {
+              "parent": "n29",
+              "child": "n33"
+            },
+            {
+              "parent": "n12",
+              "child": "n32"
+            },
+            {
+              "parent": "n9",
+              "child": "n32"
+            },
+            {
+              "parent": "n2",
+              "child": "n3"
+            },
+            {
+              "parent": "root",
+              "child": "n14"
+            },
+            {
+              "parent": "n2",
+              "child": "n11"
+            },
+            {
+              "parent": "root",
+              "child": "n29"
+            },
+            {
+              "parent": "n17",
+              "child": "n29"
+            },
+            {
+              "parent": "n5",
+              "child": "n26"
+            },
+            {
+              "parent": "n6",
+              "child": "n26"
+            },
+            {
+              "parent": "n19",
+              "child": "n26"
+            },
+            {
+              "parent": "n16",
+              "child": "n25"
+            },
+            {
+              "parent": "n18",
+              "child": "n25"
+            },
+            {
+              "parent": "n3",
+              "child": "n23"
+            },
+            {
+              "parent": "n5",
+              "child": "n23"
+            },
+            {
+              "parent": "n11",
+              "child": "n23"
+            },
+            {
+              "parent": "n13",
+              "child": "n23"
+            },
+            {
+              "parent": "n22",
+              "child": "n23"
+            },
+            {
+              "parent": "n8",
+              "child": "n16"
+            },
+            {
+              "parent": "n8",
+              "child": "n9"
+            },
+            {
+              "parent": "n8",
+              "child": "n22"
+            },
+            {
+              "parent": "n14",
+              "child": "n19"
+            },
+            {
+              "parent": "root",
+              "child": "n19"
+            },
+            {
+              "parent": "n16",
+              "child": "n25"
+            },
+            {
+              "parent": "n1",
+              "child": "n18"
+            },
+            {
+              "parent": "n7",
+              "child": "n18"
+            },
+            {
+              "parent": "n13",
+              "child": "n17"
+            },
+            {
+              "parent": "n13",
+              "child": "n23"
+            },
+            {
+              "parent": "n1",
+              "child": "n16"
+            },
+            {
+              "parent": "n2",
+              "child": "n16"
+            },
+            {
+              "parent": "n7",
+              "child": "n16"
+            },
+            {
+              "parent": "n8",
+              "child": "n16"
+            },
+            {
+              "parent": "n14",
+              "child": "n16"
+            },
+            {
+              "parent": "root",
+              "child": "n14"
+            },
+            {
+              "parent": "n11",
+              "child": "n14"
+            },
+            {
+              "parent": "n5",
+              "child": "n13"
+            },
+            {
+              "parent": "n5",
+              "child": "n23"
+            },
+            {
+              "parent": "n5",
+              "child": "n26"
+            },
+            {
+              "parent": "n5",
+              "child": "n7"
+            },
+            {
+              "parent": "n6",
+              "child": "n12"
+            },
+            {
+              "parent": "n6",
+              "child": "n26"
+            },
+            {
+              "parent": "n6",
+              "child": "n9"
+            },
+            {
+              "parent": "n2",
+              "child": "n11"
+            },
+            {
+              "parent": "root",
+              "child": "n1"
+            },
+            {
+              "parent": "root",
+              "child": "n2"
+            },
+            {
+              "parent": "root",
+              "child": "n14"
+            },
+            {
+              "parent": "root",
+              "child": "n29"
+            },
+            {
+              "parent": "root",
+              "child": "n19"
+            }
+          ],
+          "start": 50,
+          "end": 51
+        },
+        "path": "M599 290 L599 299 L392 299 L392 345 L392 473 L392 546 L392 674 L392 765 L392 893",
+        "terminal": false
+      },
+      {
+        "id": "[\"trunk\",\"node\",\"n13\",76]",
+        "from": {
+          "kind": "node",
+          "id": "n13"
+        },
+        "to": {
+          "kind": "node",
+          "id": "n13"
+        },
+        "consumers": {
+          "entries": [
+            {
+              "parent": "n3",
+              "child": "n23"
+            },
+            {
+              "parent": "n5",
+              "child": "n23"
+            },
+            {
+              "parent": "n11",
+              "child": "n23"
+            },
+            {
+              "parent": "n13",
+              "child": "n23"
+            },
+            {
+              "parent": "n6",
+              "child": "n9"
+            },
+            {
+              "parent": "n8",
+              "child": "n9"
+            },
+            {
+              "parent": "n29",
+              "child": "n33"
+            },
+            {
+              "parent": "n9",
+              "child": "n32"
+            },
+            {
+              "parent": "n12",
+              "child": "n32"
+            },
+            {
+              "parent": "n17",
+              "child": "n29"
+            },
+            {
+              "parent": "n19",
+              "child": "n26"
+            },
+            {
+              "parent": "n5",
+              "child": "n26"
+            },
+            {
+              "parent": "n6",
+              "child": "n26"
+            },
+            {
+              "parent": "n5",
+              "child": "n26"
+            },
+            {
+              "parent": "root",
+              "child": "n29"
+            },
+            {
+              "parent": "n18",
+              "child": "n25"
+            },
+            {
+              "parent": "n22",
+              "child": "n23"
+            },
+            {
+              "parent": "n11",
+              "child": "n23"
+            },
+            {
+              "parent": "n13",
+              "child": "n23"
+            },
+            {
+              "parent": "n3",
+              "child": "n23"
+            },
+            {
+              "parent": "n5",
+              "child": "n23"
+            },
+            {
+              "parent": "n16",
+              "child": "n25"
+            },
+            {
+              "parent": "n14",
+              "child": "n16"
+            },
+            {
+              "parent": "n14",
+              "child": "n19"
+            },
+            {
+              "parent": "n7",
+              "child": "n16"
+            },
+            {
+              "parent": "n8",
+              "child": "n16"
+            },
+            {
+              "parent": "n7",
+              "child": "n18"
+            },
+            {
+              "parent": "n7",
+              "child": "n16"
+            },
+            {
+              "parent": "n1",
+              "child": "n16"
+            },
+            {
+              "parent": "n2",
+              "child": "n16"
+            },
+            {
+              "parent": "n11",
+              "child": "n14"
+            },
+            {
+              "parent": "n11",
+              "child": "n23"
+            },
+            {
+              "parent": "n3",
+              "child": "n5"
+            },
+            {
+              "parent": "n3",
+              "child": "n23"
+            },
+            {
+              "parent": "n3",
+              "child": "n8"
+            },
+            {
+              "parent": "n3",
+              "child": "n5"
+            },
+            {
+              "parent": "root",
+              "child": "n14"
+            },
+            {
+              "parent": "n2",
+              "child": "n11"
+            },
+            {
+              "parent": "n2",
+              "child": "n11"
+            },
+            {
+              "parent": "n2",
+              "child": "n3"
+            },
+            {
+              "parent": "n2",
+              "child": "n16"
+            },
+            {
+              "parent": "n6",
+              "child": "n9"
+            },
+            {
+              "parent": "n8",
+              "child": "n9"
+            },
+            {
+              "parent": "n3",
+              "child": "n8"
+            },
+            {
+              "parent": "n5",
+              "child": "n7"
+            },
+            {
+              "parent": "n1",
+              "child": "n6"
+            },
+            {
+              "parent": "n3",
+              "child": "n5"
+            },
+            {
+              "parent": "n1",
+              "child": "n16"
+            },
+            {
+              "parent": "n1",
+              "child": "n4"
+            },
+            {
+              "parent": "n1",
+              "child": "n6"
+            },
+            {
+              "parent": "n1",
+              "child": "n18"
+            },
+            {
+              "parent": "n29",
+              "child": "n33"
+            },
+            {
+              "parent": "n12",
+              "child": "n32"
+            },
+            {
+              "parent": "n9",
+              "child": "n32"
+            },
+            {
+              "parent": "n2",
+              "child": "n3"
+            },
+            {
+              "parent": "root",
+              "child": "n14"
+            },
+            {
+              "parent": "n2",
+              "child": "n11"
+            },
+            {
+              "parent": "root",
+              "child": "n29"
+            },
+            {
+              "parent": "n17",
+              "child": "n29"
+            },
+            {
+              "parent": "n5",
+              "child": "n26"
+            },
+            {
+              "parent": "n6",
+              "child": "n26"
+            },
+            {
+              "parent": "n19",
+              "child": "n26"
+            },
+            {
+              "parent": "n16",
+              "child": "n25"
+            },
+            {
+              "parent": "n18",
+              "child": "n25"
+            },
+            {
+              "parent": "n3",
+              "child": "n23"
+            },
+            {
+              "parent": "n5",
+              "child": "n23"
+            },
+            {
+              "parent": "n11",
+              "child": "n23"
+            },
+            {
+              "parent": "n13",
+              "child": "n23"
+            },
+            {
+              "parent": "n22",
+              "child": "n23"
+            },
+            {
+              "parent": "n8",
+              "child": "n16"
+            },
+            {
+              "parent": "n8",
+              "child": "n9"
+            },
+            {
+              "parent": "n8",
+              "child": "n22"
+            },
+            {
+              "parent": "n14",
+              "child": "n19"
+            },
+            {
+              "parent": "root",
+              "child": "n19"
+            },
+            {
+              "parent": "n16",
+              "child": "n25"
+            },
+            {
+              "parent": "n1",
+              "child": "n18"
+            },
+            {
+              "parent": "n7",
+              "child": "n18"
+            },
+            {
+              "parent": "n13",
+              "child": "n17"
+            },
+            {
+              "parent": "n13",
+              "child": "n23"
+            },
+            {
+              "parent": "n1",
+              "child": "n16"
+            },
+            {
+              "parent": "n2",
+              "child": "n16"
+            },
+            {
+              "parent": "n7",
+              "child": "n16"
+            },
+            {
+              "parent": "n8",
+              "child": "n16"
+            },
+            {
+              "parent": "n14",
+              "child": "n16"
+            },
+            {
+              "parent": "root",
+              "child": "n14"
+            },
+            {
+              "parent": "n11",
+              "child": "n14"
+            },
+            {
+              "parent": "n5",
+              "child": "n13"
+            },
+            {
+              "parent": "n5",
+              "child": "n23"
+            },
+            {
+              "parent": "n5",
+              "child": "n26"
+            },
+            {
+              "parent": "n5",
+              "child": "n7"
+            },
+            {
+              "parent": "n6",
+              "child": "n12"
+            },
+            {
+              "parent": "n6",
+              "child": "n26"
+            },
+            {
+              "parent": "n6",
+              "child": "n9"
+            },
+            {
+              "parent": "n2",
+              "child": "n11"
+            },
+            {
+              "parent": "root",
+              "child": "n1"
+            },
+            {
+              "parent": "root",
+              "child": "n2"
+            },
+            {
+              "parent": "root",
+              "child": "n14"
+            },
+            {
+              "parent": "root",
+              "child": "n29"
+            },
+            {
+              "parent": "root",
+              "child": "n19"
+            }
+          ],
+          "start": 78,
+          "end": 79
+        },
+        "path": "M802 893 L802 914 L398 914 L398 975 L398 1103",
+        "terminal": false
+      },
+      {
+        "id": "[\"node\",\"root\",\"node\",\"n1\"]",
+        "from": {
+          "kind": "node",
+          "id": "root"
+        },
+        "to": {
+          "kind": "node",
+          "id": "n1"
+        },
+        "consumers": [
+          {
+            "parent": "root",
+            "child": "n1"
+          }
+        ],
+        "path": "M675 128 L675 134 C675 137.3137084988 672.3137084988 140 669 140 L602 140 C600.3431457506 140 599 141.3431457506 599 143 L599 146 L599 154 ",
+        "terminal": true
+      },
+      {
+        "id": "[\"node\",\"n2\",\"junction\",\"j:[\\\"n2\\\",\\\"root\\\"]\"]",
+        "from": {
+          "kind": "node",
+          "id": "n2"
+        },
+        "to": {
+          "kind": "junction",
+          "id": "j:[\"n2\",\"root\"]"
+        },
+        "consumers": [
+          {
+            "parent": "n2",
+            "child": "n11"
+          },
+          {
+            "parent": "n2",
+            "child": "n3"
+          }
+        ],
+        "path": "M763 290 L763 302 L632.7 302 L632.7 308 C632.7 311,629.7 311,629.7 314",
+        "terminal": false
+      },
+      {
+        "id": "[\"junction\",\"j:[\\\"n2\\\",\\\"root\\\"]\",\"junction\",\"j:[\\\"n2\\\",\\\"n5\\\",\\\"root\\\"]\"]",
+        "from": {
+          "kind": "junction",
+          "id": "j:[\"n2\",\"root\"]"
+        },
+        "to": {
+          "kind": "junction",
+          "id": "j:[\"n2\",\"n5\",\"root\"]"
+        },
+        "consumers": [
+          {
+            "parent": "n2",
+            "child": "n11"
+          }
+        ],
+        "path": "M678 473 L678 488 L595 488 L595 546 L595 674 L595 701 L608.5 701 L608.5 704 C608.5 707,611.5 707,611.5 710",
+        "terminal": false
+      },
+      {
+        "id": "[\"junction\",\"j:[\\\"n2\\\",\\\"n5\\\",\\\"root\\\"]\",\"junction\",\"j:[\\\"n2\\\",\\\"n5\\\",\\\"n6\\\",\\\"root\\\"]\"]",
+        "from": {
+          "kind": "junction",
+          "id": "j:[\"n2\",\"n5\",\"root\"]"
+        },
+        "to": {
+          "kind": "junction",
+          "id": "j:[\"n2\",\"n5\",\"n6\",\"root\"]"
+        },
+        "consumers": [
+          {
+            "parent": "n2",
+            "child": "n11"
+          }
+        ],
+        "path": "M611.5 710 L611.5 737 L376 737 L376 765 L376 893 L376 920 L445.25 920 L445.25 932 C445.25 935,448.25 935,448.25 938",
+        "terminal": false
+      },
+      {
+        "id": "[\"junction\",\"j:[\\\"n2\\\",\\\"n5\\\",\\\"n6\\\",\\\"root\\\"]\",\"node\",\"n11\"]",
+        "from": {
+          "kind": "junction",
+          "id": "j:[\"n2\",\"n5\",\"n6\",\"root\"]"
+        },
+        "to": {
+          "kind": "node",
+          "id": "n11"
+        },
+        "consumers": [
+          {
+            "parent": "n2",
+            "child": "n11"
+          }
+        ],
+        "path": "M448.25 938 L448.25 947 L146 947 L146 967",
+        "terminal": true
+      },
+      {
+        "id": "[\"node\",\"root\",\"junction\",\"j:[\\\"n2\\\",\\\"root\\\"]\"]",
+        "from": {
+          "kind": "node",
+          "id": "root"
+        },
+        "to": {
+          "kind": "junction",
+          "id": "j:[\"n2\",\"root\"]"
+        },
+        "consumers": [
+          {
+            "parent": "root",
+            "child": "n14"
+          }
+        ],
+        "path": "M687 290 L687 299 L626.7 299 L626.7 308 C626.7 311,629.7 311,629.7 314",
+        "terminal": false
+      },
+      {
+        "id": "[\"node\",\"n6\",\"node\",\"n12\"]",
+        "from": {
+          "kind": "node",
+          "id": "n6"
+        },
+        "to": {
+          "kind": "node",
+          "id": "n12"
+        },
+        "consumers": [
+          {
+            "parent": "n6",
+            "child": "n12"
+          }
+        ],
+        "path": "M474 893 L474 902 L638 902 L638 967",
+        "terminal": true
+      },
+      {
+        "id": "[\"node\",\"n5\",\"node\",\"n13\"]",
+        "from": {
+          "kind": "node",
+          "id": "n5"
+        },
+        "to": {
+          "kind": "node",
+          "id": "n13"
+        },
+        "consumers": [
+          {
+            "parent": "n5",
+            "child": "n13"
+          }
+        ],
+        "path": "M681 674 L681 683 L802 683 L802 757",
+        "terminal": true
+      },
+      {
+        "id": "[\"junction\",\"j:[\\\"n2\\\",\\\"root\\\"]\",\"junction\",\"j:[\\\"n2\\\",\\\"n3\\\",\\\"root\\\"]\"]",
+        "from": {
+          "kind": "junction",
+          "id": "j:[\"n2\",\"root\"]"
+        },
+        "to": {
+          "kind": "junction",
+          "id": "j:[\"n2\",\"n3\",\"root\"]"
+        },
+        "consumers": [
+          {
+            "parent": "root",
+            "child": "n14"
+          }
+        ],
+        "path": "M678 473 L678 488 L638.3 488 L638.3 494 C638.3 497,635.3 497,635.3 500",
+        "terminal": false
+      },
+      {
+        "id": "[\"junction\",\"j:[\\\"n2\\\",\\\"n3\\\",\\\"root\\\"]\",\"junction\",\"j:[\\\"n11\\\",\\\"n2\\\",\\\"n3\\\",\\\"root\\\"]\"]",
+        "from": {
+          "kind": "junction",
+          "id": "j:[\"n2\",\"n3\",\"root\"]"
+        },
+        "to": {
+          "kind": "junction",
+          "id": "j:[\"n11\",\"n2\",\"n3\",\"root\"]"
+        },
+        "consumers": [
+          {
+            "parent": "root",
+            "child": "n14"
+          }
+        ],
+        "path": "M599 674 L599 680 L556 680 L556 765 L556 893 L556 975 L556 1103 L556 1112 L516.3 1112 L516.3 1163 C516.3 1166,513.3 1166,513.3 1169",
+        "terminal": false
+      },
+      {
+        "id": "[\"junction\",\"j:[\\\"n11\\\",\\\"n2\\\",\\\"n3\\\",\\\"root\\\"]\",\"node\",\"n14\"]",
+        "from": {
+          "kind": "junction",
+          "id": "j:[\"n11\",\"n2\",\"n3\",\"root\"]"
+        },
+        "to": {
+          "kind": "node",
+          "id": "n14"
+        },
+        "consumers": [
+          {
+            "parent": "root",
+            "child": "n14"
+          },
+          {
+            "parent": "n11",
+            "child": "n14"
+          }
+        ],
+        "path": "M513.3 1169 L513.3 1208 L474 1208 L474 1219",
+        "terminal": true
+      },
+      {
+        "id": "[\"node\",\"n3\",\"junction\",\"j:[\\\"n2\\\",\\\"n3\\\",\\\"root\\\"]\"]",
+        "from": {
+          "kind": "node",
+          "id": "n3"
+        },
+        "to": {
+          "kind": "junction",
+          "id": "j:[\"n2\",\"n3\",\"root\"]"
+        },
+        "consumers": [
+          {
+            "parent": "n3",
+            "child": "n5"
+          }
+        ],
+        "path": "M599 473 L599 491 L632.3 491 L632.3 494 C632.3 497,635.3 497,635.3 500",
+        "terminal": false
+      },
+      {
+        "id": "[\"node\",\"n11\",\"junction\",\"j:[\\\"n11\\\",\\\"n2\\\",\\\"n3\\\",\\\"root\\\"]\"]",
+        "from": {
+          "kind": "node",
+          "id": "n11"
+        },
+        "to": {
+          "kind": "junction",
+          "id": "j:[\"n11\",\"n2\",\"n3\",\"root\"]"
+        },
+        "consumers": [
+          {
+            "parent": "n11",
+            "child": "n14"
+          }
+        ],
+        "path": "M146 1103 L146 1148 L510.3 1148 L510.3 1163 C510.3 1166,513.3 1166,513.3 1169",
+        "terminal": false
+      },
+      {
+        "id": "[\"node\",\"n1\",\"junction\",\"j:[\\\"n1\\\",\\\"n2\\\"]\"]",
+        "from": {
+          "kind": "node",
+          "id": "n1"
+        },
+        "to": {
+          "kind": "junction",
+          "id": "j:[\"n1\",\"n2\"]"
+        },
+        "consumers": [
+          {
+            "parent": "n1",
+            "child": "n16"
+          }
+        ],
+        "path": "M599 290 L599 305 L645.2 305 L645.2 308 C645.2 311,648.2 311,648.2 314",
+        "terminal": false
+      },
+      {
+        "id": "[\"junction\",\"j:[\\\"n1\\\",\\\"n2\\\"]\",\"junction\",\"j:[\\\"n1\\\",\\\"n14\\\",\\\"n2\\\",\\\"n7\\\",\\\"n8\\\"]\"]",
+        "from": {
+          "kind": "junction",
+          "id": "j:[\"n1\",\"n2\"]"
+        },
+        "to": {
+          "kind": "junction",
+          "id": "j:[\"n1\",\"n14\",\"n2\",\"n7\",\"n8\"]"
+        },
+        "consumers": [
+          {
+            "parent": "n1",
+            "child": "n16"
+          },
+          {
+            "parent": "n2",
+            "child": "n16"
+          }
+        ],
+        "path": "M648.2 314 L648.2 323 L513 323 L513 345 L513 473 L513 546 L513 674 L513 701 L562 701 L562 765 L562 893 L562 975 L562 1103 L562 1227 L562 1355 L562 1370 L596.36 1370 L596.36 1382 C596.36 1385,593.36 1385,593.36 1388",
+        "terminal": false
+      },
+      {
+        "id": "[\"junction\",\"j:[\\\"n1\\\",\\\"n14\\\",\\\"n2\\\",\\\"n7\\\",\\\"n8\\\"]\",\"node\",\"n16\"]",
+        "from": {
+          "kind": "junction",
+          "id": "j:[\"n1\",\"n14\",\"n2\",\"n7\",\"n8\"]"
+        },
+        "to": {
+          "kind": "node",
+          "id": "n16"
+        },
+        "consumers": [
+          {
+            "parent": "n1",
+            "child": "n16"
+          },
+          {
+            "parent": "n2",
+            "child": "n16"
+          },
+          {
+            "parent": "n7",
+            "child": "n16"
+          },
+          {
+            "parent": "n8",
+            "child": "n16"
+          },
+          {
+            "parent": "n14",
+            "child": "n16"
+          }
+        ],
+        "path": "M593.36 1388 L593.36 1397 L550 1397 L550 1416 L550 1544 L550 1556 L599 1556 L599 1600",
+        "terminal": true
+      },
+      {
+        "id": "[\"node\",\"n2\",\"junction\",\"j:[\\\"n1\\\",\\\"n2\\\"]\"]",
+        "from": {
+          "kind": "node",
+          "id": "n2"
+        },
+        "to": {
+          "kind": "junction",
+          "id": "j:[\"n1\",\"n2\"]"
+        },
+        "consumers": [
+          {
+            "parent": "n2",
+            "child": "n16"
+          }
+        ],
+        "path": "M763 290 L763 302 L651.2 302 L651.2 308 C651.2 311,648.2 311,648.2 314",
+        "terminal": false
+      },
+      {
+        "id": "[\"node\",\"n7\",\"junction\",\"j:[\\\"n7\\\",\\\"n8\\\"]\"]",
+        "from": {
+          "kind": "node",
+          "id": "n7"
+        },
+        "to": {
+          "kind": "junction",
+          "id": "j:[\"n7\",\"n8\"]"
+        },
+        "consumers": [
+          {
+            "parent": "n7",
+            "child": "n16"
+          }
+        ],
+        "path": "M559 1103 L559 1133 L610.3 1133 L610.3 1163 C610.3 1166,607.3 1166,607.3 1169",
+        "terminal": false
+      },
+      {
+        "id": "[\"junction\",\"j:[\\\"n7\\\",\\\"n8\\\"]\",\"junction\",\"j:[\\\"n1\\\",\\\"n14\\\",\\\"n2\\\",\\\"n7\\\",\\\"n8\\\"]\"]",
+        "from": {
+          "kind": "junction",
+          "id": "j:[\"n7\",\"n8\"]"
+        },
+        "to": {
+          "kind": "junction",
+          "id": "j:[\"n1\",\"n14\",\"n2\",\"n7\",\"n8\"]"
+        },
+        "consumers": [
+          {
+            "parent": "n7",
+            "child": "n16"
+          },
+          {
+            "parent": "n8",
+            "child": "n16"
+          }
+        ],
+        "path": "M607.3 1169 L607.3 1205 L553 1205 L553 1227 L553 1355 L553 1373 L593.36 1373 L593.36 1388",
+        "terminal": false
+      },
+      {
+        "id": "[\"node\",\"n8\",\"junction\",\"j:[\\\"n7\\\",\\\"n8\\\"]\"]",
+        "from": {
+          "kind": "node",
+          "id": "n8"
+        },
+        "to": {
+          "kind": "junction",
+          "id": "j:[\"n7\",\"n8\"]"
+        },
+        "consumers": [
+          {
+            "parent": "n8",
+            "child": "n16"
+          }
+        ],
+        "path": "M474 1103 L474 1136 L604.3 1136 L604.3 1163 C604.3 1166,607.3 1166,607.3 1169",
+        "terminal": false
+      },
+      {
+        "id": "[\"node\",\"n14\",\"junction\",\"j:[\\\"n1\\\",\\\"n14\\\",\\\"n2\\\",\\\"n7\\\",\\\"n8\\\"]\"]",
+        "from": {
+          "kind": "node",
+          "id": "n14"
+        },
+        "to": {
+          "kind": "junction",
+          "id": "j:[\"n1\",\"n14\",\"n2\",\"n7\",\"n8\"]"
+        },
+        "consumers": [
+          {
+            "parent": "n14",
+            "child": "n16"
+          }
+        ],
+        "path": "M474 1355 L474 1376 L590.36 1376 L590.36 1382 C590.36 1385,593.36 1385,593.36 1388",
+        "terminal": false
+      },
+      {
+        "id": "[\"node\",\"n13\",\"node\",\"n17\"]",
+        "from": {
+          "kind": "node",
+          "id": "n13"
+        },
+        "to": {
+          "kind": "node",
+          "id": "n17"
+        },
+        "consumers": [
+          {
+            "parent": "n13",
+            "child": "n17"
+          }
+        ],
+        "path": "M802 893 L802 967",
+        "terminal": true
+      },
+      {
+        "id": "[\"node\",\"n1\",\"junction\",\"j:[\\\"n1\\\",\\\"n7\\\"]\"]",
+        "from": {
+          "kind": "node",
+          "id": "n1"
+        },
+        "to": {
+          "kind": "junction",
+          "id": "j:[\"n1\",\"n7\"]"
+        },
+        "consumers": [
+          {
+            "parent": "n1",
+            "child": "n18"
+          }
+        ],
+        "path": "M392 893 L392 917 L492.1 917 L492.1 932 C492.1 935,495.1 935,495.1 938",
+        "terminal": false
+      },
+      {
+        "id": "[\"junction\",\"j:[\\\"n1\\\",\\\"n7\\\"]\",\"node\",\"n18\"]",
+        "from": {
+          "kind": "junction",
+          "id": "j:[\"n1\",\"n7\"]"
+        },
+        "to": {
+          "kind": "node",
+          "id": "n18"
+        },
+        "consumers": [
+          {
+            "parent": "n1",
+            "child": "n18"
+          },
+          {
+            "parent": "n7",
+            "child": "n18"
+          }
+        ],
+        "path": "M495.1 938 L495.1 950 L310 950 L310 967",
+        "terminal": true
+      },
+      {
+        "id": "[\"node\",\"n7\",\"junction\",\"j:[\\\"n1\\\",\\\"n7\\\"]\"]",
+        "from": {
+          "kind": "node",
+          "id": "n7"
+        },
+        "to": {
+          "kind": "junction",
+          "id": "j:[\"n1\",\"n7\"]"
+        },
+        "consumers": [
+          {
+            "parent": "n7",
+            "child": "n18"
+          }
+        ],
+        "path": "M638 893 L638 899 L498.1 899 L498.1 932 C498.1 935,495.1 935,495.1 938",
+        "terminal": false
+      },
+      {
+        "id": "[\"node\",\"n14\",\"junction\",\"j:[\\\"n14\\\",\\\"n16\\\",\\\"root\\\"]\"]",
+        "from": {
+          "kind": "node",
+          "id": "n14"
+        },
+        "to": {
+          "kind": "junction",
+          "id": "j:[\"n14\",\"n16\",\"root\"]"
+        },
+        "consumers": [
+          {
+            "parent": "n14",
+            "child": "n19"
+          }
+        ],
+        "path": "M474 1355 L474 1364 L714 1364 L714 1416 L714 1544 L714 1550 L513 1550 L513 1608 L513 1736 L513 1748 L574.5 1748 L574.5 1751 C574.5 1754,577.5 1754,577.5 1757",
+        "terminal": false
+      },
+      {
+        "id": "[\"junction\",\"j:[\\\"n14\\\",\\\"n16\\\",\\\"root\\\"]\",\"node\",\"n19\"]",
+        "from": {
+          "kind": "junction",
+          "id": "j:[\"n14\",\"n16\",\"root\"]"
+        },
+        "to": {
+          "kind": "node",
+          "id": "n19"
+        },
+        "consumers": [
+          {
+            "parent": "n14",
+            "child": "n19"
+          },
+          {
+            "parent": "root",
+            "child": "n19"
+          }
+        ],
+        "path": "M577.5 1757 L577.5 1784 L474 1784 L474 1795",
+        "terminal": true
+      },
+      {
+        "id": "[\"node\",\"n16\",\"junction\",\"j:[\\\"n14\\\",\\\"n16\\\",\\\"root\\\"]\"]",
+        "from": {
+          "kind": "node",
+          "id": "n16"
+        },
+        "to": {
+          "kind": "junction",
+          "id": "j:[\"n14\",\"n16\",\"root\"]"
+        },
+        "consumers": [
+          {
+            "parent": "n16",
+            "child": "n25"
+          }
+        ],
+        "path": "M599 1736 L599 1739 L580.5 1739 L580.5 1751 C580.5 1754,577.5 1754,577.5 1757",
+        "terminal": false
+      },
+      {
+        "id": "[\"node\",\"root\",\"junction\",\"j:[\\\"n14\\\",\\\"n16\\\",\\\"root\\\"]\"]",
+        "from": {
+          "kind": "node",
+          "id": "root"
+        },
+        "to": {
+          "kind": "junction",
+          "id": "j:[\"n14\",\"n16\",\"root\"]"
+        },
+        "consumers": [
+          {
+            "parent": "root",
+            "child": "n19"
+          }
+        ],
+        "path": "M675 128 L675 134 C675 137.3137084988 672.3137084988 140 669 140 L520 140 C518.3431457506 140 517 141.3431457506 517 143 L517 146 L517 162 L 517 290 L 517 345 L 517 473 L 517 546 L 517 674 L 517 686 L 726 686 L 726 765 L 726 893 L 726 975 L 726 1103 L 726 1227 L 726 1355 L 726 1416 L 726 1544 L 726 1553 L 517 1553 L 517 1608 L 517 1736 L 517 1745 L 577.5 1745 L 577.5 1757",
+        "terminal": false
+      },
+      {
+        "id": "[\"node\",\"root\",\"node\",\"n2\"]",
+        "from": {
+          "kind": "node",
+          "id": "root"
+        },
+        "to": {
+          "kind": "node",
+          "id": "n2"
+        },
+        "consumers": [
+          {
+            "parent": "root",
+            "child": "n2"
+          }
+        ],
+        "path": "M675 128 L675 134 C675 137.3137084988 677.6862915012 140 681 140 L760 140 C761.6568542494 140 763 141.3431457506 763 143 L763 146 L763 154 ",
+        "terminal": true
+      },
+      {
+        "id": "[\"node\",\"n8\",\"node\",\"n22\"]",
+        "from": {
+          "kind": "node",
+          "id": "n8"
+        },
+        "to": {
+          "kind": "node",
+          "id": "n22"
+        },
+        "consumers": [
+          {
+            "parent": "n8",
+            "child": "n22"
+          }
+        ],
+        "path": "M474 1103 L474 1127 L723 1127 L723 1227 L723 1355 L723 1367 L802 1367 L802 1408",
+        "terminal": true
+      },
+      {
+        "id": "[\"node\",\"n3\",\"junction\",\"j:[\\\"n3\\\",\\\"n5\\\"]\"]",
+        "from": {
+          "kind": "node",
+          "id": "n3"
+        },
+        "to": {
+          "kind": "junction",
+          "id": "j:[\"n3\",\"n5\"]"
+        },
+        "consumers": [
+          {
+            "parent": "n3",
+            "child": "n23"
+          }
+        ],
+        "path": "M599 473 L599 491 L763 491 L763 546 L763 674 L763 680 L693.5 680 L693.5 704 C693.5 707,690.5 707,690.5 710",
+        "terminal": false
+      },
+      {
+        "id": "[\"junction\",\"j:[\\\"n3\\\",\\\"n5\\\"]\",\"junction\",\"[\\\"bounded-join\\\",29,0]\"]",
+        "from": {
+          "kind": "junction",
+          "id": "j:[\"n3\",\"n5\"]"
+        },
+        "to": {
+          "kind": "junction",
+          "id": "[\"bounded-join\",29,0]"
+        },
+        "consumers": [
+          {
+            "parent": "n3",
+            "child": "n23"
+          },
+          {
+            "parent": "n5",
+            "child": "n23"
+          }
+        ],
+        "path": "M690.5 710 L690.5 743 L384 743 L384 765 L384 893 L384 929 L392 929 L392 975 L392 1103 L392 1130 L625.5 1130 L625.5 1184 C625.5 1187,628.5 1187,628.5 1190",
+        "terminal": false
+      },
+      {
+        "id": "[\"junction\",\"j:[\\\"n10\\\",\\\"n11\\\",\\\"n13\\\",\\\"n22\\\",\\\"n3\\\",\\\"n5\\\",\\\"n6\\\"]\",\"node\",\"n23\"]",
+        "from": {
+          "kind": "junction",
+          "id": "j:[\"n10\",\"n11\",\"n13\",\"n22\",\"n3\",\"n5\",\"n6\"]"
+        },
+        "to": {
+          "kind": "node",
+          "id": "n23"
+        },
+        "consumers": [
+          {
+            "parent": "n3",
+            "child": "n23"
+          },
+          {
+            "parent": "n5",
+            "child": "n23"
+          },
+          {
+            "parent": "n11",
+            "child": "n23"
+          },
+          {
+            "parent": "n13",
+            "child": "n23"
+          },
+          {
+            "parent": "n22",
+            "child": "n23"
+          }
+        ],
+        "path": "M658 1580 L658 1589 L763 1589 L763 1600",
+        "terminal": true
+      },
+      {
+        "id": "[\"node\",\"n5\",\"junction\",\"j:[\\\"n3\\\",\\\"n5\\\"]\"]",
+        "from": {
+          "kind": "node",
+          "id": "n5"
+        },
+        "to": {
+          "kind": "junction",
+          "id": "j:[\"n3\",\"n5\"]"
+        },
+        "consumers": [
+          {
+            "parent": "n5",
+            "child": "n23"
+          }
+        ],
+        "path": "M681 674 L681 692 L687.5 692 L687.5 704 C687.5 707,690.5 707,690.5 710",
+        "terminal": false
+      },
+      {
+        "id": "[\"node\",\"n11\",\"junction\",\"j:[\\\"n11\\\",\\\"n13\\\"]\"]",
+        "from": {
+          "kind": "node",
+          "id": "n11"
+        },
+        "to": {
+          "kind": "junction",
+          "id": "j:[\"n11\",\"n13\"]"
+        },
+        "consumers": [
+          {
+            "parent": "n11",
+            "child": "n23"
+          }
+        ],
+        "path": "M146 1103 L146 1148 L528.8 1148 L528.8 1163 C528.8 1166,531.8 1166,531.8 1169",
+        "terminal": false
+      },
+      {
+        "id": "[\"junction\",\"j:[\\\"n11\\\",\\\"n13\\\"]\",\"junction\",\"[\\\"bounded-join\\\",29,0]\"]",
+        "from": {
+          "kind": "junction",
+          "id": "j:[\"n11\",\"n13\"]"
+        },
+        "to": {
+          "kind": "junction",
+          "id": "[\"bounded-join\",29,0]"
+        },
+        "consumers": [
+          {
+            "parent": "n11",
+            "child": "n23"
+          },
+          {
+            "parent": "n13",
+            "child": "n23"
+          }
+        ],
+        "path": "M531.8 1169 L531.8 1178 L631.5 1178 L631.5 1184 C631.5 1187,628.5 1187,628.5 1190",
+        "terminal": false
+      },
+      {
+        "id": "[\"node\",\"n13\",\"junction\",\"j:[\\\"n11\\\",\\\"n13\\\"]\"]",
+        "from": {
+          "kind": "node",
+          "id": "n13"
+        },
+        "to": {
+          "kind": "junction",
+          "id": "j:[\"n11\",\"n13\"]"
+        },
+        "consumers": [
+          {
+            "parent": "n13",
+            "child": "n23"
+          }
+        ],
+        "path": "M398 1103 L398 1145 L534.8 1145 L534.8 1163 C534.8 1166,531.8 1166,531.8 1169",
+        "terminal": false
+      },
+      {
+        "id": "[\"node\",\"n22\",\"junction\",\"j:[\\\"n10\\\",\\\"n11\\\",\\\"n13\\\",\\\"n22\\\",\\\"n3\\\",\\\"n5\\\",\\\"n6\\\"]\"]",
+        "from": {
+          "kind": "node",
+          "id": "n22"
+        },
+        "to": {
+          "kind": "junction",
+          "id": "j:[\"n10\",\"n11\",\"n13\",\"n22\",\"n3\",\"n5\",\"n6\"]"
+        },
+        "consumers": [
+          {
+            "parent": "n22",
+            "child": "n23"
+          }
+        ],
+        "path": "M802 1544 L802 1559 L656.5 1559 L656.5 1574 C656.5 1577,658 1577,658 1580",
+        "terminal": false
+      },
+      {
+        "id": "[\"junction\",\"j:[\\\"n14\\\",\\\"n16\\\",\\\"root\\\"]\",\"junction\",\"j:[\\\"n14\\\",\\\"n16\\\",\\\"n18\\\",\\\"root\\\"]\"]",
+        "from": {
+          "kind": "junction",
+          "id": "j:[\"n14\",\"n16\",\"root\"]"
+        },
+        "to": {
+          "kind": "junction",
+          "id": "j:[\"n14\",\"n16\",\"n18\",\"root\"]"
+        },
+        "consumers": [
+          {
+            "parent": "n16",
+            "child": "n25"
+          }
+        ],
+        "path": "M577.5 1757 L577.5 1766 L590 1766 L590 1769 C590 1772,587 1772,587 1775",
+        "terminal": false
+      },
+      {
+        "id": "[\"junction\",\"j:[\\\"n14\\\",\\\"n16\\\",\\\"n18\\\",\\\"root\\\"]\",\"node\",\"n25\"]",
+        "from": {
+          "kind": "junction",
+          "id": "j:[\"n14\",\"n16\",\"n18\",\"root\"]"
+        },
+        "to": {
+          "kind": "node",
+          "id": "n25"
+        },
+        "consumers": [
+          {
+            "parent": "n16",
+            "child": "n25"
+          },
+          {
+            "parent": "n18",
+            "child": "n25"
+          }
+        ],
+        "path": "M587 1775 L587 1784 L638 1784 L638 1795",
+        "terminal": true
+      },
+      {
+        "id": "[\"node\",\"n18\",\"junction\",\"j:[\\\"n14\\\",\\\"n16\\\",\\\"n18\\\",\\\"root\\\"]\"]",
+        "from": {
+          "kind": "node",
+          "id": "n18"
+        },
+        "to": {
+          "kind": "junction",
+          "id": "j:[\"n14\",\"n16\",\"n18\",\"root\"]"
+        },
+        "consumers": [
+          {
+            "parent": "n18",
+            "child": "n25"
+          }
+        ],
+        "path": "M310 1103 L310 1160 L384 1160 L384 1227 L384 1355 L384 1416 L384 1544 L384 1608 L384 1736 L384 1742 L584 1742 L584 1769 C584 1772,587 1772,587 1775",
+        "terminal": false
+      },
+      {
+        "id": "[\"node\",\"n5\",\"junction\",\"j:[\\\"n5\\\",\\\"root\\\"]\"]",
+        "from": {
+          "kind": "node",
+          "id": "n5"
+        },
+        "to": {
+          "kind": "junction",
+          "id": "j:[\"n5\",\"root\"]"
+        },
+        "consumers": [
+          {
+            "parent": "n5",
+            "child": "n26"
+          }
+        ],
+        "path": "M681 674 L681 680 L652.5 680 L652.5 704 C652.5 707,649.5 707,649.5 710",
+        "terminal": false
+      },
+      {
+        "id": "[\"junction\",\"j:[\\\"n5\\\",\\\"root\\\"]\",\"junction\",\"j:[\\\"n5\\\",\\\"n6\\\",\\\"root\\\"]\"]",
+        "from": {
+          "kind": "junction",
+          "id": "j:[\"n5\",\"root\"]"
+        },
+        "to": {
+          "kind": "junction",
+          "id": "j:[\"n5\",\"n6\",\"root\"]"
+        },
+        "consumers": [
+          {
+            "parent": "n5",
+            "child": "n26"
+          }
+        ],
+        "path": "M649.5 710 L649.5 740 L380 740 L380 765 L380 893 L380 905 L574.5 905 L574.5 932 C574.5 935,577.5 935,577.5 938",
+        "terminal": false
+      },
+      {
+        "id": "[\"junction\",\"j:[\\\"n5\\\",\\\"n6\\\",\\\"root\\\"]\",\"junction\",\"j:[\\\"n19\\\",\\\"n5\\\",\\\"n6\\\",\\\"root\\\"]\"]",
+        "from": {
+          "kind": "junction",
+          "id": "j:[\"n5\",\"n6\",\"root\"]"
+        },
+        "to": {
+          "kind": "junction",
+          "id": "j:[\"n19\",\"n5\",\"n6\",\"root\"]"
+        },
+        "consumers": [
+          {
+            "parent": "n5",
+            "child": "n26"
+          },
+          {
+            "parent": "n6",
+            "child": "n26"
+          }
+        ],
+        "path": "M577.5 938 L577.5 953 L386 953 L386 975 L386 1103 L386 1109 L376 1109 L376 1227 L376 1355 L376 1416 L376 1544 L376 1608 L376 1736 L376 1803 L376 1931 L376 1949 L531.5 1949 L531.5 1952 C531.5 1955,534.5 1955,534.5 1958",
+        "terminal": false
+      },
+      {
+        "id": "[\"junction\",\"j:[\\\"n19\\\",\\\"n5\\\",\\\"n6\\\",\\\"root\\\"]\",\"node\",\"n26\"]",
+        "from": {
+          "kind": "junction",
+          "id": "j:[\"n19\",\"n5\",\"n6\",\"root\"]"
+        },
+        "to": {
+          "kind": "node",
+          "id": "n26"
+        },
+        "consumers": [
+          {
+            "parent": "n5",
+            "child": "n26"
+          },
+          {
+            "parent": "n6",
+            "child": "n26"
+          },
+          {
+            "parent": "n19",
+            "child": "n26"
+          }
+        ],
+        "path": "M534.5 1958 L534.5 1967 L474 1967 L474 1978",
+        "terminal": true
+      },
+      {
+        "id": "[\"node\",\"root\",\"junction\",\"j:[\\\"n5\\\",\\\"root\\\"]\"]",
+        "from": {
+          "kind": "node",
+          "id": "root"
+        },
+        "to": {
+          "kind": "junction",
+          "id": "j:[\"n5\",\"root\"]"
+        },
+        "consumers": [
+          {
+            "parent": "root",
+            "child": "n29"
+          }
+        ],
+        "path": "M687 290 L687 345 L687 473 L687 485 L517 485 L517 546 L517 674 L517 692 L646.5 692 L646.5 704 C646.5 707,649.5 707,649.5 710",
+        "terminal": false
+      },
+      {
+        "id": "[\"node\",\"n6\",\"junction\",\"j:[\\\"n5\\\",\\\"n6\\\",\\\"root\\\"]\"]",
+        "from": {
+          "kind": "node",
+          "id": "n6"
+        },
+        "to": {
+          "kind": "junction",
+          "id": "j:[\"n5\",\"n6\",\"root\"]"
+        },
+        "consumers": [
+          {
+            "parent": "n6",
+            "child": "n26"
+          }
+        ],
+        "path": "M474 893 L474 902 L580.5 902 L580.5 932 C580.5 935,577.5 935,577.5 938",
+        "terminal": false
+      },
+      {
+        "id": "[\"node\",\"n19\",\"junction\",\"j:[\\\"n19\\\",\\\"n5\\\",\\\"n6\\\",\\\"root\\\"]\"]",
+        "from": {
+          "kind": "node",
+          "id": "n19"
+        },
+        "to": {
+          "kind": "junction",
+          "id": "j:[\"n19\",\"n5\",\"n6\",\"root\"]"
+        },
+        "consumers": [
+          {
+            "parent": "n19",
+            "child": "n26"
+          }
+        ],
+        "path": "M474 1931 L474 1946 L537.5 1946 L537.5 1952 C537.5 1955,534.5 1955,534.5 1958",
+        "terminal": false
+      },
+      {
+        "id": "[\"junction\",\"j:[\\\"n5\\\",\\\"root\\\"]\",\"junction\",\"j:[\\\"n17\\\",\\\"n5\\\",\\\"root\\\"]\"]",
+        "from": {
+          "kind": "junction",
+          "id": "j:[\"n5\",\"root\"]"
+        },
+        "to": {
+          "kind": "junction",
+          "id": "j:[\"n17\",\"n5\",\"root\"]"
+        },
+        "consumers": [
+          {
+            "parent": "root",
+            "child": "n29"
+          }
+        ],
+        "path": "M649.5 710 L649.5 746 L884 746 L884 765 L884 893 L884 975 L884 1103 L884 1121 L691 1121 L691 1163 C691 1166,688 1166,688 1169",
+        "terminal": false
+      },
+      {
+        "id": "[\"junction\",\"j:[\\\"n17\\\",\\\"n5\\\",\\\"root\\\"]\",\"node\",\"n29\"]",
+        "from": {
+          "kind": "junction",
+          "id": "j:[\"n17\",\"n5\",\"root\"]"
+        },
+        "to": {
+          "kind": "node",
+          "id": "n29"
+        },
+        "consumers": [
+          {
+            "parent": "root",
+            "child": "n29"
+          },
+          {
+            "parent": "n17",
+            "child": "n29"
+          }
+        ],
+        "path": "M688 1169 L688 1199 L638 1199 L638 1219",
+        "terminal": true
+      },
+      {
+        "id": "[\"node\",\"n17\",\"junction\",\"j:[\\\"n17\\\",\\\"n5\\\",\\\"root\\\"]\"]",
+        "from": {
+          "kind": "node",
+          "id": "n17"
+        },
+        "to": {
+          "kind": "junction",
+          "id": "j:[\"n17\",\"n5\",\"root\"]"
+        },
+        "consumers": [
+          {
+            "parent": "n17",
+            "child": "n29"
+          }
+        ],
+        "path": "M802 1103 L802 1118 L685 1118 L685 1163 C685 1166,688 1166,688 1169",
+        "terminal": false
+      },
+      {
+        "id": "[\"junction\",\"j:[\\\"n2\\\",\\\"root\\\"]\",\"node\",\"n3\"]",
+        "from": {
+          "kind": "junction",
+          "id": "j:[\"n2\",\"root\"]"
+        },
+        "to": {
+          "kind": "node",
+          "id": "n3"
+        },
+        "consumers": [
+          {
+            "parent": "n2",
+            "child": "n3"
+          }
+        ],
+        "path": "M629.7 314 L629.7 326 L599 326 L599 337",
+        "terminal": true
+      },
+      {
+        "id": "[\"node\",\"n12\",\"junction\",\"j:[\\\"n12\\\",\\\"n23\\\",\\\"n9\\\"]\"]",
+        "from": {
+          "kind": "node",
+          "id": "n12"
+        },
+        "to": {
+          "kind": "junction",
+          "id": "j:[\"n12\",\"n23\",\"n9\"]"
+        },
+        "consumers": [
+          {
+            "parent": "n12",
+            "child": "n32"
+          }
+        ],
+        "path": "M638 1103 L638 1124 L888 1124 L888 1227 L888 1355 L888 1416 L888 1544 L888 1568 L681 1568 L681 1608 L681 1736 L681 1742 L738.5 1742 L738.5 1751 C738.5 1754,741.5 1754,741.5 1757",
+        "terminal": false
+      },
+      {
+        "id": "[\"junction\",\"j:[\\\"n12\\\",\\\"n23\\\",\\\"n9\\\"]\",\"node\",\"n32\"]",
+        "from": {
+          "kind": "junction",
+          "id": "j:[\"n12\",\"n23\",\"n9\"]"
+        },
+        "to": {
+          "kind": "node",
+          "id": "n32"
+        },
+        "consumers": [
+          {
+            "parent": "n12",
+            "child": "n32"
+          },
+          {
+            "parent": "n9",
+            "child": "n32"
+          }
+        ],
+        "path": "M741.5 1757 L741.5 1784 L802 1784 L802 1795",
+        "terminal": true
+      },
+      {
+        "id": "[\"node\",\"n9\",\"junction\",\"j:[\\\"n12\\\",\\\"n23\\\",\\\"n9\\\"]\"]",
+        "from": {
+          "kind": "node",
+          "id": "n9"
+        },
+        "to": {
+          "kind": "junction",
+          "id": "j:[\"n12\",\"n23\",\"n9\"]"
+        },
+        "consumers": [
+          {
+            "parent": "n9",
+            "child": "n32"
+          }
+        ],
+        "path": "M638 1544 L638 1571 L684 1571 L684 1608 L684 1736 L684 1739 L741.5 1739 L741.5 1757",
+        "terminal": false
+      },
+      {
+        "id": "[\"junction\",\"j:[\\\"n25\\\",\\\"n29\\\",\\\"n32\\\"]\",\"node\",\"n33\"]",
+        "from": {
+          "kind": "junction",
+          "id": "j:[\"n25\",\"n29\",\"n32\"]"
+        },
+        "to": {
+          "kind": "node",
+          "id": "n33"
+        },
+        "consumers": [
+          {
+            "parent": "n29",
+            "child": "n33"
+          }
+        ],
+        "path": "M741.5 1958 L741.5 1967 L802 1967 L802 1978",
+        "terminal": true
+      },
+      {
+        "id": "[\"node\",\"n29\",\"junction\",\"j:[\\\"n25\\\",\\\"n29\\\",\\\"n32\\\"]\"]",
+        "from": {
+          "kind": "node",
+          "id": "n29"
+        },
+        "to": {
+          "kind": "junction",
+          "id": "j:[\"n25\",\"n29\",\"n32\"]"
+        },
+        "consumers": [
+          {
+            "parent": "n29",
+            "child": "n33"
+          }
+        ],
+        "path": "M638 1355 L638 1361 L892 1361 L892 1416 L892 1544 L892 1608 L892 1736 L892 1803 L892 1931 L892 1940 L744.5 1940 L744.5 1952 C744.5 1955,741.5 1955,741.5 1958",
+        "terminal": false
+      },
+      {
+        "id": "[\"node\",\"n1\",\"node\",\"n4\"]",
+        "from": {
+          "kind": "node",
+          "id": "n1"
+        },
+        "to": {
+          "kind": "node",
+          "id": "n4"
+        },
+        "consumers": [
+          {
+            "parent": "n1",
+            "child": "n4"
+          }
+        ],
+        "path": "M599 290 L599 305 L763 305 L763 337",
+        "terminal": true
+      },
+      {
+        "id": "[\"junction\",\"j:[\\\"n2\\\",\\\"n3\\\",\\\"root\\\"]\",\"junction\",\"j:[\\\"n2\\\",\\\"n3\\\",\\\"n4\\\",\\\"root\\\"]\"]",
+        "from": {
+          "kind": "junction",
+          "id": "j:[\"n2\",\"n3\",\"root\"]"
+        },
+        "to": {
+          "kind": "junction",
+          "id": "j:[\"n2\",\"n3\",\"n4\",\"root\"]"
+        },
+        "consumers": [
+          {
+            "parent": "n3",
+            "child": "n5"
+          }
+        ],
+        "path": "M635.3 500 L635.3 509 L699.5 509 L699.5 512 C699.5 515,702.5 515,702.5 518",
+        "terminal": false
+      },
+      {
+        "id": "[\"junction\",\"j:[\\\"n2\\\",\\\"n3\\\",\\\"n4\\\",\\\"root\\\"]\",\"node\",\"n5\"]",
+        "from": {
+          "kind": "junction",
+          "id": "j:[\"n2\",\"n3\",\"n4\",\"root\"]"
+        },
+        "to": {
+          "kind": "node",
+          "id": "n5"
+        },
+        "consumers": [
+          {
+            "parent": "n3",
+            "child": "n5"
+          }
+        ],
+        "path": "M702.5 518 L702.5 527 L681 527 L681 538",
+        "terminal": true
+      },
+      {
+        "id": "[\"junction\",\"j:[\\\"n1\\\",\\\"n2\\\",\\\"n3\\\",\\\"n5\\\",\\\"root\\\"]\",\"node\",\"n6\"]",
+        "from": {
+          "kind": "junction",
+          "id": "j:[\"n1\",\"n2\",\"n3\",\"n5\",\"root\"]"
+        },
+        "to": {
+          "kind": "node",
+          "id": "n6"
+        },
+        "consumers": [
+          {
+            "parent": "n1",
+            "child": "n6"
+          }
+        ],
+        "path": "M621 728 L621 746 L474 746 L474 757",
+        "terminal": true
+      },
+      {
+        "id": "[\"node\",\"n5\",\"junction\",\"j:[\\\"n2\\\",\\\"n3\\\",\\\"n5\\\",\\\"root\\\"]\"]",
+        "from": {
+          "kind": "node",
+          "id": "n5"
+        },
+        "to": {
+          "kind": "junction",
+          "id": "j:[\"n2\",\"n3\",\"n5\",\"root\"]"
+        },
+        "consumers": [
+          {
+            "parent": "n5",
+            "child": "n7"
+          }
+        ],
+        "path": "M681 674 L681 680 L634 680 L634 704 C634 707,631 707,631 710",
+        "terminal": false
+      },
+      {
+        "id": "[\"node\",\"n1\",\"junction\",\"j:[\\\"n1\\\",\\\"n2\\\",\\\"n3\\\",\\\"n5\\\",\\\"root\\\"]\"]",
+        "from": {
+          "kind": "node",
+          "id": "n1"
+        },
+        "to": {
+          "kind": "junction",
+          "id": "j:[\"n1\",\"n2\",\"n3\",\"n5\",\"root\"]"
+        },
+        "consumers": [
+          {
+            "parent": "n1",
+            "child": "n6"
+          }
+        ],
+        "path": "M392 674 L392 698 L618 698 L618 722 C618 725,621 725,621 728",
+        "terminal": false
+      },
+      {
+        "id": "[\"junction\",\"j:[\\\"n2\\\",\\\"n3\\\",\\\"n5\\\",\\\"root\\\"]\",\"node\",\"n7\"]",
+        "from": {
+          "kind": "junction",
+          "id": "j:[\"n2\",\"n3\",\"n5\",\"root\"]"
+        },
+        "to": {
+          "kind": "node",
+          "id": "n7"
+        },
+        "consumers": [
+          {
+            "parent": "n5",
+            "child": "n7"
+          }
+        ],
+        "path": "M631 710 L631 746 L638 746 L638 757",
+        "terminal": true
+      },
+      {
+        "id": "[\"node\",\"n3\",\"junction\",\"j:[\\\"n3\\\",\\\"n6\\\"]\"]",
+        "from": {
+          "kind": "node",
+          "id": "n3"
+        },
+        "to": {
+          "kind": "junction",
+          "id": "j:[\"n3\",\"n6\"]"
+        },
+        "consumers": [
+          {
+            "parent": "n3",
+            "child": "n8"
+          }
+        ],
+        "path": "M599 473 L599 482 L396 482 L396 546 L396 674 L396 765 L396 893 L396 911 L510.6 911 L510.6 932 C510.6 935,513.6 935,513.6 938",
+        "terminal": false
+      },
+      {
+        "id": "[\"junction\",\"j:[\\\"n3\\\",\\\"n6\\\"]\",\"node\",\"n8\"]",
+        "from": {
+          "kind": "junction",
+          "id": "j:[\"n3\",\"n6\"]"
+        },
+        "to": {
+          "kind": "node",
+          "id": "n8"
+        },
+        "consumers": [
+          {
+            "parent": "n3",
+            "child": "n8"
+          }
+        ],
+        "path": "M513.6 938 L513.6 956 L474 956 L474 967",
+        "terminal": true
+      },
+      {
+        "id": "[\"node\",\"n6\",\"junction\",\"j:[\\\"n6\\\",\\\"n8\\\"]\"]",
+        "from": {
+          "kind": "node",
+          "id": "n6"
+        },
+        "to": {
+          "kind": "junction",
+          "id": "j:[\"n6\",\"n8\"]"
+        },
+        "consumers": [
+          {
+            "parent": "n6",
+            "child": "n9"
+          }
+        ],
+        "path": "M717 1103 L717 1109 L497.8 1109 L497.8 1163 C497.8 1166,494.8 1166,494.8 1169",
+        "terminal": false
+      },
+      {
+        "id": "[\"junction\",\"j:[\\\"n6\\\",\\\"n8\\\"]\",\"junction\",\"j:[\\\"n6\\\",\\\"n7\\\",\\\"n8\\\"]\"]",
+        "from": {
+          "kind": "junction",
+          "id": "j:[\"n6\",\"n8\"]"
+        },
+        "to": {
+          "kind": "junction",
+          "id": "j:[\"n6\",\"n7\",\"n8\"]"
+        },
+        "consumers": [
+          {
+            "parent": "n6",
+            "child": "n9"
+          },
+          {
+            "parent": "n8",
+            "child": "n9"
+          }
+        ],
+        "path": "M494.8 1169 L494.8 1181 L574.5 1181 L574.5 1184 C574.5 1187,577.5 1187,577.5 1190",
+        "terminal": false
+      },
+      {
+        "id": "[\"junction\",\"j:[\\\"n6\\\",\\\"n7\\\",\\\"n8\\\"]\",\"node\",\"n9\"]",
+        "from": {
+          "kind": "junction",
+          "id": "j:[\"n6\",\"n7\",\"n8\"]"
+        },
+        "to": {
+          "kind": "node",
+          "id": "n9"
+        },
+        "consumers": [
+          {
+            "parent": "n6",
+            "child": "n9"
+          },
+          {
+            "parent": "n8",
+            "child": "n9"
+          }
+        ],
+        "path": "M577.5 1190 L577.5 1202 L392 1202 L392 1227 L392 1355 L392 1367 L638 1367 L638 1408",
+        "terminal": true
+      },
+      {
+        "id": "[\"node\",\"n8\",\"junction\",\"j:[\\\"n6\\\",\\\"n8\\\"]\"]",
+        "from": {
+          "kind": "node",
+          "id": "n8"
+        },
+        "to": {
+          "kind": "junction",
+          "id": "j:[\"n6\",\"n8\"]"
+        },
+        "consumers": [
+          {
+            "parent": "n8",
+            "child": "n9"
+          }
+        ],
+        "path": "M474 1103 L474 1151 L491.8 1151 L491.8 1163 C491.8 1166,494.8 1166,494.8 1169",
+        "terminal": false
+      },
+      {
+        "id": "[\"junction\",\"[\\\"bounded-join\\\",29,0]\",\"junction\",\"j:[\\\"n10\\\",\\\"n11\\\",\\\"n13\\\",\\\"n22\\\",\\\"n3\\\",\\\"n5\\\",\\\"n6\\\"]\"]",
+        "from": {
+          "kind": "junction",
+          "id": "[\"bounded-join\",29,0]"
+        },
+        "to": {
+          "kind": "junction",
+          "id": "j:[\"n10\",\"n11\",\"n13\",\"n22\",\"n3\",\"n5\",\"n6\"]"
+        },
+        "consumers": [
+          {
+            "parent": "n3",
+            "child": "n23"
+          },
+          {
+            "parent": "n5",
+            "child": "n23"
+          },
+          {
+            "parent": "n11",
+            "child": "n23"
+          },
+          {
+            "parent": "n13",
+            "child": "n23"
+          }
+        ],
+        "path": "M628.5 1190 L628.5 1202 L880 1202 L880 1227 L880 1355 L880 1416 L880 1544 L880 1562 L659.5 1562 L659.5 1574 C659.5 1577,658 1577,658 1580",
+        "terminal": false
+      }
+    ],
+    "readingOrder": {
+      "__map": [
+        [
+          "root",
+          0
+        ],
+        [
+          "n1",
+          1
+        ],
+        [
+          "n2",
+          2
+        ],
+        [
+          "n3",
+          3
+        ],
+        [
+          "n4",
+          4
+        ],
+        [
+          "n5",
+          5
+        ],
+        [
+          "n6",
+          6
+        ],
+        [
+          "n7",
+          7
+        ],
+        [
+          "n13",
+          8
+        ],
+        [
+          "n11",
+          9
+        ],
+        [
+          "n18",
+          10
+        ],
+        [
+          "n8",
+          11
+        ],
+        [
+          "n12",
+          12
+        ],
+        [
+          "n17",
+          13
+        ],
+        [
+          "n14",
+          14
+        ],
+        [
+          "n29",
+          15
+        ],
+        [
+          "n10",
+          16
+        ],
+        [
+          "n34",
+          17
+        ],
+        [
+          "n9",
+          18
+        ],
+        [
+          "n22",
+          19
+        ],
+        [
+          "n16",
+          20
+        ],
+        [
+          "n23",
+          21
+        ],
+        [
+          "n19",
+          22
+        ],
+        [
+          "n25",
+          23
+        ],
+        [
+          "n32",
+          24
+        ],
+        [
+          "n26",
+          25
+        ],
+        [
+          "n36",
+          26
+        ],
+        [
+          "n33",
+          27
+        ]
+      ]
+    },
+    "junctions": {
+      "__map": [
+        [
+          "j:[\"n1\",\"n2\"]",
+          {
+            "id": "j:[\"n1\",\"n2\"]",
+            "parents": [
+              "n1",
+              "n2"
+            ],
+            "x": 648.2,
+            "y": 314
+          }
+        ],
+        [
+          "j:[\"n1\",\"n7\"]",
+          {
+            "id": "j:[\"n1\",\"n7\"]",
+            "parents": [
+              "n1",
+              "n7"
+            ],
+            "x": 495.1,
+            "y": 938
+          }
+        ],
+        [
+          "j:[\"n11\",\"n13\"]",
+          {
+            "id": "j:[\"n11\",\"n13\"]",
+            "parents": [
+              "n11",
+              "n13"
+            ],
+            "x": 531.8,
+            "y": 1169
+          }
+        ],
+        [
+          "j:[\"n2\",\"root\"]",
+          {
+            "id": "j:[\"n2\",\"root\"]",
+            "parents": [
+              "n2",
+              "root"
+            ],
+            "x": 629.7,
+            "y": 314
+          }
+        ],
+        [
+          "j:[\"n3\",\"n5\"]",
+          {
+            "id": "j:[\"n3\",\"n5\"]",
+            "parents": [
+              "n3",
+              "n5"
+            ],
+            "x": 690.5,
+            "y": 710
+          }
+        ],
+        [
+          "j:[\"n3\",\"n6\"]",
+          {
+            "id": "j:[\"n3\",\"n6\"]",
+            "parents": [
+              "n3",
+              "n6"
+            ],
+            "x": 513.6,
+            "y": 938
+          }
+        ],
+        [
+          "j:[\"n5\",\"root\"]",
+          {
+            "id": "j:[\"n5\",\"root\"]",
+            "parents": [
+              "n5",
+              "root"
+            ],
+            "x": 649.5,
+            "y": 710
+          }
+        ],
+        [
+          "j:[\"n6\",\"n8\"]",
+          {
+            "id": "j:[\"n6\",\"n8\"]",
+            "parents": [
+              "n6",
+              "n8"
+            ],
+            "x": 494.8,
+            "y": 1169
+          }
+        ],
+        [
+          "j:[\"n7\",\"n8\"]",
+          {
+            "id": "j:[\"n7\",\"n8\"]",
+            "parents": [
+              "n7",
+              "n8"
+            ],
+            "x": 607.3,
+            "y": 1169
+          }
+        ],
+        [
+          "j:[\"n12\",\"n23\",\"n9\"]",
+          {
+            "id": "j:[\"n12\",\"n23\",\"n9\"]",
+            "parents": [
+              "n12",
+              "n23",
+              "n9"
+            ],
+            "x": 741.5,
+            "y": 1757
+          }
+        ],
+        [
+          "j:[\"n14\",\"n16\",\"root\"]",
+          {
+            "id": "j:[\"n14\",\"n16\",\"root\"]",
+            "parents": [
+              "n14",
+              "n16",
+              "root"
+            ],
+            "x": 577.5,
+            "y": 1757
+          }
+        ],
+        [
+          "j:[\"n17\",\"n5\",\"root\"]",
+          {
+            "id": "j:[\"n17\",\"n5\",\"root\"]",
+            "parents": [
+              "n17",
+              "n5",
+              "root"
+            ],
+            "x": 688,
+            "y": 1169
+          }
+        ],
+        [
+          "j:[\"n2\",\"n3\",\"root\"]",
+          {
+            "id": "j:[\"n2\",\"n3\",\"root\"]",
+            "parents": [
+              "n2",
+              "n3",
+              "root"
+            ],
+            "x": 635.3,
+            "y": 500
+          }
+        ],
+        [
+          "j:[\"n2\",\"n5\",\"root\"]",
+          {
+            "id": "j:[\"n2\",\"n5\",\"root\"]",
+            "parents": [
+              "n2",
+              "n5",
+              "root"
+            ],
+            "x": 611.5,
+            "y": 710
+          }
+        ],
+        [
+          "j:[\"n25\",\"n29\",\"n32\"]",
+          {
+            "id": "j:[\"n25\",\"n29\",\"n32\"]",
+            "parents": [
+              "n25",
+              "n29",
+              "n32"
+            ],
+            "x": 741.5,
+            "y": 1958
+          }
+        ],
+        [
+          "j:[\"n5\",\"n6\",\"root\"]",
+          {
+            "id": "j:[\"n5\",\"n6\",\"root\"]",
+            "parents": [
+              "n5",
+              "n6",
+              "root"
+            ],
+            "x": 577.5,
+            "y": 938
+          }
+        ],
+        [
+          "j:[\"n6\",\"n7\",\"n8\"]",
+          {
+            "id": "j:[\"n6\",\"n7\",\"n8\"]",
+            "parents": [
+              "n6",
+              "n7",
+              "n8"
+            ],
+            "x": 577.5,
+            "y": 1190
+          }
+        ],
+        [
+          "j:[\"n11\",\"n2\",\"n3\",\"root\"]",
+          {
+            "id": "j:[\"n11\",\"n2\",\"n3\",\"root\"]",
+            "parents": [
+              "n11",
+              "n2",
+              "n3",
+              "root"
+            ],
+            "x": 513.3,
+            "y": 1169
+          }
+        ],
+        [
+          "j:[\"n14\",\"n16\",\"n18\",\"root\"]",
+          {
+            "id": "j:[\"n14\",\"n16\",\"n18\",\"root\"]",
+            "parents": [
+              "n14",
+              "n16",
+              "n18",
+              "root"
+            ],
+            "x": 587,
+            "y": 1775
+          }
+        ],
+        [
+          "j:[\"n19\",\"n5\",\"n6\",\"root\"]",
+          {
+            "id": "j:[\"n19\",\"n5\",\"n6\",\"root\"]",
+            "parents": [
+              "n19",
+              "n5",
+              "n6",
+              "root"
+            ],
+            "x": 534.5,
+            "y": 1958
+          }
+        ],
+        [
+          "j:[\"n2\",\"n3\",\"n4\",\"root\"]",
+          {
+            "id": "j:[\"n2\",\"n3\",\"n4\",\"root\"]",
+            "parents": [
+              "n2",
+              "n3",
+              "n4",
+              "root"
+            ],
+            "x": 702.5,
+            "y": 518
+          }
+        ],
+        [
+          "j:[\"n2\",\"n3\",\"n5\",\"root\"]",
+          {
+            "id": "j:[\"n2\",\"n3\",\"n5\",\"root\"]",
+            "parents": [
+              "n2",
+              "n3",
+              "n5",
+              "root"
+            ],
+            "x": 631,
+            "y": 710
+          }
+        ],
+        [
+          "j:[\"n2\",\"n5\",\"n6\",\"root\"]",
+          {
+            "id": "j:[\"n2\",\"n5\",\"n6\",\"root\"]",
+            "parents": [
+              "n2",
+              "n5",
+              "n6",
+              "root"
+            ],
+            "x": 448.25,
+            "y": 938
+          }
+        ],
+        [
+          "j:[\"n1\",\"n14\",\"n2\",\"n7\",\"n8\"]",
+          {
+            "id": "j:[\"n1\",\"n14\",\"n2\",\"n7\",\"n8\"]",
+            "parents": [
+              "n1",
+              "n14",
+              "n2",
+              "n7",
+              "n8"
+            ],
+            "x": 593.36,
+            "y": 1388
+          }
+        ],
+        [
+          "j:[\"n1\",\"n2\",\"n3\",\"n5\",\"root\"]",
+          {
+            "id": "j:[\"n1\",\"n2\",\"n3\",\"n5\",\"root\"]",
+            "parents": [
+              "n1",
+              "n2",
+              "n3",
+              "n5",
+              "root"
+            ],
+            "x": 621,
+            "y": 728
+          }
+        ],
+        [
+          "[\"bounded-join\",29,0]",
+          {
+            "id": "[\"bounded-join\",29,0]",
+            "parents": [
+              "n11",
+              "n13",
+              "n3",
+              "n5"
+            ],
+            "x": 628.5,
+            "y": 1190
+          }
+        ],
+        [
+          "j:[\"n10\",\"n11\",\"n13\",\"n22\",\"n3\",\"n5\",\"n6\"]",
+          {
+            "id": "j:[\"n10\",\"n11\",\"n13\",\"n22\",\"n3\",\"n5\",\"n6\"]",
+            "parents": [
+              "n11",
+              "n13",
+              "n22",
+              "n3",
+              "n5",
+              "n6"
+            ],
+            "x": 658,
+            "y": 1580
+          }
+        ]
+      ]
+    },
+    "bandBounds": {
+      "left": 68,
+      "width": 832,
+      "top": 162
+    },
+    "anchorX": 68,
+    "decision": {
+      "candidate": "visible-down",
+      "stability": false
+    }
+  }
+}
