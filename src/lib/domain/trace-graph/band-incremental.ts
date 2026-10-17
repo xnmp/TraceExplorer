@@ -27,7 +27,7 @@ import { bandExtent } from "./band-geometry";
 import { intersectsTile, overlapLength, routeBounds, segments, type Segment } from "./layout-quality";
 import { orthogonalRoute, LANE_TOLERANCE, NEAR_LANE, type AxisRun, type ForeignLanes, type GridSearch } from "./orthogonal-route";
 import { forEachPathNumber } from "./path-data";
-import type { Point } from "./path-sampling";
+import { pathCommands, type Point } from "./path-sampling";
 
 /** Distance between neighbouring parallel lanes a route family may take. */
 const LANE_STEP = 3;
@@ -1293,13 +1293,20 @@ function freePortLanes(request: LayoutRequest, previous: GraphLayout, budget: In
     const ports = [point(parent.x + parent.width / 2, parent.y + parent.height), point(parent.x + parent.width, parent.y + parent.height / 2)];
     for (const blocked of [...routes]) {
       if (repairs >= 4 || budget.probes <= 0) return { ...previous, routes };
-      if (blocked.from.kind !== 'node' || blocked.from.id === key || /[^ML0-9.,+ eE-]/.test(blocked.path)) continue;
+      if (blocked.from.kind !== 'node' || blocked.from.id === key) continue;
       const lines = segments(blocked.path);
       if (!lines.length || !ports.some(port => lines.some(line => distanceToSegment(line, port) < PORT_BERTH - .01))) continue;
       const from = previous.nodes.get(blocked.from.id); if (!from) continue;
-      const points = [lines[0][0], ...lines.map(line => line[1])], lanes = retainedIndex(previous, routes);
-      let found: Point[] | undefined;
+      // Curved attachment headers do not prevent repairing a later straight run.
+      // Keep their exact commands and controls; flattened curve segments are never edited.
+      const commands = pathCommands(blocked.path), raw = [...blocked.path.matchAll(/[MLC][^MLC]*/g)].map(m => m[0]);
+      if (!commands || commands.length !== raw.length) continue;
+      const points = commands.map(c => point(c.values.at(-2)!, c.values.at(-1)!));
+      const lanes = retainedIndex(previous, routes);
+      let found: string | undefined;
       for (let i = 1; i < points.length - 2 && !found; i++) {
+        // Only internal straight neighbours may move. Curve endpoints and both route ends stay fixed.
+        if ([commands[i], commands[i + 1], commands[i + 2]].some(c => c.kind !== 'L')) continue;
         const a = points[i], b = points[i + 1], vertical = a.x === b.x, horizontal = a.y === b.y;
         if (!vertical && !horizontal) continue;
         const nearby = ports.filter(port => distanceToSegment([a, b], port) < PORT_BERTH - .01);
@@ -1311,18 +1318,19 @@ function freePortLanes(request: LayoutRequest, previous: GraphLayout, budget: In
             const coordinate = center + direction * distance;
             const candidate = points.map((p, k) => k === i || k === i + 1 ? { ...p, [axis]: coordinate } : p);
             if (candidate.some(p => p.x < 8 || p.x > request.maxWidth - 8)) continue;
-            const pieces = pathSegments(candidate), end = candidate.at(-1)!, beforeEnd = candidate.at(-2)!;
-            if (pieces.some(([a,b]) => a.x !== b.x && a.y !== b.y)) continue;
+            const nextPath = raw.map((command, k) => k === i || k === i + 1 ? `L${candidate[k].x} ${candidate[k].y} ` : command).join('');
+            const pieces = segments(nextPath), end = candidate.at(-1)!, beforeEnd = candidate.at(-2)!;
+            if ([i, i + 1, i + 2].some(k => candidate[k - 1].x !== candidate[k].x && candidate[k - 1].y !== candidate[k].y)) continue;
             if (blocked.terminal && !((end.x === beforeEnd.x && end.y - beforeEnd.y >= ARROW.length)
               || (end.y === beforeEnd.y && end.x - beforeEnd.x >= ARROW.length))) continue;
             if (tiles.crosses(pieces) || tiles.grazes(pieces, from)
               || lanes.conflicts(pieces, sourceKey('node', blocked.from.id), blocked.to.kind === 'junction' ? INTO_JUNCTION : INTO_TILE)) continue;
-            found = candidate; break;
+            found = nextPath; break;
           }
           if (found) break;
         }
       }
-      if (found) { routes = routes.map(r => r === blocked ? { ...r, path: path(found!) } : r); repairs++; }
+      if (found) { routes = routes.map(r => r === blocked ? { ...r, path: found! } : r); repairs++; }
     }
   }
   return repairs ? { ...previous, routes } : previous;

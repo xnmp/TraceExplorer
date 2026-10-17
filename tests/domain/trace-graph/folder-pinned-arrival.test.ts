@@ -25,6 +25,21 @@ it.each(Array.from({ length: 20 }, (_, index) => index + 1))('preserves every re
       const now = next.graphs.get('s0:root')!.attached.nodes.get(key)!;
       expect([now.x, now.y, now.width, now.height], `${key}, arrival ${i}`).toEqual([was.x, was.y, was.width, was.height]);
     }
+    if (seed === 12 && i === 10) {
+      // Free the new parent's departure by moving straight connector tails;
+      // curved attachment headers and logical route identities remain intact.
+      const before = previous!.graphs.get('s0:root')!.attached;
+      const after = next.graphs.get('s0:root')!.attached;
+      const curves = (path: string) => [...path.matchAll(/C[^MLC]*/g)].map(match => match[0].trim());
+      const curved = before.routes.filter(route => curves(route.path).length);
+      expect(curved.length).toBeGreaterThan(0);
+      for (const route of curved) {
+        const retained = after.routes.find(now => now.id === route.id)!;
+        expect(retained).toBeDefined();
+        expect([retained.from, retained.to]).toEqual([route.from, route.to]);
+        expect(curves(retained.path)).toEqual(curves(route.path));
+      }
+    }
     previous = next;
   }
 });
