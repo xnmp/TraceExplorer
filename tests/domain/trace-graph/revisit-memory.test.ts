@@ -123,3 +123,19 @@ it('stores shared fan annotations in linear space while restoring exact geometry
   expect(sizes[1]/sizes[0]).toBeLessThan(2.2);
 });
 
+
+import { profileLayout } from '$lib/domain/trace-graph/layout-profile';
+it('certifies immutable display payloads once across repeat restores and worker clones', () => {
+  const folder=makeFolder({stacks:[handCase('screenshot')]}),engine=createDefaultEngine({bandCache:null});
+  const input=folderInput(folder,{open:['s0:root'],focus:'s0:Saffron',width:923});
+  const first=engine(input),request={...input,previous:structuredClone(first)};
+  const own=profileLayout(()=>engine(request));
+  expect(own.result.revisited).toBe(true);
+  expect(own.profile.counters['restore-validation']??0).toBe(0);
+  const worker=createDefaultEngine({bandCache:null});
+  const cold=profileLayout(()=>worker(structuredClone(request)));
+  expect(cold.profile.counters['restore-validation']).toBe(1);
+  const warm=profileLayout(()=>worker(structuredClone(request)));
+  expect(warm.profile.counters['restore-validation']??0).toBe(0);
+  expect(drawing(warm.result)).toEqual(drawing(first));
+});

@@ -1,3 +1,4 @@
+import { layoutStage, countLayoutWork } from '../layout-profile';
 /**
  * The default folder layout, computed completely before publication as one pure function.
  *
@@ -305,6 +306,10 @@ function folderPlacementHistory(input: FolderLayoutInput, arrivals: ReadonlyMap<
 
 export function createDefaultEngine(options: DefaultEngineOptions = {}): FolderLayoutEngine {
   const cache = options.bandCache === undefined ? createBoundedCache(estimateLayoutBytes) : options.bandCache;
+  // Certificates are bound to immutable serialized bytes and the requested state, not
+  // mutable Maps or a transported trust flag. A new worker validates its first restore.
+  const certifiedDisplays = createBoundedCache<boolean>(() => 8);
+  const certificateKey = (key: string, payload: string) => JSON.stringify([key, payload]);
   return (given) => {
     const prior = given.previous;
     const malformed = prior && (!(prior.graphs instanceof Map) || [...prior.graphs.values()].some(g =>
@@ -330,7 +335,19 @@ export function createDefaultEngine(options: DefaultEngineOptions = {}): FolderL
           displayBasis(graph.canonical?.request ?? graph.plan.request) === displayBasis(plans.get(id)!.plan.request))) {
         const rebound = { ...recalled, graphs: new Map([...recalled.graphs].map(([id, graph]) =>
           [id, { ...graph, plan: plans.get(id)?.plan ?? graph.plan }])) };
-        if (!folderGeometryGate(rebound)) restored = rebound;
+        const payload = input.previous!.displays!.entries.find(([key]) => key === identity.key)![1];
+        const certificate = certificateKey(identity.key, payload);
+        const endValidation = layoutStage('restore-validation');
+        try {
+          if (certifiedDisplays.get(certificate)) restored = rebound;
+          else {
+            countLayoutWork('restore-validation');
+            if (!folderGeometryGate(rebound)) {
+              certifiedDisplays.set(certificate, true);
+              restored = rebound;
+            }
+          }
+        } finally { endValidation(); }
       }
     } catch { /* Invalid stored geometry is never an authority. Rebuild through the normal gate. */ }
     if (restored) return { ...restored, revisited: true, arrivals, geometryBasis, dataRevision: input.dataRevision,
@@ -373,7 +390,11 @@ export function createDefaultEngine(options: DefaultEngineOptions = {}): FolderL
     }])) };
     const completed: FolderLayout = { ...result, ...(pinningFailed ? { decision: { ...(result.decision ?? { fallback: "pin-search-exhausted" as const, requestedColumns: geometry.columns }), pinning: "search-exhausted" as const } } : {}),
       geometryBasis, arrivalPlacement, arrivals, ...(input.dataRevision === undefined ? {} : { dataRevision: input.dataRevision }) };
-    return { ...completed, displays: rememberDisplay(input.previous?.displays, identity, completed) };
+    const displays = rememberDisplay(input.previous?.displays, identity, completed);
+    // `completed` passed the full folder gate (or the independently certified pinned path).
+    const payload = displays.entries.find(([key]) => key === identity.key)![1];
+    certifiedDisplays.set(certificateKey(identity.key, payload), true);
+    return { ...completed, displays };
   };
 }
 
