@@ -40,7 +40,7 @@ describe('shared-row attachment stability', () => {
   beforeAll(() => {
     result = scenario();
     const { before, after, forest, fan } = result;
-    // Keep setup/admission failures outside it.fails so they cannot masquerade as the known defect.
+    // Admission and wrapping are part of the feature contract too.
     expect(folderGeometryGate(before)).toBeNull();
     expect(folderGeometryGate(after)).toBeNull();
     expect(after.columns).toBe(before.columns);
@@ -52,7 +52,7 @@ describe('shared-row attachment stability', () => {
     expect([...after.graphs.get(fan)!.attached.nodes.keys()]).toHaveLength(21);
   });
 
-  it.fails('keeps an unchanged band fixed when a neighbor wraps below it (shared attachment headers currently add 6 px)', () => {
+  it('keeps an unchanged band fixed when a neighbor wraps below it', () => {
     const { before, after, forest } = result;
     // Observable folder coordinates, including every unchanged child. On main:
     // forest-mist and autumn both move from y=131 to y=137; x and sizes stay fixed.
