@@ -1,9 +1,11 @@
 # Scene transactions — Phase 3 design
 
-> **History amendment (2026-10-16):** geometry commits and history commits are distinct.
-> Expansion, collapse, selection, and anchoring never capture arrival geometry. The folder
-> engine keeps arrival snapshots only across content changes; reopening a closed component
-> preserves its saved history. Backend revision tokens are observation epochs, not contents
+> **History amendment (2026-10-17):** publishing a scene commits its displayed-layout ledger.
+> New expansion states use the current committed drawing and click anchor. Revisits restore
+> exact geometry from a bounded 64-state per-folder ledger keyed by every geometry input.
+> Contents changes clear that ledger before saving the new current state; arrival pinning
+> retains the previous rectangles. Selection never contributes to layout history or inputs.
+> Backend revision tokens are observation epochs, not contents
 > fingerprints. Worker replies and inline results use the same engine and the same complete
 > folder geometry gate. Certification and fallback finish before a single scene publication;
 > the previously committed scene remains displayed while computation is pending. See the

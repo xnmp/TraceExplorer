@@ -2,15 +2,21 @@
 
 How the Trace view arranges one connected component, which way it runs, which nodes it shows, and why it does not use ELK.
 
-## Current admission and history contract (2026-10-16)
+## Current admission and history contract (2026-10-17)
 
 This section supersedes the historical click-history, lane fallback, and crossing-cap
 policies below. The folder engine derives geometry from folder contents, expansion, and
-committed **arrival** history. Selection and click anchors are not layout inputs. Expanding
-or collapsing does not replace geometric history; returning to the same expansion restores
-the same drawing. The backend token is an observation epoch, not evidence that membership
-changed: job status updates must not capture a new placement. Closed components do not
-expose complete membership; opening learns those facts while preserving their saved history.
+committed displayed history. New states use the current drawing and click-time anchor.
+Revisiting a retained state restores its exact drawing from a 64-entry per-folder LRU,
+keyed by effective expansion, ordered cells, pane width, tile/grid metrics and policy.
+The immutable serialized ledger is an explicit history input/output, shared by the worker
+and inline engine; it becomes committed history only when its scene is published. Selection
+is never a layout input. Different paths to a never-displayed state may produce different
+drawings. Content changes invalidate the ledger and save only the current new drawing.
+The backend token is an observation epoch, not evidence that membership changed: job status
+updates must not capture an arrival placement. Closed components do not expose complete
+membership; opening learns those facts while preserving their saved history. See
+[the current acceptance report](layout-hard-gates.md) for unresolved click-stability targets.
 
 Output arrival captures the previous visible rectangles. The band and complete folder
 placement attempt to extend that drawing while retaining every common rectangle. Tile hint

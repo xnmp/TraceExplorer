@@ -1,4 +1,201 @@
-# Click stability investigation — 2026-10-17
+# Revisits restore — 2026-10-17
+
+**The revisit contract is implemented; the overall acceptance target remains unmet.** Click anchor moves, including packing: 93.000 > 32.000; Dense-tour anchor moves: 166.000 > 101.000; Mean legal displacement, px: 19.577 > 17.500; Held-screen moves at 480 px (dense): 145.000 > 114.000; Main-thread maximum p95, ms: 9.939 > 5.000; Mean siblingInversions: 0.110 > 0.107. The executable targets remain failing.
+
+Branch `layout-hard-gates` is rebased on `origin/main` `75e46b08cfd5ae94399aecfdebefb3937c6e3a73`. The conflict at original `dd0b899` was resolved with main's presentation tests, followed by replacing strict expansion construction with committed display history. #91's paint planes, `presentation.ts`, `StackGrid.svelte`, and motion implementation are retained. A 4px attachment-header clearance prevents neighboring cover bridges touching packed band tails; fixture expectations and mock DOM handles now cover that geometry.
+
+## Current contract and implementation
+
+- Never-seen states use the currently displayed band's validated history, reading order and click anchor. Strict canonical/prefix experiments and their path-independence tests were deleted. The two earlier insertion routing fixes and passes 1–2's safety/fallback/complexity work remain.
+- A folder output carries a 64-entry LRU of serialized displayed layouts. Its key includes ordered folder items, effective expansion/caret state, all non-history request inputs, pane width, tile/grid metrics, and policy. Folder identity and content fingerprints fence the ledger. Contents changes clear it before saving only the new current layout; retained arrival rectangles still use the hard pinning path.
+- Saved snapshots contain no recursive display ledger, arrival ledger, or incoming request history. A reference-table codec preserves shared consumer tables in linear space, handles negative zero, and decodes fresh Maps/objects. No mutable geometry aliases the memory. The 200/400-output fan regression bounds serialized growth.
+- Restores validate width/tile/grid provenance, ordered folder cells, per-band request signatures, and complete folder geometry before rebinding current plans. Malformed payloads rebuild through normal certification. Restored drawings never seed the band cache under a different click request. Resize restoration keeps the newest ledger instead of rolling it back to an older scene snapshot.
+- Memory is committed only by publishing a scene and passing its output as the next input. The layout function has no ambient display cache and no selection input. Main and worker receive the same history and use the same engine. The worker test performs 768 worker/main layout comparisons across 16 fixtures (752 expansion transitions), requires at least 100 revisits, and compares worker/main outputs plus exact saved geometry on every return. The permanent Saffron/Ash round trip remains.
+
+Independent review found and verified fixes for cache poisoning, malformed memory, stale geometry/cell provenance, resize-ledger rollback, and quadratic snapshot expansion. It also reviewed the free junction-end berth fix and compact layered candidate. The compact candidate fixes the five unexplained chainy height rows without weakening certification. A final reviewed correction assigns interchangeable new sibling leaves to existing slots in creation order, preserving all retained identities, coordinates and route paths; its two regression witnesses failed first.
+
+## Current acceptance against re-measured main
+
+Main was executed from a local `git archive origin/main` checkout; no fetch was performed. The committed reference is [main-reference.json](../layout-eval/main-reference.json). Re-measured 480px held-screen counts are **80/114**, stricter than the supplied 82/116. The evaluator uses 80/114; the original executable click assertions retain the supplied limits. The historical tours retain their band adapter for comparison; the 140 packing states and randomized real expansion transitions independently exercise the production folder engine. Historical layout-space counts exclude explicit `anchor-yield` decisions, matching main; held-screen counts include every movement.
+
+| Current acceptance target | Main 75e46b0 | This pass | Limit | Result |
+|---|---|---|---|---|
+| Click anchor moves, including packing | 32.000 | 93.000 | 32.000 | FAIL |
+| Dense-tour anchor moves | 101.000 | 166.000 | 101.000 | FAIL |
+| Mean legal displacement, px | 17.529 | 19.577 | 17.500 | FAIL |
+| Unexplained height regressions | 0.000 | 0.000 | 0.000 | PASS |
+| Held-screen moves at 480 px (broad) | 80.000 | 78.000 | 80.000 | PASS |
+| Held-screen moves at 480 px (dense) | 114.000 | 145.000 | 114.000 | FAIL |
+| Hard violations/errors | 0.000 | 0.000 | 0.000 | PASS |
+| Main-thread maximum p95, ms | 3.376 | 9.939 | 5.000 | FAIL |
+| Full folder engine maximum inline p95, ms (no saved main measurement) | — | 4.674 | 5.000 | PASS |
+| Mean height | 2372.651 | 2266.178 | 2372.651 | PASS |
+| Mean width | 548.184 | 542.578 | 603.002 | PASS |
+| Mean area | 1288189.671 | 1195209.857 | 1417008.638 | PASS |
+| Mean tileArea | 557459.630 | 592248.594 | 613205.593 | PASS |
+| Mean whitespace | 0.504 | 0.465 | 0.554 | PASS |
+| Mean paneWhitespace | 0.636 | 0.609 | 0.699 | PASS |
+| Mean length | 42304.604 | 37441.586 | 46535.064 | PASS |
+| Mean bends | 142.912 | 151.847 | 157.203 | PASS |
+| Mean crossings | 331.236 | 318.070 | 364.360 | PASS |
+| Mean mixedDirections | 2.081 | 1.381 | 2.289 | PASS |
+| Mean siblingInversions | 0.097 | 0.110 | 0.107 | FAIL |
+| Mean unaligned | 0.161 | 0.170 | 0.177 | PASS |
+| Mean overflow | 4.326 | 2.689 | 4.326 | PASS |
+| corpus geometry fallback rate, % | 0.000 | 0.000 | 0.500 | PASS |
+| corpus geometry fallbacks outside pane | 0.000 | 0.000 | 0.000 | PASS |
+| tours geometry fallback rate, % | 0.000 | 0.063 | 0.500 | PASS |
+| tours geometry fallbacks outside pane | 0.000 | 0.000 | 0.000 | PASS |
+| packing geometry fallback rate, % | 0.000 | 0.000 | 0.000 | PASS |
+| packing geometry fallbacks outside pane | 0.000 | 0.000 | 0.000 | PASS |
+
+Main used its then-current ≤30 current+history tile dispatch rule; this pass uses ≤20 current+history tiles and ≤20 current edges plus history routes. Each maximum follows its own dispatch eligibility, and both must meet the absolute 5ms limit. The additional full-engine measurement includes validation, packing, serialization and restore in 82 inline-eligible folder workloads, 100 measured samples after 12 warmups. These are single-stack fixtures of at most 40 nodes, width 454px and image preset 96px, with only 0–2 remembered states; they do not measure full 64-entry ledgers or large multi-stack folders. There is no saved main counterpart. Pane narrowing can still force a synchronous layout under #91's pre-paint rule; this is outside the ordinary dispatch timing sample.
+
+## Every historical acceptance row
+
+These retain the older frozen-baseline thresholds in `layout:eval` as diagnostics; main itself fails several of them. They are not substituted for the current main-relative gates above.
+
+| Historical acceptance row | Main 75e46b0 | This pass |
+|---|---|---|
+| Reported band ≤350 px | 347.000 | 326.000 |
+| Cover → first child =34 px | 34.000 | 34.000 |
+| All legal click anchors stationary (including real packing) | 32.000 | 93.000 |
+| Legal click anchors stationary, dense tours (fan-in ≤4 and ≤10) | 101.000 | 166.000 |
+| Mean legal displacement ≤baseline px | 17.529 | 19.577 |
+| Mean legal height ≥15% lower px | 1507.322 | 1494.274 |
+| >10% height regressions without stability reason | 0.000 | 0.000 |
+| Hard gate violations/errors (corpus + tours incl. dense + packing) | 0.000 | 0.000 |
+| Shared lanes between sources, not a listed fallback (corpus + tours incl. dense) | 0.000 | 0.000 |
+| Mean crossings ≤ baseline | 331.236 | 318.070 |
+| Crossing regressions not paid for by 0.00625 tile widths of height per extra crossing | 257.000 | 28.000 |
+| Cases with worse p95 than baseline | 14.000 | 50.000 |
+| Maximum p95 for main-thread requests (dispatch rule: ≤20 current+history tiles, ≤20 edges) ≤5ms | 3.376 | 9.939 |
+| Maximum p95 for requests with ≤30 visible tiles (any thread) ≤5ms | 52.897 | 206.571 |
+
+## Every corpus summary metric
+
+| Corpus metric (mean/layout) | Main 75e46b0 | This pass | Change |
+|---|---|---|---|
+| height | 2372.651 | 2266.178 | -4.49% |
+| width | 548.184 | 542.578 | -1.02% |
+| area | 1288189.671 | 1195209.857 | -7.22% |
+| tileArea | 557459.630 | 592248.594 | 6.24% |
+| whitespace | 0.504 | 0.465 | -7.71% |
+| paneWhitespace | 0.636 | 0.609 | -4.24% |
+| length | 42304.604 | 37441.586 | -11.50% |
+| bends | 142.912 | 151.847 | 6.25% |
+| crossings | 331.236 | 318.070 | -3.97% |
+| sharedLanePx | 0.023 | 0.000 | -100.00% |
+| tileIntersections | 0.000 | 0.000 | 0 |
+| overlaps | 0.000 | 0.000 | 0 |
+| directionViolations | 0.000 | 0.000 | 0 |
+| mixedDirections | 2.081 | 1.381 | -33.64% |
+| siblingInversions | 0.097 | 0.110 | 13.07% |
+| unaligned | 0.161 | 0.170 | 5.86% |
+| displacement | 31.597 | 38.352 | 21.38% |
+| maxDisplacement | 72.898 | 83.682 | 14.79% |
+| movedFraction | 0.117 | 0.196 | 67.81% |
+| anchorDisplacement | 0.035 | 1.915 | 5345.12% |
+| overflow | 4.326 | 2.689 | -37.84% |
+| missingEdges | 0.000 | 0.000 | 0 |
+| extraEdges | 0.000 | 0.000 | 0 |
+| missingNodes | 0.000 | 0.000 | 0 |
+| extraNodes | 0.000 | 0.000 | 0 |
+| invalidGeometry | 0.000 | 0.000 | 0 |
+| invalidPaths | 0.000 | 0.000 | 0 |
+| terminalViolations | 0.000 | 0.000 | 0 |
+| disconnectedEdges | 0.000 | 0.000 | 0 |
+
+| Corpus summary | Main | This pass |
+|---|---|---|
+| layouts | 6060.000 | 6060.000 |
+| errors | 0.000 | 0.000 |
+| invalid | 0.000 | 0.000 |
+| stability.transitions | 3020.000 | 3020.000 |
+| stability.mean | 63.404 | 76.958 |
+| stability.p95Max | 899.129 | 926.002 |
+| stability.movedFraction | 0.234 | 0.393 |
+| timing.median | 0.969 | 3.249 |
+| timing.p95 | 20.093 | 76.411 |
+| timing.max | 204.823 | 513.227 |
+
+Corpus-loop timings use one warmed execution per state and this run overlapped the full test suite; they are diagnostic, not the isolated timing gate. Corpus stability includes arbitrary preset transitions; the legal click and held-screen gates are reported separately.
+
+## Tour summaries and held screen space
+
+| Tour summary | Main | This pass |
+|---|---|---|
+| Broad layouts | 2610 | 2610 |
+| Broad changed states | 2145 | 2145 |
+| Broad height | 1507.322 | 1494.274 |
+| Broad area | 747326.969 | 722498.638 |
+| Broad displacement | 17.529 | 19.577 |
+| Broad movedFraction | 0.072 | 0.124 |
+| Broad tileIntersections | 0.000 | 0.000 |
+| Broad overlaps | 0.000 | 0.000 |
+| Broad disconnectedEdges | 0.000 | 0.000 |
+| Dense layouts | 540 | 540 |
+| Dense changed states | 460 | 460 |
+| Dense height | 4057.770 | 3746.524 |
+| Dense area | 2533239.457 | 2211845.369 |
+| Dense displacement | 83.946 | 88.219 |
+| Dense movedFraction | 0.313 | 0.383 |
+| Dense tileIntersections | 0.000 | 0.000 |
+| Dense overlaps | 0.000 | 0.000 |
+| Dense disconnectedEdges | 0.000 | 0.000 |
+| Broad held-screen moves, 480px | 80 | 78 |
+| Dense held-screen moves, 480px | 114 | 145 |
+| Broad held-screen moves, 800px | 124 | 128 |
+| Dense held-screen moves, 800px | 132 | 165 |
+
+## Fallback rates
+
+Geometry/emergency fallback only; click `anchor-infeasible` is a movement diagnostic, not an emergency layout.
+
+| Source | Main | This pass | Rate | Outside pane |
+|---|---|---|---|---|
+| corpus | 0/6060 | 0/6060 | 0.0000% | 0 |
+| tours | 0/3150 | 2/3150 | 0.0635% | 0 |
+| packing | 0/140 | 0/140 | 0.0000% | 0 |
+
+## Gates and remaining work
+
+Saved evidence: [acceptance JSON](layout-hard-gates-evidence/revisits-acceptance.json.gz), [timing JSON](layout-hard-gates-evidence/revisits-perf.json.gz), [full test log](layout-hard-gates-evidence/revisits-tests.txt), [worker rerun](layout-hard-gates-evidence/revisits-worker-rerun.txt), and [check log](layout-hard-gates-evidence/revisits-check.txt).
+
+- `bun run check`: 0 errors, 0 warnings.
+- `bun run test`: Test Files  2 failed | 133 passed (135); Tests  2 failed | 1977 passed | 1 skipped (1980); Duration  190.39s (tests 90%, transform 7%, import 4%). Failures: the click-stability acceptance test and a 20s worker-child timeout in the clicks transport case. The complete worker parity file then passed independently (5/5 in 6.09s), including revisit comparisons. The earlier expansion timing failure did not recur. The click acceptance test remains failing, not skipped or marked expected.
+- `bun run layout:eval`: exit 1. 6/28 current gates and 6/14 historical rows fail. Hard violations: 0.
+- Timing: Bun 1.3.8, 24 CPUs; load before 19.600/18.780/15.650, after 12.380/14.100/15.200. The timing phase ran after the full test and geometry jobs; one 0.27-second diagnostic overlapped its start. No diagnostic ran during the full-folder timing probe.
+
+The slow inline band case is random-bushy-12-7321 / reveal (8 visible tiles): p50 6.579ms, p95 9.939ms. A second inline case, random-bushy-40-7601 / reveal, reaches 5.073ms p95. Full-folder timing passes on its separate workload sample; it does not cancel these band failures.
+
+New-state click routing remains the principal gap. The focused investigation rejected global click-only anchoring (worse movement) and larger insertion search budgets (the witness still failed with 16× budget). Reserving corner clearance at detached junction trunk ends fixed several real failures. Normal quality ranking is restored for clicks; only arrivals take the early all-retained pin preference. Re-enabling main's soft crossing cap was measured and reverted because it worsened held-screen movement and displacement. None of these findings establishes infeasibility for the remaining cases. The old universal arrival-search/very-large-input limitations documented below are not waived.
+
+## Commits in this continuation
+
+| Commit | Change |
+|---|---|
+| f0ea0d7 | Assign interchangeable new sibling leaves in reading order |
+| 8b6eda4 | Test click stability outcomes and complete motion mock handles |
+| 0fe68d5 | Keep feasible click anchors ahead of the soft crossing cap |
+| 5e46a5a | Restore main crossing-cap choices for new click states |
+| c3bb50d | Measure committed click history against rebased main and remove strict experiments |
+| 0e3da1c | Distinguish rejected drawings from absent malformed history |
+| 76a8d31 | Rank new click states normally and certify compact layered candidates |
+| f50c190 | Align packing and motion fixtures with certified attachment geometry |
+| da2a3c0 | Reserve corner clearance at detached junction trunk ends |
+| 2d1c45f | Validate restored geometry and preserve the current display ledger |
+| c7dda4b | Keep packed attachment tails clear of neighboring cover lanes |
+| 604bf15 | Restore displayed folder states from bounded committed history |
+| 02a8f06 | test: require displayed history and click anchors for new states |
+
+No push, fetch, browser/Playwright, recursive removal, or access to `/home/chong/Repos/*` was used. All new commits carry the requested co-author trailer.
+
+---
+
+# Historical investigation — 2026-10-17
+
+**Historical policy:** strict path independence and arrival-only history below are superseded. The experimental scripts mentioned below have been removed.
 
 **The requested click-stability outcome is not achieved.** No experimental construction was enabled in production: each missed click targets, quality, or practical cost. The two independently reviewed routing fixes are retained. The new acceptance tests remain failing rather than weakening the targets.
 

@@ -163,5 +163,21 @@
       "states": 140,
       "count": 0
     }
+  },
+  "corpusSummary": {
+    "layouts": 6060,
+    "errors": 0,
+    "invalid": 0,
+    "stability": {
+      "transitions": 3020,
+      "mean": 63.4039567718127,
+      "p95Max": 899.1290229994803,
+      "movedFraction": 0.23400916654448245
+    },
+    "timing": {
+      "median": 0.9686290000099689,
+      "p95": 20.09335999999894,
+      "max": 204.8231289999967
+    }
   }
 }
