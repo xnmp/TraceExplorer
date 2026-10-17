@@ -8,6 +8,7 @@ import { measure } from './geometry';
 import { heldScreenMovement } from './screen-space';
 import { attached } from './baseline/placement';
 import { geometryGate } from '../src/lib/domain/trace-graph/geometry-gate';
+import { movementSummary } from './movement-summary';
 import { fallbackReason } from '../src/lib/domain/trace-graph/band-layout';
 const rows=[],all=rows;
 const dense=new Set(denseCorpus().map(c=>c.id));
@@ -28,4 +29,5 @@ const avg=(xs:number[])=>xs.length?xs.reduce((a,b)=>a+b,0)/xs.length:0;
 const summarise=(rows:typeof all)=>Object.fromEntries(['baseline','proposed'].map(engine=>{const ms=rows.map(r=>r[engine as 'baseline'|'proposed']),changed=rows.filter(r=>r.changed).map(r=>r[engine as 'baseline'|'proposed']);return [engine,{layouts:rows.length,transitions:changed.length,height:avg(ms.map(m=>m.height)),area:avg(ms.map(m=>m.area)),displacement:avg(changed.map(m=>m.displacement)),movedFraction:avg(changed.map(m=>m.movedFraction)),tileIntersections:ms.reduce((s,m)=>s+m.tileIntersections,0),overlaps:ms.reduce((s,m)=>s+m.overlaps,0),disconnectedEdges:ms.reduce((s,m)=>s+m.disconnectedEdges,0)}];}));
 // The broad corpus's tours set the displacement and height targets; dense tours are reported beside them.
 const summary=summarise(all.filter(r=>!r.dense)),denseSummary=summarise(all.filter(r=>r.dense));
-await writeFile('layout-eval/out/reveals.json',JSON.stringify({tour:'up to eight clicks, highest creation-order visible expandable node not clicked yet; eventual deselection',widths:[360,454,640,900,1400],imagePx:96,summary,denseSummary,rows},null,2));console.log(JSON.stringify({summary,denseSummary},null,2));
+const movement = Object.fromEntries(['baseline', 'proposed'].map(engine => [engine, Object.fromEntries([false, true].map(dense => [dense ? 'dense' : 'broad', movementSummary(all.filter(r => r.dense === dense).map(r => ({ ...r, revisited: engine === 'proposed' && r.revisited, metrics: r[engine as 'baseline' | 'proposed'] })))]))]));
+await writeFile('layout-eval/out/reveals.json',JSON.stringify({movement,tour:'up to eight clicks, highest creation-order visible expandable node not clicked yet; eventual deselection',widths:[360,454,640,900,1400],imagePx:96,summary,denseSummary,rows},null,2));console.log(JSON.stringify({summary,denseSummary},null,2));

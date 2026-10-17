@@ -7,6 +7,7 @@ import { measure } from './geometry';
 import { layoutGraph as baselineLayout } from './baseline/layout';
 import { attached as baselineAttached } from './baseline/placement';
 import main from './main-reference.json';
+import mainMovement from './main-movement-reference.json';
 const out = 'layout-eval/out';
 // `--engine=<name>` picks the registered folder layout engine the packing cases run through the seam.
 const engineArgs = process.argv.slice(2).filter(a => a.startsWith('--engine='));
@@ -83,7 +84,30 @@ const fallbacks = Object.fromEntries(Object.entries(fallbackRows).map(([name, ro
   states: rows.length, count: rows.filter(geometryFallback).length,
   outsidePane: rows.filter((r: any) => geometryFallback(r) && (r.metrics?.overflow ?? r.proposed?.overflow ?? r.overflow ?? 0) > .01).length,
 }]));
+const movement = {
+  corpus: { main: mainMovement.corpus, proposed: broad.movement.proposed },
+  broad: { main: mainMovement.broad, proposed: tours.movement.proposed.broad },
+  dense: { main: mainMovement.dense, proposed: tours.movement.proposed.dense },
+};
+// Preserve both existing corpus denominators; the broad-tour contract uses
+// changed transitions. Dense movement and broad anchor splits remain diagnostics.
+const movementTargets = [
+  ...(['mean', 'changed'] as const).flatMap(population =>
+    (['movedFraction', 'anchorDisplacement'] as const).map(metric => ({ source: 'corpus' as const, population, metric }))),
+  { source: 'broad' as const, population: 'changed' as const, metric: 'movedFraction' as const },
+].map(({ source, population, metric }) => ({
+  target: `${source} new-state ${population === 'mean' ? 'per-layout' : 'transition'} ${metric}`,
+  main: movement[source].main.newStates[population]![metric],
+  proposed: movement[source].proposed.newStates[population]?.[metric] ?? Infinity,
+  limit: movement[source].main.newStates[population]![metric] * 1.1,
+}));
+const movementTable = ['| Population | Kind | Layouts | Transitions | Per-layout moved fraction | Transition moved fraction | Per-layout anchor px | Transition anchor px |',
+  '|---|---|---:|---:|---:|---:|---:|---:|',
+  ...Object.entries(movement).flatMap(([source, pair]) => Object.entries(pair).flatMap(([engine, split]) =>
+    Object.entries(split).map(([kind, value]: [string, any]) => `| ${source} ${engine} | ${kind} | ${value.layouts} | ${value.transitions} | ${value.mean?.movedFraction.toFixed(6) ?? '—'} | ${value.changed?.movedFraction.toFixed(6) ?? '—'} | ${value.mean?.anchorDisplacement.toFixed(6) ?? '—'} | ${value.changed?.anchorDisplacement.toFixed(6) ?? '—'} |`))),
+].join('\n');
 const taskAcceptance = [
+  ...movementTargets,
   { target: 'Click anchor moves, including packing', main: main.acceptance[2].proposed, proposed: acceptance[2].proposed, limit: 32 },
   { target: 'Dense-tour anchor moves', main: main.acceptance[3].proposed, proposed: denseMoved.length, limit: 101 },
   { target: 'Mean legal displacement, px', main: main.summary.displacement, proposed: tours.summary.proposed.displacement, limit: 17.53 },
@@ -93,10 +117,10 @@ const taskAcceptance = [
   { target: 'Hard violations/errors', main: 0, proposed: gates.proposed, limit: 0 },
   { target: 'Independent geometry gate failures', main: 0, proposed: [...newRows, ...tours.rows, ...packing.filter((r: any) => r.engine === 'proposed')].filter(r => r.independentFailure).length, limit: 0 },
   { target: 'Unexplained shared connector lanes', main: 0, proposed: unexplainedLanes.length, limit: 0 },
-  { target: 'Main-thread maximum p95, ms', main: main.acceptance[12].proposed, proposed: maxSmall('proposed'), limit: 10 },
-  { target: '≤30 visible tiles maximum p95, ms', main: main.acceptance[13].proposed, proposed: maxVisible('proposed'), limit: 206.57144199998584 /* docs/layout-hard-gates-evidence/revisits-perf.json.gz */ },
+  { target: 'Main-thread maximum p95, ms', main: main.acceptance[12].proposed, proposed: maxSmall('proposed'), limit: 8 },
+  { target: '≤30 visible tiles maximum p95, ms', main: main.acceptance[13].proposed, proposed: maxVisible('proposed'), limit: 100 },
   { target: 'Full folder engine maximum inline p95, ms (no saved main measurement)', main: NaN, proposed: Math.max(...timing.folders.map((r: any)=>r.p95)), limit: 5 },
-  ...Object.keys(main.mean).map(metric => ({
+  ...Object.keys(main.mean).filter(metric => !['movedFraction', 'anchorDisplacement'].includes(metric)).map(metric => ({
     target: `Mean ${metric}`, main: (main.mean as Record<string, number>)[metric], proposed: broad.summary.proposed.mean[metric],
     limit: (main.mean as Record<string, number>)[metric] * (['height','overflow'].includes(metric) ? 1 : 1.1),
   })),
@@ -113,9 +137,9 @@ const laneList = laneCases.length ? ['| Source | Case | Width / image | Step | C
 const table = ['| Acceptance target | Baseline | New | Result |', '|---|---:|---:|---|', ...acceptance.map(r => `| ${r.target} | ${Number(r.baseline).toFixed(3)} | ${r.proposed.toFixed(3)} | ${r.pass ? 'PASS' : 'FAIL'} |`)].join('\n');
 const metrics = ['| Metric (mean per layout) | Baseline | New |', '|---|---:|---:|', ...Object.keys(broad.summary.baseline.mean).map(k => `| ${k} | ${broad.summary.baseline.mean[k].toFixed(3)} | ${broad.summary.proposed.mean[k].toFixed(3)} |`)].join('\n');
 const report = `${table}\n\n${metrics}\n\nExplicit anchor fallbacks (anchor-infeasible): ${moved.length}. Anchors yielded to the crossing cap (anchor-yield): ${yields.length}${yields.length ? ` (${yields.map((r: any) => `${r.case} ${r.width} step ${r.step}`).join('; ')})` : ''}. Height exceptions selected for stability: ${heightExceptions.length - unpricedHeight.length}.\n\n### Dense tours\n\n| Fan-in | Steps | Clicks | Anchors moved (baseline) | Anchors moved (new, not yielded) | anchor-infeasible | anchor-yield | lane-infeasible | gate-infeasible |\n|---:|---:|---:|---:|---:|---:|---:|---:|---:|\n${denseBreakdown.map(d => `| ≤${d.fanIn} | ${d.steps} | ${d.clicks} | ${d.baselineMoved} | ${d.moved} | ${d.anchorInfeasible} | ${d.anchorYield} | ${d.laneInfeasible} | ${d.gateInfeasible} |`).join('\n')}\n\nDense tours, mean height ${tours.denseSummary.baseline.height.toFixed(1)} → ${tours.denseSummary.proposed.height.toFixed(1)} px, mean displacement ${tours.denseSummary.baseline.displacement.toFixed(2)} → ${tours.denseSummary.proposed.displacement.toFixed(2)} px.\n\n### Shared lanes shown (listed fallbacks)\n\n${laneList}\n\n${await readFile(`${out}/readability.md`, 'utf8')}\n${await readFile(`${out}/perf.log`, 'utf8')}`;
-await writeFile(`${out}/acceptance.md`, `${taskTable}\n\nHistorical frozen-baseline diagnostics (retain their original thresholds):\n\n${report}`);
-await writeFile(`${out}/acceptance.json`, JSON.stringify({ taskAcceptance, fallbacks, acceptance, moved, yields, denseMoved, denseBreakdown, heightExceptions, perfRegressions, smallSlow, laneCases }, null, 2));
-console.log(taskTable + '\n\n' + report);
+await writeFile(`${out}/acceptance.md`, `${taskTable}\n\n${movementTable}\n\nHistorical frozen-baseline diagnostics (retain their original thresholds):\n\n${report}`);
+await writeFile(`${out}/acceptance.json`, JSON.stringify({ movement, taskAcceptance, fallbacks, acceptance, moved, yields, denseMoved, denseBreakdown, heightExceptions, perfRegressions, smallSlow, laneCases }, null, 2));
+console.log(taskTable + '\n\n' + movementTable + '\n\n' + report);
 // Historical frozen-baseline rows remain diagnostic; the user's current main-relative
 // targets (including verified revisit exclusions) decide this command's result.
 if (taskAcceptance.some(r => !r.pass)) process.exitCode = 1;

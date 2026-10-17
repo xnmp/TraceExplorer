@@ -10,6 +10,7 @@ import { attached } from './baseline/placement';
 import { attachSingleBand } from '../src/lib/domain/trace-graph/band-geometry';
 import { profileLayout, type LayoutProfile } from '../src/lib/domain/trace-graph/layout-profile';
 import { geometryGate } from '../src/lib/domain/trace-graph/geometry-gate';
+import { movementSummary } from './movement-summary';
 import { fallbackReason } from '../src/lib/domain/trace-graph/band-layout';
 const quick = process.argv.includes('--quick'), stability = 1.5;
 const widths = quick ? [454, 900] : [360, 454, 640, 900, 1400], presets = quick ? [96] : [48, 64, 96, 128];
@@ -155,7 +156,8 @@ const laneTable = sharedLanes.length
     ? ['| Case | Width / image | Step | Candidate | Shared lane px | Reason |', '|---|---|---:|---|---:|---|', ...sharedLanes.slice(0, worstN).map(r => `| ${r.case} | ${r.width} / ${r.imagePx} | ${r.step} | ${r.candidate} | ${r.sharedLanePx.toFixed(1)} | ${r.reason ?? '**none**'} |`)].join('\n')
     : ['No production layout shares a lane. Worst baseline layouts, for comparison:', '', '| Case | Width / image | Step | Baseline px | New px |', '|---|---|---:|---:|---:|', ...baselineLanes.slice(0, worstN).map(({ b, p }) => `| ${b.case} | ${b.width} / ${b.imagePx} | ${b.step} | ${b.metrics!.sharedLanePx.toFixed(1)} | ${p.metrics!.sharedLanePx.toFixed(1)} |`)].join('\n');
 await writeFile(`${outputDir}/readability.md`, `## Crossing regressions (worst ${worstN} of ${crossingRegressions.length}; ${readability.unpricedCrossingRegressions} not paid for by ${CROSSING_HEIGHT_TILES} tile widths of height per extra crossing)\n\n${crossingTable}\n\n## Shared lanes (${sharedLanes.length} production layouts)\n\n${laneTable}\n\nSVG pairs: readability.html\n`);
-const output = { meta: { seedFamily: 7000, widths, imagePx: presets, caseCount: cases.length, stability, bun: Bun.version, platform: process.platform, arch: process.arch, curveSubdivisions: 12, timing: 'one warmed execution per case; no IO/attachment/measurement in timings, production includes internal scoring and attachment' }, summary, comparison, readability, rows };
+const movement = Object.fromEntries(['baseline', 'proposed'].map(engine => [engine, movementSummary(rows.filter(r => r.engine === engine))]));
+const output = { movement, meta: { seedFamily: 7000, widths, imagePx: presets, caseCount: cases.length, stability, bun: Bun.version, platform: process.platform, arch: process.arch, curveSubdivisions: 12, timing: 'one warmed execution per case; no IO/attachment/measurement in timings, production includes internal scoring and attachment' }, summary, comparison, readability, rows };
 await writeFile(`${outputDir}/results.json`, JSON.stringify(output, null, 2));
 const metricKeys = Object.keys(rows.find(r => r.metrics)!.metrics!) as (keyof Measures)[];
 const csv = [['case', 'width', 'imagePx', 'step', 'focus', 'visible', 'total', 'engine', 'candidate', 'ms', 'changed', 'error', ...metricKeys].join(','), ...rows.map(r => [r.case, r.width, r.imagePx, r.step, r.focus ?? '', r.visible, r.total, r.engine, r.candidate, r.ms, r.changed, JSON.stringify(r.error ?? ''), ...metricKeys.map(k => r.metrics?.[k] ?? '')].join(','))].join('\n');
