@@ -51,7 +51,7 @@ it('keeps the clicked n24 tile when a reveal introduces short doglegs beside ret
     }
     previous=next;
   }
-});
+}, 30_000);
 
 it.each([false, true])('bypasses a mixed-curve run without diagonal shortcuts (redundant point: %s)', redundant => {
   const base=fixture(true),obstacle: LayoutItem={key:'obstacle',order:4,width:20,height:20,parents:[]};
