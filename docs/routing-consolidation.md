@@ -1,7 +1,8 @@
 # Routing consolidation
 
-Design against `536a667b29db585e5e16f0fe2e5623b80c485b6c` (2026-10-18).
-This pass changes no production code. The current contracts are the opening section
+Original design against `536a667b29db585e5e16f0fe2e5623b80c485b6c` (2026-10-18).
+The design commit `6768262` changed no production code; slice 1 implementation
+and measurements are recorded below. The current contracts are the opening section
 of [trace-view-layout.md](trace-view-layout.md) and [layout-hard-gates.md](layout-hard-gates.md);
 their historical lane-pricing, contact relaxation and anchor-yield descriptions are
 not permission to publish uncertified geometry.
@@ -322,7 +323,7 @@ async pattern: use existing pure request/result and publication transaction.
 
 | Slice | Replaces / independently shippable boundary | Required outcome beyond common checks | Size | Risk |
 |---|---|---|---|---|
-| **1. Channel and track assignment as a constraint solve** | T4/T11/T14/T15 metric assignment for existing ordered, representable channels; T31–T33 shared-row header rules, plus T34/T35 attachment offsets. Keep current row/corridor generators. Add common immutable segment/order/bounds/pin types and a deterministic separation solver first, within this slice. | Test below becomes ordinary `it`; retained tracks and child tops remain exact through packed attachment. Compatible disconnected spans reuse tracks. New groups can get deeper tracks/header/corridors without raising existing child tops. Differential tests for channel bound conflicts, pinned interior tracks, lifetime reuse and ordered insertions; no new fallback/errors. | 700–1,100 lines; 4–6 days | Medium-high: correct coordinate frame, cyclic orders, header corners and row packing are coupled. Scope adapters to represented channels and preserve other drawings. |
+| **1. Channel and track assignment as a constraint solve (complete)** | T4/T11/T14/T15 metric assignment for existing ordered, representable channels; T31–T33 shared-row header rules, plus T34/T35 attachment offsets. Keep current row/corridor generators. Add common immutable segment/order/bounds/pin types and a deterministic separation solver first, within this slice. | Test below becomes ordinary `it`; retained tracks and child tops remain exact through packed attachment. Compatible disconnected spans reuse tracks. New groups can get deeper tracks/header/corridors without raising existing child tops. Differential tests for channel bound conflicts, pinned interior tracks, lifetime reuse and ordered insertions; no new fallback/errors. | 700–1,100 lines; 4–6 days | Medium-high: correct coordinate frame, cyclic orders, header corners and row packing are coupled. Scope adapters to represented channels and preserve other drawings. |
 | **2. Explicit ports and painted corridors** | T8/T14/T16/T29/T34/T35 duplicated endpoint/envelope reconstruction. Import existing topology into explicit ports, arrow stubs and certified turn/corridor bounds; retain current emitter initially. | Same semantic consumers/endpoints and exact reused route geometry; native cubics, near-pane arrows and host cover chrome pass existing tests/gates. Retained unaffected stem paths remain byte-identical, supporting interrupted motion. Reject malformed imported plans. | 600–1,000 lines; 3–5 days | Medium: source vs branch endpoints, raw/attached transforms, stroke versus allocation extents. |
 | **3. Junctions and corridor topology** | T3/T5–T10/T12/T13; reuse T1 semantics. Replace provisional/deferred/stacked placement, zone reconsideration and dropped ordering with explicit junction ports and channel search. | Critical cycle gets a certified split/crossing topology, never a discarded hard dependency. Exact parentage for reused subsets, 2–8 inputs, distant fan-outs and long edges; crossing/height/pane/fallback limits all hold. Try new corridor assignments before growing only free boundaries. | 1,200–1,800 lines; 6–9 days | High: combinatorial corridor capacity and fan-in/crossing semantics. Bounds on **total** search/constraint work, not per retry. |
 | **4. Constrained incremental insertion and hint changes** | T18–T28 plus T37's separate routing. Import committed drawing into same model, freeze declared tracks/rectangles/suffixes, add new ports/segments and re-solve affected conflict components. | Arrival world-oracles, merges/departures, single 16 px descent and shrink-space reuse; clicked ancestry equality; exact revisits and worker parity. Delete repairable-contact policy and port/bypass offset repair only when all old successes are covered. Preserve other retained tiles where the request pins them; optimize only free ones. | 1,200–1,900 lines; 6–10 days | High: pruning/identity, future departures, hint port changes, dense search tails. |
@@ -334,10 +335,10 @@ contracts; topology search then supplies better feasible choices; insertion and
 cold/packing reuse them. Shipping only telemetry/imported constraints without
 fixing the shared-row case does **not** complete slice 1.
 
-### Slice 1 acceptance written now
+### Slice 1 acceptance at design time
 
 [`shared-row-track-stability.test.ts`](../tests/domain/trace-graph/shared-row-track-stability.test.ts)
-is one `it.fails`, with the known reason in its title. It uses the real default
+was one `it.fails` at `6768262`, with the known reason in its title. It uses the real default
 folder engine, a reduced version of the harness's village/forest/fan graphs,
 `deeper=1`, and 18+2 fan children. It represents the 420 px fallback pane with
 400 px engine width and fallback metrics; actual client width also depends on
@@ -350,7 +351,7 @@ The contract asserts every forest child's world rectangle is exactly unchanged.
 Setup, independent-gate and wrapping checks run in `beforeAll`, outside `it.fails`,
 so unrelated failures cannot satisfy the expected-failure marker.
 
-| Observable | Before | Current result | Required |
+| Observable | Before | Observed defect | Required |
 |---|---:|---:|---:|
 | forest-mist x / y / width / height | 49 / 131 / 92 / 97 | 49 / 137 / 92 / 97 | Exact before rectangle |
 | autumn x / y / width / height | 157 / 131 / 92 / 81 | 157 / 137 / 92 / 81 | Exact before rectangle |
@@ -420,3 +421,95 @@ establishes this fixture's feasibility, not a general solver or motion proof.
   the expected-failure body.
 - Full `layout:eval` intentionally not run; current 50-target success is the base
   contract, not a new measurement.
+
+## Slice 1 implementation and acceptance (complete)
+
+The fixed-order metric solve is in `separation.ts`: immutable coordinate bounds,
+pins, swept segments and order constraints; forward lower/backward upper
+propagation on a DAG; deterministic preferred-coordinate clamping; exact original
+pin emission and forward residual checks. Conflicts carry an ordered constraint
+witness. This is difference-constraint feasibility, not VPSC or a claim of an
+optimal projection. The method follows the constraint-graph formulation in
+[MIT 6.006 lecture 17](https://courses.csail.mit.edu/6.006/spring11/lectures/lec17.pdf).
+Reverse floating subtraction is checked in the forward direction; an unsafe free
+bound steps to the adjacent smaller representable number, without a geometric
+tolerance or any change to a pin.
+
+The adapters retain the existing discrete generators:
+
+- T4: ordered interior-gap lanes with representable minimum spacing. Outer margins
+  still choose free intervals and orders dynamically, so their legacy lifetime
+  allocator is outside this fixed-order rollout and remains byte-identical.
+- T11: acyclic singleton turn units become a conflict DAG; disjoint swept spans
+  reuse tracks. Swap cells, cycle splits and their metric paths remain legacy.
+- T14/T15: plain zones solve departure/track/trailing bounds and a free end
+  boundary; equal-endpoint plain channels solve their spread centers. Native
+  crossing/fan windows keep their existing emitter and coordinates.
+- T31–T35: cold header alignment is a feasible preference in the common solve.
+  Retained attachment adoption covers one retained net followed by one wrapped
+  new net in the same packing frame, with the new source port clear of retained
+  turn columns. Its track and child top are exact equalities. Foreign port
+  exclusions and multiple bypasses need painted corridors and remain outside
+  this adapter. Validate history replay before importing those equalities.
+  Child transforms substitute the solved top directly instead of inheriting a
+  neighbor's header. Unsupported drawings retain their original bytes.
+
+The unchanged shared-row test is now ordinary `it`, with both the reduced design
+fixture and the full village graph from `view-fixture.ts` (`deeper=1`, 18+2 fan
+children). Both retain forest's child rectangles and route strings exactly, pass
+the unchanged folder gate and introduce no fallback. The browser motion test's
+`fixme` is removed with its assertions unchanged; browser execution is left to the
+user as requested.
+
+Differential checks: 195 layered corpus/width drawings and 63 cold packing states
+match unmodified `6768262` byte-for-byte. Three unsupported port/multiple-bypass
+counterexamples match complete baseline folder bytes. A separate 896-transition
+baseline/current audit changes 128 attachment assignments with zero changed
+fallback outcomes/errors. Solver tests include exhaustive bounded feasibility,
+interior pins, ordered insertions, disjoint lifetimes, malformed inputs, decimal
+pin arithmetic and 10,000 tracks. Independent adversarial review found and drove
+regressions for malformed provenance, incomplete port-scope adoption and negative
+decimal reverse bounds. Blocking re-review accepted the adopted scope with no
+remaining material findings; it independently checked 300 bounded decimal
+problems and 96 additional folder transitions.
+
+Final type checking passed with 0 errors and 0 warnings. Full unit testing passed:
+168 files, 2,111 passed, one existing skip, no expected failures or timeouts
+(1,455.02 s). Final bench has 12,120 rows with unchanged proposed means and zero
+engine errors; reveal summaries/movement across 3,150 rows are unchanged; all 280
+packing rows are byte-identical. Both the unmodified baseline and final `bun run layout:eval` passed **all 50
+current targets**, with thresholds and populations unchanged. The absent initial
+`layout-eval/out/acceptance.md` was replaced by an unmodified snapshot evaluation;
+its report was saved to `/tmp/routing-s1-acceptance-before.md`/`.json` for comparison.
+
+Only these current acceptance rows changed; the other 47 rows are identical:
+
+| Current target, maximum p95 ms | Before (`6768262`) | Slice 1 | Existing limit |
+|---|---:|---:|---:|
+| Main-thread | 2.734 | 3.102 | 8.000 |
+| ≤30 visible tiles | 49.111 | 42.259 | 100.000 |
+| Full folder engine inline | 4.018 | 3.085 | 5.000 |
+
+These are separate timing measurements, not evidence that every workload got
+faster. Final perf load on 24 CPUs was 8.76 / 11.40 / 14.64 before,
+3.89 / 4.65 / 8.73 after (1 / 5 / 15 minutes). No timing target failed and no
+perf rerun was needed. The original control was measured under higher load.
+
+Geometry fallback counts are unchanged: corpus 0/6,060, tours 1/3,150 (0.032%),
+packing 0/140; every fallback stays inside the pane. Hard violations/errors,
+independent geometry gate failures and unexplained shared lanes are all zero.
+Worker/main parity, exact revisits and arrival pinning pass in the full suite.
+
+The regression's shipped forest child rectangles are unchanged at y=131
+(previous defect: y=137), with track 6 and header 34 retained exactly. The new
+fan can retain its deeper track/header (20/50) independently. The unchanged
+folder gate admits both results. This completes slice 1 for the declared
+represented channels, not the later port/corridor or incremental-routing slices.
+
+Compared with `6768262`, the adopted production paths delete 36 old lines:
+27 in `band-geometry.ts`, 6 in `layout.ts`, 3 in `folder-layout/default-engine.ts`.
+Legacy paths remain where their topology/order/paint is outside this model.
+Slice 2 still needs explicit painted ports/corridors and shared endpoint
+reconstruction before expanding retained adoption to foreign port interactions
+and multiple bypasses. Dynamic margin orders and crossing/cycle topology remain
+for the subsequent topology slice.
