@@ -623,6 +623,8 @@ function layoutBandCandidates(input: LayoutRequest, options: BandOptions): Graph
       // same routes around the ancestry-only embedding lets those siblings move.
       for (const [base, policy, effort] of [[previous, "constrained", 1], [previous, "repairable", 1],
         [previous, "constrained", 2], [previous, "repairable", 2],
+        [previous, "constrained", 3], [previous, "repairable", 3],
+        [previous, "constrained", 4], [previous, "repairable", 4],
         [repacked, "constrained", 1], [repacked, "repairable", 1]] as const) {
         if (Number.isFinite(bestAnchored)) break;
         if (!base) continue;
