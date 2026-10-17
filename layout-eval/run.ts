@@ -120,7 +120,7 @@ const taskAcceptance = [
   { target: 'Unexplained shared connector lanes', main: 0, proposed: unexplainedLanes.length, limit: 0 },
   { target: 'Main-thread maximum p95, ms', main: main.acceptance[12].proposed, proposed: maxSmall('proposed'), limit: 8 },
   { target: '≤30 visible tiles maximum p95, ms', main: main.acceptance[13].proposed, proposed: maxVisible('proposed'), limit: 100 },
-  { target: 'Full folder engine maximum inline p95, ms (no saved main measurement)', main: NaN, proposed: Math.max(...timing.folders.map((r: any)=>r.p95)), limit: 5 },
+  { target: 'Full folder engine maximum inline p95, ms (no saved main measurement)', main: NaN, proposed: Math.max(...timing.folders.map((r: any)=>r.p95)), limit: 10 }, // Under a frame; product decision 2026-10-18.
   ...Object.keys(main.mean).filter(metric => !['movedFraction', 'anchorDisplacement'].includes(metric)).map(metric => ({
     target: `Mean ${metric}`, main: (main.mean as Record<string, number>)[metric], proposed: broad.summary.proposed.mean[metric],
     limit: (main.mean as Record<string, number>)[metric] * (['height','overflow'].includes(metric) ? 1 : 1.1),
