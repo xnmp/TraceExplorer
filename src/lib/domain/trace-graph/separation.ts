@@ -2,6 +2,7 @@
  * Exact placement for a fixed acyclic segment order. This is bound propagation on
  * a difference-constraint DAG, followed by lexicographic closest-preference
  * placement in the declared order. It is not a VPSC least-squares projection.
+ * Difference-constraint reference: https://courses.csail.mit.edu/6.006/spring11/lectures/lec17.pdf
  * Backward upper bounds are essential: an interior pin can move earlier free
  * variables. Feasible preferred drawings are returned bit-for-bit unchanged.
  */
@@ -44,18 +45,19 @@ export function solveSeparation(problem: SeparationProblem): SeparationResult {
   if (byId.size !== problem.variables.length || rank.size !== problem.order.length || rank.size !== byId.size
     || problem.order.some(id => !byId.has(id))) return fail('invalid', '', ['order']);
   const variables = problem.order.map(id => byId.get(id)!);
-  const lower: number[] = [], upper: number[] = [], lowerReason: string[][] = [], upperReason: string[][] = [];
+  const lower: number[] = [], upper: number[] = [], lowerReason: string[] = [], upperReason: string[] = [];
+  const lowerVia: (Separation | undefined)[] = [], upperVia: (Separation | undefined)[] = [];
   for (const [i, v] of variables.entries()) {
     const lo = v.bounds?.lower ?? -Infinity, hi = v.bounds?.upper ?? Infinity;
     if (!Number.isFinite(v.preferred) || (lo !== -Infinity && !Number.isFinite(lo)) || (hi !== Infinity && !Number.isFinite(hi))
       || v.pin && !Number.isFinite(v.pin.value)) return fail('invalid', v.id, [v.id]);
     lower[i] = lo; upper[i] = hi;
-    lowerReason[i] = [v.id + ':lower']; upperReason[i] = [v.id + ':upper'];
+    lowerReason[i] = v.id + ':lower'; upperReason[i] = v.id + ':upper';
     if (v.pin) {
       if (v.pin.value < lo) return fail('bounds', v.id, [v.id + ':lower', v.id + ':pin']);
       if (v.pin.value > hi) return fail('bounds', v.id, [v.id + ':pin', v.id + ':upper']);
       lower[i] = upper[i] = v.pin.value;
-      lowerReason[i] = upperReason[i] = [v.id + ':pin'];
+      lowerReason[i] = upperReason[i] = v.id + ':pin';
     }
   }
   const outgoing: { readonly to: number; readonly edge: Separation }[][] = variables.map(() => []);
@@ -69,14 +71,23 @@ export function solveSeparation(problem: SeparationProblem): SeparationResult {
   outgoing.forEach(edges => edges.sort((a, b) => a.to - b.to || a.edge.id.localeCompare(b.edge.id)));
   for (let i = 0; i < variables.length; i++) for (const { to, edge } of outgoing[i]) {
     const bound = lower[i] + edge.gap;
-    if (bound > lower[to]) { lower[to] = bound; lowerReason[to] = [...lowerReason[i], edge.id]; }
+    if (bound > lower[to]) { lower[to] = bound; lowerVia[to] = edge; }
   }
+  const witness = (index: number) => {
+    const before: string[] = [], after: string[] = [];
+    let at = index;
+    while (lowerVia[at]) { const edge = lowerVia[at]!; before.push(edge.id); at = rank.get(edge.before)!; }
+    before.push(lowerReason[at]); before.reverse();
+    at = index;
+    while (upperVia[at]) { const edge = upperVia[at]!; after.push(edge.id); at = rank.get(edge.after)!; }
+    return [...before, ...after, upperReason[at]];
+  };
   for (let i = variables.length - 1; i >= 0; i--) {
     for (const { to, edge } of outgoing[i]) {
       const bound = upper[to] - edge.gap;
-      if (bound < upper[i]) { upper[i] = bound; upperReason[i] = [edge.id, ...upperReason[to]]; }
+      if (bound < upper[i]) { upper[i] = bound; upperVia[i] = edge; }
     }
-    if (lower[i] > upper[i]) return fail('bounds', variables[i].id, [...lowerReason[i], ...upperReason[i]]);
+    if (lower[i] > upper[i]) return fail('bounds', variables[i].id, witness(i));
   }
   const positions = new Map<string, number>();
   for (const [i, v] of variables.entries()) {
@@ -96,6 +107,7 @@ export function solveSeparation(problem: SeparationProblem): SeparationResult {
 
 /** Conflict edges only for overlapping incompatible swept intervals, not all neighbors. */
 export function solveChannel(problem: { readonly segments: readonly RoutingSegment[]; readonly order: readonly string[]; readonly gap: number }): SeparationResult {
+  if (!Number.isFinite(problem.gap) || problem.gap < 0) return { ok: false, conflict: { kind: 'invalid', variable: '', constraints: ['gap'] } };
   const segments = new Map(problem.segments.map(s => [s.id, s]));
   const separations: Separation[] = [];
   for (const segment of problem.segments) if (!segment.span.every(Number.isFinite) || segment.span[0] > segment.span[1])

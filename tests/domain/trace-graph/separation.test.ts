@@ -48,6 +48,39 @@ describe('ordered separation constraints', () => {
   it('preserves feasible preferred positions exactly, including fractional pins', () => {
     expect(positions({ variables: [{ id: 'a', preferred: 2.125, pin: { value: 2.125, reason: 'exact' } }, { id: 'b', preferred: 7.375 }], order: ['a', 'b'], separations: [{ id: 'ab', before: 'a', after: 'b', gap: 3 }] })).toEqual({ a: 2.125, b: 7.375 });
   });
+
+  it('agrees with exhaustive bounded feasibility, including branching and interior pins', () => {
+    for (let seed = 0; seed < 120; seed++) {
+      const variables = Array.from({ length: 4 }, (_, i) => ({ id: `${i}`, preferred: (seed + i * 3) % 7,
+        bounds: { lower: 0, upper: 6 }, ...(seed % 3 === i ? { pin: { value: seed % 7, reason: 'retained' } } : {}) }));
+      const separations = variables.flatMap((a, i) => variables.slice(i + 1).flatMap((b, j) =>
+        (seed + i * 3 + j) % 3 ? [{ id: `${a.id}:${b.id}`, before: a.id, after: b.id, gap: 1 + seed % 3 }] : []));
+      const feasible: number[][] = [];
+      for (let a = 0; a <= 6; a++) for (let b = 0; b <= 6; b++) for (let c = 0; c <= 6; c++) for (let d = 0; d <= 6; d++) {
+        const values = [a, b, c, d];
+        if (variables.every((v, i) => !v.pin || values[i] === v.pin.value)
+          && separations.every(e => values[Number(e.after)] >= values[Number(e.before)] + e.gap)) feasible.push(values);
+      }
+      const result = solveSeparation({ variables, order: variables.map(v => v.id), separations });
+      expect(result.ok, `seed ${seed}`).toBe(feasible.length > 0);
+      if (result.ok) {
+        const actual = [...result.positions.values()];
+        expect(feasible).toContainEqual(actual);
+        // The declared objective prioritizes the earliest variable's distance.
+        expect(feasible.some(other => {
+          const first = other.findIndex((v, i) => Math.abs(v - variables[i].preferred) !== Math.abs(actual[i] - variables[i].preferred));
+          return first >= 0 && Math.abs(other[first] - variables[first].preferred) < Math.abs(actual[first] - variables[first].preferred);
+        })).toBe(false);
+      }
+    }
+  });
+
+  it('handles a long ordered channel without copying every prefix witness', () => {
+    const variables = Array.from({ length: 10000 }, (_, i) => ({ id: `${i}`, preferred: 0, bounds: { lower: 0 } }));
+    const result = solveSeparation({ variables, order: variables.map(v => v.id),
+      separations: variables.slice(1).map((v, i) => ({ id: `${i}`, before: `${i}`, after: v.id, gap: 3 })) });
+    expect(result.ok && result.positions.get('9999')).toBe(29997);
+  });
 });
 
 describe('swept channel intervals', () => {
