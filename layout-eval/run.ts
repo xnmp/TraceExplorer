@@ -115,7 +115,8 @@ const taskAcceptance = [
   ...[false, true].map(dense => ({ target: `Held-screen moves at 480 px (${dense ? 'dense' : 'broad'})`, main: main.screen['480'][dense ? 'dense' : 'broad'],
     proposed: screen(dense ? denseTours : broadTours, 480), limit: main.screen['480'][dense ? 'dense' : 'broad'] })),
   { target: 'Hard violations/errors', main: 0, proposed: gates.proposed, limit: 0 },
-  { target: 'Independent geometry gate failures', main: 0, proposed: [...newRows, ...tours.rows, ...packing.filter((r: any) => r.engine === 'proposed')].filter(r => r.independentFailure).length, limit: 0 },
+  // Native main did not run this independent contact certificate.
+  { target: 'Independent geometry gate failures', main: NaN, proposed: [...newRows, ...tours.rows, ...packing.filter((r: any) => r.engine === 'proposed')].filter(r => r.independentFailure).length, limit: 0 },
   { target: 'Unexplained shared connector lanes', main: 0, proposed: unexplainedLanes.length, limit: 0 },
   { target: 'Main-thread maximum p95, ms', main: main.acceptance[12].proposed, proposed: maxSmall('proposed'), limit: 8 },
   { target: '≤30 visible tiles maximum p95, ms', main: main.acceptance[13].proposed, proposed: maxVisible('proposed'), limit: 100 },
@@ -131,7 +132,7 @@ const taskAcceptance = [
   ]),
 ].map(row => ({ ...row, pass: row.proposed <= row.limit + 1e-9 }));
 const taskTable = ['| Current target | Main 75e46b0 | This pass | Limit | Result |', '|---|---:|---:|---:|---|',
-  ...taskAcceptance.map(r => `| ${r.target} | ${r.main.toFixed(3)} | ${r.proposed.toFixed(3)} | ${r.limit.toFixed(3)} | ${r.pass ? 'PASS' : 'FAIL'} |`)].join('\n');
+  ...taskAcceptance.map(r => `| ${r.target} | ${Number.isFinite(r.main) ? r.main.toFixed(3) : '—'} | ${r.proposed.toFixed(3)} | ${r.limit.toFixed(3)} | ${r.pass ? 'PASS' : 'FAIL'} |`)].join('\n');
 const laneList = laneCases.length ? ['| Source | Case | Width / image | Step | Candidate | Shared lane px | Reason |', '|---|---|---|---:|---|---:|---|',
   ...laneCases.map((r: any) => `| ${r.source} | ${r.case} | ${r.width} / ${r.imagePx} | ${r.step} | ${r.candidate} | ${r.sharedLanePx.toFixed(1)} | ${r.reason ?? '**unexplained**'} |`)].join('\n') : 'None.';
 const table = ['| Acceptance target | Baseline | New | Result |', '|---|---:|---:|---|', ...acceptance.map(r => `| ${r.target} | ${Number(r.baseline).toFixed(3)} | ${r.proposed.toFixed(3)} | ${r.pass ? 'PASS' : 'FAIL'} |`)].join('\n');
