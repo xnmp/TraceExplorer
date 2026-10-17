@@ -149,11 +149,41 @@ export function extentSize(layout: GraphLayout, key: string): { readonly height:
 const attachmentClearance = (count: number) => count > 1 ? LANE_SEPARATION + 1 : 0;
 const attachmentTrack = (count: number) => count > 1 ? 6 + LANE_SEPARATION + 1 : TRACK_HEIGHT;
 
-export interface StackGridFlow extends GridFlow { readonly rowBands: readonly GridBand[] }
+/** Where a band's stem runs across from its cover (`track`, below the cover row) and how far below the cover its first child row starts. */
+export interface BandAttachment { readonly track: number; readonly stemRoom: number }
+/**
+ * Attachments for groups whose lanes may meet: every lane gets its own track, a corner and a lane
+ * apart (the route-contact gate), and every group's children start below the deepest lane.
+ * For one group this is the lone band's attachment.
+ */
+function sharedAttachments(count: number): readonly BandAttachment[] {
+  const step = attachmentTrack(count), clearance = attachmentClearance(count);
+  const header = Math.max(STACK_STEM_ROOM, step * count + 2 * ARROW.length + clearance);
+  return Array.from({ length: count }, (_, i) => ({ track: step * (i + 1), stemRoom: Math.max(header, step * (i + 1) + 2 * ARROW.length + step + clearance) }));
+}
+const LONE_ATTACHMENT = sharedAttachments(1)[0];
+/** Clear distance between two groups' lane envelopes for their stems to be drawn as lone bands (corner radius plus a port berth). */
+const LANE_APART = 2 * TRACK_HEIGHT;
+/**
+ * Whether every group sits on the row's first line and no two groups' lane envelopes (cover
+ * column to child span) come within {@link LANE_APART}: then no lane, port or corner of one group
+ * is near another's, so each keeps the lone band's attachment and their child rows align.
+ */
+function lanesApart(packed: readonly { readonly x: number; readonly y: number; readonly width: number; readonly center: number; readonly deferred?: boolean }[]): boolean {
+  if (packed.some((group) => group.y !== 0 || group.deferred)) return false;
+  const spans = packed.map((group) => [Math.min(group.x, group.center), Math.max(group.x + group.width, group.center)] as const).sort((a, b) => a[0] - b[0]);
+  return spans.every((span, i) => !i || spans[i - 1][1] + LANE_APART <= span[0]);
+}
+
+export interface StackGridFlow extends GridFlow {
+  readonly rowBands: readonly GridBand[];
+  /** Each band's attachment, as reserved by the packing; {@link bandPlacements} draws exactly these. */
+  readonly attachments?: ReadonlyMap<string, BandAttachment>;
+}
 /** One physical band per folder row; each group's footprint reserves only its own interval. */
 export function packedGridFlow(items: readonly GridItem[], open: ReadonlyMap<string, { width: number; height: number; preferredX?: number; anchorX?: number; anchorY?: number; pending?: boolean }>, columns: number, metrics: GridMetrics): StackGridFlow {
   const base = gridFlow(items, new Map(), columns, metrics);
-  const cells = new Map(base.cells), bands: GridBand[] = [], rowBands: GridBand[] = [];
+  const cells = new Map(base.cells), bands: GridBand[] = [], rowBands: GridBand[] = [], attachments = new Map<string, BandAttachment>();
   const rows = new Map<number, GridCell[]>(), kinds = new Map(items.map((item) => [item.id, item.kind]));
   for (const cell of base.cells.values()) { const row = rows.get(cell.row) ?? []; row.push(cell); rows.set(cell.row, row); }
   let extra = 0;
@@ -166,18 +196,34 @@ export function packedGridFlow(items: readonly GridItem[], open: ReadonlyMap<str
       // neither a speculative sideways squeeze nor a move of a committed band.
       return size && kinds.get(cell.id) === "stack" ? [{ id: cell.id, center: cell.x + cell.width / 2, ...size, width: size.pending ? base.width : size.width, deferred: !!size.pending }] : [];
     });
-    const step = attachmentTrack(groups.length);
-    const header = Math.max(STACK_STEM_ROOM, step * groups.length + 2 * ARROW.length + attachmentClearance(groups.length));
-    const sized = groups.map((group, i) => ({ ...group, height: group.height + Math.max(header, step * (i + 1) + 2 * ARROW.length + step + attachmentClearance(groups.length)) - STACK_STEM_ROOM }));
-    const initial = packStackGroups(sized, base.width, 16, 0);
-    // Existing margins usually suffice. Reserve an outer gutter only when the
-    // actual stem envelopes need it; a later opening otherwise moves no group.
-    const gutterRoom = coverGutters(initial, base.width) ? 0 : 4 * groups.length + 4;
-    // A placeholder spans the row inside the gutter, never widening the grid.
-    const rowWidth = Math.max(1, base.width - gutterRoom);
-    const fits = (group: import("./stack-packing").PackedStackGroup, previous: readonly import("./stack-packing").PackedStackGroup[]) =>
-      coverGutters([...previous, group].map((group) => ({ ...group, x: group.x + gutterRoom })), base.width) !== null;
-    const packed = packStackGroups(sized.map((group) => group.deferred ? { ...group, width: rowWidth } : group), rowWidth, 16, 0, fits).map((group) => ({ ...group, x: group.x + gutterRoom }));
+    const pack = (reserved: readonly BandAttachment[]) => {
+      const sized = groups.map((group, i) => ({ ...group, height: group.height + reserved[i].stemRoom - STACK_STEM_ROOM }));
+      const initial = packStackGroups(sized, base.width, 16, 0);
+      // Existing margins usually suffice. Reserve an outer gutter only when the
+      // actual stem envelopes need it; a later opening otherwise moves no group.
+      const gutterRoom = coverGutters(initial, base.width) ? 0 : 4 * groups.length + 4;
+      // A placeholder spans the row inside the gutter, never widening the grid.
+      const rowWidth = Math.max(1, base.width - gutterRoom);
+      const fits = (group: import("./stack-packing").PackedStackGroup, previous: readonly import("./stack-packing").PackedStackGroup[]) =>
+        coverGutters([...previous, group].map((group) => ({ ...group, x: group.x + gutterRoom })), base.width) !== null;
+      return packStackGroups(sized.map((group) => group.deferred ? { ...group, width: rowWidth } : group), rowWidth, 16, 0, fits).map((group) => ({ ...group, x: group.x + gutterRoom }));
+    };
+    // Groups side by side whose lanes cannot meet attach as lone bands: aligned child rows, and an
+    // unrelated opening in the row moves none of them. Any possible meeting keeps separate tracks.
+    let reserved = sharedAttachments(groups.length), packed = pack(reserved);
+    if (groups.length > 1 && lanesApart(packed)) {
+      const lone = groups.map(() => LONE_ATTACHMENT), apart = pack(lone);
+      if (lanesApart(apart)) { reserved = lone; packed = apart; }
+    }
+    // Groups on the row's first line share one child line: each starts as deep as the deepest
+    // of them needs. Kept only if the deeper reservation leaves that line's groups unchanged.
+    const firstLine = (of: typeof packed) => new Set(of.flatMap((group) => group.y === 0 && !group.deferred ? [group.id] : []));
+    const line = firstLine(packed), deepest = Math.max(0, ...groups.flatMap((group, i) => line.has(group.id) ? [reserved[i].stemRoom] : []));
+    if (line.size > 1 && groups.some((group, i) => line.has(group.id) && reserved[i].stemRoom !== deepest)) {
+      const aligned = groups.map((group, i) => line.has(group.id) ? { ...reserved[i], stemRoom: deepest } : reserved[i]), repacked = pack(aligned), after = firstLine(repacked);
+      if (after.size === line.size && [...line].every((id) => after.has(id))) { reserved = aligned; packed = repacked; }
+    }
+    groups.forEach((group, i) => attachments.set(group.id, reserved[i]));
     const top = members[0].y + extra + metrics.cellHeight;
     const height = Math.max(0, ...packed.map((group) => group.y + group.height));
     // Bands keep their covers' order, so a band's stem track does not change when a placeholder resolves.
@@ -186,7 +232,7 @@ export function packedGridFlow(items: readonly GridItem[], open: ReadonlyMap<str
     extra += height;
     if (!Number.isFinite(base.height + extra)) throw new RangeError("grid height overflow");
   }
-  return { ...base, width: Math.max(base.width, ...rowBands.map((band) => band.width)), height: base.height + extra, cells, bands, rowBands };
+  return { ...base, width: Math.max(base.width, ...rowBands.map((band) => band.width)), height: base.height + extra, cells, bands, rowBands, attachments };
 }
 
 export interface BandPlacement {
@@ -212,14 +258,13 @@ export function bandPlacements(flow: StackGridFlow, coverHeight: number): Readon
   return new Map(flow.bands.map((band) => {
     const cell = flow.cells.get(band.id)!, coverX = cell.x + cell.width / 2;
     const siblings = rows.get(band.row)!;
-    const step = attachmentTrack(siblings.length);
-    const track = step * (siblings.indexOf(band) + 1);
+    const { track, stemRoom } = flow.attachments?.get(band.id) ?? sharedAttachments(siblings.length)[siblings.indexOf(band)];
     const earlier = siblings.filter((other) => other.y < band.y);
     // The padding inside each packed interval is empty. Pick the nearest column which stays
     // outside every earlier line's child footprint; never default to the pane's left edge.
     const gutter = gutters.get(band.row)?.get(band.id) ?? coverX;
     if (!gutters.get(band.row)) throw new RangeError("packed band has no cover routing lane");
-    return [band.id, { x: band.x, coverX, coverHeight, width: flow.width, track, bypassColumns: [...gutters.get(band.row)!].filter(([id]) => id !== band.id).map(([, x]) => x), coverColumns: [...flow.cells.values()].filter((cell) => cell.row === band.row && cell.id !== band.id).map((cell) => cell.x + cell.width / 2), stemRoom: Math.max(STACK_STEM_ROOM, step * siblings.length + 2 * ARROW.length + attachmentClearance(siblings.length), track + 2 * ARROW.length + step + attachmentClearance(siblings.length)),
+    return [band.id, { x: band.x, coverX, coverHeight, width: flow.width, track, bypassColumns: [...gutters.get(band.row)!].filter(([id]) => id !== band.id).map(([, x]) => x), coverColumns: [...flow.cells.values()].filter((cell) => cell.row === band.row && cell.id !== band.id).map((cell) => cell.x + cell.width / 2), stemRoom,
       left: Math.min(band.x, coverX, gutter), right: Math.max(band.x + band.width, coverX, gutter),
       ...(earlier.length ? { bridge: { top: coverHeight + track, gutter } } : {}) }];
   }));
