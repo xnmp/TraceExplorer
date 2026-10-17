@@ -1584,6 +1584,9 @@ export const CROSSING_WEIGHT = HEIGHT_WEIGHT * CROSSING_HEIGHT_TILES;
  */
 export const MIXED_DIRECTIONS_WEIGHT = 1;
 
+/** Moving every familiar tile costs two tile-widths of height, even for short moves. */
+export const MOVED_FRACTION_WEIGHT = 2 * HEIGHT_WEIGHT;
+
 export interface Weights {
     readonly stability: number;
     /**
@@ -1599,5 +1602,5 @@ export function cost(m: Measures, tileWidth: number, weights: Weights = DEFAULT_
     if (m.overlaps || m.tileIntersections || m.directionViolations || m.missingEdges || m.extraEdges || m.missingNodes || m.extraNodes || m.invalidGeometry || m.invalidPaths || m.terminalViolations || m.disconnectedEdges)
         return Infinity;
     if (m.sharedLanePx > 0 && weights.sharedLanes !== "priced") return Infinity;
-    return HEIGHT_WEIGHT * m.height / tileWidth + 2 * m.area / (tileWidth * tileWidth) + .08 * m.length / tileWidth + .12 * m.bends + CROSSING_WEIGHT * m.crossings + 4 * m.sharedLanePx / tileWidth + MIXED_DIRECTIONS_WEIGHT * m.mixedDirections + 3 * m.siblingInversions + .25 * m.unaligned + 100 * m.overflow / tileWidth + weights.stability * (m.displacement / tileWidth + .25 * m.maxDisplacement / tileWidth + 2 * m.anchorDisplacement / tileWidth);
+    return HEIGHT_WEIGHT * m.height / tileWidth + 2 * m.area / (tileWidth * tileWidth) + .08 * m.length / tileWidth + .12 * m.bends + CROSSING_WEIGHT * m.crossings + 4 * m.sharedLanePx / tileWidth + MIXED_DIRECTIONS_WEIGHT * m.mixedDirections + 3 * m.siblingInversions + .25 * m.unaligned + 100 * m.overflow / tileWidth + MOVED_FRACTION_WEIGHT * m.movedFraction + weights.stability * (m.displacement / tileWidth + .25 * m.maxDisplacement / tileWidth + 2 * m.anchorDisplacement / tileWidth);
 }
