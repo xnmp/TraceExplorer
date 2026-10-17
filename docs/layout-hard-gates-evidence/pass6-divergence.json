@@ -1,0 +1,6241 @@
+{
+  "provenance": {
+    "mainCommit": "75e46b08cfd5ae94399aecfdebefb3937c6e3a73",
+    "mainCheckout": "git archive origin/main -> /tmp/te-div-main",
+    "branchInputSource": "/tmp/layout-gates-anchor-pass4; original pass5-anchor-before evidence archive; before current uncommitted fixes",
+    "beforeEvidenceSHA256": "a8fb696e78e889f8a749592fd58ffba6238ace919f3be7fde9b1cda8c10549f0",
+    "selection": "all added category e broad+dense rows; excludes packing",
+    "method": "Capture each engine own original tour request/history; replay incrementalTree against exact same request/history in both engines (expand shared consumer ranges for main ABI); fresh default budget for direct replay. Trace first contact predicate main bypasses during contacts=false retry. For 7 rows neither engine constructs from branch history, use successful original main-history incremental/repack input. Counterfactual patches run only in temporary archive; independent gate never patched.",
+    "limitations": "Fresh-budget direct replay is diagnostic, not end-to-end shared-budget candidate acceptance. First bypass is an observed control-flow divergence, not proof that this single rejected probe determines final chosen layout. Counterfactual recovery columns overlap.",
+    "currentSnapshot": "Production snapshot after arrow-base/shaft and own-corner blockingBerth changes, before speculative reservation removal; captured immutable /tmp/te-div-current. These columns are direct frozen-input replay, not re-walked tours."
+  },
+  "summary": {
+    "rows": 96,
+    "firstDivergingPredicate": {
+      "touched": 7,
+      "nearBerth": 89
+    },
+    "mainOnIdenticalBranchInput": {
+      "true": 89,
+      "false": 7
+    },
+    "noneRejectAtHistoryValidation": 96,
+    "noFutureConstructed": 21,
+    "noFutureCertified": 21,
+    "arrowBaseConstructed": 6,
+    "arrowBaseAndCornerConstructed": 11,
+    "freshBudgetRepackConstructed": 6,
+    "freshBudgetRepackCertified": 3,
+    "currentBeforeReservationRemovalConstructed": 11,
+    "currentWithoutFutureReservationsConstructed": 23
+  },
+  "rows": [
+    {
+      "case": "random-dag-40-7501",
+      "width": 360,
+      "step": 3,
+      "focus": "n12",
+      "branchConstruction": "insertTree: !best after primary/fallback/fine search",
+      "mainOnBranchInput": true,
+      "priorHistoryAlsoDiverged": false,
+      "firstDivergingPredicate": "touched",
+      "firstDivergingWitness": {
+        "name": "touched",
+        "source": "node\u0000n10",
+        "berth": {
+          "x": 336,
+          "y": 1075,
+          "radius": 6
+        },
+        "list": [
+          [
+            {
+              "x": 336,
+              "y": 1075
+            },
+            {
+              "x": 344,
+              "y": 1075
+            }
+          ],
+          [
+            {
+              "x": 344,
+              "y": 1075
+            },
+            {
+              "x": 344,
+              "y": 1921
+            }
+          ],
+          [
+            {
+              "x": 344,
+              "y": 1921
+            },
+            {
+              "x": 258,
+              "y": 1921
+            }
+          ]
+        ]
+      },
+      "replayInputHistory": "branch captured incremental request/history",
+      "mainContactBypassDisabled": false,
+      "removeHypotheticalFuturePortReservations": false,
+      "arrowBaseRadius3": false,
+      "arrowBaseGate": null,
+      "arrowBaseAndCornerFix": true,
+      "arrowBaseAndCornerGate": null,
+      "firstBranchContact": {
+        "predicate": "nearBerth",
+        "source": "node\u0000n4",
+        "segment": [
+          {
+            "x": 340,
+            "y": 400
+          },
+          {
+            "x": 340,
+            "y": 1755.5
+          }
+        ],
+        "berth": {
+          "x": 336,
+          "y": 556,
+          "radius": 6,
+          "source": "node\u0000n2",
+          "futureReservation": true
+        }
+      },
+      "firstBranchHistoryMainGate": "route-contact",
+      "freshBudgetRepackConstructed": false,
+      "currentBeforeReservationRemoval": {
+        "constructed": true,
+        "gate": null
+      },
+      "currentWithoutFutureReservations": {
+        "constructed": false,
+        "gate": null
+      }
+    },
+    {
+      "case": "random-dag-40-7501",
+      "width": 454,
+      "step": 5,
+      "focus": "n20",
+      "branchConstruction": "insertTree: !best after primary/fallback/fine search",
+      "mainOnBranchInput": true,
+      "priorHistoryAlsoDiverged": false,
+      "firstDivergingPredicate": "nearBerth",
+      "firstDivergingWitness": {
+        "name": "nearBerth",
+        "source": "node\u0000n8",
+        "segment": [
+          {
+            "x": 94,
+            "y": 998
+          },
+          {
+            "x": 94,
+            "y": 1000.5
+          }
+        ]
+      },
+      "replayInputHistory": "branch captured incremental request/history",
+      "mainContactBypassDisabled": false,
+      "removeHypotheticalFuturePortReservations": false,
+      "arrowBaseRadius3": true,
+      "arrowBaseGate": null,
+      "arrowBaseAndCornerFix": true,
+      "arrowBaseAndCornerGate": null,
+      "firstBranchContact": {
+        "predicate": "nearBerth",
+        "source": "node\u0000n12",
+        "segment": [
+          {
+            "x": 258,
+            "y": 2414.5
+          },
+          {
+            "x": 94,
+            "y": 2414.5
+          }
+        ],
+        "berth": {
+          "x": 94,
+          "y": 2412,
+          "radius": 6,
+          "source": "node\u0000n5",
+          "futureReservation": true
+        }
+      },
+      "firstBranchHistoryMainGate": "route-contact",
+      "freshBudgetRepackConstructed": false,
+      "currentBeforeReservationRemoval": {
+        "constructed": true,
+        "gate": null
+      },
+      "currentWithoutFutureReservations": {
+        "constructed": false,
+        "gate": null
+      }
+    },
+    {
+      "case": "random-dag-40-7502",
+      "width": 360,
+      "step": 2,
+      "focus": "n37",
+      "branchConstruction": "insertTree: !best after primary/fallback/fine search",
+      "mainOnBranchInput": true,
+      "priorHistoryAlsoDiverged": false,
+      "firstDivergingPredicate": "nearBerth",
+      "firstDivergingWitness": {
+        "name": "nearBerth",
+        "source": "node\u0000n8",
+        "segment": [
+          {
+            "x": 262,
+            "y": 614
+          },
+          {
+            "x": 262,
+            "y": 616
+          }
+        ]
+      },
+      "replayInputHistory": "branch captured incremental request/history",
+      "mainContactBypassDisabled": false,
+      "removeHypotheticalFuturePortReservations": false,
+      "arrowBaseRadius3": true,
+      "arrowBaseGate": "route-contact",
+      "arrowBaseAndCornerFix": true,
+      "arrowBaseAndCornerGate": null,
+      "firstBranchContact": {
+        "predicate": "nearBerth",
+        "source": "node\u0000n2",
+        "segment": [
+          {
+            "x": 336,
+            "y": 850
+          },
+          {
+            "x": 336,
+            "y": 2554
+          }
+        ],
+        "berth": {
+          "x": 332,
+          "y": 1018,
+          "radius": 6,
+          "source": "node\u0000n3",
+          "futureReservation": true
+        }
+      },
+      "firstBranchHistoryMainGate": "route-contact",
+      "freshBudgetRepackConstructed": true,
+      "freshBudgetRepackGate": null,
+      "currentBeforeReservationRemoval": {
+        "constructed": true,
+        "gate": null
+      },
+      "currentWithoutFutureReservations": {
+        "constructed": false,
+        "gate": null
+      }
+    },
+    {
+      "case": "random-dag-40-7502",
+      "width": 360,
+      "step": 7,
+      "focus": "n15",
+      "branchConstruction": "insertTree: !best after primary/fallback/fine search",
+      "mainOnBranchInput": true,
+      "priorHistoryAlsoDiverged": false,
+      "firstDivergingPredicate": "nearBerth",
+      "firstDivergingWitness": {
+        "name": "nearBerth",
+        "source": "node\u0000n1",
+        "segment": [
+          {
+            "x": 262,
+            "y": 296
+          },
+          {
+            "x": 262,
+            "y": 297
+          }
+        ]
+      },
+      "replayInputHistory": "branch captured incremental request/history",
+      "mainContactBypassDisabled": false,
+      "removeHypotheticalFuturePortReservations": false,
+      "arrowBaseRadius3": false,
+      "arrowBaseGate": null,
+      "arrowBaseAndCornerFix": false,
+      "arrowBaseAndCornerGate": null,
+      "firstBranchContact": {
+        "predicate": "nearBerth",
+        "source": "node\u0000n2",
+        "segment": [
+          {
+            "x": 336,
+            "y": 850
+          },
+          {
+            "x": 336,
+            "y": 1895.5
+          }
+        ],
+        "berth": {
+          "x": 332,
+          "y": 1018,
+          "radius": 6,
+          "source": "node\u0000n3",
+          "futureReservation": true
+        }
+      },
+      "firstBranchHistoryMainGate": "route-contact",
+      "freshBudgetRepackConstructed": true,
+      "freshBudgetRepackGate": "route-contact",
+      "currentBeforeReservationRemoval": {
+        "constructed": false,
+        "gate": null
+      },
+      "currentWithoutFutureReservations": {
+        "constructed": true,
+        "gate": null
+      }
+    },
+    {
+      "case": "random-dag-40-7502",
+      "width": 640,
+      "step": 7,
+      "focus": "n15",
+      "branchConstruction": "insertTree: !best after primary/fallback/fine search",
+      "mainOnBranchInput": true,
+      "priorHistoryAlsoDiverged": false,
+      "firstDivergingPredicate": "nearBerth",
+      "firstDivergingWitness": {
+        "name": "nearBerth",
+        "source": "node\u0000n2",
+        "segment": [
+          {
+            "x": 306,
+            "y": 973
+          },
+          {
+            "x": 169,
+            "y": 973
+          }
+        ]
+      },
+      "replayInputHistory": "branch captured incremental request/history",
+      "mainContactBypassDisabled": false,
+      "removeHypotheticalFuturePortReservations": false,
+      "arrowBaseRadius3": false,
+      "arrowBaseGate": null,
+      "arrowBaseAndCornerFix": false,
+      "arrowBaseAndCornerGate": null,
+      "firstBranchContact": {
+        "predicate": "nearBerth",
+        "source": "node\u0000n4",
+        "segment": [
+          {
+            "x": 174,
+            "y": 1485.5
+          },
+          {
+            "x": 258,
+            "y": 1485.5
+          }
+        ],
+        "berth": {
+          "x": 258,
+          "y": 1481,
+          "radius": 6,
+          "source": "node\u0000n15",
+          "futureReservation": true
+        }
+      },
+      "firstBranchHistoryMainGate": "route-contact",
+      "freshBudgetRepackConstructed": true,
+      "freshBudgetRepackGate": "route-contact",
+      "currentBeforeReservationRemoval": {
+        "constructed": false,
+        "gate": null
+      },
+      "currentWithoutFutureReservations": {
+        "constructed": false,
+        "gate": null
+      }
+    },
+    {
+      "case": "random-dag-40-7503",
+      "width": 360,
+      "step": 7,
+      "focus": "n20",
+      "branchConstruction": "insertTree: !best after primary/fallback/fine search",
+      "mainOnBranchInput": true,
+      "priorHistoryAlsoDiverged": false,
+      "firstDivergingPredicate": "nearBerth",
+      "firstDivergingWitness": {
+        "name": "nearBerth",
+        "source": "node\u0000n4",
+        "segment": [
+          {
+            "x": 330,
+            "y": 568
+          },
+          {
+            "x": 330,
+            "y": 2227
+          }
+        ]
+      },
+      "replayInputHistory": "branch captured incremental request/history",
+      "mainContactBypassDisabled": false,
+      "removeHypotheticalFuturePortReservations": true,
+      "noFutureGate": null,
+      "arrowBaseRadius3": false,
+      "arrowBaseGate": null,
+      "arrowBaseAndCornerFix": true,
+      "arrowBaseAndCornerGate": null,
+      "firstBranchContact": {
+        "predicate": "nearBerth",
+        "source": "node\u0000n7",
+        "segment": [
+          {
+            "x": 258,
+            "y": 1467
+          },
+          {
+            "x": 8,
+            "y": 1467
+          }
+        ],
+        "berth": {
+          "x": 94,
+          "y": 1463,
+          "radius": 6,
+          "source": "node\u0000n6",
+          "futureReservation": true
+        }
+      },
+      "firstBranchHistoryMainGate": "route-contact",
+      "freshBudgetRepackConstructed": false,
+      "currentBeforeReservationRemoval": {
+        "constructed": true,
+        "gate": null
+      },
+      "currentWithoutFutureReservations": {
+        "constructed": true,
+        "gate": null
+      }
+    },
+    {
+      "case": "random-dag-100-8101",
+      "width": 360,
+      "step": 1,
+      "focus": "n18",
+      "branchConstruction": "insertTree: !best after primary/fallback/fine search",
+      "mainOnBranchInput": true,
+      "priorHistoryAlsoDiverged": false,
+      "firstDivergingPredicate": "nearBerth",
+      "firstDivergingWitness": {
+        "name": "nearBerth",
+        "source": "node\u0000n6",
+        "segment": [
+          {
+            "x": 336,
+            "y": 1348
+          },
+          {
+            "x": 336,
+            "y": 1911
+          }
+        ]
+      },
+      "replayInputHistory": "branch captured incremental request/history",
+      "mainContactBypassDisabled": false,
+      "removeHypotheticalFuturePortReservations": false,
+      "arrowBaseRadius3": false,
+      "arrowBaseGate": null,
+      "arrowBaseAndCornerFix": false,
+      "arrowBaseAndCornerGate": null,
+      "firstBranchContact": {
+        "predicate": "nearBerth",
+        "source": "node\u0000n1",
+        "segment": [
+          {
+            "x": 262,
+            "y": 296
+          },
+          {
+            "x": 262,
+            "y": 297
+          }
+        ],
+        "berth": {
+          "x": 262,
+          "y": 299,
+          "radius": 3,
+          "source": "node\u0000root"
+        }
+      },
+      "firstBranchHistoryMainGate": "route-contact",
+      "freshBudgetRepackConstructed": true,
+      "freshBudgetRepackGate": null,
+      "currentBeforeReservationRemoval": {
+        "constructed": false,
+        "gate": null
+      },
+      "currentWithoutFutureReservations": {
+        "constructed": false,
+        "gate": null
+      }
+    },
+    {
+      "case": "random-dag-100-8101",
+      "width": 360,
+      "step": 5,
+      "focus": "n38",
+      "branchConstruction": "insertTree: !best after primary/fallback/fine search",
+      "mainOnBranchInput": true,
+      "priorHistoryAlsoDiverged": false,
+      "firstDivergingPredicate": "nearBerth",
+      "firstDivergingWitness": {
+        "name": "nearBerth",
+        "source": "node\u0000n1",
+        "segment": [
+          {
+            "x": 262,
+            "y": 296
+          },
+          {
+            "x": 262,
+            "y": 297
+          }
+        ]
+      },
+      "replayInputHistory": "branch captured incremental request/history",
+      "mainContactBypassDisabled": false,
+      "removeHypotheticalFuturePortReservations": false,
+      "arrowBaseRadius3": false,
+      "arrowBaseGate": null,
+      "arrowBaseAndCornerFix": false,
+      "arrowBaseAndCornerGate": null,
+      "firstBranchContact": {
+        "predicate": "nearBerth",
+        "source": "node\u0000n1",
+        "segment": [
+          {
+            "x": 262,
+            "y": 296
+          },
+          {
+            "x": 262,
+            "y": 297
+          }
+        ],
+        "berth": {
+          "x": 262,
+          "y": 299,
+          "radius": 3,
+          "source": "node\u0000root"
+        }
+      },
+      "firstBranchHistoryMainGate": "route-contact",
+      "freshBudgetRepackConstructed": false,
+      "currentBeforeReservationRemoval": {
+        "constructed": false,
+        "gate": null
+      },
+      "currentWithoutFutureReservations": {
+        "constructed": false,
+        "gate": null
+      }
+    },
+    {
+      "case": "random-dag-100-8101",
+      "width": 454,
+      "step": 1,
+      "focus": "n18",
+      "branchConstruction": "insertTree: !best after primary/fallback/fine search",
+      "mainOnBranchInput": true,
+      "priorHistoryAlsoDiverged": false,
+      "firstDivergingPredicate": "nearBerth",
+      "firstDivergingWitness": {
+        "name": "nearBerth",
+        "source": "node\u0000n7",
+        "segment": [
+          {
+            "x": 372.98630676800644,
+            "y": 782
+          },
+          {
+            "x": 97,
+            "y": 782
+          }
+        ]
+      },
+      "replayInputHistory": "branch captured incremental request/history",
+      "mainContactBypassDisabled": false,
+      "removeHypotheticalFuturePortReservations": false,
+      "arrowBaseRadius3": false,
+      "arrowBaseGate": null,
+      "arrowBaseAndCornerFix": false,
+      "arrowBaseAndCornerGate": null,
+      "firstBranchContact": {
+        "predicate": "nearBerth",
+        "source": "node\u0000n8",
+        "segment": [
+          {
+            "x": 376,
+            "y": 957
+          },
+          {
+            "x": 17,
+            "y": 957
+          }
+        ],
+        "berth": {
+          "x": 320.8590277777777,
+          "y": 959.6909722222222,
+          "radius": 3,
+          "source": "node\u0000n6"
+        }
+      },
+      "firstBranchHistoryMainGate": "route-contact",
+      "freshBudgetRepackConstructed": false,
+      "currentBeforeReservationRemoval": {
+        "constructed": false,
+        "gate": null
+      },
+      "currentWithoutFutureReservations": {
+        "constructed": false,
+        "gate": null
+      }
+    },
+    {
+      "case": "random-dag-100-8101",
+      "width": 454,
+      "step": 6,
+      "focus": "n69",
+      "branchConstruction": "insertTree: !best after primary/fallback/fine search",
+      "mainOnBranchInput": false,
+      "priorHistoryAlsoDiverged": true,
+      "firstDivergingPredicate": "nearBerth",
+      "firstDivergingWitness": {
+        "name": "nearBerth",
+        "source": "node\u0000n24",
+        "segment": [
+          {
+            "x": 334,
+            "y": 3158
+          },
+          {
+            "x": 94,
+            "y": 3158
+          }
+        ]
+      },
+      "replayInputHistory": "main captured successful request/history",
+      "mainContactBypassDisabled": false,
+      "removeHypotheticalFuturePortReservations": false,
+      "arrowBaseRadius3": false,
+      "arrowBaseGate": null,
+      "arrowBaseAndCornerFix": false,
+      "arrowBaseAndCornerGate": null,
+      "firstBranchContact": {
+        "predicate": "nearBerth",
+        "source": "node\u0000n12",
+        "segment": [
+          {
+            "x": 426,
+            "y": 131
+          },
+          {
+            "x": 14,
+            "y": 131
+          }
+        ],
+        "berth": {
+          "x": 340.5,
+          "y": 128,
+          "radius": 6,
+          "source": "node\u0000root"
+        }
+      },
+      "firstBranchHistoryMainGate": null,
+      "freshBudgetRepackConstructed": false,
+      "currentBeforeReservationRemoval": {
+        "constructed": false,
+        "gate": null
+      },
+      "currentWithoutFutureReservations": {
+        "constructed": false,
+        "gate": null
+      }
+    },
+    {
+      "case": "random-dag-100-8101",
+      "width": 640,
+      "step": 6,
+      "focus": "n69",
+      "branchConstruction": "insertTree: !best after primary/fallback/fine search",
+      "mainOnBranchInput": true,
+      "priorHistoryAlsoDiverged": false,
+      "firstDivergingPredicate": "nearBerth",
+      "firstDivergingWitness": {
+        "name": "nearBerth",
+        "source": "node\u0000n24",
+        "segment": [
+          {
+            "x": 478,
+            "y": 2302
+          },
+          {
+            "x": 166,
+            "y": 2302
+          }
+        ]
+      },
+      "replayInputHistory": "branch captured incremental request/history",
+      "mainContactBypassDisabled": false,
+      "removeHypotheticalFuturePortReservations": false,
+      "arrowBaseRadius3": false,
+      "arrowBaseGate": null,
+      "arrowBaseAndCornerFix": false,
+      "arrowBaseAndCornerGate": null,
+      "firstBranchContact": {
+        "predicate": "nearBerth",
+        "source": "node\u0000n1",
+        "segment": [
+          {
+            "x": 452,
+            "y": 226
+          },
+          {
+            "x": 452,
+            "y": 659
+          }
+        ],
+        "berth": {
+          "x": 450,
+          "y": 656,
+          "radius": 3,
+          "source": "node\u0000n3"
+        }
+      },
+      "firstBranchHistoryMainGate": "route-contact",
+      "freshBudgetRepackConstructed": false,
+      "currentBeforeReservationRemoval": {
+        "constructed": false,
+        "gate": null
+      },
+      "currentWithoutFutureReservations": {
+        "constructed": false,
+        "gate": null
+      }
+    },
+    {
+      "case": "random-dag-100-8101",
+      "width": 900,
+      "step": 6,
+      "focus": "n69",
+      "branchConstruction": "insertTree: !best after primary/fallback/fine search",
+      "mainOnBranchInput": true,
+      "priorHistoryAlsoDiverged": false,
+      "firstDivergingPredicate": "nearBerth",
+      "firstDivergingWitness": {
+        "name": "nearBerth",
+        "source": "node\u0000n10",
+        "segment": [
+          {
+            "x": 332,
+            "y": 1204
+          },
+          {
+            "x": 332,
+            "y": 1970
+          }
+        ]
+      },
+      "replayInputHistory": "branch captured incremental request/history",
+      "mainContactBypassDisabled": false,
+      "removeHypotheticalFuturePortReservations": false,
+      "arrowBaseRadius3": false,
+      "arrowBaseGate": null,
+      "arrowBaseAndCornerFix": false,
+      "arrowBaseAndCornerGate": null,
+      "firstBranchContact": {
+        "predicate": "nearBerth",
+        "source": "node\u0000n15",
+        "segment": [
+          {
+            "x": 94,
+            "y": 1338
+          },
+          {
+            "x": 892,
+            "y": 1338
+          }
+        ],
+        "berth": {
+          "x": 258,
+          "y": 1334,
+          "radius": 6,
+          "source": "node\u0000n19",
+          "futureReservation": true
+        }
+      },
+      "firstBranchHistoryMainGate": "route-contact",
+      "freshBudgetRepackConstructed": false,
+      "currentBeforeReservationRemoval": {
+        "constructed": false,
+        "gate": null
+      },
+      "currentWithoutFutureReservations": {
+        "constructed": false,
+        "gate": null
+      }
+    },
+    {
+      "case": "random-dag-100-8102",
+      "width": 360,
+      "step": 6,
+      "focus": "n46",
+      "branchConstruction": "insertTree: !best after primary/fallback/fine search",
+      "mainOnBranchInput": true,
+      "priorHistoryAlsoDiverged": false,
+      "firstDivergingPredicate": "touched",
+      "firstDivergingWitness": {
+        "name": "touched",
+        "source": "node\u0000n34",
+        "berth": {
+          "x": 258,
+          "y": 8414,
+          "radius": 6
+        },
+        "list": [
+          [
+            {
+              "x": 258,
+              "y": 8414
+            },
+            {
+              "x": 258,
+              "y": 8416
+            }
+          ],
+          [
+            {
+              "x": 258,
+              "y": 8416
+            },
+            {
+              "x": 258,
+              "y": 8418
+            }
+          ]
+        ]
+      },
+      "replayInputHistory": "branch captured incremental request/history",
+      "mainContactBypassDisabled": false,
+      "removeHypotheticalFuturePortReservations": true,
+      "noFutureGate": null,
+      "arrowBaseRadius3": false,
+      "arrowBaseGate": null,
+      "arrowBaseAndCornerFix": false,
+      "arrowBaseAndCornerGate": null,
+      "firstBranchContact": {
+        "predicate": "nearBerth",
+        "source": "node\u0000n46",
+        "segment": [
+          {
+            "x": 17,
+            "y": 8417
+          },
+          {
+            "x": 94,
+            "y": 8417
+          }
+        ],
+        "berth": {
+          "x": 94,
+          "y": 8414,
+          "radius": 6,
+          "source": "node\u0000n31",
+          "futureReservation": true
+        }
+      },
+      "firstBranchHistoryMainGate": "route-contact",
+      "freshBudgetRepackConstructed": false,
+      "currentBeforeReservationRemoval": {
+        "constructed": false,
+        "gate": null
+      },
+      "currentWithoutFutureReservations": {
+        "constructed": true,
+        "gate": null
+      }
+    },
+    {
+      "case": "random-dag-100-8102",
+      "width": 360,
+      "step": 7,
+      "focus": "n87",
+      "branchConstruction": "insertTree: !best after primary/fallback/fine search",
+      "mainOnBranchInput": true,
+      "priorHistoryAlsoDiverged": false,
+      "firstDivergingPredicate": "touched",
+      "firstDivergingWitness": {
+        "name": "touched",
+        "source": "node\u0000n13",
+        "berth": {
+          "x": 328,
+          "y": 3718,
+          "radius": 6
+        },
+        "list": [
+          [
+            {
+              "x": 328,
+              "y": 3718
+            },
+            {
+              "x": 352,
+              "y": 3718
+            }
+          ],
+          [
+            {
+              "x": 352,
+              "y": 3718
+            },
+            {
+              "x": 352,
+              "y": 6753
+            }
+          ],
+          [
+            {
+              "x": 352,
+              "y": 6753
+            },
+            {
+              "x": 352,
+              "y": 6754
+            }
+          ],
+          [
+            {
+              "x": 352,
+              "y": 6754
+            },
+            {
+              "x": 94,
+              "y": 6754
+            }
+          ],
+          [
+            {
+              "x": 94,
+              "y": 6754
+            },
+            {
+              "x": 94,
+              "y": 6758
+            }
+          ]
+        ]
+      },
+      "replayInputHistory": "branch captured incremental request/history",
+      "mainContactBypassDisabled": false,
+      "removeHypotheticalFuturePortReservations": true,
+      "noFutureGate": null,
+      "arrowBaseRadius3": false,
+      "arrowBaseGate": null,
+      "arrowBaseAndCornerFix": false,
+      "arrowBaseAndCornerGate": null,
+      "firstBranchContact": {
+        "predicate": "nearBerth",
+        "source": "node\u0000n4",
+        "segment": [
+          {
+            "x": 332,
+            "y": 733
+          },
+          {
+            "x": 332,
+            "y": 6451
+          }
+        ],
+        "berth": {
+          "x": 328,
+          "y": 910,
+          "radius": 6,
+          "source": "node\u0000n6",
+          "futureReservation": true
+        }
+      },
+      "firstBranchHistoryMainGate": "route-contact",
+      "freshBudgetRepackConstructed": false,
+      "currentBeforeReservationRemoval": {
+        "constructed": false,
+        "gate": null
+      },
+      "currentWithoutFutureReservations": {
+        "constructed": true,
+        "gate": null
+      }
+    },
+    {
+      "case": "random-dag-100-8102",
+      "width": 454,
+      "step": 2,
+      "focus": "n60",
+      "branchConstruction": "insertTree: !best after primary/fallback/fine search",
+      "mainOnBranchInput": true,
+      "priorHistoryAlsoDiverged": false,
+      "firstDivergingPredicate": "nearBerth",
+      "firstDivergingWitness": {
+        "name": "nearBerth",
+        "source": "node\u0000n3",
+        "segment": [
+          {
+            "x": 8,
+            "y": 3268
+          },
+          {
+            "x": 340.5,
+            "y": 3268
+          }
+        ]
+      },
+      "replayInputHistory": "branch captured incremental request/history",
+      "mainContactBypassDisabled": false,
+      "removeHypotheticalFuturePortReservations": false,
+      "arrowBaseRadius3": false,
+      "arrowBaseGate": null,
+      "arrowBaseAndCornerFix": false,
+      "arrowBaseAndCornerGate": null,
+      "firstBranchContact": {
+        "predicate": "nearBerth",
+        "source": "node\u0000n3",
+        "segment": [
+          {
+            "x": 8,
+            "y": 3268
+          },
+          {
+            "x": 340.5,
+            "y": 3268
+          }
+        ],
+        "berth": {
+          "x": 94,
+          "y": 3264,
+          "radius": 6,
+          "source": "node\u0000n33"
+        }
+      },
+      "firstBranchHistoryMainGate": "route-contact",
+      "freshBudgetRepackConstructed": false,
+      "currentBeforeReservationRemoval": {
+        "constructed": false,
+        "gate": null
+      },
+      "currentWithoutFutureReservations": {
+        "constructed": false,
+        "gate": null
+      }
+    },
+    {
+      "case": "random-dag-100-8102",
+      "width": 900,
+      "step": 6,
+      "focus": "n46",
+      "branchConstruction": "insertTree: !best after primary/fallback/fine search",
+      "mainOnBranchInput": true,
+      "priorHistoryAlsoDiverged": false,
+      "firstDivergingPredicate": "touched",
+      "firstDivergingWitness": {
+        "name": "touched",
+        "source": "node\u0000n87",
+        "berth": {
+          "x": 656,
+          "y": 1787,
+          "radius": 6
+        },
+        "list": [
+          [
+            {
+              "x": 656,
+              "y": 1787
+            },
+            {
+              "x": 703,
+              "y": 1787
+            }
+          ],
+          [
+            {
+              "x": 703,
+              "y": 1787
+            },
+            {
+              "x": 703,
+              "y": 2021
+            }
+          ],
+          [
+            {
+              "x": 703,
+              "y": 2021
+            },
+            {
+              "x": 750,
+              "y": 2021
+            }
+          ]
+        ]
+      },
+      "replayInputHistory": "branch captured incremental request/history",
+      "mainContactBypassDisabled": false,
+      "removeHypotheticalFuturePortReservations": false,
+      "arrowBaseRadius3": false,
+      "arrowBaseGate": null,
+      "arrowBaseAndCornerFix": false,
+      "arrowBaseAndCornerGate": null,
+      "firstBranchContact": {
+        "predicate": "nearBerth",
+        "source": "node\u0000n46",
+        "segment": [
+          {
+            "x": 177,
+            "y": 143
+          },
+          {
+            "x": 883,
+            "y": 143
+          }
+        ],
+        "berth": {
+          "x": 515.5929177705253,
+          "y": 140.0273864639871,
+          "radius": 3,
+          "source": "node\u0000root"
+        }
+      },
+      "firstBranchHistoryMainGate": "route-contact",
+      "freshBudgetRepackConstructed": false,
+      "currentBeforeReservationRemoval": {
+        "constructed": false,
+        "gate": null
+      },
+      "currentWithoutFutureReservations": {
+        "constructed": false,
+        "gate": null
+      }
+    },
+    {
+      "case": "random-dag-100-8102",
+      "width": 1400,
+      "step": 2,
+      "focus": "n60",
+      "branchConstruction": "insertTree: !best after primary/fallback/fine search",
+      "mainOnBranchInput": false,
+      "priorHistoryAlsoDiverged": true,
+      "firstDivergingPredicate": "nearBerth",
+      "firstDivergingWitness": {
+        "name": "nearBerth",
+        "source": "node\u0000n12",
+        "segment": [
+          {
+            "x": 994,
+            "y": 963.5
+          },
+          {
+            "x": 8,
+            "y": 963.5
+          }
+        ]
+      },
+      "replayInputHistory": "main captured successful request/history",
+      "mainContactBypassDisabled": false,
+      "removeHypotheticalFuturePortReservations": false,
+      "arrowBaseRadius3": false,
+      "arrowBaseGate": null,
+      "arrowBaseAndCornerFix": false,
+      "arrowBaseAndCornerGate": null,
+      "firstBranchContact": {
+        "predicate": "nearBerth",
+        "source": "node\u0000n13",
+        "segment": [
+          {
+            "x": 1260,
+            "y": 1108
+          },
+          {
+            "x": 258,
+            "y": 1108
+          }
+        ],
+        "berth": {
+          "x": 1016,
+          "y": 1106,
+          "radius": 3,
+          "source": "node\u0000root"
+        }
+      },
+      "firstBranchHistoryMainGate": null,
+      "freshBudgetRepackConstructed": false,
+      "currentBeforeReservationRemoval": {
+        "constructed": false,
+        "gate": null
+      },
+      "currentWithoutFutureReservations": {
+        "constructed": false,
+        "gate": null
+      }
+    },
+    {
+      "case": "random-dag-100-8103",
+      "width": 360,
+      "step": 2,
+      "focus": "n71",
+      "branchConstruction": "insertTree: !best after primary/fallback/fine search",
+      "mainOnBranchInput": true,
+      "priorHistoryAlsoDiverged": false,
+      "firstDivergingPredicate": "nearBerth",
+      "firstDivergingWitness": {
+        "name": "nearBerth",
+        "source": "node\u0000n25",
+        "segment": [
+          {
+            "x": 258,
+            "y": 4820
+          },
+          {
+            "x": 258,
+            "y": 4822
+          }
+        ]
+      },
+      "replayInputHistory": "branch captured incremental request/history",
+      "mainContactBypassDisabled": false,
+      "removeHypotheticalFuturePortReservations": false,
+      "arrowBaseRadius3": false,
+      "arrowBaseGate": null,
+      "arrowBaseAndCornerFix": false,
+      "arrowBaseAndCornerGate": null,
+      "firstBranchContact": {
+        "predicate": "nearBerth",
+        "source": "node\u0000n11",
+        "segment": [
+          {
+            "x": 8,
+            "y": 7490
+          },
+          {
+            "x": 94,
+            "y": 7490
+          }
+        ],
+        "berth": {
+          "x": 94,
+          "y": 7487,
+          "radius": 6,
+          "source": "node\u0000n28",
+          "futureReservation": true
+        }
+      },
+      "firstBranchHistoryMainGate": "route-contact",
+      "freshBudgetRepackConstructed": false,
+      "currentBeforeReservationRemoval": {
+        "constructed": false,
+        "gate": null
+      },
+      "currentWithoutFutureReservations": {
+        "constructed": false,
+        "gate": null
+      }
+    },
+    {
+      "case": "random-dag-100-8103",
+      "width": 360,
+      "step": 3,
+      "focus": "n79",
+      "branchConstruction": "insertTree: !best after primary/fallback/fine search",
+      "mainOnBranchInput": true,
+      "priorHistoryAlsoDiverged": false,
+      "firstDivergingPredicate": "nearBerth",
+      "firstDivergingWitness": {
+        "name": "nearBerth",
+        "source": "node\u0000n14",
+        "segment": [
+          {
+            "x": 255,
+            "y": 1673
+          },
+          {
+            "x": 255,
+            "y": 1674
+          }
+        ]
+      },
+      "replayInputHistory": "branch captured incremental request/history",
+      "mainContactBypassDisabled": false,
+      "removeHypotheticalFuturePortReservations": false,
+      "arrowBaseRadius3": false,
+      "arrowBaseGate": null,
+      "arrowBaseAndCornerFix": false,
+      "arrowBaseAndCornerGate": null,
+      "firstBranchContact": {
+        "predicate": "nearBerth",
+        "source": "node\u0000n14",
+        "segment": [
+          {
+            "x": 255,
+            "y": 1673
+          },
+          {
+            "x": 255,
+            "y": 1674
+          }
+        ],
+        "berth": {
+          "x": 255,
+          "y": 1676,
+          "radius": 3,
+          "source": "junction\u0000j:[\"n4\",\"n5\",\"root\"]"
+        }
+      },
+      "firstBranchHistoryMainGate": "route-contact",
+      "freshBudgetRepackConstructed": false,
+      "currentBeforeReservationRemoval": {
+        "constructed": false,
+        "gate": null
+      },
+      "currentWithoutFutureReservations": {
+        "constructed": false,
+        "gate": null
+      }
+    },
+    {
+      "case": "random-dag-100-8103",
+      "width": 360,
+      "step": 4,
+      "focus": "n61",
+      "branchConstruction": "insertTree: !best after primary/fallback/fine search",
+      "mainOnBranchInput": true,
+      "priorHistoryAlsoDiverged": false,
+      "firstDivergingPredicate": "nearBerth",
+      "firstDivergingWitness": {
+        "name": "nearBerth",
+        "source": "node\u0000n18",
+        "segment": [
+          {
+            "x": 169,
+            "y": 8447
+          },
+          {
+            "x": 166,
+            "y": 8447
+          }
+        ]
+      },
+      "replayInputHistory": "branch captured incremental request/history",
+      "mainContactBypassDisabled": false,
+      "removeHypotheticalFuturePortReservations": false,
+      "arrowBaseRadius3": false,
+      "arrowBaseGate": null,
+      "arrowBaseAndCornerFix": false,
+      "arrowBaseAndCornerGate": null,
+      "firstBranchContact": {
+        "predicate": "nearBerth",
+        "source": "node\u0000n2",
+        "segment": [
+          {
+            "x": 258,
+            "y": 448
+          },
+          {
+            "x": 94,
+            "y": 448
+          }
+        ],
+        "berth": {
+          "x": 176,
+          "y": 446,
+          "radius": 3,
+          "source": "node\u0000n1"
+        }
+      },
+      "firstBranchHistoryMainGate": "route-contact",
+      "freshBudgetRepackConstructed": false,
+      "currentBeforeReservationRemoval": {
+        "constructed": false,
+        "gate": null
+      },
+      "currentWithoutFutureReservations": {
+        "constructed": false,
+        "gate": null
+      }
+    },
+    {
+      "case": "random-dag-100-8103",
+      "width": 360,
+      "step": 7,
+      "focus": "n50",
+      "branchConstruction": "insertTree: !best after primary/fallback/fine search",
+      "mainOnBranchInput": true,
+      "priorHistoryAlsoDiverged": false,
+      "firstDivergingPredicate": "nearBerth",
+      "firstDivergingWitness": {
+        "name": "nearBerth",
+        "source": "node\u0000n16",
+        "segment": [
+          {
+            "x": 166,
+            "y": 8747
+          },
+          {
+            "x": 97,
+            "y": 8747
+          }
+        ]
+      },
+      "replayInputHistory": "branch captured incremental request/history",
+      "mainContactBypassDisabled": false,
+      "removeHypotheticalFuturePortReservations": false,
+      "arrowBaseRadius3": false,
+      "arrowBaseGate": null,
+      "arrowBaseAndCornerFix": false,
+      "arrowBaseAndCornerGate": null,
+      "firstBranchContact": {
+        "predicate": "nearBerth",
+        "source": "node\u0000n2",
+        "segment": [
+          {
+            "x": 255,
+            "y": 448
+          },
+          {
+            "x": 94,
+            "y": 448
+          }
+        ],
+        "berth": {
+          "x": 173,
+          "y": 446,
+          "radius": 3,
+          "source": "node\u0000n1"
+        }
+      },
+      "firstBranchHistoryMainGate": "route-contact",
+      "freshBudgetRepackConstructed": false,
+      "currentBeforeReservationRemoval": {
+        "constructed": false,
+        "gate": null
+      },
+      "currentWithoutFutureReservations": {
+        "constructed": false,
+        "gate": null
+      }
+    },
+    {
+      "case": "random-dag-100-8103",
+      "width": 454,
+      "step": 1,
+      "focus": "n64",
+      "branchConstruction": "insertTree: !best after primary/fallback/fine search",
+      "mainOnBranchInput": true,
+      "priorHistoryAlsoDiverged": false,
+      "firstDivergingPredicate": "nearBerth",
+      "firstDivergingWitness": {
+        "name": "nearBerth",
+        "source": "node\u0000n11",
+        "segment": [
+          {
+            "x": 343,
+            "y": 1162
+          },
+          {
+            "x": 107,
+            "y": 1162
+          }
+        ]
+      },
+      "replayInputHistory": "branch captured incremental request/history",
+      "mainContactBypassDisabled": false,
+      "removeHypotheticalFuturePortReservations": false,
+      "arrowBaseRadius3": false,
+      "arrowBaseGate": null,
+      "arrowBaseAndCornerFix": false,
+      "arrowBaseAndCornerGate": null,
+      "firstBranchContact": {
+        "predicate": "nearBerth",
+        "source": "node\u0000n5",
+        "segment": [
+          {
+            "x": 179,
+            "y": 477
+          },
+          {
+            "x": 446,
+            "y": 477
+          }
+        ],
+        "berth": {
+          "x": 343,
+          "y": 473,
+          "radius": 6,
+          "source": "node\u0000n36",
+          "futureReservation": true
+        }
+      },
+      "firstBranchHistoryMainGate": "route-contact",
+      "freshBudgetRepackConstructed": false,
+      "currentBeforeReservationRemoval": {
+        "constructed": false,
+        "gate": null
+      },
+      "currentWithoutFutureReservations": {
+        "constructed": false,
+        "gate": null
+      }
+    },
+    {
+      "case": "random-dag-100-8103",
+      "width": 454,
+      "step": 2,
+      "focus": "n71",
+      "branchConstruction": "insertTree: !best after primary/fallback/fine search",
+      "mainOnBranchInput": true,
+      "priorHistoryAlsoDiverged": false,
+      "firstDivergingPredicate": "nearBerth",
+      "firstDivergingWitness": {
+        "name": "nearBerth",
+        "source": "node\u0000n18",
+        "segment": [
+          {
+            "x": 331,
+            "y": 2704
+          },
+          {
+            "x": 94,
+            "y": 2704
+          }
+        ]
+      },
+      "replayInputHistory": "branch captured incremental request/history",
+      "mainContactBypassDisabled": false,
+      "removeHypotheticalFuturePortReservations": false,
+      "arrowBaseRadius3": false,
+      "arrowBaseGate": null,
+      "arrowBaseAndCornerFix": false,
+      "arrowBaseAndCornerGate": null,
+      "firstBranchContact": {
+        "predicate": "nearBerth",
+        "source": "node\u0000n11",
+        "segment": [
+          {
+            "x": 8,
+            "y": 4715
+          },
+          {
+            "x": 94,
+            "y": 4715
+          }
+        ],
+        "berth": {
+          "x": 94,
+          "y": 4712,
+          "radius": 6,
+          "source": "node\u0000n28",
+          "futureReservation": true
+        }
+      },
+      "firstBranchHistoryMainGate": "route-contact",
+      "freshBudgetRepackConstructed": false,
+      "currentBeforeReservationRemoval": {
+        "constructed": false,
+        "gate": null
+      },
+      "currentWithoutFutureReservations": {
+        "constructed": false,
+        "gate": null
+      }
+    },
+    {
+      "case": "random-dag-100-8103",
+      "width": 454,
+      "step": 7,
+      "focus": "n50",
+      "branchConstruction": "insertTree: !best after primary/fallback/fine search",
+      "mainOnBranchInput": false,
+      "priorHistoryAlsoDiverged": true,
+      "firstDivergingPredicate": "nearBerth",
+      "firstDivergingWitness": {
+        "name": "nearBerth",
+        "source": "node\u0000n36",
+        "segment": [
+          {
+            "x": 437,
+            "y": 4125.5
+          },
+          {
+            "x": 437,
+            "y": 6320
+          }
+        ]
+      },
+      "replayInputHistory": "main captured successful request/history",
+      "mainContactBypassDisabled": false,
+      "removeHypotheticalFuturePortReservations": false,
+      "arrowBaseRadius3": false,
+      "arrowBaseGate": null,
+      "arrowBaseAndCornerFix": false,
+      "arrowBaseAndCornerGate": null,
+      "firstBranchContact": {
+        "predicate": "nearBerth",
+        "source": "node\u0000n14",
+        "segment": [
+          {
+            "x": 161,
+            "y": 1052
+          },
+          {
+            "x": 161,
+            "y": 1053
+          }
+        ],
+        "berth": {
+          "x": 161,
+          "y": 1055,
+          "radius": 3,
+          "source": "junction\u0000j:[\"n4\",\"n5\",\"root\"]"
+        }
+      },
+      "firstBranchHistoryMainGate": null,
+      "freshBudgetRepackConstructed": false,
+      "currentBeforeReservationRemoval": {
+        "constructed": false,
+        "gate": null
+      },
+      "currentWithoutFutureReservations": {
+        "constructed": false,
+        "gate": null
+      }
+    },
+    {
+      "case": "random-dag-100-8103",
+      "width": 640,
+      "step": 1,
+      "focus": "n64",
+      "branchConstruction": "insertTree: !best after primary/fallback/fine search",
+      "mainOnBranchInput": true,
+      "priorHistoryAlsoDiverged": false,
+      "firstDivergingPredicate": "nearBerth",
+      "firstDivergingWitness": {
+        "name": "nearBerth",
+        "source": "node\u0000n11",
+        "segment": [
+          {
+            "x": 374,
+            "y": 1205
+          },
+          {
+            "x": 374,
+            "y": 1206
+          }
+        ]
+      },
+      "replayInputHistory": "branch captured incremental request/history",
+      "mainContactBypassDisabled": false,
+      "removeHypotheticalFuturePortReservations": false,
+      "arrowBaseRadius3": false,
+      "arrowBaseGate": null,
+      "arrowBaseAndCornerFix": false,
+      "arrowBaseAndCornerGate": null,
+      "firstBranchContact": {
+        "predicate": "nearBerth",
+        "source": "node\u0000n5",
+        "segment": [
+          {
+            "x": 374,
+            "y": 471
+          },
+          {
+            "x": 632,
+            "y": 471
+          }
+        ],
+        "berth": {
+          "x": 538,
+          "y": 467,
+          "radius": 6,
+          "source": "node\u0000n36",
+          "futureReservation": true
+        }
+      },
+      "firstBranchHistoryMainGate": "route-contact",
+      "freshBudgetRepackConstructed": false,
+      "currentBeforeReservationRemoval": {
+        "constructed": false,
+        "gate": null
+      },
+      "currentWithoutFutureReservations": {
+        "constructed": false,
+        "gate": null
+      }
+    },
+    {
+      "case": "random-dag-100-8103",
+      "width": 640,
+      "step": 3,
+      "focus": "n79",
+      "branchConstruction": "insertTree: !best after primary/fallback/fine search",
+      "mainOnBranchInput": true,
+      "priorHistoryAlsoDiverged": false,
+      "firstDivergingPredicate": "nearBerth",
+      "firstDivergingWitness": {
+        "name": "nearBerth",
+        "source": "node\u0000n14",
+        "segment": [
+          {
+            "x": 183,
+            "y": 3061
+          },
+          {
+            "x": 192,
+            "y": 3061
+          }
+        ]
+      },
+      "replayInputHistory": "branch captured incremental request/history",
+      "mainContactBypassDisabled": false,
+      "removeHypotheticalFuturePortReservations": false,
+      "arrowBaseRadius3": false,
+      "arrowBaseGate": null,
+      "arrowBaseAndCornerFix": false,
+      "arrowBaseAndCornerGate": null,
+      "firstBranchContact": {
+        "predicate": "nearBerth",
+        "source": "node\u0000n14",
+        "segment": [
+          {
+            "x": 632,
+            "y": 4613
+          },
+          {
+            "x": 94,
+            "y": 4613
+          }
+        ],
+        "berth": {
+          "x": 94,
+          "y": 4610,
+          "radius": 6,
+          "source": "node\u0000n22",
+          "futureReservation": true
+        }
+      },
+      "firstBranchHistoryMainGate": "route-contact",
+      "freshBudgetRepackConstructed": false,
+      "currentBeforeReservationRemoval": {
+        "constructed": false,
+        "gate": null
+      },
+      "currentWithoutFutureReservations": {
+        "constructed": false,
+        "gate": null
+      }
+    },
+    {
+      "case": "random-dag-100-8103",
+      "width": 900,
+      "step": 1,
+      "focus": "n64",
+      "branchConstruction": "insertTree: !best after primary/fallback/fine search",
+      "mainOnBranchInput": true,
+      "priorHistoryAlsoDiverged": false,
+      "firstDivergingPredicate": "nearBerth",
+      "firstDivergingWitness": {
+        "name": "nearBerth",
+        "source": "node\u0000n7",
+        "segment": [
+          {
+            "x": 720,
+            "y": 134
+          },
+          {
+            "x": 8,
+            "y": 134
+          }
+        ]
+      },
+      "replayInputHistory": "branch captured incremental request/history",
+      "mainContactBypassDisabled": false,
+      "removeHypotheticalFuturePortReservations": false,
+      "arrowBaseRadius3": false,
+      "arrowBaseGate": null,
+      "arrowBaseAndCornerFix": false,
+      "arrowBaseAndCornerGate": null,
+      "firstBranchContact": {
+        "predicate": "nearBerth",
+        "source": "node\u0000n1",
+        "segment": [
+          {
+            "x": 392,
+            "y": 226
+          },
+          {
+            "x": 392,
+            "y": 700.5
+          }
+        ],
+        "berth": {
+          "x": 388,
+          "y": 415,
+          "radius": 6,
+          "source": "node\u0000n3",
+          "futureReservation": true
+        }
+      },
+      "firstBranchHistoryMainGate": "route-contact",
+      "freshBudgetRepackConstructed": false,
+      "currentBeforeReservationRemoval": {
+        "constructed": false,
+        "gate": null
+      },
+      "currentWithoutFutureReservations": {
+        "constructed": false,
+        "gate": null
+      }
+    },
+    {
+      "case": "random-dag-100-8103",
+      "width": 900,
+      "step": 7,
+      "focus": "n50",
+      "branchConstruction": "insertTree: !best after primary/fallback/fine search",
+      "mainOnBranchInput": true,
+      "priorHistoryAlsoDiverged": false,
+      "firstDivergingPredicate": "nearBerth",
+      "firstDivergingWitness": {
+        "name": "nearBerth",
+        "source": "node\u0000n16",
+        "segment": [
+          {
+            "x": 205,
+            "y": 2356
+          },
+          {
+            "x": 97,
+            "y": 2356
+          }
+        ]
+      },
+      "replayInputHistory": "branch captured incremental request/history",
+      "mainContactBypassDisabled": false,
+      "removeHypotheticalFuturePortReservations": false,
+      "arrowBaseRadius3": false,
+      "arrowBaseGate": null,
+      "arrowBaseAndCornerFix": false,
+      "arrowBaseAndCornerGate": null,
+      "firstBranchContact": {
+        "predicate": "nearBerth",
+        "source": "node\u0000n2",
+        "segment": [
+          {
+            "x": 461,
+            "y": 292
+          },
+          {
+            "x": 133,
+            "y": 292
+          }
+        ],
+        "berth": {
+          "x": 215,
+          "y": 290,
+          "radius": 3,
+          "source": "node\u0000root"
+        }
+      },
+      "firstBranchHistoryMainGate": "route-contact",
+      "freshBudgetRepackConstructed": false,
+      "currentBeforeReservationRemoval": {
+        "constructed": false,
+        "gate": null
+      },
+      "currentWithoutFutureReservations": {
+        "constructed": false,
+        "gate": null
+      }
+    },
+    {
+      "case": "random-dag-100-8103",
+      "width": 1400,
+      "step": 3,
+      "focus": "n79",
+      "branchConstruction": "insertTree: !best after primary/fallback/fine search",
+      "mainOnBranchInput": true,
+      "priorHistoryAlsoDiverged": false,
+      "firstDivergingPredicate": "nearBerth",
+      "firstDivergingWitness": {
+        "name": "nearBerth",
+        "source": "node\u0000n11",
+        "segment": [
+          {
+            "x": 1241,
+            "y": 143
+          },
+          {
+            "x": 17,
+            "y": 143
+          }
+        ]
+      },
+      "replayInputHistory": "branch captured incremental request/history",
+      "mainContactBypassDisabled": false,
+      "removeHypotheticalFuturePortReservations": false,
+      "arrowBaseRadius3": false,
+      "arrowBaseGate": null,
+      "arrowBaseAndCornerFix": false,
+      "arrowBaseAndCornerGate": null,
+      "firstBranchContact": {
+        "predicate": "nearBerth",
+        "source": "node\u0000n14",
+        "segment": [
+          {
+            "x": 332,
+            "y": 704
+          },
+          {
+            "x": 332,
+            "y": 1083
+          }
+        ],
+        "berth": {
+          "x": 328,
+          "y": 805,
+          "radius": 6,
+          "source": "node\u0000n19",
+          "futureReservation": true
+        }
+      },
+      "firstBranchHistoryMainGate": "route-contact",
+      "freshBudgetRepackConstructed": false,
+      "currentBeforeReservationRemoval": {
+        "constructed": false,
+        "gate": null
+      },
+      "currentWithoutFutureReservations": {
+        "constructed": false,
+        "gate": null
+      }
+    },
+    {
+      "case": "random-dag-200-9101",
+      "width": 360,
+      "step": 1,
+      "focus": "n156",
+      "branchConstruction": "insertTree: !best after primary/fallback/fine search",
+      "mainOnBranchInput": true,
+      "priorHistoryAlsoDiverged": false,
+      "firstDivergingPredicate": "nearBerth",
+      "firstDivergingWitness": {
+        "name": "nearBerth",
+        "source": "node\u0000n3",
+        "segment": [
+          {
+            "x": 258,
+            "y": 1408
+          },
+          {
+            "x": 258,
+            "y": 1450
+          }
+        ]
+      },
+      "replayInputHistory": "branch captured incremental request/history",
+      "mainContactBypassDisabled": false,
+      "removeHypotheticalFuturePortReservations": false,
+      "arrowBaseRadius3": false,
+      "arrowBaseGate": null,
+      "arrowBaseAndCornerFix": false,
+      "arrowBaseAndCornerGate": null,
+      "firstBranchContact": {
+        "predicate": "nearBerth",
+        "source": "node\u0000n38",
+        "segment": [
+          {
+            "x": 258,
+            "y": 6740
+          },
+          {
+            "x": 94,
+            "y": 6740
+          }
+        ],
+        "berth": {
+          "x": 94,
+          "y": 6738,
+          "radius": 6,
+          "source": "node\u0000n30",
+          "futureReservation": true
+        }
+      },
+      "firstBranchHistoryMainGate": "route-contact",
+      "freshBudgetRepackConstructed": false,
+      "currentBeforeReservationRemoval": {
+        "constructed": false,
+        "gate": null
+      },
+      "currentWithoutFutureReservations": {
+        "constructed": false,
+        "gate": null
+      }
+    },
+    {
+      "case": "random-dag-200-9101",
+      "width": 360,
+      "step": 3,
+      "focus": "n160",
+      "branchConstruction": "insertTree: !best after primary/fallback/fine search",
+      "mainOnBranchInput": true,
+      "priorHistoryAlsoDiverged": false,
+      "firstDivergingPredicate": "touched",
+      "firstDivergingWitness": {
+        "name": "touched",
+        "source": "node\u0000n11",
+        "berth": {
+          "x": 258,
+          "y": 6889,
+          "radius": 3
+        },
+        "list": [
+          [
+            {
+              "x": 94,
+              "y": 768
+            },
+            {
+              "x": 94,
+              "y": 770
+            }
+          ],
+          [
+            {
+              "x": 94,
+              "y": 770
+            },
+            {
+              "x": 186,
+              "y": 770
+            }
+          ],
+          [
+            {
+              "x": 186,
+              "y": 770
+            },
+            {
+              "x": 186,
+              "y": 6889
+            }
+          ],
+          [
+            {
+              "x": 186,
+              "y": 6889
+            },
+            {
+              "x": 258,
+              "y": 6889
+            }
+          ],
+          [
+            {
+              "x": 258,
+              "y": 6889
+            },
+            {
+              "x": 258,
+              "y": 6891
+            }
+          ]
+        ]
+      },
+      "replayInputHistory": "branch captured incremental request/history",
+      "mainContactBypassDisabled": false,
+      "removeHypotheticalFuturePortReservations": false,
+      "arrowBaseRadius3": false,
+      "arrowBaseGate": null,
+      "arrowBaseAndCornerFix": false,
+      "arrowBaseAndCornerGate": null,
+      "firstBranchContact": {
+        "predicate": "nearBerth",
+        "source": "node\u0000n21",
+        "segment": [
+          {
+            "x": 352,
+            "y": 7038
+          },
+          {
+            "x": 94,
+            "y": 7038
+          }
+        ],
+        "berth": {
+          "x": 94,
+          "y": 7035,
+          "radius": 6,
+          "source": "node\u0000n7",
+          "futureReservation": true
+        }
+      },
+      "firstBranchHistoryMainGate": "route-contact",
+      "freshBudgetRepackConstructed": false,
+      "currentBeforeReservationRemoval": {
+        "constructed": false,
+        "gate": null
+      },
+      "currentWithoutFutureReservations": {
+        "constructed": false,
+        "gate": null
+      }
+    },
+    {
+      "case": "random-dag-200-9101",
+      "width": 360,
+      "step": 8,
+      "focus": "n184",
+      "branchConstruction": "insertTree: !best after primary/fallback/fine search",
+      "mainOnBranchInput": true,
+      "priorHistoryAlsoDiverged": false,
+      "firstDivergingPredicate": "nearBerth",
+      "firstDivergingWitness": {
+        "name": "nearBerth",
+        "source": "node\u0000n9",
+        "segment": [
+          {
+            "x": 183,
+            "y": 9050
+          },
+          {
+            "x": 183,
+            "y": 10775
+          }
+        ]
+      },
+      "replayInputHistory": "branch captured incremental request/history",
+      "mainContactBypassDisabled": false,
+      "removeHypotheticalFuturePortReservations": false,
+      "arrowBaseRadius3": false,
+      "arrowBaseGate": null,
+      "arrowBaseAndCornerFix": false,
+      "arrowBaseAndCornerGate": null,
+      "firstBranchContact": {
+        "predicate": "nearBerth",
+        "source": "node\u0000n30",
+        "segment": [
+          {
+            "x": 177,
+            "y": 10117
+          },
+          {
+            "x": 177,
+            "y": 11404.5
+          }
+        ],
+        "berth": {
+          "x": 180,
+          "y": 10709,
+          "radius": 6,
+          "source": "node\u0000n69"
+        }
+      },
+      "firstBranchHistoryMainGate": "route-contact",
+      "freshBudgetRepackConstructed": false,
+      "currentBeforeReservationRemoval": {
+        "constructed": false,
+        "gate": null
+      },
+      "currentWithoutFutureReservations": {
+        "constructed": false,
+        "gate": null
+      }
+    },
+    {
+      "case": "random-dag-200-9101",
+      "width": 454,
+      "step": 1,
+      "focus": "n156",
+      "branchConstruction": "insertTree: !best after primary/fallback/fine search",
+      "mainOnBranchInput": true,
+      "priorHistoryAlsoDiverged": false,
+      "firstDivergingPredicate": "nearBerth",
+      "firstDivergingWitness": {
+        "name": "nearBerth",
+        "source": "node\u0000n9",
+        "segment": [
+          {
+            "x": 346,
+            "y": 1153
+          },
+          {
+            "x": 107,
+            "y": 1153
+          }
+        ]
+      },
+      "replayInputHistory": "branch captured incremental request/history",
+      "mainContactBypassDisabled": false,
+      "removeHypotheticalFuturePortReservations": true,
+      "noFutureGate": null,
+      "arrowBaseRadius3": false,
+      "arrowBaseGate": null,
+      "arrowBaseAndCornerFix": false,
+      "arrowBaseAndCornerGate": null,
+      "firstBranchContact": {
+        "predicate": "nearBerth",
+        "source": "node\u0000n3",
+        "segment": [
+          {
+            "x": 8,
+            "y": 4499
+          },
+          {
+            "x": 94,
+            "y": 4499
+          }
+        ],
+        "berth": {
+          "x": 94,
+          "y": 4496,
+          "radius": 6,
+          "source": "node\u0000n30",
+          "futureReservation": true
+        }
+      },
+      "firstBranchHistoryMainGate": "route-contact",
+      "freshBudgetRepackConstructed": false,
+      "currentBeforeReservationRemoval": {
+        "constructed": false,
+        "gate": null
+      },
+      "currentWithoutFutureReservations": {
+        "constructed": true,
+        "gate": null
+      }
+    },
+    {
+      "case": "random-dag-200-9101",
+      "width": 454,
+      "step": 3,
+      "focus": "n160",
+      "branchConstruction": "insertTree: !best after primary/fallback/fine search",
+      "mainOnBranchInput": true,
+      "priorHistoryAlsoDiverged": false,
+      "firstDivergingPredicate": "nearBerth",
+      "firstDivergingWitness": {
+        "name": "nearBerth",
+        "source": "node\u0000n9",
+        "segment": [
+          {
+            "x": 269,
+            "y": 1249
+          },
+          {
+            "x": 269,
+            "y": 5144
+          }
+        ]
+      },
+      "replayInputHistory": "branch captured incremental request/history",
+      "mainContactBypassDisabled": false,
+      "removeHypotheticalFuturePortReservations": false,
+      "arrowBaseRadius3": false,
+      "arrowBaseGate": null,
+      "arrowBaseAndCornerFix": false,
+      "arrowBaseAndCornerGate": null,
+      "firstBranchContact": {
+        "predicate": "nearBerth",
+        "source": "node\u0000n6",
+        "segment": [
+          {
+            "x": 269,
+            "y": 1975
+          },
+          {
+            "x": 269,
+            "y": 4919
+          }
+        ],
+        "berth": {
+          "x": 267.5,
+          "y": 2258,
+          "radius": 3,
+          "source": "node\u0000n24"
+        }
+      },
+      "firstBranchHistoryMainGate": "route-contact",
+      "freshBudgetRepackConstructed": false,
+      "currentBeforeReservationRemoval": {
+        "constructed": false,
+        "gate": null
+      },
+      "currentWithoutFutureReservations": {
+        "constructed": false,
+        "gate": null
+      }
+    },
+    {
+      "case": "random-dag-200-9101",
+      "width": 454,
+      "step": 6,
+      "focus": "n144",
+      "branchConstruction": "insertTree: !best after primary/fallback/fine search",
+      "mainOnBranchInput": true,
+      "priorHistoryAlsoDiverged": false,
+      "firstDivergingPredicate": "nearBerth",
+      "firstDivergingWitness": {
+        "name": "nearBerth",
+        "source": "node\u0000n3",
+        "segment": [
+          {
+            "x": 250,
+            "y": 1166
+          },
+          {
+            "x": 170,
+            "y": 1166
+          }
+        ]
+      },
+      "replayInputHistory": "branch captured incremental request/history",
+      "mainContactBypassDisabled": false,
+      "removeHypotheticalFuturePortReservations": false,
+      "arrowBaseRadius3": false,
+      "arrowBaseGate": null,
+      "arrowBaseAndCornerFix": false,
+      "arrowBaseAndCornerGate": null,
+      "firstBranchContact": {
+        "predicate": "nearBerth",
+        "source": "node\u0000n17",
+        "segment": [
+          {
+            "x": 437,
+            "y": 2246
+          },
+          {
+            "x": 170,
+            "y": 2246
+          }
+        ],
+        "berth": {
+          "x": 170,
+          "y": 2246,
+          "radius": 3,
+          "source": "node\u0000n20"
+        }
+      },
+      "firstBranchHistoryMainGate": "route-contact",
+      "freshBudgetRepackConstructed": false,
+      "currentBeforeReservationRemoval": {
+        "constructed": false,
+        "gate": null
+      },
+      "currentWithoutFutureReservations": {
+        "constructed": false,
+        "gate": null
+      }
+    },
+    {
+      "case": "random-dag-200-9101",
+      "width": 640,
+      "step": 3,
+      "focus": "n160",
+      "branchConstruction": "insertTree: !best after primary/fallback/fine search",
+      "mainOnBranchInput": true,
+      "priorHistoryAlsoDiverged": false,
+      "firstDivergingPredicate": "nearBerth",
+      "firstDivergingWitness": {
+        "name": "nearBerth",
+        "source": "node\u0000n5",
+        "segment": [
+          {
+            "x": 621,
+            "y": 143
+          },
+          {
+            "x": 17,
+            "y": 143
+          }
+        ]
+      },
+      "replayInputHistory": "branch captured incremental request/history",
+      "mainContactBypassDisabled": false,
+      "removeHypotheticalFuturePortReservations": false,
+      "arrowBaseRadius3": false,
+      "arrowBaseGate": null,
+      "arrowBaseAndCornerFix": false,
+      "arrowBaseAndCornerGate": null,
+      "firstBranchContact": {
+        "predicate": "nearBerth",
+        "source": "node\u0000n5",
+        "segment": [
+          {
+            "x": 621,
+            "y": 143
+          },
+          {
+            "x": 17,
+            "y": 143
+          }
+        ],
+        "berth": {
+          "x": 297.59291777052533,
+          "y": 140.0273864639871,
+          "radius": 3,
+          "source": "node\u0000root"
+        }
+      },
+      "firstBranchHistoryMainGate": "route-contact",
+      "freshBudgetRepackConstructed": false,
+      "currentBeforeReservationRemoval": {
+        "constructed": false,
+        "gate": null
+      },
+      "currentWithoutFutureReservations": {
+        "constructed": false,
+        "gate": null
+      }
+    },
+    {
+      "case": "random-dag-200-9102",
+      "width": 360,
+      "step": 1,
+      "focus": "n185",
+      "branchConstruction": "insertTree: !best after primary/fallback/fine search",
+      "mainOnBranchInput": true,
+      "priorHistoryAlsoDiverged": false,
+      "firstDivergingPredicate": "nearBerth",
+      "firstDivergingWitness": {
+        "name": "nearBerth",
+        "source": "node\u0000n20",
+        "segment": [
+          {
+            "x": 252,
+            "y": 2731
+          },
+          {
+            "x": 94,
+            "y": 2731
+          }
+        ]
+      },
+      "replayInputHistory": "branch captured incremental request/history",
+      "mainContactBypassDisabled": false,
+      "removeHypotheticalFuturePortReservations": true,
+      "noFutureGate": null,
+      "arrowBaseRadius3": false,
+      "arrowBaseGate": null,
+      "arrowBaseAndCornerFix": true,
+      "arrowBaseAndCornerGate": null,
+      "firstBranchContact": {
+        "predicate": "nearBerth",
+        "source": "node\u0000n9",
+        "segment": [
+          {
+            "x": 8,
+            "y": 10850
+          },
+          {
+            "x": 94,
+            "y": 10850
+          }
+        ],
+        "berth": {
+          "x": 94,
+          "y": 10847,
+          "radius": 6,
+          "source": "node\u0000n24",
+          "futureReservation": true
+        }
+      },
+      "firstBranchHistoryMainGate": "route-contact",
+      "freshBudgetRepackConstructed": false,
+      "currentBeforeReservationRemoval": {
+        "constructed": true,
+        "gate": null
+      },
+      "currentWithoutFutureReservations": {
+        "constructed": true,
+        "gate": null
+      }
+    },
+    {
+      "case": "random-dag-200-9102",
+      "width": 360,
+      "step": 2,
+      "focus": "n192",
+      "branchConstruction": "insertTree: !best after primary/fallback/fine search",
+      "mainOnBranchInput": true,
+      "priorHistoryAlsoDiverged": false,
+      "firstDivergingPredicate": "nearBerth",
+      "firstDivergingWitness": {
+        "name": "nearBerth",
+        "source": "node\u0000n63",
+        "segment": [
+          {
+            "x": 252,
+            "y": 6518
+          },
+          {
+            "x": 252,
+            "y": 6519
+          }
+        ]
+      },
+      "replayInputHistory": "branch captured incremental request/history",
+      "mainContactBypassDisabled": false,
+      "removeHypotheticalFuturePortReservations": false,
+      "arrowBaseRadius3": false,
+      "arrowBaseGate": null,
+      "arrowBaseAndCornerFix": false,
+      "arrowBaseAndCornerGate": null,
+      "firstBranchContact": {
+        "predicate": "nearBerth",
+        "source": "node\u0000n63",
+        "segment": [
+          {
+            "x": 252,
+            "y": 6518
+          },
+          {
+            "x": 252,
+            "y": 6519
+          }
+        ],
+        "berth": {
+          "x": 252,
+          "y": 6521,
+          "radius": 3,
+          "source": "junction\u0000j:[\"n20\",\"n37\"]"
+        }
+      },
+      "firstBranchHistoryMainGate": "route-contact",
+      "freshBudgetRepackConstructed": false,
+      "currentBeforeReservationRemoval": {
+        "constructed": false,
+        "gate": null
+      },
+      "currentWithoutFutureReservations": {
+        "constructed": false,
+        "gate": null
+      }
+    },
+    {
+      "case": "random-dag-200-9102",
+      "width": 360,
+      "step": 5,
+      "focus": "n100",
+      "branchConstruction": "insertTree: !best after primary/fallback/fine search",
+      "mainOnBranchInput": true,
+      "priorHistoryAlsoDiverged": false,
+      "firstDivergingPredicate": "nearBerth",
+      "firstDivergingWitness": {
+        "name": "nearBerth",
+        "source": "node\u0000n63",
+        "segment": [
+          {
+            "x": 249,
+            "y": 6968
+          },
+          {
+            "x": 249,
+            "y": 6969
+          }
+        ]
+      },
+      "replayInputHistory": "branch captured incremental request/history",
+      "mainContactBypassDisabled": false,
+      "removeHypotheticalFuturePortReservations": false,
+      "arrowBaseRadius3": false,
+      "arrowBaseGate": null,
+      "arrowBaseAndCornerFix": false,
+      "arrowBaseAndCornerGate": null,
+      "firstBranchContact": {
+        "predicate": "nearBerth",
+        "source": "node\u0000n11",
+        "segment": [
+          {
+            "x": 8,
+            "y": 12599
+          },
+          {
+            "x": 94,
+            "y": 12599
+          }
+        ],
+        "berth": {
+          "x": 94,
+          "y": 12596,
+          "radius": 6,
+          "source": "node\u0000n29",
+          "futureReservation": true
+        }
+      },
+      "firstBranchHistoryMainGate": "route-contact",
+      "freshBudgetRepackConstructed": false,
+      "currentBeforeReservationRemoval": {
+        "constructed": false,
+        "gate": null
+      },
+      "currentWithoutFutureReservations": {
+        "constructed": false,
+        "gate": null
+      }
+    },
+    {
+      "case": "random-dag-200-9102",
+      "width": 454,
+      "step": 1,
+      "focus": "n185",
+      "branchConstruction": "insertTree: !best after primary/fallback/fine search",
+      "mainOnBranchInput": true,
+      "priorHistoryAlsoDiverged": false,
+      "firstDivergingPredicate": "nearBerth",
+      "firstDivergingWitness": {
+        "name": "nearBerth",
+        "source": "node\u0000n20",
+        "segment": [
+          {
+            "x": 328,
+            "y": 1683
+          },
+          {
+            "x": 8,
+            "y": 1683
+          }
+        ]
+      },
+      "replayInputHistory": "branch captured incremental request/history",
+      "mainContactBypassDisabled": false,
+      "removeHypotheticalFuturePortReservations": true,
+      "noFutureGate": null,
+      "arrowBaseRadius3": false,
+      "arrowBaseGate": null,
+      "arrowBaseAndCornerFix": false,
+      "arrowBaseAndCornerGate": null,
+      "firstBranchContact": {
+        "predicate": "nearBerth",
+        "source": "node\u0000n20",
+        "segment": [
+          {
+            "x": 328,
+            "y": 1683
+          },
+          {
+            "x": 8,
+            "y": 1683
+          }
+        ],
+        "berth": {
+          "x": 164,
+          "y": 1679,
+          "radius": 6,
+          "source": "node\u0000n12"
+        }
+      },
+      "firstBranchHistoryMainGate": "route-contact",
+      "freshBudgetRepackConstructed": false,
+      "currentBeforeReservationRemoval": {
+        "constructed": false,
+        "gate": null
+      },
+      "currentWithoutFutureReservations": {
+        "constructed": true,
+        "gate": null
+      }
+    },
+    {
+      "case": "random-dag-200-9102",
+      "width": 640,
+      "step": 2,
+      "focus": "n192",
+      "branchConstruction": "insertTree: !best after primary/fallback/fine search",
+      "mainOnBranchInput": true,
+      "priorHistoryAlsoDiverged": false,
+      "firstDivergingPredicate": "nearBerth",
+      "firstDivergingWitness": {
+        "name": "nearBerth",
+        "source": "node\u0000n3",
+        "segment": [
+          {
+            "x": 606,
+            "y": 143
+          },
+          {
+            "x": 17,
+            "y": 143
+          }
+        ]
+      },
+      "replayInputHistory": "branch captured incremental request/history",
+      "mainContactBypassDisabled": false,
+      "removeHypotheticalFuturePortReservations": true,
+      "noFutureGate": null,
+      "arrowBaseRadius3": false,
+      "arrowBaseGate": null,
+      "arrowBaseAndCornerFix": false,
+      "arrowBaseAndCornerGate": null,
+      "firstBranchContact": {
+        "predicate": "nearBerth",
+        "source": "node\u0000n3",
+        "segment": [
+          {
+            "x": 606,
+            "y": 143
+          },
+          {
+            "x": 17,
+            "y": 143
+          }
+        ],
+        "berth": {
+          "x": 596.4070822294746,
+          "y": 140.0273864639871,
+          "radius": 3,
+          "source": "node\u0000root"
+        }
+      },
+      "firstBranchHistoryMainGate": "route-contact",
+      "freshBudgetRepackConstructed": false,
+      "currentBeforeReservationRemoval": {
+        "constructed": false,
+        "gate": null
+      },
+      "currentWithoutFutureReservations": {
+        "constructed": true,
+        "gate": null
+      }
+    },
+    {
+      "case": "random-dag-200-9102",
+      "width": 900,
+      "step": 2,
+      "focus": "n192",
+      "branchConstruction": "insertTree: !best after primary/fallback/fine search",
+      "mainOnBranchInput": true,
+      "priorHistoryAlsoDiverged": false,
+      "firstDivergingPredicate": "nearBerth",
+      "firstDivergingWitness": {
+        "name": "nearBerth",
+        "source": "node\u0000n3",
+        "segment": [
+          {
+            "x": 464,
+            "y": 292
+          },
+          {
+            "x": 228,
+            "y": 292
+          }
+        ]
+      },
+      "replayInputHistory": "branch captured incremental request/history",
+      "mainContactBypassDisabled": false,
+      "removeHypotheticalFuturePortReservations": true,
+      "noFutureGate": null,
+      "arrowBaseRadius3": false,
+      "arrowBaseGate": null,
+      "arrowBaseAndCornerFix": false,
+      "arrowBaseAndCornerGate": null,
+      "firstBranchContact": {
+        "predicate": "nearBerth",
+        "source": "node\u0000n3",
+        "segment": [
+          {
+            "x": 14,
+            "y": 2678
+          },
+          {
+            "x": 300,
+            "y": 2678
+          }
+        ],
+        "berth": {
+          "x": 300,
+          "y": 2675,
+          "radius": 6,
+          "source": "node\u0000n69",
+          "futureReservation": true
+        }
+      },
+      "firstBranchHistoryMainGate": "route-contact",
+      "freshBudgetRepackConstructed": false,
+      "currentBeforeReservationRemoval": {
+        "constructed": false,
+        "gate": null
+      },
+      "currentWithoutFutureReservations": {
+        "constructed": true,
+        "gate": null
+      }
+    },
+    {
+      "case": "random-dag-200-9102",
+      "width": 1400,
+      "step": 6,
+      "focus": "n146",
+      "branchConstruction": "insertTree: !best after primary/fallback/fine search",
+      "mainOnBranchInput": true,
+      "priorHistoryAlsoDiverged": false,
+      "firstDivergingPredicate": "nearBerth",
+      "firstDivergingWitness": {
+        "name": "nearBerth",
+        "source": "node\u0000n14",
+        "segment": [
+          {
+            "x": 722,
+            "y": 1144
+          },
+          {
+            "x": 820,
+            "y": 1144
+          }
+        ]
+      },
+      "replayInputHistory": "branch captured incremental request/history",
+      "mainContactBypassDisabled": false,
+      "removeHypotheticalFuturePortReservations": false,
+      "arrowBaseRadius3": false,
+      "arrowBaseGate": null,
+      "arrowBaseAndCornerFix": false,
+      "arrowBaseAndCornerGate": null,
+      "firstBranchHistoryMainGate": "route-contact",
+      "freshBudgetRepackConstructed": false,
+      "currentBeforeReservationRemoval": {
+        "constructed": false,
+        "gate": null
+      },
+      "currentWithoutFutureReservations": {
+        "constructed": false,
+        "gate": null
+      }
+    },
+    {
+      "case": "random-dag-200-9103",
+      "width": 360,
+      "step": 1,
+      "focus": "n99",
+      "branchConstruction": "insertTree: !best after primary/fallback/fine search",
+      "mainOnBranchInput": true,
+      "priorHistoryAlsoDiverged": false,
+      "firstDivergingPredicate": "touched",
+      "firstDivergingWitness": {
+        "name": "touched",
+        "source": "node\u0000n22",
+        "berth": {
+          "x": 328,
+          "y": 3676,
+          "radius": 6
+        },
+        "list": [
+          [
+            {
+              "x": 328,
+              "y": 3676
+            },
+            {
+              "x": 349,
+              "y": 3676
+            }
+          ],
+          [
+            {
+              "x": 349,
+              "y": 3676
+            },
+            {
+              "x": 349,
+              "y": 4898
+            }
+          ],
+          [
+            {
+              "x": 349,
+              "y": 4898
+            },
+            {
+              "x": 94,
+              "y": 4898
+            }
+          ]
+        ]
+      },
+      "replayInputHistory": "branch captured incremental request/history",
+      "mainContactBypassDisabled": false,
+      "removeHypotheticalFuturePortReservations": false,
+      "arrowBaseRadius3": false,
+      "arrowBaseGate": null,
+      "arrowBaseAndCornerFix": false,
+      "arrowBaseAndCornerGate": null,
+      "firstBranchContact": {
+        "predicate": "nearBerth",
+        "source": "node\u0000n38",
+        "segment": [
+          {
+            "x": 332,
+            "y": 3325
+          },
+          {
+            "x": 332,
+            "y": 5368
+          }
+        ],
+        "berth": {
+          "x": 328,
+          "y": 3502,
+          "radius": 6,
+          "source": "node\u0000n17",
+          "futureReservation": true
+        }
+      },
+      "firstBranchHistoryMainGate": "route-contact",
+      "freshBudgetRepackConstructed": false,
+      "currentBeforeReservationRemoval": {
+        "constructed": false,
+        "gate": null
+      },
+      "currentWithoutFutureReservations": {
+        "constructed": false,
+        "gate": null
+      }
+    },
+    {
+      "case": "random-dag-200-9103",
+      "width": 360,
+      "step": 6,
+      "focus": "n142",
+      "branchConstruction": "insertTree: !best after primary/fallback/fine search",
+      "mainOnBranchInput": true,
+      "priorHistoryAlsoDiverged": false,
+      "firstDivergingPredicate": "nearBerth",
+      "firstDivergingWitness": {
+        "name": "nearBerth",
+        "source": "node\u0000n15",
+        "segment": [
+          {
+            "x": 183,
+            "y": 7525
+          },
+          {
+            "x": 171,
+            "y": 7525
+          }
+        ]
+      },
+      "replayInputHistory": "branch captured incremental request/history",
+      "mainContactBypassDisabled": false,
+      "removeHypotheticalFuturePortReservations": false,
+      "arrowBaseRadius3": false,
+      "arrowBaseGate": null,
+      "arrowBaseAndCornerFix": false,
+      "arrowBaseAndCornerGate": null,
+      "firstBranchContact": {
+        "predicate": "nearBerth",
+        "source": "node\u0000n14",
+        "segment": [
+          {
+            "x": 332,
+            "y": 1408
+          },
+          {
+            "x": 332,
+            "y": 7659.5
+          }
+        ],
+        "berth": {
+          "x": 328,
+          "y": 1564,
+          "radius": 6,
+          "source": "node\u0000n11",
+          "futureReservation": true
+        }
+      },
+      "firstBranchHistoryMainGate": "route-contact",
+      "freshBudgetRepackConstructed": false,
+      "currentBeforeReservationRemoval": {
+        "constructed": false,
+        "gate": null
+      },
+      "currentWithoutFutureReservations": {
+        "constructed": false,
+        "gate": null
+      }
+    },
+    {
+      "case": "random-dag-200-9103",
+      "width": 454,
+      "step": 1,
+      "focus": "n99",
+      "branchConstruction": "insertTree: !best after primary/fallback/fine search",
+      "mainOnBranchInput": true,
+      "priorHistoryAlsoDiverged": false,
+      "firstDivergingPredicate": "nearBerth",
+      "firstDivergingWitness": {
+        "name": "nearBerth",
+        "source": "node\u0000n2",
+        "segment": [
+          {
+            "x": 423,
+            "y": 134
+          },
+          {
+            "x": 8,
+            "y": 134
+          }
+        ]
+      },
+      "replayInputHistory": "branch captured incremental request/history",
+      "mainContactBypassDisabled": false,
+      "removeHypotheticalFuturePortReservations": false,
+      "arrowBaseRadius3": false,
+      "arrowBaseGate": null,
+      "arrowBaseAndCornerFix": false,
+      "arrowBaseAndCornerGate": null,
+      "firstBranchContact": {
+        "predicate": "nearBerth",
+        "source": "node\u0000n2",
+        "segment": [
+          {
+            "x": 423,
+            "y": 134
+          },
+          {
+            "x": 8,
+            "y": 134
+          }
+        ],
+        "berth": {
+          "x": 340.02849025764374,
+          "y": 136.33547077293125,
+          "radius": 3,
+          "source": "node\u0000root"
+        }
+      },
+      "firstBranchHistoryMainGate": "route-contact",
+      "freshBudgetRepackConstructed": false,
+      "currentBeforeReservationRemoval": {
+        "constructed": false,
+        "gate": null
+      },
+      "currentWithoutFutureReservations": {
+        "constructed": false,
+        "gate": null
+      }
+    },
+    {
+      "case": "random-dag-200-9103",
+      "width": 454,
+      "step": 2,
+      "focus": "n144",
+      "branchConstruction": "insertTree: !best after primary/fallback/fine search",
+      "mainOnBranchInput": true,
+      "priorHistoryAlsoDiverged": false,
+      "firstDivergingPredicate": "nearBerth",
+      "firstDivergingWitness": {
+        "name": "nearBerth",
+        "source": "node\u0000n3",
+        "segment": [
+          {
+            "x": 438,
+            "y": 143
+          },
+          {
+            "x": 17,
+            "y": 143
+          }
+        ]
+      },
+      "replayInputHistory": "branch captured incremental request/history",
+      "mainContactBypassDisabled": false,
+      "removeHypotheticalFuturePortReservations": false,
+      "arrowBaseRadius3": false,
+      "arrowBaseGate": null,
+      "arrowBaseAndCornerFix": false,
+      "arrowBaseAndCornerGate": null,
+      "firstBranchContact": {
+        "predicate": "nearBerth",
+        "source": "node\u0000n3",
+        "segment": [
+          {
+            "x": 438,
+            "y": 143
+          },
+          {
+            "x": 17,
+            "y": 143
+          }
+        ],
+        "berth": {
+          "x": 281.59291777052533,
+          "y": 140.0273864639871,
+          "radius": 3,
+          "source": "node\u0000root"
+        }
+      },
+      "firstBranchHistoryMainGate": "route-contact",
+      "freshBudgetRepackConstructed": false,
+      "currentBeforeReservationRemoval": {
+        "constructed": false,
+        "gate": null
+      },
+      "currentWithoutFutureReservations": {
+        "constructed": false,
+        "gate": null
+      }
+    },
+    {
+      "case": "random-dag-200-9103",
+      "width": 900,
+      "step": 2,
+      "focus": "n144",
+      "branchConstruction": "insertTree: !best after primary/fallback/fine search",
+      "mainOnBranchInput": true,
+      "priorHistoryAlsoDiverged": false,
+      "firstDivergingPredicate": "nearBerth",
+      "firstDivergingWitness": {
+        "name": "nearBerth",
+        "source": "node\u0000n1",
+        "segment": [
+          {
+            "x": 672,
+            "y": 226
+          },
+          {
+            "x": 672,
+            "y": 137
+          }
+        ]
+      },
+      "replayInputHistory": "branch captured incremental request/history",
+      "mainContactBypassDisabled": false,
+      "removeHypotheticalFuturePortReservations": false,
+      "arrowBaseRadius3": false,
+      "arrowBaseGate": null,
+      "arrowBaseAndCornerFix": false,
+      "arrowBaseAndCornerGate": null,
+      "firstBranchContact": {
+        "predicate": "nearBerth",
+        "source": "node\u0000n1",
+        "segment": [
+          {
+            "x": 672,
+            "y": 226
+          },
+          {
+            "x": 672,
+            "y": 137
+          }
+        ],
+        "berth": {
+          "x": 674.5284902576437,
+          "y": 136.33547077293125,
+          "radius": 3,
+          "source": "node\u0000root"
+        }
+      },
+      "firstBranchHistoryMainGate": "route-contact",
+      "freshBudgetRepackConstructed": false,
+      "currentBeforeReservationRemoval": {
+        "constructed": false,
+        "gate": null
+      },
+      "currentWithoutFutureReservations": {
+        "constructed": false,
+        "gate": null
+      }
+    },
+    {
+      "case": "random-dag-200-9103",
+      "width": 1400,
+      "step": 2,
+      "focus": "n144",
+      "branchConstruction": "insertTree: !best after primary/fallback/fine search",
+      "mainOnBranchInput": true,
+      "priorHistoryAlsoDiverged": false,
+      "firstDivergingPredicate": "nearBerth",
+      "firstDivergingWitness": {
+        "name": "nearBerth",
+        "source": "node\u0000n3",
+        "segment": [
+          {
+            "x": 1096,
+            "y": 478
+          },
+          {
+            "x": 266,
+            "y": 478
+          }
+        ]
+      },
+      "replayInputHistory": "branch captured incremental request/history",
+      "mainContactBypassDisabled": false,
+      "removeHypotheticalFuturePortReservations": false,
+      "arrowBaseRadius3": false,
+      "arrowBaseGate": null,
+      "arrowBaseAndCornerFix": false,
+      "arrowBaseAndCornerGate": null,
+      "firstBranchContact": {
+        "predicate": "nearBerth",
+        "source": "node\u0000n3",
+        "segment": [
+          {
+            "x": 1096,
+            "y": 480
+          },
+          {
+            "x": 1392,
+            "y": 480
+          }
+        ],
+        "berth": {
+          "x": 1260,
+          "y": 476,
+          "radius": 6,
+          "source": "node\u0000n10"
+        }
+      },
+      "firstBranchHistoryMainGate": "route-contact",
+      "freshBudgetRepackConstructed": true,
+      "freshBudgetRepackGate": null,
+      "currentBeforeReservationRemoval": {
+        "constructed": false,
+        "gate": null
+      },
+      "currentWithoutFutureReservations": {
+        "constructed": false,
+        "gate": null
+      }
+    },
+    {
+      "case": "dense-f4-40-20443",
+      "width": 360,
+      "step": 3,
+      "focus": "n27",
+      "branchConstruction": "insertTree: !best after primary/fallback/fine search",
+      "mainOnBranchInput": true,
+      "priorHistoryAlsoDiverged": false,
+      "firstDivergingPredicate": "nearBerth",
+      "firstDivergingWitness": {
+        "name": "nearBerth",
+        "source": "node\u0000n3",
+        "segment": [
+          {
+            "x": 344,
+            "y": 143
+          },
+          {
+            "x": 17,
+            "y": 143
+          }
+        ]
+      },
+      "replayInputHistory": "branch captured incremental request/history",
+      "mainContactBypassDisabled": false,
+      "removeHypotheticalFuturePortReservations": false,
+      "arrowBaseRadius3": false,
+      "arrowBaseGate": null,
+      "arrowBaseAndCornerFix": false,
+      "arrowBaseAndCornerGate": null,
+      "firstBranchContact": {
+        "predicate": "nearBerth",
+        "source": "node\u0000n3",
+        "segment": [
+          {
+            "x": 344,
+            "y": 143
+          },
+          {
+            "x": 17,
+            "y": 143
+          }
+        ],
+        "berth": {
+          "x": 334.4070822294746,
+          "y": 140.0273864639871,
+          "radius": 3,
+          "source": "node\u0000root"
+        }
+      },
+      "firstBranchHistoryMainGate": "route-contact",
+      "freshBudgetRepackConstructed": false,
+      "currentBeforeReservationRemoval": {
+        "constructed": false,
+        "gate": null
+      },
+      "currentWithoutFutureReservations": {
+        "constructed": false,
+        "gate": null
+      }
+    },
+    {
+      "case": "dense-f4-40-20443",
+      "width": 454,
+      "step": 3,
+      "focus": "n27",
+      "branchConstruction": "insertTree: !best after primary/fallback/fine search",
+      "mainOnBranchInput": true,
+      "priorHistoryAlsoDiverged": false,
+      "firstDivergingPredicate": "nearBerth",
+      "firstDivergingWitness": {
+        "name": "nearBerth",
+        "source": "node\u0000n2",
+        "segment": [
+          {
+            "x": 438,
+            "y": 131
+          },
+          {
+            "x": 14,
+            "y": 131
+          }
+        ]
+      },
+      "replayInputHistory": "branch captured incremental request/history",
+      "mainContactBypassDisabled": false,
+      "removeHypotheticalFuturePortReservations": false,
+      "arrowBaseRadius3": false,
+      "arrowBaseGate": null,
+      "arrowBaseAndCornerFix": false,
+      "arrowBaseAndCornerGate": null,
+      "firstBranchContact": {
+        "predicate": "nearBerth",
+        "source": "node\u0000n3",
+        "segment": [
+          {
+            "x": 8,
+            "y": 1958
+          },
+          {
+            "x": 194,
+            "y": 1958
+          }
+        ],
+        "berth": {
+          "x": 194,
+          "y": 1955,
+          "radius": 6,
+          "source": "node\u0000n10",
+          "futureReservation": true
+        }
+      },
+      "firstBranchHistoryMainGate": "route-contact",
+      "freshBudgetRepackConstructed": false,
+      "currentBeforeReservationRemoval": {
+        "constructed": false,
+        "gate": null
+      },
+      "currentWithoutFutureReservations": {
+        "constructed": false,
+        "gate": null
+      }
+    },
+    {
+      "case": "dense-f4-40-20443",
+      "width": 454,
+      "step": 8,
+      "focus": "n23",
+      "branchConstruction": "insertTree: !best after primary/fallback/fine search",
+      "mainOnBranchInput": true,
+      "priorHistoryAlsoDiverged": false,
+      "firstDivergingPredicate": "nearBerth",
+      "firstDivergingWitness": {
+        "name": "nearBerth",
+        "source": "node\u0000n9",
+        "segment": [
+          {
+            "x": 271,
+            "y": 143
+          },
+          {
+            "x": 437,
+            "y": 143
+          }
+        ]
+      },
+      "replayInputHistory": "branch captured incremental request/history",
+      "mainContactBypassDisabled": false,
+      "removeHypotheticalFuturePortReservations": false,
+      "arrowBaseRadius3": false,
+      "arrowBaseGate": null,
+      "arrowBaseAndCornerFix": false,
+      "arrowBaseAndCornerGate": null,
+      "firstBranchContact": {
+        "predicate": "nearBerth",
+        "source": "node\u0000n2",
+        "segment": [
+          {
+            "x": 352,
+            "y": 305
+          },
+          {
+            "x": 188,
+            "y": 305
+          }
+        ],
+        "berth": {
+          "x": 307.05902777777777,
+          "y": 305.6909722222222,
+          "radius": 3,
+          "source": "node\u0000n1"
+        }
+      },
+      "firstBranchHistoryMainGate": "route-contact",
+      "freshBudgetRepackConstructed": false,
+      "currentBeforeReservationRemoval": {
+        "constructed": false,
+        "gate": null
+      },
+      "currentWithoutFutureReservations": {
+        "constructed": false,
+        "gate": null
+      }
+    },
+    {
+      "case": "dense-f4-100-20501",
+      "width": 454,
+      "step": 2,
+      "focus": "n62",
+      "branchConstruction": "insertTree: !best after primary/fallback/fine search",
+      "mainOnBranchInput": true,
+      "priorHistoryAlsoDiverged": false,
+      "firstDivergingPredicate": "nearBerth",
+      "firstDivergingWitness": {
+        "name": "nearBerth",
+        "source": "node\u0000n2",
+        "segment": [
+          {
+            "x": 434,
+            "y": 134
+          },
+          {
+            "x": 8,
+            "y": 134
+          }
+        ]
+      },
+      "replayInputHistory": "branch captured incremental request/history",
+      "mainContactBypassDisabled": false,
+      "removeHypotheticalFuturePortReservations": false,
+      "arrowBaseRadius3": false,
+      "arrowBaseGate": null,
+      "arrowBaseAndCornerFix": false,
+      "arrowBaseAndCornerGate": null,
+      "firstBranchContact": {
+        "predicate": "nearBerth",
+        "source": "node\u0000n2",
+        "segment": [
+          {
+            "x": 434,
+            "y": 134
+          },
+          {
+            "x": 8,
+            "y": 134
+          }
+        ],
+        "berth": {
+          "x": 340.02849025764374,
+          "y": 136.33547077293125,
+          "radius": 3,
+          "source": "node\u0000root"
+        }
+      },
+      "firstBranchHistoryMainGate": "route-contact",
+      "freshBudgetRepackConstructed": false,
+      "currentBeforeReservationRemoval": {
+        "constructed": false,
+        "gate": null
+      },
+      "currentWithoutFutureReservations": {
+        "constructed": false,
+        "gate": null
+      }
+    },
+    {
+      "case": "dense-f4-100-20501",
+      "width": 454,
+      "step": 3,
+      "focus": "n92",
+      "branchConstruction": "insertTree: !best after primary/fallback/fine search",
+      "mainOnBranchInput": true,
+      "priorHistoryAlsoDiverged": false,
+      "firstDivergingPredicate": "nearBerth",
+      "firstDivergingWitness": {
+        "name": "nearBerth",
+        "source": "node\u0000n15",
+        "segment": [
+          {
+            "x": 352,
+            "y": 1711
+          },
+          {
+            "x": 116,
+            "y": 1711
+          }
+        ]
+      },
+      "replayInputHistory": "branch captured incremental request/history",
+      "mainContactBypassDisabled": false,
+      "removeHypotheticalFuturePortReservations": false,
+      "arrowBaseRadius3": false,
+      "arrowBaseGate": null,
+      "arrowBaseAndCornerFix": false,
+      "arrowBaseAndCornerGate": null,
+      "firstBranchContact": {
+        "predicate": "touched",
+        "source": "node\u0000n10",
+        "berth": {
+          "x": 261,
+          "y": 2806,
+          "radius": 3
+        },
+        "list": [
+          [
+            {
+              "x": 188,
+              "y": 1349
+            },
+            {
+              "x": 188,
+              "y": 1351
+            }
+          ],
+          [
+            {
+              "x": 188,
+              "y": 1351
+            },
+            {
+              "x": 258,
+              "y": 1351
+            }
+          ],
+          [
+            {
+              "x": 258,
+              "y": 1351
+            },
+            {
+              "x": 258,
+              "y": 1402
+            }
+          ],
+          [
+            {
+              "x": 258,
+              "y": 1402
+            },
+            {
+              "x": 260,
+              "y": 1402
+            }
+          ],
+          [
+            {
+              "x": 260,
+              "y": 1402
+            },
+            {
+              "x": 260,
+              "y": 1462
+            }
+          ],
+          [
+            {
+              "x": 260,
+              "y": 1462
+            },
+            {
+              "x": 264,
+              "y": 1462
+            }
+          ],
+          [
+            {
+              "x": 264,
+              "y": 1462
+            },
+            {
+              "x": 264,
+              "y": 1474
+            }
+          ],
+          [
+            {
+              "x": 264,
+              "y": 1474
+            },
+            {
+              "x": 262.5,
+              "y": 1474
+            }
+          ],
+          [
+            {
+              "x": 262.5,
+              "y": 1474
+            },
+            {
+              "x": 262.5,
+              "y": 1639
+            }
+          ],
+          [
+            {
+              "x": 262.5,
+              "y": 1639
+            },
+            {
+              "x": 268.5,
+              "y": 1639
+            }
+          ],
+          [
+            {
+              "x": 268.5,
+              "y": 1639
+            },
+            {
+              "x": 268.5,
+              "y": 2497
+            }
+          ],
+          [
+            {
+              "x": 268.5,
+              "y": 2497
+            },
+            {
+              "x": 267,
+              "y": 2497
+            }
+          ],
+          [
+            {
+              "x": 267,
+              "y": 2497
+            },
+            {
+              "x": 267,
+              "y": 2803
+            }
+          ],
+          [
+            {
+              "x": 267,
+              "y": 2803
+            },
+            {
+              "x": 263,
+              "y": 2803
+            }
+          ],
+          [
+            {
+              "x": 263,
+              "y": 2803
+            },
+            {
+              "x": 263,
+              "y": 2806
+            }
+          ],
+          [
+            {
+              "x": 263,
+              "y": 2806
+            },
+            {
+              "x": 261,
+              "y": 2806
+            }
+          ],
+          [
+            {
+              "x": 261,
+              "y": 2806
+            },
+            {
+              "x": 261,
+              "y": 2990
+            }
+          ],
+          [
+            {
+              "x": 261,
+              "y": 2990
+            },
+            {
+              "x": 258,
+              "y": 2990
+            }
+          ]
+        ]
+      },
+      "firstBranchHistoryMainGate": "route-contact",
+      "freshBudgetRepackConstructed": false,
+      "currentBeforeReservationRemoval": {
+        "constructed": false,
+        "gate": null
+      },
+      "currentWithoutFutureReservations": {
+        "constructed": false,
+        "gate": null
+      }
+    },
+    {
+      "case": "dense-f4-100-20501",
+      "width": 640,
+      "step": 2,
+      "focus": "n62",
+      "branchConstruction": "insertTree: !best after primary/fallback/fine search",
+      "mainOnBranchInput": true,
+      "priorHistoryAlsoDiverged": false,
+      "firstDivergingPredicate": "nearBerth",
+      "firstDivergingWitness": {
+        "name": "nearBerth",
+        "source": "node\u0000n1",
+        "segment": [
+          {
+            "x": 564,
+            "y": 134
+          },
+          {
+            "x": 8,
+            "y": 134
+          }
+        ]
+      },
+      "replayInputHistory": "branch captured incremental request/history",
+      "mainContactBypassDisabled": false,
+      "removeHypotheticalFuturePortReservations": false,
+      "arrowBaseRadius3": false,
+      "arrowBaseGate": null,
+      "arrowBaseAndCornerFix": false,
+      "arrowBaseAndCornerGate": null,
+      "firstBranchContact": {
+        "predicate": "nearBerth",
+        "source": "node\u0000n2",
+        "segment": [
+          {
+            "x": 466,
+            "y": 673.5
+          },
+          {
+            "x": 222,
+            "y": 673.5
+          }
+        ],
+        "berth": {
+          "x": 449.4409722222222,
+          "y": 674.6909722222222,
+          "radius": 3,
+          "source": "node\u0000n10"
+        }
+      },
+      "firstBranchHistoryMainGate": "route-contact",
+      "freshBudgetRepackConstructed": false,
+      "currentBeforeReservationRemoval": {
+        "constructed": false,
+        "gate": null
+      },
+      "currentWithoutFutureReservations": {
+        "constructed": false,
+        "gate": null
+      }
+    },
+    {
+      "case": "dense-f4-100-20501",
+      "width": 640,
+      "step": 6,
+      "focus": "n65",
+      "branchConstruction": "insertTree: !best after primary/fallback/fine search",
+      "mainOnBranchInput": true,
+      "priorHistoryAlsoDiverged": false,
+      "firstDivergingPredicate": "nearBerth",
+      "firstDivergingWitness": {
+        "name": "nearBerth",
+        "source": "node\u0000n11",
+        "segment": [
+          {
+            "x": 347,
+            "y": 1243
+          },
+          {
+            "x": 111,
+            "y": 1243
+          }
+        ]
+      },
+      "replayInputHistory": "branch captured incremental request/history",
+      "mainContactBypassDisabled": false,
+      "removeHypotheticalFuturePortReservations": true,
+      "noFutureGate": null,
+      "arrowBaseRadius3": true,
+      "arrowBaseGate": null,
+      "arrowBaseAndCornerFix": true,
+      "arrowBaseAndCornerGate": null,
+      "firstBranchContact": {
+        "predicate": "nearBerth",
+        "source": "node\u0000n19",
+        "segment": [
+          {
+            "x": 511,
+            "y": 2048
+          },
+          {
+            "x": 511,
+            "y": 2049
+          }
+        ],
+        "berth": {
+          "x": 511,
+          "y": 2051,
+          "radius": 3,
+          "source": "junction\u0000j:[\"n2\",\"n25\",\"n27\"]"
+        }
+      },
+      "firstBranchHistoryMainGate": "route-contact",
+      "freshBudgetRepackConstructed": false,
+      "currentBeforeReservationRemoval": {
+        "constructed": true,
+        "gate": null
+      },
+      "currentWithoutFutureReservations": {
+        "constructed": true,
+        "gate": null
+      }
+    },
+    {
+      "case": "dense-f4-100-20501",
+      "width": 1400,
+      "step": 4,
+      "focus": "n91",
+      "branchConstruction": "insertTree: !best after primary/fallback/fine search",
+      "mainOnBranchInput": true,
+      "priorHistoryAlsoDiverged": false,
+      "firstDivergingPredicate": "nearBerth",
+      "firstDivergingWitness": {
+        "name": "nearBerth",
+        "source": "node\u0000n4",
+        "segment": [
+          {
+            "x": 982,
+            "y": 469
+          },
+          {
+            "x": 166,
+            "y": 469
+          }
+        ]
+      },
+      "replayInputHistory": "branch captured incremental request/history",
+      "mainContactBypassDisabled": false,
+      "removeHypotheticalFuturePortReservations": false,
+      "arrowBaseRadius3": false,
+      "arrowBaseGate": null,
+      "arrowBaseAndCornerFix": false,
+      "arrowBaseAndCornerGate": null,
+      "firstBranchContact": {
+        "predicate": "nearBerth",
+        "source": "node\u0000n22",
+        "segment": [
+          {
+            "x": 982,
+            "y": 1294.5
+          },
+          {
+            "x": 422,
+            "y": 1294.5
+          }
+        ],
+        "berth": {
+          "x": 818,
+          "y": 1292,
+          "radius": 6,
+          "source": "node\u0000n37"
+        }
+      },
+      "firstBranchHistoryMainGate": "route-contact",
+      "freshBudgetRepackConstructed": false,
+      "currentBeforeReservationRemoval": {
+        "constructed": false,
+        "gate": null
+      },
+      "currentWithoutFutureReservations": {
+        "constructed": false,
+        "gate": null
+      }
+    },
+    {
+      "case": "dense-f4-100-20502",
+      "width": 360,
+      "step": 1,
+      "focus": "n69",
+      "branchConstruction": "insertTree: !best after primary/fallback/fine search",
+      "mainOnBranchInput": true,
+      "priorHistoryAlsoDiverged": false,
+      "firstDivergingPredicate": "nearBerth",
+      "firstDivergingWitness": {
+        "name": "nearBerth",
+        "source": "node\u0000n7",
+        "segment": [
+          {
+            "x": 249,
+            "y": 2362
+          },
+          {
+            "x": 94,
+            "y": 2362
+          }
+        ]
+      },
+      "replayInputHistory": "branch captured incremental request/history",
+      "mainContactBypassDisabled": false,
+      "removeHypotheticalFuturePortReservations": true,
+      "noFutureGate": null,
+      "arrowBaseRadius3": false,
+      "arrowBaseGate": null,
+      "arrowBaseAndCornerFix": false,
+      "arrowBaseAndCornerGate": null,
+      "firstBranchContact": {
+        "predicate": "nearBerth",
+        "source": "node\u0000n16",
+        "segment": [
+          {
+            "x": 168,
+            "y": 6355
+          },
+          {
+            "x": 168,
+            "y": 6580.5
+          }
+        ],
+        "berth": {
+          "x": 164,
+          "y": 6512,
+          "radius": 6,
+          "source": "node\u0000n40",
+          "futureReservation": true
+        }
+      },
+      "firstBranchHistoryMainGate": "route-contact",
+      "freshBudgetRepackConstructed": false,
+      "currentBeforeReservationRemoval": {
+        "constructed": false,
+        "gate": null
+      },
+      "currentWithoutFutureReservations": {
+        "constructed": true,
+        "gate": null
+      }
+    },
+    {
+      "case": "dense-f4-100-20502",
+      "width": 454,
+      "step": 3,
+      "focus": "n71",
+      "branchConstruction": "insertTree: !best after primary/fallback/fine search",
+      "mainOnBranchInput": true,
+      "priorHistoryAlsoDiverged": false,
+      "firstDivergingPredicate": "nearBerth",
+      "firstDivergingWitness": {
+        "name": "nearBerth",
+        "source": "node\u0000n13",
+        "segment": [
+          {
+            "x": 325,
+            "y": 2255
+          },
+          {
+            "x": 325,
+            "y": 2256
+          }
+        ]
+      },
+      "replayInputHistory": "branch captured incremental request/history",
+      "mainContactBypassDisabled": false,
+      "removeHypotheticalFuturePortReservations": false,
+      "arrowBaseRadius3": false,
+      "arrowBaseGate": null,
+      "arrowBaseAndCornerFix": false,
+      "arrowBaseAndCornerGate": null,
+      "firstBranchContact": {
+        "predicate": "nearBerth",
+        "source": "node\u0000n13",
+        "segment": [
+          {
+            "x": 325,
+            "y": 2255
+          },
+          {
+            "x": 325,
+            "y": 2256
+          }
+        ],
+        "berth": {
+          "x": 325,
+          "y": 2258,
+          "radius": 3,
+          "source": "junction\u0000j:[\"n14\",\"n7\",\"n9\"]"
+        }
+      },
+      "firstBranchHistoryMainGate": "route-contact",
+      "freshBudgetRepackConstructed": false,
+      "currentBeforeReservationRemoval": {
+        "constructed": false,
+        "gate": null
+      },
+      "currentWithoutFutureReservations": {
+        "constructed": false,
+        "gate": null
+      }
+    },
+    {
+      "case": "dense-f4-100-20502",
+      "width": 454,
+      "step": 4,
+      "focus": "n80",
+      "branchConstruction": "insertTree: !best after primary/fallback/fine search",
+      "mainOnBranchInput": true,
+      "priorHistoryAlsoDiverged": false,
+      "firstDivergingPredicate": "nearBerth",
+      "firstDivergingWitness": {
+        "name": "nearBerth",
+        "source": "node\u0000n6",
+        "segment": [
+          {
+            "x": 155,
+            "y": 1198
+          },
+          {
+            "x": 247,
+            "y": 1198
+          }
+        ]
+      },
+      "replayInputHistory": "branch captured incremental request/history",
+      "mainContactBypassDisabled": false,
+      "removeHypotheticalFuturePortReservations": true,
+      "noFutureGate": null,
+      "arrowBaseRadius3": false,
+      "arrowBaseGate": null,
+      "arrowBaseAndCornerFix": false,
+      "arrowBaseAndCornerGate": null,
+      "firstBranchContact": {
+        "predicate": "nearBerth",
+        "source": "node\u0000n3",
+        "segment": [
+          {
+            "x": 393,
+            "y": 550
+          },
+          {
+            "x": 393,
+            "y": 134
+          }
+        ],
+        "berth": {
+          "x": 389,
+          "y": 226,
+          "radius": 6,
+          "source": "node\u0000n1",
+          "futureReservation": true
+        }
+      },
+      "firstBranchHistoryMainGate": "route-contact",
+      "freshBudgetRepackConstructed": false,
+      "currentBeforeReservationRemoval": {
+        "constructed": false,
+        "gate": null
+      },
+      "currentWithoutFutureReservations": {
+        "constructed": true,
+        "gate": null
+      }
+    },
+    {
+      "case": "dense-f4-100-20502",
+      "width": 640,
+      "step": 2,
+      "focus": "n56",
+      "branchConstruction": "insertTree: !best after primary/fallback/fine search",
+      "mainOnBranchInput": false,
+      "priorHistoryAlsoDiverged": true,
+      "firstDivergingPredicate": "nearBerth",
+      "firstDivergingWitness": {
+        "name": "nearBerth",
+        "source": "node\u0000n2",
+        "segment": [
+          {
+            "x": 555,
+            "y": 137
+          },
+          {
+            "x": 11,
+            "y": 137
+          }
+        ]
+      },
+      "replayInputHistory": "main captured successful request/history",
+      "mainContactBypassDisabled": false,
+      "removeHypotheticalFuturePortReservations": false,
+      "arrowBaseRadius3": false,
+      "arrowBaseGate": null,
+      "arrowBaseAndCornerFix": false,
+      "arrowBaseAndCornerGate": null,
+      "firstBranchContact": {
+        "predicate": "nearBerth",
+        "source": "node\u0000n2",
+        "segment": [
+          {
+            "x": 555,
+            "y": 137
+          },
+          {
+            "x": 11,
+            "y": 137
+          }
+        ],
+        "berth": {
+          "x": 479.52849025764374,
+          "y": 136.33547077293125,
+          "radius": 3,
+          "source": "node\u0000root"
+        }
+      },
+      "firstBranchHistoryMainGate": null,
+      "freshBudgetRepackConstructed": false,
+      "currentBeforeReservationRemoval": {
+        "constructed": false,
+        "gate": null
+      },
+      "currentWithoutFutureReservations": {
+        "constructed": false,
+        "gate": null
+      }
+    },
+    {
+      "case": "dense-f4-100-20502",
+      "width": 900,
+      "step": 1,
+      "focus": "n69",
+      "branchConstruction": "insertTree: !best after primary/fallback/fine search",
+      "mainOnBranchInput": true,
+      "priorHistoryAlsoDiverged": false,
+      "firstDivergingPredicate": "nearBerth",
+      "firstDivergingWitness": {
+        "name": "nearBerth",
+        "source": "node\u0000n7",
+        "segment": [
+          {
+            "x": 802,
+            "y": 1243
+          },
+          {
+            "x": 710,
+            "y": 1243
+          }
+        ]
+      },
+      "replayInputHistory": "branch captured incremental request/history",
+      "mainContactBypassDisabled": false,
+      "removeHypotheticalFuturePortReservations": true,
+      "noFutureGate": null,
+      "arrowBaseRadius3": false,
+      "arrowBaseGate": null,
+      "arrowBaseAndCornerFix": false,
+      "arrowBaseAndCornerGate": null,
+      "firstBranchContact": {
+        "predicate": "nearBerth",
+        "source": "node\u0000n17",
+        "segment": [
+          {
+            "x": 474,
+            "y": 1702.5
+          },
+          {
+            "x": 94,
+            "y": 1702.5
+          }
+        ],
+        "berth": {
+          "x": 386,
+          "y": 1700,
+          "radius": 3,
+          "source": "node\u0000n19"
+        }
+      },
+      "firstBranchHistoryMainGate": "route-contact",
+      "freshBudgetRepackConstructed": false,
+      "currentBeforeReservationRemoval": {
+        "constructed": false,
+        "gate": null
+      },
+      "currentWithoutFutureReservations": {
+        "constructed": true,
+        "gate": null
+      }
+    },
+    {
+      "case": "dense-f4-100-20502",
+      "width": 900,
+      "step": 2,
+      "focus": "n56",
+      "branchConstruction": "insertTree: !best after primary/fallback/fine search",
+      "mainOnBranchInput": true,
+      "priorHistoryAlsoDiverged": false,
+      "firstDivergingPredicate": "nearBerth",
+      "firstDivergingWitness": {
+        "name": "nearBerth",
+        "source": "node\u0000n23",
+        "segment": [
+          {
+            "x": 889,
+            "y": 1850
+          },
+          {
+            "x": 94,
+            "y": 1850
+          }
+        ]
+      },
+      "replayInputHistory": "branch captured incremental request/history",
+      "mainContactBypassDisabled": false,
+      "removeHypotheticalFuturePortReservations": false,
+      "arrowBaseRadius3": false,
+      "arrowBaseGate": null,
+      "arrowBaseAndCornerFix": false,
+      "arrowBaseAndCornerGate": null,
+      "firstBranchContact": {
+        "predicate": "nearBerth",
+        "source": "node\u0000n23",
+        "segment": [
+          {
+            "x": 889,
+            "y": 1850
+          },
+          {
+            "x": 94,
+            "y": 1850
+          }
+        ],
+        "berth": {
+          "x": 303,
+          "y": 1847,
+          "radius": 6,
+          "source": "node\u0000n27"
+        }
+      },
+      "firstBranchHistoryMainGate": "route-contact",
+      "freshBudgetRepackConstructed": false,
+      "currentBeforeReservationRemoval": {
+        "constructed": false,
+        "gate": null
+      },
+      "currentWithoutFutureReservations": {
+        "constructed": false,
+        "gate": null
+      }
+    },
+    {
+      "case": "dense-f4-100-20502",
+      "width": 900,
+      "step": 5,
+      "focus": "n58",
+      "branchConstruction": "insertTree: !best after primary/fallback/fine search",
+      "mainOnBranchInput": true,
+      "priorHistoryAlsoDiverged": false,
+      "firstDivergingPredicate": "nearBerth",
+      "firstDivergingWitness": {
+        "name": "nearBerth",
+        "source": "node\u0000n21",
+        "segment": [
+          {
+            "x": 616,
+            "y": 1456
+          },
+          {
+            "x": 380,
+            "y": 1456
+          }
+        ]
+      },
+      "replayInputHistory": "branch captured incremental request/history",
+      "mainContactBypassDisabled": true,
+      "removeHypotheticalFuturePortReservations": true,
+      "noFutureGate": null,
+      "arrowBaseRadius3": false,
+      "arrowBaseGate": null,
+      "arrowBaseAndCornerFix": false,
+      "arrowBaseAndCornerGate": null,
+      "firstBranchContact": {
+        "predicate": "nearBerth",
+        "source": "node\u0000n17",
+        "segment": [
+          {
+            "x": 854,
+            "y": 4328.5
+          },
+          {
+            "x": 94,
+            "y": 4328.5
+          }
+        ],
+        "berth": {
+          "x": 94,
+          "y": 4324,
+          "radius": 6,
+          "source": "node\u0000n53",
+          "futureReservation": true
+        }
+      },
+      "firstBranchHistoryMainGate": "route-contact",
+      "freshBudgetRepackConstructed": false,
+      "currentBeforeReservationRemoval": {
+        "constructed": false,
+        "gate": null
+      },
+      "currentWithoutFutureReservations": {
+        "constructed": true,
+        "gate": null
+      }
+    },
+    {
+      "case": "dense-f4-100-20502",
+      "width": 1400,
+      "step": 2,
+      "focus": "n56",
+      "branchConstruction": "insertTree: !best after primary/fallback/fine search",
+      "mainOnBranchInput": true,
+      "priorHistoryAlsoDiverged": false,
+      "firstDivergingPredicate": "nearBerth",
+      "firstDivergingWitness": {
+        "name": "nearBerth",
+        "source": "node\u0000n22",
+        "segment": [
+          {
+            "x": 908,
+            "y": 1936
+          },
+          {
+            "x": 330,
+            "y": 1936
+          }
+        ]
+      },
+      "replayInputHistory": "branch captured incremental request/history",
+      "mainContactBypassDisabled": false,
+      "removeHypotheticalFuturePortReservations": true,
+      "noFutureGate": null,
+      "arrowBaseRadius3": false,
+      "arrowBaseGate": null,
+      "arrowBaseAndCornerFix": false,
+      "arrowBaseAndCornerGate": null,
+      "firstBranchContact": {
+        "predicate": "nearBerth",
+        "source": "node\u0000n23",
+        "segment": [
+          {
+            "x": 1298,
+            "y": 1504.5
+          },
+          {
+            "x": 258,
+            "y": 1504.5
+          }
+        ],
+        "berth": {
+          "x": 642,
+          "y": 1502,
+          "radius": 6,
+          "source": "node\u0000n19"
+        }
+      },
+      "firstBranchHistoryMainGate": "route-contact",
+      "freshBudgetRepackConstructed": false,
+      "currentBeforeReservationRemoval": {
+        "constructed": false,
+        "gate": null
+      },
+      "currentWithoutFutureReservations": {
+        "constructed": true,
+        "gate": null
+      }
+    },
+    {
+      "case": "dense-f4-100-20502",
+      "width": 1400,
+      "step": 4,
+      "focus": "n80",
+      "branchConstruction": "insertTree: !best after primary/fallback/fine search",
+      "mainOnBranchInput": true,
+      "priorHistoryAlsoDiverged": false,
+      "firstDivergingPredicate": "nearBerth",
+      "firstDivergingWitness": {
+        "name": "nearBerth",
+        "source": "node\u0000n3",
+        "segment": [
+          {
+            "x": 1249,
+            "y": 143
+          },
+          {
+            "x": 17,
+            "y": 143
+          }
+        ]
+      },
+      "replayInputHistory": "branch captured incremental request/history",
+      "mainContactBypassDisabled": false,
+      "removeHypotheticalFuturePortReservations": true,
+      "noFutureGate": null,
+      "arrowBaseRadius3": false,
+      "arrowBaseGate": null,
+      "arrowBaseAndCornerFix": false,
+      "arrowBaseAndCornerGate": null,
+      "firstBranchContact": {
+        "predicate": "nearBerth",
+        "source": "node\u0000n3",
+        "segment": [
+          {
+            "x": 1249,
+            "y": 143
+          },
+          {
+            "x": 17,
+            "y": 143
+          }
+        ],
+        "berth": {
+          "x": 574.5929177705252,
+          "y": 140.0273864639871,
+          "radius": 3,
+          "source": "node\u0000root"
+        }
+      },
+      "firstBranchHistoryMainGate": "route-contact",
+      "freshBudgetRepackConstructed": false,
+      "currentBeforeReservationRemoval": {
+        "constructed": false,
+        "gate": null
+      },
+      "currentWithoutFutureReservations": {
+        "constructed": true,
+        "gate": null
+      }
+    },
+    {
+      "case": "dense-f4-100-20503",
+      "width": 454,
+      "step": 7,
+      "focus": "n69",
+      "branchConstruction": "insertTree: !best after primary/fallback/fine search",
+      "mainOnBranchInput": true,
+      "priorHistoryAlsoDiverged": false,
+      "firstDivergingPredicate": "nearBerth",
+      "firstDivergingWitness": {
+        "name": "nearBerth",
+        "source": "node\u0000n14",
+        "segment": [
+          {
+            "x": 77,
+            "y": 5995
+          },
+          {
+            "x": 80,
+            "y": 5995
+          }
+        ]
+      },
+      "replayInputHistory": "branch captured incremental request/history",
+      "mainContactBypassDisabled": false,
+      "removeHypotheticalFuturePortReservations": false,
+      "arrowBaseRadius3": false,
+      "arrowBaseGate": null,
+      "arrowBaseAndCornerFix": false,
+      "arrowBaseAndCornerGate": null,
+      "firstBranchContact": {
+        "predicate": "nearBerth",
+        "source": "node\u0000n22",
+        "segment": [
+          {
+            "x": 226,
+            "y": 2440.5
+          },
+          {
+            "x": 316,
+            "y": 2440.5
+          }
+        ],
+        "berth": {
+          "x": 261.5,
+          "y": 2441,
+          "radius": 3,
+          "source": "node\u0000n13"
+        }
+      },
+      "firstBranchHistoryMainGate": "route-contact",
+      "freshBudgetRepackConstructed": false,
+      "currentBeforeReservationRemoval": {
+        "constructed": false,
+        "gate": null
+      },
+      "currentWithoutFutureReservations": {
+        "constructed": false,
+        "gate": null
+      }
+    },
+    {
+      "case": "dense-f4-100-20503",
+      "width": 1400,
+      "step": 4,
+      "focus": "n28",
+      "branchConstruction": "insertTree: !best after primary/fallback/fine search",
+      "mainOnBranchInput": false,
+      "priorHistoryAlsoDiverged": true,
+      "firstDivergingPredicate": "nearBerth",
+      "firstDivergingWitness": {
+        "name": "nearBerth",
+        "source": "node\u0000n8",
+        "segment": [
+          {
+            "x": 886,
+            "y": 967.5
+          },
+          {
+            "x": 886,
+            "y": 1205
+          }
+        ]
+      },
+      "replayInputHistory": "main captured successful request/history",
+      "mainContactBypassDisabled": false,
+      "removeHypotheticalFuturePortReservations": false,
+      "arrowBaseRadius3": false,
+      "arrowBaseGate": null,
+      "arrowBaseAndCornerFix": false,
+      "arrowBaseAndCornerGate": null,
+      "firstBranchContact": {
+        "predicate": "nearBerth",
+        "source": "node\u0000n2",
+        "segment": [
+          {
+            "x": 1050,
+            "y": 655.5
+          },
+          {
+            "x": 94,
+            "y": 655.5
+          }
+        ],
+        "berth": {
+          "x": 968,
+          "y": 653,
+          "radius": 6,
+          "source": "node\u0000n6"
+        }
+      },
+      "firstBranchHistoryMainGate": null,
+      "freshBudgetRepackConstructed": false,
+      "currentBeforeReservationRemoval": {
+        "constructed": false,
+        "gate": null
+      },
+      "currentWithoutFutureReservations": {
+        "constructed": false,
+        "gate": null
+      }
+    },
+    {
+      "case": "dense-f10-40-21041",
+      "width": 360,
+      "step": 1,
+      "focus": "n29",
+      "branchConstruction": "insertTree: !best after primary/fallback/fine search",
+      "mainOnBranchInput": true,
+      "priorHistoryAlsoDiverged": false,
+      "firstDivergingPredicate": "nearBerth",
+      "firstDivergingWitness": {
+        "name": "nearBerth",
+        "source": "node\u0000n6",
+        "segment": [
+          {
+            "x": 258,
+            "y": 1178
+          },
+          {
+            "x": 258,
+            "y": 1179
+          }
+        ]
+      },
+      "replayInputHistory": "branch captured incremental request/history",
+      "mainContactBypassDisabled": false,
+      "removeHypotheticalFuturePortReservations": false,
+      "arrowBaseRadius3": false,
+      "arrowBaseGate": null,
+      "arrowBaseAndCornerFix": false,
+      "arrowBaseAndCornerGate": null,
+      "firstBranchContact": {
+        "predicate": "nearBerth",
+        "source": "node\u0000n6",
+        "segment": [
+          {
+            "x": 258,
+            "y": 1178
+          },
+          {
+            "x": 258,
+            "y": 1179
+          }
+        ],
+        "berth": {
+          "x": 258,
+          "y": 1181,
+          "radius": 3,
+          "source": "junction\u0000j:[\"n2\",\"n3\",\"n5\",\"root\"]"
+        }
+      },
+      "firstBranchHistoryMainGate": "route-contact",
+      "freshBudgetRepackConstructed": false,
+      "currentBeforeReservationRemoval": {
+        "constructed": false,
+        "gate": null
+      },
+      "currentWithoutFutureReservations": {
+        "constructed": false,
+        "gate": null
+      }
+    },
+    {
+      "case": "dense-f10-40-21041",
+      "width": 360,
+      "step": 2,
+      "focus": "n33",
+      "branchConstruction": "insertTree: !best after primary/fallback/fine search",
+      "mainOnBranchInput": true,
+      "priorHistoryAlsoDiverged": false,
+      "firstDivergingPredicate": "nearBerth",
+      "firstDivergingWitness": {
+        "name": "nearBerth",
+        "source": "node\u0000n13",
+        "segment": [
+          {
+            "x": 255,
+            "y": 1535
+          },
+          {
+            "x": 255,
+            "y": 1536
+          }
+        ]
+      },
+      "replayInputHistory": "branch captured incremental request/history",
+      "mainContactBypassDisabled": false,
+      "removeHypotheticalFuturePortReservations": true,
+      "noFutureGate": null,
+      "arrowBaseRadius3": true,
+      "arrowBaseGate": "route-contact",
+      "arrowBaseAndCornerFix": true,
+      "arrowBaseAndCornerGate": null,
+      "firstBranchContact": {
+        "predicate": "nearBerth",
+        "source": "node\u0000n13",
+        "segment": [
+          {
+            "x": 255,
+            "y": 1535
+          },
+          {
+            "x": 255,
+            "y": 1536
+          }
+        ],
+        "berth": {
+          "x": 255,
+          "y": 1538,
+          "radius": 3,
+          "source": "junction\u0000j:[\"n2\",\"n5\",\"n6\",\"root\"]"
+        }
+      },
+      "firstBranchHistoryMainGate": "route-contact",
+      "freshBudgetRepackConstructed": false,
+      "currentBeforeReservationRemoval": {
+        "constructed": true,
+        "gate": null
+      },
+      "currentWithoutFutureReservations": {
+        "constructed": true,
+        "gate": null
+      }
+    },
+    {
+      "case": "dense-f10-40-21041",
+      "width": 360,
+      "step": 4,
+      "focus": "n34",
+      "branchConstruction": "insertTree: !best after primary/fallback/fine search",
+      "mainOnBranchInput": true,
+      "priorHistoryAlsoDiverged": false,
+      "firstDivergingPredicate": "nearBerth",
+      "firstDivergingWitness": {
+        "name": "nearBerth",
+        "source": "node\u0000n6",
+        "segment": [
+          {
+            "x": 252,
+            "y": 1178
+          },
+          {
+            "x": 252,
+            "y": 1182
+          }
+        ]
+      },
+      "replayInputHistory": "branch captured incremental request/history",
+      "mainContactBypassDisabled": false,
+      "removeHypotheticalFuturePortReservations": false,
+      "arrowBaseRadius3": false,
+      "arrowBaseGate": null,
+      "arrowBaseAndCornerFix": false,
+      "arrowBaseAndCornerGate": null,
+      "firstBranchContact": {
+        "predicate": "nearBerth",
+        "source": "node\u0000n6",
+        "segment": [
+          {
+            "x": 252,
+            "y": 1178
+          },
+          {
+            "x": 252,
+            "y": 1182
+          }
+        ],
+        "berth": {
+          "x": 252,
+          "y": 1184,
+          "radius": 3,
+          "source": "junction\u0000j:[\"n2\",\"n3\",\"n5\",\"root\"]"
+        }
+      },
+      "firstBranchHistoryMainGate": "route-contact",
+      "freshBudgetRepackConstructed": false,
+      "currentBeforeReservationRemoval": {
+        "constructed": false,
+        "gate": null
+      },
+      "currentWithoutFutureReservations": {
+        "constructed": true,
+        "gate": null
+      }
+    },
+    {
+      "case": "dense-f10-40-21041",
+      "width": 360,
+      "step": 7,
+      "focus": "n25",
+      "branchConstruction": "insertTree: !best after primary/fallback/fine search",
+      "mainOnBranchInput": true,
+      "priorHistoryAlsoDiverged": false,
+      "firstDivergingPredicate": "nearBerth",
+      "firstDivergingWitness": {
+        "name": "nearBerth",
+        "source": "node\u0000n1",
+        "segment": [
+          {
+            "x": 252,
+            "y": 296
+          },
+          {
+            "x": 252,
+            "y": 297
+          }
+        ]
+      },
+      "replayInputHistory": "branch captured incremental request/history",
+      "mainContactBypassDisabled": false,
+      "removeHypotheticalFuturePortReservations": false,
+      "arrowBaseRadius3": false,
+      "arrowBaseGate": null,
+      "arrowBaseAndCornerFix": false,
+      "arrowBaseAndCornerGate": null,
+      "firstBranchContact": {
+        "predicate": "nearBerth",
+        "source": "node\u0000n1",
+        "segment": [
+          {
+            "x": 252,
+            "y": 296
+          },
+          {
+            "x": 252,
+            "y": 297
+          }
+        ],
+        "berth": {
+          "x": 252,
+          "y": 299,
+          "radius": 3,
+          "source": "node\u0000root"
+        }
+      },
+      "firstBranchHistoryMainGate": "route-contact",
+      "freshBudgetRepackConstructed": false,
+      "currentBeforeReservationRemoval": {
+        "constructed": false,
+        "gate": null
+      },
+      "currentWithoutFutureReservations": {
+        "constructed": false,
+        "gate": null
+      }
+    },
+    {
+      "case": "dense-f10-40-21041",
+      "width": 454,
+      "step": 2,
+      "focus": "n33",
+      "branchConstruction": "insertTree: !best after primary/fallback/fine search",
+      "mainOnBranchInput": true,
+      "priorHistoryAlsoDiverged": false,
+      "firstDivergingPredicate": "nearBerth",
+      "firstDivergingWitness": {
+        "name": "nearBerth",
+        "source": "node\u0000n13",
+        "segment": [
+          {
+            "x": 113,
+            "y": 2314
+          },
+          {
+            "x": 97,
+            "y": 2314
+          }
+        ]
+      },
+      "replayInputHistory": "branch captured incremental request/history",
+      "mainContactBypassDisabled": false,
+      "removeHypotheticalFuturePortReservations": false,
+      "arrowBaseRadius3": false,
+      "arrowBaseGate": null,
+      "arrowBaseAndCornerFix": false,
+      "arrowBaseAndCornerGate": null,
+      "firstBranchHistoryMainGate": "route-contact",
+      "freshBudgetRepackConstructed": false,
+      "currentBeforeReservationRemoval": {
+        "constructed": false,
+        "gate": null
+      },
+      "currentWithoutFutureReservations": {
+        "constructed": false,
+        "gate": null
+      }
+    },
+    {
+      "case": "dense-f10-40-21041",
+      "width": 454,
+      "step": 8,
+      "focus": "n32",
+      "branchConstruction": "insertTree: !best after primary/fallback/fine search",
+      "mainOnBranchInput": true,
+      "priorHistoryAlsoDiverged": false,
+      "firstDivergingPredicate": "nearBerth",
+      "firstDivergingWitness": {
+        "name": "nearBerth",
+        "source": "node\u0000n12",
+        "segment": [
+          {
+            "x": 166,
+            "y": 3052
+          },
+          {
+            "x": 166,
+            "y": 3365
+          }
+        ]
+      },
+      "replayInputHistory": "branch captured incremental request/history",
+      "mainContactBypassDisabled": false,
+      "removeHypotheticalFuturePortReservations": false,
+      "arrowBaseRadius3": true,
+      "arrowBaseGate": null,
+      "arrowBaseAndCornerFix": true,
+      "arrowBaseAndCornerGate": null,
+      "firstBranchContact": {
+        "predicate": "nearBerth",
+        "source": "node\u0000n4",
+        "segment": [
+          {
+            "x": 429,
+            "y": 143
+          },
+          {
+            "x": 17,
+            "y": 143
+          }
+        ],
+        "berth": {
+          "x": 419.4070822294746,
+          "y": 140.0273864639871,
+          "radius": 3,
+          "source": "node\u0000root"
+        }
+      },
+      "firstBranchHistoryMainGate": "route-contact",
+      "freshBudgetRepackConstructed": false,
+      "currentBeforeReservationRemoval": {
+        "constructed": true,
+        "gate": null
+      },
+      "currentWithoutFutureReservations": {
+        "constructed": true,
+        "gate": null
+      }
+    },
+    {
+      "case": "dense-f10-40-21041",
+      "width": 640,
+      "step": 1,
+      "focus": "n29",
+      "branchConstruction": "insertTree: !best after primary/fallback/fine search",
+      "mainOnBranchInput": true,
+      "priorHistoryAlsoDiverged": false,
+      "firstDivergingPredicate": "touched",
+      "firstDivergingWitness": {
+        "name": "touched",
+        "source": "node\u0000n10",
+        "berth": {
+          "x": 164,
+          "y": 1555,
+          "radius": 6
+        },
+        "list": [
+          [
+            {
+              "x": 164,
+              "y": 1555
+            },
+            {
+              "x": 273,
+              "y": 1555
+            }
+          ],
+          [
+            {
+              "x": 273,
+              "y": 1555
+            },
+            {
+              "x": 273,
+              "y": 1988
+            }
+          ],
+          [
+            {
+              "x": 273,
+              "y": 1988
+            },
+            {
+              "x": 382,
+              "y": 1988
+            }
+          ]
+        ]
+      },
+      "replayInputHistory": "branch captured incremental request/history",
+      "mainContactBypassDisabled": false,
+      "removeHypotheticalFuturePortReservations": false,
+      "arrowBaseRadius3": true,
+      "arrowBaseGate": null,
+      "arrowBaseAndCornerFix": true,
+      "arrowBaseAndCornerGate": null,
+      "firstBranchContact": {
+        "predicate": "nearBerth",
+        "source": "node\u0000n7",
+        "segment": [
+          {
+            "x": 382,
+            "y": 888
+          },
+          {
+            "x": 8,
+            "y": 888
+          }
+        ],
+        "berth": {
+          "x": 218,
+          "y": 884,
+          "radius": 6,
+          "source": "node\u0000n6"
+        }
+      },
+      "firstBranchHistoryMainGate": "route-contact",
+      "freshBudgetRepackConstructed": false,
+      "currentBeforeReservationRemoval": {
+        "constructed": true,
+        "gate": null
+      },
+      "currentWithoutFutureReservations": {
+        "constructed": false,
+        "gate": null
+      }
+    },
+    {
+      "case": "dense-f10-40-21041",
+      "width": 640,
+      "step": 2,
+      "focus": "n33",
+      "branchConstruction": "insertTree: !best after primary/fallback/fine search",
+      "mainOnBranchInput": true,
+      "priorHistoryAlsoDiverged": false,
+      "firstDivergingPredicate": "nearBerth",
+      "firstDivergingWitness": {
+        "name": "nearBerth",
+        "source": "node\u0000n13",
+        "segment": [
+          {
+            "x": 443,
+            "y": 1888
+          },
+          {
+            "x": 97,
+            "y": 1888
+          }
+        ]
+      },
+      "replayInputHistory": "branch captured incremental request/history",
+      "mainContactBypassDisabled": false,
+      "removeHypotheticalFuturePortReservations": true,
+      "noFutureGate": null,
+      "arrowBaseRadius3": false,
+      "arrowBaseGate": null,
+      "arrowBaseAndCornerFix": true,
+      "arrowBaseAndCornerGate": null,
+      "firstBranchContact": {
+        "predicate": "nearBerth",
+        "source": "node\u0000n33",
+        "segment": [
+          {
+            "x": 535,
+            "y": 2275
+          },
+          {
+            "x": 258,
+            "y": 2275
+          }
+        ],
+        "berth": {
+          "x": 371,
+          "y": 2273,
+          "radius": 6,
+          "source": "node\u0000n26",
+          "futureReservation": true
+        }
+      },
+      "firstBranchHistoryMainGate": "route-contact",
+      "freshBudgetRepackConstructed": true,
+      "freshBudgetRepackGate": "route-contact",
+      "currentBeforeReservationRemoval": {
+        "constructed": true,
+        "gate": null
+      },
+      "currentWithoutFutureReservations": {
+        "constructed": true,
+        "gate": null
+      }
+    },
+    {
+      "case": "dense-f10-40-21041",
+      "width": 900,
+      "step": 2,
+      "focus": "n33",
+      "branchConstruction": "insertTree: !best after primary/fallback/fine search",
+      "mainOnBranchInput": true,
+      "priorHistoryAlsoDiverged": false,
+      "firstDivergingPredicate": "nearBerth",
+      "firstDivergingWitness": {
+        "name": "nearBerth",
+        "source": "node\u0000n11",
+        "segment": [
+          {
+            "x": 333,
+            "y": 1969
+          },
+          {
+            "x": 330,
+            "y": 1969
+          }
+        ]
+      },
+      "replayInputHistory": "branch captured incremental request/history",
+      "mainContactBypassDisabled": false,
+      "removeHypotheticalFuturePortReservations": false,
+      "arrowBaseRadius3": false,
+      "arrowBaseGate": null,
+      "arrowBaseAndCornerFix": false,
+      "arrowBaseAndCornerGate": null,
+      "firstBranchContact": {
+        "predicate": "nearBerth",
+        "source": "node\u0000n33",
+        "segment": [
+          {
+            "x": 783,
+            "y": 2135
+          },
+          {
+            "x": 258,
+            "y": 2135
+          }
+        ],
+        "berth": {
+          "x": 494,
+          "y": 2133,
+          "radius": 6,
+          "source": "node\u0000n32",
+          "futureReservation": true
+        }
+      },
+      "firstBranchHistoryMainGate": "route-contact",
+      "freshBudgetRepackConstructed": false,
+      "currentBeforeReservationRemoval": {
+        "constructed": false,
+        "gate": null
+      },
+      "currentWithoutFutureReservations": {
+        "constructed": false,
+        "gate": null
+      }
+    },
+    {
+      "case": "dense-f10-40-21041",
+      "width": 900,
+      "step": 8,
+      "focus": "n32",
+      "branchConstruction": "insertTree: !best after primary/fallback/fine search",
+      "mainOnBranchInput": true,
+      "priorHistoryAlsoDiverged": false,
+      "firstDivergingPredicate": "nearBerth",
+      "firstDivergingWitness": {
+        "name": "nearBerth",
+        "source": "node\u0000n4",
+        "segment": [
+          {
+            "x": 837,
+            "y": 134
+          },
+          {
+            "x": 8,
+            "y": 134
+          }
+        ]
+      },
+      "replayInputHistory": "branch captured incremental request/history",
+      "mainContactBypassDisabled": false,
+      "removeHypotheticalFuturePortReservations": true,
+      "noFutureGate": null,
+      "arrowBaseRadius3": false,
+      "arrowBaseGate": null,
+      "arrowBaseAndCornerFix": false,
+      "arrowBaseAndCornerGate": null,
+      "firstBranchContact": {
+        "predicate": "nearBerth",
+        "source": "node\u0000n13",
+        "segment": [
+          {
+            "x": 876,
+            "y": 829
+          },
+          {
+            "x": 876,
+            "y": 1155
+          }
+        ],
+        "berth": {
+          "x": 872,
+          "y": 1039,
+          "radius": 6,
+          "source": "node\u0000n17",
+          "futureReservation": true
+        }
+      },
+      "firstBranchHistoryMainGate": "route-contact",
+      "freshBudgetRepackConstructed": false,
+      "currentBeforeReservationRemoval": {
+        "constructed": false,
+        "gate": null
+      },
+      "currentWithoutFutureReservations": {
+        "constructed": true,
+        "gate": null
+      }
+    },
+    {
+      "case": "dense-f10-40-21042",
+      "width": 360,
+      "step": 6,
+      "focus": "n19",
+      "branchConstruction": "insertTree: !best after primary/fallback/fine search",
+      "mainOnBranchInput": true,
+      "priorHistoryAlsoDiverged": false,
+      "firstDivergingPredicate": "nearBerth",
+      "firstDivergingWitness": {
+        "name": "nearBerth",
+        "source": "node\u0000n16",
+        "segment": [
+          {
+            "x": 240,
+            "y": 2639
+          },
+          {
+            "x": 240,
+            "y": 2646
+          }
+        ]
+      },
+      "replayInputHistory": "branch captured incremental request/history",
+      "mainContactBypassDisabled": false,
+      "removeHypotheticalFuturePortReservations": true,
+      "noFutureGate": null,
+      "arrowBaseRadius3": false,
+      "arrowBaseGate": null,
+      "arrowBaseAndCornerFix": false,
+      "arrowBaseAndCornerGate": null,
+      "firstBranchContact": {
+        "predicate": "nearBerth",
+        "source": "node\u0000n16",
+        "segment": [
+          {
+            "x": 240,
+            "y": 2639
+          },
+          {
+            "x": 240,
+            "y": 2646
+          }
+        ],
+        "berth": {
+          "x": 240,
+          "y": 2648,
+          "radius": 3,
+          "source": "junction\u0000j:[\"n2\",\"n4\",\"n7\",\"n9\",\"root\"]"
+        }
+      },
+      "firstBranchHistoryMainGate": "route-contact",
+      "freshBudgetRepackConstructed": false,
+      "currentBeforeReservationRemoval": {
+        "constructed": false,
+        "gate": null
+      },
+      "currentWithoutFutureReservations": {
+        "constructed": true,
+        "gate": null
+      }
+    },
+    {
+      "case": "dense-f10-40-21042",
+      "width": 454,
+      "step": 6,
+      "focus": "n19",
+      "branchConstruction": "insertTree: !best after primary/fallback/fine search",
+      "mainOnBranchInput": true,
+      "priorHistoryAlsoDiverged": false,
+      "firstDivergingPredicate": "nearBerth",
+      "firstDivergingWitness": {
+        "name": "nearBerth",
+        "source": "node\u0000n12",
+        "segment": [
+          {
+            "x": 100,
+            "y": 3130
+          },
+          {
+            "x": 94,
+            "y": 3130
+          }
+        ]
+      },
+      "replayInputHistory": "branch captured incremental request/history",
+      "mainContactBypassDisabled": false,
+      "removeHypotheticalFuturePortReservations": true,
+      "noFutureGate": null,
+      "arrowBaseRadius3": false,
+      "arrowBaseGate": null,
+      "arrowBaseAndCornerFix": false,
+      "arrowBaseAndCornerGate": null,
+      "firstBranchContact": {
+        "predicate": "nearBerth",
+        "source": "node\u0000n16",
+        "segment": [
+          {
+            "x": 244,
+            "y": 1948
+          },
+          {
+            "x": 244,
+            "y": 2572.5
+          }
+        ],
+        "berth": {
+          "x": 240,
+          "y": 2128,
+          "radius": 6,
+          "source": "node\u0000n13",
+          "futureReservation": true
+        }
+      },
+      "firstBranchHistoryMainGate": "route-contact",
+      "freshBudgetRepackConstructed": false,
+      "currentBeforeReservationRemoval": {
+        "constructed": false,
+        "gate": null
+      },
+      "currentWithoutFutureReservations": {
+        "constructed": true,
+        "gate": null
+      }
+    },
+    {
+      "case": "dense-f10-40-21043",
+      "width": 360,
+      "step": 3,
+      "focus": "n25",
+      "branchConstruction": "insertTree: !best after primary/fallback/fine search",
+      "mainOnBranchInput": true,
+      "priorHistoryAlsoDiverged": false,
+      "firstDivergingPredicate": "nearBerth",
+      "firstDivergingWitness": {
+        "name": "nearBerth",
+        "source": "node\u0000n1",
+        "segment": [
+          {
+            "x": 243,
+            "y": 296
+          },
+          {
+            "x": 243,
+            "y": 297
+          }
+        ]
+      },
+      "replayInputHistory": "branch captured incremental request/history",
+      "mainContactBypassDisabled": false,
+      "removeHypotheticalFuturePortReservations": false,
+      "arrowBaseRadius3": false,
+      "arrowBaseGate": null,
+      "arrowBaseAndCornerFix": false,
+      "arrowBaseAndCornerGate": null,
+      "firstBranchContact": {
+        "predicate": "nearBerth",
+        "source": "node\u0000n1",
+        "segment": [
+          {
+            "x": 243,
+            "y": 296
+          },
+          {
+            "x": 243,
+            "y": 297
+          }
+        ],
+        "berth": {
+          "x": 243,
+          "y": 299,
+          "radius": 3,
+          "source": "node\u0000root"
+        }
+      },
+      "firstBranchHistoryMainGate": "route-contact",
+      "freshBudgetRepackConstructed": false,
+      "currentBeforeReservationRemoval": {
+        "constructed": false,
+        "gate": null
+      },
+      "currentWithoutFutureReservations": {
+        "constructed": false,
+        "gate": null
+      }
+    },
+    {
+      "case": "dense-f10-40-21043",
+      "width": 360,
+      "step": 7,
+      "focus": "n23",
+      "branchConstruction": "insertTree: !best after primary/fallback/fine search",
+      "mainOnBranchInput": true,
+      "priorHistoryAlsoDiverged": false,
+      "firstDivergingPredicate": "nearBerth",
+      "firstDivergingWitness": {
+        "name": "nearBerth",
+        "source": "node\u0000n1",
+        "segment": [
+          {
+            "x": 240,
+            "y": 296
+          },
+          {
+            "x": 240,
+            "y": 297
+          }
+        ]
+      },
+      "replayInputHistory": "branch captured incremental request/history",
+      "mainContactBypassDisabled": false,
+      "removeHypotheticalFuturePortReservations": false,
+      "arrowBaseRadius3": false,
+      "arrowBaseGate": null,
+      "arrowBaseAndCornerFix": false,
+      "arrowBaseAndCornerGate": null,
+      "firstBranchContact": {
+        "predicate": "nearBerth",
+        "source": "node\u0000n1",
+        "segment": [
+          {
+            "x": 240,
+            "y": 296
+          },
+          {
+            "x": 240,
+            "y": 297
+          }
+        ],
+        "berth": {
+          "x": 240,
+          "y": 299,
+          "radius": 3,
+          "source": "node\u0000root"
+        }
+      },
+      "firstBranchHistoryMainGate": "route-contact",
+      "freshBudgetRepackConstructed": false,
+      "currentBeforeReservationRemoval": {
+        "constructed": false,
+        "gate": null
+      },
+      "currentWithoutFutureReservations": {
+        "constructed": false,
+        "gate": null
+      }
+    },
+    {
+      "case": "dense-f10-40-21043",
+      "width": 454,
+      "step": 1,
+      "focus": "n27",
+      "branchConstruction": "insertTree: !best after primary/fallback/fine search",
+      "mainOnBranchInput": true,
+      "priorHistoryAlsoDiverged": false,
+      "firstDivergingPredicate": "nearBerth",
+      "firstDivergingWitness": {
+        "name": "nearBerth",
+        "source": "node\u0000n6",
+        "segment": [
+          {
+            "x": 248,
+            "y": 1648
+          },
+          {
+            "x": 166,
+            "y": 1648
+          }
+        ]
+      },
+      "replayInputHistory": "branch captured incremental request/history",
+      "mainContactBypassDisabled": false,
+      "removeHypotheticalFuturePortReservations": false,
+      "arrowBaseRadius3": false,
+      "arrowBaseGate": null,
+      "arrowBaseAndCornerFix": false,
+      "arrowBaseAndCornerGate": null,
+      "firstBranchContact": {
+        "predicate": "nearBerth",
+        "source": "node\u0000n13",
+        "segment": [
+          {
+            "x": 17,
+            "y": 2588
+          },
+          {
+            "x": 94,
+            "y": 2588
+          }
+        ],
+        "berth": {
+          "x": 94,
+          "y": 2585,
+          "radius": 6,
+          "source": "node\u0000n16",
+          "futureReservation": true
+        }
+      },
+      "firstBranchHistoryMainGate": "route-contact",
+      "freshBudgetRepackConstructed": false,
+      "currentBeforeReservationRemoval": {
+        "constructed": false,
+        "gate": null
+      },
+      "currentWithoutFutureReservations": {
+        "constructed": false,
+        "gate": null
+      }
+    },
+    {
+      "case": "dense-f10-40-21043",
+      "width": 640,
+      "step": 1,
+      "focus": "n27",
+      "branchConstruction": "insertTree: !best after primary/fallback/fine search",
+      "mainOnBranchInput": true,
+      "priorHistoryAlsoDiverged": false,
+      "firstDivergingPredicate": "nearBerth",
+      "firstDivergingWitness": {
+        "name": "nearBerth",
+        "source": "node\u0000n7",
+        "segment": [
+          {
+            "x": 538,
+            "y": 1063
+          },
+          {
+            "x": 94,
+            "y": 1063
+          }
+        ]
+      },
+      "replayInputHistory": "branch captured incremental request/history",
+      "mainContactBypassDisabled": false,
+      "removeHypotheticalFuturePortReservations": false,
+      "arrowBaseRadius3": false,
+      "arrowBaseGate": null,
+      "arrowBaseAndCornerFix": false,
+      "arrowBaseAndCornerGate": null,
+      "firstBranchContact": {
+        "predicate": "nearBerth",
+        "source": "node\u0000n6",
+        "segment": [
+          {
+            "x": 374,
+            "y": 627
+          },
+          {
+            "x": 8,
+            "y": 627
+          }
+        ],
+        "berth": {
+          "x": 210,
+          "y": 623,
+          "radius": 6,
+          "source": "node\u0000n5"
+        }
+      },
+      "firstBranchHistoryMainGate": "route-contact",
+      "freshBudgetRepackConstructed": false,
+      "currentBeforeReservationRemoval": {
+        "constructed": false,
+        "gate": null
+      },
+      "currentWithoutFutureReservations": {
+        "constructed": false,
+        "gate": null
+      }
+    },
+    {
+      "case": "dense-f10-40-21043",
+      "width": 640,
+      "step": 3,
+      "focus": "n25",
+      "branchConstruction": "insertTree: !best after primary/fallback/fine search",
+      "mainOnBranchInput": true,
+      "priorHistoryAlsoDiverged": false,
+      "firstDivergingPredicate": "nearBerth",
+      "firstDivergingWitness": {
+        "name": "nearBerth",
+        "source": "node\u0000n12",
+        "segment": [
+          {
+            "x": 529,
+            "y": 883
+          },
+          {
+            "x": 166,
+            "y": 883
+          }
+        ]
+      },
+      "replayInputHistory": "branch captured incremental request/history",
+      "mainContactBypassDisabled": false,
+      "removeHypotheticalFuturePortReservations": false,
+      "arrowBaseRadius3": false,
+      "arrowBaseGate": null,
+      "arrowBaseAndCornerFix": false,
+      "arrowBaseAndCornerGate": null,
+      "firstBranchContact": {
+        "predicate": "nearBerth",
+        "source": "node\u0000n1",
+        "segment": [
+          {
+            "x": 439,
+            "y": 226
+          },
+          {
+            "x": 439,
+            "y": 1498.5
+          }
+        ],
+        "berth": {
+          "x": 435,
+          "y": 385,
+          "radius": 6,
+          "source": "node\u0000n3",
+          "futureReservation": true
+        }
+      },
+      "firstBranchHistoryMainGate": "route-contact",
+      "freshBudgetRepackConstructed": false,
+      "currentBeforeReservationRemoval": {
+        "constructed": false,
+        "gate": null
+      },
+      "currentWithoutFutureReservations": {
+        "constructed": false,
+        "gate": null
+      }
+    },
+    {
+      "case": "dense-f10-40-21043",
+      "width": 640,
+      "step": 7,
+      "focus": "n23",
+      "branchConstruction": "insertTree: !best after primary/fallback/fine search",
+      "mainOnBranchInput": true,
+      "priorHistoryAlsoDiverged": false,
+      "firstDivergingPredicate": "nearBerth",
+      "firstDivergingWitness": {
+        "name": "nearBerth",
+        "source": "node\u0000n14",
+        "segment": [
+          {
+            "x": 281,
+            "y": 2131
+          },
+          {
+            "x": 264,
+            "y": 2131
+          }
+        ]
+      },
+      "replayInputHistory": "branch captured incremental request/history",
+      "mainContactBypassDisabled": false,
+      "removeHypotheticalFuturePortReservations": false,
+      "arrowBaseRadius3": false,
+      "arrowBaseGate": null,
+      "arrowBaseAndCornerFix": true,
+      "arrowBaseAndCornerGate": null,
+      "firstBranchContact": {
+        "predicate": "nearBerth",
+        "source": "node\u0000n1",
+        "segment": [
+          {
+            "x": 430,
+            "y": 134
+          },
+          {
+            "x": 632,
+            "y": 134
+          }
+        ],
+        "berth": {
+          "x": 479.52849025764374,
+          "y": 136.33547077293125,
+          "radius": 3,
+          "source": "node\u0000root"
+        }
+      },
+      "firstBranchHistoryMainGate": "route-contact",
+      "freshBudgetRepackConstructed": false,
+      "currentBeforeReservationRemoval": {
+        "constructed": true,
+        "gate": null
+      },
+      "currentWithoutFutureReservations": {
+        "constructed": false,
+        "gate": null
+      }
+    },
+    {
+      "case": "dense-f10-40-21043",
+      "width": 900,
+      "step": 1,
+      "focus": "n27",
+      "branchConstruction": "insertTree: !best after primary/fallback/fine search",
+      "mainOnBranchInput": true,
+      "priorHistoryAlsoDiverged": false,
+      "firstDivergingPredicate": "nearBerth",
+      "firstDivergingWitness": {
+        "name": "nearBerth",
+        "source": "node\u0000n7",
+        "segment": [
+          {
+            "x": 892,
+            "y": 737
+          },
+          {
+            "x": 94,
+            "y": 737
+          }
+        ]
+      },
+      "replayInputHistory": "branch captured incremental request/history",
+      "mainContactBypassDisabled": false,
+      "removeHypotheticalFuturePortReservations": false,
+      "arrowBaseRadius3": false,
+      "arrowBaseGate": null,
+      "arrowBaseAndCornerFix": false,
+      "arrowBaseAndCornerGate": null,
+      "firstBranchContact": {
+        "predicate": "nearBerth",
+        "source": "node\u0000n7",
+        "segment": [
+          {
+            "x": 892,
+            "y": 737
+          },
+          {
+            "x": 94,
+            "y": 737
+          }
+        ],
+        "berth": {
+          "x": 637,
+          "y": 734,
+          "radius": 6,
+          "source": "node\u0000n14"
+        }
+      },
+      "firstBranchHistoryMainGate": "route-contact",
+      "freshBudgetRepackConstructed": false,
+      "currentBeforeReservationRemoval": {
+        "constructed": false,
+        "gate": null
+      },
+      "currentWithoutFutureReservations": {
+        "constructed": false,
+        "gate": null
+      }
+    },
+    {
+      "case": "dense-f10-40-21043",
+      "width": 1400,
+      "step": 4,
+      "focus": "n32",
+      "branchConstruction": "insertTree: !best after primary/fallback/fine search",
+      "mainOnBranchInput": true,
+      "priorHistoryAlsoDiverged": false,
+      "firstDivergingPredicate": "nearBerth",
+      "firstDivergingWitness": {
+        "name": "nearBerth",
+        "source": "node\u0000n18",
+        "segment": [
+          {
+            "x": 810,
+            "y": 988
+          },
+          {
+            "x": 97,
+            "y": 988
+          }
+        ]
+      },
+      "replayInputHistory": "branch captured incremental request/history",
+      "mainContactBypassDisabled": false,
+      "removeHypotheticalFuturePortReservations": true,
+      "noFutureGate": null,
+      "arrowBaseRadius3": false,
+      "arrowBaseGate": null,
+      "arrowBaseAndCornerFix": false,
+      "arrowBaseAndCornerGate": null,
+      "firstBranchHistoryMainGate": "route-contact",
+      "freshBudgetRepackConstructed": false,
+      "currentBeforeReservationRemoval": {
+        "constructed": false,
+        "gate": null
+      },
+      "currentWithoutFutureReservations": {
+        "constructed": false,
+        "gate": null
+      }
+    },
+    {
+      "case": "dense-f10-40-21043",
+      "width": 1400,
+      "step": 7,
+      "focus": "n23",
+      "branchConstruction": "insertTree: !best after primary/fallback/fine search",
+      "mainOnBranchInput": true,
+      "priorHistoryAlsoDiverged": false,
+      "firstDivergingPredicate": "nearBerth",
+      "firstDivergingWitness": {
+        "name": "nearBerth",
+        "source": "node\u0000n23",
+        "segment": [
+          {
+            "x": 1210,
+            "y": 1237
+          },
+          {
+            "x": 1229,
+            "y": 1237
+          }
+        ]
+      },
+      "replayInputHistory": "branch captured incremental request/history",
+      "mainContactBypassDisabled": false,
+      "removeHypotheticalFuturePortReservations": false,
+      "arrowBaseRadius3": false,
+      "arrowBaseGate": null,
+      "arrowBaseAndCornerFix": false,
+      "arrowBaseAndCornerGate": null,
+      "firstBranchContact": {
+        "predicate": "nearBerth",
+        "source": "node\u0000n1",
+        "segment": [
+          {
+            "x": 884,
+            "y": 134
+          },
+          {
+            "x": 1392,
+            "y": 134
+          }
+        ],
+        "berth": {
+          "x": 1049.5284902576436,
+          "y": 136.33547077293125,
+          "radius": 3,
+          "source": "node\u0000root"
+        }
+      },
+      "firstBranchHistoryMainGate": "route-contact",
+      "freshBudgetRepackConstructed": false,
+      "currentBeforeReservationRemoval": {
+        "constructed": false,
+        "gate": null
+      },
+      "currentWithoutFutureReservations": {
+        "constructed": false,
+        "gate": null
+      }
+    },
+    {
+      "case": "dense-f10-100-21101",
+      "width": 1400,
+      "step": 6,
+      "focus": "n69",
+      "branchConstruction": "insertTree: !best after primary/fallback/fine search",
+      "mainOnBranchInput": true,
+      "priorHistoryAlsoDiverged": false,
+      "firstDivergingPredicate": "nearBerth",
+      "firstDivergingWitness": {
+        "name": "nearBerth",
+        "source": "node\u0000n27",
+        "segment": [
+          {
+            "x": 926,
+            "y": 946
+          },
+          {
+            "x": 186,
+            "y": 946
+          }
+        ]
+      },
+      "replayInputHistory": "branch captured incremental request/history",
+      "mainContactBypassDisabled": false,
+      "removeHypotheticalFuturePortReservations": false,
+      "arrowBaseRadius3": false,
+      "arrowBaseGate": null,
+      "arrowBaseAndCornerFix": false,
+      "arrowBaseAndCornerGate": null,
+      "firstBranchHistoryMainGate": "route-contact",
+      "freshBudgetRepackConstructed": false,
+      "currentBeforeReservationRemoval": {
+        "constructed": false,
+        "gate": null
+      },
+      "currentWithoutFutureReservations": {
+        "constructed": false,
+        "gate": null
+      }
+    },
+    {
+      "case": "dense-f10-100-21102",
+      "width": 640,
+      "step": 1,
+      "focus": "n64",
+      "branchConstruction": "insertTree: !best after primary/fallback/fine search",
+      "mainOnBranchInput": true,
+      "priorHistoryAlsoDiverged": false,
+      "firstDivergingPredicate": "nearBerth",
+      "firstDivergingWitness": {
+        "name": "nearBerth",
+        "source": "node\u0000n3",
+        "segment": [
+          {
+            "x": 493,
+            "y": 477
+          },
+          {
+            "x": 8,
+            "y": 477
+          }
+        ]
+      },
+      "replayInputHistory": "branch captured incremental request/history",
+      "mainContactBypassDisabled": false,
+      "removeHypotheticalFuturePortReservations": false,
+      "arrowBaseRadius3": false,
+      "arrowBaseGate": null,
+      "arrowBaseAndCornerFix": false,
+      "arrowBaseAndCornerGate": null,
+      "firstBranchContact": {
+        "predicate": "nearBerth",
+        "source": "node\u0000n3",
+        "segment": [
+          {
+            "x": 493,
+            "y": 477
+          },
+          {
+            "x": 8,
+            "y": 477
+          }
+        ],
+        "berth": {
+          "x": 329,
+          "y": 473,
+          "radius": 6,
+          "source": "node\u0000n4"
+        }
+      },
+      "firstBranchHistoryMainGate": "route-contact",
+      "freshBudgetRepackConstructed": false,
+      "currentBeforeReservationRemoval": {
+        "constructed": false,
+        "gate": null
+      },
+      "currentWithoutFutureReservations": {
+        "constructed": false,
+        "gate": null
+      }
+    },
+    {
+      "case": "dense-f10-100-21102",
+      "width": 900,
+      "step": 1,
+      "focus": "n64",
+      "branchConstruction": "insertTree: !best after primary/fallback/fine search",
+      "mainOnBranchInput": true,
+      "priorHistoryAlsoDiverged": false,
+      "firstDivergingPredicate": "nearBerth",
+      "firstDivergingWitness": {
+        "name": "nearBerth",
+        "source": "node\u0000n17",
+        "segment": [
+          {
+            "x": 434,
+            "y": 2059.5
+          },
+          {
+            "x": 94,
+            "y": 2059.5
+          }
+        ]
+      },
+      "replayInputHistory": "branch captured incremental request/history",
+      "mainContactBypassDisabled": false,
+      "removeHypotheticalFuturePortReservations": false,
+      "arrowBaseRadius3": false,
+      "arrowBaseGate": null,
+      "arrowBaseAndCornerFix": false,
+      "arrowBaseAndCornerGate": null,
+      "firstBranchContact": {
+        "predicate": "nearBerth",
+        "source": "node\u0000n17",
+        "segment": [
+          {
+            "x": 434,
+            "y": 2059.5
+          },
+          {
+            "x": 94,
+            "y": 2059.5
+          }
+        ],
+        "berth": {
+          "x": 312,
+          "y": 2057,
+          "radius": 3,
+          "source": "node\u0000n16"
+        }
+      },
+      "firstBranchHistoryMainGate": "route-contact",
+      "freshBudgetRepackConstructed": false,
+      "currentBeforeReservationRemoval": {
+        "constructed": false,
+        "gate": null
+      },
+      "currentWithoutFutureReservations": {
+        "constructed": false,
+        "gate": null
+      }
+    },
+    {
+      "case": "dense-f10-100-21102",
+      "width": 1400,
+      "step": 1,
+      "focus": "n64",
+      "branchConstruction": "insertTree: !best after primary/fallback/fine search",
+      "mainOnBranchInput": false,
+      "priorHistoryAlsoDiverged": true,
+      "firstDivergingPredicate": "nearBerth",
+      "firstDivergingWitness": {
+        "name": "nearBerth",
+        "source": "node\u0000n17",
+        "segment": [
+          {
+            "x": 770,
+            "y": 2139
+          },
+          {
+            "x": 94,
+            "y": 2139
+          }
+        ]
+      },
+      "replayInputHistory": "main captured successful request/history",
+      "mainContactBypassDisabled": false,
+      "removeHypotheticalFuturePortReservations": false,
+      "arrowBaseRadius3": false,
+      "arrowBaseGate": null,
+      "arrowBaseAndCornerFix": false,
+      "arrowBaseAndCornerGate": null,
+      "firstBranchHistoryMainGate": null,
+      "freshBudgetRepackConstructed": false,
+      "currentBeforeReservationRemoval": {
+        "constructed": false,
+        "gate": null
+      },
+      "currentWithoutFutureReservations": {
+        "constructed": false,
+        "gate": null
+      }
+    },
+    {
+      "case": "dense-f10-100-21102",
+      "width": 1400,
+      "step": 7,
+      "focus": "n73",
+      "branchConstruction": "insertTree: !best after primary/fallback/fine search",
+      "mainOnBranchInput": true,
+      "priorHistoryAlsoDiverged": false,
+      "firstDivergingPredicate": "nearBerth",
+      "firstDivergingWitness": {
+        "name": "nearBerth",
+        "source": "node\u0000n9",
+        "segment": [
+          {
+            "x": 770,
+            "y": 1186
+          },
+          {
+            "x": 166,
+            "y": 1186
+          }
+        ]
+      },
+      "replayInputHistory": "branch captured incremental request/history",
+      "mainContactBypassDisabled": false,
+      "removeHypotheticalFuturePortReservations": false,
+      "arrowBaseRadius3": false,
+      "arrowBaseGate": null,
+      "arrowBaseAndCornerFix": false,
+      "arrowBaseAndCornerGate": null,
+      "firstBranchContact": {
+        "predicate": "nearBerth",
+        "source": "node\u0000n19",
+        "segment": [
+          {
+            "x": 606,
+            "y": 1705.5
+          },
+          {
+            "x": 94,
+            "y": 1705.5
+          }
+        ],
+        "berth": {
+          "x": 530,
+          "y": 1703,
+          "radius": 3,
+          "source": "node\u0000n25"
+        }
+      },
+      "firstBranchHistoryMainGate": "route-contact",
+      "freshBudgetRepackConstructed": false,
+      "currentBeforeReservationRemoval": {
+        "constructed": false,
+        "gate": null
+      },
+      "currentWithoutFutureReservations": {
+        "constructed": false,
+        "gate": null
+      }
+    },
+    {
+      "case": "dense-f10-100-21103",
+      "width": 1400,
+      "step": 5,
+      "focus": "n85",
+      "branchConstruction": "insertTree: !best after primary/fallback/fine search",
+      "mainOnBranchInput": true,
+      "priorHistoryAlsoDiverged": false,
+      "firstDivergingPredicate": "nearBerth",
+      "firstDivergingWitness": {
+        "name": "nearBerth",
+        "source": "node\u0000n85",
+        "segment": [
+          {
+            "x": 1236,
+            "y": 3838.5
+          },
+          {
+            "x": 94,
+            "y": 3838.5
+          }
+        ]
+      },
+      "replayInputHistory": "branch captured incremental request/history",
+      "mainContactBypassDisabled": false,
+      "removeHypotheticalFuturePortReservations": false,
+      "arrowBaseRadius3": false,
+      "arrowBaseGate": null,
+      "arrowBaseAndCornerFix": false,
+      "arrowBaseAndCornerGate": null,
+      "firstBranchContact": {
+        "predicate": "nearBerth",
+        "source": "node\u0000n85",
+        "segment": [
+          {
+            "x": 1236,
+            "y": 3838.5
+          },
+          {
+            "x": 94,
+            "y": 3838.5
+          }
+        ],
+        "berth": {
+          "x": 1072,
+          "y": 3836,
+          "radius": 6,
+          "source": "node\u0000n64"
+        }
+      },
+      "firstBranchHistoryMainGate": "route-contact",
+      "freshBudgetRepackConstructed": false,
+      "currentBeforeReservationRemoval": {
+        "constructed": false,
+        "gate": null
+      },
+      "currentWithoutFutureReservations": {
+        "constructed": false,
+        "gate": null
+      }
+    },
+    {
+      "case": "dense-f10-100-21103",
+      "width": 1400,
+      "step": 7,
+      "focus": "n82",
+      "branchConstruction": "insertTree: !best after primary/fallback/fine search",
+      "mainOnBranchInput": false,
+      "priorHistoryAlsoDiverged": true,
+      "firstDivergingPredicate": "nearBerth",
+      "firstDivergingWitness": {
+        "name": "nearBerth",
+        "source": "node\u0000n29",
+        "segment": [
+          {
+            "x": 771,
+            "y": 3271.5
+          },
+          {
+            "x": 94,
+            "y": 3271.5
+          }
+        ]
+      },
+      "replayInputHistory": "main captured successful request/history",
+      "mainContactBypassDisabled": false,
+      "removeHypotheticalFuturePortReservations": false,
+      "arrowBaseRadius3": false,
+      "arrowBaseGate": null,
+      "arrowBaseAndCornerFix": false,
+      "arrowBaseAndCornerGate": null,
+      "firstBranchContact": {
+        "predicate": "nearBerth",
+        "source": "node\u0000n29",
+        "segment": [
+          {
+            "x": 780,
+            "y": 2665.5
+          },
+          {
+            "x": 94,
+            "y": 2665.5
+          }
+        ],
+        "berth": {
+          "x": 692,
+          "y": 2663,
+          "radius": 3,
+          "source": "node\u0000n9"
+        }
+      },
+      "firstBranchHistoryMainGate": null,
+      "freshBudgetRepackConstructed": false,
+      "currentBeforeReservationRemoval": {
+        "constructed": false,
+        "gate": null
+      },
+      "currentWithoutFutureReservations": {
+        "constructed": false,
+        "gate": null
+      }
+    }
+  ]
+}

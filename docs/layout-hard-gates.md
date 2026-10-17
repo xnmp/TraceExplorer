@@ -1,3 +1,175 @@
+# Pinned construction diagnosis — pass 6
+
+**Overall acceptance remains unmet.** Broad and dense click counts and movement-fraction/anchor-displacement quality still exceed main-relative limits. Hard safety, restoration, arrival, held-screen, legal displacement, sibling ordering and the requested performance limits pass.
+
+The construction gap is primarily a routing-safety difference, not lost click history. Main retries insertion with contact checks disabled; this branch retains those checks and independently certifies published drawings. Repairs now preserve pinned rectangles and reroute connector ink. Acceptance is reported below without weakening the requested movement targets.
+
+## First diverging predicate on identical inputs
+
+| First predicate main bypasses | Original added rows |
+|---|---:|
+| `LaneIndex.nearBerth` | 89 |
+| `LaneIndex.touched` | 7 |
+| History validation / missing anchor / partition key | 0 |
+| Total original category (e) | 96 |
+
+[Complete replay evidence](layout-hard-gates-evidence/pass6-divergence.json) records all 96 rows. Replaying the identical branch request/history makes main construct 89 candidates; every one fails the independent contact gate. In the other seven rows both engines fail on branch history, so the first divergence was traced on the successful main-history request: all seven reach `nearBerth`. The terminal branch failure is exhausted insertion (`!best`), not a rejected history shape. A first rejected probe is a control-flow witness, not proof that changing only that probe determines the final drawing. Counterfactual repair counts overlap.
+
+The original 29 category (a) rows contain 30 rejected held candidates: 22 corner/curve contacts and eight arrow-tip contacts. These are real defects. [Candidate evidence](layout-hard-gates-evidence/pass6-rejected-candidates.json) records frozen-input repair results; current tour counts below use complete replays with the resulting histories.
+
+All [17 original category (d) rows](layout-hard-gates-evidence/pass6-original-restores.json) have identical saved state keys and exactly restored geometry. They are excluded only from click-anchor and dense-tour move counts. Held-screen displacement and corpus quality still include restoration movement.
+
+## Changes
+
+- Constructor berth geometry now follows sharp corners and the actual painted arrow shaft. The arrow base has the corner berth; the actual tip retains its port clearance.
+- Future sources reserve a usable departure rather than treating both possible ports as occupied. Newly active ports can be freed by rerouting retained connectors. The seed-12 arrival exposed a nominally clear bottom port trapped behind other ink; the usable right exit required shifting a straight tail in a mixed cubic/straight route. The helper now supports that exact edit without changing the cubic commands or endpoints.
+- Incremental and anchored-repack attempts have independent bounded construction budgets. An exhausted fully pinned search no longer prevents repacking from constructing a candidate.
+- Pinned connector repair changes internal straight runs or adds local orthogonal bypasses, preserving rectangle positions, curve commands, target endpoints and logical identities. A blocked source may also depart through its other real port on the same pinned tile. Every accepted repair passes the independent full gate.
+- After ordinary holding candidates fail, bounded retries use a more constrained insertion order or construct a contact-bearing draft for repair. Unrepaired drafts cannot be published.
+- The seeded revisit property now distinguishes effective expanded/caret state as well as visible membership. The former assertion conflated two different `merges-3` states; independent replay confirmed their production keys differ. Every fixture must still exercise genuine exact revisits. Production display memory is unchanged.
+
+Each construction root cause has a failing regression fixture. The existing multi-parent arrival property also caught a departure-repair regression during final validation; its resolution and final gate results are recorded below. No presentation implementation for #91 was changed. Performance commits `c1dc133` and `68de7b9` remain; this pass adds no speed optimization.
+
+## Measurement provenance
+
+Main was re-executed from an untouched `git archive origin/main` checkout under `/tmp`, at `75e46b08cfd5ae94399aecfdebefb3937c6e3a73`. Its native inputs supply the acceptance reference: 32/101 clicks, 80/114 held-screen moves, mean legal displacement 17.5285997292. [Main input comparison](layout-hard-gates-evidence/pass6-main-inputs.json), [main acceptance](layout-hard-gates-evidence/pass6-main-acceptance.json.gz), and [main timing](layout-hard-gates-evidence/pass6-main-perf.json.gz) are committed.
+
+Paired divergence audits deliberately give both implementations identical branch-planned requests. These reserve hint space on leaves to prevent arrival resizing, unlike native main; that paired main reports 31 broad moves. This diagnostic difference does not change the requested 32/101/114/17.53 acceptance limits. The older frozen baseline is retained only as a diagnostic; it does not decide current acceptance.
+
+## Before / after classification
+
+Added movements relative to paired main, using each engine’s own actual tour history:
+
+| Classification | Original pass 5 | Pass 6 |
+|---|---:|---:|
+| (e) No held candidate constructed | 96 | 44 |
+| (a) Held candidate rejected by independent gate | 29 | 5 |
+| (c) Certified alternative / ranking | 1 | 0 |
+| (d) Exact saved-state restore (excluded) | 17 | 16 |
+
+[Original classification](layout-hard-gates-evidence/pass5-anchor-before.json), [final classification with restore proofs](layout-hard-gates-evidence/pass6-anchor-after.json). These are **added rows**, not total tour moves. Total broad-plus-packing moves excluding exact restores fall **87 → 41**; dense moves fall **155 → 109**. Final raw counts are 44 broad, 119 dense, and three packing moves; three, ten, and three respectively are proved restores.
+
+The [remaining contact evidence](layout-hard-gates-evidence/pass6-residual-contacts.json) identifies five real rejected candidates after one source-port repair. They require more capable routing around crowded tile/port corridors; per-attempt repair limits were not raised and the independent gate was not bypassed. The 44 construction failures remain bounded-search failures, not proofs of geometric impossibility.
+
+## Final acceptance against re-measured main
+
+Measured production revision: `6861894`. The dedicated evaluator ran alone after all test and audit jobs completed. Restores are excluded only where explicitly permitted.
+
+| Current target | Main 75e46b0 | This pass | Limit | Result |
+|---|---:|---:|---:|---|
+| Click anchor moves, including packing | 32.000 | 41.000 | 32.000 | FAIL |
+| Dense-tour anchor moves | 101.000 | 109.000 | 101.000 | FAIL |
+| Mean legal displacement, px | 17.529 | 17.358 | 17.530 | PASS |
+| Unexplained height regressions | 0.000 | 0.000 | 0.000 | PASS |
+| Held-screen moves at 480 px (broad) | 80.000 | 43.000 | 80.000 | PASS |
+| Held-screen moves at 480 px (dense) | 114.000 | 100.000 | 114.000 | PASS |
+| Hard violations/errors | 0.000 | 0.000 | 0.000 | PASS |
+| Independent geometry gate failures | 0.000 | 0.000 | 0.000 | PASS |
+| Unexplained shared connector lanes | 0.000 | 0.000 | 0.000 | PASS |
+| Main-thread maximum p95, ms | 3.113 | 1.672 | 10.000 | PASS |
+| ≤30 visible tiles maximum p95, ms | 51.064 | 6.218 | 206.571 | PASS |
+| Full folder engine maximum inline p95, ms (no saved main measurement) | — | 1.742 | 5.000 | PASS |
+| Mean height | 2372.651 | 2247.285 | 2372.651 | PASS |
+| Mean width | 548.184 | 543.658 | 603.002 | PASS |
+| Mean area | 1288189.671 | 1185867.142 | 1417008.638 | PASS |
+| Mean tileArea | 557459.630 | 592248.594 | 613205.593 | PASS |
+| Mean whitespace | 0.504 | 0.461 | 0.554 | PASS |
+| Mean paneWhitespace | 0.636 | 0.604 | 0.699 | PASS |
+| Mean length | 42304.604 | 37405.096 | 46535.064 | PASS |
+| Mean bends | 142.912 | 150.927 | 157.203 | PASS |
+| Mean crossings | 331.236 | 318.505 | 364.360 | PASS |
+| Mean sharedLanePx | 0.023 | 0.000 | 0.025 | PASS |
+| Mean tileIntersections | 0.000 | 0.000 | 0.000 | PASS |
+| Mean overlaps | 0.000 | 0.000 | 0.000 | PASS |
+| Mean directionViolations | 0.000 | 0.000 | 0.000 | PASS |
+| Mean mixedDirections | 2.081 | 1.433 | 2.289 | PASS |
+| Mean siblingInversions | 0.097 | 0.090 | 0.107 | PASS |
+| Mean unaligned | 0.161 | 0.160 | 0.177 | PASS |
+| Mean displacement | 31.597 | 33.205 | 34.757 | PASS |
+| Mean maxDisplacement | 72.898 | 75.936 | 80.188 | PASS |
+| Mean movedFraction | 0.117 | 0.159 | 0.128 | FAIL |
+| Mean anchorDisplacement | 0.035 | 1.034 | 0.039 | FAIL |
+| Mean overflow | 4.326 | 2.689 | 4.326 | PASS |
+| Mean missingEdges | 0.000 | 0.000 | 0.000 | PASS |
+| Mean extraEdges | 0.000 | 0.000 | 0.000 | PASS |
+| Mean missingNodes | 0.000 | 0.000 | 0.000 | PASS |
+| Mean extraNodes | 0.000 | 0.000 | 0.000 | PASS |
+| Mean invalidGeometry | 0.000 | 0.000 | 0.000 | PASS |
+| Mean invalidPaths | 0.000 | 0.000 | 0.000 | PASS |
+| Mean terminalViolations | 0.000 | 0.000 | 0.000 | PASS |
+| Mean disconnectedEdges | 0.000 | 0.000 | 0.000 | PASS |
+| corpus geometry fallback rate, % | 0.000 | 0.000 | 0.500 | PASS |
+| corpus geometry fallbacks outside pane | 0.000 | 0.000 | 0.000 | PASS |
+| tours geometry fallback rate, % | 0.000 | 0.032 | 0.500 | PASS |
+| tours geometry fallbacks outside pane | 0.000 | 0.000 | 0.000 | PASS |
+| packing geometry fallback rate, % | 0.000 | 0.000 | 0.000 | PASS |
+| packing geometry fallbacks outside pane | 0.000 | 0.000 | 0.000 | PASS |
+
+## Remaining summary metrics
+
+The table above includes every corpus mean. These additional quality summaries also retain restore movement; repeated population counts are shown for comparability. Corpus-loop timing is diagnostic; the two requested performance limits use the dedicated warmed sample.
+
+| Summary | Main | This pass | Main +10% | Result |
+|---|---:|---:|---:|---|
+| Corpus stability: transitions | 3020.000000 | 3020.000000 | 3322.000000 | same population |
+| Corpus stability: mean | 63.403957 | 66.630468 | 69.744352 | PASS |
+| Corpus stability: p95Max | 899.129023 | 892.002242 | 989.041925 | PASS |
+| Corpus stability: movedFraction | 0.234009 | 0.318179 | 0.257410 | FAIL |
+| Broad tour: layouts | 2610.000000 | 2610.000000 | 2871.000000 | same population |
+| Broad tour: transitions | 2145.000000 | 2145.000000 | 2359.500000 | same population |
+| Broad tour: height | 1507.321839 | 1497.852874 | 1658.054023 | PASS |
+| Broad tour: area | 747326.969444 | 732150.353831 | 822059.666389 | PASS |
+| Broad tour: displacement | 17.528600 | 17.358266 | 19.281460 | PASS |
+| Broad tour: movedFraction | 0.071665 | 0.104415 | 0.078831 | FAIL |
+| Broad tour: tileIntersections | 0.000000 | 0.000000 | 0.000000 | PASS |
+| Broad tour: overlaps | 0.000000 | 0.000000 | 0.000000 | PASS |
+| Broad tour: disconnectedEdges | 0.000000 | 0.000000 | 0.000000 | PASS |
+| Dense tour: layouts | 540.000000 | 540.000000 | 594.000000 | same population |
+| Dense tour: transitions | 460.000000 | 460.000000 | 506.000000 | same population |
+| Dense tour: height | 4057.770370 | 3807.159259 | 4463.547407 | PASS |
+| Dense tour: area | 2533239.456944 | 2290603.010185 | 2786563.402639 | PASS |
+| Dense tour: displacement | 83.945612 | 78.260218 | 92.340173 | PASS |
+| Dense tour: movedFraction | 0.312968 | 0.277566 | 0.344264 | PASS |
+| Dense tour: tileIntersections | 0.000000 | 0.000000 | 0.000000 | PASS |
+| Dense tour: overlaps | 0.000000 | 0.000000 | 0.000000 | PASS |
+| Dense tour: disconnectedEdges | 0.000000 | 0.000000 | 0.000000 | PASS |
+
+Corpus-loop timing (median / p95 / max, ms): main **0.774 / 18.523 / 190.152**, pass 6 **1.687 / 44.544 / 362.701**. Dedicated warmed timing is **1.672 ms** maximum main-thread p95 and **6.218 ms** maximum ≤30-visible-tile p95; both satisfy the current performance constraint. The unchanged dispatch eligibility differs from main, as documented in the previous report. Full-folder inline p95 is **1.742 ms** (diagnostic). The timing sample ran with no other agent jobs; recorded system load on 24 CPUs was 5.20/5.57/5.65 before and 8.25/7.15/6.27 after.
+
+## Remaining gaps and gate results
+
+- Broad click moves **41 > 32** and dense moves **109 > 101**: nine and eight above target. The independent gate still rejects five added held candidates with real contacts; 44 added rows lack a certified held construction.
+- Corpus mean moved fraction **0.158565 > 0.128280**, with the same deficit in the changed-transition summary (**0.318179 > 0.257410**). Broad-tour moved fraction also fails: **0.104415 > 0.078831**. Dense-tour moved fraction passes.
+- Corpus mean anchor displacement **1.034397 > 0.038687 px**. Exact restores contribute 5664.485 of 6268.444 cumulative pixels (90.36%); this remains a reported quality failure, not another restore exclusion. New-state movement also remains.
+- Geometry/error counters and the independent gate are zero across 6,060 corpus states, 3,150 tour states and 140 packing states. There is one geometry fallback in the tours (**0.03175%**), inside the pane; corpus and packing have none.
+- `bun run check`: **PASS**, 0 errors and 0 warnings.
+- `bun run test`: **FAIL**, 1,996 passed, one failed, one skipped. Only the click-acceptance test fails (41/32 and 109/101); its mean displacement and held-screen assertions pass. Exact revisits, worker/main parity, resize/arrival invalidation, zero retained arrival movement, and presentation tests pass.
+- `bun run layout:eval` run alone: **FAIL**, four primary acceptance rows fail (click counts, corpus moved fraction, corpus anchor displacement). The additional summary table above also explicitly shows broad-tour moved fraction and the duplicate changed-transition moved fraction deficit. All requested performance limits pass.
+
+[Gate command results](layout-hard-gates-evidence/pass6-gates.json), [full acceptance](layout-hard-gates-evidence/pass6-acceptance.json.gz), [corpus rows](layout-hard-gates-evidence/pass6-results.json.gz), [tour rows](layout-hard-gates-evidence/pass6-reveals.json.gz), [packing rows](layout-hard-gates-evidence/pass6-packing.json.gz), [isolated timing](layout-hard-gates-evidence/pass6-perf.json.gz). Referenced JSON evidence is committed; unreferenced diagnostic SVGs were omitted.
+
+## Fix locations and commits
+
+| Change | Source | Commit |
+|---|---|---|
+| Exact sharp corners, arrow base and painted shaft | `route-contacts.ts:165,212,243` | `7ba3f42` |
+| Alternative future departures | `band-incremental.ts:378` | `d981c8b` |
+| Independent pinned connector repair | `band-layout.ts:413`, `repair-route-contacts.ts:46` | `4049e5e` |
+| Fresh anchored-repack budget | `band-layout.ts:451` | `4c7ad62` |
+| Local orthogonal and mixed-curve bypasses | `repair-route-contacts.ts:91` | `6d585dd` |
+| Late constrained insertion | `band-layout.ts:619`, `band-incremental.ts:1424` | `0a2ff24` |
+| Contact-bearing drafts, repaired then independently certified | `band-incremental.ts:1415`, `band-layout.ts:623` | `40ae00e` |
+| Verified restore exclusions, independent audit, fresh main reference | `layout-eval/anchor-audit.ts`, `layout-eval/run.ts` | `2f1bb78` |
+| Complete effective-state revisit property | `expansion-invariance.test.ts:65` | `7ed8498` |
+| Arrival port repair in straight tails of curved connectors | `band-incremental.ts:1285` | `24c2060` |
+| Other real source port on pinned tile | `repair-route-contacts.ts:131` | `6861894` |
+
+All logical changes carry the requested co-author trailer. Nontrivial routing changes and the revisit property correction received independent adversarial review. Performance commits `c1dc133` and `68de7b9` are retained. No push or browser test was performed.
+
+---
+
+# Previous pass report (historical)
+
 # Revisits restore — 2026-10-17
 
 **The revisit contract is implemented; the overall acceptance target remains unmet.** Click anchor moves, including packing: 93.000 > 32.000; Dense-tour anchor moves: 166.000 > 101.000; Mean legal displacement, px: 19.577 > 17.500; Held-screen moves at 480 px (dense): 145.000 > 114.000; Main-thread maximum p95, ms: 9.939 > 5.000; Mean siblingInversions: 0.110 > 0.107. The executable targets remain failing.
