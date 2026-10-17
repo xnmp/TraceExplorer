@@ -79,7 +79,7 @@ export const sameListing = (a: readonly FileEntry[], b: readonly FileEntry[]): b
 const sameFocus = (a: ComponentFocus | null, b: ComponentFocus | null) => a === b || (!!a && !!b && a.key === b.key && a.componentId === b.componentId);
 /** Same width, tile, grid and cover metrics: a scene laid out for one fits the other. */
 export const sameGeometry = (a: SceneIntent, b: SceneIntent): boolean => a.width === b.width && a.tile.width === b.tile.width && a.tile.image === b.tile.image
-  && a.grid.cellWidth === b.grid.cellWidth && a.grid.cellHeight === b.grid.cellHeight && a.grid.gap === b.grid.gap && a.grid.gridPadding === b.grid.gridPadding
+  && a.grid.contentWidth === b.grid.contentWidth && a.grid.cellWidth === b.grid.cellWidth && a.grid.cellHeight === b.grid.cellHeight && a.grid.gap === b.grid.gap && a.grid.gridPadding === b.grid.gridPadding
   && a.cover.imagePx === b.cover.imagePx && a.cover.small === b.cover.small;
 
 /** What changed between two intents, by kind (contents compared, never object identity). */
@@ -162,7 +162,7 @@ export interface PreparedLayoutInput {
 export function prepareLayoutInput(intent: SceneIntent, data: SceneData, open: ReadonlyMap<GraphId, string>, history: HeldHistory | null,
   previous: FolderLayout | null, loaded: ReadonlyMap<string, ComponentData> = data.components): PreparedLayoutInput {
   const width = gridInnerWidth(intent.width, intent.grid.gridPadding);
-  const grid = { cellWidth: intent.grid.cellWidth, cellHeight: intent.grid.cellHeight, gap: intent.grid.gap };
+  const grid = { contentWidth: intent.grid.contentWidth, cellWidth: intent.grid.cellWidth, cellHeight: intent.grid.cellHeight, gap: intent.grid.gap };
   const { columns } = folderGridGeometry(width, intent.tile, grid);
   const kept = history && history.directory === data.index.directory && history.columns === columns ? history.held : new Set<string>();
   const { cells, held } = folderItems(intent.listing, data.index, intent.claimed, kept);
@@ -180,7 +180,10 @@ export function prepareLayoutInput(intent: SceneIntent, data: SceneData, open: R
     const node = loaded.get(cell.summary.id)?.dag.nodes.get(cell.id);
     if (node) coverNodes.set(cell.id, node);
   }
-  const input: FolderLayoutInput = { items: cells, open: stacks, width, tile: intent.tile, grid, previous };
+  const input: FolderLayoutInput = { items: cells, open: stacks, width, tile: intent.tile, grid, previous, dataRevision: data.index.token,
+    folderKey: data.index.directory,
+    contents: JSON.stringify([[...intent.listing].sort((a,b)=>a.path.localeCompare(b.path)).map(e => [e.path, e.kind, e.size, e.modified]),
+      [...data.index.components].sort((a,b)=>a.id.localeCompare(b.id)).map(c => [c.id, c.coverKey, c.imageCount, c.nodeCount]), [...data.index.members].sort(([a],[b])=>a.localeCompare(b))]) };
   return { input, cells, history: { directory: data.index.directory, columns, held }, sources, coverNodes, basis: layoutBasis(input, versions) };
 }
 
@@ -198,7 +201,7 @@ export const expandedSignature = (expanded: BandExpansion): string => JSON.strin
  */
 export function layoutBasis(input: FolderLayoutInput, versions: readonly StackBasis[]): string {
   return JSON.stringify([input.items.map((item) => [item.id, item.kind]), [...versions].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)),
-    input.width, input.tile.width, input.tile.image, input.grid.cellWidth, input.grid.cellHeight, input.grid.gap]);
+    input.width, input.tile.width, input.tile.image, input.grid.contentWidth, input.grid.cellWidth, input.grid.cellHeight, input.grid.gap, input.dataRevision, input.folderKey, input.contents]);
 }
 
 /** Same styling by contents: renderers read some of it directly (reference badges' selection), not only through records. */

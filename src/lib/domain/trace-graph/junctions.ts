@@ -41,6 +41,8 @@ export interface JunctionPlan {
 const setKey = (ids: readonly NodeKey[]) => JSON.stringify(ids);
 export const junctionId = (parents: readonly NodeKey[]) => `j:${setKey(parents)}`;
 export const endpointKey = (end: Endpoint) => `${end.kind}:${end.id}`;
+export const edgeKey = (from: Endpoint, to: Endpoint) => JSON.stringify([from.kind, from.id, to.kind, to.id]);
+export const consumerKey = (consumer: Consumer) => JSON.stringify([consumer.parent, consumer.child]);
 
 const isKeyList = (value: unknown): value is readonly NodeKey[] => {
   if (!Array.isArray(value)) return false;
@@ -98,15 +100,14 @@ function acyclic(parentsOf: ReadonlyMap<NodeKey, readonly NodeKey[]>): boolean {
 }
 
 /** Upper bound on optional shared-subset junctions; complete sets are never capped. */
-const MAX_SHARED_SUBSETS = 128;
+const MAX_SHARED_SUBSETS = 32;
+/** Optional factoring has a fixed work budget; identical full sets are always interned. */
+const MAX_FACTOR_INPUTS = 256;
 
 export function buildInputJunctions(relationships: readonly Relationship[]): JunctionPlan {
   const rows = normalizeRelationships(relationships);
-  // No output with several parents (a tree or forest): no junctions, and one
-  // route per parent edge, in row order, carrying just that edge. Route ids
-  // (`node:parent>node:child`) are then distinct since children are, unless a
-  // key contains ">"; such keys take the general path, which merges equal ids.
-  if (rows.every((row) => row.parents.length < 2 && !row.child.includes(">") && !(typeof row.parents[0] === "string" && row.parents[0].includes(">")))) {
+  // Trees need no grouping, regardless of the characters in their keys.
+  if (rows.every((row) => row.parents.length < 2)) {
     const routes: Route[] = [];
     for (const { child, parents } of rows) {
       if (!parents.length) continue;
@@ -116,7 +117,8 @@ export function buildInputJunctions(relationships: readonly Relationship[]): Jun
     return { joins: [], routes };
   }
   const fullSets = new Map(rows.filter((row) => row.parents.length > 1).map((row) => [setKey(row.parents), row.parents]));
-  const sets = [...fullSets.values()];
+  const factor = rows.reduce((sum, row) => sum + row.parents.length, 0) <= MAX_FACTOR_INPUTS && fullSets.size <= MAX_SHARED_SUBSETS;
+  const sets = factor ? [...fullSets.values()] : [];
   // Parent lists are never mutated, so each one's key is computed once.
   const keyCache = new Map<readonly NodeKey[], string>();
   const keyOf = (ids: readonly NodeKey[]) => {
@@ -159,7 +161,7 @@ export function buildInputJunctions(relationships: readonly Relationship[]): Jun
     const inputs: Endpoint[] = [];
     // Disjoint smaller groups partition this set. Overlapping alternatives are
     // never both reused within one join, avoiding duplicate or false paths.
-    const candidates = joins
+    const candidates = (factor ? joins : [])
       .filter((join) => join.parents.length < parents.length && join.parents.every((parent) => remaining.has(parent)))
       .sort((a, b) => b.parents.length - a.parents.length || support(b.parents) - support(a.parents) || keyOf(a.parents).localeCompare(keyOf(b.parents)));
     for (const candidate of candidates) {
@@ -178,11 +180,11 @@ export function buildInputJunctions(relationships: readonly Relationship[]): Jun
   const used = new Set<string>();
   // A route segment, keyed by its ends.
   type Edge = { readonly from: Endpoint; readonly to: Endpoint; readonly id: string };
-  const edge = (from: Endpoint, to: Endpoint): Edge => ({ from, to, id: `${endpointKey(from)}>${endpointKey(to)}` });
+  const edge = (from: Endpoint, to: Endpoint): Edge => ({ from, to, id: edgeKey(from, to) });
   const edgesInto = new Map<string, Edge[]>();
   const visit = (input: Endpoint, child: NodeKey, downstream: readonly Edge[]): void => {
     if (input.kind === "node") {
-      const consumer = `${input.id}>${child}`;
+      const consumer = JSON.stringify([input.id, child]);
       for (const { from, to, id } of downstream) {
         let route = routes.get(id);
         if (!route) routes.set(id, route = { from, to, consumers: new Map() });

@@ -3,30 +3,15 @@ delete process.env.OPENAI_API_KEY;
 import { writeFile, mkdir } from 'node:fs/promises';
 import { loadavg, cpus } from 'node:os';
 import { layoutGraph } from './baseline/layout';
-import { corpus, requestFor } from './corpus';
+import { performanceWorkloads } from './perf-workloads';
 import { layoutGraph as productionLayout, type LayoutRequest } from '../src/lib/domain/trace-graph/layout';
-import { bandHistorySignature } from '../src/lib/domain/trace-graph/band-layout';
-import { attachSingleBand } from '../src/lib/domain/trace-graph/band-geometry';
 import { canLayoutInline } from '../src/lib/domain/trace-graph/layout-workload';
+import { profileLayout } from '../src/lib/domain/trace-graph/layout-profile';
+import { timeInlineFolders } from './perf-folder';
 const quantile = (xs: number[], q: number) => [...xs].sort((a, b) => a - b)[Math.max(0, Math.ceil(xs.length * q) - 1)] ?? 0;
 const rows = [];
-const workloads: { case: string; baseline: LayoutRequest; proposed: LayoutRequest }[] = [];
-for (const original of corpus()) {
-  const focus = original.id === 'screenshot' ? 'Saffron' : original.id === 'chain-200' ? 'n199' : original.focuses.findLast(f => f !== null) ?? null;
-  const fixture = original.id.startsWith('random-') ? { ...original, full: true } : original;
-  const request = requestFor(fixture, focus, 454, 96);
-  workloads.push({ case: original.id, baseline: request, proposed: request });
-  const legal = { ...original, full: false }, before = requestFor(legal, null, 454, 96);
-  const click = before.items.filter(n => n.key !== before.band!.key && before.band!.items.some(child => child.parents.includes(n.key)))
-    .sort((a, b) => b.order - a.order || a.key.localeCompare(b.key))[0];
-  if (!click) continue;
-  const previous = productionLayout(before), baselinePrevious = layoutGraph(before);
-  const next = requestFor(legal, click.key, 454, 96);
-  if (next.items.map(n => n.key).sort().join(',') === before.items.map(n => n.key).sort().join(',')) continue;
-  workloads.push({ case: `${original.id} / committed reveal`, baseline: { ...next, hint: baselinePrevious.readingOrder },
-    proposed: { ...next, hint: previous.readingOrder, anchorKey: click.key,
-      history: { signature: bandHistorySignature(before), layout: previous, placed: attachSingleBand(previous, before) } } });
-}
+const stages = process.argv.includes('--stages');
+const workloads = performanceWorkloads();
 // Machine load affects both engines equally (pairs alternate), but heavy load still widens
 // tails; it is recorded with the results so a run can be judged.
 const loadBefore = loadavg();
@@ -47,11 +32,14 @@ for (const workload of workloads) {
   }
   rows.push({ case: workload.case, samples: baseline.length, visible: workload.proposed.items.length, edges: workload.proposed.items.reduce((sum, n) => sum + n.parents.length, 0), mainThread: canLayoutInline(workload.proposed), width: 454, imagePx: 96,
     baseline: { p50: quantile(baseline, .5), p95: quantile(baseline, .95), max: Math.max(...baseline) },
+    ...(stages ? { work: profileLayout(() => productionLayout(workload.proposed)).profile } : {}),
     proposed: { p50: quantile(proposed, .5), p95: quantile(proposed, .95), max: Math.max(...proposed) } });
 }
 await mkdir('layout-eval/out', { recursive: true });
 const load = { cpus: cpus().length, before: loadBefore, after: loadavg() };
-await writeFile('layout-eval/out/perf.json', JSON.stringify({ bun: Bun.version, iterations: '40-400 paired, ~2 s per case', warmup: 12, load, rows }, null, 2));
+const folders = timeInlineFolders();
+await writeFile('layout-eval/out/perf.json', JSON.stringify({ bun: Bun.version, iterations: '40-400 paired, ~2 s per case; folders: 100 samples', warmup: 12, load, rows, folders }, null, 2));
 const fmt = (xs: number[]) => xs.map(x => x.toFixed(2)).join(' / ');
 console.log(`Load average (1 / 5 / 15 min) on ${load.cpus} CPUs: before ${fmt(load.before)}, after ${fmt(load.after)}\n`);
 console.log(['| Case | Visible | Baseline p50 / p95 ms | New p50 / p95 ms |', '|---|---:|---:|---:|', ...rows.map(r => `| ${r.case} | ${r.visible} | ${r.baseline.p50.toFixed(3)} / ${r.baseline.p95.toFixed(3)} | ${r.proposed.p50.toFixed(3)} / ${r.proposed.p95.toFixed(3)} |`)].join('\n'));
+console.log(`\nFull folder engine, ${folders.length} inline workloads: maximum p95 ${Math.max(...folders.map(r=>r.p95)).toFixed(3)} ms.`);

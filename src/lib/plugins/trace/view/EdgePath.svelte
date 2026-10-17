@@ -4,6 +4,7 @@
    * One connector's path. Live connectors carry their identity (`data-route`); motion copies
    * (layers and retirees) carry it as `data-motion-*` and are never content.
    */
+  import { CONNECTOR_STROKE } from "$lib/domain/trace-graph/connector-ink";
   import type { PlacedRoute } from "$lib/domain/trace-graph/layout";
   import type { RouteStyle } from "$lib/domain/trace-graph/scene";
   import { endpointKey } from "$lib/domain/trace-graph/junctions";
@@ -23,4 +24,5 @@
 <path class={style.kind} class:unrelated={!style.related} class:branch={branch && style.related} class:highlight={style.highlighted}
   data-route={ghost ? undefined : route.id} data-from={ghost ? undefined : from} data-to={ghost ? undefined : to}
   data-motion-ghost={ghost ? "" : undefined} data-motion-route={ghost ? route.id : undefined} data-motion-from={ghost ? from : undefined} data-motion-to={ghost ? to : undefined}
-  marker-end={route.terminal ? `url(#${markerId(uid, tone)})` : undefined} {d} style:opacity={opacity} />
+  marker-end={route.terminal ? `url(#${markerId(uid, tone)})` : undefined} {d} style:opacity={opacity}
+  style:stroke-width={style.highlighted ? CONNECTOR_STROKE.highlight : branch && style.related ? CONNECTOR_STROKE.branch : CONNECTOR_STROKE.normal} />

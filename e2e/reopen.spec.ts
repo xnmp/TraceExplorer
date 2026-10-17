@@ -14,7 +14,7 @@ function frame() {
   };
   return {
     routes: [...document.querySelectorAll<SVGPathElement>('path[data-route], path[data-motion-route]')]
-      .map(p => ({ id: p.dataset.route ?? p.dataset.motionRoute!, alpha: opacity(p) })),
+      .map(p => ({ id: p.dataset.route ?? p.dataset.motionRoute!, from: p.dataset.from ?? p.dataset.motionFrom, to: p.dataset.to ?? p.dataset.motionTo, alpha: opacity(p) })),
     tiles: [...document.querySelectorAll<HTMLElement>('[data-tile-key], [data-ghost-tile-key]')]
       .map(p => ({ id: p.dataset.tileKey ?? p.dataset.ghostTileKey!, alpha: opacity(p) })),
   };
@@ -26,8 +26,8 @@ test('reopening after a 1 ms close preserves every still-visible route throughou
   const id = await key(page, 'stack'), child = await key(page, 'Cerulean');
   const toggle = () => page.locator(`[data-stack-key="${id}"] [data-stack-toggle]`).evaluate((e: HTMLElement) => e.click());
   await toggle(); await settle(page);
-  const before = await page.evaluate(frame), route = `node:${id}>node:${child}`;
-  expect(before.routes.some(r => r.id === route)).toBe(true);
+  const before = await page.evaluate(frame);
+  expect(before.routes.some(r => r.from === `node:${id}` && r.to === `node:${child}`)).toBe(true);
   await holdMotion(page);
   try {
     await toggle(); await awaitMotionStarted(page); await seekMotion(page, 1);

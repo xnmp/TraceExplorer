@@ -1,8 +1,20 @@
 /** Exact layout request identity: equal signatures mean equal layouts (`layoutGraph` is deterministic). */
 import type { GraphLayout, LayoutRequest } from "./layout";
 
-const geometrySignature = (layout: GraphLayout) => [layout.orientation, layout.width, layout.height, layout.bandBounds, layout.preferredX, layout.anchorX, layout.anchorY, layout.decision,
-  [...layout.nodes], [...layout.junctions], layout.routes, layout.rows, [...layout.readingOrder]];
+const routeSignature = (layout: GraphLayout) => {
+  const tables: unknown[] = [], ids = new Map<object, number>();
+  const routes = layout.routes.map(route => {
+    const c = route.consumers;
+    if (Array.isArray(c)) return route;
+    const range = c as import('./route-consumers').ConsumerSet & { entries: readonly unknown[]; start: number; end: number };
+    let id = ids.get(range.entries);
+    if (id === undefined) { id = tables.length; ids.set(range.entries, id); tables.push(range.entries); }
+    return { ...route, consumers: [id, range.start, range.end] };
+  });
+  return [routes, tables];
+};
+export const geometrySignature = (layout: GraphLayout) => [layout.orientation, layout.width, layout.height, layout.bandBounds, layout.preferredX, layout.anchorX, layout.anchorY, layout.decision,
+  [...layout.nodes], [...layout.junctions], routeSignature(layout), layout.rows, [...layout.readingOrder]];
 
 export function layoutSignature(request: LayoutRequest): string {
   // Width is normalised exactly as the engine does, so equal keys mean equal

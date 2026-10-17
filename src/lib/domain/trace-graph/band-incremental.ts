@@ -1,3 +1,8 @@
+import { layoutStage, countLayoutWork } from './layout-profile';
+import { layoutSignature, geometrySignature } from './layout-signature';
+import { createBoundedCache, estimateLayoutBytes } from './folder-layout/bounded-cache';
+import { filterRouteConsumers } from "./route-consumers";
+import { orderNewSiblingLeaves } from "./new-sibling-order";
 /**
  * Incremental tree embedding: retained rectangles and routes are fixed obstacles.
  *
@@ -8,21 +13,28 @@
  * route passes within `JUNCTION_BERTH` of a junction dot, and no new dot lies that close to a
  * connector: a line through a dot reads as joining it, and a trunk branching at a merge's dot
  * would make its other branches read as that merge's outputs. Nor does a new route touch another
- * source's line at a point if any placement avoids it (`route-contacts`): it keeps `PORT_BERTH`
+ * source's line at a point (`route-contacts`): it keeps `PORT_BERTH`
  * from other sources' ports and `CORNER_BERTH` from their corners and forks, and its own ports
  * and corners keep the same from their lines. A tile with several parents gets a junction its inputs reach
  * from distinct directions (above, the left and the right along the junction's row) while its
  * tail leaves downward; more parents nest further junctions on a spine above it. Where no
  * lane-free placement exists the candidate is withheld (null) rather than drawn with a shared lane.
  */
-import { nearestFree, type GraphLayout, type LayoutRequest, type PlacedNode, type PlacedRoute, type PlacedJunction } from "./layout";
+import { nearestFree, type GraphLayout, type LayoutItem, type LayoutRequest, type PlacedNode, type PlacedRoute, type PlacedJunction } from "./layout";
 import { ARROW, JUNCTION_BERTH, LANE_SEPARATION, PORT_BERTH, spacingFor, STACK_STEM_ROOM } from "./metrics";
-import { axisOf, berthsOf, distanceToTile, entersBerth, grazesTile, INTO_JUNCTION, INTO_TILE, leavingRunFrom, routeEnds, shallowRun, SHALLOW_RUN, TILE_GRAZE, type Berth, type Ends } from "./route-contacts";
-import { bandExtent } from "./band-geometry";
+import { axisOf, berthsOf, paintedSegments, distanceToTile, distanceToSegment, grazesTile, INTO_JUNCTION, INTO_TILE, leavingRunFrom, routeEnds, shallowRun, SHALLOW_RUN, TILE_GRAZE, type Berth, type Ends } from "./route-contacts";
+import { bandExtent, roundedStem } from "./band-geometry";
+import { channelCornerRadius, channelInk } from './channel-corners';
+import { pinnedBandExtent } from './pinned-band-extent';
 import { intersectsTile, overlapLength, routeBounds, segments, type Segment } from "./layout-quality";
-import { orthogonalRoute, LANE_TOLERANCE, NEAR_LANE, type AxisRun, type ForeignLanes } from "./orthogonal-route";
+import { orthogonalRoute, LANE_TOLERANCE, NEAR_LANE, type AxisRun, type ForeignLanes, type GridSearch } from "./orthogonal-route";
+import { JUNCTION_CLEARANCE } from "./connector-ink";
 import { forEachPathNumber } from "./path-data";
-import type { Point } from "./path-sampling";
+import { pathCommands, type Point } from "./path-sampling";
+
+/** Fractional curve coordinates need the full reserved clearance. The drawing gate uses
+ * this numerical tolerance; the legacy contact helper's .01px slack admits real near misses. */
+const entersBerth = (segment: Segment, berth: Berth): boolean => distanceToSegment(segment, berth) < berth.radius - 1e-7;
 
 /** Distance between neighbouring parallel lanes a route family may take. */
 const LANE_STEP = 3;
@@ -61,10 +73,23 @@ const DETOUR_SCAN = 8;
 const SIDE_LANE = 4;
 /** Grid points a fallback route search may expand before it gives up (a bounded failure). */
 const GRID_BUDGET = 5000;
+/** A grid route may discover this many missing port/corner obstacles before giving up. */
+const BERTH_RETRIES = 16;
 /** Most 64 px rows one segment may span in the lane index (about 4 million px): beyond it the history is not usable. */
 const MAX_INDEX_ROWS = 65_536;
 /** Whether a coordinate or size lies within the lane index's reach: finite, at most `MAX_INDEX_ROWS` rows from zero. */
 export const inReach = (value: number) => Number.isFinite(value) && Math.abs(value) <= MAX_INDEX_ROWS * 64;
+
+/** Prefixes share immutable complete membership; the weak key releases its source index with it. */
+const futureSourceIndexes = new WeakMap<readonly LayoutItem[], ReadonlySet<string>>();
+function futureSourcesOf(items: readonly LayoutItem[]): ReadonlySet<string> {
+  const known = futureSourceIndexes.get(items);
+  if (known) return known;
+  const sources = new Set<string>();
+  for (const item of items) for (const parent of item.parents) sources.add(parent);
+  futureSourceIndexes.set(items, sources);
+  return sources;
+}
 
 /** Parsed endpoints and control points must fit the same bounded geometry as retained tiles. */
 export function usableRetainedRoute(route: PlacedRoute): boolean {
@@ -79,21 +104,21 @@ export function usableRetainedRoute(route: PlacedRoute): boolean {
 const indexRange = (first: number, last: number) => Number.isSafeInteger(first) && Number.isSafeInteger(last) && last >= first && last - first <= MAX_INDEX_ROWS;
 
 /**
- * Grid work one layout request may spend on its second chance (~45 ms of grid search; the
- * finer probes come on top). It buys most of the remaining placements: more work finds a few
- * more, at a steep cost in time.
+ * Grid work one embedding may spend on its second chance (finer probes are
+ * separate). The measured search knee retains substantially more anchors;
+ * every retry still has an explicit finite pool.
  */
-const SECOND_CHANCE_WORK = 200_000;
+const SECOND_CHANCE_WORK = 1_600_000;
 /** Probe placements a layout request may try to wire (see `IncrementalBudget`). */
-const PROBE_WORK = 2000;
+const PROBE_WORK = 16_000;
 /** Grid work the plain fallback may spend per layout request (see `IncrementalBudget`). */
-const FALLBACK_WORK = 200_000;
+const FALLBACK_WORK = 1_600_000;
 
 /**
  * Work a layout request may still spend on incremental embeddings: grid work (points
  * expanded, plus built points / 8) for the plain fallback and for the second chance, and
- * probe placements to wire. One budget serves every incremental embedding tried for one
- * layout request, so the incremental path's worst case is bounded however many tiles,
+ * probe placements to wire. Each attempted embedding receives one budget, so its worst
+ * case is bounded however many tiles,
  * parents, ports and slots it tries; once a pool is spent, its searches stop and the
  * embedding gives way to the full layout.
  */
@@ -117,7 +142,7 @@ const fallbackEffort = (pool: IncrementalBudget): Effort => ({ slots: FALLBACK_S
  * The second chance, taken only when a tile has no placement otherwise (so layouts found
  * without it are unchanged): more slots, longer searches, and columns beside every lane.
  */
-const secondChance = (pool: IncrementalBudget): Effort => ({ slots: 16, budget: 50_000, everyLane: true, pool, spends: "second" });
+const secondChance = (pool: IncrementalBudget): Effort => ({ slots: 128, budget: 400_000, everyLane: true, pool, spends: "second" });
 
 /** The M/L path through `points`, written once per run of repeated points. */
 const path = (points: readonly Point[]) => {
@@ -299,7 +324,7 @@ class Cells {
  * after a `mark` are withdrawn by `rollback` to it, so trial routes need no copies.
  */
 class LaneIndex {
-  constructor(private readonly base?: LaneIndex) {}
+  constructor(private readonly base?: LaneIndex, private readonly deferContacts = false) {}
   private readonly all: Segment[] = [];
   /** The source of each segment in `all`. */
   private readonly sources: string[] = [];
@@ -307,6 +332,8 @@ class LaneIndex {
   private readonly dots: Berth[][] = [];
   /** Ports, corners and forks other sources keep off (`route-contacts`), by 64 px row of their point. */
   private readonly berths: (Berth & { readonly source: string })[][] = [];
+  /** Alternative unpainted departures: preserve at least one, not both. */
+  private readonly departures = new Map<string, readonly Berth[]>();
   /** Segment indices by 64 px row (an index property for a negative row; NaN rows are never visited). */
   private readonly rows: number[][] = [];
   /** Every segment by cell, and the slanted ones (flattened curves: neither horizontal nor vertical) apart. */
@@ -331,7 +358,7 @@ class LaneIndex {
       const row = Math.floor(berth.y / 64);
       if (Number.isFinite(row) && Number.isFinite(berth.x)) this.log.push(push(this.berths, row, { ...berth, source }));
     }
-    for (const segment of list) {
+    for (const segment of paintedSegments(list, ends)) {
       const index = this.all.push(segment) - 1;
       this.sources.push(source);
       this.log.push(this.all, this.sources);
@@ -350,9 +377,26 @@ class LaneIndex {
         this.log.push(file(this.horizontal, { at: a.y, lo: a.x, hi: a.x, source, segment, speck: true }), file(this.vertical, { at: a.x, lo: a.y, hi: a.y, source, segment, speck: true }));
         continue;
       }
-      if (dy <= LANE_TOLERANCE / 8 && dy < dx) this.log.push(file(this.horizontal, { at: (a.y + b.y) / 2, lo: Math.min(a.x, b.x), hi: Math.max(a.x, b.x), source, segment }));
-      else if (dx <= LANE_TOLERANCE / 8 && dx < dy) this.log.push(file(this.vertical, { at: (a.x + b.x) / 2, lo: Math.min(a.y, b.y), hi: Math.max(a.y, b.y), source, segment }));
+      // A slanted fillet sample is not an axis lane: exporting its midpoint would
+      // seed fractional grid lines inside the adjoining straight run's clearance.
+      if (dy === 0 && dx > 0) this.log.push(file(this.horizontal, { at: (a.y + b.y) / 2, lo: Math.min(a.x, b.x), hi: Math.max(a.x, b.x), source, segment }));
+      else if (dx === 0 && dy > 0) this.log.push(file(this.vertical, { at: (a.x + b.x) / 2, lo: Math.min(a.y, b.y), hi: Math.max(a.y, b.y), source, segment }));
     }
+  }
+  /** A future source needs one clear departure; either candidate port may serve it. */
+  reserveDeparture(node: PlacedNode): void {
+    this.departures.set(sourceKey('node', node.key), [
+      { x: node.x + node.width / 2, y: node.y + node.height, radius: PORT_BERTH },
+      { x: node.x + node.width, y: node.y + node.height / 2, radius: PORT_BERTH },
+    ]);
+  }
+  private blockingDeparture(ink: readonly Segment[], source: string): Berth | undefined {
+    for (const [owner, ports] of this.departures) {
+      if (owner === source) continue;
+      const clear = ports.filter(port => !this.touched(port, owner));
+      if (clear.length && clear.every(port => ink.some(segment => entersBerth(segment, port)))) return clear[0];
+    }
+    return undefined;
   }
   /** Adds a junction dot: later routes keep `JUNCTION_BERTH` from it. */
   addDot(dot: Point): void {
@@ -376,17 +420,23 @@ class LaneIndex {
 
   /** Whether any of `list` passes within `JUNCTION_BERTH` of a dot. */
   private nearDot(list: readonly Segment[]): boolean {
-    if (this.base?.nearDot(list)) return true;
+    return list.some(([a, b]) => !indexRange(Math.floor((Math.min(a.y, b.y) - JUNCTION_BERTH) / 64), Math.floor((Math.max(a.y, b.y) + JUNCTION_BERTH) / 64)))
+      || this.dotNear(list) !== undefined;
+  }
+
+  private dotNear(list: readonly Segment[]): Berth | undefined {
+    const retained = this.base?.dotNear(list);
+    if (retained) return retained;
     for (const segment of list) {
       const [a, b] = segment, top = Math.floor((Math.min(a.y, b.y) - JUNCTION_BERTH) / 64), bottom = Math.floor((Math.max(a.y, b.y) + JUNCTION_BERTH) / 64);
-      if (!indexRange(top, bottom)) return true;
+      if (!indexRange(top, bottom)) return undefined;
       const left = Math.min(a.x, b.x) - JUNCTION_BERTH, right = Math.max(a.x, b.x) + JUNCTION_BERTH;
       for (let row = top; row <= bottom; row++) {
         const dots = this.dots[row];
-        if (dots) for (const dot of dots) if (dot.x > left && dot.x < right && entersBerth(segment, dot)) return true;
+        if (dots) for (const dot of dots) if (dot.x > left && dot.x < right && entersBerth(segment, dot)) return dot;
       }
     }
-    return false;
+    return undefined;
   }
 
   /**
@@ -463,46 +513,77 @@ class LaneIndex {
   }
 
   /**
-   * Whether touches conflict (`conflicts`). Clearing it lets a search take a route that touches
-   * another source's line at a point when no route avoids every such touch.
-   */
-  contacts = true;
-  /** Set when `conflicts` turned a route down for a touch alone (its lanes, dots and curves clear). */
-  touchBlocked = false;
-
-  /**
    * Whether any of `list` (axis-parallel, consecutive) runs along a segment of a source other than
    * `source`, or alongside a curve of it at a shallow angle (the two read as one line, as near
    * lanes do), passes within `JUNCTION_BERTH` of a dot (new routes end at no dot already placed),
-   * or (while `contacts` is set) touches another source's line (`route-contacts`): passes within
+   * or touches another source's line (`route-contacts`): passes within
    * the berth of its ports, corners or forks, or has a corner or (as `ends` says) an end within
    * its own berth of that line. Only the route's new ink counts for curves, dots and touches:
    * where it follows its source's earlier lines, the drawing does not change.
    */
   conflicts(list: readonly Segment[], source: string, ends: Ends = NO_ENDS): boolean {
     // Any order gives the same answer; a route's final approach is the likeliest to be taken.
-    for (let i = list.length - 1, n = 0; n < list.length; n++, i = n - 1) if (this.runsAlong(list[i], source)) return true;
-    const ink = list.flatMap(segment => this.newInk(segment, source));
+    const painted = paintedSegments(list, ends);
+    for (let i = painted.length - 1, n = 0; n < painted.length; n++, i = n - 1) if (this.runsAlong(painted[i], source)) return true;
+    const ink = painted.flatMap(segment => this.newInk(segment, source));
     if (!ink.length) return false;
     if (this.nearDot(ink)) return true;
     for (const segment of ink) if (axisOf(segment) && this.shallowInto(segment, source, new Map())) return true;
-    if (!this.contacts) return false;
-    for (const segment of ink) if (this.nearBerth(segment, source)) return this.touchBlocked = true;
-    for (const berth of berthsOf(list, ends)) if (ink.some(segment => entersBerth(segment, berth)) && this.touched(berth, source)) return this.touchBlocked = true;
-    return false;
+    if (!this.deferContacts) {
+      for (const segment of ink) if (this.nearBerth(segment, source)) return true;
+      for (const berth of berthsOf(list, ends)) if (ink.some(segment => entersBerth(segment, berth)) && this.touched(berth, source)) return true;
+    }
+    return !!this.blockingDeparture(ink, source);
+  }
+
+  /** A forbidden meeting the visibility grid must route around, excluding shared source ink. */
+  blockingBerth(list: readonly Segment[], source: string): Berth | undefined {
+    const ink = list.flatMap(segment => this.newInk(segment, source));
+    const dot = this.dotNear(ink);
+    if (dot) return dot;
+    for (const segment of ink) {
+      const berth = this.berthNear(segment, source);
+      if (berth) return berth;
+    }
+    // A legal crossing may become an accidental join when the new path turns
+    // beside it. Give the visibility search that witness too, so it can move
+    // the corner instead of repeatedly returning the same shortest path.
+    for (const berth of berthsOf(list, NO_ENDS)) {
+      if (ink.some(segment => entersBerth(segment, berth)) && this.touched(berth, source)) return berth;
+    }
+    return this.blockingDeparture(ink, source);
+  }
+
+  /** Add the other probes of the same local turn together. A rounded corner has several
+   * sampled berths; discovering them one at a time spends a retry on every sample. */
+  nearbyBerths(witness: Berth, source: string): Berth[] {
+    const out = this.base?.nearbyBerths(witness, source) ?? [];
+    const reach = 2 * PORT_BERTH;
+    for (let row = Math.floor((witness.y - reach) / 64); row <= Math.floor((witness.y + reach) / 64); row++) {
+      for (const berth of this.berths[row] ?? []) if (berth.source !== source
+        && Math.abs(berth.x - witness.x) <= reach && Math.abs(berth.y - witness.y) <= reach) out.push(berth);
+    }
+    return out;
   }
 
   /** Whether the segment passes within the berth of a port, corner or fork of a source other than `source`. */
   private nearBerth(segment: Segment, source: string): boolean {
-    if (this.base?.nearBerth(segment, source)) return true;
+    const [a, b] = segment;
+    return !indexRange(Math.floor((Math.min(a.y, b.y) - PORT_BERTH) / 64), Math.floor((Math.max(a.y, b.y) + PORT_BERTH) / 64))
+      || this.berthNear(segment, source) !== undefined;
+  }
+
+  private berthNear(segment: Segment, source: string): Berth | undefined {
+    const retained = this.base?.berthNear(segment, source);
+    if (retained) return retained;
     const [a, b] = segment, top = Math.floor((Math.min(a.y, b.y) - PORT_BERTH) / 64), bottom = Math.floor((Math.max(a.y, b.y) + PORT_BERTH) / 64);
-    if (!indexRange(top, bottom)) return true;
+    if (!indexRange(top, bottom)) return undefined;
     const left = Math.min(a.x, b.x) - PORT_BERTH, right = Math.max(a.x, b.x) + PORT_BERTH;
     for (let row = top; row <= bottom; row++) {
       const list = this.berths[row];
-      if (list) for (const berth of list) if (berth.source !== source && berth.x > left && berth.x < right && entersBerth(segment, berth)) return true;
+      if (list) for (const berth of list) if (berth.source !== source && berth.x > left && berth.x < right && entersBerth(segment, berth)) return berth;
     }
-    return false;
+    return undefined;
   }
 
   /** Whether a segment of a source other than `source` passes within the berth's radius of its point. */
@@ -619,18 +700,18 @@ function retainedSegments(route: PlacedRoute): readonly Segment[] {
  * The retained routes' segments, indexed, memoized per previous layout for the last list of
  * routes kept from it (the same routes, with the same paths and sources, give the same index).
  */
-const retainedIndexes = new WeakMap<GraphLayout, { readonly routes: readonly PlacedRoute[]; readonly keys: readonly string[]; readonly index: LaneIndex }>();
-function retainedIndex(previous: GraphLayout, kept: readonly PlacedRoute[]): LaneIndex {
+const retainedIndexes = new WeakMap<GraphLayout, { readonly routes: readonly PlacedRoute[]; readonly keys: readonly string[]; readonly index: LaneIndex; readonly targetJoin?: string }>();
+function retainedIndex(previous: GraphLayout, kept: readonly PlacedRoute[], targetJoin?: string): LaneIndex {
   const keys = kept.map(r => `${r.path}\u0001${sourceKey(r.from.kind, r.from.id)}`);
   const cached = retainedIndexes.get(previous);
-  if (cached && cached.routes.length === kept.length && kept.every((r, i) => r === cached.routes[i] && keys[i] === cached.keys[i])) return cached.index;
+  if (cached && cached.targetJoin === targetJoin && cached.routes.length === kept.length && kept.every((r, i) => r === cached.routes[i] && keys[i] === cached.keys[i])) return cached.index;
   const index = new LaneIndex();
-  for (const r of kept) { const ss = retainedSegments(r); index.add(ss, sourceKey(r.from.kind, r.from.id), routeEnds(r, ss, previous.nodes)); }
+  for (const r of kept) { const ss = retainedSegments(r); index.add(ss, sourceKey(r.from.kind, r.from.id), routeEnds(r, ss, previous.nodes, previous.junctions)); }
   // The dots the kept routes reach.
   const dots = new Set<string>();
   for (const r of kept) for (const end of [r.from, r.to]) if (end.kind === "junction") dots.add(end.id);
-  for (const id of dots) { const j = previous.junctions.get(id); if (j && Number.isFinite(j.x) && Number.isFinite(j.y)) index.addDot(point(j.x, j.y)); }
-  retainedIndexes.set(previous, { routes: kept, keys, index });
+  for (const id of dots) { const j = previous.junctions.get(id); if (id !== targetJoin && j && Number.isFinite(j.x) && Number.isFinite(j.y)) index.addDot(point(j.x, j.y)); }
+  retainedIndexes.set(previous, { routes: kept, keys, index, targetJoin });
   return index;
 }
 
@@ -699,6 +780,7 @@ interface Scene {
   readonly extra: PlacedNode;
   readonly width: number;
   readonly clearance: number;
+  readonly paneEdges?: { readonly left: number; readonly right: number };
   /** Height of the cover row (the header the cover's side routes cross). */
   readonly header: number;
   /** Lowest edge of any tile above the probed tile (and of the parent). */
@@ -707,6 +789,8 @@ interface Scene {
   readonly coverStem: (points: readonly Point[]) => readonly Point[];
   /** The lanes route families choose among. */
   readonly grain: Grain;
+  /** Proposed spine dots; admission exempts only the actual arrival. */
+  readonly joinDots?: readonly Point[];
 }
 
 /** Parallel lanes a route family may take: `choices` of them, `step` apart. */
@@ -929,7 +1013,7 @@ class RouteSearch {
         const c = bases[f] ??= this.candidate(families[f].base);
         if (!this.isClear(c)) continue;
         if (!c.crowded) {
-          if (!lanes.conflicts(c.lanes, this.source, endsInto(owner[f]))) return route(c, owner[f], index);
+          if (!foreignJoinBerth(c.lanes, this.s.joinDots) && !lanes.conflicts(c.lanes, this.source, endsInto(owner[f]))) return route(c, owner[f], index);
           if (record) c.crowded = true;
         }
         crowded.push(f);
@@ -944,7 +1028,7 @@ class RouteSearch {
       for (const i of ranked) {
         const c = options[i];
         if (c.crowded) continue;
-        if (!lanes.conflicts(c.lanes, this.source, endsInto(owner[from[i]]))) { if (this.isClear(c)) return route(c, owner[from[i]], index); }
+        if (!foreignJoinBerth(c.lanes, this.s.joinDots) && !lanes.conflicts(c.lanes, this.source, endsInto(owner[from[i]]))) { if (this.isClear(c)) return route(c, owner[from[i]], index); }
         else if (record) c.crowded = true;
       }
     }
@@ -999,7 +1083,7 @@ function wire(parents: readonly PlacedNode[], n: PlacedNode, s: Scene, lanes: La
     const before = lanes.mark();
     lanes.add(spine, junction, SPINE);
     const arrivals = joinArrivals(levels), searches: RouteSearch[] = [];
-    const search = (i: number) => searches[i] ??= new RouteSearch(parents[i], arrivals, s, false);
+    const search = (i: number) => searches[i] ??= new RouteSearch(parents[i], arrivals, { ...s, joinDots: levels }, false);
     // Each parent's best route with the spine alone. Other parents' routes only add lanes to
     // avoid, so a parent without one settles the shift, and one still lane-free beside them
     // is still that parent's best.
@@ -1053,7 +1137,7 @@ function gridWire(parents: readonly PlacedNode[], n: PlacedNode, s: Scene, lanes
   }
   const routes: Route[] = [];
   for (const p of parents) {
-    const source = sourceKey("node", p.key), foreign = lanes.foreign(source);
+    const source = sourceKey("node", p.key);
     // The bottom port, then (except for the cover) the right port, each left by a short stub.
     const ports = [[point(p.x + p.width / 2, p.y + p.height), point(p.x + p.width / 2, p.y + p.height + 2)]];
     if (p.key !== s.cover) ports.push([point(p.x + p.width, p.y + p.height / 2), point(p.x + p.width + 2, p.y + p.height / 2)]);
@@ -1061,11 +1145,11 @@ function gridWire(parents: readonly PlacedNode[], n: PlacedNode, s: Scene, lanes
     let found: Route | undefined;
     search: for (const [port, start] of ports) for (const arrival of goals) {
       if (!(left(effort) > 0)) break search;
-      const spent = { cells: 0, pops: 0 };
-      const grid = orthogonalRoute(start, arrival.end, obstacles, s.width, foreign, { budget: Math.min(effort.budget, left(effort)), everyLane: effort.everyLane, spent });
-      spend(effort, spent);
+      const complete = (grid: readonly Point[]) => [port, ...grid, ...(levels ? [] : [point(arrival.end.x, n.y - ARROW.length)])];
+      const painted = (grid: readonly Point[]) => pathSegments(p.key === s.cover ? s.coverStem(complete(grid)) : complete(grid));
+      const grid = routeAroundBerths(start, arrival.end, obstacles, s.width, lanes, source, effort, { bounds: s.paneEdges }, levels, painted);
       if (!grid) continue;
-      const points = [port, ...grid, ...(levels ? [] : [point(arrival.end.x, n.y - ARROW.length)])];
+      const points = complete(grid);
       const ss = pathSegments(points);
       if (!ss.length || lanes.conflicts(p.key === s.cover ? pathSegments(s.coverStem(points)) : ss, source, levels ? INTO_JUNCTION : INTO_TILE)) continue;
       found = { points, ss, arrival };
@@ -1077,6 +1161,54 @@ function gridWire(parents: readonly PlacedNode[], n: PlacedNode, s: Scene, lanes
   }
   lanes.rollback(before);
   return { routes, levels };
+}
+
+/** Other proposed junction dots are obstacles even before the wiring is committed. */
+function foreignJoinBerth(pieces: readonly Segment[], dots?: readonly Point[]): Berth | undefined {
+  const end = pieces.at(-1)?.[1];
+  if (!end || !dots) return undefined;
+  for (const dot of dots) {
+    if (dot.x === end.x && dot.y === end.y) continue;
+    if (pieces.some(piece => distanceToSegment(piece, dot) < JUNCTION_CLEARANCE - 1e-7))
+      return { ...dot, radius: JUNCTION_CLEARANCE };
+  }
+  return undefined;
+}
+
+/**
+ * The grid knows parallel lanes, but its shortest path can still cross a foreign port or
+ * corner. Add that rejecting witness as an obstacle and search again. Adding every berth
+ * up front would form a much larger Cartesian grid, even when the first route is legal.
+ * Every attempt spends the same shared request budget; the final full lane check still
+ * rejects unsupported corner/curve conflicts rather than weakening the geometry contract.
+ */
+function routeAroundBerths(start: Point, goal: Point, obstacles: readonly PlacedNode[], width: number,
+  lanes: LaneIndex, source: string, effort: Effort, options: Pick<GridSearch, 'bounds' | 'column'>, joinDots?: readonly Point[],
+  painted: (grid: readonly Point[]) => readonly Segment[] = pathSegments): readonly Point[] | null {
+  const foreign = lanes.foreign(source), avoided: PlacedNode[] = [], seen = new Set<string>();
+  for (let attempt = 0; attempt < BERTH_RETRIES && left(effort) > 0; attempt++) {
+    const spent = { cells: 0, pops: 0 };
+    const grid = orthogonalRoute(start, goal, avoided.length ? [...obstacles, ...avoided] : obstacles, width, foreign,
+      { ...options, budget: Math.min(effort.budget, left(effort)), everyLane: effort.everyLane, spent });
+    spend(effort, spent);
+    if (!grid) return null;
+    const pieces = pathSegments(grid);
+    const berth = foreignJoinBerth(joinDots ? painted(grid) : pieces, joinDots) ?? lanes.blockingBerth(pieces, source);
+    if (!berth) return grid;
+    const key = JSON.stringify([berth.x, berth.y, berth.radius]);
+    if (seen.has(key)) return null;
+    // Every added probe is already a foreign-ink constraint, including the other samples
+    // along this rounded turn. Batch them so the retry limit counts obstacles, not samples.
+    for (const nearby of [berth, ...lanes.nearbyBerths(berth, source)]) {
+      const key = JSON.stringify([nearby.x, nearby.y, nearby.radius]);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      // The grid expands rectangles by TILE_GRAZE; the resulting square contains the berth.
+      const radius = Math.max(0, nearby.radius - TILE_GRAZE);
+      avoided.push({ key, x: nearby.x - radius, y: nearby.y - radius, width: radius * 2, height: radius * 2, row: 0, band: 0 });
+    }
+  }
+  return null;
 }
 
 /**
@@ -1099,18 +1231,18 @@ function gridWireAll(parents: readonly PlacedNode[], n: PlacedNode, s: Scene, la
   const goal = levels ? levels[0] : point(n.x + n.width / 2, n.y - 16), column = levels ? levels.slice(1).map(l => l.y) : undefined;
   const routes: Route[] = [];
   for (const i of order) {
-    const p = parents[i], source = sourceKey("node", p.key), foreign = lanes.foreign(source), cover = p.key === s.cover;
+    const p = parents[i], source = sourceKey("node", p.key), cover = p.key === s.cover;
     const ports = [[point(p.x + p.width / 2, p.y + p.height), point(p.x + p.width / 2, p.y + p.height + 2)]];
     if (!cover) ports.push([point(p.x + p.width, p.y + p.height / 2), point(p.x + p.width + 2, p.y + p.height / 2)]);
     let found: Route | undefined;
     for (const [port, start] of ports) {
       if (!(left(effort) > 0)) break;
-      const spent = { cells: 0, pops: 0 };
-      const grid = orthogonalRoute(start, goal, obstacles, s.width, foreign, { budget: Math.min(effort.budget, left(effort)), everyLane: true, spent, column });
-      spend(effort, spent);
+      const complete = (grid: readonly Point[]) => [port, ...grid, ...(levels ? [] : [point(goal.x, n.y - ARROW.length)])];
+      const painted = (grid: readonly Point[]) => pathSegments(cover ? s.coverStem(complete(grid)) : complete(grid));
+      const grid = routeAroundBerths(start, goal, obstacles, s.width, lanes, source, effort, { column, bounds: s.paneEdges }, levels, painted);
       if (!grid) continue;
       const end = grid[grid.length - 1], level = levels ? levels.findIndex(l => l.y === end.y) : -1;
-      const points = [port, ...grid, ...(levels ? [] : [point(goal.x, n.y - ARROW.length)])];
+      const points = complete(grid);
       const ss = pathSegments(points);
       if (!ss.length || lanes.conflicts(cover ? pathSegments(s.coverStem(points)) : ss, source, levels ? INTO_JUNCTION : INTO_TILE)) continue;
       found = { points, ss, arrival: { end, heading: "down", level } };
@@ -1147,7 +1279,288 @@ function coverStemFor(request: LayoutRequest, cover: PlacedNode): (points: reado
   };
 }
 
-export function incrementalTree(request: LayoutRequest, previous: GraphLayout, budget: IncrementalBudget = incrementalBudget()): GraphLayout | null {
+/** Reconnect one retained wire after a hint changes a port or obstructs its old path.
+ * Only the wire changes. The caller certifies the complete drawing after all resizes/insertions. */
+export function rerouteRetainedRoute(request: LayoutRequest, previous: GraphLayout, routeId: string,
+  budget: IncrementalBudget = incrementalBudget(), paneLeft = 0): GraphLayout | null {
+  const route = previous.routes.find(r => r.id === routeId);
+  if (!route || route.from.kind !== "node") return null;
+  const from = previous.nodes.get(route.from.id), to = route.to.kind === "node" ? previous.nodes.get(route.to.id) : undefined;
+  const join = route.to.kind === "junction" ? previous.junctions.get(route.to.id) : undefined;
+  const cover = previous.nodes.get(request.band?.key ?? "");
+  if (!from || !(to || join) || !cover || from.key === to?.key || previous.nodes.size > INCREMENTAL_LIMIT
+    || [...previous.nodes.values()].some(n => ![n.x, n.y, n.width, n.height].every(inReach))) return null;
+  // Only the destination dot permits convergence; every other dot and all retained ink
+  // remain obstacles. Complete publication still needs the independent geometry gate.
+  const kept = join ? previous.routes : previous.routes.filter(r => r !== route), lanes = new LaneIndex(retainedIndex(previous, kept, join?.id));
+  const futureSources = new Set(request.items.filter(item => !previous.nodes.has(item.key)).flatMap(item => item.parents));
+  for (const node of previous.nodes.values()) if (futureSources.has(node.key)) lanes.reserveDeparture(node);
+  const scene: Scene = { tiles: new TileIndex([...previous.nodes.values()]), extra: to ?? from,
+    width: Math.max(request.maxWidth, previous.width), paneEdges: { left: paneLeft, right: request.maxWidth },
+    clearance: spacingFor(request.tileWidth).clearance, header: cover.height, bottomAbove: (to ?? join)!.y - 20,
+    cover: cover.key, coverStem: coverStemFor(request, cover), grain: FINE_GRAIN };
+  const replace = (points: readonly Point[]) => ({ ...previous, routes: previous.routes.map(r => r === route ? { ...r, path: path(points) } : r) });
+  const effort = secondChance(budget);
+  const ports = [[point(from.x + from.width / 2, from.y + from.height), point(from.x + from.width / 2, from.y + from.height + 2)]];
+  if (from.key !== cover.key) ports.push([point(from.x + from.width, from.y + from.height / 2), point(from.x + from.width + 2, from.y + from.height / 2)]);
+  if (to) {
+    const wiring = gridWireAll([from], to, scene, lanes, to.key, effort)
+      ?? wire([from], to, scene, lanes, to.key, { index: 0 });
+    if (wiring) return replace(wiring.routes[0].points);
+    // The top approach can be sealed by the new hint. The same grid can reach the
+    // tile's other real input port without moving either endpoint rectangle.
+    const goal = point(to.x - 2 * ARROW.length, to.y + to.height / 2), source = sourceKey("node", from.key);
+    for (const [port, start] of ports) {
+      const grid = routeAroundBerths(start, goal, [...previous.nodes.values()], scene.width, lanes, source, effort, { bounds: scene.paneEdges });
+      if (!grid) continue;
+      const points = [port, ...grid, point(to.x - ARROW.length, goal.y)], pieces = pathSegments(points);
+      if (!scene.tiles.crosses(pieces) && !scene.tiles.grazes(pieces, from) && !lanes.conflicts(pieces, source, INTO_TILE)) return replace(points);
+    }
+    return null;
+  }
+  const source = sourceKey("node", from.key);
+  // Retain the existing convergence geometry (including its ordinary cubic). Search
+  // back to a point before the dot's berth, so unrelated lane checks never have to
+  // pretend that the junction's intentionally converging inputs are foreign contacts.
+  const commands = pathCommands(route.path), raw = [...route.path.matchAll(/[MLC][^MLC]*/g)].map(m => m[0]);
+  if (!commands || commands.length !== raw.length) return null;
+  const anchors = commands.map((command, index) => ({ index, goal: point(command.values.at(-2)!, command.values.at(-1)!) }))
+    .filter(({ index, goal }) => index > 0 && Math.hypot(goal.x - join!.x, goal.y - join!.y) >= 2 * PORT_BERTH).reverse();
+  const approaches = [{ goal: point(join!.x, join!.y), tail: '' }, ...anchors.map(({ index, goal }) => ({ goal, tail: raw.slice(index + 1).join('') }))];
+  for (const { goal, tail } of approaches) for (const [port, start] of ports) {
+    const grid = routeAroundBerths(start, goal, [...previous.nodes.values()], scene.width, lanes, source, effort, { bounds: scene.paneEdges });
+    if (!grid) continue;
+    const nextPath = path([port, ...grid]) + ' ' + tail, pieces = segments(nextPath);
+    if (!scene.tiles.crosses(pieces) && !scene.tiles.grazes(pieces, from) && !lanes.conflicts(pieces, source, INTO_JUNCTION))
+      return { ...previous, routes: previous.routes.map(r => r === route ? { ...r, path: nextPath } : r) };
+  }
+  return null;
+}
+
+/** Tile pins do not pin wires. Free an occluded source port by rerouting a blocking
+ * terminal connector while preserving every retained rectangle and logical edge. */
+function freeBlockedPorts(request: LayoutRequest, previous: GraphLayout, budget: IncrementalBudget): GraphLayout {
+  const newParents = new Set(request.items.filter(n => !previous.nodes.has(n.key)).flatMap(n => n.parents));
+  if (!newParents.size || previous.nodes.size > INCREMENTAL_LIMIT || !inReach(request.maxWidth)
+    || !inReach(previous.width) || !inReach(previous.height)
+    || [...previous.nodes.values()].some(n => ![n.x, n.y, n.width, n.height].every(inReach))
+    || [...previous.junctions.values()].some(j => ![j.x, j.y].every(inReach))
+    || previous.routes.some(r => !usableRetainedRoute(r))) return previous;
+  let routes = [...previous.routes], changed = false, repairs = 0;
+  const source = (r: PlacedRoute) => sourceKey(r.from.kind, r.from.id);
+  for (const key of newParents) {
+    const parent = previous.nodes.get(key); if (!parent) continue;
+    const ports = [point(parent.x + parent.width / 2, parent.y + parent.height), point(parent.x + parent.width, parent.y + parent.height / 2)];
+    const blockers = ports.map(port => routes.filter(r => source(r) !== sourceKey('node', key)
+      && segments(r.path).some(segment => distanceToSegment(segment, port) < PORT_BERTH - .01)));
+    if (blockers.some(list => !list.length)) continue;
+    const candidates = [...new Set(blockers.flat())].sort((a, b) => Number(blockers.every(list => list.includes(b))) - Number(blockers.every(list => list.includes(a))));
+    for (const blocked of candidates) {
+      if (repairs++ >= 4 || !(budget.second > 0)) return changed ? { ...previous, routes } : previous;
+      if (blocked.from.kind !== 'node' || blocked.to.kind !== 'node' || !blocked.terminal || blocked.from.id === blocked.to.id) continue;
+      const from = previous.nodes.get(blocked.from.id), to = previous.nodes.get(blocked.to.id);
+      if (!from || !to) continue;
+      const kept = routes.filter(r => r !== blocked), cover = previous.nodes.get(request.band!.key);
+      if (!cover) return previous;
+      let replacement: Wiring | undefined;
+      // One clear port suffices. Requiring both can be impossible where a child
+      // sits just below its parent; represent the chosen berth in the search grid.
+      for (const port of ports) {
+        const lanes = new LaneIndex(retainedIndex(previous, kept));
+        const berth: PlacedNode = { key: JSON.stringify(['reserved-port', key]), x: port.x - PORT_BERTH, y: port.y - PORT_BERTH,
+          width: PORT_BERTH * 2, height: PORT_BERTH * 2, row: 0, band: 0 };
+        const scene: Scene = { tiles: new TileIndex([...previous.nodes.values(), berth]), extra: to,
+          width: Math.max(request.maxWidth, previous.width), clearance: spacingFor(request.tileWidth).clearance,
+          header: cover.height, bottomAbove: to.y - 20, cover: cover.key, coverStem: coverStemFor(request, cover), grain: FINE_GRAIN };
+        replacement = gridWireAll([from], to, scene, lanes, to.key, secondChance(budget));
+        if (replacement) break;
+      }
+      if (!replacement) continue;
+      routes = routes.map(r => r === blocked ? { ...r, path: path(replacement!.routes[0].points) } : r);
+      changed = true;
+      break;
+    }
+  }
+  return changed ? { ...previous, routes } : previous;
+}
+
+/** Shift only an internal orthogonal run that occludes a newly active source port.
+ * Endpoints and logical identities stay fixed; the shared insertion budget bounds repair.
+ * This also handles junction inputs, which cannot be replaced by a tile-to-tile router. */
+function freePortLanes(request: LayoutRequest, previous: GraphLayout, budget: IncrementalBudget): GraphLayout {
+  const newParents = new Set(request.items.filter(n => !previous.nodes.has(n.key)).flatMap(n => n.parents));
+  let routes = [...previous.routes], repairs = 0;
+  if (previous.nodes.size > INCREMENTAL_LIMIT || !inReach(request.maxWidth)
+    || previous.routes.some(r => !usableRetainedRoute(r))) return previous;
+  const tiles = new TileIndex([...previous.nodes.values()]);
+  for (const key of newParents) {
+    const parent = previous.nodes.get(key); if (!parent) continue;
+    const ports = [point(parent.x + parent.width / 2, parent.y + parent.height), point(parent.x + parent.width, parent.y + parent.height / 2)];
+    for (const blocked of [...routes]) {
+      if (repairs >= 4 || budget.probes <= 0) return { ...previous, routes };
+      if (blocked.from.kind !== 'node' || blocked.from.id === key) continue;
+      const lines = segments(blocked.path);
+      if (!lines.length || !ports.some(port => lines.some(line => distanceToSegment(line, port) < PORT_BERTH - .01))) continue;
+      const from = previous.nodes.get(blocked.from.id); if (!from) continue;
+      // Curved attachment headers do not prevent repairing a later straight run.
+      // Keep their exact commands and controls; flattened curve segments are never edited.
+      const authored = pathCommands(blocked.path), authoredRaw = [...blocked.path.matchAll(/[MLC][^MLC]*/g)].map(m => m[0]);
+      if (!authored || authored.length !== authoredRaw.length) continue;
+      // A straight run can contain grid waypoints. They are not fixed corners and
+      // must not shorten the room available to move the neighbouring turn.
+      const kept = authored.flatMap((command, i) => {
+        if (!i || command.kind !== 'L' || authored[i + 1]?.kind !== 'L') return [i];
+        const a = authored[i - 1].values, b = command.values, c = authored[i + 1].values;
+        const dx = b.at(-2)! - a.at(-2)!, dy = b.at(-1)! - a.at(-1)!;
+        const ex = c.at(-2)! - b.at(-2)!, ey = c.at(-1)! - b.at(-1)!;
+        return dx * ey === dy * ex && dx * ex + dy * ey > 0 ? [] : [i];
+      });
+      const commands = kept.map(i => authored[i]), raw = kept.map(i => authoredRaw[i]);
+      const points = commands.map(c => point(c.values.at(-2)!, c.values.at(-1)!));
+      const lanes = retainedIndex(previous, routes);
+      const foreign = routes.filter(r => r.from.kind !== blocked.from.kind || r.from.id !== blocked.from.id)
+        .flatMap(r => {
+          const ss = retainedSegments(r), painted = paintedSegments(ss, routeEnds(r, ss, previous.nodes, previous.junctions));
+          return [...channelInk(r.path), ...painted.slice(ss.length)];
+        });
+      let found: string | undefined;
+      for (let i = 1; i < points.length - 2 && !found; i++) {
+        // Translate a run together with its adjacent fillets, keeping their radius and controls.
+        if (commands[i + 1].kind !== 'L') continue;
+        const elbow = (j: number): boolean => {
+          if (commands[j]?.kind !== 'C' || j < 1) return false;
+          const start = points[j - 1], end = points[j], [x1, y1, x2, y2] = commands[j].values;
+          return Math.abs(Math.abs(end.x - start.x) - Math.abs(end.y - start.y)) < 1e-7
+            && (start.x === x1 && end.y === y2 && start.y !== y1 && end.x !== x2
+              || start.y === y1 && end.x === x2 && start.x !== x1 && end.y !== y2);
+        };
+        const lo = commands[i].kind === 'C' && elbow(i) ? i - 1 : i;
+        const hi = commands[i + 2].kind === 'C' && elbow(i + 2) ? i + 2 : i + 1;
+        if (!lo || hi + 1 >= commands.length || commands[lo].kind !== 'L' || commands[hi + 1].kind !== 'L'
+          || commands[i].kind === 'C' && lo === i || commands[i + 2].kind === 'C' && hi === i + 1) continue;
+        const a = points[i], b = points[i + 1], vertical = a.x === b.x, horizontal = a.y === b.y;
+        if (!vertical && !horizontal) continue;
+        const nearby = ports.filter(port => distanceToSegment([a, b], port) < PORT_BERTH - .01);
+        for (const port of nearby) {
+          const old = vertical ? a.x : a.y, axis = vertical ? 'x' : 'y', center = vertical ? port.x : port.y;
+          const direction = old < center ? -1 : 1;
+          for (const distance of [PORT_BERTH + LANE_STEP, PORT_BERTH + 2 * LANE_STEP, PORT_BERTH, PORT_BERTH + 3 * LANE_STEP]) {
+            if (budget.probes-- <= 0) break;
+            const coordinate = center + direction * distance;
+            const delta = coordinate - old;
+            const shaped = commands.map((c, k) => ({ kind: c.kind, values: c.values.map((v, j) => k >= lo && k <= hi && j % 2 === (axis === 'x' ? 0 : 1) ? v + delta : v) }));
+            const skipped = new Set<number>();
+            const at = (j: number) => point(shaped[j].values.at(-2)!, shaped[j].values.at(-1)!);
+            const fitFillet = (j: number, incoming: boolean): boolean => {
+              const start = at(j - 1), end = at(j), values = shaped[j].values;
+              const u = point(Math.sign(values[0] - start.x), Math.sign(values[1] - start.y));
+              const v = point(Math.sign(end.x - values[2]), Math.sign(end.y - values[3]));
+              const radius = Math.abs(end.x - start.x), corner = point(start.x + u.x * radius, start.y + u.y * radius);
+              const fixed = at(incoming ? j - 2 : j + 1);
+              const room = incoming ? (corner.x - fixed.x) * u.x + (corner.y - fixed.y) * u.y
+                : (fixed.x - corner.x) * v.x + (fixed.y - corner.y) * v.y;
+              const reserve = !incoming && j + 1 === commands.length - 1 && blocked.terminal ? ARROW.length : 1e-7;
+              if (room < reserve) return false;
+              const available = Math.min(radius, room - reserve);
+              const sharpCorner = (index: number): Point => {
+                const p = at(index), c = shaped[index];
+                if (c.kind !== 'C' || !elbow(index)) return p;
+                const start = at(index - 1), r = Math.abs(p.x - start.x);
+                return point(start.x + Math.sign(c.values[0] - start.x) * r, start.y + Math.sign(c.values[1] - start.y) * r);
+              };
+              // Compare against the repaired sharp legs, including the neighbouring
+              // fillet's corner, rather than only the shortened straight pieces.
+              const before = sharpCorner(j - 2), after = elbow(j + 2) ? sharpCorner(j + 2) : at(j + 1);
+              const certified = channelCornerRadius(before, corner, after, foreign, available);
+              const fitted = certified < 1e-6 ? 0 : certified;
+              if (fitted === radius) return true;
+              if (!fitted) {
+                shaped[j - 1] = {kind:'L',values:[corner.x,corner.y]};
+                shaped[j] = {kind:'L',values:[corner.x,corner.y]}; skipped.add(j); return true;
+              }
+              const native = pathCommands(roundedStem([point(corner.x - u.x * 2 * fitted, corner.y - u.y * 2 * fitted), corner,
+                point(corner.x + v.x * 2 * fitted, corner.y + v.y * 2 * fitted)], () => fitted))!;
+              shaped[j - 1] = {kind:'L',values:[...native[1].values]};
+              shaped[j] = {kind:'C',values:[...native[2].values]}; return true;
+            };
+            if (commands[i].kind === 'C' && !fitFillet(i, true) || commands[i + 2].kind === 'C' && !fitFillet(i + 2, false)) continue;
+            const candidate = shaped.map((_, j) => at(j));
+            if (candidate.some(p => p.x < 8 || p.x > request.maxWidth - 8)) continue;
+            const nextPath = raw.map((command, k) => skipped.has(k) ? '' : k >= lo && k <= hi ? shaped[k].kind + shaped[k].values.join(' ') + ' ' : command).join('');
+            const pieces = segments(nextPath), end = candidate.at(-1)!, beforeEnd = candidate.at(-2)!;
+            if ([lo, hi + 1].some(k => {
+              const a = candidate[k - 1], b = candidate[k], oldA = points[k - 1], oldB = points[k];
+              return a.x !== b.x && a.y !== b.y || (b.x - a.x) * (oldB.x - oldA.x) + (b.y - a.y) * (oldB.y - oldA.y) <= 0;
+            })) continue;
+            if (blocked.terminal && !((end.x === beforeEnd.x && end.y - beforeEnd.y >= ARROW.length)
+              || (end.y === beforeEnd.y && end.x - beforeEnd.x >= ARROW.length))) continue;
+            if (tiles.crosses(pieces) || tiles.grazes(pieces, from)
+              || lanes.conflicts(pieces, sourceKey('node', blocked.from.id), blocked.to.kind === 'junction' ? INTO_JUNCTION : INTO_TILE)) continue;
+            found = nextPath; break;
+          }
+          if (found) break;
+        }
+      }
+      if (found) { routes = routes.map(r => r === blocked ? { ...r, path: found! } : r); repairs++; }
+    }
+  }
+  return repairs ? { ...previous, routes } : previous;
+}
+
+/** Repairable drafts defer contact admission to connector repair and independent certification. */
+type InsertionPolicy = "stable" | "constrained" | "repairable";
+
+function insertWithPortRepair(request: LayoutRequest, previous: GraphLayout, budget: IncrementalBudget, paneEdges?: Scene["paneEdges"], policy: InsertionPolicy = "stable"): GraphLayout | null {
+  countLayoutWork("pinned-search");
+  const repaired = freeBlockedPorts(request, previous, budget);
+  const placed = insertTree(request, repaired, budget, paneEdges, policy);
+  if (placed) return placed;
+  const shifted = freePortLanes(request, repaired, budget);
+  return shifted === repaired ? null : insertTree(request, shifted, budget, paneEdges, policy);
+}
+
+interface InsertionMemo { readonly layout: GraphLayout | null; readonly remaining: IncrementalBudget }
+const insertionMemo = createBoundedCache<InsertionMemo>(entry => 64 + (entry.layout ? estimateLayoutBytes(entry.layout) : 0));
+
+/** Content keys admit worker clones too. Cached objects stay private; budget effects are replayed
+ * exactly, including failed searches. No rejected candidate acquires a geometry certificate.
+ * The repairable policy returns an uncertified draft: repair its connector contacts and
+ * run the independent geometry gate before admitting it as a displayed layout. */
+export function incrementalTree(request: LayoutRequest, previous: GraphLayout, budget: IncrementalBudget = incrementalBudget(), policy: InsertionPolicy = "stable"): GraphLayout | null {
+  const endStage = layoutStage('pinned-band');
+  try {
+    const memoKey = JSON.stringify([policy, layoutSignature(request), geometrySignature(previous), previous.pinnedViolation, [budget.fallback, budget.second, budget.probes].map(String)]);
+    const known = insertionMemo.get(memoKey);
+    if (known) {
+      Object.assign(budget, known.remaining);
+      countLayoutWork('pinned-cache-hit');
+      return structuredClone(known.layout);
+    }
+    const result = buildIncrementalTree(request, previous, budget, policy);
+    insertionMemo.set(memoKey, { layout: structuredClone(result), remaining: { ...budget } });
+    return result;
+  } finally { endStage(); }
+}
+
+function buildIncrementalTree(request: LayoutRequest, previous: GraphLayout, budget: IncrementalBudget, policy: InsertionPolicy): GraphLayout | null {
+  const placed = insertWithPortRepair(request, previous, budget, undefined, policy);
+  if (!placed) return null;
+  const key = request.band!.key;
+  const extent = pinnedBandExtent(placed, key);
+  if (!extent) return null;
+  return { ...placed, bandBounds: { left: 0, width: extent.left + extent.width,
+    top: placed.nodes.get(key)!.height + (request.history?.attachment?.placement.stemRoom ?? STACK_STEM_ROOM) }, preferredX: 0 };
+}
+
+/** World coordinates already include packing. No child-band allocation padding applies. */
+export function incrementalWorld(request: LayoutRequest, previous: GraphLayout, budget: IncrementalBudget = incrementalBudget(), paneLeft = 0): GraphLayout | null {
+  const placed = insertWithPortRepair(request, previous, budget, { left: paneLeft, right: request.maxWidth });
+  if (!placed) return null;
+  const extent = bandExtent({ ...placed, bandBounds: undefined }, request.band!.key, 0);
+  return extent.left < 0 || extent.left + extent.width > request.maxWidth ? null : { ...placed, bandBounds: undefined };
+}
+
+function insertTree(request: LayoutRequest, previous: GraphLayout, budget: IncrementalBudget, paneEdges?: Scene["paneEdges"], policy: InsertionPolicy = "stable"): GraphLayout | null {
   const key = request.band!.key, s = spacingFor(request.tileWidth), wanted = new Set(request.items.map(n => n.key));
   if (request.items.length > INCREMENTAL_LIMIT || !wanted.has(key)) return null;
   if (!previous.nodes.has(key) || request.items.some(n => n.key !== key && n.parents.length === 0 && !previous.nodes.has(n.key))) return null;
@@ -1159,11 +1572,10 @@ export function incrementalTree(request: LayoutRequest, previous: GraphLayout, b
   // Retained routes carry only their visible consumers; the junctions they touch stay.
   const visible = (c: { readonly parent: string; readonly child: string }) => wanted.has(c.parent) && wanted.has(c.child);
   const kept: PlacedRoute[] = [], routes: PlacedRoute[] = [], referenced = new Set<string>();
-  for (const r of previous.routes) {
-    if (!r.consumers.some(visible)) continue;
+  for (const r of filterRouteConsumers(previous.routes, visible)) {
     if (!usableRetainedRoute(r)) return null;
     kept.push(r);
-    routes.push({ ...r, consumers: r.consumers.filter(visible) });
+    routes.push(r);
     if (r.from.kind === "junction") referenced.add(r.from.id);
     if (r.to.kind === "junction") referenced.add(r.to.id);
   }
@@ -1171,12 +1583,21 @@ export function incrementalTree(request: LayoutRequest, previous: GraphLayout, b
   previous.junctions.forEach((join, id) => { if (referenced.has(id)) joins.set(id, join); });
   for (const id of referenced) { const j = joins.get(id); if (!j || !inReach(j.x) || !inReach(j.y)) return null; }
   if (!inReach(previous.width) || !inReach(previous.height)) return null;
-  const lanes = new LaneIndex(retainedIndex(previous, kept));
+  const lanes = new LaneIndex(retainedIndex(previous, kept), policy === "repairable");
   // Retained geometry beyond any real band (millions of pixels) cannot be indexed; lay out afresh.
   if (lanes.tooLarge()) return null;
+  // Hidden outputs need one usable departure, without occupying both ports.
+  // The same complete membership keeps future sources out of leaf reordering.
+  const futureSources = futureSourcesOf(request.band?.items ?? request.items);
   const remaining = request.items.filter(n => !nodes.has(n.key));
+  // Multi-parent nodes need more independent corridors. On a bounded retry, place
+  // them before easier siblings; readiness below still enforces topological order.
+  if (policy === "constrained") remaining.sort((a, b) => b.parents.length - a.parents.length || b.order - a.order || b.key.localeCompare(a.key));
   if (!remaining.length) return null;
-  const width = request.maxWidth, cover = nodes.get(key)!;
+  for (const node of nodes.values()) if (futureSources.has(node.key)) lanes.reserveDeparture(node);
+  // Retained routes may already occupy channels outside the pane or the tile
+  // envelope. Keep that certified allocation when extending the drawing.
+  const width = Math.max(request.maxWidth, previous.width), cover = nodes.get(key)!;
   const coverStem = coverStemFor(request, cover);
   // Placed boxes in `nodes` order and their lowest edge, kept in step with `nodes` below.
   let boxes = [...nodes.values()], bottom = -Infinity, tiles = new TileIndex([...boxes]);
@@ -1187,7 +1608,7 @@ export function incrementalTree(request: LayoutRequest, previous: GraphLayout, b
   const sceneFor = (n: PlacedNode): Scene => {
     let bottomAbove = -Infinity;
     for (const b of boxes) if (b.y < n.y) bottomAbove = Math.max(bottomAbove, b.y + b.height);
-    return { tiles, extra: n, width, clearance: s.clearance, header: header || (n.band === 0 && n.row === 0 ? n.height : 0), bottomAbove, cover: key, coverStem, grain };
+    return { tiles, extra: n, width, paneEdges, clearance: s.clearance, header: header || (n.band === 0 && n.row === 0 ? n.height : 0), bottomAbove, cover: key, coverStem, grain };
   };
   let second: Effort | undefined;
   const plain = fallbackEffort(budget);
@@ -1234,10 +1655,7 @@ export function incrementalTree(request: LayoutRequest, previous: GraphLayout, b
     // taken only if no probe adding no more height has a direct route: a detour costs length
     // and turns, and the layout that holds still must not lose to a fresh one on them.
     const ny = ys.length, ranked = rankProbes(xs, ys, bottom, item.height);
-    // With `blocked`, a pass records the probes a touch turned down (lanes, dots and curves clear):
-    // with touches allowed only those can wire differently, so a later pass is given them as `only`
-    // and counts the rest as failed without wiring them again.
-    const probes = (blocked?: number[], only?: ReadonlySet<number>): { node: PlacedNode; wiring: Wiring } | undefined => {
+    const probes = (): { node: PlacedNode; wiring: Wiring } | undefined => {
       const hardest = { index: 0 };
       let holeTries = HOLE_TRIES;
       // The first placement routed only by a detour, kept while probes adding no more height
@@ -1249,27 +1667,21 @@ export function incrementalTree(request: LayoutRequest, previous: GraphLayout, b
         const n: PlacedNode = { key: item.key, x, y, width: item.width, height: item.height, row: y === parent.y ? parent.row : parent.row + 1, band: parent.band + 1 };
         if (!free(n)) continue;
         if (detoured && (Math.max(bottom, n.y + n.height) > detoured.reach || !(scan-- > 0))) return detoured.found;
-        if (only && !only.has(probe)) { if (hole) holeTries--; continue; }
         if (!(budget.probes > 0)) return detoured?.found;
         budget.probes--;
-        lanes.touchBlocked = false;
         // Once a detour is in hand, only a direct route can replace it.
         const wiring = wire(parents, n, sceneFor(n), lanes, item.key, hardest, !!detoured);
         if (wiring && !wiring.routes.some(r => r.detour)) return { node: n, wiring };
         if (wiring) detoured ??= { found: { node: n, wiring }, reach: Math.max(bottom, n.y + n.height) };
         else {
           if (hole) holeTries--;
-          if (lanes.touchBlocked) blocked?.push(probe);
         }
       }
       return detoured?.found;
     };
-    // Placements whose routes touch no other source's line come first; failing those, the
-    // probes again with touches allowed (contacts are a cost, not a reason to lay out afresh).
-    // The grid fallbacks take the first route that keeps lanes and dots alone.
-    const touching = <T>(search: () => T): T => { lanes.contacts = false; try { return search(); } finally { lanes.contacts = true; } };
-    const blocked: number[] = [];
-    let best = probes(blocked) ?? (blocked.length ? touching(() => probes(undefined, new Set(blocked))) : undefined);
+    // Contacts are a hard constraint. A failed compact probe must search another
+    // route or placement rather than returning an illegal connector for later rejection.
+    let best = probes();
     if (!best) {
       const rowYs = [...new Set([Math.max(baseBottom, ...parents.map(p => p.y + p.height)) + arrivalGap,
         ...boxes.filter(n => n.y > baseBottom).map(n => n.y), Math.max(bottom, previous.height) + arrivalGap])].sort((a, b) => a - b);
@@ -1287,13 +1699,12 @@ export function incrementalTree(request: LayoutRequest, previous: GraphLayout, b
       };
       // Once a tile needed the second chance, later tiles go to it directly: the scene has proved
       // too crowded for the plain fallback, and its failures cost as much as the second chance.
-      best = second ? undefined : touching(() => fallback(plain));
+      best = second ? undefined : fallback(plain);
       if (!best) {
         // The second chance: the probes again on lanes half a step apart, then the grid router.
         const effort = second ??= secondChance(budget);
         grain = FINE_GRAIN;
-        const fine: number[] = [];
-        best = probes(fine) ?? touching(() => (fine.length ? probes(undefined, new Set(fine)) : undefined) ?? fallback(effort));
+        best = probes() ?? fallback(effort);
         grain = GRAIN;
       }
       if (!best) return null;
@@ -1302,6 +1713,7 @@ export function incrementalTree(request: LayoutRequest, previous: GraphLayout, b
     if (nodes.has(item.key)) { nodes.set(item.key, placed); boxes = [...nodes.values()]; tiles = new TileIndex([...boxes]); bottom = Math.max(...boxes.map(n => n.y + n.height)); }
     else { nodes.set(item.key, placed); boxes.push(placed); tiles.add(placed); bottom = Math.max(bottom, placed.y + placed.height); }
     commit(item.key, item.parents, parents, placed, best.wiring);
+    if (futureSources.has(item.key)) lanes.reserveDeparture(placed);
   }
 
   /** Records a placed tile's routes, junctions and lanes. */
@@ -1309,20 +1721,30 @@ export function incrementalTree(request: LayoutRequest, previous: GraphLayout, b
     const lanePoints = (p: PlacedNode, points: readonly Point[]) => p.key === key ? coverStem(points) : points;
     if (!wiring.levels) {
       const p = parents[0], route = wiring.routes[0];
-      routes.push({ id: `incremental:${p.key}:${child}`, from: { kind: "node", id: p.key }, to: { kind: "node", id: child },
+      routes.push({ id: JSON.stringify(["incremental", p.key, child]), from: { kind: "node", id: p.key }, to: { kind: "node", id: child },
         consumers: [{ parent: p.key, child }], terminal: true, path: path(route.points) });
       lanes.add(pathSegments(lanePoints(p, route.points)), sourceKey("node", p.key), INTO_TILE);
       return;
     }
     // Levels no parent reached are dropped; the spine runs through their points unchanged.
     const levels = wiring.levels, used = levels.map((_, level) => wiring.routes.some(r => r.arrival.level === level));
-    const ids = levels.map((_, level) => level ? `incremental-join:${child}:${level}` : `incremental-join:${child}`);
+    const ids = levels.map((_, level) => JSON.stringify(["incremental-join", child, level]));
     const kept = levels.map((_, level) => level).filter(level => used[level]);
-    /** Parents reaching level `level` or any above it. */
+    /** One shared consumer table; descending entry levels make every spine a prefix. */
+    const byLevel = Array.from({ length: levels.length }, () => [] as string[]);
+    parentKeys.forEach((parent, i) => byLevel[wiring.routes[i].arrival.level].push(parent));
+    const entries: { readonly parent: string; readonly child: string }[] = [];
+    const prefixEnds = new Uint32Array(levels.length);
+    for (let level = levels.length - 1; level >= 0; level--) {
+      for (const parent of byLevel[level]) entries.push({ parent, child });
+      prefixEnds[level] = entries.length;
+    }
+    const consumersAbove = (level: number) => ({ entries, start: 0, end: prefixEnds[level] });
+    /** Junction metadata preserves the original parent order. */
     const above = (level: number) => parentKeys.filter((_, i) => wiring.routes[i].arrival.level >= level);
     parents.forEach((p, i) => {
       const route = wiring.routes[i];
-      routes.push({ id: `incremental:${p.key}:${child}`, from: { kind: "node", id: p.key }, to: { kind: "junction", id: ids[route.arrival.level] },
+      routes.push({ id: JSON.stringify(["incremental", p.key, child]), from: { kind: "node", id: p.key }, to: { kind: "junction", id: ids[route.arrival.level] },
         consumers: [{ parent: p.key, child }], terminal: false, path: path(route.points) });
       lanes.add(pathSegments(lanePoints(p, route.points)), sourceKey("node", p.key), INTO_JUNCTION);
     });
@@ -1330,22 +1752,20 @@ export function incrementalTree(request: LayoutRequest, previous: GraphLayout, b
     // Spine routes between consecutive kept levels, top down, then the tail from the lowest.
     for (let k = kept.length - 1; k > 0; k--) {
       const upper = kept[k], lower = kept[k - 1], from = levels[upper], to = levels[lower];
-      routes.push({ id: `${ids[upper]}:spine`, from: { kind: "junction", id: ids[upper] }, to: { kind: "junction", id: ids[lower] },
-        consumers: above(upper).map(parent => ({ parent, child })), terminal: false, path: path([from, to]) });
+      routes.push({ id: JSON.stringify(["incremental-spine", ids[upper], ids[lower]]), from: { kind: "junction", id: ids[upper] }, to: { kind: "junction", id: ids[lower] },
+        consumers: consumersAbove(upper), terminal: false, path: path([from, to]) });
       lanes.add(pathSegments([from, to]), sourceKey("junction", ids[upper]), DOT_TO_DOT);
     }
     const low = levels[kept[0]], end = point(low.x, placed.y - ARROW.length);
-    routes.push({ id: `${ids[0]}:tail`, from: { kind: "junction", id: ids[kept[0]] }, to: { kind: "node", id: child },
-      consumers: parentKeys.map(parent => ({ parent, child })), terminal: true, path: path([low, end]) });
+    routes.push({ id: JSON.stringify(["incremental-tail", ids[kept[0]], child]), from: { kind: "junction", id: ids[kept[0]] }, to: { kind: "node", id: child },
+      consumers: { entries, start: 0, end: entries.length }, terminal: true, path: path([low, end]) });
     lanes.add(pathSegments([low, end]), sourceKey("junction", ids[kept[0]]), SPINE);
   }
 
   const readingOrder = new Map<string, number>();
   for (let i = 0; i < request.items.length; i++) readingOrder.set(request.items[i].key, i);
   const provisional: GraphLayout = { ...previous, nodes, routes, junctions: joins, rows: [],
-    height: bottom + s.bottom,
+    width: Math.max(previous.width, width), height: bottom + s.bottom,
     readingOrder };
-  const extent = bandExtent({ ...provisional, bandBounds: undefined }, key);
-  if (extent.left < 0 || extent.left + extent.width > width) return null;
-  return { ...provisional, bandBounds: { left: extent.left, width: extent.width, top: nodes.get(key)!.height + (request.history?.attachment?.placement.stemRoom ?? STACK_STEM_ROOM) }, preferredX: extent.left };
+  return orderNewSiblingLeaves(provisional, request.items, previous.nodes, futureSources);
 }

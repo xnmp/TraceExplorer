@@ -1,3 +1,4 @@
+import { routeConsumers } from "./route-consumers";
 /**
  * Scene composition: the pure pipeline from a component's DAG and the current
  * focus to everything a renderer needs (visible tiles, sizes, tones, layout
@@ -162,13 +163,13 @@ export type RouteKind = "current" | "subfolder" | "external";
 export interface RouteStyle { readonly kind: RouteKind; readonly related: boolean; readonly highlighted: boolean }
 
 export function routeStyle(route: PlacedRoute, dag: TraceDag, context: Lineage): RouteStyle {
-  const kinds = route.consumers.map((item) => dag.nodes.get(item.parent)?.scope ?? "current");
+  const kinds = routeConsumers(route).map((item) => dag.nodes.get(item.parent)?.scope ?? "current");
   const kind: RouteKind = kinds.every((value) => value === "external") ? "external" : kinds.every((value) => value === "subfolder") ? "subfolder" : "current";
   if (context.focus === null) return { kind, related: true, highlighted: false };
   return {
     kind,
-    related: route.consumers.some((item) => context.related.has(item.parent) && context.related.has(item.child)),
-    highlighted: context.related.has(context.focus) && route.consumers.some((item) => item.parent === context.focus || item.child === context.focus),
+    related: routeConsumers(route).some((item) => context.related.has(item.parent) && context.related.has(item.child)),
+    highlighted: context.related.has(context.focus) && routeConsumers(route).some((item) => item.parent === context.focus || item.child === context.focus),
   };
 }
 

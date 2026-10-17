@@ -1,0 +1,200 @@
+{
+  "width": 900,
+  "items": [
+    {
+      "key": "n0",
+      "parents": [],
+      "order": 0,
+      "width": 92,
+      "height": 104
+    },
+    {
+      "key": "n1",
+      "parents": [
+        "n0"
+      ],
+      "order": 1,
+      "width": 92,
+      "height": 104
+    },
+    {
+      "key": "n2",
+      "parents": [
+        "n1"
+      ],
+      "order": 2,
+      "width": 92,
+      "height": 104
+    },
+    {
+      "key": "n3",
+      "parents": [
+        "n0"
+      ],
+      "order": 3,
+      "width": 92,
+      "height": 104
+    },
+    {
+      "key": "n4",
+      "parents": [
+        "n0"
+      ],
+      "order": 4,
+      "width": 92,
+      "height": 104
+    },
+    {
+      "key": "n5",
+      "parents": [
+        "n0",
+        "n2"
+      ],
+      "order": 5,
+      "width": 92,
+      "height": 104
+    },
+    {
+      "key": "n6",
+      "parents": [
+        "n0"
+      ],
+      "order": 6,
+      "width": 92,
+      "height": 104
+    },
+    {
+      "key": "n7",
+      "parents": [
+        "n3"
+      ],
+      "order": 7,
+      "width": 92,
+      "height": 104
+    },
+    {
+      "key": "n9",
+      "parents": [
+        "n5"
+      ],
+      "order": 9,
+      "width": 92,
+      "height": 104
+    },
+    {
+      "key": "n11",
+      "parents": [
+        "n9"
+      ],
+      "order": 11,
+      "width": 92,
+      "height": 104
+    },
+    {
+      "key": "n15",
+      "parents": [
+        "n4"
+      ],
+      "order": 15,
+      "width": 92,
+      "height": 104
+    }
+  ],
+  "found": {
+    "size": 11,
+    "contacts": [
+      {
+        "route": "incremental:n3:n7",
+        "other": "incremental:n4:n15",
+        "kind": "corner",
+        "p": {
+          "x": 270,
+          "y": 244
+        },
+        "distance": 0,
+        "segment": [
+          {
+            "x": 378,
+            "y": 244
+          },
+          {
+            "x": 270,
+            "y": 244
+          }
+        ],
+        "path": "M270 242 L270 244 L70 244 L70 254",
+        "otherPath": "M378 242 L378 244 L270 244 L270 254"
+      },
+      {
+        "route": "incremental:n5:n9",
+        "other": "incremental:n4:n15",
+        "kind": "corner",
+        "p": {
+          "x": 378,
+          "y": 244
+        },
+        "distance": 0,
+        "segment": [
+          {
+            "x": 378,
+            "y": 242
+          },
+          {
+            "x": 378,
+            "y": 244
+          }
+        ],
+        "path": "M486 242 L486 244 L378 244 L378 254",
+        "otherPath": "M378 242 L378 244 L270 244 L270 254"
+      },
+      {
+        "route": "incremental:n4:n15",
+        "other": "incremental:n3:n7",
+        "kind": "corner",
+        "p": {
+          "x": 270,
+          "y": 244
+        },
+        "distance": 0,
+        "segment": [
+          {
+            "x": 270,
+            "y": 242
+          },
+          {
+            "x": 270,
+            "y": 244
+          }
+        ],
+        "path": "M378 242 L378 244 L270 244 L270 254",
+        "otherPath": "M270 242 L270 244 L70 244 L70 254"
+      },
+      {
+        "route": "incremental:n4:n15",
+        "other": "incremental:n5:n9",
+        "kind": "corner",
+        "p": {
+          "x": 378,
+          "y": 244
+        },
+        "distance": 0,
+        "segment": [
+          {
+            "x": 486,
+            "y": 244
+          },
+          {
+            "x": 378,
+            "y": 244
+          }
+        ],
+        "path": "M378 242 L378 244 L270 244 L270 254",
+        "otherPath": "M486 242 L486 244 L378 244 L378 254"
+      }
+    ],
+    "decision": {
+      "candidate": "incremental-tree",
+      "stability": true
+    }
+  }
+}

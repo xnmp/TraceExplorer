@@ -762,7 +762,8 @@ export function createSceneController(options: SceneControllerOptions) {
    * history, so a selection that returns to an earlier focus keeps the band decisions made since.
    */
   function recentLayout(prepared: PreparedLayoutInput, shown: Publication | null): FolderLayout | null {
-    if (!shown || sameLayoutMetrics(shown.scene.inputs.layoutInput, prepared.input)) return null;
+    // The engine owns revisit memory. Reusing an old complete output would roll that ledger back.
+    if (!shown || shown.scene.layout.displays || sameLayoutMetrics(shown.scene.inputs.layoutInput, prepared.input)) return null;
     const entry = recentLayouts.get(prepared.basis);
     if (!entry) return null;
     const same = entry.sources.size === prepared.sources.size && [...prepared.sources].every(([id, source]) => {

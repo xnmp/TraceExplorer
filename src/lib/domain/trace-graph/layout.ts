@@ -14,9 +14,12 @@
  * this engine sits behind the `layoutGraph(LayoutRequest) → GraphLayout`
  * boundary instead; callers never depend on how it works.
  */
+import { channelInk, roundChannelPath, type ChannelInk } from "./channel-corners";
+import { boundedJunctions } from "./bounded-junctions";
 import { layoutBand, type BandOptions } from "./band-layout";
+import type { ConsumerSet } from "./route-consumers";
 import type { NodeKey } from "./model";
-import { buildInputJunctions, endpointKey, type Consumer, type Endpoint, type Junction } from "./junctions";
+import { buildInputJunctions, endpointKey, edgeKey, type Consumer, type Endpoint, type Junction } from "./junctions";
 import { ARROW, bendZones, JUNCTION_BERTH, LANE_SEPARATION, PORT_BERTH, spacingFor, TRACK_HEIGHT } from "./metrics";
 import { orderLayers } from "./layer-order";
 
@@ -104,7 +107,7 @@ export interface PlacedRoute {
   readonly id: string;
   readonly from: Endpoint;
   readonly to: Endpoint;
-  readonly consumers: readonly Consumer[];
+  readonly consumers: ConsumerSet;
   readonly path: string;
   /** Ends at a tile (draws the single arrowhead for that output). */
   readonly terminal: boolean;
@@ -126,6 +129,7 @@ export interface BandHistory {
 }
 
 export interface BandDecision {
+  readonly relayout?: 'pane-width' | 'tile-size';
   readonly candidate: string;
   readonly partition?: readonly number[];
   readonly stability: boolean;
@@ -134,7 +138,7 @@ export interface BandDecision {
    * `lane-infeasible`: every candidate ran connectors from different sources along a shared lane; the best of them, priced, is shown.
    * `anchor-yield`: an anchor-preserving layout existed, but crossed far more than the best unanchored one (the crossing cap); the anchors moved.
    */
-  readonly fallback?: "anchor-infeasible" | "anchor-yield" | "packing-infeasible" | "gate-infeasible" | "lane-infeasible";
+  readonly fallback?: "geometry-fallback" | "invalid-history" | "anchor-infeasible" | "anchor-yield" | "packing-infeasible" | "gate-infeasible" | "lane-infeasible";
 }
 
 export interface GraphLayout {
@@ -185,8 +189,6 @@ const MIN_LANE = 3;
 const CROSSING_SWAP = 2 * TRACK_HEIGHT - LANE_SEPARATION;
 /** Farthest beyond its bend's own span a dogleg breaking a cycle of turn orders may take its column. */
 const DOGLEG_REACH = 4 * MIN_LANE;
-/** Widest offset, from its junction's column, at which an input ends its bend (see the fan-in step). */
-const FAN_IN = 3;
 /** Distance kept outside a forbidden interval when stepping past it. */
 const FREE_STEP = 0.5;
 /** No tile is anywhere near this big; larger sizes are clamped so coordinates stay exact. */
@@ -294,13 +296,6 @@ export function nearestFree(preferred: number, intervals: readonly Interval[], l
   return nearestOutside(preferred, mergeIntervals(intervals), low, high);
 }
 
-/** A short, stable hash of a string (FNV-1a). */
-function hashOf(text: string): string {
-  let hash = 0x811c9dc5;
-  for (let index = 0; index < text.length; index++) hash = Math.imul(hash ^ text.charCodeAt(index), 0x01000193);
-  return (hash >>> 0).toString(36);
-}
-
 export function layoutGraph(request: LayoutRequest, options?: BandOptions): GraphLayout {
   if (!request || !Array.isArray(request.items)) throw new RangeError("malformed layout request");
   return request.band ? layoutBand(request, options) : layoutLayered(request);
@@ -327,7 +322,7 @@ export type Ordering = "barycenter" | "median-sweep" | {
  */
 export type Passing = "straight" | "nearest-end";
 
-export interface LayeredOptions { readonly ordering?: Ordering; readonly passing?: Passing }
+export interface LayeredOptions { readonly columnGap?: number; readonly ordering?: Ordering; readonly passing?: Passing; readonly channelStyle?: "scaled" | "orthogonal" }
 
 /** The reusable layered engine; band candidates call it without recursively planning bands. */
 export function layoutLayered(request: LayoutRequest, options: LayeredOptions = {}): GraphLayout {
@@ -395,7 +390,7 @@ function layoutDown(request: LayoutRequest, minWidth: number, options: LayeredOp
   // dots stack. Legacy placement needs two retries. A pinned band can first
   // consume spare pane width; moving rows within that width changes gap slots,
   // so allow two further routing passes to settle the new slot choices.
-  const prepared = prepare(request, options.ordering ?? "barycenter", options.passing ?? "straight");
+  const prepared = { ...prepare(request, options.ordering ?? "barycenter", options.passing ?? "straight", options.columnGap), channelStyle: options.channelStyle };
   let extra = { left: 0, right: 0 };
   const attempts = prepared.pinned ? 4 : 2;
   for (let attempt = 0; ; attempt++) {
@@ -410,7 +405,8 @@ function layoutDown(request: LayoutRequest, minWidth: number, options: LayeredOp
  * (as built by {@link layoutLayered} with `orientation: "down"`), computed from
  * its display rows alone, before any routing: the band's height (from the first
  * child row to the last row's bottom, plus the bottom margin and `stemRoom`), its
- * child allocation width (tile span plus 8 px padding each side) and the connector
+ * child allocation width (tile span plus painted padding for orthogonal channels,
+ * or 8 px each side for the legacy style) and the connector
  * ink of a tree (each non-cover source's routes reach a child at least one
  * generation channel below it). Mirrors {@link layoutPass}: longest-path
  * generations wrap greedily onto rows of the content width, a row is as tall as
@@ -418,8 +414,8 @@ function layoutDown(request: LayoutRequest, minWidth: number, options: LayeredOp
  * generation and `bandChannel` below its last row. Null unless the cover is
  * generation 0's only tile (otherwise its first child row is not known here).
  */
-export function downwardBandBound(request: LayoutRequest, coverKey: NodeKey, stemRoom: number): { readonly height: number; readonly width: number; readonly length: number } | null {
-  const space = spacingFor(request.tileWidth), gap = space.column;
+export function downwardBandBound(request: LayoutRequest, coverKey: NodeKey, stemRoom: number, options: LayeredOptions = {}): { readonly height: number; readonly width: number; readonly length: number } | null {
+  const space = spacingFor(request.tileWidth), gap = Number.isFinite(options.columnGap) ? Math.max(0, options.columnGap!) : space.column;
   // Index-based throughout (this runs on every band layout, mostly tiny ones):
   // item i's parents, children and generation live in arrays indexed by i.
   const list = request.items, count = list.length;
@@ -475,6 +471,8 @@ export function downwardBandBound(request: LayoutRequest, coverKey: NodeKey, ste
   }
   const budget = Number.isFinite(request.maxWidth) && request.maxWidth > 0 ? Math.floor(request.maxWidth) : Infinity;
   const limit = Math.max(widest, Math.min(natural, Math.max(widest, budget - 2 * space.margin)));
+  const bandChannel = options.channelStyle === "orthogonal" ? space.approach + 2 * LANE_SEPARATION : space.bandChannel;
+  const rowChannel = options.channelStyle === "orthogonal" ? space.approach + 2 * LANE_SEPARATION : space.rowChannel;
   let height = 0, width = 0;
   for (let b = 1; b < byBand.length; b++) {
     const members = byBand[b], size = members.length, first = widths[members[0]];
@@ -500,7 +498,7 @@ export function downwardBandBound(request: LayoutRequest, coverKey: NodeKey, ste
       const sorted = members.map((at) => heights[at]).sort((x, y) => y - x);
       for (let row = 0; row < rows; row++) height += sorted[row * perRow];
     } else for (let row = 0; row < rows; row++) height += row ? shortest : tallest;
-    height += (rows - 1) * space.rowChannel + (b < byBand.length - 1 ? space.bandChannel : 0);
+    height += (rows - 1) * rowChannel + (b < byBand.length - 1 ? bandChannel : 0);
     // Balanced or not, some row holds at least the average number of tiles.
     const fullest = uniform ? Math.ceil(size / rows) : 1;
     width = Math.max(width, uniform ? fullest * first + (fullest - 1) * gap : widest);
@@ -512,15 +510,15 @@ export function downwardBandBound(request: LayoutRequest, coverKey: NodeKey, ste
   }
   if (!tree) sources = 0;
   // Tile x is rounded to 0.01 px and attachment reassociates sums: stay strictly below.
-  return { height: height + space.bottom + stemRoom - 1e-6, width: Math.max(0, width + 16 - .02 - 1e-6),
-    length: Math.max(0, sources * (space.bandChannel - ARROW.length) - 1e-6) };
+  return { height: height + space.bottom + stemRoom - 1e-6, width: Math.max(0, width + (options.channelStyle === "orthogonal" ? ARROW.width : 16) - .02 - 1e-6),
+    length: Math.max(0, sources * (bandChannel - ARROW.length) - 1e-6) };
 }
 
 /**
  * Everything about a request that does not depend on a pass's extra margins:
  * computed once and shared by every pass of {@link layoutDown}.
  */
-function prepare(request: LayoutRequest, ordering: Ordering = "barycenter", passing: Passing = "straight") {
+function prepare(request: LayoutRequest, ordering: Ordering = "barycenter", passing: Passing = "straight", columnGap?: number) {
   // Malformed input never spreads through the geometry: a size that is not a
   // finite, non-negative number counts as zero, sizes are capped far above
   // any tile, and an order that is not a number sorts first (ties by key).
@@ -572,8 +570,8 @@ function prepare(request: LayoutRequest, ordering: Ordering = "barycenter", pass
 
   const relationships: { child: NodeKey; parents: NodeKey[] }[] = [];
   for (const child of keys) relationships.push({ child, parents: parentsOf(child) });
-  const plan = buildInputJunctions(relationships);
-  const gap = space.column;
+  const plan = boundedJunctions(buildInputJunctions(relationships));
+  const gap = Number.isFinite(columnGap) ? Math.max(0, columnGap!) : space.column;
   const margin = space.margin;
   const widest = keys.reduce((most, key) => Math.max(most, items.get(key)!.width), 0);
   const byBand: NodeKey[][] = Array.from({ length: bandCount }, () => []);
@@ -624,7 +622,7 @@ function prepare(request: LayoutRequest, ordering: Ordering = "barycenter", pass
     gap, margin, budget, pinned, contentWidth, rank, firstBand, firstRows: wrapRow(firstBand.map((key) => items.get(key)!.width), contentWidth, gap),
   };
 }
-type Prepared = ReturnType<typeof prepare>;
+type Prepared = ReturnType<typeof prepare> & Pick<LayeredOptions, "channelStyle">;
 
 /** What does not move between passes about where a junction goes: its band, consumers, what it may sit on, and its nested junctions. */
 interface JoinFacts { readonly bandIndex: number; readonly consumers: NodeKey[]; readonly own: ReadonlySet<NodeKey>; readonly nestedJoins: string[] }
@@ -782,35 +780,40 @@ function layoutPass(prepared: Prepared, extra: { readonly left: number; readonly
   // placed after lanes (step 3b), against the runs routes actually take; and
   // junctions on one level never overlap.
   type Keepout = { readonly low: number; readonly high: number; readonly key: NodeKey | null };
-  const berth = JUNCTION_BERTH + 2;
-  const runs = (row: number): Keepout[] => {
+  const fanOf = (join: Junction) => join.inputs.length === 2 ? LANE_SEPARATION : (join.inputs.length - 1) * LANE_SEPARATION / 2;
+  const runs = (row: number, berth: number): Keepout[] => {
     const boxes = spans(row);
     if (!boxes.length) return [];
     const first = boxes[0], last = boxes.at(-1)!;
+    // A fan extends beyond its dot; margin lanes begin only `clearance` outside
+    // the tiles, so reserve the remaining approach width inside their boundary.
+    const inset = Math.max(0, berth - JUNCTION_BERTH + MIN_LANE - space.clearance);
     return [
       ...boxes.map((box) => ({ low: box.x + box.width / 2 - berth, high: box.x + box.width / 2 + berth, key: box.key })),
       ...boxes.slice(1).map((box, index) => ({ low: boxes[index].x + boxes[index].width - berth, high: box.x + berth, key: null })),
-      { low: -Infinity, high: first.x, key: null },
-      { low: last.x + last.width, high: Infinity, key: null },
+      { low: -Infinity, high: first.x + inset, key: null },
+      { low: last.x + last.width - inset, high: Infinity, key: null },
     ];
   };
   const placed = new Map<string, { x: number; level: number; channel: number }>();
-  const runsNear = new Map<number, Keepout[]>();
+  const runsNear = new Map<string, Keepout[]>();
+  const fanAt = new Map<string, number>();
   const onLevel = new Map<string, number[]>();
   const inChannel = new Map<number, number[]>();
   const channelDepth = new Map<number, number>();
-  const bandLevels = new Map<number, number>();
   /** Where a junction wants to be, and what it may sit on. */
   const situate = (join: Junction) => {
     const { bandIndex, consumers, own, nestedJoins } = joinFacts.get(join.id)!;
     const parentX = join.parents.reduce((sum, id) => sum + center(id), 0) / join.parents.length;
     const targetX = consumers.length ? consumers.reduce((sum, id) => sum + center(id), 0) / consumers.length : parentX;
-    const channel = lastRowOfBand.get(bandIndex)!;
+    // Within a pinned band, join immediately after its last actual parent row.
+    // Waiting for the whole generation keeps unrelated inputs alive through wraps.
+    const channel = pinned ? join.parents.reduce((last, id) => Math.max(last, columns.get(id)!.row), 0) : lastRowOfBand.get(bandIndex)!;
     let deepestNested = 0;
     for (const id of nestedJoins) { const spot = placed.get(id); if (spot?.channel === channel) deepestNested = Math.max(deepestNested, spot.level); }
     const minLevel = 1 + deepestNested;
     const preferred = Math.min(width - 14, Math.max(14, parentX * 0.6 + targetX * 0.4));
-    return { bandIndex, channel, own, minLevel, preferred };
+    return { channel, own, minLevel, preferred, fan: fanOf(join), berth: JUNCTION_BERTH + fanOf(join) };
   };
   type Situation = ReturnType<typeof situate>;
   const onLevelOf = (channel: number, level: number) => onLevel.get(`${channel}:${level}`) ?? [];
@@ -818,10 +821,14 @@ function layoutPass(prepared: Prepared, extra: { readonly left: number; readonly
    * The nearest x on the shallowest level allowed, clear of `keepouts` (sorted
    * by start); `stacking` also keeps it off every other dot's column.
    */
-  const search = ({ channel, minLevel, preferred }: Situation, keepouts: readonly Interval[], stacking: boolean, deepest: number) => {
+  const search = ({ channel, minLevel, preferred, fan }: Situation, keepouts: readonly Interval[], stacking: boolean, deepest: number) => {
     // Every list here is sorted already, so merging stays linear.
     const merged = stacking
-      ? unionMerged(mergeSortedStarts(keepouts), mergeSortedStarts((inChannel.get(channel) ?? []).map((other) => [other - berth, other + berth] as const)))
+      ? unionMerged(mergeSortedStarts(keepouts), mergeIntervals((inChannel.get(channel) ?? []).map((other) => {
+        const otherFan = fanAt.get(`${channel}:${other}`)!;
+        const radius = Math.max(JUNCTION_BERTH + Math.max(fan, otherFan), fan + otherFan + MIN_LANE);
+        return [other - radius, other + radius] as const;
+      })))
       : mergeSortedStarts(keepouts);
     // Levels only add same-level spacing: no room here means none on any level.
     if (nearestOutside(preferred, merged, 14, width - 14) === null) return null;
@@ -833,11 +840,11 @@ function layoutPass(prepared: Prepared, extra: { readonly left: number; readonly
     }
     return null;
   };
-  const settle = (join: Junction, { bandIndex, channel }: Situation, { x, level }: { x: number; level: number }) => {
+  const settle = (join: Junction, { channel }: Situation, { x, level }: { x: number; level: number }) => {
     insertSorted(onLevel, `${channel}:${level}`, x);
     insertSorted(inChannel, channel, x);
+    fanAt.set(`${channel}:${x}`, Math.max(fanOf(join), fanAt.get(`${channel}:${x}`) ?? 0));
     channelDepth.set(channel, Math.max(channelDepth.get(channel) ?? 0, level));
-    bandLevels.set(bandIndex, Math.max(bandLevels.get(bandIndex) ?? 0, level));
     placed.set(join.id, { x: round(x), level, channel });
   };
   // First pass: every constraint, with the vertical runs other routes may
@@ -848,9 +855,10 @@ function layoutPass(prepared: Prepared, extra: { readonly left: number; readonly
   const isDeferred = new Set<string>();
   for (const join of ordered) {
     const situation = situate(join);
-    const { channel, own, minLevel, preferred } = situation;
-    if (!runsNear.has(channel)) runsNear.set(channel, [...runs(channel), ...runs(channel + 1)].sort((a, b) => a.low - b.low));
-    const keepouts = runsNear.get(channel)!.filter((run) => !run.key || !own.has(run.key)).map((run) => [run.low, run.high] as const);
+    const { channel, own, minLevel, preferred, berth } = situation;
+    const cacheKey = `${channel}:${berth}`;
+    if (!runsNear.has(cacheKey)) runsNear.set(cacheKey, [...runs(channel, berth), ...runs(channel + 1, berth)].sort((a, b) => a.low - b.low));
+    const keepouts = runsNear.get(cacheKey)!.filter((run) => !run.key || !own.has(run.key)).map((run) => [run.low, run.high] as const);
     const nestsDeferred = join.inputs.some((input) => input.kind === "junction" && isDeferred.has(input.id));
     const choice = nestsDeferred ? null : search(situation, keepouts, true, Math.max(minLevel, channelDepth.get(channel) ?? 0) + 1);
     if (choice) { settle(join, situation, choice); continue; }
@@ -1107,7 +1115,10 @@ function layoutPass(prepared: Prepared, extra: { readonly left: number; readonly
         edge = left ? Math.min(edge, boxes[0].x - space.clearance) : Math.max(edge, last.x + last.width + space.clearance);
       }
       return { source, sourceX, lo: lo - 1, hi: hi + 1, edge, anchor: left ? edge - space.column / 2 + space.clearance : edge + space.column / 2 - space.clearance };
-    }).sort((a, b) => (left ? b.sourceX - a.sourceX : a.sourceX - b.sourceX) || a.source.localeCompare(b.source));
+    }).sort((a, b) => a.lo - b.lo || a.hi - b.hi
+      || (left ? b.sourceX - a.sourceX : a.sourceX - b.sourceX) || a.source.localeCompare(b.source));
+    // Allocate interval lifetimes in start order. Source-position order can
+    // occupy a track before a later source could reuse it, wasting pane width.
     const bound = left ? space.clearance : width - space.clearance;
     /** Every entry's x at one separation; the outer side is unbounded, so each always finds one. */
     const place = (separation: number) => {
@@ -1119,13 +1130,15 @@ function layoutPass(prepared: Prepared, extra: { readonly left: number; readonly
       for (const entry of entries) {
         const around: [number, number][] = [];
         for (const other of byX) {
-          if (!(other.lo <= entry.hi && entry.lo <= other.hi)) continue;
+          // Equal expanded row endpoints leave a whole tile row between the
+          // actual entry/exit channels, so their margin lane can be reused.
+          if (!(other.lo < entry.hi && entry.lo < other.hi)) continue;
           const start = other.x - separation + FREE_STEP, end = other.x + separation - FREE_STEP;
           const last = around.at(-1);
           if (last && start <= last[1] + FREE_STEP) last[1] = Math.max(last[1], end);
           else around.push([start, end]);
         }
-        const x = nearestOutside(entry.anchor, around, left ? -Infinity : entry.edge, left ? entry.edge : Infinity)!;
+        const x = nearestOutside(separation === MIN_LANE ? entry.edge : entry.anchor, around, left ? -Infinity : entry.edge, left ? entry.edge : Infinity)!;
         let at = byX.length;
         while (at > 0 && byX[at - 1].x > x) at--;
         byX.splice(at, 0, { x, lo: entry.lo, hi: entry.hi });
@@ -1191,7 +1204,7 @@ function layoutPass(prepared: Prepared, extra: { readonly left: number; readonly
     let wideningLeft = 2 * (Number.isFinite(budget) ? budget : width) - extra.left - extra.right;
     for (const { join } of deferred) {
       const situation = situate(join);
-      const { channel, own, minLevel } = situation;
+      const { channel, own, minLevel, berth } = situation;
       const keepouts = columnsOf(channel).filter((column) => !column.key || !own.has(column.key)).map((column) => [column.x - berth, column.x + berth] as const);
       const deepest = Math.max(minLevel, channelDepth.get(channel) ?? 0);
       const ownColumn = search(situation, keepouts, true, deepest + 1);
@@ -1219,7 +1232,7 @@ function layoutPass(prepared: Prepared, extra: { readonly left: number; readonly
   // junction levels; bend zone i lies between level i and level i + 1
   // (level 0 is the row above, the last zone ends at the row below). Bends
   // happen only inside zones, so a route never bends across a junction level.
-  const levelCount = (channel: number) => lastRowOfBand.get(rowKeys[channel].band) === channel ? bandLevels.get(rowKeys[channel].band) ?? 0 : 0;
+  const levelCount = (channel: number) => channelDepth.get(channel) ?? 0;
   type Anchor = { readonly row: number; readonly edge: "top" | "bottom" | "arrow" } | { readonly junction: string };
   interface Leg {
     readonly channel: number; readonly source: string; readonly target: string | null;
@@ -1243,17 +1256,37 @@ function layoutPass(prepared: Prepared, extra: { readonly left: number; readonly
     const parent = trie[item.parent];
     return leg(parent.row, item.source, null, parent.x, item.x, parent.from, { row: item.row, edge: "top" }, item.own);
   });
-  const finalLegs = courses.map(({ route, source, last, end, own }) => {
+  const initialFinalLegs = courses.map(({ route, source, last, end, own }) => {
     const from = trie[last];
     return leg(from.row, source, endpointKey(route.to), from.x, end.x, from.from, end.to, own);
+  });
+  // Reserve actual approach columns before any zone or track occupancy is built.
+  // The final six-pixel fan still ends at the separately recorded dot column.
+  const targets = new Map<string, Leg[]>();
+  for (const item of initialFinalLegs) if ("junction" in item.to) append(targets, item.to.junction, item);
+  const offsets = new Map<Leg, number>();
+  for (const inputs of targets.values()) {
+    const sorted = [...inputs].sort((a,b) => a.x1 - b.x1 || a.source.localeCompare(b.source));
+    if (sorted.length === 2) { offsets.set(sorted[0], -3); offsets.set(sorted[1], 3); }
+    else sorted.forEach((item, i) => offsets.set(item, (i - (sorted.length - 1) / 2) * 3));
+  }
+  const fanIn = new Map<Leg, number>();
+  const finalLegs = initialFinalLegs.map(item => {
+    const offset = offsets.get(item);
+    if (offset === undefined) return item;
+    const reserved = { ...item, x2: item.x2 + offset };
+    fanIn.set(reserved, offset);
+    return reserved;
   });
   const allLegs: Leg[] = [];
   for (const item of nodeLegs) if (item !== null) allLegs.push(item);
   for (const item of finalLegs) allLegs.push(item);
-  const bends = (item: Leg) => Math.abs(item.x1 - item.x2) >= 0.5;
+  const bends = (item: Leg) => fanIn.has(item) ? round(item.x1) !== round(item.x2) : Math.abs(item.x1 - item.x2) >= 0.5;
   const near = (a: number, b: number) => Math.abs(a - b) < MIN_LANE;
   // Routes from one source (a branching trunk) or into one junction may meet.
-  const compatible = (a: Leg, b: Leg) => a.source === b.source || (a.target !== null && a.target === b.target && a.target.startsWith("junction:"));
+  const compatible = (a: Leg, b: Leg) => a.source === b.source
+    || (a.target !== null && a.target === b.target && a.target.startsWith("junction:")
+      && (a.x1 - a.x2) * (b.x1 - b.x2) < 0);
 
   // 4. Zones. Each bend takes the zone whose vertical runs stay clear of
   // junctions it does not belong to (touching one would read as one more
@@ -1330,7 +1363,7 @@ function layoutPass(prepared: Prepared, extra: { readonly left: number; readonly
           const top = Math.max(other.from, from), bottom = Math.min(other.to, to), column = Math.abs(other.x - x) < .01;
           if (compatible(other.leg, item)) { if (column && top < bottom) found.shared++; continue; }
           if (top > bottom || (other.bend !== null && other.bend === bend && top === bottom)) continue;
-          if (column) found.shared++; else found.near++;
+          if (top < bottom || column) found.shared++; else found.near++;
         }
       }
     };
@@ -1367,32 +1400,6 @@ function layoutPass(prepared: Prepared, extra: { readonly left: number; readonly
     for (const item of bending) if (item.lo !== item.hi) { unregister(item); choose(item); }
   }
 
-  // Fan-in. Inputs of one junction meet only at its dot: each bending input ends its bend a
-  // little to its own side of the junction's column and reaches the dot along its own slope,
-  // so no two share a final stretch (a lane shared between sources). Nearer inputs keep closer
-  // to the column, so inputs from one side do not cross before the dot. Offsets stay within
-  // the berth other routes and junctions keep from the column, and within half of what the
-  // nearest other dot's column on that side leaves beyond LANE_SEPARATION: that dot's inputs
-  // may fan out towards this one, and the two must not read as one line.
-  const fanIn = new Map<Leg, number>();
-  const intoJunction = new Map<string, Leg[]>();
-  for (const item of finalLegs) if ("junction" in item.to && bends(item)) append(intoJunction, item.to.junction, item);
-  const columnsByChannel = new Map<number, number[]>();
-  for (const id of intoJunction.keys()) { const spot = placed.get(id)!; append(columnsByChannel, spot.channel, spot.x); }
-  const fanWidth = (id: string, side: number) => {
-    const { x, channel } = placed.get(id)!;
-    let room = Infinity;
-    for (const other of columnsByChannel.get(channel)!) if (Math.sign(other - x) === side) room = Math.min(room, Math.abs(other - x));
-    return Math.min(FAN_IN, Math.max(0, (room - LANE_SEPARATION) / 2));
-  };
-  for (const [id, inputs] of intoJunction) for (const side of [-1, 1]) {
-    const group = inputs.filter((item) => Math.sign(item.x1 - item.x2) === side)
-      .sort((a, b) => Math.abs(a.x1 - a.x2) - Math.abs(b.x1 - b.x2) || (a.source < b.source ? -1 : a.source > b.source ? 1 : 0));
-    if (!group.length) continue;
-    const widest = fanWidth(id, side);
-    group.forEach((item, rank) => fanIn.set(item, side * widest * (rank + 1) / group.length));
-  }
-
   // 5. Tracks. Bends in one zone whose spans overlap bend in separate
   // horizontal slices of it (left-edge channel routing), so two routes never
   // run side by side at a shallow angle: wherever they cross, one of them runs
@@ -1410,7 +1417,7 @@ function layoutPass(prepared: Prepared, extra: { readonly left: number; readonly
   const trackCount: number[][] = [];
   // Every column a vertical run of the channel occupies, for choosing dogleg columns.
   const columnsIn: number[][] = [];
-  for (const item of allLegs) (columnsIn[item.channel] ??= []).push(item.x1, item.x2, item.x2 + (fanIn.get(item) ?? 0));
+  for (const item of allLegs) (columnsIn[item.channel] ??= []).push(item.x1, item.x2);
   /**
    * How two swapping bends cross: in one shared slice ("cross"), with a dogleg of one of them
    * (the bend, and the free column between the two it doglegs through), or not at all (null:
@@ -1424,7 +1431,8 @@ function layoutPass(prepared: Prepared, extra: { readonly left: number; readonly
     if (Math.max(Math.abs(first.x1 - first.x2), Math.abs(second.x1 - second.x2)) <= CROSSING_SWAP) {
       // They cross midway; a run of another source there would meet both at one point.
       const middle = (lo + hi) / 2;
-      if (!busy.some(([low, high]) => middle > low && middle < high)) return "cross";
+      if (Math.abs(first.x1 - second.x1) >= 2 * MIN_LANE && Math.abs(first.x2 - second.x2) >= 2 * MIN_LANE
+        && !busy.some(([low, high]) => middle > low && middle < high)) return "cross";
     }
     const leg = [first, second].find((item) => !("junction" in item.to));
     if (!leg) return null;
@@ -1433,7 +1441,7 @@ function layoutPass(prepared: Prepared, extra: { readonly left: number; readonly
       // A blocked swap cannot use consecutive inset curves: their vertical stems would
       // share the gap between slices. Try a bounded detour, clear of every actual stem.
       const occupied: [number, number][] = (columnsIn[channel] ?? []).map(x => [x - MIN_LANE, x + MIN_LANE]);
-      x = nearestFree((lo + hi) / 2, occupied, Math.max(0, lo - DOGLEG_REACH), Math.min(width, hi + DOGLEG_REACH));
+      x = nearestFree((lo + hi) / 2, occupied, 0, width);
     }
     return x === null ? null : { leg, x };
   };
@@ -1522,7 +1530,7 @@ function layoutPass(prepared: Prepared, extra: { readonly left: number; readonly
         const busy: [number, number][] = [];
         for (const x of columnsIn[channel] ?? []) busy.push([x - MIN_LANE, x + MIN_LANE]);
         const lo = Math.min(item.x1, item.x2), hi = Math.max(item.x1, item.x2);
-        const x = nearestFree((lo + hi) / 2, busy, Math.max(0, lo - DOGLEG_REACH), Math.min(width, hi + DOGLEG_REACH));
+        const x = nearestFree((lo + hi) / 2, busy, 0, width);
         if (x === null) continue;
         const low = Math.min(item.x1, x) - MIN_LANE, high = Math.max(item.x1, x) + MIN_LANE;
         pieces.set(index, { x, track: firstTrack(low, high, item), low, high });
@@ -1589,6 +1597,7 @@ function layoutPass(prepared: Prepared, extra: { readonly left: number; readonly
     (trackCount[channel] ??= [])[zone] = most;
   }
   const tracksIn = (channel: number, zone: number) => trackCount[channel]?.[zone] ?? 1;
+  const curvedTracks = zoneGroups.map(zones => zones?.map(legs => legs?.some(item => (item.span ?? 1) > 1) ?? false));
 
   // Port berths. A tile's outputs leave its bottom edge at its centre; another source bending
   // under that port within the stem's first PORT_BERTH crosses the stem so close to the tile that
@@ -1596,15 +1605,19 @@ function layoutPass(prepared: Prepared, extra: { readonly left: number; readonly
   // under another source's port (strictly between the bend's ends: a bend ending on a port's
   // column is a lane matter) starts that zone's tracks a berth below the row; the zone grows only
   // where its tracks then need more room.
-  const portBerth: number[] = [];
+  const portBerth: number[] = [], nearbyPort: boolean[] = [];
   const portsByRow = new Map<number, { x: number; source: string }[]>();
   for (const item of trie) if (item.parent < 0 && item.tile !== undefined) append(portsByRow, item.row, { x: item.x, source: item.source });
   for (const item of allLegs) {
     if (item.zone !== 0 || portBerth[item.channel] || !bends(item)) continue;
-    const lo = Math.min(item.x1, item.x2, item.dogleg?.x ?? Infinity) + .5, hi = Math.max(item.x1, item.x2, item.dogleg?.x ?? -Infinity) - .5;
-    for (const port of portsByRow.get(item.channel) ?? []) if (port.source !== item.source && port.x > lo && port.x < hi) { portBerth[item.channel] = PORT_BERTH; break; }
+    const lo = Math.min(item.x1, item.x2, item.dogleg?.x ?? Infinity) - PORT_BERTH, hi = Math.max(item.x1, item.x2, item.dogleg?.x ?? -Infinity) + PORT_BERTH;
+    for (const port of portsByRow.get(item.channel) ?? []) if (port.source !== item.source && port.x > lo && port.x < hi) {
+      nearbyPort[item.channel] = true;
+      if (port.x > lo + PORT_BERTH + .5 && port.x < hi - PORT_BERTH - .5) { portBerth[item.channel] = PORT_BERTH; break; }
+    }
   }
-  const berthAt = (channel: number, zone: number) => zone === 0 ? portBerth[channel] ?? 0 : 0;
+  const berthAt = (channel: number, zone: number) => zone === 0
+    ? Math.max(portBerth[channel] ?? 0, nearbyPort[channel] && curvedTracks[channel]?.[zone] ? PORT_BERTH : 0) : 0;
 
   // 6. Vertical placement. Each zone is as tall as its tracks need (crowded
   // channels grow instead of squeezing bends), and junction levels sit
@@ -1612,7 +1625,7 @@ function layoutPass(prepared: Prepared, extra: { readonly left: number; readonly
   const nodes = new Map<NodeKey, PlacedNode>();
   const rows: RowBox[] = [];
   /** Zone boxes by channel, then zone. */
-  const zoneBoxes: { top: number; bottom: number }[][] = [];
+  const zoneBoxes: { top: number; bottom: number; curved: boolean }[][] = [];
   let y: number = space.top;
   rowKeys.forEach(({ band, keys: keysInRow }, index) => {
     for (const key of keysInRow) {
@@ -1623,10 +1636,16 @@ function layoutPass(prepared: Prepared, extra: { readonly left: number; readonly
     rows.push({ index, band, top: y, bottom, keys: keysInRow });
     y = bottom;
     const count = levelCount(index);
-    const boxes: { top: number; bottom: number }[] = zoneBoxes[index] = [];
+    const boxes: { top: number; bottom: number; curved: boolean }[] = zoneBoxes[index] = [];
     for (let zone = 0; zone <= count; zone++) {
-      const tall = Math.max(defaultZone(index, zone), berthAt(index, zone) + tracksIn(index, zone) * TRACK_HEIGHT);
-      boxes[zone] = { top: y, bottom: y + tall };
+      const curved = curvedTracks[index]?.[zone] ?? false;
+      // Straight tracks need three pixels between centers and at free ends;
+      // a tile port needs six. Curved swaps retain their full six-pixel slices.
+      const needed = curved ? berthAt(index, zone) + tracksIn(index, zone) * TRACK_HEIGHT
+        : (tracksIn(index, zone) - 1) * LANE_SEPARATION + LANE_SEPARATION
+          + (zone === 0 && nearbyPort[index] ? PORT_BERTH : LANE_SEPARATION);
+      const tall = Math.max(prepared.channelStyle === "orthogonal" && !curved ? 2 * LANE_SEPARATION : defaultZone(index, zone), needed);
+      boxes[zone] = { top: y, bottom: y + tall, curved };
       y += tall + (zone < count ? 2 * JUNCTION_BERTH : 0);
     }
     // No bend below the last zone: routes into the next row run straight.
@@ -1645,16 +1664,25 @@ function layoutPass(prepared: Prepared, extra: { readonly left: number; readonly
     return anchor.edge === "bottom" ? row.bottom : anchor.edge === "top" ? row.top : row.top - ARROW.length;
   };
 
-  // 7. Paths: vertical to the bend's slice, an S-curve within it (inset from the slice's edges
-  // where it has neighbours), vertical on.
+  // 7. Paths: vertical to the reserved track, across it, then vertical on, with local fillets.
+  // Paired swaps and junction fans retain their dedicated curve shapes.
   // Bend zones end `approach` above the next row, so a route into a tile ends
   // in a straight, vertical stem at least as long as its arrowhead.
-  const draw = (item: Leg): string => {
+  const trackCenter = (item: Leg, track: number) => {
+    const box = zoneBoxes[item.channel][item.zone], y1 = at(item.from), y2 = at(item.to);
+    const top = Math.max(box.top + berthAt(item.channel, item.zone), y1), bottom = Math.min(box.bottom, y2);
+    const tracks = tracksIn(item.channel, item.zone), slice = (bottom - top) / tracks;
+    if (box.curved) return top + slice * (track + .5);
+    const first = Math.max(box.top, y1) + (item.zone === 0 && nearbyPort[item.channel] ? PORT_BERTH : LANE_SEPARATION);
+    const last = bottom - LANE_SEPARATION;
+    return tracks === 1 ? (first + last) / 2 : first + (last - first) * track / (tracks - 1);
+  };
+  const drawSharp = (item: Leg): string => {
     const y1 = at(item.from), y2 = at(item.to);
     const { x1, x2 } = item;
     // Each coordinate is formatted once, however often the path repeats it.
     const right = `${round(x2)}`;
-    if (!bends(item)) {
+    if (!bends(item) && !fanIn.has(item)) {
       // Too slight an offset to bend; the stem into an arrowhead is still exactly vertical.
       const stem = "edge" in item.to && item.to.edge === "arrow" && round(x1) !== round(x2) ? ` L${right} ${round(y2 - ARROW.length)}` : "";
       return `${stem} L${right} ${round(y2)}`;
@@ -1667,20 +1695,40 @@ function layoutPass(prepared: Prepared, extra: { readonly left: number; readonly
     // keeps half of LANE_SEPARATION inside either edge of its slice, running vertically there.
     const inset = tracks > 1 ? LANE_SEPARATION / 2 : 0;
     const span = item.span ?? 1, start = top + slice * (item.track + 1 - span) + inset, end = top + slice * (item.track + 1) - inset;
-    const left = `${round(x1)}`, middle = `${round((start + end) / 2)}`;
+    const left = `${round(x1)}`, middle = `${round(span > 1 ? (start + end) / 2 : trackCenter(item, item.track))}`;
     if (item.dogleg) {
       // Curve to the dogleg's column in its first slice, down that column, then on in its own.
-      const first = top + slice * item.dogleg.track + inset, last = first + slice - 2 * inset, column = `${round(item.dogleg.x)}`, upper = `${round((first + last) / 2)}`;
-      return `${first > y1 ? ` L${left} ${round(first)}` : ""} C${left} ${upper},${column} ${upper},${column} ${round(last)} L${column} ${round(start)} C${column} ${middle},${right} ${middle},${right} ${round(end)}${end < y2 ? ` L${right} ${round(y2)}` : ""}`;
+      const column = `${round(item.dogleg.x)}`, upper = `${round(trackCenter(item, item.dogleg.track))}`;
+      return ` L${left} ${upper} L${column} ${upper} L${column} ${middle} L${right} ${middle} L${right} ${round(y2)}`;
     }
     const fan = fanIn.get(item);
-    if (fan) {
+    if (fan !== undefined && fan !== 0) {
       // Into a junction: down its own side of the column to the berth, then a short S-curve
       // that reaches the dot vertically (routes stay orthogonal apart from their curves).
-      const side = `${round(x2 + fan)}`, berthTop = Math.max(end, y2 - JUNCTION_BERTH), into = `${round((berthTop + y2) / 2)}`;
-      return `${start > y1 ? ` L${left} ${round(start)}` : ""} C${left} ${middle},${side} ${middle},${side} ${round(end)}${end < berthTop ? ` L${side} ${round(berthTop)}` : ""} C${side} ${into},${right} ${into},${right} ${round(y2)}`;
+      const side = `${round(x2)}`, dot = `${round(x2 - fan)}`, berthTop = Math.max(end, y2 - JUNCTION_BERTH), into = `${round((berthTop + y2) / 2)}`;
+      return ` L${left} ${middle} L${side} ${middle} L${side} ${round(berthTop)} C${side} ${into},${dot} ${into},${dot} ${round(y2)}`;
     }
-    return `${start > y1 ? ` L${left} ${round(start)}` : ""} C${left} ${middle},${right} ${middle},${right} ${round(end)}${end < y2 ? ` L${right} ${round(y2)}` : ""}`;
+    // Keep turns on their reserved orthogonal track; paired swaps need crossing curves.
+    return (item.span ?? 1) > 1
+      ? `${start > y1 ? ` L${left} ${round(start)}` : ""} C${left} ${middle},${right} ${middle},${right} ${round(end)}${end < y2 ? ` L${right} ${round(y2)}` : ""}`
+      : ` L${left} ${middle} L${right} ${middle} L${right} ${round(y2)}`;
+  };
+  // Foreign ink is read from the sharp drawing, independently of turn order.
+  const sharp = new Map(allLegs.map(item => [item, `M${round(item.x1)} ${round(at(item.from))}${drawSharp(item)}`]));
+  const ink = new Map<number, { item: Leg; runs: ChannelInk[] }[]>();
+  for (const item of allLegs) append(ink, item.channel, { item, runs: channelInk(sharp.get(item)!) });
+  const draw = (item: Leg): string => {
+    if (!bends(item) && !fanIn.has(item)) return drawSharp(item);
+    const box = zoneBoxes[item.channel][item.zone];
+    const foreign = ink.get(item.channel)!.filter(other => other.item.source !== item.source).flatMap(other => other.runs);
+    const centers = Array.from({ length: tracksIn(item.channel, item.zone) }, (_, track) => round(trackCenter(item, track)));
+    const path = roundChannelPath(sharp.get(item)!, foreign, corner => {
+      // Each track owns only its half of the space to the next track, even when
+      // the neighbouring route belongs to this source or occupies another x span.
+      const neighbours = centers.filter(y => y !== corner.y).map(y => Math.abs(y - corner.y) / 2);
+      return Math.max(0, Math.min(corner.y - box.top, box.bottom - corner.y, ...neighbours));
+    });
+    return path.replace(/^M[^LC]*/, '');
   };
   // Shared stretches are drawn once, as trunks carrying the consumers of
   // every route through them; each route draws only from where it branches
@@ -1708,12 +1756,26 @@ function layoutPass(prepared: Prepared, extra: { readonly left: number; readonly
   const chainStart = (node: number) => shared(node) && (trie[node].parent < 0 || usage[trie[node].parent] !== usage[node]);
   // Usage never grows down the trie, so the shared nodes of a route's trail
   // (root to end) are a prefix of it: the route draws from the first unshared.
-  // Each trunk's consumers are listed by route, whatever the walk's direction.
-  const trunkConsumers = new Map<number, Consumer[]>();
-  for (const { route, last } of courses) {
-    for (let node = last; node >= 0; node = trie[node].parent) if (chainStart(node)) {
-      const list = trunkConsumers.get(node);
-      if (list) for (const entry of route.consumers) list.push(entry); else trunkConsumers.set(node, [...route.consumers]);
+  // DFS makes every subtree's consumers a contiguous range in one shared table.
+  // A route contributes once, regardless of how many trunk segments carry it.
+  const children = trie.map(() => [] as number[]), endings = trie.map(() => [] as number[]);
+  trie.forEach((item, node) => { if (item.parent >= 0) children[item.parent].push(node); });
+  courses.forEach((course, i) => endings[course.last].push(i));
+  const consumers: Consumer[] = [], ranges: { start: number; end: number }[] = [];
+  const visit: { node: number; leave: boolean }[] = [];
+  trie.forEach((item, node) => { if (item.parent < 0) visit.push({ node, leave: false }); });
+  while (visit.length) {
+    const { node, leave } = visit.pop()!;
+    if (leave) {
+      ranges[node].end = consumers.length;
+    } else {
+      ranges[node] = { start: consumers.length, end: consumers.length };
+      for (const i of endings[node]) for (const entry of courses[i].route.consumers) {
+        consumers.push(entry);
+
+      }
+      visit.push({ node, leave: true });
+      for (let i = children[node].length - 1; i >= 0; i--) visit.push({ node: children[node][i], leave: false });
     }
   }
   const routes: PlacedRoute[] = [];
@@ -1729,15 +1791,10 @@ function layoutPass(prepared: Prepared, extra: { readonly left: number; readonly
     // Follow the single continuation that keeps every route of this trunk.
     for (let current: number | undefined = node; current !== undefined; current = continuation[current]) path += piece(current);
     if (path.includes("L") || path.includes("C")) {
-      const distinct = new Map<string, Consumer>();
-      for (const entry of trunkConsumers.get(node)!) distinct.set(`${entry.parent}>${entry.child}`, entry);
-      const consumers = [...distinct.values()];
       if (!endpointOf) { endpointOf = new Map(); for (const { route, source } of courses) endpointOf.set(source, route.from); }
       const from = endpointOf.get(item.source)!;
-      // Named by what it carries, not where it runs, so a trunk keeps its id
-      // (and morphs) across relayouts that move it.
-      const carried = hashOf([...distinct.keys()].sort().join("|"));
-      routes.push({ id: unique(`${item.source}~${carried}`), from, to: from, consumers, path, terminal: false });
+      // Exact source and trie position identify this segment without a lossy hash.
+      routes.push({ id: JSON.stringify(["trunk", from.kind, from.id, node]), from, to: from, consumers: { entries: consumers, ...ranges[node] }, path, terminal: false });
     }
   });
   const unsharedTrail: number[] = [];
@@ -1754,7 +1811,7 @@ function layoutPass(prepared: Prepared, extra: { readonly left: number; readonly
     }
     path += draw(final);
     // The final leg's target is the route's end, as an endpoint key.
-    const id = `${source}>${final.target}`;
+    const id = edgeKey(route.from, route.to);
     routes.push({ id: plainKeys ? id : unique(id), from: route.from, to: route.to, consumers: route.consumers, path, terminal: route.to.kind === "node" });
   });
 

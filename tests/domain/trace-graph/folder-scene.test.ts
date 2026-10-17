@@ -1,3 +1,4 @@
+import { routeConsumers } from "$lib/domain/trace-graph/route-consumers";
 import { describe, expect, it } from "vitest";
 import { engines, type FolderLayout, type FolderLayoutInput } from "$lib/domain/trace-graph/folder-layout";
 import { buildFolderScene, entityId, JUNCTION_RADIUS, type FolderScene, type SceneStyling } from "$lib/domain/trace-graph/folder-scene";
@@ -31,7 +32,7 @@ describe("folder scene records", () => {
         const expected = [...visible].flatMap((child) => (dag.parents.get(child) ?? []).filter((parent) => visible.has(parent)).map((parent) => `${parent}>${child}`)).sort();
         const edges = [...scene.edges.values()].filter((edge) => edge.graphId === id);
         expect(edges.filter((edge) => !edge.badge).map((edge) => `${edge.parent}>${edge.child}`).sort()).toEqual(expected);
-        const drawn = new Set([...scene.routes.values()].filter((route) => route.graphId === id).flatMap((route) => route.route.consumers.map((c) => `${c.parent}>${c.child}`)));
+        const drawn = new Set([...scene.routes.values()].filter((route) => route.graphId === id).flatMap((route) => routeConsumers(route.route).map((c) => `${c.parent}>${c.child}`)));
         expect([...drawn].sort()).toEqual(expected);
         expect(edges.filter((edge) => edge.badge).map((edge) => `${edge.parent}>${edge.child}`).sort())
           .toEqual([...graph.plan.badges].flatMap(([child, badges]) => badges.map((badge) => `${badge.key}>${child}`)).sort());

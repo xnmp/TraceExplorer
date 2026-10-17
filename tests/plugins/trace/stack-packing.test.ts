@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { packStackGroups } from "$lib/plugins/trace/view/stack-packing";
 import { packedGridFlow, bandPlacements, attachPackedBand, bandExtent } from "$lib/plugins/trace/view/stack-grid";
 import { layoutGraph } from "$lib/domain/trace-graph/layout";
-import { STACK_STEM_ROOM } from "$lib/domain/trace-graph/metrics";
+import { ARROW, LANE_SEPARATION, STACK_STEM_ROOM, TRACK_HEIGHT } from "$lib/domain/trace-graph/metrics";
 import { samplePathString } from "$lib/domain/trace-graph/path-sampling";
 
 const group = (id: string, center: number, width = 100, height = 80) => ({ id, center, width, height });
@@ -48,12 +48,24 @@ describe("shared grid row band", () => {
     expect(flow.cells.get("file")?.y).toBe(230);
     expect(flow.height).toBe(330);
   });
+  it("attaches side-by-side groups whose lanes cannot meet as lone bands, aligned and unmoved by the other opening", () => {
+    const lone = bandPlacements(packedGridFlow(items, new Map([["a", { width: 90, height: 80 }]]), 2, metrics), 100).get("a")!;
+    const both = bandPlacements(packedGridFlow(items, new Map([["a", { width: 90, height: 80 }], ["b", { width: 90, height: 120 }]]), 2, metrics), 100);
+    for (const id of ["a", "b"]) expect({ track: both.get(id)!.track, stemRoom: both.get(id)!.stemRoom }).toEqual({ track: lone.track, stemRoom: lone.stemRoom });
+    expect(lone.stemRoom).toBe(STACK_STEM_ROOM);
+  });
+  it("keeps separate, separated tracks when one group's lane passes another's", () => {
+    const flow = packedGridFlow(items, new Map([["a", { width: 140, height: 80 }], ["b", { width: 140, height: 120 }]]), 2, metrics);
+    const [a, b] = ["a", "b"].map((id) => bandPlacements(flow, 100).get(id)!);
+    expect(b.track! - a.track!).toBeGreaterThanOrEqual(TRACK_HEIGHT + LANE_SEPARATION + 1);
+    expect(b.stemRoom!).toBeGreaterThanOrEqual(b.track! + 2 * ARROW.length);
+  });
   it("adds wrapped lines within that band without moving any cover horizontally", () => {
     const flow = packedGridFlow(items, new Map([["a", { width: 140, height: 80 }], ["b", { width: 140, height: 120 }]]), 2, metrics);
-    expect(flow.bands.map(({ y }) => y)).toEqual([100, 180]);
+    expect(flow.bands.map(({ y }) => y)).toEqual([100, 186]);
     expect(flow.cells.get("b")?.x).toBe(110);
-    expect(flow.rowBands[0].height).toBe(200);
-    expect(flow.cells.get("file")?.y).toBe(310);
+    expect(flow.rowBands[0].height).toBe(222);
+    expect(flow.cells.get("file")?.y).toBe(332);
   });
   for (const childX of [20, 155, 160, 260]) {
     it(`leaves only bend room before routing to a child at ${childX}`, () => {

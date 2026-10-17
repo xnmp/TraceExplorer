@@ -176,7 +176,13 @@ export function cornersOf(ss: readonly Segment[]): Point[] {
     while (j < points.length - 1 && along[j] - along[k] < CORNER_WINDOW) j++;
     const ux = points[k].x - points[i].x, uy = points[k].y - points[i].y, vx = points[j].x - points[k].x, vy = points[j].y - points[k].y;
     const u = Math.hypot(ux, uy), v = Math.hypot(vx, vy);
-    if (u > 1e-9 && v > 1e-9 && (ux * vx + uy * vy) / (u * v) <= cos) out.push(points[k]);
+    // Windowed directions capture rounded bends, but can erase a short, sharp
+    // dogleg between long parallel runs. Its actual vertices still need berths.
+    const a = points[k - 1], b = points[k], c = points[k + 1];
+    const ax = b.x - a.x, ay = b.y - a.y, bx = c.x - b.x, by = c.y - b.y;
+    const al = Math.hypot(ax, ay), bl = Math.hypot(bx, by);
+    const sharp = al > 1e-9 && bl > 1e-9 && (ax * bx + ay * by) / (al * bl) <= cos;
+    if (sharp || u > 1e-9 && v > 1e-9 && (ux * vx + uy * vy) / (u * v) <= cos) out.push(b);
   }
   return out;
 }
@@ -202,15 +208,27 @@ export const INTO_JUNCTION: Ends = Object.freeze({ start: PORT_BERTH, end: 0 });
 /** A route from a tile's port into another tile, ending in an arrowhead. */
 export const INTO_TILE: Ends = Object.freeze({ start: PORT_BERTH, end: PORT_BERTH, arrow: true });
 
+/** The arrow shaft beyond the path's end is painted ink too. */
+export function paintedSegments(ss: readonly Segment[], ends: Ends): readonly Segment[] {
+  const last = ss.at(-1), tip = last && ends.arrow ? arrowTip(last) : null;
+  return tip ? [...ss, [last![1], tip]] : ss;
+}
+
 /**
  * A drawn route's ends: a start on its tile's outline is a port, elsewhere a free end (a branch
  * leaving its trunk); an arrowhead's end is a port, a trunk's end short of any tile is free; a
  * junction's dot keeps its own berth.
  */
-export function routeEnds(route: PlacedRoute, ss: readonly Segment[], nodes: ReadonlyMap<string, PlacedNode>): Ends {
+export function routeEnds(route: PlacedRoute, ss: readonly Segment[], nodes: ReadonlyMap<string, PlacedNode>, junctions: ReadonlyMap<string, Point>): Ends {
   if (!ss.length) return { start: 0, end: 0 };
-  const start = route.from.kind === "junction" ? 0 : onOutline(nodes.get(route.from.id), ss[0][0]) ? PORT_BERTH : CORNER_BERTH;
-  const end = route.to.kind === "junction" ? 0 : route.terminal ? PORT_BERTH : CORNER_BERTH;
+  const atDot = (id: string, point: Point): boolean => {
+    const dot = junctions.get(id);
+    return !!dot && Math.hypot(dot.x - point.x, dot.y - point.y) <= BERTH_SLACK;
+  };
+  const start = route.from.kind === "junction" ? atDot(route.from.id, ss[0][0]) ? 0 : CORNER_BERTH
+    : onOutline(nodes.get(route.from.id), ss[0][0]) ? PORT_BERTH : CORNER_BERTH;
+  const end = route.to.kind === "junction" ? atDot(route.to.id, ss[ss.length-1][1]) ? 0 : CORNER_BERTH
+    : route.terminal ? PORT_BERTH : CORNER_BERTH;
   return { start, end, arrow: route.to.kind === "node" && route.terminal };
 }
 
@@ -221,7 +239,8 @@ export function berthsOf(ss: readonly Segment[], ends: Ends): Berth[] {
   const first = ss[0][0], last = ss[ss.length - 1][1];
   if (ends.start > 0) out.push({ x: first.x, y: first.y, radius: ends.start });
   if (ends.end > 0) {
-    out.push({ x: last.x, y: last.y, radius: ends.end });
+    // The line ends at the arrow base; only its tip occupies the target port.
+    out.push({ x: last.x, y: last.y, radius: ends.arrow ? CORNER_BERTH : ends.end });
     const tip = ends.arrow ? arrowTip(ss[ss.length - 1]) : null;
     if (tip) out.push({ x: tip.x, y: tip.y, radius: ends.end });
   }

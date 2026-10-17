@@ -4,6 +4,13 @@ Run `bun run layout:eval` from the repository root. No network or API calls are 
 `OPENAI_API_KEY` is removed. Generated artifacts go to the git-ignored `out/`. The script
 exits non-zero when any acceptance target fails.
 
+Current acceptance compares against the locally re-measured `75e46b0` in
+`main-reference.json`; the frozen-baseline rows below remain separate diagnostics and
+also affect the exit status. Tours pass committed click history and bounded revisit
+memory through the historical band adapter. Packing and randomized worker/main expansion
+tests exercise the production folder engine. Held-screen metrics apply the production
+scroll-compensation equations and clamping; they are not browser measurements.
+
 `baseline/` freezes the domain layout, metrics, attachment, path helpers and skyline
 packing from `34ed9a2de1d8ab3c4190b590e0054be3ac32c394`, the engine before plan phase 2.
 Production comparisons call the public `layoutGraph` entry point; the complete topology
@@ -33,9 +40,12 @@ with `--out=before.json` before a performance-only change and `--compare=before.
 after: any differing case means the change altered geometry or decisions.
 
 The 5 ms target is reported twice. "Main-thread" requests follow the view's dispatch rule
-(`canLayoutInline`: at most 30 current plus committed-history tiles, and 40 current input
+(`canLayoutInline`: at most 20 current plus committed-history tiles, and 20 current input
 edges plus history routes); larger requests run in the worker. The table also checks every
 case with at most 30 visible tiles, whichever thread runs it.
+An additional full-folder inline probe includes planning, validation, packing, and display
+memory encode/restore, with 100 samples after 12 warmups per workload. No saved main
+measurement exists for that additional probe; its absolute limit is 5 ms.
 
 Metrics: child/routing height, width, area, rectangle/pane whitespace, sampled ink,
 quarter-turn bends, unrelated-source crossings, shared-lane pixels, direction, sibling

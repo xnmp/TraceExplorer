@@ -291,13 +291,16 @@ async function routeFrame(page: Page) {
       const bends: number[] = [];
       const curves = [...d.matchAll(/([MLC])\s*([^MLC]+)/g)].flatMap(match => {
         const values = match[2].match(/-?(?:\d+\.?\d*|\.\d+)(?:e[-+]?\d+)?/gi)!.map(Number);
-        const dx = values[0] - at[0], dy = values[1] - at[1];
-        const axis = match[1] === 'L' ? Math.abs(dy) < .001 && Math.abs(dx) > .001 ? 0 : Math.abs(dx) < .001 && Math.abs(dy) > .001 ? 1 : undefined : undefined;
+        // Motion copies write every command of a route as a cubic so that its endpoints share one
+        // command list; a cubic whose controls all lie on one axis is the same straight run as an L.
+        const offsets = (i: number) => (match[1] === 'C' ? [0, 2, 4] : match[1] === 'L' ? [0] : []).map(k => values[k + i] - at[i]);
+        const still = (i: number) => offsets(i).every(v => Math.abs(v) < .001), moves = (i: number) => offsets(i).some(v => Math.abs(v) > .001);
+        const axis = still(1) && moves(0) ? 0 : still(0) && moves(1) ? 1 : undefined;
         if (axis !== undefined && previousAxis !== undefined && axis !== previousAxis) bends.push(before);
         previousAxis = axis;
         prefix += match[0]; probe.setAttribute('d', prefix);
         const after = probe.getTotalLength() * scale;
-        const curve = match[1] === 'C' ? [{ from: before, to: after,
+        const curve = match[1] === 'C' && axis === undefined ? [{ from: before, to: after,
           shape: values.map((v, i) => Math.round((v - at[i % 2]) * 10) / 10).join(',') }] : [];
         at = values.slice(-2); before = after;
         return curve;
@@ -352,7 +355,7 @@ for (const fixture of ['1', 'bridge', 'native-large', 'junction', 'junction-coll
   if (scenario.includes('close A')) {
     const a = await key(page, 'stack-a-1'), b = await key(page, 'stack-b-1');
     expect(start.tiles.find(t => t.key === b)!.y).toBeGreaterThan(start.tiles.find(t => t.key === a)!.bottom);
-    if (fixture.startsWith('bridge')) { const cover = await key(page, 'stack-b'); expect(start.routes.filter(r => r.id.startsWith(`node:${cover}`)).some(r => r.curves.filter(c => c.to - c.from > 1).length >= 3), JSON.stringify(start.routes)).toBe(true); }
+    if (fixture.startsWith('bridge')) { const cover = await key(page, 'stack-b'); expect(start.routes.filter(r => r.source === `node:${cover}`).some(r => r.curves.filter(c => c.to - c.from > 1).length >= 3), JSON.stringify(start.routes)).toBe(true); }
   }
   await holdMotion(page);
   const frames: Array<{ time: number; scene: Awaited<ReturnType<typeof routeFrame>> }> = [];
@@ -431,12 +434,12 @@ test('a retiring group keeps its connector fade when another group closes', asyn
       (window as any).trace.motion.seek(60);
       await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
     });
-    const before = (await routeFrame(page)).routes.filter(r => r.id.startsWith(`node:${a}>`) && r.opacity > 0);
+    const before = (await routeFrame(page)).routes.filter(r => r.source === `node:${a}` && r.opacity > 0);
     expect(before.length).toBeGreaterThan(0);
     expect(before.every(r => r.opacity > 0 && r.opacity < 1)).toBe(true);
     await toggle('b').evaluate((element: HTMLElement) => element.click());
     await awaitMotionStarted(page);
-    const after = (await routeFrame(page)).routes.filter(r => r.id.startsWith(`node:${a}>`) && r.opacity > 0);
+    const after = (await routeFrame(page)).routes.filter(r => r.source === `node:${a}` && r.opacity > 0);
     expect(after.map(r => ({ id: r.id, opacity: r.opacity, d: r.d }))).toEqual(before.map(r => ({ id: r.id, opacity: r.opacity, d: r.d })));
   } finally { await releaseMotion(page); }
   await settle(page);

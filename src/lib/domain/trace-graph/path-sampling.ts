@@ -144,7 +144,7 @@ export function polyline(points: readonly Point[]): string {
 }
 
 /** Absolute layout commands, with exact control points (no resampling). */
-function pathCommands(path: string): { kind: string; values: number[] }[] | null {
+export function pathCommands(path: string): { kind: string; values: number[] }[] | null {
   const commands = [...path.matchAll(/([MLC])\s*((?:[-+\d.eE,\s])+)/g)].map(match => ({
     kind: match[1], values: match[2].match(/-?(?:\d+\.?\d*|\.\d+)(?:e[-+]?\d+)?/gi)?.map(Number) ?? [],
   }));

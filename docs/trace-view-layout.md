@@ -2,6 +2,62 @@
 
 How the Trace view arranges one connected component, which way it runs, which nodes it shows, and why it does not use ELK.
 
+## Current admission and history contract (2026-10-17)
+
+This section supersedes the historical click-history, lane fallback, and crossing-cap
+policies below. The folder engine derives geometry from folder contents, expansion, and
+committed displayed history. New states use the current drawing and click-time anchor.
+Revisiting a retained state restores its exact drawing from a 64-entry per-folder LRU,
+keyed by effective expansion, ordered cells, pane width, tile/grid metrics and policy.
+The immutable serialized ledger is an explicit history input/output, shared by the worker
+and inline engine; it becomes committed history only when its scene is published. Selection
+is never a layout input. Different paths to a never-displayed state may produce different
+drawings. Content changes invalidate the ledger and save only the current new drawing.
+The backend token is an observation epoch, not evidence that membership changed: job status
+updates must not capture an arrival placement. Closed components do not expose complete
+membership; opening learns those facts while preserving their saved history. See
+[the current acceptance report](layout-hard-gates.md) for measured targets and remaining construction limits.
+
+Output arrival captures the previous visible rectangles. Hint height is present only on
+tiles with children. Retained tiles keep their x positions; their y positions either stay
+fixed or descend by exactly one hint height (16 px), only below a tile in the same column
+that gained its first hint. Tiles above or beside it stay fixed; simultaneous hints cannot
+accumulate a larger descent. Shrinking a hint keeps positions and leaves reusable space.
+Bounded connector repair certifies the resulting drawing before publication, and the scene
+layer glides its geometry change. Folder pinning includes other bands and ordinary grid
+cells as obstacles, and can extend the canvas. Search exhaustion is reported honestly as
+`pin-search-exhausted`; it is not a proof of geometric infeasibility.
+
+Ordinary channel turns use the existing cubic quarter-circle fillets, with a per-turn radius
+up to the cover attachment's 6 px. Track bounds, adjacent runs, and clearance from foreign
+ink constrain the radius; no available clearance leaves a sharp turn. The independent gate
+and ordinary curve motion remain unchanged. Opening a later wrapped cover row can still
+move another band's children by 6 px because track spacing is shared; routing consolidation
+(layout review recommendation 4) will address that separately.
+
+`history-boundary.ts` validates containers, finite bounded coordinates, consumers, and the
+exact raw-to-attached transform before reuse. Invalid history is discarded with
+`invalid-history`. Provisional cover stems are replaced during attachment: the global safety
+gate applies to the complete drawing that will actually be displayed.
+
+`geometry-gate.ts` independently reads path geometry, verifies source claims and connectivity,
+certifies curve/tile separation by bounded convex-hull subdivision, and checks unrelated
+corners, ports, arrow bases, and near lanes. It does not use router occupancy tables.
+`folder-layout/geometry-gate.ts` repeats admission in folder coordinates after packing.
+All fallback candidates are computed and admitted before the transaction publishes once.
+Wider channels, safe chains/fans, wide columns, and isolated rows replace unsafe candidates;
+unsafe geometry is never returned by the band/folder admission boundary. A construction
+outside the finite coordinate reach can still fail explicitly.
+
+Proper transverse interior crossings remain allowed by this implementation; they have no
+bridge rendering. Thus the literal requirement that unrelated routes never touch anywhere
+is stronger than the implemented clearance contract. Arbitrary nonplanar DAGs cannot satisfy
+that literal requirement with continuous planar connectors.
+
+Shared trunk consumers are immutable table ranges. Endpoint/edge IDs are encoded tuples;
+optional junction subset factoring has a fixed work budget. These seams do not consolidate
+the independent routing implementations.
+
 ## Grid bands and pinned covers
 
 The view uses one folder-order grid. `folderCells` collapses each lineage at
@@ -64,12 +120,16 @@ malformed backend history deterministically before planning.
 C = 16 H/t + 2 A/t² + .08 L/t + .12 B + .1 X
     + mixedDirections + 3 siblingInversions + .25 unaligned
     + 100 widthOverflow/t
-    + 1.5 (meanDisplacement/t + .25 maxDisplacement/t + 2 clickedDisplacement/t)
+    + 80 movedFraction
+    + 16 (meanDisplacement/t + .25 maxDisplacement/t + 2 clickedDisplacement/t)
 ```
 
 Here H/A are the visible child/routing height and area, t is tile width, L is sampled
 connector length, B is turning in quarter-turn equivalents, X is unrelated-source
-crossings. Empty area is already priced through H/A; whitespace is reported separately.
+crossings. Moving every retained child costs five tile-widths of height even for short moves;
+mean travel of one tile width costs one tile-width of height, with additional maximum and
+clicked-tile penalties. The same weights apply to ordinary scoring, optimistic bounds and
+explicit shared-lane fallback pricing. Empty area is already priced through H/A; whitespace is reported separately.
 Hard gates reject missing/extra nodes, wrong sizes, nonfinite/off-canvas geometry,
 overlaps, connectors through tiles, incorrect directed parentage, invalid paths, broken
 source-to-output connectivity, arrow approaches and shared lanes.
@@ -238,21 +298,23 @@ not leave ([Contacts](#contacts)); a new tile goes only where no line already dr
 within `TILE_GRAZE` of it. Blocked source ports use a bounded rectilinear
 visibility grid (5,000 expanded points per search, up to 3 fallback slots). Only when nothing is found does a second
 chance run: probes on lanes half a step apart, then the grid with columns beside every
-foreign lane over up to 16 slots (50,000 points per search). An embedding that cannot be
-made lane-free is not offered.
-The work is bounded per layout request, not per search: one `IncrementalBudget` serves
-every incremental embedding a request tries (the incremental tree and the anchored
-repack), with 2,000 probe placements, 200,000 units of plain-fallback grid work and
-200,000 of second-chance grid work (a unit is one expanded point, or eight built ones).
-A spent pool stops its searches, and the embedding gives way to the full layout. The
-budgets trade anchor stability against worst-case time on dense DAG reveals: smaller
-pools moved more anchors (for example 50,000 / 50,000 with 250 probes: 23 legal-tour
-clicks moved their anchor, against 7 at the chosen budgets, before the crossing cap). Retained geometry spanning
+foreign lane over up to 128 slots (400,000 points per search). A published embedding
+must be independently certified; contact-bearing internal drafts may be repaired first.
+Each attempted embedding has an independent `IncrementalBudget`: 16,000 probe placements,
+1,600,000 units of plain-fallback grid work and 1,600,000 of second-chance grid work
+(a unit is one expanded point, or eight built ones). A spent pool stops its searches.
+After ordinary held candidates fail, four pairs of constrained/repairable retries use
+1×, 2×, 3× and 4× those pools. Two final retries retain the cover and clicked ancestry
+while allowing other siblings to move. Arrival pinning does not use these relaxed retries.
+Pinned connector repair is capped at 3,072 probes and 96 edits per candidate; every accepted
+repair passes the unchanged independent geometry gate. The measured budget curve and
+residual route-family limitations are in [the acceptance report](layout-hard-gates.md).
+Retained geometry spanning
 more than 65,536 index rows (about 4 million px) is not indexed: such history is not
 used for an incremental embedding.
 Only previous visible geometry is retained; no candidate reserves future descendants.
 The clicked tile and its visible ancestors have a hard preference among geometry-safe
-candidates. Other surviving tiles pay displacement. A direction change must improve
+candidates. Other surviving tiles pay both moved fraction and travel distance. A direction change must improve
 quality by at least 15%, preventing near-tie oscillation. Anchored history may exceed the
 compact candidate's height; the decision records that stability exception.
 

@@ -10,6 +10,7 @@
  * `diffScenes` matches records by identity across complete scenes (offscreen ones included) and
  * says how each one presents: `snap`, `animate` or `carry` (geometry unchanged).
  */
+import { JUNCTION_RADIUS } from "./connector-ink";
 import type { FileEntry } from "../file";
 import type { NodeKey, TraceNode } from "./model";
 import type { ReferenceBadge } from "./projection";
@@ -139,7 +140,7 @@ export interface FolderScene {
 }
 
 /** The rendered junction dot's radius. */
-export const JUNCTION_RADIUS = 2.8;
+export { JUNCTION_RADIUS } from "./connector-ink";
 
 const finite = (...values: number[]) => values.every(Number.isFinite);
 function checkedRect(rect: GridRect, what: string, positive = false): GridRect {
@@ -162,7 +163,7 @@ export function buildFolderScene(input: FolderSceneInput): FolderScene {
   const cells = layoutInput.items as readonly FolderCell[];
   const tile = layoutInput.tile;
   const geometry = folderGridGeometry(layoutInput.width, tile, layoutInput.grid);
-  if (layout.columns !== geometry.columns) throw new RangeError("layout columns do not match its input");
+  if (layout.columns !== geometry.columns && !(layout.decision?.fallback === "isolated-rows" && layout.decision.requestedColumns === geometry.columns && layout.columns === 1)) throw new RangeError("layout columns do not match its input");
   const ids = new Set<string>();
   for (const cell of cells) { if (ids.has(cell.id)) throw new RangeError(`duplicate grid item: ${cell.id}`); ids.add(cell.id); }
   if (layout.cells.size !== cells.length || cells.some((cell) => !layout.cells.has(cell.id))) throw new RangeError("layout cells do not match the items");

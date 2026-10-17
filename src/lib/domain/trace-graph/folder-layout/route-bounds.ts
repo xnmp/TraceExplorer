@@ -23,6 +23,16 @@ export function routeBounds(path: string, dx = 0, dy = 0, padding = ROUTE_BOUNDS
   return { x: left - padding, y: top - padding, width: right - left + 2 * padding, height: bottom - top + 2 * padding };
 }
 
+/** Keep cosmetic padding inside the pane, without concealing real route overflow. */
+export function paneRouteBounds(path: string, paneWidth: number, dx = 0, dy = 0): GridRect | null {
+  const raw = routeBounds(path, dx, dy, 0);
+  if (!raw) return null;
+  const paddedLeft = raw.x - ROUTE_BOUNDS_PADDING, paddedRight = raw.x + raw.width + ROUTE_BOUNDS_PADDING;
+  const left = raw.x >= 0 ? Math.max(0, paddedLeft) : paddedLeft;
+  const right = raw.x + raw.width <= paneWidth ? Math.min(paneWidth, paddedRight) : paddedRight;
+  return { x: left, y: raw.y - ROUTE_BOUNDS_PADDING, width: right - left, height: raw.height + 2 * ROUTE_BOUNDS_PADDING };
+}
+
 /** The smallest rectangle containing both (either may be null). */
 export function unionRect(a: GridRect | null, b: GridRect | null): GridRect | null {
   if (!a) return b;

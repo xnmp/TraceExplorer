@@ -716,8 +716,8 @@ describe("scene controller: restoration", () => {
     const saved = scenes.recall("p", "/f")!;
     expect([...saved.scene.graphs.keys()].sort()).toEqual(["a1", "b1"]);
     for (const graph of [...saved.scene.graphs.values(), ...saved.scene.layout.graphs.values()]) expect(graph.plan.request.history).toBeUndefined();
-    // The published scene itself is unchanged.
-    expect([...h.controller.published!.scene.graphs.values()].some((graph) => graph.plan.request.history !== undefined)).toBe(true);
+    // Live new states use committed click history; persisted scenes strip request chains.
+    expect(h.controller.published!.scene.layout.displays!.entries.length).toBeGreaterThan(1);
   });
 });
 
@@ -983,7 +983,7 @@ describe("scene controller: geometry motion policy (native findings)", () => {
     expect(moving(h)).toBe(false);
   });
 
-  it("a size round trip commits the layout it had before without laying out again", async () => {
+  it("a size round trip restores its geometry and retains the newest display ledger", async () => {
     const h = setup({ inline: () => false });
     h.offer({ open: new Set(["a1"]) }); await flush();
     h.deliver("ca"); await flush();
@@ -1001,9 +1001,14 @@ describe("scene controller: geometry motion policy (native findings)", () => {
     const asked = h.layouts.length, inlineRuns = h.engine.mock.calls.length;
     h.offer({ width: 900 });
     await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
-    expect(h.controller.published!.scene.layout).toBe(narrow.scene.layout);
+    const restored = h.controller.published!.scene.layout;
+    expect(restored.cells).toEqual(narrow.scene.layout.cells);
+    expect(restored.bands).toEqual(narrow.scene.layout.bands);
+    for (const [id, graph] of restored.graphs) expect(graph.attached).toEqual(narrow.scene.layout.graphs.get(id)!.attached);
+    expect(restored.revisited).toBe(true);
+    expect(restored.displays!.entries.length).toBeGreaterThan(narrow.scene.layout.displays!.entries.length);
     expect(h.layouts.length).toBe(asked);
-    expect(h.engine.mock.calls.length).toBe(inlineRuns);
+    expect(h.engine.mock.calls.length).toBe(inlineRuns + 1);
   });
 
   it("lays out at once, whatever the workload, when the scene on screen no longer fits the pane", async () => {

@@ -1,8 +1,8 @@
 /**
  * Where the Trace view runs the folder layout engine: the registered default engine, with one
- * band cache shared by every pane. Inline runs are decided by Phase 2's workload rule
- * (`canLayoutInline`) applied to each band request the run would actually compute (bands the
- * cache holds cost nothing); heavier runs go to the layout worker, whose bands are then
+ * band cache shared by every pane. Inline runs use separate construction and drawing budgets
+ * (`canLayoutFolderInline`) for construction, restore decoding and certification. Cached
+ * bands still need packing and certification; heavier runs go to the layout worker, whose bands are then
  * remembered here so the next inline run reuses them.
  *
  * The engine is not wrapped in a whole-input cache (`memoizeEngine`): the scene controller
@@ -11,8 +11,9 @@
  * its previous layout to every request (a quarter to a third of a typical one). The inline
  * check and the run that follows it plan the input once.
  */
-import { canLayoutInline } from "$lib/domain/trace-graph/layout-workload";
-import { createBoundedCache, createDefaultEngine, estimateLayoutBytes, rememberBands, uncachedBandRequests,
+import { folderBandWork } from "$lib/domain/trace-graph/folder-layout/default-engine";
+import { canLayoutFolderInline, canRetainFolderInline } from "$lib/domain/trace-graph/layout-workload";
+import { createBoundedCache, createDefaultEngine, estimateLayoutBytes, rememberBands,
   type FolderLayout, type FolderLayoutEngine, type FolderLayoutInput } from "$lib/domain/trace-graph/folder-layout";
 
 export interface FolderLayoutRuntime {
@@ -29,7 +30,9 @@ export function createFolderLayoutRuntime(): FolderLayoutRuntime {
   return {
     engine,
     inline(input) {
-      try { return uncachedBandRequests(input, bands).every(canLayoutInline); }
+      try {
+        return canRetainFolderInline(input) && canLayoutFolderInline(input.items, folderBandWork(input, bands));
+      }
       catch { return true; } // Invalid geometry fails the same way inline, at once.
     },
     remember: (layout) => rememberBands(layout, bands),

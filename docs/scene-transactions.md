@@ -1,5 +1,16 @@
 # Scene transactions — Phase 3 design
 
+> **History amendment (2026-10-17):** publishing a scene commits its displayed-layout ledger.
+> New expansion states use the current committed drawing and click anchor. Revisits restore
+> exact geometry from a bounded 64-state per-folder ledger keyed by every geometry input.
+> Contents changes clear that ledger before saving the new current state; arrival pinning
+> retains the previous rectangles. Selection never contributes to layout history or inputs.
+> Backend revision tokens are observation epochs, not contents
+> fingerprints. Worker replies and inline results use the same engine and the same complete
+> folder geometry gate. Certification and fallback finish before a single scene publication;
+> the previously committed scene remains displayed while computation is pending. See the
+> current admission contract in `trace-view-layout.md` for remaining limits.
+
 > **Amendment (2026-10-13):** section 3 is superseded where it splits planning, per-graph layout and composition across the controller. All geometry comes from one pure, swappable `FolderLayoutEngine = (input: FolderLayoutInput) => FolderLayout` (see `docs/trace-scene-plan.md`, phase 3 step 1). `planFolderScene`/`composeFolderScene` and per-graph `PreparedLayouts` become internals of the default engine; the controller runs the engine (inline or worker) on a complete, prepared `FolderLayoutInput` and commits its output. Per-band caching is the engine's concern (`memoizeEngine`). Everything else here stands.
 
 

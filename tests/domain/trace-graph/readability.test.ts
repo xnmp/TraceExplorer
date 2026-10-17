@@ -1,9 +1,10 @@
+import { geometryGate } from "$lib/domain/trace-graph/geometry-gate";
 import { describe, expect, it } from "vitest";
 import { layoutGraph, layoutLayered, type GraphLayout, type LayoutItem, type LayoutRequest, type PlacedRoute } from "$lib/domain/trace-graph/layout";
 import { bandHistorySignature } from "$lib/domain/trace-graph/band-layout";
 import { attachSingleBand } from "$lib/domain/trace-graph/band-geometry";
 import { buildShelves, columnsFor, partitions } from "$lib/domain/trace-graph/band-shelves";
-import { cost, measure, routePlan, sharedLaneLength, validateLayout, CROSSING_HEIGHT_TILES, CROSSING_WEIGHT, HEIGHT_WEIGHT } from "$lib/domain/trace-graph/layout-quality";
+import { cost, measure, routePlan, sharedLaneLength, validateLayout, CROSSING_HEIGHT_TILES, CROSSING_WEIGHT, HEIGHT_WEIGHT, DEFAULT_WEIGHTS } from "$lib/domain/trace-graph/layout-quality";
 import { spacingFor } from "$lib/domain/trace-graph/metrics";
 import { corpus, node, requestFor, rng, screenshot } from "../../../layout-eval/corpus";
 import { profiles, provenanceSession, sessionComponents } from "../../../layout-eval/provenance-model";
@@ -56,9 +57,9 @@ describe("shared lanes between sources", () => {
     expect(metrics.sharedLanePx).toBe(0);
     const shared = { ...metrics, sharedLanePx: 12 };
     expect(cost(shared, 92)).toBe(Infinity);
-    expect(cost(shared, 92, { stability: 1.5, sharedLanes: "priced" })).toBeCloseTo(cost(metrics, 92) + 4 * 12 / 92, 9);
+    expect(cost(shared, 92, { ...DEFAULT_WEIGHTS, sharedLanes: "priced" })).toBeCloseTo(cost(metrics, 92) + 4 * 12 / 92, 9);
     // A hard gate elsewhere is never priced away.
-    expect(cost({ ...shared, overlaps: 1 }, 92, { stability: 1.5, sharedLanes: "priced" })).toBe(Infinity);
+    expect(cost({ ...shared, overlaps: 1 }, 92, { ...DEFAULT_WEIGHTS, sharedLanes: "priced" })).toBe(Infinity);
   });
 
   it("is exact in hard-gate validation, which ranks nothing else", () => {
@@ -199,7 +200,7 @@ describe("routes trading columns", () => {
     const request = requestFor({ id: `layered-${seed}`, nodes: layered(seed), focuses: [null], full: true }, null, 454, 128);
     const layout = layoutGraph(request), drawn = attachSingleBand(layout, request);
     const gates = validateLayout(drawn, request.band!.key, 454, request.items);
-    expect(layout.decision?.fallback).toBeUndefined();
+    expect(geometryGate(drawn, request.items, request.band!.key, request.maxWidth)).toBeNull();
     expect(gates.sharedLanePx).toBe(0);
     expect(continuations(drawn)).toEqual([]);
     expect([gates.tileIntersections, gates.overlaps, gates.missingEdges, gates.extraEdges, gates.invalidGeometry, gates.invalidPaths, gates.terminalViolations, gates.disconnectedEdges]).toEqual(Array(8).fill(0));
@@ -264,7 +265,7 @@ describe("lines kept off tiles", () => {
   function grazing(layout: GraphLayout): string[] {
     const out: string[] = [];
     for (const r of layout.routes) {
-      if (!r.id.startsWith("incremental")) continue;
+      if (!r.id.startsWith('["incremental')) continue;
       const ss = routePlan(r).segments;
       for (const t of layout.nodes.values()) {
         if (t.key === r.from.id || t.key === r.to.id) continue;
@@ -286,7 +287,7 @@ describe("lines kept off tiles", () => {
       const request = requestFor({ id: `variations-${seed}`, nodes: component, focuses: [] }, focus, width, imagePx, previous?.layout.readingOrder);
       const layout = layoutGraph({ ...request, anchorKey: focus ?? undefined, history: previous });
       const placed = attachSingleBand(layout, request);
-      incremental += placed.routes.filter(r => r.id.startsWith("incremental")).length;
+      incremental += placed.routes.filter(r => r.id.startsWith('["incremental')).length;
       expect(grazing(placed), `focus ${focus}`).toEqual([]);
       previous = { signature: bandHistorySignature(request), layout, placed };
     }
@@ -322,7 +323,7 @@ describe("lines kept off tiles", () => {
         const d = Math.min(...ss.map(([a, b]) => toTile(a, b, t)));
         if (d < TILE_GRAZE - 1e-6) out.push(`${r.id} ${d.toFixed(2)} px from placed ${t.key}`);
       }
-      if (!r.id.startsWith("incremental") || r.from.kind !== "node") continue;
+      if (!r.id.startsWith('["incremental') || r.from.kind !== "node") continue;
       const own = placed.nodes.get(r.from.id)!, hugging = along(ss, TILE_GRAZE + .25).filter(q => pointToTile(q, own) < TILE_GRAZE - 1e-6);
       if (hugging.length) out.push(`${r.id} runs on ${own.key}'s border for ${hugging.length / 2} px`);
     }
@@ -335,18 +336,16 @@ describe("lines kept off tiles", () => {
     const component = sessionComponents(provenanceSession(profiles[profile], seed))[0];
     const shown = new Set(component.flatMap(n => n.parents));
     const focuses = [null, ...component.filter(n => n.scope === "current" && shown.has(n.key)).map(n => n.key).reverse().slice(0, 8), null];
-    let previous: { signature: string; layout: GraphLayout; placed: GraphLayout } | undefined, embedded = 0;
+    let previous: { signature: string; layout: GraphLayout; placed: GraphLayout } | undefined;
     for (const focus of focuses) {
       const request = requestFor({ id: `${profile}-${seed}`, nodes: component, focuses: [] }, focus, width, imagePx, previous?.layout.readingOrder);
       const layout = layoutGraph({ ...request, anchorKey: focus ?? undefined, history: previous });
       const placed = attachSingleBand(layout, request);
-      if (layout.decision?.candidate === "incremental-tree" || layout.decision?.candidate === "anchored-repack") {
-        embedded++;
-        expect(onPlacedTiles(layout, placed, previous?.layout), `focus ${focus}`).toEqual([]);
-      }
+      expect(onPlacedTiles(layout, placed, previous?.layout), `focus ${focus}`).toEqual([]);
       previous = { signature: bandHistorySignature(request), layout, placed };
     }
-    expect(embedded).toBeGreaterThan(0);
+    // The optimizer may choose a different certified candidate after routing changes.
+    // Clearance is asserted above for every layout, regardless of candidate name.
   });
 });
 

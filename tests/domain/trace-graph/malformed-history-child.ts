@@ -9,6 +9,7 @@ import { createDefaultEngine } from '../../../src/lib/domain/trace-graph/folder-
 import { folderInput, makeFolder } from './folder-layout-fixtures';
 import { node } from '../../../layout-eval/corpus';
 
+const geometry = (layout: GraphLayout) => ({ ...layout, decision: undefined });
 const [mode, path] = process.argv.slice(2);
 const attachmentField = path.startsWith('attachment:') ? path.slice('attachment:'.length) : null;
 const corrupt = (graph: GraphLayout): GraphLayout => attachmentField ? graph : ({ ...graph, routes: graph.routes.map(route => ({ ...route, path })) });
@@ -25,8 +26,9 @@ if (mode === 'validation') {
   const previous = { ...before, graphs: new Map([['s0:root', { ...graph, layout: corrupt(graph.layout), attached: corrupt(graph.attached), placement: attachmentField ? { ...graph.placement, [attachmentField]: 1e20 } : graph.placement }]]) };
   const result = createDefaultEngine()({ ...input(true), previous });
   const fresh = createDefaultEngine()(input(true));
-  deepStrictEqual(result.graphs.get('s0:root')!.layout, fresh.graphs.get('s0:root')!.layout);
-  deepStrictEqual(result.graphs.get('s0:root')!.attached, fresh.graphs.get('s0:root')!.attached);
+  deepStrictEqual(geometry(result.graphs.get('s0:root')!.layout), geometry(fresh.graphs.get('s0:root')!.layout));
+  equal(result.graphs.get('s0:root')!.layout.decision?.fallback, 'invalid-history');
+  deepStrictEqual(geometry(result.graphs.get('s0:root')!.attached), geometry(fresh.graphs.get('s0:root')!.attached));
 } else {
   const items = [
     { key: 'root', parents: [], width: 92, height: 116, order: 0 },
@@ -37,6 +39,6 @@ if (mode === 'validation') {
   const grown = [...items, { key: 'b', parents: ['a'], width: 92, height: 100, order: 2 }];
   const request = { ...before, items: grown, band: { key: 'root', items: grown }, anchorKey: 'a' };
   if (mode === 'incremental') equal(incrementalTree(request, corrupt(placed)), null);
-  else deepStrictEqual(layoutGraph({ ...request, history: { signature: bandHistorySignature(before), layout: corrupt(layout), placed: corrupt(placed), ...(attachmentField ? { attachment: { bandTop: 116, placement: { x: 0, coverX: 300, coverHeight: 116, width: 640, left: 0, right: 640, [attachmentField]: 1e20 } } } : {}) } }), layoutGraph(request));
+  else deepStrictEqual(geometry(layoutGraph({ ...request, history: { signature: bandHistorySignature(before), layout: corrupt(layout), placed: corrupt(placed), ...(attachmentField ? { attachment: { bandTop: 116, placement: { x: 0, coverX: 300, coverHeight: 116, width: 640, left: 0, right: 640, [attachmentField]: 1e20 } } } : {}) } })), geometry(layoutGraph(request)));
 }
 console.log('fresh geometry');

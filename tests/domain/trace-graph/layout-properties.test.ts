@@ -1,3 +1,7 @@
+import { createDefaultEngine } from "$lib/domain/trace-graph/folder-layout/default-engine";
+import { folderInput, makeFolder } from "./folder-layout-fixtures";
+import { folderGeometryGate } from "$lib/domain/trace-graph/folder-layout/geometry-gate";
+import type { FolderLayout } from "$lib/domain/trace-graph/folder-layout/types";
 /**
  * Property tests on seeded random provenance DAGs: the engine's invariants hold for every graph,
  * not only the hand cases. Graphs come from the generative workflow model
@@ -77,15 +81,19 @@ describe("layout properties on seeded random DAGs", () => {
     expect(layoutGraph({ ...request, items: [...request.items].reverse(), band: { ...request.band!, items: [...request.band!.items].reverse() } })).toEqual(first);
   });
 
-  it.each(graphs)("$id: clicks keep the clicked tile and its ancestors still unless flagged", ({ nodes, width }) => {
-    const random = rng(nodes.length * 31 + width);
-    const c: Case = { id: "p", nodes, focuses: [null] };
-    let previous = commit(requestFor(c, null, width, 96)).history;
-    for (let step = 0; step < 6; step++) {
-      // Only a shown tile can be clicked.
-      const shown = [...previous.placed.nodes.keys()], focus = shown[Math.floor(random() * shown.length)];
-      const request = { ...requestFor(c, focus, width, 96), anchorKey: focus, history: previous };
-      previous = check(request, previous, focus).history;
+  it.each(graphs)("$id: click paths return to identical complete folder geometry", ({ nodes, width }) => {
+    const random = rng(nodes.length * 31 + width), folder = makeFolder({stacks: [nodes]});
+    const engine = createDefaultEngine(), seen = new Map<string, unknown>(), cover = [...folder.stacks.keys()][0];
+    let previous: FolderLayout | undefined;
+    for (let step = 0; step < 8; step++) {
+      const focus = step === 0 || step === 7 ? null : `s0:${nodes[Math.floor(random() * nodes.length)].key}`;
+      const result = engine(folderInput(folder, {open: [cover], focus, width, previous}));
+      expect(folderGeometryGate(result)).toBeNull();
+      const graph = result.graphs.get(cover)!;
+      const key = JSON.stringify([...graph.attached.nodes.keys()].sort());
+      const geometry = [result.cells, result.bands, [...graph.attached.nodes], graph.attached.routes, [...graph.attached.junctions], graph.origin];
+      if (seen.has(key)) expect(geometry).toEqual(seen.get(key)); else seen.set(key, geometry);
+      previous = result;
     }
   });
 

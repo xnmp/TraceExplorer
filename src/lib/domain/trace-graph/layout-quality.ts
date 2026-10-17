@@ -1,3 +1,4 @@
+import { eachConsumer } from "./route-consumers";
 import type { GraphLayout, LayoutItem, PlacedNode, PlacedRoute } from "./layout";
 import { ARROW, LANE_SEPARATION, STACK_STEM_ROOM } from "./metrics";
 import { flattenInto, flattened, flattenPath, type Point } from "./path-sampling";
@@ -45,11 +46,19 @@ export function overlapLength([a, b]: Segment, [c, d]: Segment): number { return
 /** {@link overlapLength} of segments (ax, ay)-(bx, by) and (cx, cy)-(ex, ey), on plain coordinates for the hot joins. */
 function collinearOverlap(ax: number, ay: number, bx: number, by: number, cx: number, cy: number, ex: number, ey: number): number {
     const dx = bx - ax, dy = by - ay;
+    // Flattening an almost-zero cubic can leave roundoff-sized fragments. Neither
+    // operand then defines a line; testing only the first made overlap asymmetric
+    // and reported perpendicular cover stems as shared lanes after translation.
+    if ((ex - cx) ** 2 + (ey - cy) ** 2 < EPS * EPS) return 0;
     if (Math.abs(dx * (cy - ay) - dy * (cx - ax)) > EPS || Math.abs(dx * (ey - ay) - dy * (ex - ax)) > EPS) return 0;
     const length = distance(dx, dy);
     if (length < EPS) return 0;
-    const t1 = ((cx - ax) * dx + (cy - ay) * dy) / length, t2 = ((ex - ax) * dx + (ey - ay) * dy) / length;
-    return Math.max(0, Math.min(length, Math.max(t1, t2)) - Math.max(0, Math.min(t1, t2)));
+    // Intersect in a world coordinate before converting to arc length. Projecting
+    // each endpoint separately can turn an exactly shared endpoint into positive
+    // overlap through division roundoff (and depends on operand order).
+    const [a, b, c, d, span] = Math.abs(dx) >= Math.abs(dy)
+        ? [ax, bx, cx, ex, Math.abs(dx)] : [ay, by, cy, ey, Math.abs(dy)];
+    return Math.max(0, Math.min(Math.max(a, b), Math.max(c, d)) - Math.max(Math.min(a, b), Math.min(c, d))) * (length / span);
 }
 interface Bounds { readonly minX: number; readonly maxX: number; readonly minY: number; readonly maxY: number }
 const boundsOf = ([a, b]: Segment): Bounds => ({ minX: Math.min(a.x, b.x), maxX: Math.max(a.x, b.x), minY: Math.min(a.y, b.y), maxY: Math.max(a.y, b.y) });
@@ -566,7 +575,7 @@ function edgeIndex(layout: GraphLayout, items: readonly LayoutItem[], wanted: Re
             if (from !== undefined) record(from * keys + child, parent, item.key, true);
         }
     }
-    for (let i = 0; i < layout.routes.length; i++) for (const c of layout.routes[i].consumers) {
+    for (let i = 0; i < layout.routes.length; i++) for (const c of eachConsumer(layout.routes[i])) {
         const from = wanted.get(c.parent), to = wanted.get(c.child);
         if (from === undefined || to === undefined) continue;
         const slot = record(from * keys + to, c.parent, c.child, false), list = carriers[slot];
@@ -588,10 +597,10 @@ function edgeIndex(layout: GraphLayout, items: readonly LayoutItem[], wanted: Re
 /** The reference edge index, on string keys. */
 function keyedEdgeIndex(layout: GraphLayout, items: readonly LayoutItem[], wanted: ReadonlyMap<string, number>): EdgeIndex {
     const expected = new Set<string>(), drawn = new Set<string>(), carrying = new Map<string, number[]>();
-    for (const item of items) for (const parent of item.parents) if (wanted.has(parent)) expected.add(`${parent}\u0000${item.key}`);
+    for (const item of items) for (const parent of item.parents) if (wanted.has(parent)) expected.add(JSON.stringify([parent, item.key]));
     layout.routes.forEach((r, i) => {
-        for (const c of r.consumers) if (wanted.has(c.parent) && wanted.has(c.child)) {
-            const key = `${c.parent}\u0000${c.child}`; drawn.add(key);
+        for (const c of eachConsumer(r)) if (wanted.has(c.parent) && wanted.has(c.child)) {
+            const key = JSON.stringify([c.parent, c.child]); drawn.add(key);
             const list = carrying.get(key);
             if (!list) carrying.set(key, [i]); else if (list.at(-1) !== i) list.push(i);
         }
@@ -605,7 +614,7 @@ function keyedEdgeIndex(layout: GraphLayout, items: readonly LayoutItem[], wante
     for (const e of expected) if (!drawn.has(e)) missing++;
     for (const e of drawn) if (!expected.has(e)) extra++;
     const list: ExpectedEdge[] = [];
-    for (const edge of expected) { const [parent, child] = edge.split('\u0000'); list.push({ parent, child, carriers: carrying.get(edge) ?? [] }); }
+    for (const edge of expected) { const [parent, child] = JSON.parse(edge) as [string, string]; list.push({ parent, child, carriers: carrying.get(edge) ?? [] }); }
     return { expected: list, missing, extra, joinedRoutes, needsJoins };
 }
 
@@ -1356,9 +1365,14 @@ function gateInputs(layout: GraphLayout, items: readonly LayoutItem[]): unknown[
     out.push(layout.junctions.size);
     for (const j of layout.junctions.values()) out.push(j.x, j.y);
     out.push(layout.routes.length);
+    const tables = new Map<readonly unknown[], number>();
     for (const r of layout.routes) {
-        out.push(r.path, r.terminal, r.from.kind, r.from.id, r.to.kind, r.to.id, r.consumers.length);
-        for (const c of r.consumers) out.push(c.parent, c.child);
+        const c = r.consumers, range = Array.isArray(c) ? { entries: c, start: 0, end: c.length } : c as import('./route-consumers').ConsumerSet & { entries: readonly import('./junctions').Consumer[]; start: number; end: number };
+        let table = tables.get(range.entries);
+        const fresh = table === undefined;
+        if (fresh) { table = tables.size; tables.set(range.entries, table); }
+        out.push(r.path, r.terminal, r.from.kind, r.from.id, r.to.kind, r.to.id, table, range.start, range.end);
+        if (fresh) { out.push(range.entries.length); for (const entry of range.entries) out.push(entry.parent, entry.child); }
     }
     out.push(items.length);
     for (const item of items) {
@@ -1392,24 +1406,8 @@ const gateMemo = new WeakMap<GraphLayout, GateMemo>();
 
 /** Whether {@link gateInputs} of the layout and items would equal `known`, element by element, without building it. */
 function sameGateInputs(layout: GraphLayout, items: readonly LayoutItem[], known: readonly unknown[]): boolean {
-    let at = 0;
-    const same = (value: unknown) => Object.is(known[at++], value);
-    const bounds = layout.bandBounds;
-    if (!same(layout.width) || !same(layout.height) || !same(layout.orientation) || !same(bounds?.left) || !same(bounds?.width) || !same(bounds?.top) || !same(layout.nodes.size)) return false;
-    for (const [key, n] of layout.nodes) if (!same(key) || !same(n.key) || !same(n.x) || !same(n.y) || !same(n.width) || !same(n.height) || !same(n.row)) return false;
-    if (!same(layout.junctions.size)) return false;
-    for (const j of layout.junctions.values()) if (!same(j.x) || !same(j.y)) return false;
-    if (!same(layout.routes.length)) return false;
-    for (const r of layout.routes) {
-        if (!same(r.path) || !same(r.terminal) || !same(r.from.kind) || !same(r.from.id) || !same(r.to.kind) || !same(r.to.id) || !same(r.consumers.length)) return false;
-        for (const c of r.consumers) if (!same(c.parent) || !same(c.child)) return false;
-    }
-    if (!same(items.length)) return false;
-    for (const item of items) {
-        if (!same(item.key) || !same(item.width) || !same(item.height) || !same(item.parents.length)) return false;
-        for (const parent of item.parents) if (!same(parent)) return false;
-    }
-    return at === known.length;
+    const values = gateInputs(layout, items);
+    return values.length === known.length && values.every((value, i) => Object.is(value, known[i]));
 }
 
 function recallGates(layout: GraphLayout, coverKey: string, paneWidth: number, items: readonly LayoutItem[]): GateMemo | undefined {
@@ -1456,12 +1454,25 @@ function nearLaneLength(layout: GraphLayout, routeGeometry: readonly RouteData[]
             .filter(i => runs[4 * i + 2] - runs[4 * i + 1] > NEAR_RUN)
             .sort((a, b) => runs[4 * a + 1] - runs[4 * b + 1] || a - b);
         const ends = [...order].sort((a, b) => runs[4 * a + 2] - runs[4 * b + 2] || a - b);
-        const active = new Set<number>();
+        const active = new Map<number, Map<number, Set<number>>>();
+        const bin = (i: number) => Math.floor(runs[4 * i] / LANE_SEPARATION);
+        const change = (i: number, add: boolean) => {
+            const key = bin(i), source = of[runs[4 * i + 3]];
+            let bucket = active.get(key);
+            if (!bucket && add) active.set(key, bucket = new Map());
+            if (!bucket) return;
+            let set = bucket.get(source);
+            if (!set && add) bucket.set(source, set = new Set());
+            if (add) set!.add(i);
+            else if (set) { set.delete(i); if (!set.size) bucket.delete(source); if (!bucket.size) active.delete(key); }
+        };
         let expired = 0, total = 0;
         for (const a of order) {
             const lo = runs[4 * a + 1];
-            while (expired < ends.length && runs[4 * ends[expired] + 2] - lo <= NEAR_RUN) active.delete(ends[expired++]);
-            for (const b of active) {
+            while (expired < ends.length && runs[4 * ends[expired] + 2] - lo <= NEAR_RUN) change(ends[expired++], false);
+            for (const key of new Set([bin(a) - 1, bin(a), bin(a) + 1])) for (const [source, nearby] of active.get(key) ?? []) {
+              if (source === of[runs[4 * a + 3]]) continue;
+              for (const b of nearby) {
                 const d = Math.abs(runs[4 * b] - runs[4 * a]);
                 const ra = runs[4 * a + 3], rb = runs[4 * b + 3];
                 if (!(d > 1e-9 && d < LANE_SEPARATION - AXIS_SLACK) || of[ra] === of[rb]) continue;
@@ -1470,8 +1481,9 @@ function nearLaneLength(layout: GraphLayout, routeGeometry: readonly RouteData[]
                 const ta = layout.routes[ra].to, tb = layout.routes[rb].to;
                 if (ta.kind === "junction" && tb.kind === "junction" && ta.id === tb.id) continue;
                 total += overlap;
+              }
             }
-            active.add(a);
+            change(a, true);
         }
         return total;
     }
@@ -1572,6 +1584,13 @@ export const CROSSING_WEIGHT = HEIGHT_WEIGHT * CROSSING_HEIGHT_TILES;
  */
 export const MIXED_DIRECTIONS_WEIGHT = 1;
 
+/**
+ * Moving every familiar tile costs seven tile-widths of height, even for short moves.
+ * Calibrated with actual hint heights and fitted gutters to preserve the existing
+ * main-relative moved-fraction cap (docs/layout-hard-gates.md).
+ */
+export const MOVED_FRACTION_WEIGHT = 7 * HEIGHT_WEIGHT;
+
 export interface Weights {
     readonly stability: number;
     /**
@@ -1581,11 +1600,12 @@ export interface Weights {
      */
     readonly sharedLanes?: "gate" | "priced";
 }
+/** A tile-width of mean travel costs a tile-width of height; fallback pricing shares this objective. */
+export const DEFAULT_WEIGHTS: Weights = Object.freeze({ stability: HEIGHT_WEIGHT });
 /** Tile-size normalized perceptual cost, with hard geometry/parentage gates. Whitespace is reported separately: area and height already price it. */
-const DEFAULT_WEIGHTS: Weights = Object.freeze({ stability: 1.5 });
 export function cost(m: Measures, tileWidth: number, weights: Weights = DEFAULT_WEIGHTS): number {
     if (m.overlaps || m.tileIntersections || m.directionViolations || m.missingEdges || m.extraEdges || m.missingNodes || m.extraNodes || m.invalidGeometry || m.invalidPaths || m.terminalViolations || m.disconnectedEdges)
         return Infinity;
     if (m.sharedLanePx > 0 && weights.sharedLanes !== "priced") return Infinity;
-    return HEIGHT_WEIGHT * m.height / tileWidth + 2 * m.area / (tileWidth * tileWidth) + .08 * m.length / tileWidth + .12 * m.bends + CROSSING_WEIGHT * m.crossings + 4 * m.sharedLanePx / tileWidth + MIXED_DIRECTIONS_WEIGHT * m.mixedDirections + 3 * m.siblingInversions + .25 * m.unaligned + 100 * m.overflow / tileWidth + weights.stability * (m.displacement / tileWidth + .25 * m.maxDisplacement / tileWidth + 2 * m.anchorDisplacement / tileWidth);
+    return HEIGHT_WEIGHT * m.height / tileWidth + 2 * m.area / (tileWidth * tileWidth) + .08 * m.length / tileWidth + .12 * m.bends + CROSSING_WEIGHT * m.crossings + 4 * m.sharedLanePx / tileWidth + MIXED_DIRECTIONS_WEIGHT * m.mixedDirections + 3 * m.siblingInversions + .25 * m.unaligned + 100 * m.overflow / tileWidth + MOVED_FRACTION_WEIGHT * m.movedFraction + weights.stability * (m.displacement / tileWidth + .25 * m.maxDisplacement / tileWidth + 2 * m.anchorDisplacement / tileWidth);
 }

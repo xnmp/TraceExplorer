@@ -1,6 +1,6 @@
 import { NO_EXPANSION } from "$lib/domain/trace-graph/expansion";
 import { describe, expect, it } from "vitest";
-import { intentChange, changed, requiredComponents, resolveCover, sameStyling, sameListing, type SceneIntent } from "$lib/plugins/trace/view/scene-inputs";
+import { prepareLayoutInput, intentChange, changed, requiredComponents, resolveCover, sameStyling, sameListing, type SceneIntent } from "$lib/plugins/trace/view/scene-inputs";
 import { folderCells, fallbackGridMetrics } from "$lib/domain/trace-graph/folder-grid";
 import { tileMetrics } from "$lib/domain/trace-graph/metrics";
 import type { FolderIndex } from "$lib/domain/trace-graph/folder-data";
@@ -60,4 +60,16 @@ describe("scene inputs", () => {
     expect(sameStyling(styling, { ...styling, cover: { imagePx: 64, small: false } })).toBe(false);
     expect(sameStyling(styling, { ...styling, badgeHover: "r" })).toBe(false);
   });
+});
+
+
+it("passes the observation epoch through closed layouts without treating selection as an epoch", () => {
+  const closed = { ...intent, open: new Set<string>() };
+  const prepare = (token: string, selectedKeys = closed.selectedKeys) => prepareLayoutInput(
+    { ...closed, selectedKeys }, { index: { ...index, token }, components: new Map() }, new Map(), null, null);
+  const before = prepare("before"), selected = prepare("before", new Set(["b1"])), refreshed = prepare("after");
+  expect(before.input.dataRevision).toBe("before");
+  expect(selected.basis).toBe(before.basis);
+  expect(refreshed.input.dataRevision).toBe("after");
+  expect(refreshed.basis).not.toBe(before.basis);
 });

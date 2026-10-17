@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { JUNCTION_STROKE_WIDTH } from "$lib/domain/trace-graph/connector-ink";
   /**
    * A closed stack's band as it retires (docs/scene-transactions.md §6): one exit group, drawn
    * where it was displayed. Its tiles, connectors and junctions share the group's fade, clip and slide
@@ -43,7 +44,7 @@
       {#each exit.junctions as retiree (retiree.renderId)}
         {@const record = retiree.record as JunctionRecord}
         <circle class="junction" class:highlight={record.highlighted} data-motion-ghost="" data-motion-junction={record.junction.id}
-          cx={record.junction.x} cy={record.junction.y} r={JUNCTION_RADIUS} style:opacity={retiree.initial.opacity} />
+          cx={record.junction.x} cy={record.junction.y} r={JUNCTION_RADIUS} style:stroke-width={JUNCTION_STROKE_WIDTH} style:opacity={retiree.initial.opacity} />
       {/each}
     </svg>
     {:else}

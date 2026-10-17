@@ -73,7 +73,13 @@ export function estimateLayoutBytes(layout: GraphLayout): number {
   let total = OBJECT * 4;
   for (const node of layout.nodes.values()) total += ENTRY + OBJECT + text(node.key);
   for (const junction of layout.junctions.values()) total += ENTRY + OBJECT + text(junction.id) + 16 * junction.parents.length;
-  for (const route of layout.routes) total += OBJECT * 3 + text(route.id) + text(route.path) + OBJECT * route.consumers.length;
+  const tables = new Set<readonly unknown[]>();
+  for (const route of layout.routes) {
+    total += OBJECT * 3 + text(route.id) + text(route.path);
+    const c = route.consumers;
+    const entries = Array.isArray(c) ? c : (c as { entries: readonly unknown[] }).entries;
+    if (!tables.has(entries)) { tables.add(entries); total += OBJECT * entries.length; }
+  }
   for (const row of layout.rows) total += OBJECT + 16 * row.keys.length;
   total += ENTRY * layout.readingOrder.size;
   return total;
@@ -91,8 +97,23 @@ function estimatePlanBytes(plan: BandScenePlan): number {
   return total;
 }
 
-export function estimateFolderLayoutBytes(layout: FolderLayout): number {
+export function estimateFolderLayoutBytes(layout: FolderLayout, seen = new Set<object>()): number {
+  if (seen.has(layout)) return 0;
+  seen.add(layout);
   let total = OBJECT * 4 + (ENTRY + OBJECT) * (layout.cells.size + layout.bands.length + layout.rowBands.length);
-  for (const graph of layout.graphs.values()) total += OBJECT * 3 + estimatePlanBytes(graph.plan) + estimateLayoutBytes(graph.layout) + estimateLayoutBytes(graph.attached);
+  if (layout.displays) {
+    total += text(layout.displays.folder) + text(layout.displays.contents);
+    for (const [key, value] of [...layout.displays.members, ...layout.displays.entries]) total += ENTRY + text(key) + text(value);
+  }
+  if (layout.cellFootprints) total += OBJECT + (ENTRY + OBJECT) * layout.cellFootprints.size;
+  for (const graph of layout.graphs.values()) {
+    total += OBJECT * 3 + estimatePlanBytes(graph.plan) + estimateLayoutBytes(graph.layout) + estimateLayoutBytes(graph.attached);
+    if (graph.canonical) total += estimatePlanBytes({ ...graph.plan, request: graph.canonical.request }) + estimateLayoutBytes(graph.canonical.layout);
+  }
+  for (const arrival of layout.arrivals?.values() ?? []) {
+    total += OBJECT + text(arrival.contents);
+    if (arrival.history) total += text(arrival.history.signature) + estimateLayoutBytes(arrival.history.layout) + estimateLayoutBytes(arrival.history.placed);
+  }
+  if (layout.arrivalPlacement) total += OBJECT + text(layout.arrivalPlacement.basis) + estimateFolderLayoutBytes(layout.arrivalPlacement.layout, seen);
   return total;
 }

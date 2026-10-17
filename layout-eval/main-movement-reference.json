@@ -1,0 +1,67 @@
+{
+  "commit": "75e46b08cfd5ae94399aecfdebefb3937c6e3a73",
+  "source": {
+    "corpus": "29d03a9cc0461e76075e4b00ca26ccfeb44f60a483739233f3038abb24b78104",
+    "tours": "1df2af868768a691be1d5a6b1c454b72bff1942182315ecd3c9bf594d5b4031f"
+  },
+  "corpus": {
+    "newStates": {
+      "layouts": 6060,
+      "transitions": 3020,
+      "mean": {
+        "movedFraction": 0.11661842953206882,
+        "anchorDisplacement": 0.03516966463106829
+      },
+      "changed": {
+        "movedFraction": 0.23400916654448245,
+        "anchorDisplacement": 0.07057224094843505
+      }
+    },
+    "exactRestores": {
+      "layouts": 0,
+      "transitions": 0,
+      "mean": null,
+      "changed": null
+    }
+  },
+  "broad": {
+    "newStates": {
+      "layouts": 2610,
+      "transitions": 2145,
+      "mean": {
+        "movedFraction": 0.058897001210379996,
+        "anchorDisplacement": 19.83033626604476
+      },
+      "changed": {
+        "movedFraction": 0.07166488259165119,
+        "anchorDisplacement": 24.129220351690826
+      }
+    },
+    "exactRestores": {
+      "layouts": 0,
+      "transitions": 0,
+      "mean": null,
+      "changed": null
+    }
+  },
+  "dense": {
+    "newStates": {
+      "layouts": 540,
+      "transitions": 460,
+      "mean": {
+        "movedFraction": 0.2666020405324489,
+        "anchorDisplacement": 151.66818041094828
+      },
+      "changed": {
+        "movedFraction": 0.3129676127989618,
+        "anchorDisplacement": 178.04525526502624
+      }
+    },
+    "exactRestores": {
+      "layouts": 0,
+      "transitions": 0,
+      "mean": null,
+      "changed": null
+    }
+  }
+}

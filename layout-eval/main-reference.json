@@ -1,0 +1,214 @@
+{
+  "commit": "75e46b08cfd5ae94399aecfdebefb3937c6e3a73",
+  "measured": "2026-10-17",
+  "acceptance": [
+    {
+      "target": "Reported band \u2264350 px",
+      "baseline": 448,
+      "proposed": 347,
+      "pass": true
+    },
+    {
+      "target": "Cover \u2192 first child =34 px",
+      "baseline": 94,
+      "proposed": 34,
+      "pass": true
+    },
+    {
+      "target": "All legal click anchors stationary (including real packing)",
+      "baseline": 410,
+      "proposed": 32,
+      "pass": false
+    },
+    {
+      "target": "Legal click anchors stationary, dense tours (fan-in \u22644 and \u226410)",
+      "baseline": 426,
+      "proposed": 101,
+      "pass": false
+    },
+    {
+      "target": "Mean legal displacement \u2264baseline px",
+      "baseline": 31.156355788786865,
+      "proposed": 17.528599729178435,
+      "pass": true
+    },
+    {
+      "target": "Mean legal height \u226515% lower px",
+      "baseline": 1909.4421455938698,
+      "proposed": 1507.3218390804598,
+      "pass": true
+    },
+    {
+      "target": ">10% height regressions without stability reason",
+      "baseline": 0,
+      "proposed": 0,
+      "pass": true
+    },
+    {
+      "target": "Hard gate violations/errors (corpus + tours incl. dense + packing)",
+      "baseline": 0,
+      "proposed": 0,
+      "pass": true
+    },
+    {
+      "target": "Shared lanes between sources, not a listed fallback (corpus + tours incl. dense)",
+      "baseline": 1365,
+      "proposed": 0,
+      "pass": true
+    },
+    {
+      "target": "Mean crossings \u2264 baseline",
+      "baseline": 380.957095709571,
+      "proposed": 331.23597359735976,
+      "pass": true
+    },
+    {
+      "target": "Crossing regressions not paid for by 0.00625 tile widths of height per extra crossing",
+      "baseline": 0,
+      "proposed": 257,
+      "pass": false
+    },
+    {
+      "target": "Cases with worse p95 than baseline",
+      "baseline": 0,
+      "proposed": 14,
+      "pass": false
+    },
+    {
+      "target": "Maximum p95 for main-thread requests (dispatch rule: \u226430 current+history tiles) \u22645ms",
+      "baseline": 46.81818799999746,
+      "proposed": 3.112780000003113,
+      "pass": true
+    },
+    {
+      "target": "Maximum p95 for requests with \u226430 visible tiles (any thread) \u22645ms",
+      "baseline": 47.67762100000982,
+      "proposed": 51.06433800001105,
+      "pass": false
+    }
+  ],
+  "mean": {
+    "height": 2372.651320132013,
+    "width": 548.1840759075908,
+    "area": 1288189.6706683168,
+    "tileArea": 557459.6303630363,
+    "whitespace": 0.5038563508600419,
+    "paneWhitespace": 0.6357584204948737,
+    "length": 42304.603982788794,
+    "bends": 142.91182047299552,
+    "crossings": 331.23597359735976,
+    "sharedLanePx": 0.0231023102310231,
+    "tileIntersections": 0,
+    "overlaps": 0,
+    "directionViolations": 0,
+    "mixedDirections": 2.0805280528052807,
+    "siblingInversions": 0.09719471947194719,
+    "unaligned": 0.16056105610561056,
+    "displacement": 31.59735139453372,
+    "maxDisplacement": 72.8984127031472,
+    "movedFraction": 0.11661842953206882,
+    "anchorDisplacement": 0.03516966463106829,
+    "overflow": 4.326320132013201,
+    "missingEdges": 0,
+    "extraEdges": 0,
+    "missingNodes": 0,
+    "extraNodes": 0,
+    "invalidGeometry": 0,
+    "invalidPaths": 0,
+    "terminalViolations": 0,
+    "disconnectedEdges": 0
+  },
+  "summary": {
+    "layouts": 2610,
+    "transitions": 2145,
+    "height": 1507.3218390804598,
+    "area": 747326.9694444444,
+    "displacement": 17.528599729178435,
+    "movedFraction": 0.07166488259165119,
+    "tileIntersections": 0,
+    "overlaps": 0,
+    "disconnectedEdges": 0
+  },
+  "denseSummary": {
+    "layouts": 540,
+    "transitions": 460,
+    "height": 4057.7703703703705,
+    "area": 2533239.456944444,
+    "displacement": 83.94561179201534,
+    "movedFraction": 0.3129676127989618,
+    "tileIntersections": 0,
+    "overlaps": 0,
+    "disconnectedEdges": 0
+  },
+  "screen": {
+    "480": {
+      "broad": 80,
+      "dense": 114
+    },
+    "800": {
+      "broad": 124,
+      "dense": 132
+    }
+  },
+  "fallbacks": {
+    "corpus": {
+      "states": 6060,
+      "count": 0
+    },
+    "tours": {
+      "states": 3150,
+      "count": 0
+    },
+    "packing": {
+      "states": 140,
+      "count": 0
+    }
+  },
+  "corpusSummary": {
+    "layouts": 6060,
+    "errors": 0,
+    "invalid": 0,
+    "mean": {
+      "height": 2372.651320132013,
+      "width": 548.1840759075908,
+      "area": 1288189.6706683168,
+      "tileArea": 557459.6303630363,
+      "whitespace": 0.5038563508600419,
+      "paneWhitespace": 0.6357584204948737,
+      "length": 42304.603982788794,
+      "bends": 142.91182047299552,
+      "crossings": 331.23597359735976,
+      "sharedLanePx": 0.0231023102310231,
+      "tileIntersections": 0,
+      "overlaps": 0,
+      "directionViolations": 0,
+      "mixedDirections": 2.0805280528052807,
+      "siblingInversions": 0.09719471947194719,
+      "unaligned": 0.16056105610561056,
+      "displacement": 31.59735139453372,
+      "maxDisplacement": 72.8984127031472,
+      "movedFraction": 0.11661842953206882,
+      "anchorDisplacement": 0.03516966463106829,
+      "overflow": 4.326320132013201,
+      "missingEdges": 0,
+      "extraEdges": 0,
+      "missingNodes": 0,
+      "extraNodes": 0,
+      "invalidGeometry": 0,
+      "invalidPaths": 0,
+      "terminalViolations": 0,
+      "disconnectedEdges": 0
+    },
+    "stability": {
+      "transitions": 3020,
+      "mean": 63.4039567718127,
+      "p95Max": 899.1290229994803,
+      "movedFraction": 0.23400916654448245
+    },
+    "timing": {
+      "median": 0.7739120000042021,
+      "p95": 18.522687999997288,
+      "max": 190.15195899999526
+    }
+  }
+}

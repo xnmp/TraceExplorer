@@ -93,6 +93,7 @@ export function gridPins(flow: GridFlow, open: Iterable<string>, previous: Reado
 
 /** Host tile-grid metrics (`tileGridMetrics`), as the grid reads them. */
 export interface HostGridMetrics {
+  readonly contentWidth?: number;
   readonly cellWidth: number;
   readonly cellHeight: number;
   readonly gap: number;
@@ -101,7 +102,7 @@ export interface HostGridMetrics {
 
 /** The grid metrics used without a host tile renderer: the Trace tile itself, an 8 px gap and no padding. */
 export const fallbackGridMetrics = (tile: TileMetrics): HostGridMetrics =>
-  ({ cellWidth: tile.width, cellHeight: tileSize({ foreign: false, hint: true }, tile).height, gap: 8, gridPadding: 0 });
+  ({ contentWidth: tile.width, cellWidth: tile.width, cellHeight: tileSize({ foreign: false, hint: true }, tile).height, gap: 8, gridPadding: 0 });
 
 /** The grid's inner width: the pane width less the grid padding on both sides, never negative. */
 export const gridInnerWidth = (paneWidth: number, gridPadding: number): number => Math.max(0, paneWidth - 2 * gridPadding);
