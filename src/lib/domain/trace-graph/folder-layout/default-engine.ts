@@ -31,7 +31,7 @@ import { gridFlow, type GridItem, type GridMetrics, type GridRect } from "../gri
 import { attachPackedBand, bandExtent, bandPlacements, packedGridFlow } from "../band-geometry";
 import { BAND_DEFAULTS, bandHistorySignature, type BandOptions } from "../band-layout";
 import { folderGridGeometry, gridPins, type FolderGridGeometry } from "../folder-grid";
-import { layoutGraph, type BandHistory, type GraphLayout, type LayoutRequest } from "../layout";
+import { layoutGraph, type BandHistory, type GraphLayout, type LayoutRequest, type LayoutItem } from "../layout";
 import { layoutSignature } from "../layout-signature";
 import { isLayoutShape } from "../history-boundary";
 import { recallDisplay, rememberDisplay, displayIdentity } from "./display-memory";
@@ -109,7 +109,9 @@ function priorsOf(previous: unknown): ReadonlyMap<GraphId, Prior> {
 /** The ledger survives closed stacks; geometry snapshots are taken only on folder changes. */
 function arrivalsFor(input: FolderLayoutInput): ReadonlyMap<GraphId, ArrivalHistory> {
   const previous = input.previous;
-  const arrivals = new Map(previous?.arrivals instanceof Map ? previous.arrivals : []);
+  const present = new Set(input.items.filter(item => item.kind === 'stack').map(item => item.id));
+  const arrivals = new Map(previous?.arrivals instanceof Map
+    ? [...previous.arrivals].filter(([id]) => present.has(id)) : []);
   const priors = priorsOf(previous);
   for (const [id, stack, members] of openStacks(input)) {
     const contents = JSON.stringify(members.map(key => [key, stack.graph.dag.nodes.get(key)!.order, stack.graph.dag.parents.get(key)]));
@@ -121,7 +123,18 @@ function arrivalsFor(input: FolderLayoutInput): ReadonlyMap<GraphId, ArrivalHist
     const history = old ? freshEpoch ? priors.get(id)?.history ?? old.history : old.history : undefined;
     arrivals.set(id, { contents, history });
   }
-  return arrivals;
+  // Bound closed-stack history too: removal pruning alone does not limit a long
+  // visit through a folder with many still-present components.
+  const bounded = createBoundedCache<ArrivalHistory>(arrival => 64 + 2 * arrival.contents.length
+    + (arrival.history ? 2 * arrival.history.signature.length
+      + estimateLayoutBytes(arrival.history.layout) + estimateLayoutBytes(arrival.history.placed) : 0));
+  for (const [id, arrival] of arrivals) {
+    try { bounded.set(id, arrival); } catch { /* Malformed history is not retained. */ }
+  }
+  return new Map([...arrivals.keys()].flatMap(id => {
+    const arrival = bounded.get(id);
+    return arrival ? [[id, arrival] as const] : [];
+  }));
 }
 
 /** The stack's drawable members: keys of its graph, each once, in the given order. */
@@ -286,17 +299,22 @@ export interface DefaultEngineOptions {
   readonly band?: BandOptions;
 }
 
-function folderPlacementHistory(input: FolderLayoutInput, arrivals: ReadonlyMap<GraphId, ArrivalHistory>, basis: string): FolderPlacementHistory | undefined {
+function folderPlacementHistory(input: FolderLayoutInput, plans: ReadonlyMap<GraphId, BandPlan>, basis: string): FolderPlacementHistory | undefined {
   const previous = input.previous;
   if (!previous) return undefined;
   const itemIds = previous.cells instanceof Map ? [...previous.cells.keys()] : null;
   const changedItems = itemIds && (itemIds.length !== input.items.length
     || input.items.some(item => !previous.cells.has(item.id)));
-  const changedContents = previous.arrivals instanceof Map && [...arrivals].some(([id, arrival]) => {
-    const old = previous.arrivals!.get(id);
-    return old && old.contents !== arrival.contents && previous.graphs instanceof Map && previous.graphs.has(id)
-      && (input.dataRevision === undefined || previous.dataRevision !== input.dataRevision);
-  });
+  // The bounded arrival ledger may evict a component; the currently displayed
+  // graph remains the authority for whether its membership changed.
+  const changedContents = (input.dataRevision === undefined || previous.dataRevision !== input.dataRevision)
+    && previous.graphs instanceof Map && [...plans].some(([id, { plan }]) => {
+      try {
+        const old = previous.graphs.get(id)?.plan?.request?.band?.items;
+        const facts = (items: readonly LayoutItem[]) => items.map(n => [n.key, n.order, n.parents]);
+        return Array.isArray(old) && JSON.stringify(facts(old)) !== JSON.stringify(facts(plan.request.band?.items ?? []));
+      } catch { return false; } // Invalid previous facts cannot establish an arrival.
+    });
   if ((changedItems || changedContents) && previous.geometryBasis === basis) {
     const { arrivalPlacement: _placement, arrivals: _arrivals, displays: _displays, ...layout } = previous;
     return { basis, layout };
@@ -352,7 +370,7 @@ export function createDefaultEngine(options: DefaultEngineOptions = {}): FolderL
     } catch { /* Invalid stored geometry is never an authority. Rebuild through the normal gate. */ }
     if (restored) return { ...restored, revisited: true, arrivals, geometryBasis, dataRevision: input.dataRevision,
       displays: rememberDisplay(input.previous?.displays, identity, restored, true) };
-    const arrivalPlacement = folderPlacementHistory(input, arrivals, geometryBasis);
+    const arrivalPlacement = folderPlacementHistory(input, plans, geometryBasis);
     const bands = layoutPlanned(plans, cache, options.band);
     let result = withCellFootprints(composeFolderLayout(input.items, geometry, bands), input);
     let failure = folderGeometryGate(result);
