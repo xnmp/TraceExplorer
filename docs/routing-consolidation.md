@@ -828,3 +828,96 @@ Geometry fallbacks remain **0/6,060 corpus, 0/3,150 tours and 0/140 proposed
 packing states**, with zero outside the pane. The report, exact comparison,
 fail-first logs and control replays are in ignored `layout-eval/out/s3fix/`.
 No Playwright/browser run or push was performed.
+
+## Slice 4 investigation (not adopted)
+
+Slice 4 is **not complete**. Production routing remains at `cb87cbf`; no T18–T28
+or T37 implementation has been removed. The slice 4 row above remains open.
+The following evidence is a restart point, not acceptance of a partial replacement.
+
+An isolated contact-search probe reused slice 3's corridor ledger and
+separation domains instead of enumerating perpendicular offsets. It does not
+yet import the complete committed routing model, implement all declared track
+and suffix equalities, or replace insertion, hint reconnection and folder-world
+routing. Its initial replay covered **19 of 20** changed old contact-repair
+successes in the first 153 captured changed-success tour records, with tile/dot
+retention checks.
+That is a limited diagnostic, not the required complete old-success coverage.
+The missed case is `random-dag-100-8101`, width 360/image 96, anchor `n33`,
+32 visible tiles of 100. The old certified result uses several local bypasses
+and an internal run shift; the probe reports a topology conflict. A subsequent
+projection experiment was not accepted or integrated. Neither failure proves
+that another embedding or a complete constrained model is infeasible.
+
+Two committed-history import requirements were independently reproduced:
+
+- Current gate-certified `merges-3` and `random-dag-40-7503` incremental drawings
+  can fail `importRoutingPlan`'s independent-approach-port validation.
+- Both the retained `future-port-scene.json` fixture and its current successful
+  click result pass the geometry gate but fail imported junction parentage.
+  Consumer pruning can leave a one-input residual meeting declaring two parents.
+
+These cases need explicit semantic projection/convergence representation while
+preserving declared painted pins; removing the import checks is not a solution.
+An independent review also reproduced a saved-ledger equality conflict through
+the evaluation adapter: `random-tree-12-7122`, width 454/image 96, focuses
+`[null,n1,n3,n1,n4,n3,n4]`. At the final click, committed `n4.y=321`, while the
+exact saved revisit requires `n4.y=312`. All drawings pass the unchanged gate.
+This particular conflict was **not** reproduced in the production first-column
+folder flow. It needs explicit conflict handling for imported legacy ledgers;
+it is not evidence against a fresh policy that avoids inconsistent snapshots.
+
+The original inventory workload was remeasured: 522 legal tour steps, 65 cold
+bands, 65 raw layered diagnostics and 398 folder states. All T18–T28/T37 counters
+match the slice 3 table above, and there are zero published gate failures.
+The complete drawing digest is again
+`47e279306a18a12ce71fae8d30359f2d6ef5121b4bef64969d4d8ad803e82210`,
+matching slice 3's instrumented and uninstrumented controls. There is no new
+implementation to measure as an “after” population: the adopted stage counts
+remain unchanged.
+
+The full census also completed: **6,060 proposed corpus states, 3,150 tour steps and 140 proposed packing states**. Every non-timing field in all 12,120 corpus comparison rows matches the uninstrumented control; complete tour and packing results match too. Cells below count **geometry changes or non-null constructor/probe/retry returns / calls**, including rejected/reconstructed candidates, warmups and readability reconstructions in the corpus command. They are not distinct published layouts. T25 counts returned retry drafts, not certified repairs. No stage was deleted; there is no replacement after-run.
+
+| Stage | Original workload | Full corpus | Full tours | Packing |
+|---|---:|---:|---:|---:|
+| T18 Resize | 99 / 298 | 0 / 0 | 0 / 0 | 0 / 0 |
+| T18 Tile-only seed | 0 / 0 | 0 / 0 | 0 / 0 | 0 / 0 |
+| T19 Retain members | 189 / 189 | 114 / 114 | 1179 / 1182 | 2 / 2 |
+| T19 Subset projection | 189 / 648 | 114 / 2267 | 1179 / 3577 | 2 / 56 |
+| T19 Normalize frame | 18 / 83 | 0 / 0 | 0 / 0 | 27 / 54 |
+| T19 Anchor translation | 0 / 9 | 20 / 20 | 102 / 121 | 20 / 20 |
+| T20 Primary probes | 4581 / 5785 | 23934 / 26075 | 24233 / 34008 | 78 / 78 |
+| T20 Wiring | 4782 / 38823 | 24222 / 106032 | 25336 / 322415 | 78 / 122 |
+| T20 Insertion | 660 / 888 | 2080 / 2323 | 2906 / 5393 | 56 / 56 |
+| T21 Plain placement | 591 / 848 | 1204 / 1544 | 2802 / 5635 | 0 / 0 |
+| T21 Grid wiring | 967 / 2655 | 1905 / 4741 | 7234 / 26319 | 0 / 0 |
+| T22 Second placement | 393 / 613 | 734 / 937 | 4556 / 6973 | 0 / 0 |
+| T22 All-lane wiring | 376 / 1100 | 701 / 2247 | 4432 / 14896 | 0 / 0 |
+| T23 Free terminal ports | 0 / 808 | 0 / 2275 | 0 / 4715 | 0 / 56 |
+| T24 Free internal lanes | 80 / 169 | 48 / 229 | 678 / 1866 | 0 / 0 |
+| T25 Constrained retry | 5 / 57 | 6 / 6 | 74 / 707 | 0 / 0 |
+| T25 Repairable retry draft | 12 / 52 | 4 / 4 | 84 / 633 | 0 / 0 |
+| T26 Leaf ordering | 33 / 660 | 60 / 2080 | 95 / 2906 | 0 / 56 |
+| T27 Hint reroute | 7 / 9 | 0 / 0 | 0 / 0 | 0 / 0 |
+| T27 Retained route | 5 / 5 | 0 / 0 | 0 / 0 | 0 / 0 |
+| T28 Contact repair | 11 / 27 | 5 / 23 | 58 / 121 | 0 / 0 |
+| T37 Folder pins | 133 / 135 | 0 / 0 | 0 / 0 | 0 / 0 |
+
+The corpus/tours contain **48/678 internal-run repair changes**, **4/84 returned repairable retry drafts**, and **5/58 changed certified contact repairs**, respectively. The 19/20 diagnostic is only a subset of the required contact coverage; it does not cover those complete populations or the other repair classes. Hint and folder-arrival coverage remains represented by the separate original inventory workload.
+
+The unmodified `cb87cbf` baseline completed **50/50** current targets and is
+copied under `layout-eval/out/routing-s4-baseline`. No perf retry was needed.
+The source check passes with 267 files, zero errors and zero warnings. The full
+unchanged-source unit run finished with **2,184 passed, one failed, one existing
+skip**: the malformed-history `M100 NaN L200 NaN` case hit its unchanged
+five-second child-process timeout. Its focused file rerun passed **31/31** at
+the same limit; this does not turn the full unit command green.
+
+There is no adopted after-run or changed current acceptance row to report.
+New slice 4 fail-first publication contracts and replacement acceptance have
+**not** been established. The independent blocking review rejects the incomplete
+replacement; production remains unchanged. The handover, census, portable
+reproductions and baseline receipts are under `layout-eval/out` and in the
+slice 4 audit archive. No required slice 4 work is deferred under the name of
+slice 5; cold embedding and folder packing consolidation remain slice 5's
+unchanged scope.
