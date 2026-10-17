@@ -14,6 +14,8 @@
  * this engine sits behind the `layoutGraph(LayoutRequest) → GraphLayout`
  * boundary instead; callers never depend on how it works.
  */
+import { solveOrderedTracks } from "./ordered-tracks";
+import { solveSeparation, type Separation } from "./separation";
 import { channelInk, roundChannelPath, type ChannelInk } from "./channel-corners";
 import { boundedJunctions } from "./bounded-junctions";
 import { layoutBand, type BandOptions } from "./band-layout";
@@ -1175,7 +1177,17 @@ function layoutPass(prepared: Prepared, extra: { readonly left: number; readonly
       });
     }
     const first = blocked.length ? nearestFree(centred, blocked, slot.low, slot.high - span) ?? centred : centred;
-    order.forEach(([source], index) => xs.set(source, first + index * spacing));
+    // Interior stem exclusions choose the corridor offset above. Once that order
+    // and interval are representable, metric placement is a bounded separation DAG.
+    if (spacing >= MIN_LANE || order.length === 1) {
+      const solved = solveSeparation({
+        variables: order.map(([source], index) => ({ id: source, preferred: first + index * spacing, bounds: { lower: slot.low, upper: slot.high } })),
+        order: order.map(([source]) => source),
+        separations: order.slice(1).map(([source], i) => ({ id: `${i}`, before: order[i][0], after: source, gap: MIN_LANE })),
+      });
+      if (!solved.ok) throw new RangeError("Lane constraint conflict: " + JSON.stringify(solved.conflict));
+      solved.positions.forEach((x, source) => xs.set(source, x));
+    } else order.forEach(([source], index) => xs.set(source, first + index * spacing));
   }
   for (const { node, slot, desired } of pending) trie[node].x = slot ? laneX(slot, trie[node].source)! : desired;
 
@@ -1500,6 +1512,30 @@ function layoutPass(prepared: Prepared, extra: { readonly left: number; readonly
       later.add(unitOf[j]);
       pending[unitOf[j]]++;
     }
+    // Ordinary channels have singleton units and an acyclic leave/arrive order.
+    // Swaps and cyclic orders still belong to the existing topology generator;
+    // this slice does not reinterpret their crossing cells or split pieces.
+    if (units.length === count) {
+      const degrees = [...pending], sequence: number[] = [], used = new Set<number>();
+      while (sequence.length < count) {
+        const next = units.find(id => !used.has(id) && degrees[id] === 0);
+        if (next === undefined) break;
+        sequence.push(next); used.add(next);
+        for (const later of forced[next] ?? []) degrees[later]--;
+      }
+      if (sequence.length === count) {
+        const separations: Separation[] = [];
+        for (let i = 0; i < count; i++) for (let j = i + 1; j < count; j++) if (conflict(sequence[i], sequence[j]))
+          separations.push({ id: `${i}:${j}`, before: `${sequence[i]}`, after: `${sequence[j]}`, gap: 1 });
+        const solved = solveSeparation({ variables: sequence.map(i => ({ id: `${i}`, preferred: 0, bounds: { lower: 0 } })),
+          order: sequence.map(String), separations });
+        if (!solved.ok) throw new RangeError("Track constraint conflict: " + JSON.stringify(solved.conflict));
+        let most = 1;
+        for (const [id, track] of solved.positions) { ordered[Number(id)].track = track; most = Math.max(most, track + 1); }
+        (trackCount[channel] ??= [])[zone] = most;
+        return;
+      }
+    }
     // Turn order: the forced constraints, otherwise the sort order above.
     const sequenced: boolean[] = [];
     // Bends already given a track, in turn order.
@@ -1641,10 +1677,15 @@ function layoutPass(prepared: Prepared, extra: { readonly left: number; readonly
       const curved = curvedTracks[index]?.[zone] ?? false;
       // Straight tracks need three pixels between centers and at free ends;
       // a tile port needs six. Curved swaps retain their full six-pixel slices.
-      const needed = curved ? berthAt(index, zone) + tracksIn(index, zone) * TRACK_HEIGHT
-        : (tracksIn(index, zone) - 1) * LANE_SEPARATION + LANE_SEPARATION
-          + (zone === 0 && nearbyPort[index] ? PORT_BERTH : LANE_SEPARATION);
-      const tall = Math.max(prepared.channelStyle === "orthogonal" && !curved ? 2 * LANE_SEPARATION : defaultZone(index, zone), needed);
+      const preferredHeight = prepared.channelStyle === "orthogonal" && !curved ? 2 * LANE_SEPARATION : defaultZone(index, zone);
+      let tall: number;
+      if (curved) tall = Math.max(preferredHeight, berthAt(index, zone) + tracksIn(index, zone) * TRACK_HEIGHT);
+      else {
+        const solved = solveOrderedTracks(tracksIn(index, zone), preferredHeight,
+          zone === 0 && nearbyPort[index] ? PORT_BERTH : LANE_SEPARATION, LANE_SEPARATION);
+        if (!solved.ok) throw new RangeError("Zone constraint conflict: " + JSON.stringify(solved.conflict));
+        tall = solved.positions.get("end")!;
+      }
       boxes[zone] = { top: y, bottom: y + tall, curved };
       y += tall + (zone < count ? 2 * JUNCTION_BERTH : 0);
     }
@@ -1668,7 +1709,7 @@ function layoutPass(prepared: Prepared, extra: { readonly left: number; readonly
   // Paired swaps and junction fans retain their dedicated curve shapes.
   // Bend zones end `approach` above the next row, so a route into a tile ends
   // in a straight, vertical stem at least as long as its arrowhead.
-  const trackCenter = (item: Leg, track: number) => {
+  const preferredTrackCenter = (item: Leg, track: number) => {
     const box = zoneBoxes[item.channel][item.zone], y1 = at(item.from), y2 = at(item.to);
     const top = Math.max(box.top + berthAt(item.channel, item.zone), y1), bottom = Math.min(box.bottom, y2);
     const tracks = tracksIn(item.channel, item.zone), slice = (bottom - top) / tracks;
@@ -1677,6 +1718,26 @@ function layoutPass(prepared: Prepared, extra: { readonly left: number; readonly
     const last = bottom - LANE_SEPARATION;
     return tracks === 1 ? (first + last) / 2 : first + (last - first) * track / (tracks - 1);
   };
+  // In plain channels each ordinal denotes one common track coordinate. The
+  // channel end/port berths become bounds, not offsets applied after assignment.
+  const solvedCenters = new Map<Leg, readonly number[]>();
+  for (const zones of zoneGroups) for (const legs of zones ?? []) {
+    if (!legs?.length || legs.some(item => item.dogleg || (item.span ?? 1) > 1)) continue;
+    const item = legs[0], box = zoneBoxes[item.channel][item.zone];
+    const count = tracksIn(item.channel, item.zone);
+    // Junction fan/crossing shapes with distinct endpoint windows remain outside
+    // this adapter. Their old coordinates and emitter are unchanged.
+    if (legs.some(other => at(other.from) !== at(item.from) || at(other.to) !== at(item.to))) continue;
+    const lower = Math.max(box.top, at(item.from)) + (item.zone === 0 && nearbyPort[item.channel] ? PORT_BERTH : LANE_SEPARATION);
+    const upper = Math.min(box.bottom, at(item.to)) - LANE_SEPARATION;
+    const order = Array.from({ length: count }, (_, i) => `${i}`);
+    const solved = solveSeparation({ variables: order.map((id, i) => ({ id, preferred: preferredTrackCenter(item, i), bounds: { lower, upper } })), order,
+      separations: order.slice(1).map((id, i) => ({ id: `track:${id}`, before: order[i], after: id, gap: LANE_SEPARATION })) });
+    if (!solved.ok) throw new RangeError("Channel bound conflict: " + JSON.stringify(solved.conflict));
+    const centers = [...solved.positions.values()];
+    for (const leg of legs) solvedCenters.set(leg, centers);
+  }
+  const trackCenter = (item: Leg, track: number) => solvedCenters.get(item)?.[track] ?? preferredTrackCenter(item, track);
   const drawSharp = (item: Leg): string => {
     const y1 = at(item.from), y2 = at(item.to);
     const { x1, x2 } = item;

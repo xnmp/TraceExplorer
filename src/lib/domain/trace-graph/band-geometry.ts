@@ -2,6 +2,7 @@
 import { gridFlow, type GridFlow, type GridItem, type GridMetrics, type GridBand, type GridCell } from "./grid-flow";
 import { nearestFree, type GraphLayout, type PlacedNode } from "./layout";
 import { packStackGroups, coverGutters } from "./stack-packing";
+import { attachmentPreferences, solveAttachmentChannel, type AttachmentMetric } from "./attachment-channel";
 import { pathTailAtY } from "./path-geometry";
 import { numberStart, pathNumbers, scanNumber, scanned } from "./path-data";
 import { ARROW, STACK_STEM_ROOM, TRACK_HEIGHT, LANE_SEPARATION, tileSize, spacingFor, type TileMetrics } from "./metrics";
@@ -146,22 +147,9 @@ export function extentSize(layout: GraphLayout, key: string): { readonly height:
   return { height: layout.nodes.size > Number(!!cover) ? Math.max(0, layout.height - bounds.top + STACK_STEM_ROOM) : 0, width: boundsField(bounds, "width")! };
 }
 
-const attachmentClearance = (count: number) => count > 1 ? LANE_SEPARATION + 1 : 0;
-const attachmentTrack = (count: number) => count > 1 ? 6 + LANE_SEPARATION + 1 : TRACK_HEIGHT;
-
-/** Where a band's stem runs across from its cover (`track`, below the cover row) and how far below the cover its first child row starts. */
-export interface BandAttachment { readonly track: number; readonly stemRoom: number }
-/**
- * Attachments for groups whose lanes may meet: every lane gets its own track, a corner and a lane
- * apart (the route-contact gate), and every group's children start below the deepest lane.
- * For one group this is the lone band's attachment.
- */
-function sharedAttachments(count: number): readonly BandAttachment[] {
-  const step = attachmentTrack(count), clearance = attachmentClearance(count);
-  const header = Math.max(STACK_STEM_ROOM, step * count + 2 * ARROW.length + clearance);
-  return Array.from({ length: count }, (_, i) => ({ track: step * (i + 1), stemRoom: Math.max(header, step * (i + 1) + 2 * ARROW.length + step + clearance) }));
-}
-const LONE_ATTACHMENT = sharedAttachments(1)[0];
+/** Where the cover stem bends and the child row starts, relative to its packed band. */
+export interface BandAttachment extends AttachmentMetric {}
+const LONE_ATTACHMENT = attachmentPreferences(1)[0];
 /** Clear distance between two groups' lane envelopes for their stems to be drawn as lone bands (corner radius plus a port berth). */
 const LANE_APART = 2 * TRACK_HEIGHT;
 /**
@@ -181,7 +169,7 @@ export interface StackGridFlow extends GridFlow {
   readonly attachments?: ReadonlyMap<string, BandAttachment>;
 }
 /** One physical band per folder row; each group's footprint reserves only its own interval. */
-export function packedGridFlow(items: readonly GridItem[], open: ReadonlyMap<string, { width: number; height: number; preferredX?: number; anchorX?: number; anchorY?: number; pending?: boolean }>, columns: number, metrics: GridMetrics): StackGridFlow {
+export function packedGridFlow(items: readonly GridItem[], open: ReadonlyMap<string, { width: number; height: number; preferredX?: number; anchorX?: number; anchorY?: number; pending?: boolean }>, columns: number, metrics: GridMetrics, retained: ReadonlyMap<string, BandAttachment & { readonly x: number; readonly bandTop: number; readonly columns: readonly number[] }> = new Map()): StackGridFlow {
   const base = gridFlow(items, new Map(), columns, metrics);
   const cells = new Map(base.cells), bands: GridBand[] = [], rowBands: GridBand[] = [], attachments = new Map<string, BandAttachment>();
   const rows = new Map<number, GridCell[]>(), kinds = new Map(items.map((item) => [item.id, item.kind]));
@@ -210,19 +198,40 @@ export function packedGridFlow(items: readonly GridItem[], open: ReadonlyMap<str
     };
     // Groups side by side whose lanes cannot meet attach as lone bands: aligned child rows, and an
     // unrelated opening in the row moves none of them. Any possible meeting keeps separate tracks.
-    let reserved = sharedAttachments(groups.length), packed = pack(reserved);
+    let reserved = attachmentPreferences(groups.length), packed = pack(reserved);
     if (groups.length > 1 && lanesApart(packed)) {
       const lone = groups.map(() => LONE_ATTACHMENT), apart = pack(lone);
       if (lanesApart(apart)) { reserved = lone; packed = apart; }
     }
-    // Groups on the row's first line share one child line: each starts as deep as the deepest
-    // of them needs. Kept only if the deeper reservation leaves that line's groups unchanged.
-    const firstLine = (of: typeof packed) => new Set(of.flatMap((group) => group.y === 0 && !group.deferred ? [group.id] : []));
-    const line = firstLine(packed), deepest = Math.max(0, ...groups.flatMap((group, i) => line.has(group.id) ? [reserved[i].stemRoom] : []));
-    if (line.size > 1 && groups.some((group, i) => line.has(group.id) && reserved[i].stemRoom !== deepest)) {
-      const aligned = groups.map((group, i) => line.has(group.id) ? { ...reserved[i], stemRoom: deepest } : reserved[i]), repacked = pack(aligned), after = firstLine(repacked);
-      if (after.size === line.size && [...line].every((id) => after.has(id))) { reserved = aligned; packed = repacked; }
-    }
+    // Adopt only the existing ordered corridor family: retained groups form a prefix,
+    // stay in their packing frame, and new groups follow on wrapped lines. Other
+    // embeddings (including sideways insertions/corridor changes) keep their drawing.
+    const kept = groups.filter(group => retained.has(group.id));
+    // Multiple bypasses and ports inside an existing turn envelope need explicit
+    // painted corridors (slice 2). They are not represented by this two-net
+    // ordered attachment channel and must not acquire a partially enforced pin set.
+    const scoped = kept.length === 1 && groups.length === 2 && retained.has(groups[0].id)
+      && groups.filter(group => !retained.has(group.id)).every(group => kept.every(old =>
+        retained.get(old.id)!.columns.every(x => Math.abs(group.center - x) >= LANE_APART)))
+      && packed.every((group, i) => retained.has(group.id)
+        ? retained.get(group.id)!.x === group.x && retained.get(group.id)!.bandTop === metrics.cellHeight + group.y
+        : i >= kept.length && group.y > 0);
+    const solve = (align: ReadonlySet<string> = new Set()): readonly BandAttachment[] => {
+      const solved = solveAttachmentChannel(groups.map((group, i) => {
+        const at = packed.find(p => p.id === group.id)!;
+        return { id: group.id, span: [Math.min(at.x, group.center), Math.max(at.x + group.width, group.center)] as const,
+          preferred: reserved[i], ...(scoped && retained.has(group.id) ? { pin: retained.get(group.id)! } : {}) };
+      }), lanesApart(packed), align);
+      if (!solved.ok) throw new RangeError("Attachment constraint conflict: " + JSON.stringify(solved.conflict));
+      return groups.map(group => ({ track: solved.positions.get(group.id + ':track')!, stemRoom: solved.positions.get(group.id + ':top')! }));
+    };
+    const firstLine = (of: typeof packed) => new Set(of.flatMap(group => group.y === 0 && !group.deferred ? [group.id] : []));
+    const line = firstLine(packed);
+    const candidate = solve(scoped ? new Set() : line), repacked = pack(candidate), after = firstLine(repacked);
+    // Header preferences may not change the discrete line choice. Pins bypass
+    // this preference entirely; their equalities are already in the solve.
+    if (scoped || after.size === line.size && [...line].every(id => after.has(id))) { reserved = candidate; packed = repacked; }
+    else reserved = solve();
     groups.forEach((group, i) => attachments.set(group.id, reserved[i]));
     const top = members[0].y + extra + metrics.cellHeight;
     const height = Math.max(0, ...packed.map((group) => group.y + group.height));
@@ -258,7 +267,7 @@ export function bandPlacements(flow: StackGridFlow, coverHeight: number): Readon
   return new Map(flow.bands.map((band) => {
     const cell = flow.cells.get(band.id)!, coverX = cell.x + cell.width / 2;
     const siblings = rows.get(band.row)!;
-    const { track, stemRoom } = flow.attachments?.get(band.id) ?? sharedAttachments(siblings.length)[siblings.indexOf(band)];
+    const { track, stemRoom } = flow.attachments?.get(band.id) ?? attachmentPreferences(siblings.length)[siblings.indexOf(band)];
     const earlier = siblings.filter((other) => other.y < band.y);
     // The padding inside each packed interval is empty. Pick the nearest column which stays
     // outside every earlier line's child footprint; never default to the pane's left edge.
@@ -286,6 +295,8 @@ function bandTransform(layout: GraphLayout, key: string, bandTop: number, placem
   const first = layout.bandBounds?.top ?? firstRow(layout, key, true);
   const stemRoom = placement.stemRoom ?? STACK_STEM_ROOM;
   const bottom = root.y + root.height;
+  // The solver fixed this child top in the packed-band frame. Substitute the
+  // affine equality directly; retained tops never inherit a neighbor's header.
   const childOffset = bandTop + stemRoom - (Number.isFinite(first) ? first : bottom);
   return { root, bottom, stemRoom, dx: placement.x - extentLeft(layout, key), childOffset, mapY: (y: number) => y <= bottom ? y - root.y : y + childOffset };
 }
