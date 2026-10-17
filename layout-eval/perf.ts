@@ -6,9 +6,11 @@ import { layoutGraph } from './baseline/layout';
 import { performanceWorkloads } from './perf-workloads';
 import { layoutGraph as productionLayout, type LayoutRequest } from '../src/lib/domain/trace-graph/layout';
 import { canLayoutInline } from '../src/lib/domain/trace-graph/layout-workload';
+import { profileLayout } from '../src/lib/domain/trace-graph/layout-profile';
 import { timeInlineFolders } from './perf-folder';
 const quantile = (xs: number[], q: number) => [...xs].sort((a, b) => a - b)[Math.max(0, Math.ceil(xs.length * q) - 1)] ?? 0;
 const rows = [];
+const stages = process.argv.includes('--stages');
 const workloads = performanceWorkloads();
 // Machine load affects both engines equally (pairs alternate), but heavy load still widens
 // tails; it is recorded with the results so a run can be judged.
@@ -30,6 +32,7 @@ for (const workload of workloads) {
   }
   rows.push({ case: workload.case, samples: baseline.length, visible: workload.proposed.items.length, edges: workload.proposed.items.reduce((sum, n) => sum + n.parents.length, 0), mainThread: canLayoutInline(workload.proposed), width: 454, imagePx: 96,
     baseline: { p50: quantile(baseline, .5), p95: quantile(baseline, .95), max: Math.max(...baseline) },
+    ...(stages ? { work: profileLayout(() => productionLayout(workload.proposed)).profile } : {}),
     proposed: { p50: quantile(proposed, .5), p95: quantile(proposed, .95), max: Math.max(...proposed) } });
 }
 await mkdir('layout-eval/out', { recursive: true });

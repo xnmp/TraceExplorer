@@ -1,3 +1,4 @@
+import { layoutStage, countLayoutWork } from '../layout-profile';
 /** Extend one committed folder drawing in world coordinates, so packing is also pinned. */
 import { incrementalWorld } from '../band-incremental';
 import { isLayoutShape, validHistory } from '../history-boundary';
@@ -59,7 +60,11 @@ function mapRouteConsumers(routes: readonly PlacedRoute[], map: (c: Consumer) =>
  * prove that retained placement is infeasible.
  */
 export function pinnedFolderPlacement(input: FolderLayoutInput, plans: ReadonlyMap<GraphId, Plan>, snapshot: FolderPlacementHistory['layout'], candidate: FolderLayout): FolderLayout | null {
+  const endStage = layoutStage('pinned-folder'); try {
+
   try { return place(input, plans, snapshot, candidate); } catch { return null; }
+
+  } finally { endStage(); }
 }
 
 function place(input: FolderLayoutInput, plans: ReadonlyMap<GraphId, Plan>, snapshot: FolderPlacementHistory['layout'], candidate: FolderLayout): FolderLayout | null {

@@ -1,3 +1,4 @@
+import { layoutStage, countLayoutWork } from './layout-profile';
 /** Global checks on the drawing, independent of placement and router occupancy tables. */
 import type { GraphLayout, LayoutItem, PlacedNode, PlacedRoute } from './layout';
 import { validateLayout, cost } from './layout-quality';
@@ -90,6 +91,8 @@ function halves(p: readonly [Point, Point, Point, Point]): readonly [Primitive, 
  * The pair proof also protects interior-to-interior contacts between parallel curves.
  */
 function separatedPrimitives(a: Primitive, b: Primitive, radius: number): boolean {
+  const endStage = layoutStage('curve-refinement'); try {
+
   let budget = 4096;
   const visit = (p: Primitive, q: Primitive, depth: number): boolean => {
     if (boxDistance(boxOf(...p), boxOf(...q)) >= radius) return true;
@@ -104,6 +107,8 @@ function separatedPrimitives(a: Primitive, b: Primitive, radius: number): boolea
     return visit(p, left, depth + 1) && visit(p, right, depth + 1);
   };
   return visit(a, b, 0);
+
+  } finally { endStage(); }
 }
 
 interface Branch extends Box { readonly source: string | null; readonly entries?: readonly Segment[]; readonly left?: Branch; readonly right?: Branch }
@@ -139,6 +144,8 @@ function intentional(layout: GraphLayout, a: PlacedRoute, b: PlacedRoute, p: Poi
 const clearanceCache = createBoundedCache<string | null>(() => 64, { maxEntries: 64, maxBytes: 8 * 1024 * 1024 });
 
 export function routeClearanceViolation(layout: GraphLayout): string | null {
+  const endStage = layoutStage('clearance'); try {
+
   // Exact values, not object identity: even an externally mutated history is rechecked.
   const signature = JSON.stringify([layout.nodes ? [...layout.nodes].map(([id,n]) => [id,n.x,n.y,n.width,n.height]) : [], layout.routes.map(r => [r.path, r.from.kind, r.from.id, r.to.kind, r.to.id, r.terminal]),
     [...layout.junctions].map(([id, j]) => [id, j.x, j.y])]);
@@ -147,9 +154,13 @@ export function routeClearanceViolation(layout: GraphLayout): string | null {
   const result = checkClearance(layout);
   clearanceCache.set(signature, result);
   return result;
+
+  } finally { endStage(); }
 }
 
 function checkClearance(layout: GraphLayout): string | null {
+  const endStage = layoutStage('clearance-compute'); try {
+
   const entries: Segment[] = [], probes: { route: PlacedRoute; source: string; probes: Probe[] }[] = [];
   for (const route of layout.routes) {
     const parsed = read(route.path);
@@ -216,6 +227,8 @@ function checkClearance(layout: GraphLayout): string | null {
     if (search(tree)) return 'route-contact';
   }
   return null;
+
+  } finally { endStage(); }
 }
 
 const geometryChecks = createBoundedCache<string | null>(() => 64, { maxEntries: 64, maxBytes: 8 * 1024 * 1024 });
@@ -255,6 +268,8 @@ function entersTile(primitive: Primitive, tile: PlacedNode): boolean {
 }
 
 export function drawingClaimsViolation(layout: GraphLayout): string | null {
+  const endStage = layoutStage('claims'); try {
+
   const tree=tileIndex([...layout.nodes.values()]);
   const parsedRoutes: {route: PlacedRoute; parsed: NonNullable<ReturnType<typeof read>>}[]=[];
   // Runs make homogeneous consumer-range checks constant time even on shared trunks.
@@ -328,10 +343,14 @@ export function drawingClaimsViolation(layout: GraphLayout): string | null {
     if (seen.size!==group.length) return 'invalid-source';
   }
   return null;
+
+  } finally { endStage(); }
 }
 
 /** This is the admission boundary for a complete drawing, whatever generated it. */
 export function geometryGate(layout: GraphLayout, items: readonly LayoutItem[], cover: string, width: number): string | null {
+  const endStage = layoutStage('geometry-gate'); try {
+
   const key = JSON.stringify([cover, width, items.map(n => [n.key, n.width, n.height, n.parents]), geometrySignature(layout)]);
   const known = geometryChecks.get(key);
   if (known !== undefined) return known;
@@ -340,4 +359,6 @@ export function geometryGate(layout: GraphLayout, items: readonly LayoutItem[], 
   const failure = claims ?? (metrics && !Number.isFinite(cost(metrics, 92)) ? metrics.sharedLanePx ? 'shared-lane' : 'invalid-geometry' : routeClearanceViolation(layout));
   geometryChecks.set(key, failure);
   return failure;
+
+  } finally { endStage(); }
 }

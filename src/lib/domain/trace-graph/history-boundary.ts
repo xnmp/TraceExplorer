@@ -1,3 +1,4 @@
+import { layoutStage, countLayoutWork } from './layout-profile';
 /** Validate untrusted committed geometry before any reuse, resize, signature or index walk. */
 import type { BandHistory, GraphLayout, LayoutItem, LayoutRequest } from './layout';
 import { inReach, usableRetainedRoute } from './band-incremental';
@@ -109,6 +110,8 @@ type Visit = (value: unknown) => boolean;
  * walked once. This avoids reparsing every path and serializing two drawings on a warm read.
  */
 function historyValues(history: BandHistory, visit: Visit): boolean {
+  const endStage = layoutStage('history-walk'); try {
+
   const tables = new Set<readonly unknown[]>();
   const list = (values: readonly unknown[] | undefined): boolean => visit(values)
     && (values === undefined || visit(values.length) && values.every(visit));
@@ -157,6 +160,8 @@ function historyValues(history: BandHistory, visit: Visit): boolean {
   return visit(p.x) && visit(p.coverX) && visit(p.coverHeight) && visit(p.width) && visit(p.left) && visit(p.right)
     && visit(p.track) && visit(p.stemRoom) && list(p.coverColumns) && list(p.bypassColumns) && visit(p.bridge)
     && (!p.bridge || visit(p.bridge.top) && visit(p.bridge.gutter));
+
+  } finally { endStage(); }
 }
 
 function unchangedHistory(value: object, cover: string): boolean {
@@ -173,6 +178,8 @@ function rememberHistory(value: BandHistory, cover: string): void {
 }
 
 export function validHistory(value: unknown, cover: string): value is BandHistory {
+  const endStage = layoutStage('history'); try {
+
   if (object(value) && unchangedHistory(value, cover)) return true;
   if (!object(value) || typeof value.signature !== 'string' || !isLayoutShape(value.layout) || !isLayoutShape(value.placed) || !attachmentValid(value.attachment)) return false;
   let key: string;
@@ -199,4 +206,6 @@ export function validHistory(value: unknown, cover: string): value is BandHistor
   historyChecks.set(key, true);
   rememberHistory(value as unknown as BandHistory, cover);
   return true;
+
+  } finally { endStage(); }
 }

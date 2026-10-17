@@ -1,3 +1,6 @@
+import { layoutStage, countLayoutWork } from './layout-profile';
+import { layoutSignature, geometrySignature } from './layout-signature';
+import { createBoundedCache, estimateLayoutBytes } from './folder-layout/bounded-cache';
 import { filterRouteConsumers } from "./route-consumers";
 import { orderNewSiblingLeaves } from "./new-sibling-order";
 /**
@@ -1307,6 +1310,7 @@ function freePortLanes(request: LayoutRequest, previous: GraphLayout, budget: In
 }
 
 function insertWithPortRepair(request: LayoutRequest, previous: GraphLayout, budget: IncrementalBudget, paneEdges?: Scene["paneEdges"]): GraphLayout | null {
+  countLayoutWork("pinned-search");
   const repaired = freeBlockedPorts(request, previous, budget);
   const placed = insertTree(request, repaired, budget, paneEdges);
   if (placed) return placed;
@@ -1314,7 +1318,28 @@ function insertWithPortRepair(request: LayoutRequest, previous: GraphLayout, bud
   return shifted === repaired ? null : insertTree(request, shifted, budget, paneEdges);
 }
 
+interface InsertionMemo { readonly layout: GraphLayout | null; readonly remaining: IncrementalBudget }
+const insertionMemo = createBoundedCache<InsertionMemo>(entry => 64 + (entry.layout ? estimateLayoutBytes(entry.layout) : 0));
+
+/** Content keys admit worker clones too. Cached objects stay private; budget effects are replayed
+ * exactly, including failed searches. No rejected candidate acquires a geometry certificate. */
 export function incrementalTree(request: LayoutRequest, previous: GraphLayout, budget: IncrementalBudget = incrementalBudget()): GraphLayout | null {
+  const endStage = layoutStage('pinned-band');
+  try {
+    const memoKey = JSON.stringify([layoutSignature(request), geometrySignature(previous), previous.pinnedViolation, [budget.fallback, budget.second, budget.probes].map(String)]);
+    const known = insertionMemo.get(memoKey);
+    if (known) {
+      Object.assign(budget, known.remaining);
+      countLayoutWork('pinned-cache-hit');
+      return structuredClone(known.layout);
+    }
+    const result = buildIncrementalTree(request, previous, budget);
+    insertionMemo.set(memoKey, { layout: structuredClone(result), remaining: { ...budget } });
+    return result;
+  } finally { endStage(); }
+}
+
+function buildIncrementalTree(request: LayoutRequest, previous: GraphLayout, budget: IncrementalBudget): GraphLayout | null {
   const placed = insertWithPortRepair(request, previous, budget);
   if (!placed) return null;
   const key = request.band!.key;

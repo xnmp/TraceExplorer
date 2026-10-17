@@ -1,3 +1,4 @@
+import { layoutStage, countLayoutWork } from './layout-profile';
 import { filterRouteConsumers } from "./route-consumers";
 /** Visible-first, bounded band optimisation. Geometry and history are immutable inputs. */
 import { downwardBandBound, layoutLayered, type GraphLayout, type LayoutItem, type LayoutRequest, type Ordering, type Passing, type PlacedNode } from "./layout";
@@ -278,6 +279,9 @@ export function layoutBand(input: LayoutRequest, options: BandOptions = BAND_DEF
   }
   let result = layoutBandCandidates(request, options);
   if (request.items.length && geometryGate(attachSingleBand(result, request), request.items, request.band!.key, request.maxWidth)) {
+    const endFallback = layoutStage('fallback-ladder');
+    countLayoutWork('fallback-ladder');
+    try {
     let replacement: GraphLayout | undefined;
     for (const scale of [1.5, 2, 3]) {
       const candidate = withPaneBandBounds(layoutLayered({ ...request, history: undefined, band: undefined, tileWidth: (request.tileWidth ?? 92) * scale, orientation: "down" }, { ordering: options.ordering, passing: options.passing, channelStyle: "orthogonal" }), request.band!.key, request.maxWidth);
@@ -300,6 +304,7 @@ export function layoutBand(input: LayoutRequest, options: BandOptions = BAND_DEF
     result = replacement ?? safeLayout(request);
     const failure = geometryGate(attachSingleBand(result, request), request.items, request.band!.key, request.maxWidth);
     if (failure) throw new RangeError("No certified layout: " + failure);
+    } finally { endFallback(); }
   }
   if (result.pinnedViolation) result = { ...result, decision: { ...result.decision!, fallback: "gate-infeasible" } };
   const relayout = !invalid && input.history ? historyRelayoutReason(input.history.signature,input) : undefined;
@@ -308,6 +313,8 @@ export function layoutBand(input: LayoutRequest, options: BandOptions = BAND_DEF
 }
 
 function layoutBandCandidates(input: LayoutRequest, options: BandOptions): GraphLayout {
+  const endStage = layoutStage('candidates'); try {
+
   if (!input || !Array.isArray(input.items) || !input.band) throw new RangeError("malformed band request");
   validate(input.items);
   if (input.tileWidth !== undefined && (!Number.isFinite(input.tileWidth) || input.tileWidth <= 0 || input.tileWidth > 100_000)) throw new RangeError("invalid tile metrics");
@@ -348,6 +355,7 @@ function layoutBandCandidates(input: LayoutRequest, options: BandOptions): Graph
   }
   const tileWidth = request.tileWidth ?? 92;
   const prepare = (c: Candidate): Prepared => {
+    countLayoutWork("candidate");
     // Rectangles and allocation translate exactly with attachment; connectors are
     // attached only for candidates whose rectangle-only bound survives pruning.
     const skeleton = singleBandSkeleton(c.layout, request);
@@ -636,4 +644,6 @@ function layoutBandCandidates(input: LayoutRequest, options: BandOptions): Graph
   }
   return { ...winner.layout, anchorY: anchors.length && winner.anchors && compatible?.attachment ? compatible.attachment.bandTop - compatible.attachment.placement.coverHeight : undefined, anchorX: anchors.length && winner.anchors ? bandExtent(winner.placed, key).left : undefined, decision: { candidate: winner.name, partition: winner.partition, stability,
     ...(lanesShared ? { fallback: "lane-infeasible" as const } : yielded ? { fallback: "anchor-yield" as const } : anchors.length && !winner.anchors ? { fallback: "anchor-infeasible" as const } : {}) } };
+
+  } finally { endStage(); }
 }

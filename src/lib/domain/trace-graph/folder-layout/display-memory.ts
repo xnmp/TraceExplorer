@@ -1,3 +1,4 @@
+import { layoutStage, countLayoutWork } from '../layout-profile';
 /** Displayed geometry is committed data, not an engine-local cache. Snapshots are strings so
  * no mutable Map, node or route can alias a displayed result or another history generation. */
 import type { BandOptions } from '../band-layout';
@@ -83,12 +84,18 @@ const compatible = (memory: DisplayMemory | undefined, identity: Identity) =>
   !identity.changed && validDisplayMemory(memory) && memory?.folder === identity.folder && memory.contents === identity.contents;
 
 export function recallDisplay(memory: DisplayMemory | undefined, identity: Identity): FolderLayout | undefined {
+  const endStage = layoutStage('restore-decode'); try {
+
   if (!compatible(memory, identity)) return undefined;
   const entry = memory!.entries.find(([key]) => key === identity.key);
   try { return entry ? decode(entry[1]) : undefined; } catch { return undefined; }
+
+  } finally { endStage(); }
 }
 
 export function rememberDisplay(memory: DisplayMemory | undefined, identity: Identity, layout: FolderLayout, recalled = false): DisplayMemory {
+  const endStage = layoutStage('memory-commit'); try {
+
   const entries = compatible(memory, identity) ? memory!.entries : [];
   const existing = entries.find(([key]) => key === identity.key);
   const { displays: _memory, arrivals: _arrivals, arrivalPlacement: _placement, ...snapshot } = layout;
@@ -98,4 +105,6 @@ export function rememberDisplay(memory: DisplayMemory | undefined, identity: Ide
   const value = (recalled ? existing?.[1] : undefined) ?? encode({ ...snapshot, graphs: new Map([...snapshot.graphs].map(([id, graph]) => [id, clean(graph)])) });
   return { folder: identity.folder, contents: identity.contents, members: identity.members.map(([k, v]) => [k, v]),
     entries: [...entries.filter(([key]) => key !== identity.key).slice(-(DISPLAY_LIMIT - 1)).map(([k, v]) => [k, v] as const), [identity.key, value]] };
+
+  } finally { endStage(); }
 }

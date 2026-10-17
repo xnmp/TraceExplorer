@@ -8,6 +8,7 @@ import { optimizedBand, type Optimized } from './engine';
 import { svg, gallery } from './render';
 import { attached } from './baseline/placement';
 import { attachSingleBand } from '../src/lib/domain/trace-graph/band-geometry';
+import { profileLayout, type LayoutProfile } from '../src/lib/domain/trace-graph/layout-profile';
 import { fallbackReason } from '../src/lib/domain/trace-graph/band-layout';
 const quick = process.argv.includes('--quick'), stability = 1.5;
 const widths = quick ? [454, 900] : [360, 454, 640, 900, 1400], presets = quick ? [96] : [48, 64, 96, 128];
@@ -28,6 +29,7 @@ interface Row {
     metrics: Measures | null;
     error?: string;
     changed: boolean;
+    work?: LayoutProfile;
     decision?: import("../src/lib/domain/trace-graph/layout").BandDecision;
     /** Why a proposed layout is an explicit fallback, from the layout itself (`fallbackReason`). */
     reason?: string | null;
@@ -53,6 +55,7 @@ for (const c of cases)
                 let base: GraphLayout | undefined, proposed: Optimized | undefined;
                 for (const engine of ['baseline', 'proposed']) {
                     const start = performance.now();
+                    let work: LayoutProfile | undefined;
                     let result: GraphLayout | undefined, candidate = engine, ms = 0, error: string | undefined;
                     try {
                         if (engine === 'baseline') {
@@ -60,7 +63,9 @@ for (const c of cases)
                             result = base;
                         }
                         else {
-                            proposed = optimizedBand({ ...request, hint: prevPrototype?.layout.readingOrder }, { previous: prevPrototype, stability, anchorKey: focus ?? undefined });
+                            const run = () => optimizedBand({ ...request, hint: prevPrototype?.layout.readingOrder }, { previous: prevPrototype, stability, anchorKey: focus ?? undefined });
+                            if (process.argv.includes('--stages')) { const traced = profileLayout(run); proposed = traced.result; work = traced.profile; }
+                            else proposed = run();
                             result = proposed.layout;
                             candidate = proposed.candidate;
                         }
@@ -72,7 +77,7 @@ for (const c of cases)
                     }
                     const placed = result ? (engine === 'baseline' ? attached(result, request) : attachSingleBand(result, request)) : undefined;
                     const metrics = placed ? measure(placed, request.band!.key, width, request.items, changed ? (engine === 'baseline' ? prevAttachedB : prevAttachedP) : undefined, focus ?? undefined) : null;
-                    rows.push({ case: c.id, width, imagePx, step, focus, visible: request.items.length, total: request.band!.items.length, tileWidth: request.tileWidth ?? 92, engine, candidate, ms, metrics, error, changed, decision: engine === "proposed" ? proposed?.layout.decision : undefined, reason: engine === "proposed" && proposed ? fallbackReason(proposed.layout) : null });
+                    rows.push({ work, case: c.id, width, imagePx, step, focus, visible: request.items.length, total: request.band!.items.length, tileWidth: request.tileWidth ?? 92, engine, candidate, ms, metrics, error, changed, decision: engine === "proposed" ? proposed?.layout.decision : undefined, reason: engine === "proposed" && proposed ? fallbackReason(proposed.layout) : null });
                     if (rows.length % 500 === 0)
                         console.log(`Completed ${rows.length} engine runs (${c.id}, ${width}px, image ${imagePx})`);
                     if (placed) {
