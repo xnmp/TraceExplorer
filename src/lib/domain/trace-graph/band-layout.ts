@@ -426,7 +426,8 @@ function layoutBandCandidates(input: LayoutRequest, options: BandOptions): Graph
     }) && !geometryGate(attached, request.items, key, request.maxWidth) ? result : layout;
   };
   if (previous) {
-    // One grid-work budget for every incremental embedding this request tries.
+    // Each embedding has bounded effort. A failed fully pinned search must not
+    // consume the repack candidate's opportunity to keep the clicked anchor.
     const budget = incrementalBudget();
     const incremental = repairPinned(incrementalTree(request, previous, budget));
     if (incremental) history.push({ name: "incremental-tree", layout: incremental });
@@ -447,7 +448,7 @@ function layoutBandCandidates(input: LayoutRequest, options: BandOptions): Graph
       const repack = !warm || height > compactShelf * 1.1
         || (wantsDown && height > rowsHeight * 1.1 && height > bandExtent(visibleDown().layout, key).height * 1.1);
       const subset = repack ? projected(previous, { ...request, items: request.items.filter(n => fixed.has(n.key)) }) : null;
-      const compact = repairPinned(subset && incrementalTree(request, { ...subset, bandBounds: undefined, anchorX: undefined, anchorY: undefined }, budget));
+      const compact = repairPinned(subset && incrementalTree(request, { ...subset, bandBounds: undefined, anchorX: undefined, anchorY: undefined }, incrementalBudget()));
       if (compact) history.push({ name: "anchored-repack", layout: compact });
     }
     if (retained) history.push({ name: "retained-visible", layout: retained, partition: request.history?.layout.decision?.partition });

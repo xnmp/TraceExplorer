@@ -9,6 +9,7 @@ it('keeps the click anchor when a connector passes an unused future source port'
   const scene = JSON.parse(JSON.stringify(fixture), (_key, value) => value?.__map ? new Map(value.__map) : value);
   const previous = scene.previous as GraphLayout;
   const request = scene.request as LayoutRequest;
+  expect(geometryGate(previous, request.items.filter(n=>previous.nodes.has(n.key)), request.band!.key, request.maxWidth)).toBeNull();
   const input = {...request, history: {signature: bandHistorySignature(request),layout: previous,placed: previous}};
   const result = attachSingleBand(layoutGraph(input), input);
   const anchor = request.anchorKey!;
