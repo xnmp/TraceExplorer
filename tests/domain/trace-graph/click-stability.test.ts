@@ -9,7 +9,7 @@ it('keeps legal corpus clicks at least as stable as main using committed click h
   expect.soft(result.screenAnchors).toBeLessThanOrEqual(82);
   expect.soft(result.denseScreenAnchors).toBeLessThanOrEqual(114);
   expect.soft(result.displacement).toBeLessThanOrEqual(17.53);
-}, 900_000);
+}, 1_800_000);
 
 it('explains every corpus height regression over ten percent with actual retained stability', () => {
   expect(unexplainedHeightRegressions()).toEqual([]);

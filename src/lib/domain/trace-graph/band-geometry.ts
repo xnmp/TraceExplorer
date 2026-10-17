@@ -390,7 +390,8 @@ export function bandRouteStem(layout: GraphLayout, key: string, bandTop: number,
 }
 
 /** Round orthogonal stem corners, clamping the radius for short runs. */
-export function roundedStem(points: readonly { readonly x: number; readonly y: number }[]): string {
+export function roundedStem(points: readonly { readonly x: number; readonly y: number }[],
+  radiusAt?: (before: { x: number; y: number }, corner: { x: number; y: number }, after: { x: number; y: number }) => number): string {
   // Drop repeated points, then points inside straight runs, until neither is left: a run that
   // doubles back leaves two equal corners, whose zero-length run has no direction to round.
   let corners: readonly { readonly x: number; readonly y: number }[] = points;
@@ -409,7 +410,8 @@ export function roundedStem(points: readonly { readonly x: number; readonly y: n
   for (let i = 1; i < corners.length - 1; i++) {
     const before = corners[i - 1], corner = corners[i], after = corners[i + 1];
     const incoming = runLength(corner.x - before.x, corner.y - before.y), outgoing = runLength(after.x - corner.x, after.y - corner.y);
-    const radius = Math.min(6, incoming / 2, outgoing / 2), k = .5522847498;
+    const radius = Math.max(0, Math.min(6, incoming / 2, outgoing / 2, radiusAt?.(before, corner, after) ?? 6)), k = .5522847498;
+    if (!radius) { path += ` L${corner.x} ${corner.y}`; continue; }
     const ux = (corner.x - before.x) / incoming, uy = (corner.y - before.y) / incoming;
     const vx = (after.x - corner.x) / outgoing, vy = (after.y - corner.y) / outgoing;
     const ax = corner.x - ux * radius, ay = corner.y - uy * radius;

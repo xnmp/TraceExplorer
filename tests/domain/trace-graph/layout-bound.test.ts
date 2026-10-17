@@ -44,7 +44,7 @@ describe("downward band bound", () => {
         checked++;
       }
     expect(checked).toBe(960);
-  });
+  }, 30_000); // Corpus geometry proof; latency is gated by layout:eval.
 
   it("is tight where rows decide the height: a chain in a wide pane", () => {
     const chain = [item("root"), ...Array.from({ length: 6 }, (_, i) => item(`c${i}`, [i ? `c${i - 1}` : "root"], i + 1))];

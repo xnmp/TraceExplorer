@@ -14,6 +14,7 @@
  * this engine sits behind the `layoutGraph(LayoutRequest) → GraphLayout`
  * boundary instead; callers never depend on how it works.
  */
+import { channelInk, roundChannelPath, type ChannelInk } from "./channel-corners";
 import { boundedJunctions } from "./bounded-junctions";
 import { layoutBand, type BandOptions } from "./band-layout";
 import type { ConsumerSet } from "./route-consumers";
@@ -1663,11 +1664,20 @@ function layoutPass(prepared: Prepared, extra: { readonly left: number; readonly
     return anchor.edge === "bottom" ? row.bottom : anchor.edge === "top" ? row.top : row.top - ARROW.length;
   };
 
-  // 7. Paths: vertical to the reserved track, across it, then vertical on.
-  // Paired swaps, doglegs and junction fans retain their dedicated curve shapes.
+  // 7. Paths: vertical to the reserved track, across it, then vertical on, with local fillets.
+  // Paired swaps and junction fans retain their dedicated curve shapes.
   // Bend zones end `approach` above the next row, so a route into a tile ends
   // in a straight, vertical stem at least as long as its arrowhead.
-  const draw = (item: Leg): string => {
+  const trackCenter = (item: Leg, track: number) => {
+    const box = zoneBoxes[item.channel][item.zone], y1 = at(item.from), y2 = at(item.to);
+    const top = Math.max(box.top + berthAt(item.channel, item.zone), y1), bottom = Math.min(box.bottom, y2);
+    const tracks = tracksIn(item.channel, item.zone), slice = (bottom - top) / tracks;
+    if (box.curved) return top + slice * (track + .5);
+    const first = Math.max(box.top, y1) + (item.zone === 0 && nearbyPort[item.channel] ? PORT_BERTH : LANE_SEPARATION);
+    const last = bottom - LANE_SEPARATION;
+    return tracks === 1 ? (first + last) / 2 : first + (last - first) * track / (tracks - 1);
+  };
+  const drawSharp = (item: Leg): string => {
     const y1 = at(item.from), y2 = at(item.to);
     const { x1, x2 } = item;
     // Each coordinate is formatted once, however often the path repeats it.
@@ -1685,16 +1695,10 @@ function layoutPass(prepared: Prepared, extra: { readonly left: number; readonly
     // keeps half of LANE_SEPARATION inside either edge of its slice, running vertically there.
     const inset = tracks > 1 ? LANE_SEPARATION / 2 : 0;
     const span = item.span ?? 1, start = top + slice * (item.track + 1 - span) + inset, end = top + slice * (item.track + 1) - inset;
-    const trackCenter = (track: number) => {
-      if (box.curved) return top + slice * (track + .5);
-      const first = Math.max(box.top, y1) + (item.zone === 0 && nearbyPort[item.channel] ? PORT_BERTH : LANE_SEPARATION);
-      const last = bottom - LANE_SEPARATION;
-      return tracks === 1 ? (first + last) / 2 : first + (last - first) * track / (tracks - 1);
-    };
-    const left = `${round(x1)}`, middle = `${round(span > 1 ? (start + end) / 2 : trackCenter(item.track))}`;
+    const left = `${round(x1)}`, middle = `${round(span > 1 ? (start + end) / 2 : trackCenter(item, item.track))}`;
     if (item.dogleg) {
       // Curve to the dogleg's column in its first slice, down that column, then on in its own.
-      const first = top + slice * item.dogleg.track + inset, last = first + slice - 2 * inset, column = `${round(item.dogleg.x)}`, upper = `${round(trackCenter(item.dogleg.track))}`;
+      const column = `${round(item.dogleg.x)}`, upper = `${round(trackCenter(item, item.dogleg.track))}`;
       return ` L${left} ${upper} L${column} ${upper} L${column} ${middle} L${right} ${middle} L${right} ${round(y2)}`;
     }
     const fan = fanIn.get(item);
@@ -1708,6 +1712,23 @@ function layoutPass(prepared: Prepared, extra: { readonly left: number; readonly
     return (item.span ?? 1) > 1
       ? `${start > y1 ? ` L${left} ${round(start)}` : ""} C${left} ${middle},${right} ${middle},${right} ${round(end)}${end < y2 ? ` L${right} ${round(y2)}` : ""}`
       : ` L${left} ${middle} L${right} ${middle} L${right} ${round(y2)}`;
+  };
+  // Foreign ink is read from the sharp drawing, independently of turn order.
+  const sharp = new Map(allLegs.map(item => [item, `M${round(item.x1)} ${round(at(item.from))}${drawSharp(item)}`]));
+  const ink = new Map<number, { item: Leg; runs: ChannelInk[] }[]>();
+  for (const item of allLegs) append(ink, item.channel, { item, runs: channelInk(sharp.get(item)!) });
+  const draw = (item: Leg): string => {
+    if (!bends(item) && !fanIn.has(item)) return drawSharp(item);
+    const box = zoneBoxes[item.channel][item.zone];
+    const foreign = ink.get(item.channel)!.filter(other => other.item.source !== item.source).flatMap(other => other.runs);
+    const centers = Array.from({ length: tracksIn(item.channel, item.zone) }, (_, track) => round(trackCenter(item, track)));
+    const path = roundChannelPath(sharp.get(item)!, foreign, corner => {
+      // Each track owns only its half of the space to the next track, even when
+      // the neighbouring route belongs to this source or occupies another x span.
+      const neighbours = centers.filter(y => y !== corner.y).map(y => Math.abs(y - corner.y) / 2);
+      return Math.max(0, Math.min(corner.y - box.top, box.bottom - corner.y, ...neighbours));
+    });
+    return path.replace(/^M[^LC]*/, '');
   };
   // Shared stretches are drawn once, as trunks carrying the consumers of
   // every route through them; each route draws only from where it branches

@@ -22,13 +22,18 @@ import { orderNewSiblingLeaves } from "./new-sibling-order";
  */
 import { nearestFree, type GraphLayout, type LayoutItem, type LayoutRequest, type PlacedNode, type PlacedRoute, type PlacedJunction } from "./layout";
 import { ARROW, JUNCTION_BERTH, LANE_SEPARATION, PORT_BERTH, spacingFor, STACK_STEM_ROOM } from "./metrics";
-import { axisOf, berthsOf, paintedSegments, distanceToTile, distanceToSegment, entersBerth, grazesTile, INTO_JUNCTION, INTO_TILE, leavingRunFrom, routeEnds, shallowRun, SHALLOW_RUN, TILE_GRAZE, type Berth, type Ends } from "./route-contacts";
-import { bandExtent } from "./band-geometry";
+import { axisOf, berthsOf, paintedSegments, distanceToTile, distanceToSegment, grazesTile, INTO_JUNCTION, INTO_TILE, leavingRunFrom, routeEnds, shallowRun, SHALLOW_RUN, TILE_GRAZE, type Berth, type Ends } from "./route-contacts";
+import { bandExtent, roundedStem } from "./band-geometry";
+import { channelCornerRadius, channelInk } from './channel-corners';
 import { intersectsTile, overlapLength, routeBounds, segments, type Segment } from "./layout-quality";
 import { orthogonalRoute, LANE_TOLERANCE, NEAR_LANE, type AxisRun, type ForeignLanes, type GridSearch } from "./orthogonal-route";
 import { JUNCTION_CLEARANCE } from "./connector-ink";
 import { forEachPathNumber } from "./path-data";
 import { pathCommands, type Point } from "./path-sampling";
+
+/** Fractional curve coordinates need the full reserved clearance. The drawing gate uses
+ * this numerical tolerance; the legacy contact helper's .01px slack admits real near misses. */
+const entersBerth = (segment: Segment, berth: Berth): boolean => distanceToSegment(segment, berth) < berth.radius - 1e-7;
 
 /** Distance between neighbouring parallel lanes a route family may take. */
 const LANE_STEP = 3;
@@ -371,8 +376,10 @@ class LaneIndex {
         this.log.push(file(this.horizontal, { at: a.y, lo: a.x, hi: a.x, source, segment, speck: true }), file(this.vertical, { at: a.x, lo: a.y, hi: a.y, source, segment, speck: true }));
         continue;
       }
-      if (dy <= LANE_TOLERANCE / 8 && dy < dx) this.log.push(file(this.horizontal, { at: (a.y + b.y) / 2, lo: Math.min(a.x, b.x), hi: Math.max(a.x, b.x), source, segment }));
-      else if (dx <= LANE_TOLERANCE / 8 && dx < dy) this.log.push(file(this.vertical, { at: (a.x + b.x) / 2, lo: Math.min(a.y, b.y), hi: Math.max(a.y, b.y), source, segment }));
+      // A slanted fillet sample is not an axis lane: exporting its midpoint would
+      // seed fractional grid lines inside the adjoining straight run's clearance.
+      if (dy === 0 && dx > 0) this.log.push(file(this.horizontal, { at: (a.y + b.y) / 2, lo: Math.min(a.x, b.x), hi: Math.max(a.x, b.x), source, segment }));
+      else if (dx === 0 && dy > 0) this.log.push(file(this.vertical, { at: (a.x + b.x) / 2, lo: Math.min(a.y, b.y), hi: Math.max(a.y, b.y), source, segment }));
     }
   }
   /** A future source needs one clear departure; either candidate port may serve it. */
@@ -544,6 +551,18 @@ class LaneIndex {
       if (ink.some(segment => entersBerth(segment, berth)) && this.touched(berth, source)) return berth;
     }
     return this.blockingDeparture(ink, source);
+  }
+
+  /** Add the other probes of the same local turn together. A rounded corner has several
+   * sampled berths; discovering them one at a time spends a retry on every sample. */
+  nearbyBerths(witness: Berth, source: string): Berth[] {
+    const out = this.base?.nearbyBerths(witness, source) ?? [];
+    const reach = 2 * PORT_BERTH;
+    for (let row = Math.floor((witness.y - reach) / 64); row <= Math.floor((witness.y + reach) / 64); row++) {
+      for (const berth of this.berths[row] ?? []) if (berth.source !== source
+        && Math.abs(berth.x - witness.x) <= reach && Math.abs(berth.y - witness.y) <= reach) out.push(berth);
+    }
+    return out;
   }
 
   /** Whether the segment passes within the berth of a port, corner or fork of a source other than `source`. */
@@ -1177,10 +1196,16 @@ function routeAroundBerths(start: Point, goal: Point, obstacles: readonly Placed
     if (!berth) return grid;
     const key = JSON.stringify([berth.x, berth.y, berth.radius]);
     if (seen.has(key)) return null;
-    seen.add(key);
-    // The grid expands rectangles by TILE_GRAZE; the resulting square contains the berth.
-    const radius = Math.max(0, berth.radius - TILE_GRAZE);
-    avoided.push({ key, x: berth.x - radius, y: berth.y - radius, width: radius * 2, height: radius * 2, row: 0, band: 0 });
+    // Every added probe is already a foreign-ink constraint, including the other samples
+    // along this rounded turn. Batch them so the retry limit counts obstacles, not samples.
+    for (const nearby of [berth, ...lanes.nearbyBerths(berth, source)]) {
+      const key = JSON.stringify([nearby.x, nearby.y, nearby.radius]);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      // The grid expands rectangles by TILE_GRAZE; the resulting square contains the berth.
+      const radius = Math.max(0, nearby.radius - TILE_GRAZE);
+      avoided.push({ key, x: nearby.x - radius, y: nearby.y - radius, width: radius * 2, height: radius * 2, row: 0, band: 0 });
+    }
   }
   return null;
 }
@@ -1320,14 +1345,40 @@ function freePortLanes(request: LayoutRequest, previous: GraphLayout, budget: In
       const from = previous.nodes.get(blocked.from.id); if (!from) continue;
       // Curved attachment headers do not prevent repairing a later straight run.
       // Keep their exact commands and controls; flattened curve segments are never edited.
-      const commands = pathCommands(blocked.path), raw = [...blocked.path.matchAll(/[MLC][^MLC]*/g)].map(m => m[0]);
-      if (!commands || commands.length !== raw.length) continue;
+      const authored = pathCommands(blocked.path), authoredRaw = [...blocked.path.matchAll(/[MLC][^MLC]*/g)].map(m => m[0]);
+      if (!authored || authored.length !== authoredRaw.length) continue;
+      // A straight run can contain grid waypoints. They are not fixed corners and
+      // must not shorten the room available to move the neighbouring turn.
+      const kept = authored.flatMap((command, i) => {
+        if (!i || command.kind !== 'L' || authored[i + 1]?.kind !== 'L') return [i];
+        const a = authored[i - 1].values, b = command.values, c = authored[i + 1].values;
+        const dx = b.at(-2)! - a.at(-2)!, dy = b.at(-1)! - a.at(-1)!;
+        const ex = c.at(-2)! - b.at(-2)!, ey = c.at(-1)! - b.at(-1)!;
+        return dx * ey === dy * ex && dx * ex + dy * ey > 0 ? [] : [i];
+      });
+      const commands = kept.map(i => authored[i]), raw = kept.map(i => authoredRaw[i]);
       const points = commands.map(c => point(c.values.at(-2)!, c.values.at(-1)!));
       const lanes = retainedIndex(previous, routes);
+      const foreign = routes.filter(r => r.from.kind !== blocked.from.kind || r.from.id !== blocked.from.id)
+        .flatMap(r => {
+          const ss = retainedSegments(r), painted = paintedSegments(ss, routeEnds(r, ss, previous.nodes, previous.junctions));
+          return [...channelInk(r.path), ...painted.slice(ss.length)];
+        });
       let found: string | undefined;
       for (let i = 1; i < points.length - 2 && !found; i++) {
-        // Only internal straight neighbours may move. Curve endpoints and both route ends stay fixed.
-        if ([commands[i], commands[i + 1], commands[i + 2]].some(c => c.kind !== 'L')) continue;
+        // Translate a run together with its adjacent fillets, keeping their radius and controls.
+        if (commands[i + 1].kind !== 'L') continue;
+        const elbow = (j: number): boolean => {
+          if (commands[j]?.kind !== 'C' || j < 1) return false;
+          const start = points[j - 1], end = points[j], [x1, y1, x2, y2] = commands[j].values;
+          return Math.abs(Math.abs(end.x - start.x) - Math.abs(end.y - start.y)) < 1e-7
+            && (start.x === x1 && end.y === y2 && start.y !== y1 && end.x !== x2
+              || start.y === y1 && end.x === x2 && start.x !== x1 && end.y !== y2);
+        };
+        const lo = commands[i].kind === 'C' && elbow(i) ? i - 1 : i;
+        const hi = commands[i + 2].kind === 'C' && elbow(i + 2) ? i + 2 : i + 1;
+        if (!lo || hi + 1 >= commands.length || commands[lo].kind !== 'L' || commands[hi + 1].kind !== 'L'
+          || commands[i].kind === 'C' && lo === i || commands[i + 2].kind === 'C' && hi === i + 1) continue;
         const a = points[i], b = points[i + 1], vertical = a.x === b.x, horizontal = a.y === b.y;
         if (!vertical && !horizontal) continue;
         const nearby = ports.filter(port => distanceToSegment([a, b], port) < PORT_BERTH - .01);
@@ -1337,11 +1388,51 @@ function freePortLanes(request: LayoutRequest, previous: GraphLayout, budget: In
           for (const distance of [PORT_BERTH + LANE_STEP, PORT_BERTH + 2 * LANE_STEP, PORT_BERTH, PORT_BERTH + 3 * LANE_STEP]) {
             if (budget.probes-- <= 0) break;
             const coordinate = center + direction * distance;
-            const candidate = points.map((p, k) => k === i || k === i + 1 ? { ...p, [axis]: coordinate } : p);
+            const delta = coordinate - old;
+            const shaped = commands.map((c, k) => ({ kind: c.kind, values: c.values.map((v, j) => k >= lo && k <= hi && j % 2 === (axis === 'x' ? 0 : 1) ? v + delta : v) }));
+            const skipped = new Set<number>();
+            const at = (j: number) => point(shaped[j].values.at(-2)!, shaped[j].values.at(-1)!);
+            const fitFillet = (j: number, incoming: boolean): boolean => {
+              const start = at(j - 1), end = at(j), values = shaped[j].values;
+              const u = point(Math.sign(values[0] - start.x), Math.sign(values[1] - start.y));
+              const v = point(Math.sign(end.x - values[2]), Math.sign(end.y - values[3]));
+              const radius = Math.abs(end.x - start.x), corner = point(start.x + u.x * radius, start.y + u.y * radius);
+              const fixed = at(incoming ? j - 2 : j + 1);
+              const room = incoming ? (corner.x - fixed.x) * u.x + (corner.y - fixed.y) * u.y
+                : (fixed.x - corner.x) * v.x + (fixed.y - corner.y) * v.y;
+              const reserve = !incoming && j + 1 === commands.length - 1 && blocked.terminal ? ARROW.length : 1e-7;
+              if (room < reserve) return false;
+              const available = Math.min(radius, room - reserve);
+              const sharpCorner = (index: number): Point => {
+                const p = at(index), c = shaped[index];
+                if (c.kind !== 'C' || !elbow(index)) return p;
+                const start = at(index - 1), r = Math.abs(p.x - start.x);
+                return point(start.x + Math.sign(c.values[0] - start.x) * r, start.y + Math.sign(c.values[1] - start.y) * r);
+              };
+              // Compare against the repaired sharp legs, including the neighbouring
+              // fillet's corner, rather than only the shortened straight pieces.
+              const before = sharpCorner(j - 2), after = elbow(j + 2) ? sharpCorner(j + 2) : at(j + 1);
+              const certified = channelCornerRadius(before, corner, after, foreign, available);
+              const fitted = certified < 1e-6 ? 0 : certified;
+              if (fitted === radius) return true;
+              if (!fitted) {
+                shaped[j - 1] = {kind:'L',values:[corner.x,corner.y]};
+                shaped[j] = {kind:'L',values:[corner.x,corner.y]}; skipped.add(j); return true;
+              }
+              const native = pathCommands(roundedStem([point(corner.x - u.x * 2 * fitted, corner.y - u.y * 2 * fitted), corner,
+                point(corner.x + v.x * 2 * fitted, corner.y + v.y * 2 * fitted)], () => fitted))!;
+              shaped[j - 1] = {kind:'L',values:[...native[1].values]};
+              shaped[j] = {kind:'C',values:[...native[2].values]}; return true;
+            };
+            if (commands[i].kind === 'C' && !fitFillet(i, true) || commands[i + 2].kind === 'C' && !fitFillet(i + 2, false)) continue;
+            const candidate = shaped.map((_, j) => at(j));
             if (candidate.some(p => p.x < 8 || p.x > request.maxWidth - 8)) continue;
-            const nextPath = raw.map((command, k) => k === i || k === i + 1 ? `L${candidate[k].x} ${candidate[k].y} ` : command).join('');
+            const nextPath = raw.map((command, k) => skipped.has(k) ? '' : k >= lo && k <= hi ? shaped[k].kind + shaped[k].values.join(' ') + ' ' : command).join('');
             const pieces = segments(nextPath), end = candidate.at(-1)!, beforeEnd = candidate.at(-2)!;
-            if ([i, i + 1, i + 2].some(k => candidate[k - 1].x !== candidate[k].x && candidate[k - 1].y !== candidate[k].y)) continue;
+            if ([lo, hi + 1].some(k => {
+              const a = candidate[k - 1], b = candidate[k], oldA = points[k - 1], oldB = points[k];
+              return a.x !== b.x && a.y !== b.y || (b.x - a.x) * (oldB.x - oldA.x) + (b.y - a.y) * (oldB.y - oldA.y) <= 0;
+            })) continue;
             if (blocked.terminal && !((end.x === beforeEnd.x && end.y - beforeEnd.y >= ARROW.length)
               || (end.y === beforeEnd.y && end.x - beforeEnd.x >= ARROW.length))) continue;
             if (tiles.crosses(pieces) || tiles.grazes(pieces, from)
