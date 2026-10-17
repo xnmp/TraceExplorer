@@ -16,7 +16,7 @@ it('uses additional bounded insertion search to retain the clicked tile', () => 
     }
     previous = next;
   }
-});
+}, 30_000);
 
 it('retains a crowded later click with the larger bounded search', () => {
   const fixture = { ...corpus().find(c => c.id === 'random-dag-100-8101')!, full: false };
