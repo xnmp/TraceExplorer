@@ -1375,7 +1375,12 @@ function buildIncrementalTree(request: LayoutRequest, previous: GraphLayout, bud
   const placed = insertWithPortRepair(request, previous, budget, undefined, policy);
   if (!placed) return null;
   const key = request.band!.key;
-  const extent = bandExtent({ ...placed, bandBounds: undefined }, key);
+  // Pinned ink cannot be centered to make room for cosmetic allocation padding.
+  // Spend only the actual free margin on either side, retaining the painted
+  // arrow half-width just as the other pane-bounded candidates do.
+  const raw = bandExtent({ ...placed, bandBounds: undefined }, key, 0);
+  const padding = Math.max(ARROW.width / 2, Math.min(8, raw.left, placed.width - raw.left - raw.width));
+  const extent = bandExtent({ ...placed, bandBounds: undefined }, key, padding);
   if (extent.left < 0 || extent.left + extent.width > placed.width) return null;
   return { ...placed, bandBounds: { left: 0, width: extent.left + extent.width,
     top: placed.nodes.get(key)!.height + (request.history?.attachment?.placement.stemRoom ?? STACK_STEM_ROOM) }, preferredX: 0 };
