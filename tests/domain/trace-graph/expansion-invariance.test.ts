@@ -55,18 +55,25 @@ it('restores revisited states over seeded click walks on the corpus', () => {
     const engine = createDefaultEngine(), random = rng(fixture.nodes.length * 137);
     let expansion = openStack(NO_EXPANSION, stack.cover), previous: FolderLayout | undefined;
     const seen = new Map<string, unknown>();
+    let revisits = 0;
     for (let step = 0; step < 24; step++) {
       previous = engine(folderInput(folder, { open: [stack.cover], expansion, previous, width: 900, tile: tileMetrics(64) }));
       expect(folderGeometryGate(previous), `${fixture.id}/${step}`).toBeNull();
       const graph = previous.graphs.get(stack.cover)!;
-      const state = JSON.stringify([...graph.attached.nodes.keys()].sort());
+      // A merge can expose the same nodes with a different caret state. Those are
+      // different displayed states, even though their visible membership agrees.
+      const state = JSON.stringify([
+        [...graph.attached.nodes.keys()].sort(),
+        [...graph.plan.tiles].map(([key, tile]) => [key, tile.expanded, tile.togglable]),
+      ]);
       const drawing = geometry(previous);
-      if (seen.has(state)) expect(drawing, `${fixture.id}/${step}`).toEqual(seen.get(state));
+      if (seen.has(state)) { expect(drawing, `${fixture.id}/${step}`).toEqual(seen.get(state)); revisits++; }
       else seen.set(state, drawing);
       const choices = [...graph.plan.tiles].filter(([, t]) => t.togglable).map(([key]) => key);
       if (!choices.length) break;
       expansion = toggleNode(expansion, scope, choices[Math.floor(random() * choices.length)]);
     }
+    expect(revisits, `${fixture.id}: walk must exercise exact revisits`).toBeGreaterThan(0);
   }
 }, 30000);
 
