@@ -5,6 +5,10 @@ import { folderGeometryGate } from '$lib/domain/trace-graph/folder-layout/geomet
 import { projectDag, projectReferenceBadges } from '$lib/domain/trace-graph/projection';
 import type { FolderLayout } from '$lib/domain/trace-graph/folder-layout/types';
 import { corpusNode as node, makeFolder, folderInput } from './folder-layout-fixtures';
+import { twoChainsMerge } from './folder-merge-fixture';
+import { createFolderLayoutRuntime } from '$lib/plugins/trace/view/folder-layout-runtime';
+import { buildFolderScene } from '$lib/domain/trace-graph/folder-scene';
+import { staticPresentation } from '$lib/plugins/trace/view/presentation';
 
 const rectangles = (layout: FolderLayout) => new Map([
   ...[...layout.cells].map(([key, cell]) => {
@@ -14,6 +18,31 @@ const rectangles = (layout: FolderLayout) => new Map([
   ...[...layout.graphs.values()].flatMap(g => [...g.attached.nodes].map(([key, n]) =>
     [key, [n.x + g.origin.x, n.y + g.origin.y, n.width, n.height]] as const)),
 ]);
+
+it('publishes the two-chains component merge after opening both stacks and clicking the absorbed child', () => {
+  const runtime = createFolderLayoutRuntime(), fixture = twoChainsMerge();
+  let previous: FolderLayout | null = null;
+  for (const [step, prepare] of fixture.steps.entries()) {
+    const { input, sources } = prepare(previous);
+    expect(runtime.inline(input)).toBe(true);
+    const layout = runtime.engine(input);
+    expect(folderGeometryGate(layout)).toBeNull();
+    const scene = buildFolderScene({ scope: { paneId: 'merge', directory: '/pictures', generation: 1 },
+      layoutInput: input, layout, sources,
+      styling: { focus: 'o:11:0', selectedKeys: new Set(['o:11:0']), selectedPaths: new Set(), badgeHover: null } });
+    // Publication consumes attachment descriptors even when arrivals snap. An
+    // engine drawing that passes the gate must survive that consumer too.
+    const published = staticPresentation(scene);
+    expect(published.live.size).toBe(scene.records.size);
+    if (step === fixture.steps.length - 1) {
+      expect(previous!.graphs.size).toBe(2);
+      expect([...scene.graphs.keys()]).toEqual(['a:2']);
+      expect(scene.graphs.get('a:2')!.attached.nodes.has(fixture.joined)).toBe(true);
+      expectFolderArrivalPinned(previous!, layout);
+    }
+    previous = layout;
+  }
+});
 
 it.each([true, false])('keeps displayed tiles fixed when an output merges components (absorbed open: %s)', absorbedOpen => {
   const folder = makeFolder({ stacks: [

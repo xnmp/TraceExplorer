@@ -348,6 +348,10 @@ export function attachedStem(path: string, bandTop: number, stemRoom: number, pl
 
 /** A root route's attachment, before corners are rounded. Non-root routes have no stem. */
 export function bandRouteStem(layout: GraphLayout, key: string, bandTop: number, placement: BandPlacement, route: import("./layout").PlacedRoute): AttachedStem | null {
+  // A world-placed merge's envelope can include an absorbed cover beside this
+  // cover. It is not a packed child band below the cover row, so its native
+  // routes have no attachment transform to reconstruct.
+  if (bandTop < placement.coverHeight) return null;
   const t = bandTransform(layout, key, bandTop, placement);
   if (!t || route.from.kind !== "node" || route.from.id !== key) return null;
   const path = translatePath(route.path, t);

@@ -552,6 +552,18 @@ a time, including semantic endpoints, consumers and untouched retained path
 strings. The final full suite also passed it after validation refinements. A separate
 260-drawing raw-topology census verifies import without rewriting route metadata.
 
+That differential compared engine drawings, not their publication consumers.
+The slice 2 merge regression returned the same certified drawing as slice 1,
+then threw while presentation captured an attachment descriptor: a world-placed
+merged envelope includes the absorbed cover beside the surviving cover, so its
+top is above the packed child-band frame. `bandRouteStem` now declines that
+inapplicable transform; the native route remains authoritative and routing-plan
+validation stays strict. The browser-free two-chains regression carries the
+previous layout through the real view input adapter, inline runtime and worker
+reply protocol, then builds the scene and snapped presentation. Existing
+component-merge tests checked geometry, pinning and revisits without this final
+consumer; within-graph convergence cases did not exercise component publication.
+
 Independent blocking adversarial review accepted the implementation after
 regressions for native primitive/shaft/turn bindings, branch connectivity and
 paint allocation. Its final focused run passed 166 tests across 10 files.

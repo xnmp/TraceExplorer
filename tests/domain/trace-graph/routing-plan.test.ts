@@ -84,6 +84,11 @@ describe('imported painted routing contract', () => {
     const wrong = tilePort({ key: 'cover', x: 60, y: 0, width: 40, height: 40 }, 'bottom');
     expect(() => importAttachmentStem('M20 40 L20 100', 40, 34, placement, wrong)).toThrow(/start port/i);
   });
+  it('rejects actual attachment lanes outside the cover-to-child allocation', () => {
+    const placement = { coverX: 20, coverHeight: 40, x: 0, width: 100, left: 0, right: 100 };
+    expect(() => importAttachmentStem('M20 40 L20 100', 0, 34, placement)).toThrow(/bound conflict/i);
+    expect(() => importAttachmentStem('M20 40 L20 100', 40, 34, { ...placement, track: 19 })).toThrow(/bound conflict/i);
+  });
   it('keeps slanted arrow wings perpendicular to the native endpoint direction', () => {
     const arrow = importArrowStub('diagonal', 'M0 0 L10 10', 'tip');
     const [a, b] = arrow.paint;
