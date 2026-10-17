@@ -17,6 +17,15 @@ const topology = (): Pick<GraphLayout, 'nodes' | 'junctions' | 'routes'> => ({
 const fixture = (): RoutingPlan => importRoutingPlan(topology());
 
 describe('imported painted routing contract', () => {
+  it.each([0.0001,0.001,0.01])('binds the native arrival side when positive tile height %s is smaller than port slack',height=>{
+    const items=[{key:'root',parents:[],width:60,height,order:0},{key:'child',parents:['root'],width:60,height,order:1}];
+    const drawing=layoutLayered({items,maxWidth:360});
+    const plan=importRoutingPlan(drawing);
+    const arrival=plan.ports.find(port=>port.id===plan.paths.find(path=>path.route?.terminal)!.end)!;
+    expect(arrival.owner.kind).toBe('tile');
+    expect(arrival.side).toBe('top');
+    expect(()=>validateRoutingPlan(structuredClone(plan))).not.toThrow();
+  });
   it('imports existing shared-net and native-curve topology without rewriting semantics or path bytes', () => {
     let count = 0;
     for (const c of corpus()) for (const width of [360, 900]) for (const image of [48, 96]) {
@@ -118,6 +127,11 @@ describe('imported painted routing contract', () => {
   it('requires departure and arrival tangents normal to the port side', () => {
     const graph = topology(), route = graph.routes[0];
     expect(() => importRoutingPlan({ ...graph, routes: [{ ...route, path: 'M20 40 L0 40 L0 80 L12 80' }] })).toThrow(/tangent/i);
+  });
+  it('does not reinterpret an invalid tile departure as a connected same-source branch',()=>{
+    const graph=topology(),route=graph.routes[0];
+    const branch={...route,id:'invalid-branch',to:route.from,terminal:false,path:'M20 40 L30 40'};
+    expect(()=>importRoutingPlan({...graph,routes:[route,branch]})).toThrow(/tangent/i);
   });
   it('retains native command arity as well as its control-point sequence', () => {
     const graph = topology(), route = graph.routes[0];

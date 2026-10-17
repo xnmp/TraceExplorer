@@ -23,6 +23,13 @@ describe("downward bound at a pane width that is not a multiple of 32", () => {
 });
 
 describe("rounded cover stems", () => {
+  it.each([NaN, Infinity, -Infinity])("rejects non-finite input before redundant points can hide it (%s)", (x) => {
+    expect(() => roundedStem([{ x: 0, y: 0 }, { x, y: 0 }, { x: 20, y: 0 }])).toThrow(/finite/i);
+  });
+  it("rejects an empty stem and a non-finite corner radius", () => {
+    expect(() => roundedStem([])).toThrow(/empty/i);
+    expect(() => roundedStem([{ x: 0, y: 0 }, { x: 0, y: 20 }, { x: 20, y: 20 }], () => NaN)).toThrow(/finite/i);
+  });
   it("never writes NaN for a stem that doubles back on itself", () => {
     for (const points of [
       [{ x: 382, y: 128 }, { x: 382, y: 146 }, { x: 382, y: 140 }, { x: 382, y: 146 }, { x: 300, y: 146 }, { x: 300, y: 200 }],
@@ -44,9 +51,9 @@ describe("rounded cover stems", () => {
   });
 });
 
-describe("lane-infeasible requests without history", () => {
-  // Ordinary candidates for this small DAG share lanes. The admission boundary must
-  // replace them with certified fallback geometry.
+describe("formerly lane-infeasible requests without history", () => {
+  // The joint corridor search now routes this DAG without a fallback. Preserve
+  // the user-visible contract: exact certified geometry without shared lanes.
   // (Found by a seeded search; the earlier 7-node fixture gained a lane-free layout once routes
   // passed rows along their straight lines, and the 10-node one after it once a cycle of turn
   // orders took a dogleg.)
@@ -54,16 +61,16 @@ describe("lane-infeasible requests without history", () => {
     node("n5", ["n3", "n4", "root"], 5)];
   const request = requestFor({ id: "lane-infeasible", nodes, focuses: [null] }, null, 900, 96);
 
-  it("returns certified fallback geometry when ordinary candidates share lanes", () => {
+  it("returns certified geometry without shared lanes", () => {
     const layout = layoutGraph(request), drawn = attachSingleBand(layout, request);
-    expect(layout.decision?.fallback).toBe("geometry-fallback");
+    expect(layout.decision?.fallback).toBeUndefined();
     expect(geometryGate(drawn, request.items, request.band!.key, 900)).toBeNull();
     expect(measure(drawn, request.band!.key, 900, request.items).sharedLanePx).toBe(0);
   });
 
   it("gives its reason from the layout: malformed only when the input is", () => {
     const layout = layoutGraph(request);
-    expect(fallbackReason(layout)).toMatch(/^geometry-fallback/);
+    expect(fallbackReason({ ...layout, decision: { ...layout.decision!, fallback: "geometry-fallback" } })).toMatch(/^geometry-fallback/);
     const gated = { ...layout, decision: { ...layout.decision!, fallback: "gate-infeasible" as const } };
     expect(fallbackReason(gated)).not.toMatch(/malformed/);
     expect(fallbackReason({ ...gated, pinnedViolation: "cover has a visible parent" } as GraphLayout)).toMatch(/malformed/);

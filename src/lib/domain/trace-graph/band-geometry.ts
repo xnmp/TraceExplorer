@@ -3,7 +3,7 @@ import { gridFlow, type GridFlow, type GridItem, type GridMetrics, type GridBand
 import { type GraphLayout, type PlacedNode } from "./layout";
 import { packStackGroups, coverGutters } from "./stack-packing";
 import { attachmentPreferences, solveAttachmentChannel, type AttachmentMetric } from "./attachment-channel";
-import { importedRoute, importRoutingPlan, importAttachmentStem, tilePort, stemCorners, type CertifiedTurn } from "./routing-plan";
+import { importedRoute, importTurnPlan, importAttachmentStem, tilePort, stemCorners, type CertifiedTurn } from "./routing-plan";
 import { numberStart, scanNumber, scanned } from "./path-data";
 import { ARROW, STACK_STEM_ROOM, TRACK_HEIGHT, LANE_SEPARATION, tileSize, spacingFor, type TileMetrics } from "./metrics";
 /** Reserve one child generation until a committed layout supplies the actual footprint.
@@ -361,8 +361,8 @@ export function bandRouteStem(layout: GraphLayout, key: string, bandTop: number,
 /** Round orthogonal stem corners, clamping the radius for short runs. */
 export function roundedStem(points: readonly { readonly x: number; readonly y: number }[],
   radiusAt?: (before: { x: number; y: number }, corner: { x: number; y: number }, after: { x: number; y: number }) => number): string {
-  const corners = stemCorners(points);
-  return emitRoundedStem(corners, importRoutingPlan({ points: corners, radiusAt }).turns);
+  const plan = importTurnPlan(points, radiusAt);
+  return emitRoundedStem(plan.points, plan.turns);
 }
 
 /** The existing path-data emitter consumes an imported, validated turn plan. */

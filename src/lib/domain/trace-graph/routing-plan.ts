@@ -7,7 +7,7 @@ import type { Point } from './path-sampling';
 import { pathTokens } from './path-data';
 import { segments } from './layout-quality';
 import { arrowTip, BERTH_SLACK } from './route-contacts';
-import { ARROW, PORT_BERTH, TRACK_HEIGHT, LANE_SEPARATION } from './metrics';
+import { ARROW, PORT_BERTH, TRACK_HEIGHT, LANE_SEPARATION, JUNCTION_BERTH } from './metrics';
 import { CONNECTOR_STROKE, CONNECTOR_FILLET_RADIUS, JUNCTION_RADIUS, JUNCTION_STROKE_WIDTH } from './connector-ink';
 import { solveSeparation, type CoordinateBounds, type CoordinatePin } from './separation';
 import { endpointKey, type Junction } from './junctions';
@@ -79,6 +79,13 @@ export interface RoutingPlan {
   readonly turns: readonly CertifiedTurn[];
   /** Geometry-to-port/paint bindings: removing an allocation cannot certify ink. */
   readonly paths: readonly RoutingPath[];
+  readonly meetings?: readonly JunctionMeeting[];
+}
+export interface JunctionMeeting {
+  readonly id: string;
+  readonly dot: Point;
+  readonly parents: readonly string[];
+  readonly inputs: readonly { readonly source: string; readonly port: string; readonly path: string }[];
 }
 export interface RoutingPath {
   readonly id: string;
@@ -100,6 +107,11 @@ export class RoutingImportError extends Error {
 const reject = (id: string, message: string): never => { throw new RoutingImportError(id, message); };
 const finite = (id: string, ...values: number[]) => { if (!values.every(Number.isFinite)) reject(id, 'geometry must be finite'); };
 const same = (a: Point, b: Point) => a.x === b.x && a.y === b.y;
+function followsPort(side: PortSide, first: Point, next: Point): boolean {
+  const length = Math.hypot(next.x - first.x, next.y - first.y), ux = (next.x - first.x) / length, uy = (next.y - first.y) / length;
+  return side === 'top' ? -uy > 0 && Math.abs(ux) <= BERTH_SLACK : side === 'bottom' ? uy > 0 && Math.abs(ux) <= BERTH_SLACK
+    : side === 'left' ? -ux > 0 && Math.abs(uy) <= BERTH_SLACK : ux > 0 && Math.abs(uy) <= BERTH_SLACK;
+}
 const inflate = (b: InkBounds, radius: number): InkBounds => ({ left: b.left - radius, top: b.top - radius, right: b.right + radius, bottom: b.bottom + radius });
 export function inkBounds(points: readonly Point[], radius = 0): InkBounds {
   let left = Infinity, top = Infinity, right = -Infinity, bottom = -Infinity;
@@ -165,13 +177,17 @@ export function importPaintedCorridors(topology: Pick<GraphLayout, 'routes' | 'j
   validateRoutingPlan(plan); return corridors;
 }
 
-export function tilePort(tile: Pick<PlacedNode, 'key' | 'x' | 'y' | 'width' | 'height'>, side: PortSide, offset = (side === 'top' || side === 'bottom' ? tile.width : tile.height) / 2): RoutingPort {
+function tilePortPoint(tile: Pick<PlacedNode, 'x' | 'y' | 'width' | 'height'>, side: PortSide, offset: number): Point {
   const { x, y, width, height } = tile;
-  const point = side === 'top' ? { x: x + offset, y } : side === 'bottom' ? { x: x + offset, y: y + height }
+  return side === 'top' ? { x: x + offset, y } : side === 'bottom' ? { x: x + offset, y: y + height }
     : side === 'left' ? { x, y: y + offset } : { x: x + width, y: y + offset };
-  return { id: JSON.stringify(['tile', tile.key, side, offset]), owner: { kind: 'tile', id: tile.key, rect: { x, y, width, height } }, side, offset, point };
 }
-const junctionPort = (id: string, point: Point, side: PortSide): RoutingPort => ({ id: JSON.stringify(['junction', id, side]), owner: { kind: 'junction', id, point }, side, offset: 0, point });
+export function tilePort(tile: Pick<PlacedNode, 'key' | 'x' | 'y' | 'width' | 'height'>, side: PortSide, offset = (side === 'top' || side === 'bottom' ? tile.width : tile.height) / 2,
+  identity = JSON.stringify(['tile', tile.key, side, offset])): RoutingPort {
+  const { x, y, width, height } = tile;
+  return { id: identity, owner: { kind: 'tile', id: tile.key, rect: { x, y, width, height } }, side, offset, point: tilePortPoint(tile, side, offset) };
+}
+const junctionPort = (id: string, point: Point, side: PortSide, identity = JSON.stringify(['junction', id, side])): RoutingPort => ({ id: identity, owner: { kind: 'junction', id, point }, side, offset: 0, point });
 
 /** Same final-segment direction as today's renderer/gate, including native cubics. */
 export function importArrowStub(id: string, path: string, port: string): ArrowStub {
@@ -195,17 +211,16 @@ export type RoutingTopology = (Pick<GraphLayout, 'nodes' | 'junctions' | 'routes
 /** The one import boundary for the current generators' topology. Ports in a
  * row-local frame, completed shared nets, and cut attachment/channel polylines
  * become the same validated representation without choosing new geometry. */
-export function importRoutingPlan(topology: RoutingTopology): RoutingPlan {
+export function importRoutingPlan(topology: RoutingTopology, charge: (work:number, reason?:string)=>void = ()=>{}): RoutingPlan {
   if ('points' in topology) {
-    const points = stemCorners(topology.points);
-    if (!points.length) return reject('polyline', 'empty path');
+    charge(8*topology.points.length+1,'polyline import');
+    const { points, turns } = importTurnPlan(topology.points, topology.radiusAt);
     const start = topology.start ?? junctionPort('polyline:start', points[0], 'bottom');
     const end = junctionPort('polyline:end', points.at(-1)!, 'top');
-    const turns = importStemTurns(points, topology.radiusAt);
     const plan = { ports: [start, end], stubs: [], corridors: [certifiedCorridor('polyline:stroke', points, STROKE_RADIUS)], turns,
       paths: [{ id: 'polyline:path', kind: 'polyline' as const, start: start.id, end: end.id, points,
         native: points.slice(1).map((p, i): NativeInk => [points[i], p]), turns: turns.map(t => t.id), corridors: ['polyline:stroke'] }] };
-    validateRoutingPlan(plan); return plan;
+    validateRoutingPlan(plan,charge); return plan;
   }
   const ports: RoutingPort[] = [], stubs: ArrowStub[] = [], corridors: CertifiedCorridor[] = [], paths: RoutingPath[] = [];
   for (const id of topology.departures ?? []) {
@@ -215,6 +230,7 @@ export function importRoutingPlan(topology: RoutingTopology): RoutingPlan {
   }
   const seen = new Set<string>();
   for (const route of topology.routes) {
+    charge(route.path.length+1,'native path import');
     if (seen.has(route.id)) reject(route.id, 'duplicate route identity'); seen.add(route.id);
     const paint = importPaintedRoute(route), { geometry, stub } = paint;
     const ownerPort = (end: 'from' | 'to', p: Point): RoutingPort => {
@@ -225,26 +241,38 @@ export function importRoutingPlan(topology: RoutingTopology): RoutingPlan {
         // A shared prefix may start/stop away from its semantic source's dot.
         const atDot = Math.hypot(dot.x - p.x, dot.y - p.y) <= BERTH_SLACK;
         if (!atDot && end === 'to' && route.from !== route.to && (route.from.kind !== route.to.kind || route.from.id !== route.to.id)) return reject(route.id, 'port off junction owner');
-        const owner = junctionPort(atDot ? dot.id : `${route.id}:${end}:branch`, atDot ? dot : p, end === 'from' ? 'bottom' : 'top');
-        return { ...owner, id: `${route.id}:${end}` };
+        return junctionPort(atDot ? dot.id : `${route.id}:${end}:branch`, atDot ? dot : p, end === 'from' ? 'bottom' : 'top', `${route.id}:${end}`);
       }
       const node = topology.nodes.get(endpoint.id);
       if (!node) return reject(route.id, 'unknown tile owner');
-      const candidates = (['bottom', 'right', 'top', 'left'] as const).map(side => tilePort(node, side,
-        side === 'top' || side === 'bottom' ? p.x - node.x : p.y - node.y));
-      const port = candidates.find(c => Math.hypot(c.point.x - p.x, c.point.y - p.y) <= BERTH_SLACK);
-      if (port) return { ...port, id: `${route.id}:${end}` };
+      const points = geometry.points, first = end === 'from' ? points[0] : points.at(-1)!;
+      let next: Point | undefined;
+      for (let i = end === 'from' ? 1 : points.length - 2; i >= 0 && i < points.length; i += end === 'from' ? 1 : -1)
+        if (!same(points[i], first)) { next = points[i]; break; }
+      let touchesEdge = false;
+      for (const side of ['bottom', 'right', 'top', 'left'] as const) {
+        const horizontal = side === 'top' || side === 'bottom', offset = horizontal ? p.x - node.x : p.y - node.y;
+        if (offset < 0 || offset > (horizontal ? node.width : node.height)) continue;
+        const point = tilePortPoint(node, side, offset);
+        if (Math.hypot(point.x - p.x, point.y - p.y) > BERTH_SLACK) continue;
+        touchesEdge = true;
+        // Tiny rectangles can put opposite edges within serialization slack.
+        // Native direction, rather than side enumeration, owns that port.
+        if (next && !followsPort(side, first, next)) continue;
+        return tilePort(node, side, offset, `${route.id}:${end}`);
+      }
+      if (touchesEdge) return reject(route.id, 'native tangent does not match port side');
       if (end === 'to' && route.terminal) return reject(route.id, 'terminal port off tile edge');
-      return { ...junctionPort(`${route.id}:${end}`, p, end === 'from' ? 'bottom' : 'top'), id: `${route.id}:${end}` };
+      return junctionPort(`${route.id}:${end}`, p, end === 'from' ? 'bottom' : 'top', `${route.id}:${end}`);
     };
-    ports.push(ownerPort('from', geometry.start));
+    const start = ownerPort('from', geometry.start); ports.push(start);
     const target = ownerPort('to', stub?.tip ?? geometry.end); ports.push(target);
     // Tile coordinates precede decimal path serialization. Keep the authored tip
     // on the stub and the exact tile equation on its port; validation permits only
     // the existing serialization allowance, never a changed solver equality.
     if (stub) stubs.push(stub);
     corridors.push(...paint.corridors);
-    paths.push({ id: route.id, kind: 'native', route, native: geometry.ink, turns: [], start: `${route.id}:from`, end: `${route.id}:to`, points: geometry.points,
+    paths.push({ id: route.id, kind: 'native', route, native: geometry.ink, turns: [], start: start.id, end: target.id, points: geometry.points,
       corridors: [`${route.id}:stroke`, ...(stub ? [`${route.id}:arrow-ink`] : [])], ...(stub ? { stub: stub.id } : {}) });
   }
   // The semantic source may name a shared prefix, but a branch must be on a
@@ -263,8 +291,14 @@ export function importRoutingPlan(topology: RoutingTopology): RoutingPlan {
   for (let changed = true; changed;) {
     changed = false;
     for (const route of topology.routes) if (!connected.has(route.id)) {
+      charge(1,'branch propagation');
       const point = importedRoute(route).start;
-      if (topology.routes.some(other => connected.has(other.id) && source(other) === source(route) && importedRoute(other).ink.some(ink => on(point, ink)))) {
+      if (topology.routes.some(other => {
+        charge(1,'branch candidate');
+        return connected.has(other.id) && source(other) === source(route) && importedRoute(other).ink.some(ink => {
+          charge(1,'branch connection'); return on(point,ink);
+        });
+      })) {
         connected.add(route.id); changed = true;
       }
     }
@@ -273,8 +307,25 @@ export function importRoutingPlan(topology: RoutingTopology): RoutingPlan {
   for (const dot of topology.junctions.values()) {
     corridors.push(certifiedCorridor(`dot:${dot.id}`, [dot], JUNCTION_RADIUS + JUNCTION_STROKE_WIDTH / 2));
   }
-  const plan = { ports, stubs, corridors, turns: [], paths };
-  validateRoutingPlan(plan); return plan;
+  const meetings: JunctionMeeting[] = [];
+  for (const dot of topology.junctions.values()) {
+    charge(topology.routes.length,'junction input lookup');
+    const inputs = topology.routes.filter(route => route.to.kind === 'junction' && route.to.id === dot.id
+      && (route.from.kind !== 'junction' || route.from.id !== dot.id));
+    if (!inputs.length) continue;
+    const arrivals = inputs.map(route=>{
+      const geometry=importedRoute(route),last=geometry.ink.at(-1)!;
+      const ratio=last.length===2 ? Math.min(1,JUNCTION_BERTH/Math.hypot(last[1].x-last[0].x,last[1].y-last[0].y)) : 0;
+      const point=last.length===4 ? last[0] : {x:last[1].x-(last[1].x-last[0].x)*ratio,y:last[1].y-(last[1].y-last[0].y)*ratio};
+      const source=endpointKey(route.from);
+      const port=junctionPort(`${dot.id}:input:${source}`,point,'top',JSON.stringify(['junction-input',dot.id,source]));
+      ports.push(port);
+      return {source,port:port.id,path:route.id};
+    });
+    meetings.push({id:dot.id,dot:{x:dot.x,y:dot.y},parents:dot.parents,inputs:arrivals});
+  }
+  const plan = { ports, stubs, corridors, turns: [], paths, meetings };
+  validateRoutingPlan(plan,charge); return plan;
 }
 
 /** A fixed imported track is checked using slice 1's bounds/pin solver. Free
@@ -326,7 +377,8 @@ export function importAttachmentStem(path: string, bandTop: number, stemRoom: nu
   return { ...importRoutingPlan({ points, ...(cover ? { start: cover } : {}) }), points, tail: cut.tail };
 }
 
-export function validateRoutingPlan(plan: RoutingPlan): void {
+export function validateRoutingPlan(plan: RoutingPlan, charge: (work:number, reason?:string)=>void = ()=>{}): void {
+  charge(plan.ports.length+plan.paths.length+plan.corridors.length+plan.turns.length+plan.stubs.length,'routing plan validation');
   const ids = new Set<string>();
   const identity = (id: string) => { if (!id || ids.has(id)) reject(id, 'duplicate or empty identity'); ids.add(id); };
   const bounds = (id: string, b: InkBounds) => {
@@ -343,11 +395,72 @@ export function validateRoutingPlan(plan: RoutingPlan): void {
       const r = port.owner.rect;
       finite(port.id, r.x, r.y, r.width, r.height, r.x + r.width, r.y + r.height);
       const size = port.side === 'top' || port.side === 'bottom' ? r.width : r.height;
-      const expected = tilePort({ ...r, key: port.owner.id }, port.side, port.offset);
-      if (r.width < 0 || r.height < 0 || port.offset < 0 || port.offset > size || !same(port.point, expected.point)) reject(port.id, 'port off owner tile edge');
+      const expected = tilePortPoint(r, port.side, port.offset);
+      if (r.width < 0 || r.height < 0 || port.offset < 0 || port.offset > size || !same(port.point, expected)) reject(port.id, 'port off owner tile edge');
     } else {
       finite(port.id, port.owner.point.x, port.owner.point.y);
       if (port.offset !== 0 || !same(port.point, port.owner.point)) reject(port.id, 'port off junction owner');
+    }
+  }
+  const meetings=new Map((plan.meetings??[]).map(meeting=>[meeting.id,meeting]));
+  const pathsById=new Map(plan.paths.map(path=>[path.id,path]));
+  if(meetings.size!==(plan.meetings??[]).length) reject('junctions','duplicate junction meeting');
+  for(const path of plan.paths) if(path.route?.to.kind==='junction'
+    && (path.route.from.kind!=='junction' || path.route.from.id!==path.route.to.id) && !meetings.has(path.route.to.id))
+    reject(path.route.to.id,'missing junction meeting');
+  const represented=new Map<string,ReadonlySet<string>>();
+  const unresolved=new Set(meetings.keys());
+  while(unresolved.size) {
+    let progressed=false;
+    for(const id of unresolved) {
+      const meeting=meetings.get(id)!;
+      charge(meeting.inputs.length+1,'junction parentage');
+      const sources=meeting.inputs.map(input=>pathsById.get(input.path)?.route?.from);
+      if(sources.some(source=>!source)) reject(id,'invalid junction parent binding');
+      if(sources.some(source=>source!.kind==='junction' && !represented.has(source!.id))) continue;
+      const parents=new Set<string>();
+      for(const source of sources) {
+        const inputParents=source!.kind==='node' ? [source!.id] : represented.get(source!.id)!;
+        charge(inputParents instanceof Array ? inputParents.length : inputParents.size,'junction parent union');
+        for(const parent of inputParents) {
+          if(parents.has(parent)) reject(id,'overlapping junction input parentage');
+          parents.add(parent);
+        }
+      }
+      if(!Array.isArray(meeting.parents) || new Set(meeting.parents).size!==meeting.parents.length || meeting.parents.length!==parents.size || meeting.parents.some(parent=>!parents.has(parent))) reject(id,'incorrect junction parentage');
+      represented.set(id,parents);unresolved.delete(id);progressed=true;
+    }
+    if(!progressed) reject([...unresolved][0],'cyclic or missing junction parentage');
+  }
+  // Authored centipixel coordinates compare as integers, avoiding binary
+  // subtraction inventing a clearance failure at an exact decimal boundary.
+  const separated=(a:number,b:number)=>{
+    const aa=Math.round(a*100),bb=Math.round(b*100);
+    return aa/100===a && bb/100===b ? Math.abs(aa-bb)>=LANE_SEPARATION*100
+      : a+LANE_SEPARATION<=b || b+LANE_SEPARATION<=a;
+  };
+  for (const meeting of plan.meetings??[]) {
+    finite(meeting.id,meeting.dot.x,meeting.dot.y);
+    charge(plan.paths.length,'junction path lookup');
+    const incoming=plan.paths.filter(path=>path.route?.to.kind==='junction' && path.route.to.id===meeting.id
+      && (path.route.from.kind!=='junction' || path.route.from.id!==meeting.id));
+    if (meeting.inputs.length<2 || new Set(meeting.inputs.map(input=>input.source)).size!==meeting.inputs.length || incoming.length!==meeting.inputs.length)
+      reject(meeting.id,'incomplete junction inputs');
+    const approaches:{point:Point;axis:'x'|'y'}[]=[];
+    for (const input of meeting.inputs) {
+      const path=incoming.find(path=>path.id===input.path),port=ports.get(input.port);
+      if (!path?.route || !port || input.source!==endpointKey(path.route.from) || !same(path.points.at(-1)!,meeting.dot)) reject(meeting.id,'invalid junction port binding');
+      const last=path!.native.at(-1)!,point=port!.point;
+      const on=last.length===4 ? same(last[0],point) : last[0].x===last[1].x
+        ? point.x===last[0].x && point.y>=Math.min(last[0].y,last[1].y) && point.y<=Math.max(last[0].y,last[1].y)
+        : point.y===last[0].y && point.x>=Math.min(last[0].x,last[1].x) && point.x<=Math.max(last[0].x,last[1].x);
+      if (!on) reject(meeting.id,'junction approach off native path');
+      const end=last.at(-1)!,before=[...last].reverse().find(p=>!same(p,end));
+      if(!before) reject(meeting.id,'junction approach has no tangent');
+      const axis=Math.abs(before!.x-end.x)<Math.abs(before!.y-end.y) ? 'x' as const : 'y' as const;
+      if(approaches.some(other=>other.axis===axis && !separated(other.point[axis],point[axis])))
+        reject(meeting.id,'junction inputs need independent approach ports');
+      approaches.push({point,axis});
     }
   }
   for (const stub of plan.stubs) {
@@ -379,6 +492,7 @@ export function validateRoutingPlan(plan: RoutingPlan): void {
   }
   const corridors = new Map(plan.corridors.map(c => [c.id, c])), stubs = new Map(plan.stubs.map(s => [s.id, s])), turns = new Map(plan.turns.map(t => [t.id, t]));
   for (const path of plan.paths) {
+    charge(path.native.length+path.points.length+path.corridors.length+path.turns.length+1,'native path validation');
     identity(path.id);
     if (!['native', 'polyline'].includes(path.kind)) reject(path.id, 'invalid path kind');
     const start = ports.get(path.start), end = ports.get(path.end), first = path.points[0], last = path.points.at(-1);
@@ -389,25 +503,26 @@ export function validateRoutingPlan(plan: RoutingPlan): void {
     if (!path.corridors.length || path.corridors.some(id => !corridors.has(id))) reject(path.id, 'path missing painted corridor');
     const stroke = inkBounds(path.points, STROKE_RADIUS);
     if (!path.corridors.some(id => contains(corridors.get(id)!.ink, stroke))) reject(path.id, 'path outside painted corridor');
-    const nativePoints: Point[] = first ? [first] : [];
-    let previous = first;
+    let previous = first, pointIndex = 1;
     for (const run of path.native) {
       if (run.length !== 2 && run.length !== 4 || !previous || !same(run[0], previous)) reject(path.id, 'disconnected native primitives');
-      nativePoints.push(...run.slice(1)); previous = run.at(-1)!;
+      for (let i = 1; i < run.length; i++) {
+        const point = path.points[pointIndex++];
+        if (!point || !same(run[i], point)) reject(path.id, 'native primitives differ from path points');
+      }
+      previous = run.at(-1)!;
     }
-    if (nativePoints.length !== path.points.length || nativePoints.some((p, i) => !same(p, path.points[i]))) reject(path.id, 'native primitives differ from path points');
+    if (pointIndex !== path.points.length) reject(path.id, 'native primitives differ from path points');
     if (path.route) {
       const authored = importedRoute(path.route);
       if (authored.points.length !== path.points.length || authored.points.some((p, i) => !same(p, path.points[i]))
         || authored.ink.length !== path.native.length || authored.ink.some((run, i) => run.length !== path.native[i].length || run.some((p, j) => !same(p, path.native[i][j])))) reject(path.id, 'native primitives differ from authored route');
     }
-    const normal = (side: PortSide): Point => side === 'top' ? { x: 0, y: -1 } : side === 'bottom' ? { x: 0, y: 1 } : side === 'left' ? { x: -1, y: 0 } : { x: 1, y: 0 };
     const tangent = (port: RoutingPort, points: readonly Point[]) => {
       if (port.owner.kind !== 'tile') return;
       const first = points[0], next = points.find(p => !same(p, first));
       if (!next) return reject(path.id, 'port has no native tangent');
-      const n = normal(port.side), length = Math.hypot(next.x - first.x, next.y - first.y), ux = (next.x - first.x) / length, uy = (next.y - first.y) / length;
-      if (ux * n.x + uy * n.y <= 0 || Math.abs(ux * n.y - uy * n.x) > BERTH_SLACK) reject(path.id, 'native tangent does not match port side');
+      if (!followsPort(port.side, first, next)) reject(path.id, 'native tangent does not match port side');
     };
     tangent(start!, path.points);
     // A terminal stub is on the same native tangent as its final straight run.
@@ -460,6 +575,22 @@ export function stemCorners(points: readonly Point[]): readonly Point[] {
 
 export function importStemTurns(points: readonly Point[], radiusAt?: (before: Point, corner: Point, after: Point) => number): readonly CertifiedTurn[] {
   const corners = stemCorners(points);
+  return stemTurns(corners, radiusAt);
+}
+
+/** Local emission needs only normalized points and certified turn envelopes.
+ * Endpoints, arrows and route bindings are certified by the completed native
+ * plan; allocating a temporary whole path plan here adds no input constraint. */
+export function importTurnPlan(points: readonly Point[], radiusAt?: (before: Point, corner: Point, after: Point) => number): {
+  readonly points: readonly Point[]; readonly turns: readonly CertifiedTurn[];
+} {
+  if (!points.length) return reject('polyline', 'empty path');
+  for (const point of points) finite('point', point.x, point.y);
+  const corners = stemCorners(points);
+  return { points: corners, turns: stemTurns(corners, radiusAt) };
+}
+
+function stemTurns(corners: readonly Point[], radiusAt?: (before: Point, corner: Point, after: Point) => number): readonly CertifiedTurn[] {
   return corners.slice(1, -1).map((corner, i) => {
     const before = corners[i], after = corners[i + 2];
     const incoming = Math.hypot(corner.x - before.x, corner.y - before.y), outgoing = Math.hypot(after.x - corner.x, after.y - corner.y);
