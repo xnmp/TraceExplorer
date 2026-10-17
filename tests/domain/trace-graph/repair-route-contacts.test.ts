@@ -3,6 +3,7 @@ import { geometryGate } from '$lib/domain/trace-graph/geometry-gate';
 import type { GraphLayout, LayoutItem, LayoutRequest, PlacedRoute } from '$lib/domain/trace-graph/layout';
 import { repairRouteContacts } from '$lib/domain/trace-graph/repair-route-contacts';
 import { segments } from '$lib/domain/trace-graph/layout-quality';
+import { pathCommands } from '$lib/domain/trace-graph/path-sampling';
 
 function fixture(arrow: boolean): { layout: GraphLayout; request: LayoutRequest } {
   const coordinates = arrow ? [['a',40,0],['b',140,0],['a-out',40,100],['b-out',140,180]] as const
@@ -50,4 +51,31 @@ it('keeps the clicked n24 tile when a reveal introduces short doglegs beside ret
     }
     previous=next;
   }
+});
+
+it.each([false, true])('bypasses a mixed-curve run without diagonal shortcuts (redundant point: %s)', redundant => {
+  const base=fixture(true),obstacle: LayoutItem={key:'obstacle',order:4,width:20,height:20,parents:[]};
+  const items=[...base.request.items,obstacle],request={...base.request,items,band:{key:'a',items}};
+  const curve='C150 25,150 35,150 40';
+  const layout:GraphLayout={...base.layout,nodes:new Map([...base.layout.nodes,['obstacle',{key:'obstacle',x:110,y:70,width:20,height:20,row:4,band:0}]]),
+    routes:[base.layout.routes[0],{...base.layout.routes[1],path:`M150 20 ${curve} L150 98 ${redundant ? 'L90 98 ' : ''}L30 98 L30 140 L150 140 L150 172`}]};
+  const original=structuredClone(layout);
+  expect(geometryGate(layout,items,'a',200)).toBe('route-contact');
+  const repaired=repairRouteContacts(layout,request);
+  expect(repaired).not.toBeNull();
+  expect(geometryGate(repaired!,items,'a',200)).toBeNull();
+  expect(repaired!.routes[1].path).toContain(curve);
+  expect(repaired!.routes.every(route => {
+    const commands = pathCommands(route.path)!;
+    return commands.every((command, i) => command.kind !== 'L'
+      || command.values[0] === commands[i - 1].values.at(-2) || command.values[1] === commands[i - 1].values.at(-1));
+  })).toBe(true);
+  expect(repaired!.routes.map(r=>r.path.match(/C[^MLC]*/g)?.map(c=>c.trim())??[]))
+    .toEqual(original.routes.map(r=>r.path.match(/C[^MLC]*/g)?.map(c=>c.trim())??[]));
+  expect(repaired!.nodes).toEqual(original.nodes);
+  expect(repaired!.junctions).toEqual(original.junctions);
+  expect(repaired!.routes.map(({path,...route})=>route)).toEqual(original.routes.map(({path,...route})=>route));
+  expect(repaired!.routes.map(r=>[segments(r.path)[0][0],segments(r.path).at(-1)![1]]))
+    .toEqual(original.routes.map(r=>[segments(r.path)[0][0],segments(r.path).at(-1)![1]]));
+  expect(layout).toEqual(original);
 });

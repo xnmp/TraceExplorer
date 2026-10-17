@@ -4,7 +4,7 @@ import { geometryGate } from './geometry-gate';
 import { segments, type Segment } from './layout-quality';
 import { berthsOf, distanceToSegment, paintedSegments, routeEnds, type Berth } from './route-contacts';
 import { PORT_BERTH } from './metrics';
-import type { Point } from './path-sampling';
+import { pathCommands, type Point } from './path-sampling';
 
 interface Line { readonly route: PlacedRoute; readonly pieces: readonly Segment[]; readonly berths: readonly Berth[] }
 interface Contact { readonly route: PlacedRoute; readonly other: PlacedRoute; readonly berth: Berth }
@@ -39,10 +39,8 @@ function contacts(lines: readonly Line[], layout: GraphLayout, changed?: PlacedR
   return found;
 }
 
-const pathOf = (points: readonly Point[]): string => points.map((p, i) => `${i ? 'L' : 'M'}${p.x} ${p.y}`).join(' ');
-
 /**
- * Move only internal orthogonal connector runs. Rectangles, junctions, route identities,
+ * Move internal orthogonal runs or bypass a contact on a short portion of one. Rectangles, junctions, route identities,
  * consumers, and both endpoints remain fixed. A bounded search may fail; failed drafts
  * never escape. Every accepted result passes the complete independent geometry gate.
  */
@@ -63,35 +61,70 @@ export function repairRouteContacts(layout: GraphLayout, request: LayoutRequest)
     const first = witnesses[0];
     let chosen: GraphLayout | undefined, score = witnesses.length;
     for (const route of [first.other, first.route]) {
-      if (!/^M[-+0-9.,eE\sL]*$/.test(route.path)) continue;
       const unaffected = witnesses.filter(c => c.route !== route && c.other !== route).length;
-      const pieces = segments(route.path);
-      if (!pieces.length) continue;
-      const points = [pieces[0][0], ...pieces.map(s => s[1])];
-      for (let i = 1; i < points.length - 2 && probes > 0; i++) {
-        const a = points[i], b = points[i + 1], axis = a.x === b.x ? 'x' : a.y === b.y ? 'y' : null;
-        if (!axis || distanceToSegment([a, b], first.berth) > 100) continue;
-        for (const offset of OFFSETS) {
-          if (--probes < 0) break;
-          const moved = points.map((p, j) => j === i || j === i + 1 ? {...p, [axis]:p[axis] + offset} : p);
-          if (moved.some(p => p.x < 0 || p.x > request.maxWidth || p.y < 0 || p.y > layout.height)) continue;
-          const path = pathOf(moved), key = `${route.id}\u0000${path}`;
-          if (seen.has(key)) continue;
-          seen.add(key);
-          const replacement = {...route, path};
-          const next = {...current, routes:current.routes.map(r => r === route ? replacement : r)};
-          const nextLines = lines.map(line => line.route === route ? lineOf(replacement, next) : line);
-          const remaining = unaffected + contacts(nextLines, next, replacement).length;
-          if (remaining >= score) continue;
-          const failure = certify(next);
-          if (!failure) return next;
-          if (failure !== 'route-contact') continue;
-          chosen = next; score = remaining;
-        }
+      for (const path of alternatives(route, first.berth)) {
+        if (--probes < 0) break;
+        const key = `${route.id}\u0000${path}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        const replacement = {...route, path};
+        const next = {...current, routes:current.routes.map(r => r === route ? replacement : r)};
+        const nextLines = lines.map(line => line.route === route ? lineOf(replacement, next) : line);
+        if (nextLines.some(line => line.pieces.some(([a, b]) => a.x < 0 || b.x < 0 || a.x > request.maxWidth || b.x > request.maxWidth
+          || a.y < 0 || b.y < 0 || a.y > layout.height || b.y > layout.height))) continue;
+        const remaining = unaffected + contacts(nextLines, next, replacement).length;
+        if (remaining >= score) continue;
+        const failure = certify(next);
+        if (!failure) return next;
+        if (failure !== 'route-contact') continue;
+        chosen = next; score = remaining;
       }
     }
     if (!chosen) return null;
     current = chosen;
   }
   return null;
+}
+
+/** Exact commands retain curve controls and endpoints; flattened curves are never rewritten. */
+function* alternatives(route: PlacedRoute, berth: Berth): Generator<string> {
+  const commands = pathCommands(route.path), raw = [...route.path.matchAll(/[MLC][^MLC]*/g)].map(m => m[0]);
+  if (!commands || commands.length !== raw.length) return;
+  const at = (i: number): Point => ({x:commands[i].values.at(-2)!, y:commands[i].values.at(-1)!});
+  const line = (p: Point): string => `L${p.x} ${p.y}`;
+  // Only straight neighbours can follow a shifted run without altering a curve endpoint.
+  for (let i = 2; i < commands.length - 1; i++) {
+    if ([commands[i - 1], commands[i], commands[i + 1]].some(c => c.kind !== 'L')) continue;
+    const a = at(i - 1), b = at(i), axis = a.x === b.x ? 'x' : a.y === b.y ? 'y' : null;
+    if (!axis || distanceToSegment([a, b], berth) > 100) continue;
+    const before = at(i - 2), after = at(i + 1);
+    // A redundant collinear neighbour would become diagonal when this run moves.
+    if (axis === 'x' ? before.y !== a.y || after.y !== b.y : before.x !== a.x || after.x !== b.x) continue;
+    for (const delta of OFFSETS) {
+      const pa = {...a, [axis]:a[axis] + delta}, pb = {...b, [axis]:b[axis] + delta};
+      yield raw.map((r, j) => j === i - 1 ? line(pa) : j === i ? line(pb) : r).join(' ');
+    }
+  }
+  // A long run can be pinned by remote obstacles while a short local bypass remains free.
+  for (let i = 1; i < commands.length; i++) {
+    if (commands[i].kind !== 'L') continue;
+    const a = at(i - 1), b = at(i), horizontal = a.y === b.y, vertical = a.x === b.x;
+    if ((!horizontal && !vertical) || distanceToSegment([a, b], berth) > berth.radius + 3) continue;
+    const along = horizontal ? 'x' : 'y', across = horizontal ? 'y' : 'x';
+    const length = Math.abs(b[along] - a[along]), sign = Math.sign(b[along] - a[along]);
+    if (!length) continue;
+    const center = (berth[along] - a[along]) * sign;
+    for (const span of [berth.radius + 3, berth.radius + 6, berth.radius + 12]) {
+      // Keep the departure and arrival directions, with room before the first new turn.
+      const lo = Math.max(i === 1 ? 9 : 1, center - span);
+      const hi = Math.min(length - (i === commands.length - 1 ? 9 : 1), center + span);
+      if (!(lo < hi) || center < lo || center > hi) continue;
+      const p = {...a, [along]:a[along] + sign * lo}, q = {...a, [along]:a[along] + sign * hi};
+      for (const delta of [...OFFSETS, -24, 24]) {
+        const c = {...p, [across]:p[across] + delta}, d = {...q, [across]:q[across] + delta};
+        const bypass = [p, c, d, q, b].map(line).join(' ');
+        yield raw.map((r, j) => j === i ? bypass : r).join(' ');
+      }
+    }
+  }
 }
