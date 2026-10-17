@@ -1,10 +1,12 @@
 /**
- * Exact placement for a fixed acyclic segment order. This is bound propagation on
- * a difference-constraint DAG, followed by lexicographic closest-preference
- * placement in the declared order. It is not a VPSC least-squares projection.
+ * Feasibility for a fixed acyclic segment order. Bound propagation on a
+ * difference-constraint DAG, followed by deterministic preferred-coordinate
+ * clamping. No projection optimality is claimed for free coordinates.
  * Difference-constraint reference: https://courses.csail.mit.edu/6.006/spring11/lectures/lec17.pdf
  * Backward upper bounds are essential: an interior pin can move earlier free
- * variables. Feasible preferred drawings are returned bit-for-bit unchanged.
+ * variables. Jointly feasible preferred drawings return bit-for-bit unchanged.
+ * Reverse floating subtraction may conservatively bound a free coordinate;
+ * pins always retain their original values and forward residuals admit output.
  */
 export interface CoordinateBounds { readonly lower?: number; readonly upper?: number }
 export interface CoordinatePin { readonly value: number; readonly reason: string }
@@ -37,6 +39,17 @@ export interface SeparationConflict {
 export type SeparationResult = { readonly ok: true; readonly positions: ReadonlyMap<string, number> }
   | { readonly ok: false; readonly conflict: SeparationConflict };
 
+/** The adjacent smaller representable number, used only when subtraction rounded
+ * an upper bound in the unsafe direction. This never reduces a separation. */
+function nextDown(value: number): number {
+  if (value === -Infinity) return value;
+  if (value === 0) return -Number.MIN_VALUE;
+  const bytes = new DataView(new ArrayBuffer(8));
+  bytes.setFloat64(0, value);
+  bytes.setBigUint64(0, bytes.getBigUint64(0) + (value > 0 ? -1n : 1n));
+  return bytes.getFloat64(0);
+}
+
 export function solveSeparation(problem: SeparationProblem): SeparationResult {
   const fail = (kind: SeparationConflict['kind'], variable: string, constraints: readonly string[]): SeparationResult =>
     ({ ok: false, conflict: { kind, variable, constraints } });
@@ -45,13 +58,13 @@ export function solveSeparation(problem: SeparationProblem): SeparationResult {
   if (byId.size !== problem.variables.length || rank.size !== problem.order.length || rank.size !== byId.size
     || problem.order.some(id => !byId.has(id))) return fail('invalid', '', ['order']);
   const variables = problem.order.map(id => byId.get(id)!);
-  const lower: number[] = [], upper: number[] = [], lowerReason: string[] = [], upperReason: string[] = [];
+  const lower: number[] = [], upper: number[] = [], originalUpper: number[] = [], lowerReason: string[] = [], upperReason: string[] = [];
   const lowerVia: (Separation | undefined)[] = [], upperVia: (Separation | undefined)[] = [];
   for (const [i, v] of variables.entries()) {
     const lo = v.bounds?.lower ?? -Infinity, hi = v.bounds?.upper ?? Infinity;
     if (!Number.isFinite(v.preferred) || (lo !== -Infinity && !Number.isFinite(lo)) || (hi !== Infinity && !Number.isFinite(hi))
       || v.pin && !Number.isFinite(v.pin.value)) return fail('invalid', v.id, [v.id]);
-    lower[i] = lo; upper[i] = hi;
+    lower[i] = lo; upper[i] = hi; originalUpper[i] = v.pin?.value ?? hi;
     lowerReason[i] = v.id + ':lower'; upperReason[i] = v.id + ':upper';
     if (v.pin) {
       if (v.pin.value < lo) return fail('bounds', v.id, [v.id + ':lower', v.id + ':pin']);
@@ -69,6 +82,9 @@ export function solveSeparation(problem: SeparationProblem): SeparationResult {
     edgeIds.add(edge.id); outgoing[from].push({ to, edge });
   }
   outgoing.forEach(edges => edges.sort((a, b) => a.to - b.to || a.edge.id.localeCompare(b.edge.id)));
+  const preferred = new Map(variables.map(v => [v.id, v.pin?.value ?? v.preferred]));
+  if (variables.every((v, i) => preferred.get(v.id)! >= lower[i] && preferred.get(v.id)! <= upper[i])
+    && problem.separations.every(e => preferred.get(e.after)! >= preferred.get(e.before)! + e.gap)) return { ok: true, positions: preferred };
   for (let i = 0; i < variables.length; i++) for (const { to, edge } of outgoing[i]) {
     const bound = lower[i] + edge.gap;
     if (bound > lower[to]) { lower[to] = bound; lowerVia[to] = edge; }
@@ -84,14 +100,27 @@ export function solveSeparation(problem: SeparationProblem): SeparationResult {
   };
   for (let i = variables.length - 1; i >= 0; i--) {
     for (const { to, edge } of outgoing[i]) {
-      const bound = upper[to] - edge.gap;
+      if (upper[i] + edge.gap <= upper[to]) continue;
+      let bound = upper[to] - edge.gap;
+      while (bound + edge.gap > upper[to]) bound = nextDown(bound);
       if (bound < upper[i]) { upper[i] = bound; upperVia[i] = edge; }
     }
+    // Carry a feasible preferred successor ceiling backward as well: an
+    // unrelated conflict must not perturb a feasible decimal chain.
+    const desired = variables[i].pin?.value ?? variables[i].preferred;
+    if (desired > upper[i] && desired <= originalUpper[i]
+      && outgoing[i].every(({ to, edge }) => desired + edge.gap <= upper[to])) upper[i] = desired;
+    // Reverse subtraction can round below an exact decimal pin. Test the
+    // forward residual before declaring a conflict; no epsilon changes the gap.
+    if (lower[i] > upper[i] && lower[i] <= originalUpper[i]
+      && outgoing[i].every(({ to, edge }) => lower[i] + edge.gap <= upper[to])) upper[i] = lower[i];
     if (lower[i] > upper[i]) return fail('bounds', variables[i].id, witness(i));
   }
   const positions = new Map<string, number>();
   for (const [i, v] of variables.entries()) {
-    const value = v.pin?.value ?? Math.max(lower[i], Math.min(upper[i], v.preferred));
+    const preferredFits = v.preferred >= lower[i] && v.preferred <= originalUpper[i]
+      && outgoing[i].every(({ to, edge }) => v.preferred + edge.gap <= upper[to]);
+    const value = v.pin?.value ?? (preferredFits ? v.preferred : Math.max(lower[i], Math.min(upper[i], v.preferred)));
     if (!Number.isFinite(value)) return fail('invalid', v.id, ['overflow']);
     positions.set(v.id, value);
     for (const { to, edge } of outgoing[i]) lower[to] = Math.max(lower[to], value + edge.gap);

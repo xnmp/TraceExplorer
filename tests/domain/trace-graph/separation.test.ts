@@ -49,6 +49,26 @@ describe('ordered separation constraints', () => {
     expect(positions({ variables: [{ id: 'a', preferred: 2.125, pin: { value: 2.125, reason: 'exact' } }, { id: 'b', preferred: 7.375 }], order: ['a', 'b'], separations: [{ id: 'ab', before: 'a', after: 'b', gap: 3 }] })).toEqual({ a: 2.125, b: 7.375 });
   });
 
+  it('preserves decimal pins when reverse subtraction rounds below their value', () => {
+    expect(positions({ variables: [{ id: 'a', preferred: .3, pin: { value: .3, reason: 'old' } },
+      { id: 'b', preferred: 3.3, pin: { value: 3.3, reason: 'old' } }, { id: 'new', preferred: 0 }], order: ['a', 'b', 'new'],
+      separations: [{ id: 'ab', before: 'a', after: 'b', gap: 3 }, { id: 'bn', before: 'b', after: 'new', gap: 3 }] })).toEqual({ a: .3, b: 3.3, new: 6.3 });
+  });
+
+  it('does not perturb a feasible decimal component while another component needs solving', () => {
+    expect(positions({ variables: [{ id: 'a', preferred: .1 }, { id: 'b', preferred: 3.1 },
+      { id: 'c', preferred: 6.1, pin: { value: 6.1, reason: 'old' } }, { id: 'd', preferred: 0 }, { id: 'e', preferred: 0 }],
+      order: ['a', 'b', 'c', 'd', 'e'], separations: [{ id: 'ab', before: 'a', after: 'b', gap: 3 },
+        { id: 'bc', before: 'b', after: 'c', gap: 3 }, { id: 'de', before: 'd', after: 'e', gap: 3 }] })).toEqual({ a: .1, b: 3.1, c: 6.1, d: 0, e: 3 });
+  });
+
+  it.each([[-.4, .3], [-.3, 3]])('finds a feasible free predecessor of a negative decimal pin (%s, gap %s)', (value, gap) => {
+    const result = positions({ variables: [{ id: 'a', preferred: 10 }, { id: 'b', preferred: 0, pin: { value, reason: 'retained' } }],
+      order: ['a', 'b'], separations: [{ id: 'ab', before: 'a', after: 'b', gap }] });
+    expect(result.b).toBe(value);
+    expect(result.a + gap).toBeLessThanOrEqual(value);
+  });
+
   it('agrees with exhaustive bounded feasibility, including branching and interior pins', () => {
     for (let seed = 0; seed < 120; seed++) {
       const variables = Array.from({ length: 4 }, (_, i) => ({ id: `${i}`, preferred: (seed + i * 3) % 7,
@@ -66,7 +86,7 @@ describe('ordered separation constraints', () => {
       if (result.ok) {
         const actual = [...result.positions.values()];
         expect(feasible).toContainEqual(actual);
-        // The declared objective prioritizes the earliest variable's distance.
+        // On this integer population, clamping also prioritizes the earliest preference.
         expect(feasible.some(other => {
           const first = other.findIndex((v, i) => Math.abs(v - variables[i].preferred) !== Math.abs(actual[i] - variables[i].preferred));
           return first >= 0 && Math.abs(other[first] - variables[first].preferred) < Math.abs(actual[first] - variables[first].preferred);
