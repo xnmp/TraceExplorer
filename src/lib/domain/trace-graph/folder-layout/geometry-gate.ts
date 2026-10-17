@@ -5,6 +5,8 @@ import type { GraphLayout, LayoutItem, PlacedNode, PlacedJunction, PlacedRoute }
 import type { FolderLayout } from './types';
 
 export function folderGeometryGate(folder: FolderLayout): string | null {
+  for (const cell of folder.cells.values()) if (!cell || ![cell.x, cell.y, cell.width, cell.height].every(Number.isFinite)
+    || !(cell.width > 0) || !(cell.height > 0)) return 'invalid-cell';
   if (folder.cellFootprints !== undefined) {
     if (!(folder.cellFootprints instanceof Map)) return 'invalid-cell-footprint';
     for (const [id, rect] of folder.cellFootprints) {
@@ -25,6 +27,14 @@ export function folderGeometryGate(folder: FolderLayout): string | null {
   for (const [id, graph] of folder.graphs) {
     const key = (value: string) => JSON.stringify(['graph', id, value]);
     const { attached, origin } = graph;
+    // The scene paints the cover from its cell, not from the attached node. Bind
+    // both representations before checking routes against the attached drawing.
+    const cell = folder.cells.get(id), cover = attached.nodes.get(id);
+    const width = graph.plan.request.items.find(item => item.key === id)?.width;
+    if (!cell || !cover || width === undefined || !Number.isFinite(width) || !(width > 0) || !Number.isFinite(origin.x) || !Number.isFinite(origin.y)
+      || Math.abs(cover.x + origin.x - cell.x - (cell.width - width) / 2) > 1e-7
+      || Math.abs(cover.y + origin.y - cell.y) > 1e-7
+      || cover.width !== width || cover.height !== cell.height) return 'detached-cover';
     for (const n of attached.nodes.values()) nodes.set(key(n.key), { ...n, key: key(n.key), x: n.x + origin.x, y: n.y + origin.y });
     for (const j of attached.junctions.values()) junctions.set(key(j.id), { ...j, id: key(j.id), x: j.x + origin.x, y: j.y + origin.y, parents: j.parents.map(key) });
     const tables = new Map<readonly unknown[], readonly { parent: string; child: string }[]>();
