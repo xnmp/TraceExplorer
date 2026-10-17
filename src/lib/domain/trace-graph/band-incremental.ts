@@ -1,4 +1,5 @@
 import { filterRouteConsumers } from "./route-consumers";
+import { orderNewSiblingLeaves } from "./new-sibling-order";
 /**
  * Incremental tree embedding: retained rectangles and routes are fixed obstacles.
  *
@@ -1535,5 +1536,5 @@ function insertTree(request: LayoutRequest, previous: GraphLayout, budget: Incre
   const provisional: GraphLayout = { ...previous, nodes, routes, junctions: joins, rows: [],
     width: Math.max(previous.width, width), height: bottom + s.bottom,
     readingOrder };
-  return provisional;
+  return orderNewSiblingLeaves(provisional, request.items, previous.nodes, futureSources);
 }
