@@ -3,6 +3,7 @@ import { filterRouteConsumers } from "./route-consumers";
 /** Visible-first, bounded band optimisation. Geometry and history are immutable inputs. */
 import { downwardBandBound, layoutLayered, type GraphLayout, type LayoutItem, type LayoutRequest, type Ordering, type Passing, type PlacedNode } from "./layout";
 import { geometryGate, routeClearanceViolation } from "./geometry-gate";
+import { repairRouteContacts } from "./repair-route-contacts";
 import { safeChain } from "./safe-chain";
 import { safeFanGrid } from "./safe-grid";
 import { safeColumns } from "./safe-columns";
@@ -409,10 +410,25 @@ function layoutBandCandidates(input: LayoutRequest, options: BandOptions): Graph
       layout: withPaneBandBounds(layoutLayered(compactRequest, compactOptions), key, request.maxWidth) });
   }
   const history: Candidate[] = [];
+  const repairPinned = (layout: GraphLayout | null): GraphLayout | null => {
+    if (!layout) return null;
+    const placed = attachSingleBand(layout, request);
+    if (!routeClearanceViolation(placed)) return layout;
+    const repaired = repairRouteContacts(placed, request);
+    if (!repaired) return layout;
+    // The repaired drawing is already in the attachment frame. Preserve that
+    // allocation so attaching it again cannot translate any pinned rectangle.
+    const result = { ...repaired, preferredX: bandExtent(placed, key).left };
+    const attached = attachSingleBand(result, request);
+    return [...placed.nodes].every(([id, node]) => {
+      const next = attached.nodes.get(id);
+      return next && next.x === node.x && next.y === node.y && next.width === node.width && next.height === node.height;
+    }) && !geometryGate(attached, request.items, key, request.maxWidth) ? result : layout;
+  };
   if (previous) {
     // One grid-work budget for every incremental embedding this request tries.
     const budget = incrementalBudget();
-    const incremental = incrementalTree(request, previous, budget);
+    const incremental = repairPinned(incrementalTree(request, previous, budget));
     if (incremental) history.push({ name: "incremental-tree", layout: incremental });
     // With nothing new to place, the retained tiles as they are (`retained-visible`).
     const retained = projected(previous, request);
@@ -431,7 +447,7 @@ function layoutBandCandidates(input: LayoutRequest, options: BandOptions): Graph
       const repack = !warm || height > compactShelf * 1.1
         || (wantsDown && height > rowsHeight * 1.1 && height > bandExtent(visibleDown().layout, key).height * 1.1);
       const subset = repack ? projected(previous, { ...request, items: request.items.filter(n => fixed.has(n.key)) }) : null;
-      const compact = subset && incrementalTree(request, { ...subset, bandBounds: undefined, anchorX: undefined, anchorY: undefined }, budget);
+      const compact = repairPinned(subset && incrementalTree(request, { ...subset, bandBounds: undefined, anchorX: undefined, anchorY: undefined }, budget));
       if (compact) history.push({ name: "anchored-repack", layout: compact });
     }
     if (retained) history.push({ name: "retained-visible", layout: retained, partition: request.history?.layout.decision?.partition });
