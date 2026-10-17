@@ -204,7 +204,7 @@ describe("resizedLayout on the engine's own layouts", () => {
     }
     expect(tried).toBeGreaterThan(400);
     // Every accepted result above either restores the drawing or safely retains its space.
-  });
+  }, 30_000); // Engine layouts across the corpus; about 2 s locally, slower on shared CI runners.
 
   it("repeated growing and shrinking never drifts: the second cycle ends where the first did", () => {
     for (const { id, placed, leaves } of layouts) for (const leaf of leaves.slice(0, 3)) {

@@ -11,8 +11,35 @@ let previous: any = null, sequence = 0;
 const mode = process.argv[2];
 import { NO_EXPANSION, openStack, toggleNode } from '../../../src/lib/domain/trace-graph/expansion';
 import { corpus, rng } from '../../../layout-eval/corpus';
+import { twoChainsMerge } from './folder-merge-fixture';
+import { createFolderLayoutRuntime } from '../../../src/lib/plugins/trace/view/folder-layout-runtime';
+import { buildFolderScene } from '../../../src/lib/domain/trace-graph/folder-scene';
+import { staticPresentation } from '../../../src/lib/plugins/trace/view/presentation';
 try {
-  if (mode === 'revisits') {
+  if (mode === 'merges') {
+    const runtime = createFolderLayoutRuntime(), fixture = twoChainsMerge();
+    for (const prepare of fixture.steps) {
+      const { input, sources } = prepare(previous), inline = runtime.engine(structuredClone(input)), id = ++sequence;
+      const message = ledger.message(id, input);
+      if (id > 1) equal(message.previous, id - 1);
+      const reply: any = await new Promise((resolve, reject) => {
+        worker.onmessage = event => resolve(event.data); worker.onerror = reject;
+        worker.postMessage(message);
+      });
+      if (reply.error) throw new Error(reply.error);
+      deepStrictEqual(reply.folder, inline);
+      for (const layout of [inline, reply.folder]) {
+        equal(folderGeometryGate(layout), null);
+        const scene = buildFolderScene({ scope: { paneId: 'merge', directory: '/pictures', generation: 1 },
+          layoutInput: input, layout, sources,
+          styling: { focus: 'o:11:0', selectedKeys: new Set(['o:11:0']), selectedPaths: new Set(), badgeHover: null } });
+        equal(staticPresentation(scene).live.size, scene.records.size);
+        equal(scene.graphs.size, [0, 1, 2, 2, 1][id - 1]);
+      }
+      ledger.replied(id, reply.folder); previous = reply.folder;
+    }
+    equal(previous.graphs.get('a:2').attached.nodes.has(fixture.joined), true);
+  } else if (mode === 'revisits') {
     let revisits = 0;
     for (const fixture of corpus().filter(c => c.nodes.length > 2 && c.nodes.length <= 16).slice(0,16)) {
       const folder = makeFolder({stacks:[fixture.nodes]}), stack = [...folder.stacks.values()][0];

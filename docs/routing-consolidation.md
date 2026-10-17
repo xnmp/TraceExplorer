@@ -324,7 +324,7 @@ async pattern: use existing pure request/result and publication transaction.
 | Slice | Replaces / independently shippable boundary | Required outcome beyond common checks | Size | Risk |
 |---|---|---|---|---|
 | **1. Channel and track assignment as a constraint solve (complete)** | T4/T11/T14/T15 metric assignment for existing ordered, representable channels; T31–T33 shared-row header rules, plus T34/T35 attachment offsets. Keep current row/corridor generators. Add common immutable segment/order/bounds/pin types and a deterministic separation solver first, within this slice. | Test below becomes ordinary `it`; retained tracks and child tops remain exact through packed attachment. Compatible disconnected spans reuse tracks. New groups can get deeper tracks/header/corridors without raising existing child tops. Differential tests for channel bound conflicts, pinned interior tracks, lifetime reuse and ordered insertions; no new fallback/errors. | 700–1,100 lines; 4–6 days | Medium-high: correct coordinate frame, cyclic orders, header corners and row packing are coupled. Scope adapters to represented channels and preserve other drawings. |
-| **2. Explicit ports and painted corridors** | T8/T14/T16/T29/T34/T35 duplicated endpoint/envelope reconstruction. Import existing topology into explicit ports, arrow stubs and certified turn/corridor bounds; retain current emitter initially. | Same semantic consumers/endpoints and exact reused route geometry; native cubics, near-pane arrows and host cover chrome pass existing tests/gates. Retained unaffected stem paths remain byte-identical, supporting interrupted motion. Reject malformed imported plans. | 600–1,000 lines; 3–5 days | Medium: source vs branch endpoints, raw/attached transforms, stroke versus allocation extents. |
+| **2. Explicit ports and painted corridors (complete)** | T8/T14/T16/T29/T34/T35 duplicated endpoint/envelope reconstruction. Import existing topology into explicit ports, arrow stubs and certified turn/corridor bounds; retain current emitter initially. | Same semantic consumers/endpoints and exact reused route geometry; native cubics, near-pane arrows and host cover chrome pass existing tests/gates. Retained unaffected stem paths remain byte-identical, supporting interrupted motion. Reject malformed imported plans. | 600–1,000 lines; 3–5 days | Medium: source vs branch endpoints, raw/attached transforms, stroke versus allocation extents. |
 | **3. Junctions and corridor topology** | T3/T5–T10/T12/T13; reuse T1 semantics. Replace provisional/deferred/stacked placement, zone reconsideration and dropped ordering with explicit junction ports and channel search. | Critical cycle gets a certified split/crossing topology, never a discarded hard dependency. Exact parentage for reused subsets, 2–8 inputs, distant fan-outs and long edges; crossing/height/pane/fallback limits all hold. Try new corridor assignments before growing only free boundaries. | 1,200–1,800 lines; 6–9 days | High: combinatorial corridor capacity and fan-in/crossing semantics. Bounds on **total** search/constraint work, not per retry. |
 | **4. Constrained incremental insertion and hint changes** | T18–T28 plus T37's separate routing. Import committed drawing into same model, freeze declared tracks/rectangles/suffixes, add new ports/segments and re-solve affected conflict components. | Arrival world-oracles, merges/departures, single 16 px descent and shrink-space reuse; clicked ancestry equality; exact revisits and worker parity. Delete repairable-contact policy and port/bypass offset repair only when all old successes are covered. Preserve other retained tiles where the request pins them; optimize only free ones. | 1,200–1,900 lines; 6–10 days | High: pruning/identity, future departures, hint port changes, dense search tails. |
 | **5. Cold sweeps and folder packing in that model** | T2/T17/T19/T30/T36–T38 placement alternatives. Shelves, downward and serial layouts become embedding generators feeding one solve; packing contributes constraints before final routing. | All cold widths/presets and legal tours retain display/long-edge order, quality and timing targets. New-state sweeps may choose freer embeddings; pinned states never lose pins when a compact/serial candidate is considered. Folder ordinary cells and other bands are first-class obstacles. | 1,000–1,600 lines; 5–8 days | High: compactness, candidate pruning and 5 ms inline budget; avoids a simultaneous scoring rewrite. |
@@ -513,3 +513,99 @@ Slice 2 still needs explicit painted ports/corridors and shared endpoint
 reconstruction before expanding retained adoption to foreign port interactions
 and multiple bypasses. Dynamic margin orders and crossing/cycle topology remain
 for the subsequent topology slice.
+
+## Slice 2 implementation and acceptance (complete)
+
+`routing-plan.ts` imports the existing generators into explicit tile/junction
+ports (owner, side, offset and point), arrow bases/tips/straight shafts, native
+M/L/C primitives, and painted corridor/turn bounds. A `RoutingPath` binds its
+ports, primitives, allocated paint and certified turns; completed shared nets
+retain the original route object, consumer ranges and path bytes. Row-local
+departures, completed nets and attachment/channel polylines use this same import
+boundary. Allocation uses its shared paint projection: even a candidate with
+inadmissible endpoint semantics must have all its ink measured, rather than
+silently omitted. Cosmetic padding remains a separate projection of the hull.
+
+T8/T14 consume imported departure ports; T16 and T35 keep the existing path-data
+emitter while supplying imported turn certificates; T29 reads the shared native
+stroke/arrow/dot envelopes; T34 imports the cover/cut-tail ports and bridge/drop
+polyline. The attachment lane is an exact pin within the slice 1 solver's bounds.
+Stroke and dot dimensions come from `connector-ink.ts`, arrow dimensions from
+`metrics.ts`; the existing 6 px fillet maximum is now one shared paint constant.
+No topology choice, repair policy, emitter formatting or gate tolerance changes.
+
+Validation rejects off-edge ports, mismatched stubs/tangents, missing or narrow
+paint allocations, detached source branches, missing/unrelated turns, malformed
+path grammar, nonfinite geometry, duplicate identities and altered native command
+structure. Actual native straight ink must witness the terminal arrow shaft.
+The existing decimal serialization allowance is kept distinct from exact metric
+pins. These are local containment certificates, not a replacement for independent
+whole-drawing admission or foreign-curve clearance certification.
+
+A frozen `bun build` of the unmodified `11d46d8` engine served as the oracle for a
+one-off differential. It is not kept in the suite, because later slices change
+drawings on purpose. The differential passed **6,318 attached drawings**:
+65 corpus graphs, every existing width (360/454/640/900/1400) and preset
+(48/64/96/128), all their 6,060 focus/history states, plus 258 sampled legal tour
+states including dense merges. It compares complete serialized drawings, one at
+a time, including semantic endpoints, consumers and untouched retained path
+strings. The final full suite also passed it after validation refinements. A separate
+260-drawing raw-topology census verifies import without rewriting route metadata.
+
+That differential compared engine drawings, not their publication consumers.
+The slice 2 merge regression returned the same certified drawing as slice 1,
+then threw while presentation captured an attachment descriptor: a world-placed
+merged envelope includes the absorbed cover beside the surviving cover, so its
+top is above the packed child-band frame. `bandRouteStem` now declines that
+inapplicable transform; the native route remains authoritative and routing-plan
+validation stays strict. The browser-free two-chains regression carries the
+previous layout through the real view input adapter, inline runtime and worker
+reply protocol, then builds the scene and snapped presentation. Existing
+component-merge tests checked geometry, pinning and revisits without this final
+consumer; within-graph convergence cases did not exercise component publication.
+
+Independent blocking adversarial review accepted the implementation after
+regressions for native primitive/shaft/turn bindings, branch connectivity and
+paint allocation. Its final focused run passed 166 tests across 10 files.
+Final type checking passed: 264 files, 0 errors and 0 warnings. Full testing
+passed: 170 files, 2,135 tests passed and one existing skip (1,220.39 s), including
+23 validation/import contracts (the differential ran in the same suite before it was removed). Both geometry gates,
+their tolerances, evaluation populations, `presentation.ts`, `scene-motion.ts`
+and `StackGrid.svelte` remain unchanged.
+
+The archived unmodified `11d46d8` evaluation passed all 50 current targets. Its
+acceptance was saved to `/tmp/routing-s2-acceptance-before.md` and `.json` before
+starting the final evaluation. Final bench has 12,120 rows identical after
+excluding timing/work fields, with identical proposed quality means and zero
+errors. All 3,150 reveal rows, their broad/dense summaries and movement are
+identical; all 280 packing rows are byte-identical. Final `bun run layout:eval`
+passed **all 50 current targets**, exit 0, with no perf rerun. All 47 non-timing
+acceptance rows are identical; only these three timing rows changed:
+
+| Current target, maximum p95 ms | Before (`11d46d8`) | Slice 2 | Existing limit |
+|---|---:|---:|---:|
+| Main-thread | 3.089 | 2.748 | 8.000 |
+| ≤30 visible tiles | 40.507 | 15.416 | 100.000 |
+| Full folder engine inline | 3.143 | 3.448 | 5.000 |
+
+These are separate timing measurements, not an optimization claim. Baseline
+load on 24 CPUs was 16.25 / 12.96 / 11.39 before and 3.49 / 4.94 / 7.48 after;
+final load was 3.62 / 4.11 / 5.37 before and 3.41 / 3.88 / 4.61 after
+(1 / 5 / 15 minutes). No timing target failed in either run.
+
+Fallbacks are unchanged: corpus 0/6,060, tours 1/3,150 (0.032%), packing 0/140;
+all remain inside the pane. Hard violations/errors, independent gate failures
+and unexplained shared lanes remain zero. Exact revisits, worker/main parity,
+arrival pinning and retained stem-path contracts pass in the full suite.
+Comparison artifacts are `/tmp/routing-s2-acceptance-diff.json`,
+`/tmp/routing-s2-bench-diff.json` and `/tmp/routing-s2-quality-diff.json`.
+
+Across the existing six stage implementations, the net reduction is **76
+lines**, excluding the new shared representation: 54 in `band-geometry.ts`,
+8 in `channel-corners.ts`, 16 in `pinned-band-extent.ts`, 6 in
+`folder-layout/route-bounds.ts`, offset by 8 added lines in `layout.ts`.
+
+Slice 3 still owns junction factoring/ports and convergence regions, corridor
+alternatives, crossings/cycle splits, and removal of provisional/deferred/stacked
+placement. This slice does not broaden slice 1's retained attachment adoption or
+delete the foreign native-curve clearance algorithm.
