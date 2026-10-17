@@ -10,6 +10,7 @@
  * `diffScenes` matches records by identity across complete scenes (offscreen ones included) and
  * says how each one presents: `snap`, `animate` or `carry` (geometry unchanged).
  */
+import { JUNCTION_RADIUS } from "./connector-ink";
 import type { FileEntry } from "../file";
 import type { NodeKey, TraceNode } from "./model";
 import type { ReferenceBadge } from "./projection";
@@ -139,7 +140,7 @@ export interface FolderScene {
 }
 
 /** The rendered junction dot's radius. */
-export const JUNCTION_RADIUS = 2.8;
+export { JUNCTION_RADIUS } from "./connector-ink";
 
 const finite = (...values: number[]) => values.every(Number.isFinite);
 function checkedRect(rect: GridRect, what: string, positive = false): GridRect {

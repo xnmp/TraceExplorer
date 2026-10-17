@@ -3,6 +3,7 @@ import { corpus, requestFor } from '../../../layout-eval/corpus';
 import { optimizedBand } from '../../../layout-eval/engine';
 import { geometryGate } from '$lib/domain/trace-graph/geometry-gate';
 
+// Bounded worker searches run under full-suite contention; latency is gated by layout:eval.
 it('repositions non-anchor siblings when their fully pinned insertion cannot retain the clicked tile', () => {
   const fixture = { ...corpus().find(c => c.id === 'random-dag-40-7503')!, full: false };
   let previous: ReturnType<typeof optimizedBand> | undefined;
@@ -23,4 +24,4 @@ it('repositions non-anchor siblings when their fully pinned insertion cannot ret
     focus = choices[0]?.key ?? null;
     if (focus) visited.add(focus);
   }
-});
+}, 30_000);

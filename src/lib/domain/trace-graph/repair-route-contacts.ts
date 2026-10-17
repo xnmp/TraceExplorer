@@ -3,6 +3,7 @@ import type { GraphLayout, LayoutRequest, PlacedRoute } from './layout';
 import { geometryGate } from './geometry-gate';
 import { segments, type Segment } from './layout-quality';
 import { berthsOf, distanceToSegment, paintedSegments, routeEnds, type Berth } from './route-contacts';
+import { JUNCTION_CLEARANCE } from './connector-ink';
 import { PORT_BERTH } from './metrics';
 import { pathCommands, type Point } from './path-sampling';
 
@@ -23,7 +24,13 @@ function intentional(layout: GraphLayout, a: PlacedRoute, b: PlacedRoute, p: Poi
 /** Constructor witnesses are only search hints; they never certify a repaired drawing. */
 function lineOf(route: PlacedRoute, layout: GraphLayout): Line {
   const pieces = segments(route.path), ends = routeEnds(route, pieces, layout.nodes, layout.junctions);
-  return {route, pieces:paintedSegments(pieces, ends), berths:berthsOf(pieces, ends)};
+  // routeEnds leaves junction berths to the constructor's dot index. Repair
+  // needs the same witnesses explicitly, including contacts on straight runs.
+  const dots = [route.from, route.to].flatMap(end => {
+    const dot = end.kind === 'junction' ? layout.junctions.get(end.id) : undefined;
+    return dot ? [{ x: dot.x, y: dot.y, radius: JUNCTION_CLEARANCE }] : [];
+  });
+  return {route, pieces:paintedSegments(pieces, ends), berths:[...berthsOf(pieces, ends), ...dots]};
 }
 
 function contacts(lines: readonly Line[], layout: GraphLayout, changed?: PlacedRoute): readonly Contact[] {
@@ -128,11 +135,12 @@ function* alternatives(route: PlacedRoute, berth: Berth, layout: GraphLayout): G
       }
     }
   }
-  // A foreign run can occupy a source's port while its other departure is clear.
+  // A foreign run or nearby corner can occupy a source's port berth while its
+  // other departure is clear. The first contact witness need not be the port itself.
   // Reconnect only to an early straight run; the retained suffix, including every
   // cubic command and the target approach, stays authored exactly as before.
   const source = route.from.kind === 'node' ? layout.nodes.get(route.from.id) : undefined;
-  if (!source || Math.hypot(at(0).x - berth.x, at(0).y - berth.y) > .01) return;
+  if (!source || Math.hypot(at(0).x - berth.x, at(0).y - berth.y) > PORT_BERTH) return;
   const ports = [{x:source.x + source.width / 2, y:source.y + source.height, axis:'y'},
     {x:source.x + source.width, y:source.y + source.height / 2, axis:'x'}] as const;
   if (!ports.some(p => Math.hypot(p.x - at(0).x, p.y - at(0).y) < .01)) return;

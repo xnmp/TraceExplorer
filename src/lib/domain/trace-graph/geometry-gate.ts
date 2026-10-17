@@ -2,6 +2,7 @@ import { layoutStage, countLayoutWork } from './layout-profile';
 /** Global checks on the drawing, independent of placement and router occupancy tables. */
 import type { GraphLayout, LayoutItem, PlacedNode, PlacedRoute } from './layout';
 import { validateLayout, cost } from './layout-quality';
+import { JUNCTION_CLEARANCE } from './connector-ink';
 import { ARROW, LANE_SEPARATION, PORT_BERTH } from './metrics';
 import { inReach } from './band-incremental';
 import { geometrySignature } from './layout-signature';
@@ -179,7 +180,9 @@ function checkClearance(layout: GraphLayout): string | null {
     }
     for (let i = 1; i < points.length; i++) entries.push({ a: points[i - 1], b: points[i], route, source, error: errors[i], hull: hulls[i], primitive: pieces[i] });
     const portRadius = (p: Point, end: PlacedRoute['from']) => {
-      const n = end.kind === 'node' ? layout.nodes?.get(end.id) : undefined;
+      const dot = end.kind === 'junction' ? layout.junctions.get(end.id) : undefined;
+      if (dot && Math.hypot(p.x - dot.x, p.y - dot.y) < 1e-7) return Math.max(LANE_SEPARATION, JUNCTION_CLEARANCE);
+      const n = layout.nodes?.get(end.id);
       const onOutline = n && p.x >= n.x - .01 && p.x <= n.x + n.width + .01 && p.y >= n.y - .01 && p.y <= n.y + n.height + .01
         && Math.min(Math.abs(p.x - n.x), Math.abs(p.x - n.x - n.width), Math.abs(p.y - n.y), Math.abs(p.y - n.y - n.height)) < .01;
       return onOutline ? PORT_BERTH : LANE_SEPARATION;

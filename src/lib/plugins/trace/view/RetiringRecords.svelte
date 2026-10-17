@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { JUNCTION_STROKE_WIDTH } from "$lib/domain/trace-graph/connector-ink";
   /**
    * Retirees drawn by the grid, in folder coordinates (docs/scene-transactions.md §6): in-band
    * departures and old connector paths whose band a later publication closed while they still
@@ -32,7 +33,7 @@
           <EdgePath route={record.route} d={record.route.path} style={record.style} branch={retiree.branch} {uid} ghost />
         {:else}
           <circle class="junction" class:highlight={record.highlighted} data-motion-ghost="" data-motion-junction={record.junction.id}
-            cx={record.junction.x} cy={record.junction.y} r={JUNCTION_RADIUS} />
+            cx={record.junction.x} cy={record.junction.y} r={JUNCTION_RADIUS} style:stroke-width={JUNCTION_STROKE_WIDTH} />
         {/if}
       </svg>
     </div>

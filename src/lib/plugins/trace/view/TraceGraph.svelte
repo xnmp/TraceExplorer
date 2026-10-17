@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { JUNCTION_STROKE_WIDTH } from "$lib/domain/trace-graph/connector-ink";
   /**
    * One open stack's band, drawn from the published scene: its tiles, connectors and junctions
    * exactly as the committed layout attached them. A renderer only: no planning, layout or
@@ -120,7 +121,7 @@
     {/each}
     {#each junctions as { id, junction, highlighted } (junction.id)}
       <circle class="junction" class:highlight={highlighted} style:opacity={presented.layered.has(id) ? 0 : undefined}
-        data-junction={junction.id} cx={junction.x} cy={junction.y} r={JUNCTION_RADIUS}><title>{junctionTitle(junction.parents)}</title></circle>
+        data-junction={junction.id} cx={junction.x} cy={junction.y} r={JUNCTION_RADIUS} style:stroke-width={JUNCTION_STROKE_WIDTH}><title>{junctionTitle(junction.parents)}</title></circle>
     {/each}
   </svg>
   <!-- Exact connector geometry in native HTML layers: WebKit accelerates transforms and opacity on HTML layers, but not reliably on SVG children. -->
@@ -133,7 +134,7 @@
           <EdgePath route={layer.record.route} d={layer.record.route.path} style={layer.record.style} branch={layer.branch} {uid} ghost />
         {:else}
           <circle class="junction" class:highlight={layer.record.highlighted} data-motion-ghost="" data-motion-junction={layer.record.junction.id}
-            cx={layer.record.junction.x} cy={layer.record.junction.y} r={JUNCTION_RADIUS} />
+            cx={layer.record.junction.x} cy={layer.record.junction.y} r={JUNCTION_RADIUS} style:stroke-width={JUNCTION_STROKE_WIDTH} />
         {/if}
       </svg>
     </div>
@@ -171,18 +172,18 @@
     --edge-branch: var(--trace-edge-branch, color-mix(in srgb, var(--text-primary) 72%, transparent));
     --edge-highlight: var(--trace-edge-highlight, var(--accent));
   }
-  :global(.trace-edges path) { fill: none; stroke: var(--edge); stroke-width: 1.35; }
+  :global(.trace-edges path) { fill: none; stroke: var(--edge); }
   :global(.trace-edges path.subfolder) { stroke: var(--edge-subfolder); }
   :global(.trace-edges path.external) { stroke: var(--edge-external); stroke-dasharray: 4 3; }
-  :global(.trace-edges path.branch) { stroke: var(--edge-branch); stroke-width: 1.6; }
-  :global(.trace-edges path.highlight) { stroke: var(--edge-highlight); stroke-width: 2.3; }
+  :global(.trace-edges path.branch) { stroke: var(--edge-branch); }
+  :global(.trace-edges path.highlight) { stroke: var(--edge-highlight); }
   :global(.trace-edges path.unrelated) { opacity: .4; }
   :global(.trace-edges marker polygon) { fill: var(--edge); }
   :global(.trace-edges marker.subfolder polygon) { fill: var(--edge-subfolder); }
   :global(.trace-edges marker.external polygon) { fill: var(--edge-external); }
   :global(.trace-edges marker.branch polygon) { fill: var(--edge-branch); }
   :global(.trace-edges marker.highlight polygon) { fill: var(--edge-highlight); }
-  :global(.trace-edges .junction) { fill: color-mix(in srgb, var(--text-secondary) 75%, transparent); stroke: var(--background-solid); stroke-width: 1; pointer-events: auto; }
+  :global(.trace-edges .junction) { fill: color-mix(in srgb, var(--text-secondary) 75%, transparent); stroke: var(--background-solid); pointer-events: auto; }
   :global(.trace-edges .junction.highlight) { fill: var(--edge-highlight); }
   :global(.trace-edges [data-motion-ghost]) { pointer-events: none; }
 </style>

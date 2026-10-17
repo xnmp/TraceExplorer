@@ -26,6 +26,7 @@ import { axisOf, berthsOf, paintedSegments, distanceToTile, distanceToSegment, e
 import { bandExtent } from "./band-geometry";
 import { intersectsTile, overlapLength, routeBounds, segments, type Segment } from "./layout-quality";
 import { orthogonalRoute, LANE_TOLERANCE, NEAR_LANE, type AxisRun, type ForeignLanes, type GridSearch } from "./orthogonal-route";
+import { JUNCTION_CLEARANCE } from "./connector-ink";
 import { forEachPathNumber } from "./path-data";
 import { pathCommands, type Point } from "./path-sampling";
 
@@ -768,6 +769,8 @@ interface Scene {
   readonly coverStem: (points: readonly Point[]) => readonly Point[];
   /** The lanes route families choose among. */
   readonly grain: Grain;
+  /** Proposed spine dots; admission exempts only the actual arrival. */
+  readonly joinDots?: readonly Point[];
 }
 
 /** Parallel lanes a route family may take: `choices` of them, `step` apart. */
@@ -990,7 +993,7 @@ class RouteSearch {
         const c = bases[f] ??= this.candidate(families[f].base);
         if (!this.isClear(c)) continue;
         if (!c.crowded) {
-          if (!lanes.conflicts(c.lanes, this.source, endsInto(owner[f]))) return route(c, owner[f], index);
+          if (!foreignJoinBerth(c.lanes, this.s.joinDots) && !lanes.conflicts(c.lanes, this.source, endsInto(owner[f]))) return route(c, owner[f], index);
           if (record) c.crowded = true;
         }
         crowded.push(f);
@@ -1005,7 +1008,7 @@ class RouteSearch {
       for (const i of ranked) {
         const c = options[i];
         if (c.crowded) continue;
-        if (!lanes.conflicts(c.lanes, this.source, endsInto(owner[from[i]]))) { if (this.isClear(c)) return route(c, owner[from[i]], index); }
+        if (!foreignJoinBerth(c.lanes, this.s.joinDots) && !lanes.conflicts(c.lanes, this.source, endsInto(owner[from[i]]))) { if (this.isClear(c)) return route(c, owner[from[i]], index); }
         else if (record) c.crowded = true;
       }
     }
@@ -1060,7 +1063,7 @@ function wire(parents: readonly PlacedNode[], n: PlacedNode, s: Scene, lanes: La
     const before = lanes.mark();
     lanes.add(spine, junction, SPINE);
     const arrivals = joinArrivals(levels), searches: RouteSearch[] = [];
-    const search = (i: number) => searches[i] ??= new RouteSearch(parents[i], arrivals, s, false);
+    const search = (i: number) => searches[i] ??= new RouteSearch(parents[i], arrivals, { ...s, joinDots: levels }, false);
     // Each parent's best route with the spine alone. Other parents' routes only add lanes to
     // avoid, so a parent without one settles the shift, and one still lane-free beside them
     // is still that parent's best.
@@ -1122,9 +1125,11 @@ function gridWire(parents: readonly PlacedNode[], n: PlacedNode, s: Scene, lanes
     let found: Route | undefined;
     search: for (const [port, start] of ports) for (const arrival of goals) {
       if (!(left(effort) > 0)) break search;
-      const grid = routeAroundBerths(start, arrival.end, obstacles, s.width, lanes, source, effort, { bounds: s.paneEdges });
+      const complete = (grid: readonly Point[]) => [port, ...grid, ...(levels ? [] : [point(arrival.end.x, n.y - ARROW.length)])];
+      const painted = (grid: readonly Point[]) => pathSegments(p.key === s.cover ? s.coverStem(complete(grid)) : complete(grid));
+      const grid = routeAroundBerths(start, arrival.end, obstacles, s.width, lanes, source, effort, { bounds: s.paneEdges }, levels, painted);
       if (!grid) continue;
-      const points = [port, ...grid, ...(levels ? [] : [point(arrival.end.x, n.y - ARROW.length)])];
+      const points = complete(grid);
       const ss = pathSegments(points);
       if (!ss.length || lanes.conflicts(p.key === s.cover ? pathSegments(s.coverStem(points)) : ss, source, levels ? INTO_JUNCTION : INTO_TILE)) continue;
       found = { points, ss, arrival };
@@ -1138,6 +1143,18 @@ function gridWire(parents: readonly PlacedNode[], n: PlacedNode, s: Scene, lanes
   return { routes, levels };
 }
 
+/** Other proposed junction dots are obstacles even before the wiring is committed. */
+function foreignJoinBerth(pieces: readonly Segment[], dots?: readonly Point[]): Berth | undefined {
+  const end = pieces.at(-1)?.[1];
+  if (!end || !dots) return undefined;
+  for (const dot of dots) {
+    if (dot.x === end.x && dot.y === end.y) continue;
+    if (pieces.some(piece => distanceToSegment(piece, dot) < JUNCTION_CLEARANCE - 1e-7))
+      return { ...dot, radius: JUNCTION_CLEARANCE };
+  }
+  return undefined;
+}
+
 /**
  * The grid knows parallel lanes, but its shortest path can still cross a foreign port or
  * corner. Add that rejecting witness as an obstacle and search again. Adding every berth
@@ -1146,7 +1163,8 @@ function gridWire(parents: readonly PlacedNode[], n: PlacedNode, s: Scene, lanes
  * rejects unsupported corner/curve conflicts rather than weakening the geometry contract.
  */
 function routeAroundBerths(start: Point, goal: Point, obstacles: readonly PlacedNode[], width: number,
-  lanes: LaneIndex, source: string, effort: Effort, options: Pick<GridSearch, 'bounds' | 'column'>): readonly Point[] | null {
+  lanes: LaneIndex, source: string, effort: Effort, options: Pick<GridSearch, 'bounds' | 'column'>, joinDots?: readonly Point[],
+  painted: (grid: readonly Point[]) => readonly Segment[] = pathSegments): readonly Point[] | null {
   const foreign = lanes.foreign(source), avoided: PlacedNode[] = [], seen = new Set<string>();
   for (let attempt = 0; attempt < BERTH_RETRIES && left(effort) > 0; attempt++) {
     const spent = { cells: 0, pops: 0 };
@@ -1154,7 +1172,8 @@ function routeAroundBerths(start: Point, goal: Point, obstacles: readonly Placed
       { ...options, budget: Math.min(effort.budget, left(effort)), everyLane: effort.everyLane, spent });
     spend(effort, spent);
     if (!grid) return null;
-    const berth = lanes.blockingBerth(pathSegments(grid), source);
+    const pieces = pathSegments(grid);
+    const berth = foreignJoinBerth(joinDots ? painted(grid) : pieces, joinDots) ?? lanes.blockingBerth(pieces, source);
     if (!berth) return grid;
     const key = JSON.stringify([berth.x, berth.y, berth.radius]);
     if (seen.has(key)) return null;
@@ -1192,10 +1211,12 @@ function gridWireAll(parents: readonly PlacedNode[], n: PlacedNode, s: Scene, la
     let found: Route | undefined;
     for (const [port, start] of ports) {
       if (!(left(effort) > 0)) break;
-      const grid = routeAroundBerths(start, goal, obstacles, s.width, lanes, source, effort, { column, bounds: s.paneEdges });
+      const complete = (grid: readonly Point[]) => [port, ...grid, ...(levels ? [] : [point(goal.x, n.y - ARROW.length)])];
+      const painted = (grid: readonly Point[]) => pathSegments(cover ? s.coverStem(complete(grid)) : complete(grid));
+      const grid = routeAroundBerths(start, goal, obstacles, s.width, lanes, source, effort, { column, bounds: s.paneEdges }, levels, painted);
       if (!grid) continue;
       const end = grid[grid.length - 1], level = levels ? levels.findIndex(l => l.y === end.y) : -1;
-      const points = [port, ...grid, ...(levels ? [] : [point(goal.x, n.y - ARROW.length)])];
+      const points = complete(grid);
       const ss = pathSegments(points);
       if (!ss.length || lanes.conflicts(cover ? pathSegments(s.coverStem(points)) : ss, source, levels ? INTO_JUNCTION : INTO_TILE)) continue;
       found = { points, ss, arrival: { end, heading: "down", level } };
