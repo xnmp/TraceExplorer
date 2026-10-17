@@ -24,18 +24,20 @@ const ROOT = JSON.stringify(['folder-placement-anchor']);
 export function preservesFolderRectangles(result: FolderLayout, snapshot: FolderPlacementHistory['layout']): boolean {
   if (!(snapshot?.cells instanceof Map) || !(snapshot.graphs instanceof Map)) return false;
   const same = (a: GridRect, b: GridRect) => !!a && !!b && a.x === b.x && a.y === b.y && a.width === b.width && a.height === b.height;
+  const current = new Map<string, GridRect>([...result.cells].map(([id, cell]) => [id, result.cellFootprints?.get(id) ?? cell]));
+  for (const graph of result.graphs.values()) for (const [key, n] of graph.attached.nodes)
+    current.set(key, { ...n, x: n.x + graph.origin.x, y: n.y + graph.origin.y });
   for (const [id, cell] of snapshot.cells) {
     const now = result.cells.get(id);
-    if (now && !same(cell, now)) return false;
+    if (now ? !same(cell, now) : current.has(id) && !same(snapshot.cellFootprints?.get(id) ?? cell, current.get(id)!)) return false;
   }
-  for (const [id, graph] of snapshot.graphs) {
+  for (const graph of snapshot.graphs.values()) {
     if (!graph?.attached || !(graph.attached.nodes instanceof Map) || !graph.origin) return false;
-    const now = result.graphs.get(id); if (!now) continue;
     for (const [key, old] of graph.attached.nodes) {
       if (!old) return false;
-      const n = now.attached.nodes.get(key);
+      const n = current.get(key);
       if (n && !same({ ...old, x: old.x + graph.origin.x, y: old.y + graph.origin.y },
-        { ...n, x: n.x + now.origin.x, y: n.y + now.origin.y })) return false;
+        n)) return false;
     }
   }
   return true;
@@ -99,25 +101,36 @@ function place(input: FolderLayoutInput, plans: ReadonlyMap<GraphId, Plan>, snap
     nodes.set(key, { ...cell, ...footprint, key, x: footprint.x + ORIGIN_X, band: 0 });
     items.push({ key, width: footprint.width, height: footprint.height, order: items.length, parents: [] });
   }
+  // Tile identity survives component merges. Component ids only scope the new
+  // output; they must never decide which visible geometry remains pinned.
+  const retained = new Map<string, PlacedNode>([...snapshot.cells].map(([key, cell]) =>
+    [key, { ...cell, ...(snapshot.cellFootprints?.get(key) ?? cell), key, band: 0 }]));
+  for (const graph of snapshot.graphs.values()) for (const [key, node] of graph.attached.nodes)
+    retained.set(key, { ...node, x: node.x + graph.origin.x, y: node.y + graph.origin.y });
+  const owners = new Map([...plans].flatMap(([id, { plan }]) => plan.request.items.map(item => [item.key, id] as const)));
+  const nodeKey = (key: string) => scope('node', owners.get(key) ?? '', key);
   for (const [id, { plan }] of plans) {
-    const graph = snapshot.graphs.get(id), attached = graph?.attached, origin = graph?.origin;
     const cell = cells.get(id)!;
-    const nodeKey = (key: string) => scope('node', id, key), joinKey = (key: string) => scope('junction', id, key);
     for (const item of plan.request.items) {
-      const key = nodeKey(item.key), old = attached?.nodes.get(item.key);
+      const key = nodeKey(item.key), old = retained.get(item.key);
       identities.set(key, { graph: id, key: item.key });
       items.push({ ...item, key, parents: item.parents.map(nodeKey), width: old?.width ?? item.width, height: old?.height ?? item.height });
-      if (old) nodes.set(key, { ...old, key, x: old.x + origin!.x + ORIGIN_X, y: old.y + origin!.y });
+      if (old) nodes.set(key, { ...old, key, x: old.x + ORIGIN_X, y: old.y });
       else if (item.key === id) nodes.set(key, { key, x: cell.x + (cell.width - item.width) / 2 + ORIGIN_X,
         y: cell.y, width: item.width, height: cell.height, row: 0, band: 0 });
     }
-    for (const j of attached?.junctions.values() ?? []) {
-      const key = joinKey(j.id); oldJunctions.set(key, j.id);
+  }
+  for (const [id, graph] of snapshot.graphs) {
+    const { attached, origin } = graph;
+    const joinKey = (key: string) => scope('junction', id, key);
+    const retainedId = (kind: string, key: string) => owners.get(id) === id ? key : scope(kind, id, key);
+    for (const j of attached.junctions.values()) {
+      const key = joinKey(j.id); oldJunctions.set(key, retainedId('retained-junction', j.id));
       junctions.set(key, { ...j, id: key, x: j.x + origin!.x + ORIGIN_X, y: j.y + origin!.y, parents: j.parents.map(nodeKey) });
     }
     const scoped = mapRouteConsumers(attached?.routes ?? [], c => ({ parent: nodeKey(c.parent), child: nodeKey(c.child) }));
     for (const route of scoped) {
-      const key = scope('route', id, route.id); oldRoutes.set(key, route.id);
+      const key = scope('route', id, route.id); oldRoutes.set(key, retainedId('retained-route', route.id));
       const endpoint = (end: PlacedRoute['from']) => ({ ...end, id: end.kind === 'node' ? nodeKey(end.id) : joinKey(end.id) });
       routes.push({ ...route, id: key, from: endpoint(route.from), to: endpoint(route.to),
         path: mapPathNumbers(route.path, (v, i) => v + (i % 2 ? origin!.y : origin!.x + ORIGIN_X)) });
@@ -194,5 +207,5 @@ function place(input: FolderLayoutInput, plans: ReadonlyMap<GraphId, Plan>, snap
   const result: FolderLayout = { columns: snapshot.columns, size: { width: Math.max(snapshot.size.width, bounds!.x + bounds!.width), height: Math.max(snapshot.size.height, bounds!.y + bounds!.height) },
     bounds: bounds!, cells, bands, rowBands, graphs };
   const painted = withCellFootprints(result, input);
-  return folderGeometryGate(painted) ? null : painted;
+  return folderGeometryGate(painted) || !preservesFolderRectangles(painted, snapshot) ? null : painted;
 }
