@@ -560,7 +560,9 @@ test("opening children in another band during a running expansion continues from
       samples.push((await positions())[mist][1]);
     }
     const end = samples.at(-1)!;
-    for (let i = 1; i < samples.length; i++) expect(Math.abs(samples[i] - end), `forest-mist sample ${i} heads to its place`).toBeLessThanOrEqual(Math.abs(samples[i - 1] - end) + .5);
+    // The view's scroll compensation moves in whole pixels while the tile's transform is continuous,
+    // so its screen position wavers by up to a pixel about its path (on main too, between these samples).
+    for (let i = 1; i < samples.length; i++) expect(Math.abs(samples[i] - end), `forest-mist sample ${i} heads to its place`).toBeLessThanOrEqual(Math.abs(samples[i - 1] - end) + 1);
   } finally { await releaseMotion(page); }
   await settle(page);
   expect(await uncaught(page)).toEqual([]);
@@ -744,7 +746,8 @@ test("a newer selection cancels a cold cover's double-click selection request", 
 });
 
 test("a band wider than the pane scrolls the view sideways, keeping routes attached to their cover", async ({ page }) => {
-  await openView(page, 220, "?wideRoots=24", false);
+  // The band's routing needs about 194 px beside its single column, so a 150 px pane is narrower than it.
+  await openView(page, 150, "?wideRoots=24", false);
   await stack(page, "wr-0").locator("[data-stack-toggle]").click(); await settle(page);
   const cover = await key(page, "wr-0");
   const view = page.getByTestId("trace-view");
@@ -762,7 +765,9 @@ test("a band wider than the pane scrolls the view sideways, keeping routes attac
   await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
   const before = await attachment();
   expect(before.starts.length).toBeGreaterThan(0);
-  for (const wheel of [100, 5000, -5000]) {
+  // Part of the way, to the far end, and back: the first step stays inside the scroll range.
+  const range = await view.evaluate((element) => element.scrollWidth - element.clientWidth);
+  for (const wheel of [Math.ceil(range / 2), 5000, -5000]) {
     const left = await view.evaluate((element) => element.scrollLeft);
     await page.mouse.wheel(wheel, 0);
     await expect.poll(() => view.evaluate((element) => element.scrollLeft)).not.toBe(left);
