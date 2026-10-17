@@ -1584,8 +1584,8 @@ export const CROSSING_WEIGHT = HEIGHT_WEIGHT * CROSSING_HEIGHT_TILES;
  */
 export const MIXED_DIRECTIONS_WEIGHT = 1;
 
-/** Moving every familiar tile costs two tile-widths of height, even for short moves. */
-export const MOVED_FRACTION_WEIGHT = 2 * HEIGHT_WEIGHT;
+/** Moving every familiar tile costs five tile-widths of height, even for short moves. */
+export const MOVED_FRACTION_WEIGHT = 5 * HEIGHT_WEIGHT;
 
 export interface Weights {
     readonly stability: number;
@@ -1596,8 +1596,9 @@ export interface Weights {
      */
     readonly sharedLanes?: "gate" | "priced";
 }
+/** A tile-width of mean travel costs a tile-width of height; fallback pricing shares this objective. */
+export const DEFAULT_WEIGHTS: Weights = Object.freeze({ stability: HEIGHT_WEIGHT });
 /** Tile-size normalized perceptual cost, with hard geometry/parentage gates. Whitespace is reported separately: area and height already price it. */
-const DEFAULT_WEIGHTS: Weights = Object.freeze({ stability: 1.5 });
 export function cost(m: Measures, tileWidth: number, weights: Weights = DEFAULT_WEIGHTS): number {
     if (m.overlaps || m.tileIntersections || m.directionViolations || m.missingEdges || m.extraEdges || m.missingNodes || m.extraNodes || m.invalidGeometry || m.invalidPaths || m.terminalViolations || m.disconnectedEdges)
         return Infinity;

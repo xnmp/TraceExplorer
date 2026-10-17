@@ -12,7 +12,7 @@ import { validHistory } from "./history-boundary";
 import { spacingFor, STACK_STEM_ROOM } from "./metrics";
 import { bandWidthBudget, columnsFor, partitions, buildShelves, validate } from "./band-shelves";
 import { attachSingleBand, attachPackedBand, localBandPlacement, bandExtent, withBandBounds, withPaneBandBounds, singleBandSkeleton } from "./band-geometry";
-import { measure, validateLayout, cost, routePlan, sharedLaneLength, type Measures, type Weights } from "./layout-quality";
+import { measure, validateLayout, cost, routePlan, sharedLaneLength, DEFAULT_WEIGHTS, type Measures, type Weights } from "./layout-quality";
 import { incrementalBudget, incrementalTree, inReach, usableRetainedRoute } from "./band-incremental";
 import { forEachPathNumber, mapPathNumbers, pathNumbers } from "./path-data";
 import { extentCost, optimisticCost, rectangleCost } from "./layout-cost-bound";
@@ -227,7 +227,7 @@ function downwardHeightFloor(items: readonly LayoutItem[], key: string): number 
  */
 const ANCHOR_CROSSING_SLACK = 50;
 const ANCHOR_CROSSING_RATIO = .25;
-const PRICED_LANES: Weights = Object.freeze({ stability: 1.5, sharedLanes: "priced" });
+const PRICED_LANES: Weights = Object.freeze({ ...DEFAULT_WEIGHTS, sharedLanes: "priced" });
 
 const NO_COST: Measures = { height: 0, width: 0, area: 0, tileArea: 0, whitespace: 0, paneWhitespace: 0, length: 0, bends: 0, crossings: 0, sharedLanePx: 0,
   tileIntersections: 0, overlaps: 0, directionViolations: 0, mixedDirections: 0, siblingInversions: 0, unaligned: 0, overflow: 0, displacement: 0,

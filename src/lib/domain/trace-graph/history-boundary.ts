@@ -6,7 +6,7 @@ import { geometrySignature, layoutSignature } from './layout-signature';
 import { attachPackedBand, attachSingleBand } from './band-geometry';
 import { createBoundedCache } from './folder-layout/bounded-cache';
 import { drawingClaimsViolation, geometryGate } from './geometry-gate';
-import { cost, validateLayout } from './layout-quality';
+import { cost, validateLayout, DEFAULT_WEIGHTS } from './layout-quality';
 
 const object = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === 'object';
 const coordinate = (value: unknown): value is number => typeof value === 'number' && inReach(value);
@@ -200,7 +200,7 @@ export function validHistory(value: unknown, cover: string): value is BandHistor
     // must be valid. The exact attachment comparison above binds both drawings.
     if (layout === value.layout && layout !== value.placed) {
       if (drawingClaimsViolation(layout) || !Number.isFinite(cost(validateLayout(layout, cover, layout.width, visible), 92,
-        { stability: 1.5, sharedLanes: 'priced' }))) return false;
+        { ...DEFAULT_WEIGHTS, sharedLanes: 'priced' }))) return false;
     } else if (geometryGate(layout, visible, cover, layout.width)) return false;
   }
   historyChecks.set(key, true);

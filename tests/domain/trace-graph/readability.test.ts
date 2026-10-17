@@ -4,7 +4,7 @@ import { layoutGraph, layoutLayered, type GraphLayout, type LayoutItem, type Lay
 import { bandHistorySignature } from "$lib/domain/trace-graph/band-layout";
 import { attachSingleBand } from "$lib/domain/trace-graph/band-geometry";
 import { buildShelves, columnsFor, partitions } from "$lib/domain/trace-graph/band-shelves";
-import { cost, measure, routePlan, sharedLaneLength, validateLayout, CROSSING_HEIGHT_TILES, CROSSING_WEIGHT, HEIGHT_WEIGHT } from "$lib/domain/trace-graph/layout-quality";
+import { cost, measure, routePlan, sharedLaneLength, validateLayout, CROSSING_HEIGHT_TILES, CROSSING_WEIGHT, HEIGHT_WEIGHT, DEFAULT_WEIGHTS } from "$lib/domain/trace-graph/layout-quality";
 import { spacingFor } from "$lib/domain/trace-graph/metrics";
 import { corpus, node, requestFor, rng, screenshot } from "../../../layout-eval/corpus";
 import { profiles, provenanceSession, sessionComponents } from "../../../layout-eval/provenance-model";
@@ -57,9 +57,9 @@ describe("shared lanes between sources", () => {
     expect(metrics.sharedLanePx).toBe(0);
     const shared = { ...metrics, sharedLanePx: 12 };
     expect(cost(shared, 92)).toBe(Infinity);
-    expect(cost(shared, 92, { stability: 1.5, sharedLanes: "priced" })).toBeCloseTo(cost(metrics, 92) + 4 * 12 / 92, 9);
+    expect(cost(shared, 92, { ...DEFAULT_WEIGHTS, sharedLanes: "priced" })).toBeCloseTo(cost(metrics, 92) + 4 * 12 / 92, 9);
     // A hard gate elsewhere is never priced away.
-    expect(cost({ ...shared, overlaps: 1 }, 92, { stability: 1.5, sharedLanes: "priced" })).toBe(Infinity);
+    expect(cost({ ...shared, overlaps: 1 }, 92, { ...DEFAULT_WEIGHTS, sharedLanes: "priced" })).toBe(Infinity);
   });
 
   it("is exact in hard-gate validation, which ranks nothing else", () => {
