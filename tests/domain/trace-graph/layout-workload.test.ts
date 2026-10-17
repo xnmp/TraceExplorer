@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { mustLayoutBeforePaint } from "$lib/domain/trace-graph/layout-workload";
+import { mustLayoutBeforePaint, withinFolderRestoreBudget } from "$lib/domain/trace-graph/layout-workload";
 
 const shown = (extent: number, width: number) => ({ extent, width });
 
@@ -35,5 +35,19 @@ describe("layout before paint", () => {
   it("compares extremely large extents exactly", () => {
     expect(mustLayoutBeforePaint(shown(Number.MAX_SAFE_INTEGER, Number.MAX_SAFE_INTEGER), Number.MAX_SAFE_INTEGER - 1)).toBe(true);
     expect(mustLayoutBeforePaint(shown(Number.MAX_VALUE, Number.MAX_VALUE), Number.MAX_VALUE)).toBe(false);
+  });
+});
+
+describe('folder restore budget', () => {
+  it.each([
+    [{ tiles: 90, edges: 95, pathBytes: 30_720 }, true],
+    [{ tiles: 91, edges: 95, pathBytes: 30_720 }, false],
+    [{ tiles: 90, edges: 96, pathBytes: 30_720 }, false],
+    [{ tiles: 90, edges: 95, pathBytes: 30_721 }, false],
+    [{ tiles: 2001, edges: 0, pathBytes: 0 }, false],
+    [{ tiles: NaN, edges: 0, pathBytes: 0 }, false],
+    [{ tiles: 0, edges: Infinity, pathBytes: 0 }, false],
+  ])('dispatches %j inline: %s', (work, inline) => {
+    expect(withinFolderRestoreBudget(work)).toBe(inline);
   });
 });

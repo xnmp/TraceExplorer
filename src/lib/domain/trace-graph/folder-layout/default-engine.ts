@@ -234,7 +234,23 @@ function layoutPlanned(plans: ReadonlyMap<GraphId, BandPlan>, cache: BoundedCach
  * Throws as the engine does for invalid geometry.
  */
 export function uncachedBandRequests(input: FolderLayoutInput, cache: BoundedCache<GraphLayout>): readonly LayoutRequest[] {
-  return [...plansOf(input).plans.values()].filter(({ kept, plan }) => !kept && !cache.get(signatureOf(plan.request))).map(({ plan }) => plan.request);
+  return folderBandWork(input, cache).filter(band => !band.cached).map(band => band.request);
+}
+
+/** The dispatch rule's inputs; reading them never constructs or decodes a drawing. */
+export interface FolderBandWork {
+  readonly id: GraphId;
+  readonly request: LayoutRequest;
+  readonly cached: boolean;
+  readonly drawing: GraphLayout | undefined;
+}
+
+export function folderBandWork(input: FolderLayoutInput, cache: BoundedCache<GraphLayout>): readonly FolderBandWork[] {
+  return [...plansOf(input).plans].map(([id, { kept, plan }]) => {
+    const cached = kept ?? cache.get(signatureOf(plan.request));
+    return { id, request: plan.request, cached: !!cached,
+      drawing: kept ? input.previous?.graphs.get(id)?.attached ?? kept : cached ?? plan.request.history?.placed };
+  });
 }
 
 /** Every band needs packing and certification even if its raw layout is cached. */
