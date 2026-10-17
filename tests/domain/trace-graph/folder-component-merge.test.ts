@@ -1,3 +1,4 @@
+import { expectFolderArrivalPinned } from './folder-arrival-contract';
 import { expect, it } from 'vitest';
 import { createDefaultEngine } from '$lib/domain/trace-graph/folder-layout/default-engine';
 import { folderGeometryGate } from '$lib/domain/trace-graph/folder-layout/geometry-gate';
@@ -32,7 +33,7 @@ it.each([true, false])('keeps displayed tiles fixed when an output merges compon
   expect(createDefaultEngine()(structuredClone(request))).toEqual(after);
   expect(folderGeometryGate(after)).toBeNull();
   const old = rectangles(before), now = rectangles(after);
-  for (const [key, rect] of old) expect(now.get(key), key).toEqual(rect);
+  expectFolderArrivalPinned(before, after);
   const revisited = createDefaultEngine()({ ...request, previous: structuredClone(after) });
   expect(revisited.revisited).toBe(true);
   expect(rectangles(revisited)).toEqual(now);

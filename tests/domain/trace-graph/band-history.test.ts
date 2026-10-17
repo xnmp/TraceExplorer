@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { expectArrivalPinned } from "./arrival-contract";
 import { bandHistorySignature, historyFit, resizedLayout, resizedTiles } from "$lib/domain/trace-graph/band-history";
 import type { GraphLayout, LayoutItem, LayoutRequest, PlacedNode } from "$lib/domain/trace-graph/layout";
 import { pathNumbers } from "$lib/domain/trace-graph/path-data";
@@ -58,17 +59,35 @@ const layout = (nodes: PlacedNode[], routes: GraphLayout["routes"] = [], orienta
 const route = (from: string, to: string, path: string) => ({ id: `${from}>${to}`, from: { kind: "node" as const, id: from }, to: { kind: "node" as const, id: to }, consumers: [{ parent: from, child: to }], terminal: true, path });
 
 describe("resizedLayout", () => {
-  it("grows a tile in place and moves only what lies below it, by what it needs", () => {
+  it("grows a tile in place while retaining tiles in other columns", () => {
     const before = layout([node("root", 300, 0), node("a", 100, 150), node("b", 300, 150), node("c", 100, 300)],
       [route("a", "c", "M146 250 L146 292")]);
     const after = resizedLayout(before, new Map([["b", 116]]))!;
     expect(after.nodes.get("b")).toMatchObject({ x: 300, y: 150, height: 116 });
     expect(after.nodes.get("a")).toEqual(before.nodes.get("a"));
     expect(after.nodes.get("root")).toEqual(before.nodes.get("root"));
-    expect(after.nodes.get("c")!.y).toBe(316);
+    expect(after.nodes.get("c")!.y).toBe(300);
+    expectArrivalPinned(before, after);
     // The connector into c keeps its start on a's bottom and still ends at c's arrow.
-    expect(pathNumbers(after.routes[0].path)).toEqual([146, 250, 146, 308]);
-    expect(after.height).toBe(before.height + 16);
+    expect(pathNumbers(after.routes[0].path)).toEqual([146, 250, 146, 292]);
+    expect(after.height).toBe(before.height);
+  });
+  it("moves only the column below a new hint by exactly 16, even when 8 pixels would suffice", () => {
+    const before = layout([node("root", 300, 0), node("b", 300, 150), node("below", 300, 258), node("beside", 500, 258)]);
+    const after = resizedLayout(before, new Map([["b", 116]]))!;
+    expect(after.nodes.get("below")!.y).toBe(274);
+    expect(after.nodes.get("beside")).toEqual(before.nodes.get("beside"));
+    expect(after.nodes.get("root")).toEqual(before.nodes.get("root"));
+    expectArrivalPinned(before, after);
+  });
+  it("keeps a partly shifted row's bounds around both moved and pinned members", () => {
+    const before = { ...layout([node("root", 300, 0), node("b", 300, 150), node("below", 300, 258), node("beside", 500, 258)]),
+      rows: [{ index: 0, band: 0, top: 258, bottom: 358, keys: ["below", "beside"] }] };
+    const after = resizedLayout(before, new Map([["b", 116]]))!;
+    expect(after.nodes.get("below")!.y).toBe(274);
+    expect(after.nodes.get("beside")!.y).toBe(258);
+    expect(after.rows[0]).toEqual({ ...before.rows[0], top: 258, bottom: 374 });
+    expectArrivalPinned(before, after);
   });
   it("moves nothing when the row is already tall enough", () => {
     const before = layout([node("root", 300, 0), node("a", 100, 150, 116), node("b", 300, 150), node("c", 100, 300)]);
@@ -108,38 +127,44 @@ describe("resizedLayout", () => {
     const shared = segments(after.routes[0].path).reduce((sum, s) => sum + segments(other.path).reduce((t, o) => t + overlapLength(s, o), 0), 0);
     expect(shared).toBe(0);
   });
-  it("growing a tile and shrinking it back restores the drawing", () => {
+  it("shrinking a hint keeps retained positions and reuses that space on the next arrival", () => {
     const before = layout([node("root", 300, 0), node("a", 100, 150), node("b", 300, 150), node("d", 300, 300)],
       [route("a", "d", "M146 250 C146 259,346 259,346 268 L346 292")]);
-    const back = resizedLayout(resizedLayout(before, new Map([["b", 116]]))!, new Map([["b", 100]]))!;
-    expect([...back.nodes.values()]).toEqual([...before.nodes.values()]);
-    expect(pathNumbers(back.routes[0].path)).toEqual(pathNumbers(before.routes[0].path));
-    expect(back.height).toBe(before.height);
+    const grown = resizedLayout(before, new Map([["b", 116]]))!;
+    const back = resizedLayout(grown, new Map([["b", 100]]))!;
+    for (const [key, tile] of back.nodes) expect(tile).toEqual({ ...grown.nodes.get(key)!, ...(key === "b" ? { height: 100 } : {}) });
+    expect(resizedLayout(back, new Map([["b", 116]]))).toEqual(grown);
+    expectArrivalPinned(before, grown);
     const right = layout([node("root", 300, 0), node("a", 100, 144), node("b", 300, 150)], [route("a", "b", "M192 194 L240 194 L240 200 L292 200")], "right");
     const restored = resizedLayout(resizedLayout(right, new Map([["b", 112]]))!, new Map([["b", 100]]))!;
     expect(pathNumbers(restored.routes[0].path)).toEqual(pathNumbers(right.routes[0].path));
   });
-  it("running right, a tile of a stacked column keeps its stack gap to the tile below, whatever its neighbours' columns do", () => {
+  it("running right, a hint may consume existing column space while all tiles remain pinned", () => {
     // b's column stacks c 16 px under b; e, in the next column, ends exactly where c starts.
     const before = layout([node("root", 300, 0), node("b", 300, 150), node("c", 300, 266), node("e", 500, 140, 126), node("f", 500, 282)], [], "right");
     const after = resizedLayout(before, new Map([["b", 116]]))!;
-    expect(after.nodes.get("c")!.y - (after.nodes.get("b")!.y + after.nodes.get("b")!.height)).toBe(16);
+    expect(after.nodes.get("c")!.y).toBe(266);
+    expect(after.nodes.get("f")).toEqual(before.nodes.get("f"));
+    expectArrivalPinned(before, after);
     expect(after.nodes.get("e")).toEqual(before.nodes.get("e"));
   });
-  it("running right, cuts right under the tile when a neighbour column reaches past its stack, keeping that neighbour's ports", () => {
+  it("running right, keeps neighbour ports when a hint fits without a column shift", () => {
     // e reaches from above b's lower edge past c's top; its output leaves its right side at its centre, above b's edge.
     const leaving = route("e", "g", "M592 210 L640 210");
     const before = layout([node("root", 300, 0), node("b", 300, 150), node("c", 300, 266), node("e", 500, 140, 140), node("g", 648, 160)], [leaving], "right");
     const after = resizedLayout(before, new Map([["b", 116]]))!;
-    expect(after.nodes.get("c")!.y).toBe(282);
+    expect(after.nodes.get("c")!.y).toBe(266);
+    expectArrivalPinned(before, after);
     expect(after.nodes.get("e")).toEqual(before.nodes.get("e"));
     expect(after.routes[0].path).toBe(leaving.path);
   });
-  it("running right, declines when no cut keeps both the stack gap and a neighbour's ports, and holds the tiles apart", () => {
+  it("running right, preserves unrelated lower ports and limits rerouting anchors to the hint column", () => {
     // As above, but e's output leaves below b's lower edge: a cut there would tear it off e.
     const before = layout([node("root", 300, 0), node("b", 300, 150), node("c", 300, 266), node("e", 500, 200, 120), node("g", 648, 220)],
       [route("e", "g", "M592 260 L640 260")], "right");
-    expect(resizedLayout(before, new Map([["b", 116]]))).toBeNull();
+    const after = resizedLayout(before, new Map([["b", 116]]))!;
+    expect(after.routes).toEqual(before.routes);
+    expectArrivalPinned(before, after);
     const held = resizedTiles(before, new Map([["b", 116]]));
     expect(held.nodes.get("b")).toMatchObject({ y: 150, height: 116 });
     expect(held.nodes.get("c")!.y).toBe(282);

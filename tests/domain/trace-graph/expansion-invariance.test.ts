@@ -1,3 +1,4 @@
+import { expectArrivalPinned } from './arrival-contract';
 import { expect, it } from 'vitest';
 import { createDefaultEngine } from '$lib/domain/trace-graph/folder-layout/default-engine';
 import type { FolderLayout } from '$lib/domain/trace-graph/folder-layout/types';
@@ -35,13 +36,14 @@ it('pins every retained rectangle when the fourth sibling arrives without an anc
   }
 });
 
-it('does not resize a leaf when its first output arrives', () => {
+it('adds exactly the hint height when a leaf receives its first output', () => {
   const engine = createDefaultEngine(), tile = tileMetrics(64);
   const nodes = [node('root'), node('leaf', ['root'], 1)];
   const input = (nodes: typeof recorded, previous?: FolderLayout) => folderInput(makeFolder({ stacks: [nodes] }), { open: ['s0:root'], width: 900, tile, previous });
   const before = engine(input(nodes)), after = engine(input([...nodes, node('output', ['leaf'], 2)], before));
   const rect = before.graphs.get('s0:root')!.attached.nodes.get('s0:leaf')!, next = after.graphs.get('s0:root')!.attached.nodes.get('s0:leaf')!;
-  expect([next.x, next.y, next.width, next.height]).toEqual([rect.x, rect.y, rect.width, rect.height]);
+  expect([next.x, next.y, next.width, next.height]).toEqual([rect.x, rect.y, rect.width, rect.height + 16]);
+  expectArrivalPinned(before.graphs.get('s0:root')!.attached, after.graphs.get('s0:root')!.attached);
 });
 
 import { corpus, rng } from '../../../layout-eval/corpus';
@@ -96,10 +98,7 @@ it('pins retained rectangles through seeded output arrivals and checks every res
       previous = commit().result;
       nodes.push(node(`n${i}`, [parent], i));
       const next = commit().result;
-      for (const [key, rect] of previous.graphs.get('s0:root')!.attached.nodes) {
-        const now = next.graphs.get('s0:root')!.attached.nodes.get(key)!;
-        expect([now.x, now.y, now.width, now.height], `seed ${seed}, output ${i}, retained ${key}`).toEqual([rect.x, rect.y, rect.width, rect.height]);
-      }
+      expectArrivalPinned(previous.graphs.get('s0:root')!.attached, next.graphs.get('s0:root')!.attached);
       previous = next;
     }
   }

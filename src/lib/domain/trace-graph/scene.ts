@@ -75,7 +75,7 @@ export function planScene(dag: TraceDag, members: readonly NodeKey[], focus: Nod
   return { lineage: effective, tiles, request: { items, maxWidth, hint, orientation, extent, tileWidth: tile.width } };
 }
 
-function sceneTiles(dag: TraceDag, visible: readonly NodeKey[], context: Lineage, tile: TileMetrics, expanded: ReadonlySet<NodeKey>, togglable?: ReadonlySet<NodeKey>, reserveHint = false) {
+function sceneTiles(dag: TraceDag, visible: readonly NodeKey[], context: Lineage, tile: TileMetrics, expanded: ReadonlySet<NodeKey>, togglable?: ReadonlySet<NodeKey>) {
   const shown = new Set(visible);
   const tiles = new Map<NodeKey, SceneTile>();
   const items: LayoutItem[] = [];
@@ -84,7 +84,7 @@ function sceneTiles(dag: TraceDag, visible: readonly NodeKey[], context: Lineage
     const childCount = dag.children.get(key)!.length;
     const expandable = childCount > 0;
     // Sizes depend only on the node, never on the focus.
-    const size = tileSize({ foreign: node.scope !== "current", hint: reserveHint || expandable }, tile);
+    const size = tileSize({ foreign: node.scope !== "current", hint: expandable }, tile);
     tiles.set(key, { key, node, tone: toneOf(context, key), size, childCount, hiddenDescendants: hiddenDescendantCount(dag, key, shown), expandable, expanded: expanded.has(key),
       togglable: expandable && (togglable ? togglable.has(key) : true) });
     items.push({ key, width: size.width, height: size.height, order: node.order, parents: dag.parents.get(key)!.filter((parent) => shown.has(parent)) });
@@ -146,14 +146,14 @@ export function planBandScene(graph: BadgeProjection, members: readonly NodeKey[
   const anchored = anchor !== null && (membership.has(anchor) || graph.badges.has(anchor)) ? anchor : undefined;
   const tile = options.tile ?? tileMetrics();
   const carets = bandCarets(graph, members, options.expanded);
-  const { tiles, items } = sceneTiles(dag, carets.visible, NO_LINEAGE, tile, carets.open, carets.togglable, true);
+  const { tiles, items } = sceneTiles(dag, carets.visible, NO_LINEAGE, tile, carets.open, carets.togglable);
   const badges = new Map([...tiles.keys()].flatMap((key) => {
     const references = graph.byConsumer.get(key);
     return references ? [[key, references] as const] : [];
   }));
   return { lineage: NO_LINEAGE, tiles, badges, request: { items, maxWidth, history: options.history, anchorKey: anchored, hint: options.hint, tileWidth: tile.width, orientation: "down", pinned: options.pinned, band: { key: options.pinned.key, items: members.map((key) => {
     const node = dag.nodes.get(key)!;
-    const size = tileSize({ foreign: node.scope !== "current", hint: true }, tile);
+    const size = tileSize({ foreign: node.scope !== "current", hint: (dag.children.get(key)?.length ?? 0) > 0 }, tile);
     return { key, ...size, order: node.order, parents: (dag.parents.get(key) ?? []).filter((parent) => membership.has(parent)) };
   }) } } };
 }

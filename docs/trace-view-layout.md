@@ -18,11 +18,22 @@ updates must not capture an arrival placement. Closed components do not expose c
 membership; opening learns those facts while preserving their saved history. See
 [the current acceptance report](layout-hard-gates.md) for measured targets and remaining construction limits.
 
-Output arrival captures the previous visible rectangles. The band and complete folder
-placement attempt to extend that drawing while retaining every common rectangle. Tile hint
-height is reserved before an output exists. Folder pinning includes other bands and ordinary
-grid cells as obstacles, and can extend the canvas. Search exhaustion is reported honestly
-as `pin-search-exhausted`; it is not a proof of geometric infeasibility.
+Output arrival captures the previous visible rectangles. Hint height is present only on
+tiles with children. Retained tiles keep their x positions; their y positions either stay
+fixed or descend by exactly one hint height (16 px), only below a tile in the same column
+that gained its first hint. Tiles above or beside it stay fixed; simultaneous hints cannot
+accumulate a larger descent. Shrinking a hint keeps positions and leaves reusable space.
+Bounded connector repair certifies the resulting drawing before publication, and the scene
+layer glides its geometry change. Folder pinning includes other bands and ordinary grid
+cells as obstacles, and can extend the canvas. Search exhaustion is reported honestly as
+`pin-search-exhausted`; it is not a proof of geometric infeasibility.
+
+Ordinary channel turns use the existing cubic quarter-circle fillets, with a per-turn radius
+up to the cover attachment's 6 px. Track bounds, adjacent runs, and clearance from foreign
+ink constrain the radius; no available clearance leaves a sharp turn. The independent gate
+and ordinary curve motion remain unchanged. Opening a later wrapped cover row can still
+move another band's children by 6 px because track spacing is shared; routing consolidation
+(layout review recommendation 4) will address that separately.
 
 `history-boundary.ts` validates containers, finite bounded coordinates, consumers, and the
 exact raw-to-attached transform before reuse. Invalid history is discarded with

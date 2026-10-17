@@ -17,6 +17,7 @@ import { incrementalBudget, incrementalTree, inReach, usableRetainedRoute } from
 import { forEachPathNumber, mapPathNumbers, pathNumbers } from "./path-data";
 import { extentCost, optimisticCost, rectangleCost } from "./layout-cost-bound";
 import { bandHistorySignature, historyFit, historyRelayoutReason, resizedLayout, resizedTiles } from "./band-history";
+import { rerouteResizedHistory } from "./hint-resize";
 
 export { bandWidthBudget };
 
@@ -53,8 +54,24 @@ function fittedHistory(input: LayoutRequest, options: BandOptions): { readonly h
   // With an attachment, the placed geometry is attached afresh from `layout` (`normalizedHistory`)
   // and never read, so only `layout` is resized. Geometry that cannot be resized in place keeps
   // only its tiles: they hold the band where it was while it is laid out again.
-  const layout = resizedLayout(history.layout, fit.heights);
-  const placed = history.attachment ? history.placed : layout && resizedLayout(history.placed, fit.heights);
+  const members = new Set((input.band?.items ?? input.items).map(item => item.key));
+  const resize = (original: GraphLayout) => {
+    // Remove actual departures before certifying a resized source port. Hidden members
+    // remain history: only absence from the complete band means a node departed.
+    const drawing = [...original.nodes.keys()].every(key => members.has(key)) ? original : retainMembers(original, members);
+    const transformed = resizedLayout(drawing, fit.heights);
+    const retained = input.items.filter(item => drawing.nodes.has(item.key));
+    if (transformed && !geometryGate(transformed, retained, input.band!.key, input.maxWidth)) {
+      // A legal retained wire can still seal the new output's only approach. Try
+      // insertion before choosing this resize over the fixed-rectangle reroutes.
+      const extended = retained.length === input.items.length ? transformed : incrementalTree(input, transformed);
+      if (extended && !geometryGate(attachSingleBand(extended, input), input.items, input.band!.key, input.maxWidth)) return transformed;
+    }
+    return rerouteResizedHistory(input, drawing, fit.heights, false)
+      ?? rerouteResizedHistory(input, drawing, fit.heights, true);
+  };
+  const layout = resize(history.layout);
+  const placed = history.attachment ? history.placed : layout && resize(history.placed);
   if (layout && placed) return { history: { ...history, layout, placed }, resized: true, grew: true };
   return { history: { ...history, layout: resizedTiles(history.layout, fit.heights), placed: resizedTiles(history.placed, fit.heights) }, resized: true, grew: true };
 }
@@ -92,17 +109,23 @@ function anchorKeys(request: LayoutRequest, previous: GraphLayout): readonly str
   return [...found];
 }
 
+/** Keep the existing embedding and only the consumers and junctions belonging to its members. */
+function retainMembers(previous: GraphLayout, keys: ReadonlySet<string>): GraphLayout {
+  const nodes = new Map([...previous.nodes].filter(([key]) => keys.has(key)));
+  const routes = filterRouteConsumers(previous.routes, c => keys.has(c.parent) && keys.has(c.child));
+  const joins = new Set(routes.flatMap(r => [r.from, r.to].filter(e => e.kind === "junction").map(e => e.id)));
+  return { ...previous, nodes, routes, junctions: new Map([...previous.junctions].filter(([key]) => joins.has(key))) };
+}
+
 /** Keep a subset's embedding and trim trailing space; retained leading space has an explicit price. */
 function projected(previous: GraphLayout, request: LayoutRequest): GraphLayout | null {
   const keys = new Set(request.items.map(n => n.key));
   if (!request.items.every(n => previous.nodes.has(n.key))) return null;
-  const nodes = new Map([...previous.nodes].filter(([key]) => keys.has(key)));
-  const routes = filterRouteConsumers(previous.routes, c => keys.has(c.parent) && keys.has(c.child));
-  const joins = new Set(routes.flatMap(r => [r.from, r.to].filter(e => e.kind === "junction").map(e => e.id)));
+  const retained = retainMembers(previous, keys), { nodes, routes } = retained;
   const extent = bandExtent(previous, request.band!.key);
   const first = Math.min(...[...previous.nodes.values()].filter(n => n.key !== request.band!.key).map(n => n.y));
   const bottom = Math.max(0, ...[...nodes.values()].map(n => n.y + n.height), ...routes.flatMap(r => pathNumbers(r.path).filter((_, i) => i % 2)));
-  return { ...previous, nodes, routes, junctions: new Map([...previous.junctions].filter(([key]) => joins.has(key))),
+  return { ...retained,
     height: bottom + spacingFor(request.tileWidth).bottom,
     bandBounds: { left: extent.left, width: extent.width, top: previous.bandBounds?.top ?? (Number.isFinite(first) ? first : 0) }, preferredX: extent.left,
     readingOrder: new Map([...previous.readingOrder].filter(([key]) => keys.has(key))) };
@@ -402,12 +425,27 @@ function layoutBandCandidates(input: LayoutRequest, options: BandOptions): Graph
   // A small gutter reduction can avoid an entire wrapped row. Treat it as another
   // certified construction, not a change to the normal spacing or its lower bound.
   if (!anchors.length && wantsDown && rows) {
+    const space = spacingFor(request.tileWidth), widest = Math.max(...request.items.map(item => item.width));
+    const contentWidth = width - 2 * space.margin;
+    const nextColumns = Math.max(2, Math.floor((contentWidth + space.column) / (widest + space.column)) + 1);
+    const fittingGap = (contentWidth - nextColumns * widest) / (nextColumns - 1);
+    // Hidden members still need routing room when revealed. Keep their existing
+    // compact gutter; fit an extra column only once the complete band is visible.
+    const fullyVisible = request.band!.items.every(item => keys.has(item.key));
     const compactOptions = { ordering: options.ordering, passing: options.passing, channelStyle: "orthogonal" as const,
-      columnGap: spacingFor(request.tileWidth).column * .75 };
+      // Keep one clear passing lane; the complete drawing still needs independent admission.
+      columnGap: fullyVisible && fittingGap >= 2 * space.clearance ? Math.min(space.column * .75, fittingGap) : space.column * .75 };
     const compactRequest = { ...request, history: undefined, band: undefined, maxWidth: width, orientation: "down" as const };
     const bound = downwardBandBound(compactRequest, key, STACK_STEM_ROOM, compactOptions);
-    if (bound && bound.height < rows.height * .9) shelves.push({ name: "compact-down",
-      layout: withPaneBandBounds(layoutLayered(compactRequest, compactOptions), key, request.maxWidth) });
+    // Preserve the existing candidate threshold unless the fitted gutter admits
+    // an extra column that the standard compact construction could not fit.
+    if (bound && bound.height < rows.height
+      && (compactOptions.columnGap < space.column * .75 || bound.height < rows.height * .9)) {
+      const layout = withPaneBandBounds(layoutLayered(compactRequest, compactOptions), key, request.maxWidth);
+      // Fitting an extra tile column is useful only if its routed allocation fits too.
+      if (compactOptions.columnGap >= space.column * .75 || bandExtent(layout, key).width <= request.maxWidth)
+        shelves.push({ name: "compact-down", layout });
+    }
   }
   const history: Candidate[] = [];
   const repairPinned = (layout: GraphLayout | null): GraphLayout | null => {

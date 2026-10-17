@@ -58,7 +58,7 @@ export function repairRouteContacts(layout: GraphLayout, request: LayoutRequest)
   const certify = (drawing: GraphLayout) => geometryGate(drawing, request.items, cover, request.maxWidth);
   const originalFailure = certify(layout);
   if (!originalFailure) return layout;
-  if (originalFailure !== 'route-contact') return null;
+  if (originalFailure !== 'route-contact' && originalFailure !== 'shared-lane') return null;
   let current = layout, probes = MAX_PROBES;
   const seen = new Set<string>();
   for (let iteration = 0; iteration < MAX_REPAIRS && probes > 0; iteration++) {
@@ -84,7 +84,7 @@ export function repairRouteContacts(layout: GraphLayout, request: LayoutRequest)
         if (remaining >= score) continue;
         const failure = certify(next);
         if (!failure) return next;
-        if (failure !== 'route-contact') continue;
+        if (failure !== 'route-contact' && failure !== 'shared-lane') continue;
         chosen = next; score = remaining;
       }
     }

@@ -1,3 +1,4 @@
+import { expectFolderArrivalPinned } from './folder-arrival-contract';
 import { expect, it } from 'vitest';
 import { createDefaultEngine } from '$lib/domain/trace-graph/folder-layout/default-engine';
 import type { FolderLayout } from '$lib/domain/trace-graph/folder-layout/types';
@@ -42,11 +43,5 @@ it('pins arrivals even after their component ledger entry was evicted', () => {
   };
   const before = engine(input(initial));
   const after = engine(input([...initial, node('c', ['a', 'b'], 3)], { ...before, arrivals: new Map() }));
-  expect(after.cells).toEqual(before.cells);
-  for (const [id, graph] of before.graphs) for (const [key, node] of graph.attached.nodes) {
-    const current = after.graphs.get(id)!;
-    const now = current.attached.nodes.get(key)!;
-    expect([now.x + current.origin.x, now.y + current.origin.y, now.width, now.height]).toEqual(
-      [node.x + graph.origin.x, node.y + graph.origin.y, node.width, node.height]);
-  }
+  expectFolderArrivalPinned(before, after);
 });

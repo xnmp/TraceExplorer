@@ -112,6 +112,21 @@ it('rejects a pinned drawing when both real source departures are blocked',()=>{
   expect(repairRouteContacts(layout,request)).toBeNull();
 });
 
+it('repairs a shared departure lane only when the complete pinned drawing clears the gate', () => {
+  const { layout, request } = occupiedDeparture();
+  const shared = { ...layout, routes: [layout.routes[0], { ...layout.routes[1],
+    path: 'M62 20 L62 25 L70 25 L70 120 L110 120 L110 172' }] };
+  const before = structuredClone(shared);
+  expect(geometryGate(shared, request.items, 'a', 140)).toBe('shared-lane');
+  const repaired = repairRouteContacts(shared, request);
+  expect(repaired).not.toBeNull();
+  expect(geometryGate(repaired!, request.items, 'a', 140)).toBeNull();
+  expect(repaired!.nodes).toEqual(before.nodes);
+  expect(repaired!.junctions).toEqual(before.junctions);
+  expect(repaired!.routes.map(({ path, ...route }) => route)).toEqual(before.routes.map(({ path, ...route }) => route));
+  expect(shared).toEqual(before);
+});
+
 it('does not replace an authored curved departure to switch source ports',()=>{
   const {layout,request}=occupiedDeparture();
   const curved={...layout,routes:[{...layout.routes[0],path:layout.routes[0].path.replace('L70 60','C63 60 67 60 70 60')},layout.routes[1]]};

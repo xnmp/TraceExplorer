@@ -1,3 +1,4 @@
+import { expectFolderArrivalPinned } from './folder-arrival-contract';
 import { expect, it } from 'vitest';
 import { createDefaultEngine } from '$lib/domain/trace-graph/folder-layout/default-engine';
 import { folderGeometryGate } from '$lib/domain/trace-graph/folder-layout/geometry-gate';
@@ -17,10 +18,7 @@ it('routes an arrival around a centered ordinary tile within the pane, preservin
   expect(after.size.width).toBeLessThanOrEqual(200);
   expect(folderGeometryGate(after)).toBeNull();
   expect(after.cells).toEqual(before.cells);
-  for (const [id, graph] of before.graphs) for (const [key, n] of graph.attached.nodes) {
-    expect(after.graphs.get(id)!.attached.nodes.get(key)).toMatchObject({ x:n.x, y:n.y, width:n.width, height:n.height });
-    expect(after.graphs.get(id)!.origin).toEqual(graph.origin);
-  }
+  expectFolderArrivalPinned(before, after);
   expect(after.graphs.get('s0:root')!.attached.nodes.has('s0:b')).toBe(true);
 });
 
@@ -50,6 +48,5 @@ it('does not add band padding to ordinary world-coordinate cells during a merge 
   const before = engine(input(false)), after = engine({...input(true),previous:before});
   expect(after.size.width).toBeLessThanOrEqual(200);
   expect(folderGeometryGate(after)).toBeNull();
-  for (const [id,g] of before.graphs) for (const [key,n] of g.attached.nodes)
-    expect(after.graphs.get(id)!.attached.nodes.get(key)).toMatchObject({x:n.x,y:n.y,width:n.width,height:n.height});
+  expectFolderArrivalPinned(before, after);
 });

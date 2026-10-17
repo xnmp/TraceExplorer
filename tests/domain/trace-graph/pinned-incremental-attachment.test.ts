@@ -1,3 +1,4 @@
+import { expectArrivalPinned } from './arrival-contract';
 import { expect, it } from 'vitest';
 import { layoutGraph } from '$lib/domain/trace-graph/layout';
 import { bandHistorySignature } from '$lib/domain/trace-graph/band-layout';
@@ -13,10 +14,7 @@ it('arrival extends a wide committed band without translating its retained tile 
     history: { signature: bandHistorySignature(first), layout, placed } };
   const result = attachSingleBand(layoutGraph(next), next);
   expect(geometryGate(result, next.items, 'root', 640)).toBeNull();
-  for (const [key, was] of placed.nodes) {
-    const now = result.nodes.get(key)!;
-    expect([now.x, now.y, now.width, now.height], key).toEqual([was.x, was.y, was.width, was.height]);
-  }
+  expectArrivalPinned(placed, result);
 });
 
 import { profiles, provenanceSession, sessionComponents } from '../../../layout-eval/provenance-model';
@@ -31,10 +29,7 @@ it('arrival routes clear retained cover ports without rebuilding the committed b
     history: { signature: bandHistorySignature(first), layout, placed } };
   const result = attachSingleBand(layoutGraph(next), next);
   expect(geometryGate(result, next.items, 'root', 454)).toBeNull();
-  for (const [key, was] of placed.nodes) {
-    const now = result.nodes.get(key)!;
-    expect([now.x, now.y, now.width, now.height], key).toEqual([was.x, was.y, was.width, was.height]);
-  }
+  expectArrivalPinned(placed, result);
 });
 
 it.each([['chains', 'i20'], ['variations', 'i34']])('keeps retained %s geometry when an output arrives beyond the pane', (profile, focus) => {
@@ -50,10 +45,7 @@ it.each([['chains', 'i20'], ['variations', 'i34']])('keeps retained %s geometry 
   const next = { ...requestFor({ ...c, nodes: [...nodes, node('placeholder', [focus], 1e6)] }, focus, 360, 96), history: selected };
   const after = commit(next);
   expect(geometryGate(after.placed, next.items, 'root', 360)).toBeNull();
-  for (const [key, was] of selected.placed.nodes) {
-    const now = after.placed.nodes.get(key)!;
-    expect([now.x, now.y, now.width, now.height], key).toEqual([was.x, was.y, was.width, was.height]);
-  }
+  expectArrivalPinned(selected.placed, after.placed);
 });
 
 import { corpus } from '../../../layout-eval/corpus';
@@ -72,6 +64,6 @@ it('removing a failed output preserves the retained routing channel and tile rec
   expect(geometryGate(failed.placed, request.items, 'root', 360)).toBeNull();
   for (const [key, now] of failed.placed.nodes) {
     const was = started.placed.nodes.get(key)!;
-    expect([now.x, now.y, now.width, now.height], key).toEqual([was.x, was.y, was.width, was.height]);
+    expect([now.x, now.y, now.width, now.height], key).toEqual([was.x, was.y, was.width, request.items.find(n => n.key === key)!.height]);
   }
 });

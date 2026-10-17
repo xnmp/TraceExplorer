@@ -1,3 +1,4 @@
+import { expectFolderArrivalPinned } from './folder-arrival-contract';
 import { expect, it } from 'vitest';
 import { createDefaultEngine } from '$lib/domain/trace-graph/folder-layout/default-engine';
 import type { FolderLayout } from '$lib/domain/trace-graph/folder-layout';
@@ -20,11 +21,7 @@ it.each(Array.from({ length: 20 }, (_, index) => index + 1))('preserves every re
     const input = { ...base, open: new Map([...base.open].map(([id, stack]) => [id, { ...stack, expanded: new Map(stack.members.map(key => [key, true])) }])) };
     const next = engine(input);
     expect(folderGeometryGate(next), `arrival ${i}`).toBeNull();
-    if (previous) expect(next.cells, `retained folder cells, arrival ${i}`).toEqual(previous.cells);
-    if (previous) for (const [key, was] of previous.graphs.get('s0:root')!.attached.nodes) {
-      const now = next.graphs.get('s0:root')!.attached.nodes.get(key)!;
-      expect([now.x, now.y, now.width, now.height], `${key}, arrival ${i}`).toEqual([was.x, was.y, was.width, was.height]);
-    }
+    if (previous) expectFolderArrivalPinned(previous, next);
     if (seed === 12 && i === 10) {
       // Free the new parent's departure by moving straight connector tails;
       // curved attachment headers and logical route identities remain intact.

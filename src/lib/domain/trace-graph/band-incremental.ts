@@ -25,6 +25,7 @@ import { ARROW, JUNCTION_BERTH, LANE_SEPARATION, PORT_BERTH, spacingFor, STACK_S
 import { axisOf, berthsOf, paintedSegments, distanceToTile, distanceToSegment, grazesTile, INTO_JUNCTION, INTO_TILE, leavingRunFrom, routeEnds, shallowRun, SHALLOW_RUN, TILE_GRAZE, type Berth, type Ends } from "./route-contacts";
 import { bandExtent, roundedStem } from "./band-geometry";
 import { channelCornerRadius, channelInk } from './channel-corners';
+import { pinnedBandExtent } from './pinned-band-extent';
 import { intersectsTile, overlapLength, routeBounds, segments, type Segment } from "./layout-quality";
 import { orthogonalRoute, LANE_TOLERANCE, NEAR_LANE, type AxisRun, type ForeignLanes, type GridSearch } from "./orthogonal-route";
 import { JUNCTION_CLEARANCE } from "./connector-ink";
@@ -699,18 +700,18 @@ function retainedSegments(route: PlacedRoute): readonly Segment[] {
  * The retained routes' segments, indexed, memoized per previous layout for the last list of
  * routes kept from it (the same routes, with the same paths and sources, give the same index).
  */
-const retainedIndexes = new WeakMap<GraphLayout, { readonly routes: readonly PlacedRoute[]; readonly keys: readonly string[]; readonly index: LaneIndex }>();
-function retainedIndex(previous: GraphLayout, kept: readonly PlacedRoute[]): LaneIndex {
+const retainedIndexes = new WeakMap<GraphLayout, { readonly routes: readonly PlacedRoute[]; readonly keys: readonly string[]; readonly index: LaneIndex; readonly targetJoin?: string }>();
+function retainedIndex(previous: GraphLayout, kept: readonly PlacedRoute[], targetJoin?: string): LaneIndex {
   const keys = kept.map(r => `${r.path}\u0001${sourceKey(r.from.kind, r.from.id)}`);
   const cached = retainedIndexes.get(previous);
-  if (cached && cached.routes.length === kept.length && kept.every((r, i) => r === cached.routes[i] && keys[i] === cached.keys[i])) return cached.index;
+  if (cached && cached.targetJoin === targetJoin && cached.routes.length === kept.length && kept.every((r, i) => r === cached.routes[i] && keys[i] === cached.keys[i])) return cached.index;
   const index = new LaneIndex();
   for (const r of kept) { const ss = retainedSegments(r); index.add(ss, sourceKey(r.from.kind, r.from.id), routeEnds(r, ss, previous.nodes, previous.junctions)); }
   // The dots the kept routes reach.
   const dots = new Set<string>();
   for (const r of kept) for (const end of [r.from, r.to]) if (end.kind === "junction") dots.add(end.id);
-  for (const id of dots) { const j = previous.junctions.get(id); if (j && Number.isFinite(j.x) && Number.isFinite(j.y)) index.addDot(point(j.x, j.y)); }
-  retainedIndexes.set(previous, { routes: kept, keys, index });
+  for (const id of dots) { const j = previous.junctions.get(id); if (id !== targetJoin && j && Number.isFinite(j.x) && Number.isFinite(j.y)) index.addDot(point(j.x, j.y)); }
+  retainedIndexes.set(previous, { routes: kept, keys, index, targetJoin });
   return index;
 }
 
@@ -1278,6 +1279,64 @@ function coverStemFor(request: LayoutRequest, cover: PlacedNode): (points: reado
   };
 }
 
+/** Reconnect one retained wire after a hint changes a port or obstructs its old path.
+ * Only the wire changes. The caller certifies the complete drawing after all resizes/insertions. */
+export function rerouteRetainedRoute(request: LayoutRequest, previous: GraphLayout, routeId: string,
+  budget: IncrementalBudget = incrementalBudget(), paneLeft = 0): GraphLayout | null {
+  const route = previous.routes.find(r => r.id === routeId);
+  if (!route || route.from.kind !== "node") return null;
+  const from = previous.nodes.get(route.from.id), to = route.to.kind === "node" ? previous.nodes.get(route.to.id) : undefined;
+  const join = route.to.kind === "junction" ? previous.junctions.get(route.to.id) : undefined;
+  const cover = previous.nodes.get(request.band?.key ?? "");
+  if (!from || !(to || join) || !cover || from.key === to?.key || previous.nodes.size > INCREMENTAL_LIMIT
+    || [...previous.nodes.values()].some(n => ![n.x, n.y, n.width, n.height].every(inReach))) return null;
+  // Only the destination dot permits convergence; every other dot and all retained ink
+  // remain obstacles. Complete publication still needs the independent geometry gate.
+  const kept = join ? previous.routes : previous.routes.filter(r => r !== route), lanes = new LaneIndex(retainedIndex(previous, kept, join?.id));
+  const futureSources = new Set(request.items.filter(item => !previous.nodes.has(item.key)).flatMap(item => item.parents));
+  for (const node of previous.nodes.values()) if (futureSources.has(node.key)) lanes.reserveDeparture(node);
+  const scene: Scene = { tiles: new TileIndex([...previous.nodes.values()]), extra: to ?? from,
+    width: Math.max(request.maxWidth, previous.width), paneEdges: { left: paneLeft, right: request.maxWidth },
+    clearance: spacingFor(request.tileWidth).clearance, header: cover.height, bottomAbove: (to ?? join)!.y - 20,
+    cover: cover.key, coverStem: coverStemFor(request, cover), grain: FINE_GRAIN };
+  const replace = (points: readonly Point[]) => ({ ...previous, routes: previous.routes.map(r => r === route ? { ...r, path: path(points) } : r) });
+  const effort = secondChance(budget);
+  const ports = [[point(from.x + from.width / 2, from.y + from.height), point(from.x + from.width / 2, from.y + from.height + 2)]];
+  if (from.key !== cover.key) ports.push([point(from.x + from.width, from.y + from.height / 2), point(from.x + from.width + 2, from.y + from.height / 2)]);
+  if (to) {
+    const wiring = gridWireAll([from], to, scene, lanes, to.key, effort)
+      ?? wire([from], to, scene, lanes, to.key, { index: 0 });
+    if (wiring) return replace(wiring.routes[0].points);
+    // The top approach can be sealed by the new hint. The same grid can reach the
+    // tile's other real input port without moving either endpoint rectangle.
+    const goal = point(to.x - 2 * ARROW.length, to.y + to.height / 2), source = sourceKey("node", from.key);
+    for (const [port, start] of ports) {
+      const grid = routeAroundBerths(start, goal, [...previous.nodes.values()], scene.width, lanes, source, effort, { bounds: scene.paneEdges });
+      if (!grid) continue;
+      const points = [port, ...grid, point(to.x - ARROW.length, goal.y)], pieces = pathSegments(points);
+      if (!scene.tiles.crosses(pieces) && !scene.tiles.grazes(pieces, from) && !lanes.conflicts(pieces, source, INTO_TILE)) return replace(points);
+    }
+    return null;
+  }
+  const source = sourceKey("node", from.key);
+  // Retain the existing convergence geometry (including its ordinary cubic). Search
+  // back to a point before the dot's berth, so unrelated lane checks never have to
+  // pretend that the junction's intentionally converging inputs are foreign contacts.
+  const commands = pathCommands(route.path), raw = [...route.path.matchAll(/[MLC][^MLC]*/g)].map(m => m[0]);
+  if (!commands || commands.length !== raw.length) return null;
+  const anchors = commands.map((command, index) => ({ index, goal: point(command.values.at(-2)!, command.values.at(-1)!) }))
+    .filter(({ index, goal }) => index > 0 && Math.hypot(goal.x - join!.x, goal.y - join!.y) >= 2 * PORT_BERTH).reverse();
+  const approaches = [{ goal: point(join!.x, join!.y), tail: '' }, ...anchors.map(({ index, goal }) => ({ goal, tail: raw.slice(index + 1).join('') }))];
+  for (const { goal, tail } of approaches) for (const [port, start] of ports) {
+    const grid = routeAroundBerths(start, goal, [...previous.nodes.values()], scene.width, lanes, source, effort, { bounds: scene.paneEdges });
+    if (!grid) continue;
+    const nextPath = path([port, ...grid]) + ' ' + tail, pieces = segments(nextPath);
+    if (!scene.tiles.crosses(pieces) && !scene.tiles.grazes(pieces, from) && !lanes.conflicts(pieces, source, INTO_JUNCTION))
+      return { ...previous, routes: previous.routes.map(r => r === route ? { ...r, path: nextPath } : r) };
+  }
+  return null;
+}
+
 /** Tile pins do not pin wires. Free an occluded source port by rerouting a blocking
  * terminal connector while preserving every retained rectangle and logical edge. */
 function freeBlockedPorts(request: LayoutRequest, previous: GraphLayout, budget: IncrementalBudget): GraphLayout {
@@ -1487,13 +1546,8 @@ function buildIncrementalTree(request: LayoutRequest, previous: GraphLayout, bud
   const placed = insertWithPortRepair(request, previous, budget, undefined, policy);
   if (!placed) return null;
   const key = request.band!.key;
-  // Pinned ink cannot be centered to make room for cosmetic allocation padding.
-  // Spend only the actual free margin on either side, retaining the painted
-  // arrow half-width just as the other pane-bounded candidates do.
-  const raw = bandExtent({ ...placed, bandBounds: undefined }, key, 0);
-  const padding = Math.max(ARROW.width / 2, Math.min(8, raw.left, placed.width - raw.left - raw.width));
-  const extent = bandExtent({ ...placed, bandBounds: undefined }, key, padding);
-  if (extent.left < 0 || extent.left + extent.width > placed.width) return null;
+  const extent = pinnedBandExtent(placed, key);
+  if (!extent) return null;
   return { ...placed, bandBounds: { left: 0, width: extent.left + extent.width,
     top: placed.nodes.get(key)!.height + (request.history?.attachment?.placement.stemRoom ?? STACK_STEM_ROOM) }, preferredX: 0 };
 }

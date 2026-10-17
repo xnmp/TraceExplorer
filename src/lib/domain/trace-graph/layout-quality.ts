@@ -1584,8 +1584,12 @@ export const CROSSING_WEIGHT = HEIGHT_WEIGHT * CROSSING_HEIGHT_TILES;
  */
 export const MIXED_DIRECTIONS_WEIGHT = 1;
 
-/** Moving every familiar tile costs five tile-widths of height, even for short moves. */
-export const MOVED_FRACTION_WEIGHT = 5 * HEIGHT_WEIGHT;
+/**
+ * Moving every familiar tile costs seven tile-widths of height, even for short moves.
+ * Calibrated with actual hint heights and fitted gutters to preserve the existing
+ * main-relative moved-fraction cap (docs/layout-hard-gates.md).
+ */
+export const MOVED_FRACTION_WEIGHT = 7 * HEIGHT_WEIGHT;
 
 export interface Weights {
     readonly stability: number;

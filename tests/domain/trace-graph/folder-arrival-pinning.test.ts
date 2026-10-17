@@ -1,3 +1,4 @@
+import { expectFolderArrivalPinned } from './folder-arrival-contract';
 import { expect, it } from 'vitest';
 import { createDefaultEngine } from '$lib/domain/trace-graph/folder-layout/default-engine';
 import { folderGeometryGate } from '$lib/domain/trace-graph/folder-layout/geometry-gate';
@@ -24,7 +25,7 @@ it.each([
   };
   const before = engine(input(initial)), after = engine(input([...initial, output], before));
   const now = rectangles(after);
-  for (const [key, rect] of rectangles(before)) expect(now.get(key), key).toEqual(rect);
+  expectFolderArrivalPinned(before, after);
   expect(folderGeometryGate(after)).toBeNull();
 
   const fromClone = createDefaultEngine()(input([...initial, output], structuredClone(before)));
@@ -42,7 +43,7 @@ it.each([
 
   const next = engine(input([...initial, output, node('next', [output.key], output.order + 1)], restored));
   const nextRects = rectangles(next);
-  for (const [key, rect] of now) expect(nextRects.get(key), `second arrival: ${key}`).toEqual(rect);
+  expectFolderArrivalPinned(after, next);
   expect(folderGeometryGate(next)).toBeNull();
 });
 
@@ -53,7 +54,7 @@ it('appends new ordinary files without repacking the retained folder', () => {
   const before = engine(input);
   const nextInput = { ...input, items: [{ id: 'new-file', kind: 'file' as const }, ...input.items], previous: before };
   const after = engine(nextInput), now = rectangles(after);
-  for (const [key, rect] of rectangles(before)) expect(now.get(key), key).toEqual(rect);
+  expectFolderArrivalPinned(before, after);
   expect(after.cells.has('new-file')).toBe(true);
   expect(folderGeometryGate(after)).toBeNull();
   expect(rectangles(createDefaultEngine()(structuredClone(nextInput)))).toEqual(now);
@@ -70,7 +71,7 @@ it('seeds a newly arrived disconnected root before routing its joining output', 
   };
   const before = engine(input(nodes)), after = engine(input([...nodes, node('r2', [], 2), node('join', ['a', 'r2'], 3)], before));
   const now = rectangles(after);
-  for (const [key, rect] of rectangles(before)) expect(now.get(key), key).toEqual(rect);
+  expectFolderArrivalPinned(before, after);
   expect(after.graphs.get('s0:root')!.attached.nodes.has('s0:r2')).toBe(true);
   expect(after.graphs.get('s0:root')!.attached.nodes.has('s0:join')).toBe(true);
   expect(folderGeometryGate(after)).toBeNull();
@@ -88,6 +89,25 @@ it('routes a retained merge around a full-width cell boundary without widening t
   expect(after.size.width).toBeLessThanOrEqual(200);
   for (const graph of after.graphs.values()) expect(graph.origin.x + graph.attached.width).toBeLessThanOrEqual(200);
   const now=rectangles(after);
-  for(const [key,rect] of rectangles(before)) expect(now.get(key),key).toEqual(rect);
+  expectFolderArrivalPinned(before, after);
+  expect(folderGeometryGate(after)).toBeNull();
+});
+
+it('preserves the host cover height when a leaf gains its first hint', () => {
+  const engine = createDefaultEngine(), tile = tileMetrics(96);
+  const initial = [node('root'), node('a', ['root'], 1)];
+  const input = (members: typeof initial, previous?: FolderLayout) => {
+    const folder = makeFolder({ stacks: [members, [node('root'), node('child', ['root'], 1)]], files: 1 });
+    const base = folderInput(folder, { open: ['s0:root', 's1:root'], width: 200, tile,
+      grid: { cellWidth: 140, cellHeight: 163, gap: 6 }, previous });
+    return { ...base, open: new Map([...base.open].map(([id, stack]) =>
+      [id, { ...stack, expanded: new Map(stack.members.map(key => [key, true])) }])) };
+  };
+  const before = engine(input(initial)), after = engine(input([...initial, node('b', ['a'], 2)], before));
+  expect(before.graphs.get('s0:root')!.attached.nodes.get('s0:root')!.height).toBe(163);
+  expect(after.graphs.get('s0:root')!.attached.nodes.get('s0:root')!.height).toBe(163);
+  expect(after.graphs.get('s0:root')!.attached.nodes.get('s0:a')!.height)
+    .toBe(before.graphs.get('s0:root')!.attached.nodes.get('s0:a')!.height + 16);
+  expectFolderArrivalPinned(before, after);
   expect(folderGeometryGate(after)).toBeNull();
 });
