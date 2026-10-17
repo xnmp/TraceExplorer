@@ -17,6 +17,7 @@
 import { solveOrderedTracks } from "./ordered-tracks";
 import { solveSeparation, type Separation } from "./separation";
 import { channelInk, roundChannelPath, type ChannelInk } from "./channel-corners";
+import { importRoutingPlan, tilePort, turnWindow } from "./routing-plan";
 import { boundedJunctions } from "./bounded-junctions";
 import { layoutBand, type BandOptions } from "./band-layout";
 import type { ConsumerSet } from "./route-consumers";
@@ -1014,6 +1015,16 @@ function layoutPass(prepared: Prepared, extra: { readonly left: number; readonly
     more.set(key, child);
   };
   const sourceRoot = new Map<string, number>();
+  // Ports are expressed in their row-local frame until vertical placement. The
+  // same tile equation supplies the final emitter start, rather than a second
+  // reconstruction from source centres and row bottoms.
+  const departureKeys = [...new Set(plan.routes.flatMap(route => route.from.kind === "node" ? [route.from.id] : []))];
+  const departurePlan = importRoutingPlan({ nodes: new Map(departureKeys.map(key => {
+    const column = columns.get(key)!, tile = items.get(key)!;
+    return [key, { key, x: column.x, y: 0, width: tile.width, height: tile.height, row: column.row, band: column.band }];
+  })), junctions: new Map(), routes: [], departures: departureKeys });
+  const sourcePorts = new Map(departurePlan.ports.map(port => [port.owner.id, port]));
+  const sourcePort = (key: string) => sourcePorts.get(key)!;
   /** Lane claims by source, then rounded end x, then row. */
   const claimed = new Map<string, Map<number, Map<number, string | null>>>();
   /** Per inner gap, per source: the sum and count of the x its routes wanted there, which orders its lanes. */
@@ -1024,7 +1035,7 @@ function layoutPass(prepared: Prepared, extra: { readonly left: number; readonly
     const known = sourceRoot.get(source);
     if (known !== undefined) return known;
     const node: PassNode = endpoint.kind === "node"
-      ? { parent: -1, source, row: columns.get(endpoint.id)!.row, x: center(endpoint.id), from: { row: columns.get(endpoint.id)!.row, edge: "bottom" }, own: NO_JUNCTIONS, tile: `${endpoint.id}` }
+      ? { parent: -1, source, row: columns.get(endpoint.id)!.row, x: sourcePort(endpoint.id).point.x, from: { row: columns.get(endpoint.id)!.row, edge: "bottom" }, own: NO_JUNCTIONS, tile: `${endpoint.id}` }
       : { parent: -1, source, row: placed.get(endpoint.id)!.channel, x: placed.get(endpoint.id)!.x, from: { junction: endpoint.id }, own: new Set([endpoint.id]) };
     trie.push(node);
     sourceRoot.set(source, trie.length - 1);
@@ -1643,7 +1654,7 @@ function layoutPass(prepared: Prepared, extra: { readonly left: number; readonly
   // where its tracks then need more room.
   const portBerth: number[] = [], nearbyPort: boolean[] = [];
   const portsByRow = new Map<number, { x: number; source: string }[]>();
-  for (const item of trie) if (item.parent < 0 && item.tile !== undefined) append(portsByRow, item.row, { x: item.x, source: item.source });
+  for (const item of trie) if (item.parent < 0 && item.tile !== undefined) append(portsByRow, item.row, { x: sourcePort(item.tile).point.x, source: item.source });
   for (const item of allLegs) {
     if (item.zone !== 0 || portBerth[item.channel] || !bends(item)) continue;
     const lo = Math.min(item.x1, item.x2, item.dogleg?.x ?? Infinity) - PORT_BERTH, hi = Math.max(item.x1, item.x2, item.dogleg?.x ?? -Infinity) + PORT_BERTH;
@@ -1784,10 +1795,7 @@ function layoutPass(prepared: Prepared, extra: { readonly left: number; readonly
     const foreign = ink.get(item.channel)!.filter(other => other.item.source !== item.source).flatMap(other => other.runs);
     const centers = Array.from({ length: tracksIn(item.channel, item.zone) }, (_, track) => round(trackCenter(item, track)));
     const path = roundChannelPath(sharp.get(item)!, foreign, corner => {
-      // Each track owns only its half of the space to the next track, even when
-      // the neighbouring route belongs to this source or occupies another x span.
-      const neighbours = centers.filter(y => y !== corner.y).map(y => Math.abs(y - corner.y) / 2);
-      return Math.max(0, Math.min(corner.y - box.top, box.bottom - corner.y, ...neighbours));
+      return turnWindow(corner, box, centers).upper!;
     });
     return path.replace(/^M[^LC]*/, '');
   };
@@ -1805,8 +1813,8 @@ function layoutPass(prepared: Prepared, extra: { readonly left: number; readonly
     if (item.parent >= 0) { const into = nodeLegs[node]!; return `M${round(into.x1)} ${round(at(into.from))}`; }
     if ("junction" in item.from) return `M${round(item.x)} ${round(at(item.from))}`;
     const tile = nodes.get(item.tile!)!;
-    const bottom = rows[tile.row].bottom, x = round(item.x);
-    return `M${x} ${round(tile.y + tile.height)}${tile.y + tile.height < bottom ? ` L${x} ${round(bottom)}` : ""}`;
+    const bottom = rows[tile.row].bottom, port = tilePort(tile, sourcePort(item.tile!).side), x = round(port.point.x);
+    return `M${x} ${round(port.point.y)}${port.point.y < bottom ? ` L${x} ${round(bottom)}` : ""}`;
   };
   // The crossing into a node's row and the run through it.
   const piece = (node: number): string => {

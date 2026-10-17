@@ -4,11 +4,12 @@ import { pathTokens } from './path-data';
 import { distanceToTile, distanceToSegment } from './route-contacts';
 import { crossing, type Segment } from './layout-quality';
 import type { Point } from './path-sampling';
+import { importPathGeometry, FILLET_RADIUS, type NativeInk } from './routing-plan';
 
 const rect = (a: Point, b: Point) => ({ x: Math.min(a.x, b.x), y: Math.min(a.y, b.y), width: Math.abs(a.x - b.x), height: Math.abs(a.y - b.y) });
 
 type Cubic = readonly [Point, Point, Point, Point];
-export type ChannelInk = Segment | Cubic;
+export type ChannelInk = NativeInk;
 const bounds = (points: readonly Point[]) => {
   let x = Infinity, y = Infinity, right = -Infinity, bottom = -Infinity;
   for (const p of points) {
@@ -34,16 +35,7 @@ function split(p: Cubic): readonly [Cubic, Cubic] {
 
 /** Native M/L/C primitives retain foreign curves exactly, including their control points. */
 export function channelInk(path: string): ChannelInk[] {
-  const tokens = pathTokens(path), out: ChannelInk[] = [];
-  let i = 0, from: Point = { x: 0, y: 0 };
-  const point = (): Point => ({ x: tokens[i++] as number, y: tokens[i++] as number });
-  while (i < tokens.length) {
-    const command = tokens[i++];
-    if (command === 'M') from = point();
-    else if (command === 'L') { const to = point(); out.push([from, to]); from = to; }
-    else if (command === 'C') { const a = point(), b = point(), to = point(); out.push([from, a, b, to]); from = to; }
-  }
-  return out;
+  return [...importPathGeometry(path).ink];
 }
 
 /** An upper bound within 1e-7px of the sharp segment's true distance to foreign ink. */
@@ -93,7 +85,7 @@ function clearsCurve(curve: Cubic, ink: ChannelInk, clearance: number): boolean 
  * The square is a cheap sufficient test; tight turns certify the actual quarter cubic. */
 export function channelCornerRadius(before: Point, corner: Point, after: Point, foreign: readonly ChannelInk[], cap: number): number {
   const incoming = Math.hypot(corner.x - before.x, corner.y - before.y), outgoing = Math.hypot(after.x - corner.x, after.y - corner.y);
-  const limit = Math.min(6, cap, incoming / 2, outgoing / 2);
+  const limit = Math.min(FILLET_RADIUS, cap, incoming / 2, outgoing / 2);
   if (!(limit > 0)) return 0;
   const ux = (corner.x - before.x) / incoming, uy = (corner.y - before.y) / incoming;
   const vx = (after.x - corner.x) / outgoing, vy = (after.y - corner.y) / outgoing;

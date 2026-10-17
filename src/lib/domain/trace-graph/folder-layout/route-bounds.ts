@@ -4,22 +4,16 @@
  * padding covers the arrowhead and stroke, as the DOM measurement it replaces did (12 px).
  */
 import type { GridRect } from "../grid-flow";
-import { forEachPathNumber } from "../path-data";
+import { importPathGeometry } from "../routing-plan";
 
 export const ROUTE_BOUNDS_PADDING = 12;
 
 /** The padded control-point bounds of `path`, translated by (dx, dy); null for a path with no point. */
 export function routeBounds(path: string, dx = 0, dy = 0, padding = ROUTE_BOUNDS_PADDING): GridRect | null {
-  let left = Infinity, top = Infinity, right = -Infinity, bottom = -Infinity, index = 0, x = 0;
-  forEachPathNumber(path, (value) => {
-    if (index++ % 2 === 0) { x = value + dx; return; }
-    const y = value + dy;
-    if (x < left) left = x;
-    if (x > right) right = x;
-    if (y < top) top = y;
-    if (y > bottom) bottom = y;
-  });
-  if (!(left <= right) || !(top <= bottom)) return null;
+  if (!path.trim()) return null;
+  const hull = importPathGeometry(path).hull;
+  // Preserve the old translate-before-padding arithmetic exactly.
+  const left = hull.left + dx, top = hull.top + dy, right = hull.right + dx, bottom = hull.bottom + dy;
   return { x: left - padding, y: top - padding, width: right - left + 2 * padding, height: bottom - top + 2 * padding };
 }
 
