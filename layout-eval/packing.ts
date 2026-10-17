@@ -39,7 +39,7 @@ for (const width of [360, 454, 640, 900, 1400]) for (const imagePx of [48, 64, 9
       rows.push({ width, imagePx, engine, kind: 'static', groups: fixtures.length, rowHeight: packed.rowHeight, metrics: packed.metrics });
     } else {
       const packed = runEngine(fixtures, fixtures.map(focusOf), gridWidth, tile, coverHeight, null, folderEngine);
-      rows.push({ width, imagePx, engine, kind: 'static', groups: fixtures.length, rowHeight: packed.rowHeight, metrics: packed.metrics });
+      rows.push({ independentFailure: packed.independentFailure, width, imagePx, engine, kind: 'static', groups: fixtures.length, rowHeight: packed.rowHeight, metrics: packed.metrics });
     }
     const tour = Array.from({ length: Math.min(2, columns) }, (_, i) => prefix(screenshot, i));
     let previous: GraphLayout[] | undefined, committed: FolderLayout | null = null;
@@ -48,12 +48,13 @@ for (const width of [360, 454, 640, 900, 1400]) for (const imagePx of [48, 64, 9
       const focus = name ? `g${active}:${name}` : null;
       if (focus && previous && !previous[active].nodes.has(focus)) throw new Error('packing tour selected an unavailable tile');
       const focuses = tour.map((_, i) => i === active ? focus : null);
+      let revisited = false, displayKey: string | undefined, independentFailure: string | null | undefined;
       let scene: { placed: GraphLayout[]; rowHeight: number; metrics: ReturnType<typeof measure> };
       if (engine === 'baseline') { const rs = tour.map((c, i) => pin(requestFor(c, focuses[i], gridWidth, imagePx), i)); scene = pack(rs, rs.map(baselineLayout)); }
-      else { const run = runEngine(tour, focuses, gridWidth, tile, coverHeight, committed, folderEngine); committed = run.layout; scene = run; }
+      else { const run = runEngine(tour, focuses, gridWidth, tile, coverHeight, committed, folderEngine); committed = run.layout; scene = run; revisited = run.revisited; displayKey = run.displayKey; independentFailure = run.independentFailure; }
       const a = focus && previous?.[active].nodes.get(focus), b = focus && scene.placed[active].nodes.get(focus);
       const clickDisplacement = a && b ? Math.hypot(a.x - b.x, a.y - b.y) : 0;
-      rows.push({ width, imagePx, engine, kind: 'tour', step, focus, groups: tour.length, rowHeight: scene.rowHeight, metrics: scene.metrics, clickDisplacement, decision: scene.placed[active].decision });
+      rows.push({ independentFailure, width, imagePx, engine, revisited, displayKey, kind: 'tour', step, focus, groups: tour.length, rowHeight: scene.rowHeight, metrics: scene.metrics, clickDisplacement, decision: scene.placed[active].decision });
       previous = scene.placed;
     }
   } catch (e) { rows.push({ width, imagePx, engine, error: String(e) }); }

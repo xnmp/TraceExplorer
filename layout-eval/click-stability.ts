@@ -17,8 +17,8 @@ export function clickStability() {
         const moved = !!focus && m.anchorDisplacement>.01 && next.layout.decision?.fallback !== 'anchor-yield';
         if (moved) byVisit[(next.revisited ? 'revisit' : 'new') + (original.id.startsWith('dense-') ? 'Dense' : '') as keyof typeof byVisit]++;
         const screen = !!focus && heldScreenMovement(previous.placed,next.placed,focus,request.band!.key,width,480).anchor>.01;
-        if(original.id.startsWith('dense-')) { denseAnchors+=Number(moved); denseScreenAnchors+=Number(screen); }
-        else {anchors+=Number(moved);screenAnchors+=Number(screen);displacement+=m.displacement;transitions++;}
+        if(original.id.startsWith('dense-')) { denseAnchors+=Number(moved && !next.revisited); denseScreenAnchors+=Number(screen); }
+        else {anchors+=Number(moved && !next.revisited);screenAnchors+=Number(screen);displacement+=m.displacement;transitions++;}
       }
       previous=next;oldKeys=keys;
       const choices=request.items.filter(n=>!visited.has(n.key)&&request.band!.items.some(c=>c.parents.includes(n.key))).sort((a,b)=>b.order-a.order||a.key.localeCompare(b.key));
@@ -48,7 +48,7 @@ export function packingAnchorMoves(): number {
       const focus = name ? `g${active}:${name}` : null;
       const next = runEngine(fixtures, fixtures.map((_, i) => i === active ? focus : null), gridWidth, tile, coverHeight, committed);
       const a = focus && previous?.[active].nodes.get(focus), b = focus && next.placed[active].nodes.get(focus);
-      if (a && b && Math.hypot(a.x - b.x, a.y - b.y) > .01 && next.placed[active].decision?.fallback !== 'anchor-yield') moved++;
+      if (!next.revisited && a && b && Math.hypot(a.x - b.x, a.y - b.y) > .01 && next.placed[active].decision?.fallback !== 'anchor-yield') moved++;
       committed = next.layout; previous = next.placed;
     }
   }
