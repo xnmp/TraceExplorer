@@ -71,5 +71,30 @@
       "gate": null
     }
   ],
-  "frozenAdditionalProbe": "Extended local offsets up to96px recovered one additional old contact candidate; no production change made because bounded budget and sibling retries already meet click targets and this probe is not a universal routing proof."
+  "frozenAdditionalProbe": "Extended local offsets up to96px recovered one additional old contact candidate; no production change made because bounded budget and sibling retries already meet click targets and this probe is not a universal routing proof.",
+  "final": {
+    "productionRevision": "8f3a21cb282434e516196494f7b3db5b447bcc3d",
+    "nonRestoreMoves": {
+      "broad": 15,
+      "dense": 57,
+      "packing": 0
+    },
+    "restores": {
+      "broad": 1,
+      "dense": 9,
+      "packing": 0
+    },
+    "addedCategories": {
+      "construction": 8,
+      "gateRejected": 4,
+      "restores": 10
+    },
+    "provenInfeasibleHeldRows": 0,
+    "evidence": "pass7-anchor-final.json",
+    "inspection": "Rendered and inspected final n38 before-placement and n60 rejected-placement SVGs again. They retain the same cramped corridor geometry as the budget-only maximum point; no impossibility proof follows.",
+    "svgs": [
+      "pass7-final-unconstructed-before.svg",
+      "pass7-final-contact-rejected.svg"
+    ]
+  }
 }

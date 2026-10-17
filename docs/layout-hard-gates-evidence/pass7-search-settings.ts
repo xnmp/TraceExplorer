@@ -1,3 +1,6 @@
+/** Reproduction: instrument an archive of 5d3af5e into /tmp/layout-search-base first.
+ * bun this-script.ts medium 2 2; bun this-script.ts maximum 8 4.
+ * Never use the final production checkout as the baseline: it already includes these fixes. */
 import {cp,readFile,writeFile} from 'node:fs/promises';
 const [name,scale,retries]=process.argv.slice(2);const k=Number(scale),n=Number(retries);const root='/tmp/layout-search-'+name;
 await cp('/tmp/layout-search-base',root,{recursive:true});
