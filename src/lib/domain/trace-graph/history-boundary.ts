@@ -124,9 +124,10 @@ function historyValues(history: BandHistory, visit: Visit): boolean {
     return true;
   };
   const drawing = (layout: GraphLayout): boolean => {
+    if (!visit(layout)) return false;
     const d=layout.decision;
     if (!visit(d) || d && (!visit(d.candidate) || !visit(d.stability) || !visit(d.fallback) || !visit(d.relayout) || !list(d.partition))) return false;
-    if (!visit(layout) || !visit(layout.orientation) || !visit(layout.width) || !visit(layout.height) || !visit(layout.pinnedViolation)
+    if (!visit(layout.orientation) || !visit(layout.width) || !visit(layout.height) || !visit(layout.pinnedViolation)
       || !visit(layout.nodes) || !visit(layout.nodes.size)) return false;
     for (const [key, n] of layout.nodes) if (!visit(key) || !visit(n) || !visit(n.key) || !visit(n.x) || !visit(n.y)
       || !visit(n.width) || !visit(n.height) || !visit(n.row) || !visit(n.band)) return false;
@@ -207,5 +208,5 @@ export function validHistory(value: unknown, cover: string): value is BandHistor
   rememberHistory(value as unknown as BandHistory, cover);
   return true;
 
-  } finally { endStage(); }
+  } catch { return false; } finally { endStage(); }
 }
