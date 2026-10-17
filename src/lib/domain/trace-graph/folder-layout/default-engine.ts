@@ -26,6 +26,7 @@ import { layoutStage, countLayoutWork } from '../layout-profile';
  * separately when a folder fallback changes attachment. A world placement has no band transform
  * to replay; its exact local drawing supplies history, and its canonical request supplies caching.
  */
+import { TRACK_HEIGHT, STACK_STEM_ROOM } from "../metrics";
 import type { NodeKey } from "../model";
 import { gridFlow, type GridItem, type GridMetrics, type GridRect } from "../grid-flow";
 import { attachPackedBand, bandExtent, bandPlacements, packedGridFlow } from "../band-geometry";
@@ -33,7 +34,8 @@ import { BAND_DEFAULTS, bandHistorySignature, type BandOptions } from "../band-l
 import { folderGridGeometry, gridPins, type FolderGridGeometry } from "../folder-grid";
 import { layoutGraph, type BandHistory, type GraphLayout, type LayoutRequest, type LayoutItem } from "../layout";
 import { layoutSignature } from "../layout-signature";
-import { isLayoutShape } from "../history-boundary";
+import { pathNumbers } from "../path-data";
+import { isLayoutShape, validHistory } from "../history-boundary";
 import { recallDisplay, rememberDisplay, displayIdentity } from "./display-memory";
 import { withCellFootprints } from "./cell-footprints";
 import { folderGeometryGate } from "./geometry-gate";
@@ -49,6 +51,7 @@ import type { ArrivalHistory, FolderGraph, FolderLayout, FolderLayoutEngine, Fol
 export interface PlannedBand {
   readonly plan: BandScenePlan;
   readonly layout: GraphLayout;
+  readonly retainedAttachment?: { readonly track: number; readonly stemRoom: number; readonly x: number; readonly bandTop: number; readonly columns: readonly number[] };
 }
 
 export const gridMetricsOf = (geometry: FolderGridGeometry): GridMetrics =>
@@ -223,7 +226,13 @@ function layoutPlanned(plans: ReadonlyMap<GraphId, BandPlan>, cache: BoundedCach
   for (const [id, { plan, kept }] of plans) {
     const layout = kept ?? bandLayout(plan.request, cache, options);
     // A cover the band does not place cannot be attached; the stack is shown closed.
-    if (layout.nodes.has(id)) bands.set(id, { plan, layout });
+    if (layout.nodes.has(id)) bands.set(id, { plan, layout, ...(kept && plan.request.history?.attachment && validHistory(plan.request.history, id) ? { retainedAttachment: {
+      track: plan.request.history.attachment.placement.track ?? TRACK_HEIGHT,
+      stemRoom: plan.request.history.attachment.placement.stemRoom ?? STACK_STEM_ROOM,
+      x: plan.request.history.attachment.placement.x, bandTop: plan.request.history.attachment.bandTop,
+      columns: [...new Set(plan.request.history.placed.routes.filter(route => route.from.kind === 'node' && route.from.id === id)
+        .flatMap(route => pathNumbers(route.path).filter((_, i) => i % 2 === 0)))],
+    } } : {}) });
   }
   return bands;
 }
@@ -287,7 +296,7 @@ export function composeFolderLayout(items: readonly GridItem[], geometry: Folder
     const band = item.kind === "stack" ? bands.get(item.id) : undefined;
     return band ? [[item.id, bandExtent(band.layout, item.id)] as const] : [];
   }));
-  const flow = packedGridFlow(items, extents, geometry.columns, gridMetricsOf(geometry));
+  const flow = packedGridFlow(items, extents, geometry.columns, gridMetricsOf(geometry), new Map([...bands].flatMap(([id, band]) => band.retainedAttachment ? [[id, band.retainedAttachment] as const] : [])));
   const placements = bandPlacements(flow, geometry.cellHeight);
   const graphs = new Map<GraphId, FolderGraph>();
   for (const band of flow.bands) {
