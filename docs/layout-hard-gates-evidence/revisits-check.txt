@@ -1,3 +1,0 @@
-$ svelte-check --tsconfig ./tsconfig.json
-1792196870143 START "/var/tmp/te-wt2/layout-gates"
-1792196870145 COMPLETED 254 FILES 0 ERRORS 0 WARNINGS 0 FILES_WITH_PROBLEMS

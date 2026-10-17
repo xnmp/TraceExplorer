@@ -3,7 +3,7 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import { corpus, denseCorpus, requestFor } from './corpus';
 import { optimizedBand, type Optimized } from './engine';
 import { svg } from './render';
-const out = process.argv[2] ?? 'docs/click-stability-evidence';
+const out = process.argv[2] ?? 'layout-eval/out/click-stability-evidence';
 await mkdir(out, {recursive:true});
 const rows: object[] = [], counts = new Map<string,number>(), samples = new Map<string,number>();
 for (const original of [...corpus(), ...denseCorpus()]) for (const width of [360,454,640,900,1400]) {
