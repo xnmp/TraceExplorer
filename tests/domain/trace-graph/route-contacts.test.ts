@@ -96,7 +96,7 @@ describe("routeEnds and berthsOf", () => {
     const into = polyline(p(50, 80), p(50, 100), p(150, 100), p(150, 192));
     const berths = berthsOf(into, INTO_TILE);
     expect(berths).toEqual(expect.arrayContaining([
-      { x: 50, y: 80, radius: PORT_BERTH }, { x: 150, y: 192, radius: PORT_BERTH }, { x: 150, y: 192 + ARROW.length, radius: PORT_BERTH },
+      { x: 50, y: 80, radius: PORT_BERTH }, { x: 150, y: 192, radius: CORNER_BERTH }, { x: 150, y: 192 + ARROW.length, radius: PORT_BERTH },
       { x: 50, y: 100, radius: CORNER_BERTH }, { x: 150, y: 100, radius: CORNER_BERTH },
     ]));
     expect(berths).toHaveLength(5);
@@ -194,4 +194,22 @@ describe("tile clearance (grazesTile)", () => {
     expect(grazesTile(polyline(p(0, 161), p(300, 161)), { x: NaN, y: 100, width: 80, height: 60 })).toBe(false);
     expect(leavingRun([])).toBe(0);
   });
+});
+
+it('reserves both sharp corners of a short dogleg between long parallel runs', () => {
+  const a = [{x:172,y:1231},{x:172,y:2189},{x:170,y:2189},{x:170,y:2424}];
+  const b = [{x:175,y:1225},{x:175,y:2189},{x:173,y:2189},{x:173,y:2481}];
+  const pieces = (points: typeof a) => points.slice(1).map((p,i)=>[points[i],p] as const);
+  const berths = berthsOf(pieces(a), {start:0,end:0});
+  expect(berths).toContainEqual({x:172,y:2189,radius:3});
+  expect(pieces(b).some(s=>berths.some(berth=>entersBerth(s,berth)))).toBe(true);
+});
+
+it('permits transverse ink four pixels from an arrow base while protecting its tip', () => {
+  const ss=polyline(p(0,0),p(100,0));
+  const berths=berthsOf(ss,INTO_TILE);
+  const allowed=polyline(p(96,-10),p(96,10))[0];
+  const nearTip=polyline(p(113,-10),p(113,10))[0];
+  expect(berths.some(b=>entersBerth(allowed,b))).toBe(false);
+  expect(berths.some(b=>entersBerth(nearTip,b))).toBe(true);
 });
