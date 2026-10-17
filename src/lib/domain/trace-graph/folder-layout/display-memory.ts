@@ -76,7 +76,7 @@ function decode(text: string): FolderLayout {
 export function validDisplayMemory(value: unknown): value is DisplayMemory {
   if (!value || typeof value !== 'object') return false;
   const m = value as DisplayMemory;
-  const pairs = (v: unknown): boolean => Array.isArray(v) && v.every(e => Array.isArray(e) && e.length === 2 && e.every(x => typeof x === 'string'));
+  const pairs = (v: unknown): boolean => Array.isArray(v) && Array.from(v).every(e => Array.isArray(e) && e.length === 2 && Array.from(e).every(x => typeof x === 'string'));
   return typeof m.folder === 'string' && typeof m.contents === 'string' && pairs(m.members) && pairs(m.entries) && m.entries.length <= DISPLAY_LIMIT;
 }
 
