@@ -120,3 +120,13 @@ it('certifies the displayed attachment after provisional cover stems are replace
   changed.layout.routes[1] = { ...changed.layout.routes[1], path: 'M250 200 L280 200 L280 130 L450 130 L450 342' };
   expect(validHistory(changed, 'root')).toBe(false);
 });
+
+it('accepts a finite pending-output creation order beyond the spatial index range',()=>{
+  const facts=JSON.parse(bandHistorySignature(before));
+  facts[3].find((n:unknown[])=>n[0]==='b')[3]=1_000_000_000_012;
+  expect(validHistory({signature:JSON.stringify(facts),layout:raw,placed},'root')).toBe(true);
+});
+it.each([null,NaN,Infinity,-Infinity])('rejects malformed logical order %s',order=>{
+  const signature=JSON.parse(bandHistorySignature(before)); signature[3][0][3]=order;
+  expect(validHistory({signature:JSON.stringify(signature),layout:raw,placed},'root')).toBe(false);
+});

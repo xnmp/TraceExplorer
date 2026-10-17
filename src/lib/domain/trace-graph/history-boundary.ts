@@ -90,7 +90,7 @@ function facts(signature: string): LayoutItem[] | null {
   if (!Array.isArray(parsed) || parsed.length !== 4 || !Array.isArray(parsed[3])) return null;
   const result: LayoutItem[] = [], seen = new Set<string>();
   for (const f of parsed[3]) {
-    if (!Array.isArray(f) || f.length !== 5 || typeof f[0] !== 'string' || seen.has(f[0]) || ![f[1], f[2], f[3]].every(coordinate)
+    if (!Array.isArray(f) || f.length !== 5 || typeof f[0] !== 'string' || seen.has(f[0]) || ![f[1], f[2]].every(coordinate) || typeof f[3] !== 'number' || !Number.isFinite(f[3])
       || f[1] <= 0 || f[2] <= 0 || !strings(f[4])) return null;
     seen.add(f[0]); result.push({ key: f[0], width: f[1], height: f[2], order: f[3], parents: f[4] });
   }
