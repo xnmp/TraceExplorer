@@ -325,10 +325,10 @@ async pattern: use existing pure request/result and publication transaction.
 |---|---|---|---|---|
 | **1. Channel and track assignment as a constraint solve (complete)** | T4/T11/T14/T15 metric assignment for existing ordered, representable channels; T31–T33 shared-row header rules, plus T34/T35 attachment offsets. Keep current row/corridor generators. Add common immutable segment/order/bounds/pin types and a deterministic separation solver first, within this slice. | Test below becomes ordinary `it`; retained tracks and child tops remain exact through packed attachment. Compatible disconnected spans reuse tracks. New groups can get deeper tracks/header/corridors without raising existing child tops. Differential tests for channel bound conflicts, pinned interior tracks, lifetime reuse and ordered insertions; no new fallback/errors. | 700–1,100 lines; 4–6 days | Medium-high: correct coordinate frame, cyclic orders, header corners and row packing are coupled. Scope adapters to represented channels and preserve other drawings. |
 | **2. Explicit ports and painted corridors (complete)** | T8/T14/T16/T29/T34/T35 duplicated endpoint/envelope reconstruction. Import existing topology into explicit ports, arrow stubs and certified turn/corridor bounds; retain current emitter initially. | Same semantic consumers/endpoints and exact reused route geometry; native cubics, near-pane arrows and host cover chrome pass existing tests/gates. Retained unaffected stem paths remain byte-identical, supporting interrupted motion. Reject malformed imported plans. | 600–1,000 lines; 3–5 days | Medium: source vs branch endpoints, raw/attached transforms, stroke versus allocation extents. |
-| **3. Junctions and corridor topology** | T3/T5–T10/T12/T13; reuse T1 semantics. Replace provisional/deferred/stacked placement, zone reconsideration and dropped ordering with explicit junction ports and channel search. | Critical cycle gets a certified split/crossing topology, never a discarded hard dependency. Exact parentage for reused subsets, 2–8 inputs, distant fan-outs and long edges; crossing/height/pane/fallback limits all hold. Try new corridor assignments before growing only free boundaries. | 1,200–1,800 lines; 6–9 days | High: combinatorial corridor capacity and fan-in/crossing semantics. Bounds on **total** search/constraint work, not per retry. |
+| **3. Junctions and corridor topology (complete)** | T3/T5–T10/T12/T13; reuse T1 semantics. Replace provisional/deferred/stacked placement, zone reconsideration and dropped ordering with explicit junction ports and channel search. | Critical cycle gets a certified split/crossing topology, never a discarded hard dependency. Exact parentage for reused subsets, 2–8 inputs, distant fan-outs and long edges; crossing/height/pane/fallback limits all hold. Try new corridor assignments before growing only free boundaries. | 1,200–1,800 lines; 6–9 days | High: combinatorial corridor capacity and fan-in/crossing semantics. Bounds on **total** search/constraint work, not per retry. |
 | **4. Constrained incremental insertion and hint changes** | T18–T28 plus T37's separate routing. Import committed drawing into same model, freeze declared tracks/rectangles/suffixes, add new ports/segments and re-solve affected conflict components. | Arrival world-oracles, merges/departures, single 16 px descent and shrink-space reuse; clicked ancestry equality; exact revisits and worker parity. Delete repairable-contact policy and port/bypass offset repair only when all old successes are covered. Preserve other retained tiles where the request pins them; optimize only free ones. | 1,200–1,900 lines; 6–10 days | High: pruning/identity, future departures, hint port changes, dense search tails. |
-| **5. Cold sweeps and folder packing in that model** | T2/T17/T19/T30/T36–T38 placement alternatives. Shelves, downward and serial layouts become embedding generators feeding one solve; packing contributes constraints before final routing. | All cold widths/presets and legal tours retain display/long-edge order, quality and timing targets. New-state sweeps may choose freer embeddings; pinned states never lose pins when a compact/serial candidate is considered. Folder ordinary cells and other bands are first-class obstacles. | 1,000–1,600 lines; 5–8 days | High: compactness, candidate pruning and 5 ms inline budget; avoids a simultaneous scoring rewrite. |
-| **6. Remove superseded routers/repairs** | Delete remaining legacy T5–T7/T10/T13/T21–T25/T28/T36/T38 implementations once every embedding uses common constraints. Retain T1 consumer semantics, T16 emitter if still useful, T39 history and T40 independent gates. | No legacy escapes reached across full acceptance and targeted rare-branch fixtures; safe chain/fan/serial are certified embedding choices under identical pins. New diagnostics distinguish topology conflict, metric conflict, unsupported input and budget exhaustion. | 300–700 new/changed lines, larger net deletion; 2–4 days | Medium after coverage; zero sample use alone never justifies deletion. |
+| **5. Cold sweeps and folder packing in that model** | T2/T17/T19/T30/T36–T38 placement alternatives. Shelves, downward and serial layouts become embedding generators feeding one solve; packing contributes constraints before final routing. | All cold widths/presets and legal tours retain display/long-edge order, quality and timing targets. New-state sweeps may choose freer embeddings; pinned states never lose pins when a compact/serial candidate is considered. Folder ordinary cells and other bands are first-class obstacles. | 1,000–1,600 lines; 5–8 days | High: compactness, candidate pruning and 10 ms inline budget; avoids a simultaneous scoring rewrite. |
+| **6. Remove superseded routers/repairs** | Delete remaining legacy T21–T25/T28/T36/T38 implementations once every embedding uses common constraints; T5–T7/T10/T13 are deleted in slice 3. Retain T1 consumer semantics, T16 emitter if still useful, T39 history and T40 independent gates. | No legacy escapes reached across full acceptance and targeted rare-branch fixtures; safe chain/fan/serial are certified embedding choices under identical pins. New diagnostics distinguish topology conflict, metric conflict, unsupported input and budget exhaustion. | 300–700 new/changed lines, larger net deletion; 2–4 days | Medium after coverage; zero sample use alone never justifies deletion. |
 
 Slices 3–5 are intentionally separate: metric solving first establishes enforceable
 contracts; topology search then supplies better feasible choices; insertion and
@@ -609,3 +609,151 @@ Slice 3 still owns junction factoring/ports and convergence regions, corridor
 alternatives, crossings/cycle splits, and removal of provisional/deferred/stacked
 placement. This slice does not broaden slice 1's retained attachment adoption or
 delete the foreign native-curve clearance algorithm.
+
+## Slice 3 implementation and acceptance (complete)
+
+The pure deterministic search is [corridor-search.ts:25](../src/lib/domain/trace-graph/corridor-search.ts#L25), adopted by `layout.ts:360`. One **64,000,000-unit total ledger** covers candidate reconstruction, discrete alternatives, boundary growth, metric solves, native import and quality evaluation. It is never reset on retry. Candidate coordinates use `solveSeparation`; completed competing candidates use the existing `measure`/`cost` objective. The production policy returns its first fully scored feasible incumbent; band embedding ranking and hysteresis remain unchanged. A genuine singleton on the first reconstruction needs no ranking; the last remaining assignment after rejection is still scored. An unaffordable first score returns a conflict. This is bounded feasible search, not global optimization or exhaustive width minimization.
+
+Junction domains reserve exact T1 inputs, levels and convergence regions before corridor occupancy. `junctionInputPorts` in `routing-plan.ts:46` supplies source-bound approach ports; complete plans include meetings and independently validate exact parent sets, nested subsets, native-path bindings and separate approaches. Same-source branch connectivity and junction input lookup charge traversal to the same ledger. Removing the speed-only lookup indexes preserves the complete drawing digest and every stage count; the restored traversal charges explain the final ledger maximum. Discrete/metric conflicts and exhausted searches return an explicit conflict through `RoutingConflictError`; cold bands enter the existing certified fallback ladder. Retained-history conflicts rethrow, keeping the last committed scene rather than discarding its pins.
+
+Channel critical dependencies are explicit departure/arrival pieces in [channel-topology.ts:37](../src/lib/domain/trace-graph/channel-topology.ts#L37). A cycle chooses a split member and a free column, then rebuilds and metric-solves the complete dependency graph. Every original leave-before-arrive edge binds its actual piece; no hard edge is deleted. Swaps use this same split topology. The unchanged whole-drawing gates still decide publication.
+
+Small unordered gaps use exact subset capacity pruning for up to eight occupants (larger groups retain the final hard metric solve). New corridor alternatives are tried before increasing free boundaries, using the same ledger. Left-boundary growth includes alignment delay only for lower bounds whose downstream separation path reaches that boundary, via `freeBoundaryGrowth` in `channel-domains.ts:27`. This avoids charging unrelated narrow rows: both existing compactness fixtures retain their pane fit and height limits.
+
+### Deleted stages
+
+All locations in this table name **unmodified `b38b374`**, since the removed lines have no current location. No inventoried replacement stage remains as a legacy escape.
+
+| Stage | Deleted old `layout.ts` lines | Current responsibility |
+|---|---|---|
+| T3 Provisional junctions | 777–872 | Immutable junction domains, current 750 onward |
+| T5 Compression / widening | 389–407; 1163–1166 | Fixed-domain margin solve and free-boundary alternatives, current 1060 onward |
+| T6 Deferred placement / T7 stacked dots and dropped keepouts | 1205–1254 | Initial hard junction/corridor constraints; no later relocation or keepout removal |
+| T9 Approach-offset pass | 1287–1303 | Source-bound junction input ports, current 1240 onward |
+| T10 Zone reconsideration | 1314–1424 | Hard zone choices in the joint search, current 1270 onward |
+| T12 Swap cells / T13 cycle and sort escape | 1443–1471; 1480–1645 | Explicit split pieces and dependency solve in `channel-topology.ts` |
+
+T1 semantic factoring/consumers, T2 rows, T4 corridor generation/lifetime preferences, T8 compact trunks and T14–T16 metric bounds/emission remain. Their responsibilities were not deleted; T4's blocked-inner-offset escape and T11's legacy track/swap/cycle assignment were replaced. Shelves, insertion/repair and folder packing remain outside this slice.
+
+### Repeated inventory
+
+The original design workload and local hook semantics were replayed on `b38b374` and slice 3: **522 legal tour steps, 65 cold bands, 65 raw layered diagnostics, 398 folder states**. Both runs have zero published gate failures. Each instrumented drawing digest matches its own uninstrumented control: before `d89206be60cbbf56c880544636eca259104ad5b1667985e461501bc9cd8315f2`; after `47e279306a18a12ce71fae8d30359f2d6ef5121b4bef64969d4d8ad803e82210`. These digests differ because topology may change. The T11 hook covers both slice 1's early acyclic exit and the legacy final exit on the base; its measured 4,187 / 8,365 agrees with the original inventory.
+
+Counts include reconstructed and rejected drafts, not distinct published layouts. The final first-incumbent policy reaches 670 completed lane/track/emission passes for 670 successful searches, with 981 row-construction attempts including early capacity rejections. Local-stage hooks count reaching their original observation point; earlier rejections still consume the same search work ledger. A missing legacy hook means its implementation was deleted, not an inferred lack of use. T1/T39 do semantic construction/exact replay; T40 is read-only; none introduces coordinate repairs to count. T18's tile-only seed, T36's terminal safe constructors and T38 isolation remain unexercised in this workload. As in the original design table, T38's denominator is the 363 normal folder-composition opportunities; the isolation constructor itself has zero calls.
+
+| Stage | Before: changes / calls | Slice 3: changes / calls |
+|---|---:|---:|
+| T2 Row placement | 890 / 890 | 981 / 981 |
+| T3 Provisional junctions | 306 / 890 | 0 / 0 |
+| T4 Lane allocation | 623 / 890 | 403 / 670 |
+| T5 Margin compression | 581 / 843 | 0 / 0 |
+| T5 Legacy widening retries | 220 / 220 | 0 / 0 |
+| T6 Deferred junctions | 5 / 890 | 0 / 0 |
+| T7 Stacked dots | 0 / 8 | 0 / 0 |
+| T7 Dropped keepouts | 0 / 8 | 0 / 0 |
+| T8 Shared trunks | 383 / 670 | 383 / 670 |
+| T9 Post-placement fan offsets | 144 / 670 | 0 / 0 |
+| T10 Zone reconsideration | 83 / 670 | 0 / 0 |
+| T11 Track assignment | 4,187 / 8,365 | 4,198 / 8,363 |
+| T12 Swap dogleg | 4 / 4 | 0 / 0 |
+| T12 Shared crossing slice | 0 / 0 | 0 / 0 |
+| T13 Cycle dogleg | 0 / 0 | 0 / 0 |
+| T13 Sort escape | 0 / 0 | 0 / 0 |
+| T14 Port berth | 213 / 670 | 213 / 670 |
+| T15 Vertical placement | 670 / 670 | 670 / 670 |
+| T15 Zone growth | 3,695 / 9,673 | 3,709 / 9,672 |
+| T16 Fillets | 35,013 / 38,030 | 36,366 / 38,622 |
+| T17 Shelf constructor | 893 / 893 | 893 / 893 |
+| T18 Resize | 99 / 298 | 99 / 298 |
+| T19 Retain members | 191 / 191 | 189 / 189 |
+| T19 Subset projection | 191 / 650 | 189 / 648 |
+| T19 Normalize frame | 18 / 83 | 18 / 83 |
+| T19 Anchor translation | 0 / 9 | 0 / 9 |
+| T20 Primary probes | 4,723 / 6,072 | 4,581 / 5,785 |
+| T20 Wiring | 4,940 / 43,017 | 4,782 / 38,823 |
+| T20 Insertion | 668 / 876 | 660 / 888 |
+| T21 Plain placement | 584 / 829 | 591 / 848 |
+| T21 Grid wiring | 1,139 / 2,899 | 967 / 2,655 |
+| T22 Second placement | 565 / 765 | 393 / 613 |
+| T22 All-lane wiring | 555 / 1,364 | 376 / 1,100 |
+| T23 Free terminal ports | 0 / 812 | 0 / 808 |
+| T24 Free internal lanes | 64 / 165 | 80 / 169 |
+| T25 Constrained retry | 7 / 58 | 5 / 57 |
+| T25 Repairable retry | 14 / 51 | 12 / 52 |
+| T26 Leaf ordering | 33 / 668 | 33 / 660 |
+| T27 Hint reroute | 7 / 9 | 7 / 9 |
+| T27 Retained route | 5 / 5 | 5 / 5 |
+| T28 Contact repair | 10 / 32 | 11 / 27 |
+| T29 Pane allocation | 605 / 605 | 605 / 605 |
+| T29 Painted envelope | 566 / 606 | 558 / 598 |
+| T30 Packing | 1,656 / 1,656 | 1,656 / 1,656 |
+| T30 Outer gutter | 0 / 828 | 0 / 828 |
+| T30 Folder composition | 363 / 363 | 363 / 363 |
+| T31 Shared header | 261 / 363 | 261 / 363 |
+| T32 Lone reduction | 102 / 102 | 102 / 102 |
+| T33 First-line alignment | 45 / 363 | 45 / 363 |
+| T34/T35 Attachment | 4,475 / 4,480 | 4,462 / 4,467 |
+| T36 Band fallback | 0 / 864 | 0 / 864 |
+| T37 Folder pins | 133 / 135 | 133 / 135 |
+| T38 Isolation | 0 / 363 | 0 / 363 |
+| New: junction placement | 0 / 0 | 386 / 981 |
+| New: junction input ports | 0 / 0 | 144 / 670 |
+| New: free-boundary growth | 0 / 0 | 155 / 155 |
+| New: whole corridor search | 0 / 0 | 670 / 670 |
+
+The 670 joint searches all succeeded; maximum work **5,454,889**, maximum reconstructed candidates **7**, and no conflict/exhaustion occurred in this measurement population. New free-boundary growth fired 155 times instead of the old 220 widening retries; old compression, provisional/deferred relocation, keepout relaxation, zone reconsideration and swap/cycle escapes have no implementation. The constructed cycle/swap and exhaustion tests cover branches the original corpus did not exercise. Remaining T18–T28/T37 counts identify the retained insertion paths reserved for slice 4.
+
+Audit artifacts: `/tmp/routing-s3-prepare-instrument.ts`, `/tmp/routing-s3-instrument-before.ts`, `/tmp/routing-s3-counts-before.json`, `/tmp/routing-s3-control-counts-before.json`; after generator `/tmp/routing-s3-prepare-after.ts`, and the final counts/control under `.routing-s3-tmp/counts-after.json` and `control-counts-after.json`. These are temporary local audit artifacts, not production dependencies.
+
+### Tests, review and publication
+
+Fail-first search contracts cover 2–8 exact junction inputs, reused subsets, distant fan-out, multi-row long edges, a constructed critical cycle, a swap, and total-budget exhaustion. Additional contracts cover deterministic immutable inputs, alternate metric feasibility with exact pins, capacity pruning, boundary bottlenecks, incumbent retention, malformed meeting metadata, duplicate parent declarations and coincident approaches. Polyline work exhaustion was reproduced before the callback fix. The existing 20,000-node chains, 3,000-output fans, sparse annotation scaling and both compactness fixtures pass focused verification without changed bounds.
+
+The publication fixture runs ten component-merge/close/revisit/arrival/close/revisit steps through the real view input adapter, inline runtime, real worker replies, scene construction and snapped presentation. Exact revisits compare complete drawings; arrivals retain existing world rectangles. It exposed a base history-validation defect: pending-output logical order near 10¹² was treated as a bounded pixel coordinate, discarding valid history. `history-boundary.ts` now requires finite logical order while retaining coordinate bounds for sizes. The baseline failed this regression before the fix; the valid committed scene and worker/main parity are preserved afterward.
+
+Fresh blocking adversarial review was accepted after independent dependency, parentage, boundary-feasibility, large-fallback, scale and publication probes. Review-driven regressions include missing/false meetings, duplicate parents, optional incumbent loss, unmetered construction and the dense 12-root/66-output case. The historical slice 1 layered differential keeps all 195 input cases, replacing its obsolete coordinate hash with exact visible-node, parentage and consumer coverage plus native port validation after structured transfer. The raw topology census and complete acceptance populations also remain. Every distinct serialized column now takes an orthogonal bend, including subpixel offsets; a fail-first quarter-pixel departure regression and the affected five-step corpus replay verify native source tangents without relaxing validation. A formerly lane-infeasible fixture now routes without fallback and retains independent safety/shared-lane assertions.
+
+Final type checking passes: **267 files, zero errors and warnings**. The complete final-source unit gate passes with four workers: **170 files, 2,185 tests passed and one existing skip** (1,426.13 s), including all 195 historical inputs and the new publication regressions. A fresh final blocking correctness review accepted this intended source and independently passed 109 tests across six files; no source changes followed it.
+
+Final `bun run layout:eval` passes **all 50 current targets**, exit 0, on the first completed run at the authorized 10 ms inline limit. It produced 12,120 corpus comparison rows (6,060 proposed layouts), 3,150 tour steps and 280 packing rows (140 proposed states). Hard violations/errors, independent gate failures and unexplained connector lanes are **zero**. Geometry fallbacks are now **0/6,060 corpus, 0/3,150 tours and 0/140 packing**, all inside the pane; the saved baseline had one tour fallback (0.031746%). Main-thread maximum p95 is 4.328417 ms against 8, ≤30 visible tiles maximum p95 is 47.617739 ms against 100, and full-folder inline maximum p95 is 5.986872 ms against 10. No perf-only retry was needed. Observed perf-stage load ranged from 7.10 to 14.88; final load was 13.29 / 14.35 / 13.27 (1 / 5 / 15 minutes). These are separate timing measurements, not an optimization claim.
+
+Neither geometry gate, its tolerances, evaluation populations, `presentation.ts`, `scene-motion.ts` nor `StackGrid.svelte` has changed. Selection remains outside layout inputs. Slice 4 still owns retained corridor/track/suffix adoption, insertion, hint changes and removal of T18–T28/T37 repair policies; cold row/shelf/folder embedding consolidation remains slice 5.
+
+The product decision on 2026-10-18 stops performance work and raises only the full-folder inline p95 limit from **5 to 10 ms**, already committed in `db85304`. All other thresholds and populations remain unchanged. The saved unmodified `b38b374` acceptance is compared as measured: its inline timing failed under contention (43.683 ms; load 9.27 / 10.25 / 11.35 before, 7.62 / 7.29 / 9.31 after, with transient load above 14). The baseline is not rerun.
+
+Speed-only branch/junction lookup caches, reference-identity short circuits and the duplicate point-wise paint containment path were removed from the intended source. Already tested simplifications remain: local emission consumes normalized points and certified turns through `importTurnPlan`; complete candidates still receive full native validation. Direct port construction avoids building and replacing temporary identities; native equality checks consume primitives directly. The first quality-feasible incumbent policy remains, followed by unchanged band ranking. No profiling or timing optimization is part of final acceptance.
+
+### Every changed current acceptance row
+
+All **50** current rows were compared by exact target identity and numeric value with the saved unmodified `b38b374` acceptance: **26 changed, 24 unchanged, zero failures**. The inline limit change from 5 to 10 ms is the only threshold difference; every other threshold and population is identical. Values below are rounded to six decimals; the archived JSON retains full precision.
+
+| Current target | Before (`b38b374`) | Slice 3 | Current limit |
+|---|---:|---:|---:|
+| corpus new-state per-layout movedFraction | 0.123791 | 0.122412 | 0.128280 |
+| corpus new-state transition movedFraction | 0.197611 | 0.195411 | 0.257410 |
+| broad new-state transition movedFraction | 0.049549 | 0.050285 | 0.078831 |
+| Click anchor moves, including packing | 25 | 26 | 32 |
+| Dense-tour anchor moves | 82 | 73 | 101 |
+| Mean legal displacement, px | 13.016643 | 12.271997 | 17.530000 |
+| Held-screen moves at 480 px (broad) | 25 | 31 | 80 |
+| Held-screen moves at 480 px (dense) | 77 | 70 | 114 |
+| Main-thread maximum p95, ms | 2.583575 | 4.328417 | 8 |
+| ≤30 visible tiles maximum p95, ms | 27.250072 | 47.617739 | 100 |
+| Full folder engine maximum inline p95, ms (no saved main measurement) | 43.682763 | 5.986872 | 10 |
+| Mean height | 2117.381848 | 2119.691254 | 2372.651320 |
+| Mean width | 555.920533 | 556.575731 | 603.002483 |
+| Mean area | 1160917.662807 | 1168364.099498 | 1417008.637735 |
+| Mean whitespace | 0.482170 | 0.482588 | 0.554242 |
+| Mean paneWhitespace | 0.610242 | 0.610495 | 0.699334 |
+| Mean length | 37030.996694 | 37614.444695 | 46535.064381 |
+| Mean bends | 152.752515 | 154.108557 | 157.203003 |
+| Mean crossings | 318.024092 | 333.099340 | 364.359571 |
+| Mean mixedDirections | 1.534818 | 1.532508 | 2.288581 |
+| Mean siblingInversions | 0.104290 | 0.102310 | 0.106914 |
+| Mean unaligned | 0.162046 | 0.164026 | 0.176617 |
+| Mean displacement | 28.961140 | 28.934352 | 34.757087 |
+| Mean maxDisplacement | 66.208057 | 65.964872 | 80.188254 |
+| Mean overflow | 2.674010 | 3.090759 | 4.326320 |
+| tours geometry fallback rate, % | 0.031746 | 0 | 0.500000 |
+
+The baseline acceptance, current complete report, exact comparison, repeated inventory and controls, source hashes, fail-first evidence and correctness reviews are archived in ignored `layout-eval/out/routing-s3-audit.tar.gz`. The final handover and portable commit bundle are beside that archive. No browser/Playwright run or push was performed.
