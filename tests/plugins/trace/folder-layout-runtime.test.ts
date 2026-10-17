@@ -12,19 +12,19 @@ describe("folder layout runtime", () => {
     expect(runtime.inline(folderInput(folder, { open: ["s0:root", "s1:root"] }))).toBe(false);
   });
 
-  it("counts only bands it would compute: remembered bands make the same run inline", () => {
+  it("budgets certification even when all raw bands are remembered", () => {
     const runtime = createFolderLayoutRuntime();
     const input = folderInput(folder, { open: ["s0:root", "s1:root"] });
     runtime.remember(engines.default(input));
-    expect(runtime.inline(input)).toBe(true);
+    expect(runtime.inline(input)).toBe(false);
     // The engine answers from those bands with the same geometry as a fresh run.
     expect(runtime.engine(input).graphs.get("s1:root")!.attached).toEqual(engines.default(input).graphs.get("s1:root")!.attached);
   });
 
-  it("treats a kept committed band as free when another band's focus changes", () => {
+  it("budgets a kept committed band when another band's focus changes", () => {
     const runtime = createFolderLayoutRuntime();
     const previous = engines.default(folderInput(folder, { open: ["s0:root", "s1:root"], focus: "s0:Saffron" }));
-    expect(runtime.inline(folderInput(folder, { open: ["s0:root", "s1:root"], focus: "s0:Ash", previous }))).toBe(true);
+    expect(runtime.inline(folderInput(folder, { open: ["s0:root", "s1:root"], focus: "s0:Ash", previous }))).toBe(false);
   });
 });
 

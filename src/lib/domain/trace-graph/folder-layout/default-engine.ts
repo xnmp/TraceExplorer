@@ -237,6 +237,11 @@ export function uncachedBandRequests(input: FolderLayoutInput, cache: BoundedCac
   return [...plansOf(input).plans.values()].filter(({ kept, plan }) => !kept && !cache.get(signatureOf(plan.request))).map(({ plan }) => plan.request);
 }
 
+/** Every band needs packing and certification even if its raw layout is cached. */
+export function folderBandRequests(input: FolderLayoutInput): readonly LayoutRequest[] {
+  return [...plansOf(input).plans.values()].map(({ plan }) => plan.request);
+}
+
 /** Seeds `cache` with the bands of a layout computed elsewhere (a worker), keyed by their exact requests. */
 export function rememberBands(layout: FolderLayout, cache: BoundedCache<GraphLayout>): void {
   // Restored geometry was chosen under an earlier history, not the current request.
