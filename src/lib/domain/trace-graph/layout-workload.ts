@@ -59,11 +59,12 @@ export const withinFolderRestoreBudget = (work: LayoutWorkload): boolean =>
 export function canRetainFolderInline(input: FolderLayoutInput): boolean {
   return withinFolderRestoreBudget(folderDrawingWorkload(input.items,
     [...input.previous?.graphs ?? []].map(([id, graph]) => ({ id, request: graph.plan.request,
-      cached: true, drawing: graph.attached }))));
+      cached: true, search: false, drawing: graph.attached }))));
 }
 
 /**
- * Both independent costs must fit: only missing bands pay construction, while the whole drawing
+ * A band that runs a constrained incremental search never runs inline (see `FolderBandWork.search`).
+ * Otherwise both independent costs must fit: only missing bands pay construction, while the whole drawing
  * pays restore/certification. Kept committed bands and remembered worker bands are equally free
  * to construct. This pure rule is shared by production dispatch and the inline performance set.
  *
@@ -95,6 +96,9 @@ export function canRetainFolderInline(input: FolderLayoutInput): boolean {
  * a second time as path text. These are dispatch estimates, not hard timing guarantees.
  */
 export function canLayoutFolderInline(items: readonly GridItem[], bands: readonly FolderBandWork[]): boolean {
+  // A constrained incremental search spends up to its finite allowance before any
+  // legacy fallback; that is worker work whatever the drawing's size.
+  if (bands.some(band => band.search)) return false;
   const construction = bands.filter(band => !band.cached).map(band => layoutWorkload(band.request))
     .reduce((sum, work) => ({ tiles: sum.tiles + work.tiles, edges: sum.edges + work.edges,
       pathBytes: sum.pathBytes + work.pathBytes }), { tiles: 0, edges: 0, pathBytes: 0 });

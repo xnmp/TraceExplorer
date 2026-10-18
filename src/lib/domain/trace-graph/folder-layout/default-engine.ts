@@ -36,7 +36,7 @@ import { layoutGraph, RoutingConflictError, type BandHistory, type GraphLayout, 
 import { layoutSignature } from "../layout-signature";
 import { pathNumbers } from "../path-data";
 import { isLayoutShape, validHistory } from "../history-boundary";
-import { recallDisplay, rememberDisplay, displayIdentity } from "./display-memory";
+import { holdsDisplay, recallDisplay, rememberDisplay, displayIdentity } from "./display-memory";
 import { withCellFootprints } from "./cell-footprints";
 import { folderGeometryGate } from "./geometry-gate";
 import { safeLayout } from "../safe-layout";
@@ -45,7 +45,7 @@ import { automaticFolderPlacement } from "./automatic-placement";
 import { folderWorldPreferences } from "./world-preferences";
 import { WorldPlacementDecline } from "./world-result";
 import { automaticIncrementalBudget, type IncrementalWorkBudget } from "../band-incremental";
-import { adoptionFallback, PRODUCTION_ROUTING_WORK, recordAdoption } from "../incremental-adoption";
+import { adoptionFallback, PRODUCTION_ROUTING_WORK, recordAdoption, recordPublication } from "../incremental-adoption";
 import { planBandScene, type BandScenePlan } from "../scene";
 import type { BandExpansion } from "../visibility";
 import { createBoundedCache, estimateLayoutBytes, type BoundedCache } from "./bounded-cache";
@@ -301,15 +301,31 @@ export interface FolderBandWork {
   readonly request: LayoutRequest;
   readonly cached: boolean;
   readonly drawing: GraphLayout | undefined;
+  /** Constructing this band may run a bounded constrained search (slice 4): it adds
+   * tiles to its committed drawing, or the folder may be re-placed around retained
+   * world rectangles. Its cost is a finite work allowance, not the band's size. */
+  readonly search: boolean;
 }
 
 export function folderBandWork(input: FolderLayoutInput, cache: BoundedCache<GraphLayout>): readonly FolderBandWork[] {
-  return [...plansOf(input).plans].map(([id, { kept, plan }]) => {
+  const { plans } = plansOf(input), basis = geometryBasisOf(input);
+  // An exact revisit restores its remembered display, and a metadata refresh keeps
+  // the previous drawing: neither searches. Any other change to a folder with a
+  // placement history may re-place it around retained world rectangles.
+  const restores = holdsDisplay(input.previous?.displays, displayIdentity(input, plans));
+  const world = !restores && !retainsFolder(input, plans, basis)
+    && !!(folderPlacementHistory(input, plans, basis) ?? retainedWorldPlacement(input, plans, basis));
+  return [...plans].map(([id, { kept, plan }]) => {
     const cached = kept ?? cache.get(signatureOf(plan.request));
-    return { id, request: plan.request, cached: !!cached,
+    const placed = plan.request.history?.placed;
+    const inserts = !!placed && plan.request.items.some(item => !placed.nodes.has(item.key));
+    return { id, request: plan.request, cached: !!cached, search: world || !cached && !restores && inserts,
       drawing: kept ? input.previous?.graphs.get(id)?.attached ?? kept : cached ?? plan.request.history?.placed };
   });
 }
+
+/** The pane geometry a folder drawing was laid out for. */
+const geometryBasisOf = (input: FolderLayoutInput): string => JSON.stringify([Math.max(0, input.width), input.tile, input.grid]);
 
 /** Every band needs packing and certification even if its raw layout is cached. */
 export function folderBandRequests(input: FolderLayoutInput): readonly LayoutRequest[] {
@@ -421,13 +437,21 @@ function validFolderFrame(previous: FolderLayout | null | undefined): previous i
   } catch { return false; }
 }
 
+/** Whether a metadata refresh can keep the previous drawing: same frame, cells and unchanged bands. */
+function retainsFolder(input: FolderLayoutInput, plans: ReadonlyMap<GraphId, BandPlan>, basis: string): input is FolderLayoutInput & { previous: FolderLayout } {
+  try {
+    const previous = input.previous;
+    return validFolderFrame(previous) && previous.geometryBasis === basis && previous.cells.size === input.items.length
+      && [...previous.cells.keys()].every((id, i) => id === input.items[i].id) && previous.graphs.size === plans.size
+      && [...plans].every(([id, band]) => band.unchanged && previous.graphs.has(id) && validHistory(band.plan.request.history, id));
+  } catch { return false; } // Invalid retained folder metadata cannot authorize reuse.
+}
+
 /** A metadata refresh retains the complete drawing in its original coordinate frame. */
 function retainedFolder(input: FolderLayoutInput, plans: ReadonlyMap<GraphId, BandPlan>, basis: string): FolderLayout | null {
   try {
+    if (!retainsFolder(input, plans, basis)) return null;
     const previous = input.previous;
-    if (!validFolderFrame(previous) || previous.geometryBasis !== basis || previous.cells.size !== input.items.length
-      || [...previous.cells.keys()].some((id, i) => id !== input.items[i].id) || previous.graphs.size !== plans.size
-      || [...plans].some(([id, band]) => !band.unchanged || !previous.graphs.has(id) || !validHistory(band.plan.request.history, id))) return null;
     const graphs = new Map([...previous.graphs].map(([id, graph]) => [id, { ...graph, plan: plans.get(id)!.plan }]));
     const result = withCellFootprints({ columns: previous.columns, size: previous.size, bounds: previous.bounds,
       cells: previous.cells, bands: previous.bands, rowBands: previous.rowBands, graphs,
@@ -460,6 +484,8 @@ function constrainedFolderPlacement(input: FolderLayoutInput, plans: ReadonlyMap
     automaticPools: automaticIncrementalBudget() };
   let outcome: Parameters<typeof recordAdoption>[1], drawing: FolderLayout | null = null;
   try {
+    // Legacy placement treats malformed packing metadata as a decline; so does this.
+    if (!validFolderFrame(snapshot as FolderLayout)) throw new WorldPlacementDecline({ reason: 'unsupported-input', constraints: ['folder frame'] });
     const result = automaticFolderPlacement(input, plans, snapshot, folderWorldPreferences(input, geometry, work), work);
     if (!result.ok) outcome = adoptionFallback(result.conflict.reason);
     else if (folderGeometryGate(result.drawing) || !preservesFolderRectangles(result.drawing, snapshot)) outcome = 'contract';
@@ -479,6 +505,7 @@ function constrainedFolderPlacement(input: FolderLayoutInput, plans: ReadonlyMap
     else throw error;
   }
   recordAdoption('folder-arrival', outcome, PRODUCTION_ROUTING_WORK['folder-arrival'] - work.remaining);
+  if (drawing) recordPublication('folder-arrival');
   return drawing;
 }
 
@@ -497,7 +524,7 @@ export function createDefaultEngine(options: DefaultEngineOptions = {}): FolderL
     const foreign = prior?.displays && prior.displays.folder !== undefined && prior.displays.folder !== (given.folderKey ?? '');
     const input = malformed || foreign ? { ...given, previous: undefined } : given;
     const { geometry, plans } = plansOf(input);
-    const arrivals = arrivalsFor(input), geometryBasis = JSON.stringify([Math.max(0, input.width), input.tile, input.grid]);
+    const arrivals = arrivalsFor(input), geometryBasis = geometryBasisOf(input);
     let relayout: 'pane-width' | 'tile-size' | undefined;
     if (input.previous?.geometryBasis && input.previous.geometryBasis !== geometryBasis) {
       try { relayout = JSON.parse(input.previous.geometryBasis)[0] !== Math.max(0,input.width) ? 'pane-width' : 'tile-size'; }

@@ -1724,6 +1724,21 @@ export function constrainedIncremental(request: LayoutRequest, previous: GraphLa
     conflict: { reason: 'unsupported-input', constraints: ['solved attachment identity frame'] } };
 }
 
+/** Band insertion under one allowance: retained connectors byte-identical first.
+ * Only if that search exhausts its budget, the remainder of the same allowance
+ * lets free retained tracks move (fragment capture); retained source constants,
+ * native pieces and every rectangle stay exact either way. The strict search is
+ * not a subset of the fragment search's order: on tour replays it certifies
+ * inputs whose fragment search exhausts its budget in metric conflicts. */
+export function constrainedBandInsertion(request: LayoutRequest, previous: GraphLayout,
+  pools: () => IncrementalBudget, allowance: number): IncrementalRoutingResult {
+  const strict = constrainedIncremental(request, previous, pools(), undefined, allowance);
+  if (strict.ok || strict.conflict.reason !== 'budget-exhaustion' || strict.work >= allowance) return strict;
+  const framed = constrainedIncremental(request, previous, pools(), undefined, allowance - strict.work,
+    preferred => ({ preferred, frames: [] }));
+  return { ...framed, work: framed.work + strict.work };
+}
+
 interface InsertionMemo { readonly layout: GraphLayout | null; readonly remaining: IncrementalBudget }
 const insertionMemo = createBoundedCache<InsertionMemo>(entry => 64 + (entry.layout ? estimateLayoutBytes(entry.layout) : 0));
 

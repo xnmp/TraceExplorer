@@ -42,6 +42,10 @@ export function recordAdoption(site: AdoptionSite, outcome: 'success' | Adoption
   if (work > 0) countLayoutWork(`adoption:${site}:work`, work);
 }
 
+/** The constrained drawing won ranking and is the one published. A success
+ * only made it a candidate; band ranking may still prefer another embedding. */
+export const recordPublication = (site: AdoptionSite): void => countLayoutWork(`adoption:${site}:published`);
+
 export interface AdoptionAttempt { readonly drawing: GraphLayout | null; readonly outcome: 'success' | AdoptionFallback; readonly work: number }
 const attempts = createBoundedCache<AdoptionAttempt>(entry => 64 + (entry.drawing ? estimateLayoutBytes(entry.drawing) : 0));
 

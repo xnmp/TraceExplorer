@@ -1359,3 +1359,121 @@ with parent `d9aa452`; import into that base on `routing-s4`. It is not a
 fast-forward from either separate earlier checkpoint commit. Clean-base import
 is supported. `--preserve-wip` requires the exact bytes and executable modes
 recorded when this bundle was built, and preserves all those worktree files.
+
+### Slice 4d — production adoption with legacy fallback
+
+Production now runs the constrained incremental construction first at two sites,
+and runs legacy only when it declines, inside the same engine request. No
+intermediate frame exists.
+
+- **Band insertion** (`band-layout.ts`, `constrainedInsertion`). This calls
+  `constrainedBandInsertion` with 128M work and legacy-size pools.
+  - It runs the strict capture first, with retained connectors byte-identical.
+  - Only if that search exhausts its budget does the remainder of the same
+    allowance run the frameless fragment capture.
+  - The result must keep every retained rectangle exactly. It then competes as the
+    `incremental-tree` candidate under the unchanged ranking, anchors and gates.
+- **Folder arrival** (`default-engine.ts`, `constrainedFolderPlacement`). This calls
+  `automaticFolderPlacement` with 256M work and 4x pools.
+  - It publishes only if `folderGeometryGate` passes and every snapshot rectangle
+    is preserved.
+  - Malformed packing metadata declines as `unsupported`, as legacy does.
+- **World-placed graphs** now declare their band frame (`worldBandFrame` in
+  `priorOf`), so the next click's attachment frame matches. In the hint case the
+  clicked `s0:p` stays at y216; it had moved to y228.
+- **Counters.** Every attempt is counted as `adoption:<site>:attempt`, then
+  `success`, `published` or `fallback:<topology|metric|unsupported|budget|contract>`,
+  and `work`.
+  - `published` counts only drawings that ranking actually returned.
+  - Identical band attempts are memoised and return clones, so the worker and the
+    main thread agree.
+- **Dispatch.** A constrained search spends up to its allowance before any legacy
+  fallback. A budget fallback costs about 1–1.5 s, and a success is often 40 ms or
+  more. So `FolderBandWork.search` sends such runs to the worker. These count as
+  searches:
+  - a band that adds tiles to its committed drawing;
+  - any change to a folder with a placement history, except an exact revisit or a
+    metadata refresh.
+
+  Every arrival and expanding click is now asynchronous. This keeps zero blink,
+  but the reply comes later than an inline run would.
+
+Unchanged production inventory: 1,050 requests (522 tour steps, 65 cold, 65
+layered, 398 folder states), no geometry failures.
+
+| Site | Attempts | Successes | Published | Fallbacks by reason | Work |
+|---|---:|---:|---:|---|---:|
+| Band insertion | 459 (19 memo hits) | 440 | 266 | budget 19 | 4,594,606,913 |
+| Folder arrival | 135 | 132 | 132 | budget 1, topology 1, unsupported 1 | 931,140,512 |
+
+There were no contract fallbacks. Retained-tile movements between consecutive
+inventory outputs fell from 116 to 37. One case got worse: tour index 928
+(random-dag-12-7221, arrival n=6). There `s0:n3` takes a legal single 16 px
+descent that legacy avoided.
+
+Old-success replay was rerun at 1,024M with 4x pools, the same policy as the
+previous checkpoint. It calls `constrainedBandInsertion` for plain band inputs:
+
+| Population | Previous checkpoint | Now | Gains / losses |
+|---|---:|---:|---|
+| Corpus, complete requests | 62/63 | 62/63 | 0 / 0 |
+| Tours, complete requests | 535/894 | 601/894 | 66 / 0 |
+| Original, complete requests | 204/253 | 213/253 | 9 / 0 |
+| Original, resize stages | 99/99 | 99/99 | — |
+
+| Old-success stage | Corpus | Tours | Original |
+|---|---|---|---|
+| T24 free port lanes | 47/48 | 360 → 411/678 | 34 → 41/80 |
+| T25 repairable contacts | 4/4 | 64 → 68/84 | 11 → 12/12 |
+| T28 route contacts | 5/5 | 47 → 53/58 | 11/11 |
+| Additional constrained route | 6/6 | 64 → 69/74 | 3 → 4/5 |
+
+The missing move behind the tour gains was the capture order. On those inputs
+the fragment capture spends its whole allowance in metric conflicts, while the
+strict capture certifies within about 25M. All 293 remaining tour misses are
+budget exhaustion. Tour input 41, for example, needs the repairable-contact
+policy: every strict family's insertion search fails, and a contact-deferring
+order did not certify either.
+
+No legacy stage is deleted. None of T24, T25 or T28 is replayed for all its old
+successes in every population.
+
+Tests (fail-first on a2a3174/5bbcb77, where noted):
+- `routing-hint-next-click`: y228 before.
+- `incremental-adoption.test.ts`, covering:
+  - retained band tiles through clicks;
+  - hint growth and shrink, shrink-space reuse, and a single 16 px descent, each
+    published and then clicked with the ancestry kept;
+  - exact revisits;
+  - arrivals and merges keyed by tile identity;
+  - malformed snapshot decline (threw before);
+  - dispatch (was inline before).
+- An `adoption` worker/main parity mode.
+- Test timeouts raised where a budget fallback runs under suite load.
+- The world-publication controller test now runs the arrival off-thread.
+
+Gates: `bun run check` reports 294 files with 0 errors, `bun run test` passes (UNIT_SUMMARY), and `layout:eval` passes all 50 targets. The table lists the acceptance rows that changed against 5bbcb77; every other row is unchanged.
+
+| Row | 5bbcb77 | Now | Limit |
+|---|---:|---:|---:|
+| Corpus per-layout movedFraction | 0.1224 | 0.1128 | 0.1283 |
+| Corpus transition movedFraction | 0.1954 | 0.1801 | 0.2574 |
+| Broad transition movedFraction | 0.0503 | 0.0431 | 0.0788 |
+| Click anchor moves, incl. packing | 26 | 24 | 32 |
+| Dense-tour anchor moves | 73 | 76 | 101 |
+| Mean legal displacement, px | 12.27 | 10.89 | 17.53 |
+| Held-screen moves 480 px, broad / dense | 31 / 70 | 28 / 73 | 80 / 114 |
+| Main-thread max p95, ms | 2.528 | 3.367 | 8 |
+| ≤30 visible tiles max p95, ms | 36.105 | 37.262 | 100 |
+| Full folder inline max p95, ms | 4.626 | 8.888 | 10 |
+| Mean height / width | 2119.7 / 556.6 | 2116.4 / 558.1 | 2372.7 / 603.0 |
+| Mean length / bends / crossings | 37614 / 154.11 / 333.10 | 37739 / 154.82 / 333.61 | 46535 / 157.20 / 364.36 |
+| Mean displacement / maxDisplacement | 28.93 / 65.96 | 27.14 / 62.24 | 34.76 / 80.19 |
+| Mean siblingInversions / mixedDirections | 0.102 / 1.533 | 0.084 / 1.548 | 0.107 / 2.289 |
+
+Area, whitespace, paneWhitespace and unaligned changed by less than 0.5%.
+
+Slice 4 remains open. The remaining work:
+- tour and original budget misses, led by T24 free-port-lane cases;
+- a contact-repair move inside the constrained constructor, which would cover the T25 and T28 remainders;
+- deletion of legacy stages once every population covers them.

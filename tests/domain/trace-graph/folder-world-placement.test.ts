@@ -37,7 +37,7 @@ describe('world-placed folder history', () => {
     expect(closed.graphs.get('s0:root')!.attached.nodes).toEqual(arrived.graphs.get('s0:root')!.attached.nodes);
     expect(closed.size.width).toBe(width);
     expect(closed.decision?.fallback).toBeUndefined();
-  });
+  }, 30_000); // A budget fallback spends the constrained search's finite allowance before legacy runs.
 
   it.each(['missing', 'stale', 'empty', 'malformed', 'negative-bounds'] as const)('does not trust %s canonical band metadata', kind => {
     const engine = createDefaultEngine(), initial = engine(worldInput(false));

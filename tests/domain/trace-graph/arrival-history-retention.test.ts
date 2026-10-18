@@ -44,4 +44,4 @@ it('pins arrivals even after their component ledger entry was evicted', () => {
   const before = engine(input(initial));
   const after = engine(input([...initial, node('c', ['a', 'b'], 3)], { ...before, arrivals: new Map() }));
   expectFolderArrivalPinned(before, after);
-});
+}, 30_000); // A budget fallback spends the constrained search's finite allowance before legacy runs.

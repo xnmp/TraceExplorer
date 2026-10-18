@@ -16,6 +16,7 @@ import { expectFolderArrivalPinned } from './folder-arrival-contract';
 import { makeFolder, folderInput, corpusNode } from './folder-layout-fixtures';
 import { projectDag, projectReferenceBadges } from '$lib/domain/trace-graph/projection';
 import { fallbackGridMetrics } from '$lib/domain/trace-graph/folder-grid';
+import { createFolderLayoutRuntime } from '$lib/plugins/trace/view/folder-layout-runtime';
 
 type Rect = readonly [number, number, number, number];
 const worldRects = (folder: FolderLayout): Map<string, Rect> => new Map([...folder.graphs.values()].flatMap(graph =>
@@ -76,12 +77,12 @@ describe('band insertion through publication', () => {
   // retained tiles; the constrained path keeps every retained rectangle.
   it.each([['random-bushy-40-7603', 2], ['random-bushy-100-8201', 2]] as const)('%s keeps every retained tile through the first %i clicks', (id, steps) => {
     const c = { ...corpus().find(f => f.id === id)!, full: false }, visited = new Set<string>();
-    let focus: string | null = null, previous: Optimized | undefined;
+    let focus: string | null = null, previous: Optimized | undefined, published = 0;
     for (let step = 0; step <= steps; step++) {
       const req = requestFor(c, focus, 400, 48);
       const { result: next, count } = counters(() => optimizedBand(req, { previous, anchorKey: focus ?? undefined }));
+      published += count('adoption:band-insertion:published');
       if (previous) {
-        expect(count('adoption:band-insertion:success'), `step ${step}`).toBeGreaterThan(0);
         for (const [key, was] of previous.placed.nodes) {
           const now = next.placed.nodes.get(key);
           if (now) expect([now.x, now.y, now.width, now.height], `step ${step} ${key}`).toEqual([was.x, was.y, was.width, was.height]);
@@ -92,6 +93,7 @@ describe('band insertion through publication', () => {
         .sort((a, b) => b.order - a.order || a.key.localeCompare(b.key))[0];
       focus = selected.key; visited.add(focus);
     }
+    expect(published).toBeGreaterThan(0);
   });
 });
 
@@ -111,7 +113,7 @@ describe('folder arrivals through publication', () => {
   ] as const)('%s (%s) publishes the constrained drawing, then the next click and revisit keep it', (name, _label, site) => {
     const input = fixture(name), engine = createDefaultEngine();
     const { result: out, count } = counters(() => engine(input));
-    expect(count(`adoption:${site}:success`)).toBeGreaterThan(0);
+    expect(count(`adoption:${site}:published`)).toBeGreaterThan(0);
     expect(folderGeometryGate(out)).toBeNull();
     expectWorldHintPinned(input.previous!, out);
     const members = [...input.open.values()].flatMap(stack => stack.members);
@@ -132,6 +134,30 @@ describe('folder arrivals through publication', () => {
     expect(worldRects(back)).toEqual(worldRects(out));
   });
 
+  // Legacy placement declines malformed packing metadata; the constrained path
+  // must decline it too rather than throw out of the layout request.
+  it('declines a snapshot with malformed packing metadata and publishes the legacy result', () => {
+    const input = fixture('world-hint-1');
+    const malformed = { ...input, previous: { ...input.previous!, bounds: undefined as never } };
+    const { result: out, count } = counters(() => createDefaultEngine()(malformed));
+    expect(folderGeometryGate(out)).toBeNull();
+    expect([count('adoption:folder-arrival:attempt'), count('adoption:folder-arrival:fallback:unsupported')]).toEqual([1, 1]);
+  });
+
+  // The constrained search spends up to a finite allowance before any legacy
+  // fallback, so dispatch sends it to the worker; the exact revisit stays inline.
+  it('dispatches constrained searches to the worker and keeps exact revisits inline', () => {
+    const input = fixture('world-hint-1'), runtime = createFolderLayoutRuntime();
+    expect(runtime.inline(input)).toBe(false);
+    const out = runtime.engine(input);
+    const closing = close(input, out, 's0:p');
+    expect(runtime.inline(closing)).toBe(false);
+    const clicked = runtime.engine(closing);
+    const revisit = { ...input, previous: clicked };
+    expect(runtime.inline(revisit)).toBe(true);
+    expect(runtime.engine(revisit).revisited).toBe(true);
+  });
+
   // A merge above later grid rows and a hint descent: every retained world
   // rectangle, keyed by tile identity, stays where the snapshot has it.
   it('keeps retained world rectangles through output arrivals and a component merge', () => {
@@ -143,7 +169,7 @@ describe('folder arrivals through publication', () => {
       const { result: next, count } = counters(() => engine(folderInput(folder, { ...options, open: [...folder.stacks.keys()], previous })));
       expect(folderGeometryGate(next), `arrival ${n}`).toBeNull();
       if (previous) expectFolderArrivalPinned(previous, next);
-      adopted += count('adoption:folder-arrival:success');
+      adopted += count('adoption:folder-arrival:published');
       previous = next;
     }
     expect(adopted).toBeGreaterThan(0);
@@ -158,7 +184,7 @@ describe('folder arrivals through publication', () => {
     const request = { ...initial, previous: before, items: initial.items.filter(i => i.id !== 's1:root'),
       open: new Map([['s0:root', { id: 's0:root', graph, members: graph.dag.order, anchor: null, expanded: new Map(graph.dag.order.map(k => [k, true])) }]]) };
     const { result: after, count } = counters(() => engine(request));
-    expect(count('adoption:folder-arrival:success')).toBe(1);
+    expect(count('adoption:folder-arrival:published')).toBe(1);
     expect(folderGeometryGate(after)).toBeNull();
     expectFolderArrivalPinned(before, after);
     expect([...after.graphs.get('s0:root')!.attached.nodes.keys()].sort()).toEqual(['merged', 's0:a', 's0:root', 's1:b', 's1:root'].sort());

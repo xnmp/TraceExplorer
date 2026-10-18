@@ -25,7 +25,10 @@ try {
     for (let step = 0; step < 7; step++) {
       const input = worldInput(step > 0, previous, `save-${step}`);
       if (step === 6) (input.open as Map<string, unknown>).delete('s1:root');
-      equal(runtime.inline(input), true);
+      // Metadata refreshes keep the drawing inline. The arrival (step 1) and closing
+      // another band (step 6) re-place the folder around retained world rectangles:
+      // a bounded constrained search, which dispatch sends to the worker.
+      equal(runtime.inline(input), step !== 1 && step !== 6);
       const inline = runtime.engine(structuredClone(input)), id = ++sequence;
       const reply: any = await new Promise((resolve, reject) => {
         worker.onmessage = event => resolve(event.data); worker.onerror = reject;
@@ -89,7 +92,7 @@ try {
       const arrival = decode(readFileSync(new URL(`./fixtures/routing-adoption/${name}.json`, import.meta.url), 'utf8')).at(-1);
       const run = async (input: any) => {
         const { result: inline, profile } = profileLayout(() => engine(structuredClone(input)));
-        adopted += Object.entries(profile.counters).filter(([k]) => /^adoption:.*:success$/.test(k)).reduce((n, [, v]) => n + v, 0);
+        adopted += Object.entries(profile.counters).filter(([k]) => /^adoption:.*:published$/.test(k)).reduce((n, [, v]) => n + v, 0);
         const id = ++sequence;
         const reply: any = await new Promise((resolve, reject) => {
           worker.onmessage = event => resolve(event.data); worker.onerror = reject;

@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { node } from "../../../layout-eval/corpus";
 import { createFolderLayoutRuntime } from "$lib/plugins/trace/view/folder-layout-runtime";
-import { createDefaultEngine, engines } from "$lib/domain/trace-graph/folder-layout";
+import { createBoundedCache, createDefaultEngine, engines, estimateLayoutBytes } from "$lib/domain/trace-graph/folder-layout";
+import { folderBandWork } from "$lib/domain/trace-graph/folder-layout/default-engine";
 import { folderInput, handCase, makeFolder } from "../../domain/trace-graph/folder-layout-fixtures";
 import { worldInput } from "../../domain/trace-graph/folder-world-fixture";
 
@@ -26,7 +27,12 @@ describe("folder layout runtime", () => {
   it("a kept committed band is free when another band's focus changes", () => {
     const runtime = createFolderLayoutRuntime();
     const previous = engines.default(folderInput(folder, { open: ["s0:root", "s1:root"], focus: "s0:Saffron" }));
-    expect(runtime.inline(folderInput(folder, { open: ["s0:root", "s1:root"], focus: "s0:Ash", previous }))).toBe(true);
+    const input = folderInput(folder, { open: ["s0:root", "s1:root"], focus: "s0:Ash", previous });
+    // The kept fan costs nothing to construct. The refocused band reveals a tile, so
+    // its constrained insertion search is what sends this run to the worker.
+    expect(folderBandWork(input, createBoundedCache(estimateLayoutBytes)).map(band => [band.id, band.cached, band.search]))
+      .toEqual([["s0:root", false, true], ["s1:root", true, false]]);
+    expect(runtime.inline(input)).toBe(false);
   });
 });
 
