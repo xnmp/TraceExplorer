@@ -1272,6 +1272,9 @@ test("opening a later row preserves an unchanged band's attachment motion", asyn
       await seek(40);
       const before = y();
       w.trace.setSelection(["/pictures/fan.png"], "/pictures/fan.png");
+      // The interruption commits once its layout is in, a few frames later (more on a slow machine);
+      // the held motion keeps the band where it was meanwhile.
+      for (let i = 0; i < 240 && w.trace.motion.state().running[0]?.epoch === original; i++) await frame();
       for (let i = 0; i < 12; i++) await frame();
       const after = y();
       // The interruption's epoch restarts the clock where the original motion was (40 ms in).

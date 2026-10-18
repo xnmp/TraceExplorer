@@ -125,6 +125,9 @@ test("collapsing a big stack brings back tiles whose thumbnails went idle: none 
   // The fan's 120 children mount and push the stacks' thumbnails out of view, then past the cache's idle limit.
   await toggle("fan").click();
   await settle(page);
+  // The fan's own images may still be loading (on a slow machine, past the media deadline): the
+  // frames sampled below are the collapse's, not the open's.
+  await expect.poll(async () => (await page.evaluate(visibleMedia)).bad, { timeout: 30_000 }).toEqual([]);
   // Collapsing brings those tiles back: their thumbnails were loaded, and the scene holds them until its views draw them.
   const frames = await samplePaintedFrames(page, visibleMedia, 900, () => toggle("fan").click());
   await settle(page);
