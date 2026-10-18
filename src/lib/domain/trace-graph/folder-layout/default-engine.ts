@@ -94,9 +94,29 @@ function priorOf(previous: Record<string, unknown>, id: GraphId, graph: unknown)
     basis = requestBasis(plan.request as unknown as LayoutRequest);
   } catch { return { hint }; }
   const bandTop = (band.y as number) - (cell.y as number);
+  if (graph.worldPlaced === true) {
+    const framed = worldBandFrame(graph.attached as GraphLayout, id, placement as unknown as FolderGraph["placement"]);
+    return { hint, committed: { layout: graph.layout, basis }, history: { signature, layout: framed, placed: framed } };
+  }
   return { hint, committed: { layout: graph.layout, basis },
     history: { signature, layout: graph.layout, placed: graph.attached,
-      ...(graph.worldPlaced === true ? {} : { attachment: { bandTop, placement: placement as unknown as FolderGraph["placement"] } }) } };
+      attachment: { bandTop, placement: placement as unknown as FolderGraph["placement"] } } };
+}
+
+/**
+ * A world-placed drawing is already attached in its cover's frame. Declare that
+ * frame explicitly: the body belongs to a band whose top is the cover bottom and
+ * whose child allocation starts one stem room below it. Re-attaching a layout
+ * derived from it at that band top is the identity, so a later click translates
+ * the body only by an actual change of band top or stem room, never by
+ * re-inferring the frame from wherever the first child row happens to sit.
+ */
+function worldBandFrame(attached: GraphLayout, id: GraphId, placement: FolderGraph["placement"]): GraphLayout {
+  const cover = attached.nodes.get(id);
+  if (attached.bandBounds || !cover) return attached;
+  const extent = bandExtent(attached, id);
+  return { ...attached, bandBounds: { left: extent.left, width: extent.width,
+    top: cover.y + cover.height + (placement.stemRoom ?? STACK_STEM_ROOM) } };
 }
 
 function priorsOf(previous: unknown): ReadonlyMap<GraphId, Prior> {
