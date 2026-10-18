@@ -11,6 +11,8 @@ it('keeps legal corpus clicks at least as stable as main using committed click h
   expect.soft(result.displacement).toBeLessThanOrEqual(17.53);
 }, 1_800_000);
 
+// Every corpus state at 20 sizes; constrained insertion's bounded search runs
+// before any legacy fallback, so this sweep needs a longer window than one request.
 it('explains every corpus height regression over ten percent with actual retained stability', () => {
   expect(unexplainedHeightRegressions()).toEqual([]);
-}, 300_000);
+}, 1_200_000);

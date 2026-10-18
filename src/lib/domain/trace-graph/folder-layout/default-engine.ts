@@ -32,7 +32,7 @@ import { gridFlow, type GridItem, type GridMetrics, type GridRect } from "../gri
 import { attachPackedBand, bandExtent, bandPlacements, packedGridFlow } from "../band-geometry";
 import { BAND_DEFAULTS, bandHistorySignature, type BandOptions } from "../band-layout";
 import { folderGridGeometry, gridPins, type FolderGridGeometry } from "../folder-grid";
-import { layoutGraph, type BandHistory, type GraphLayout, type LayoutRequest, type LayoutItem } from "../layout";
+import { layoutGraph, RoutingConflictError, type BandHistory, type GraphLayout, type LayoutRequest, type LayoutItem } from "../layout";
 import { layoutSignature } from "../layout-signature";
 import { pathNumbers } from "../path-data";
 import { isLayoutShape, validHistory } from "../history-boundary";
@@ -41,6 +41,11 @@ import { withCellFootprints } from "./cell-footprints";
 import { folderGeometryGate } from "./geometry-gate";
 import { safeLayout } from "../safe-layout";
 import { pinnedFolderPlacement, preservesFolderRectangles } from "./pinned-placement";
+import { automaticFolderPlacement } from "./automatic-placement";
+import { folderWorldPreferences } from "./world-preferences";
+import { WorldPlacementDecline } from "./world-result";
+import { automaticIncrementalBudget, type IncrementalWorkBudget } from "../band-incremental";
+import { adoptionFallback, PRODUCTION_ROUTING_WORK, recordAdoption } from "../incremental-adoption";
 import { planBandScene, type BandScenePlan } from "../scene";
 import type { BandExpansion } from "../visibility";
 import { createBoundedCache, estimateLayoutBytes, type BoundedCache } from "./bounded-cache";
@@ -441,6 +446,42 @@ function retainedWorldPlacement(input: FolderLayoutInput, plans: ReadonlyMap<Gra
   return { basis, layout };
 }
 
+/**
+ * Constrained folder-world arrival (slice 4): every retained world rectangle,
+ * native path and dot of the actual committed folder is a constant; new tiles
+ * and routes are constructed around them under one finite allowance. Published
+ * only when the folder gate certifies the completed drawing and every retained
+ * rectangle is where the arrival snapshot has it; otherwise null hands the
+ * request to the legacy pinned placement in the same engine call.
+ */
+function constrainedFolderPlacement(input: FolderLayoutInput, plans: ReadonlyMap<GraphId, BandPlan>,
+  snapshot: FolderPlacementHistory['layout'], geometry: FolderGridGeometry, candidate: FolderLayout): FolderLayout | null {
+  const work: IncrementalWorkBudget = { remaining: PRODUCTION_ROUTING_WORK['folder-arrival'], automaticRemaining: PRODUCTION_ROUTING_WORK['folder-arrival'],
+    automaticPools: automaticIncrementalBudget() };
+  let outcome: Parameters<typeof recordAdoption>[1], drawing: FolderLayout | null = null;
+  try {
+    const result = automaticFolderPlacement(input, plans, snapshot, folderWorldPreferences(input, geometry, work), work);
+    if (!result.ok) outcome = adoptionFallback(result.conflict.reason);
+    else if (folderGeometryGate(result.drawing) || !preservesFolderRectangles(result.drawing, snapshot)) outcome = 'contract';
+    else {
+      outcome = 'success';
+      // As for the legacy world placement: the request's raw band layout remains
+      // the band cache's canonical entry; the world drawing never becomes one.
+      drawing = { ...result.drawing, graphs: new Map([...result.drawing.graphs].map(([id, graph]) => {
+        const raw = candidate.graphs.get(id), plan = plans.get(id)?.plan;
+        return [id, raw && plan ? { ...graph, canonical: { request: plan.request, layout: raw.layout } } : graph] as const;
+      })) };
+    }
+  } catch (error) {
+    if (error instanceof WorldPlacementDecline) outcome = adoptionFallback(error.conflict.reason);
+    else if (error instanceof RoutingConflictError) outcome = error.conflict.kind === 'search-exhausted' ? 'budget'
+      : error.conflict.kind === 'invalid' ? 'unsupported' : error.conflict.kind === 'metric' ? 'metric' : 'topology';
+    else throw error;
+  }
+  recordAdoption('folder-arrival', outcome, PRODUCTION_ROUTING_WORK['folder-arrival'] - work.remaining);
+  return drawing;
+}
+
 export function createDefaultEngine(options: DefaultEngineOptions = {}): FolderLayoutEngine {
   const cache = options.bandCache === undefined ? createBoundedCache(estimateLayoutBytes) : options.bandCache;
   // Certificates are bound to immutable serialized bytes and the requested state, not
@@ -498,7 +539,8 @@ export function createDefaultEngine(options: DefaultEngineOptions = {}): FolderL
     let failure = folderGeometryGate(result);
     let pinningFailed = false;
     if (placement && (failure || !preservesFolderRectangles(result, placement.layout))) {
-      const pinned = pinnedFolderPlacement(input, plans, placement.layout, result);
+      const pinned = constrainedFolderPlacement(input, plans, placement.layout, geometry, result)
+        ?? pinnedFolderPlacement(input, plans, placement.layout, result);
       pinningFailed = pinned === null;
       result = pinned ?? result;
       if (pinned) failure = null; // The world candidate certifies its completed attached folder.
