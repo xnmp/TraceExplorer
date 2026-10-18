@@ -1,0 +1,1152 @@
+{
+  "items": [
+    {
+      "id": "a:1",
+      "kind": "stack"
+    },
+    {
+      "id": "a:5",
+      "kind": "stack"
+    },
+    {
+      "id": "a:6",
+      "kind": "stack"
+    },
+    {
+      "id": "/pictures/notes.txt",
+      "kind": "file"
+    },
+    {
+      "id": "/pictures/plain.png",
+      "kind": "file"
+    },
+    {
+      "id": "/pictures/refs",
+      "kind": "folder"
+    }
+  ],
+  "open": {
+    "__map": [
+      [
+        "a:5",
+        {
+          "id": "a:5",
+          "graph": {
+            "dag": {
+              "nodes": {
+                "__map": [
+                  [
+                    "a:5",
+                    {
+                      "key": "a:5",
+                      "artifactId": 5,
+                      "runId": null,
+                      "parents": [],
+                      "path": "/pictures/forest.png",
+                      "scope": "current",
+                      "location": "./forest.png",
+                      "state": "present",
+                      "temporary": false,
+                      "discarded": false,
+                      "earlierRevision": false,
+                      "order": 5,
+                      "prompt": "forest prompt"
+                    }
+                  ],
+                  [
+                    "o:25:0",
+                    {
+                      "key": "o:25:0",
+                      "artifactId": 25,
+                      "runId": 25,
+                      "parents": [
+                        "a:5"
+                      ],
+                      "path": "/pictures/forest-mist.png",
+                      "scope": "current",
+                      "location": "./forest-mist.png",
+                      "state": "present",
+                      "temporary": false,
+                      "discarded": false,
+                      "earlierRevision": false,
+                      "order": 25,
+                      "prompt": "forest-mist prompt"
+                    }
+                  ],
+                  [
+                    "o:26:0",
+                    {
+                      "key": "o:26:0",
+                      "artifactId": 26,
+                      "runId": 26,
+                      "parents": [
+                        "a:5"
+                      ],
+                      "path": "/pictures/autumn.png",
+                      "scope": "current",
+                      "location": "./autumn.png",
+                      "state": "present",
+                      "temporary": false,
+                      "discarded": false,
+                      "earlierRevision": false,
+                      "order": 26,
+                      "prompt": "autumn prompt"
+                    }
+                  ],
+                  [
+                    "o:39:0",
+                    {
+                      "key": "o:39:0",
+                      "artifactId": 43,
+                      "runId": 39,
+                      "parents": [
+                        "a:5"
+                      ],
+                      "path": "/managed/variation-1.png",
+                      "scope": "current",
+                      "location": "Unsaved",
+                      "state": "present",
+                      "temporary": true,
+                      "discarded": false,
+                      "earlierRevision": false,
+                      "order": 43,
+                      "prompt": "variation-1 prompt"
+                    }
+                  ],
+                  [
+                    "o:40:0",
+                    {
+                      "key": "o:40:0",
+                      "artifactId": 44,
+                      "runId": 40,
+                      "parents": [
+                        "a:5"
+                      ],
+                      "path": "/managed/variation-2.png",
+                      "scope": "current",
+                      "location": "Unsaved",
+                      "state": "present",
+                      "temporary": true,
+                      "discarded": false,
+                      "earlierRevision": false,
+                      "order": 44,
+                      "prompt": "variation-2 prompt"
+                    }
+                  ],
+                  [
+                    "o:41:0",
+                    {
+                      "key": "o:41:0",
+                      "artifactId": 45,
+                      "runId": 41,
+                      "parents": [
+                        "a:5"
+                      ],
+                      "path": "/managed/variation-3.png",
+                      "scope": "current",
+                      "location": "Unsaved",
+                      "state": "present",
+                      "temporary": true,
+                      "discarded": false,
+                      "earlierRevision": false,
+                      "order": 45,
+                      "prompt": "variation-3 prompt"
+                    }
+                  ],
+                  [
+                    "o:42:0",
+                    {
+                      "key": "o:42:0",
+                      "artifactId": 46,
+                      "runId": 42,
+                      "parents": [
+                        "a:5"
+                      ],
+                      "path": "/managed/variation-4.png",
+                      "scope": "current",
+                      "location": "Unsaved",
+                      "state": "present",
+                      "temporary": true,
+                      "discarded": false,
+                      "earlierRevision": false,
+                      "order": 46,
+                      "prompt": "variation-4 prompt"
+                    }
+                  ]
+                ]
+              },
+              "parents": {
+                "__map": [
+                  [
+                    "a:5",
+                    []
+                  ],
+                  [
+                    "o:25:0",
+                    [
+                      "a:5"
+                    ]
+                  ],
+                  [
+                    "o:26:0",
+                    [
+                      "a:5"
+                    ]
+                  ],
+                  [
+                    "o:39:0",
+                    [
+                      "a:5"
+                    ]
+                  ],
+                  [
+                    "o:40:0",
+                    [
+                      "a:5"
+                    ]
+                  ],
+                  [
+                    "o:41:0",
+                    [
+                      "a:5"
+                    ]
+                  ],
+                  [
+                    "o:42:0",
+                    [
+                      "a:5"
+                    ]
+                  ]
+                ]
+              },
+              "children": {
+                "__map": [
+                  [
+                    "a:5",
+                    [
+                      "o:25:0",
+                      "o:26:0",
+                      "o:39:0",
+                      "o:40:0",
+                      "o:41:0",
+                      "o:42:0"
+                    ]
+                  ],
+                  [
+                    "o:25:0",
+                    []
+                  ],
+                  [
+                    "o:26:0",
+                    []
+                  ],
+                  [
+                    "o:39:0",
+                    []
+                  ],
+                  [
+                    "o:40:0",
+                    []
+                  ],
+                  [
+                    "o:41:0",
+                    []
+                  ],
+                  [
+                    "o:42:0",
+                    []
+                  ]
+                ]
+              },
+              "order": [
+                "a:5",
+                "o:25:0",
+                "o:26:0",
+                "o:39:0",
+                "o:40:0",
+                "o:41:0",
+                "o:42:0"
+              ]
+            },
+            "badges": {
+              "__map": []
+            },
+            "byConsumer": {
+              "__map": []
+            }
+          },
+          "members": [
+            "a:5",
+            "o:25:0",
+            "o:26:0",
+            "o:39:0",
+            "o:40:0",
+            "o:41:0",
+            "o:42:0"
+          ],
+          "anchor": null,
+          "expanded": {
+            "__map": [
+              [
+                "a:5",
+                true
+              ],
+              [
+                "o:25:0",
+                true
+              ]
+            ]
+          }
+        }
+      ]
+    ]
+  },
+  "width": 864,
+  "tile": {
+    "width": 92,
+    "image": 51
+  },
+  "grid": {
+    "contentWidth": 92,
+    "cellWidth": 92,
+    "cellHeight": 97,
+    "gap": 8
+  },
+  "previous": {
+    "columns": 8,
+    "size": {
+      "width": 864,
+      "height": 852
+    },
+    "bounds": {
+      "x": 0,
+      "y": 0,
+      "width": 864,
+      "height": 852
+    },
+    "cells": {
+      "__map": [
+        [
+          "a:1",
+          {
+            "id": "a:1",
+            "row": 0,
+            "col": 0,
+            "x": 0,
+            "y": 0,
+            "width": 101,
+            "height": 97
+          }
+        ],
+        [
+          "a:5",
+          {
+            "id": "a:5",
+            "row": 0,
+            "col": 1,
+            "x": 109,
+            "y": 0,
+            "width": 101,
+            "height": 97
+          }
+        ],
+        [
+          "a:6",
+          {
+            "id": "a:6",
+            "row": 0,
+            "col": 2,
+            "x": 218,
+            "y": 0,
+            "width": 101,
+            "height": 97
+          }
+        ],
+        [
+          "/pictures/notes.txt",
+          {
+            "id": "/pictures/notes.txt",
+            "row": 0,
+            "col": 3,
+            "x": 327,
+            "y": 0,
+            "width": 101,
+            "height": 97
+          }
+        ],
+        [
+          "/pictures/plain.png",
+          {
+            "id": "/pictures/plain.png",
+            "row": 0,
+            "col": 4,
+            "x": 436,
+            "y": 0,
+            "width": 101,
+            "height": 97
+          }
+        ],
+        [
+          "/pictures/refs",
+          {
+            "id": "/pictures/refs",
+            "row": 0,
+            "col": 5,
+            "x": 545,
+            "y": 0,
+            "width": 101,
+            "height": 97
+          }
+        ]
+      ]
+    },
+    "bands": [
+      {
+        "x": 16,
+        "y": 147,
+        "width": 756,
+        "height": 705,
+        "id": "a:5",
+        "row": 0
+      }
+    ],
+    "rowBands": [
+      {
+        "x": 8,
+        "y": 147,
+        "width": 764,
+        "height": 705,
+        "row": 0,
+        "id": "row:0"
+      }
+    ],
+    "graphs": {
+      "__map": [
+        [
+          "a:5",
+          {
+            "id": "a:5",
+            "plan": {
+              "request": {
+                "items": [
+                  {
+                    "key": "a:5",
+                    "width": 92,
+                    "height": 97,
+                    "order": 5,
+                    "parents": []
+                  },
+                  {
+                    "key": "o:25:0",
+                    "width": 92,
+                    "height": 81,
+                    "order": 25,
+                    "parents": [
+                      "a:5"
+                    ]
+                  },
+                  {
+                    "key": "o:26:0",
+                    "width": 92,
+                    "height": 81,
+                    "order": 26,
+                    "parents": [
+                      "a:5"
+                    ]
+                  },
+                  {
+                    "key": "o:39:0",
+                    "width": 92,
+                    "height": 81,
+                    "order": 43,
+                    "parents": [
+                      "a:5"
+                    ]
+                  },
+                  {
+                    "key": "o:40:0",
+                    "width": 92,
+                    "height": 81,
+                    "order": 44,
+                    "parents": [
+                      "a:5"
+                    ]
+                  },
+                  {
+                    "key": "o:41:0",
+                    "width": 92,
+                    "height": 81,
+                    "order": 45,
+                    "parents": [
+                      "a:5"
+                    ]
+                  },
+                  {
+                    "key": "o:42:0",
+                    "width": 92,
+                    "height": 81,
+                    "order": 46,
+                    "parents": [
+                      "a:5"
+                    ]
+                  }
+                ],
+                "maxWidth": 864,
+                "tileWidth": 92,
+                "orientation": "down",
+                "pinned": {
+                  "key": "a:5",
+                  "x": 159.5,
+                  "obstacles": []
+                },
+                "band": {
+                  "key": "a:5",
+                  "items": [
+                    {
+                      "key": "a:5",
+                      "width": 92,
+                      "imageHeight": 51,
+                      "height": 97,
+                      "order": 5,
+                      "parents": []
+                    },
+                    {
+                      "key": "o:25:0",
+                      "width": 92,
+                      "imageHeight": 51,
+                      "height": 81,
+                      "order": 25,
+                      "parents": [
+                        "a:5"
+                      ]
+                    },
+                    {
+                      "key": "o:26:0",
+                      "width": 92,
+                      "imageHeight": 51,
+                      "height": 81,
+                      "order": 26,
+                      "parents": [
+                        "a:5"
+                      ]
+                    },
+                    {
+                      "key": "o:39:0",
+                      "width": 92,
+                      "imageHeight": 51,
+                      "height": 81,
+                      "order": 43,
+                      "parents": [
+                        "a:5"
+                      ]
+                    },
+                    {
+                      "key": "o:40:0",
+                      "width": 92,
+                      "imageHeight": 51,
+                      "height": 81,
+                      "order": 44,
+                      "parents": [
+                        "a:5"
+                      ]
+                    },
+                    {
+                      "key": "o:41:0",
+                      "width": 92,
+                      "imageHeight": 51,
+                      "height": 81,
+                      "order": 45,
+                      "parents": [
+                        "a:5"
+                      ]
+                    },
+                    {
+                      "key": "o:42:0",
+                      "width": 92,
+                      "imageHeight": 51,
+                      "height": 81,
+                      "order": 46,
+                      "parents": [
+                        "a:5"
+                      ]
+                    }
+                  ]
+                }
+              }
+            },
+            "layout": {
+              "orientation": "down",
+              "width": 864,
+              "height": 852,
+              "nodes": {
+                "__map": [
+                  [
+                    "a:5",
+                    {
+                      "key": "a:5",
+                      "x": 113.5,
+                      "y": 0,
+                      "width": 92,
+                      "height": 97,
+                      "band": 0,
+                      "row": 0
+                    }
+                  ],
+                  [
+                    "o:25:0",
+                    {
+                      "key": "o:25:0",
+                      "x": 356,
+                      "y": 147,
+                      "width": 92,
+                      "height": 81,
+                      "band": 1,
+                      "row": 1
+                    }
+                  ],
+                  [
+                    "o:26:0",
+                    {
+                      "key": "o:26:0",
+                      "x": 464,
+                      "y": 147,
+                      "width": 92,
+                      "height": 81,
+                      "band": 1,
+                      "row": 1
+                    }
+                  ],
+                  [
+                    "o:39:0",
+                    {
+                      "key": "o:39:0",
+                      "x": 572,
+                      "y": 147,
+                      "width": 92,
+                      "height": 81,
+                      "band": 1,
+                      "row": 1
+                    }
+                  ],
+                  [
+                    "o:40:0",
+                    {
+                      "key": "o:40:0",
+                      "x": 680,
+                      "y": 147,
+                      "width": 92,
+                      "height": 81,
+                      "band": 1,
+                      "row": 1
+                    }
+                  ],
+                  [
+                    "o:41:0",
+                    {
+                      "key": "o:41:0",
+                      "x": 124,
+                      "y": 147,
+                      "width": 92,
+                      "height": 81,
+                      "row": 1,
+                      "band": 1
+                    }
+                  ],
+                  [
+                    "o:42:0",
+                    {
+                      "key": "o:42:0",
+                      "x": 16,
+                      "y": 771,
+                      "width": 92,
+                      "height": 81,
+                      "row": 1,
+                      "band": 1
+                    }
+                  ]
+                ]
+              },
+              "rows": [],
+              "routes": [
+                {
+                  "id": "[\"node\",\"a:5\",\"node\",\"o:25:0\"]",
+                  "from": {
+                    "kind": "node",
+                    "id": "a:5"
+                  },
+                  "to": {
+                    "kind": "node",
+                    "id": "o:25:0"
+                  },
+                  "consumers": [
+                    {
+                      "parent": "a:5",
+                      "child": "o:25:0"
+                    }
+                  ],
+                  "path": "M159.5 97 L159.5 111 C159.5 114.3137084988 162.1862915012 117 165.5 117 L396 117 C399.3137084988 117 402 119.6862915012 402 123 L402 130.9999999999977 C402 130.99999999999847 402 130.99999999999923 402 131 L 402 139",
+                  "terminal": true
+                },
+                {
+                  "id": "[\"node\",\"a:5\",\"node\",\"o:26:0\"]",
+                  "from": {
+                    "kind": "node",
+                    "id": "a:5"
+                  },
+                  "to": {
+                    "kind": "node",
+                    "id": "o:26:0"
+                  },
+                  "consumers": [
+                    {
+                      "parent": "a:5",
+                      "child": "o:26:0"
+                    }
+                  ],
+                  "path": "M159.5 97 L159.5 111 C159.5 114.3137084988 162.1862915012 117 165.5 117 L504 117 C507.3137084988 117 510 119.6862915012 510 123 L510 130.9999999999977 C510 130.99999999999847 510 130.99999999999923 510 131 L 510 139",
+                  "terminal": true
+                },
+                {
+                  "id": "[\"node\",\"a:5\",\"node\",\"o:39:0\"]",
+                  "from": {
+                    "kind": "node",
+                    "id": "a:5"
+                  },
+                  "to": {
+                    "kind": "node",
+                    "id": "o:39:0"
+                  },
+                  "consumers": [
+                    {
+                      "parent": "a:5",
+                      "child": "o:39:0"
+                    }
+                  ],
+                  "path": "M159.5 97 L159.5 111 C159.5 114.3137084988 162.1862915012 117 165.5 117 L612 117 C615.3137084988 117 618 119.6862915012 618 123 L618 130.9999999999977 C618 130.99999999999847 618 130.99999999999923 618 131 L 618 139",
+                  "terminal": true
+                },
+                {
+                  "id": "[\"node\",\"a:5\",\"node\",\"o:40:0\"]",
+                  "from": {
+                    "kind": "node",
+                    "id": "a:5"
+                  },
+                  "to": {
+                    "kind": "node",
+                    "id": "o:40:0"
+                  },
+                  "consumers": [
+                    {
+                      "parent": "a:5",
+                      "child": "o:40:0"
+                    }
+                  ],
+                  "path": "M159.5 97 L159.5 111 C159.5 114.3137084988 162.1862915012 117 165.5 117 L720 117 C723.3137084988 117 726 119.6862915012 726 123 L726 130.9999999999977 C726 130.99999999999847 726 130.99999999999923 726 131 L 726 139",
+                  "terminal": true
+                },
+                {
+                  "id": "[\"folder-route\",\"[\\\"incremental\\\",\\\"[\\\\\\\"node\\\\\\\",\\\\\\\"a:5\\\\\\\",\\\\\\\"a:5\\\\\\\"]\\\",\\\"[\\\\\\\"node\\\\\\\",\\\\\\\"a:5\\\\\\\",\\\\\\\"o:41:0\\\\\\\"]\\\"]\",\"\"]",
+                  "from": {
+                    "kind": "node",
+                    "id": "a:5"
+                  },
+                  "to": {
+                    "kind": "node",
+                    "id": "o:41:0"
+                  },
+                  "consumers": [
+                    {
+                      "parent": "a:5",
+                      "child": "o:41:0"
+                    }
+                  ],
+                  "terminal": true,
+                  "path": "M159.5 97 L159.5 114 L170 114 L170 139"
+                },
+                {
+                  "id": "[\"folder-route\",\"[\\\"incremental\\\",\\\"[\\\\\\\"node\\\\\\\",\\\\\\\"a:5\\\\\\\",\\\\\\\"a:5\\\\\\\"]\\\",\\\"[\\\\\\\"node\\\\\\\",\\\\\\\"a:5\\\\\\\",\\\\\\\"o:42:0\\\\\\\"]\\\"]\",\"\"]",
+                  "from": {
+                    "kind": "node",
+                    "id": "a:5"
+                  },
+                  "to": {
+                    "kind": "node",
+                    "id": "o:42:0"
+                  },
+                  "consumers": [
+                    {
+                      "parent": "a:5",
+                      "child": "o:42:0"
+                    }
+                  ],
+                  "terminal": true,
+                  "path": "M205.5 48.5 L209.5 48.5 L209.5 103 L856 103 L856 754 L62 754 L62 763"
+                }
+              ],
+              "readingOrder": {
+                "__map": [
+                  [
+                    "a:5",
+                    0
+                  ],
+                  [
+                    "o:25:0",
+                    1
+                  ],
+                  [
+                    "o:26:0",
+                    2
+                  ],
+                  [
+                    "o:39:0",
+                    3
+                  ],
+                  [
+                    "o:40:0",
+                    4
+                  ]
+                ]
+              },
+              "junctions": {
+                "__map": []
+              },
+              "decision": {
+                "candidate": "folder-pinned-extension",
+                "stability": true
+              }
+            },
+            "attached": {
+              "orientation": "down",
+              "width": 864,
+              "height": 852,
+              "nodes": {
+                "__map": [
+                  [
+                    "a:5",
+                    {
+                      "key": "a:5",
+                      "x": 113.5,
+                      "y": 0,
+                      "width": 92,
+                      "height": 97,
+                      "band": 0,
+                      "row": 0
+                    }
+                  ],
+                  [
+                    "o:25:0",
+                    {
+                      "key": "o:25:0",
+                      "x": 356,
+                      "y": 147,
+                      "width": 92,
+                      "height": 81,
+                      "band": 1,
+                      "row": 1
+                    }
+                  ],
+                  [
+                    "o:26:0",
+                    {
+                      "key": "o:26:0",
+                      "x": 464,
+                      "y": 147,
+                      "width": 92,
+                      "height": 81,
+                      "band": 1,
+                      "row": 1
+                    }
+                  ],
+                  [
+                    "o:39:0",
+                    {
+                      "key": "o:39:0",
+                      "x": 572,
+                      "y": 147,
+                      "width": 92,
+                      "height": 81,
+                      "band": 1,
+                      "row": 1
+                    }
+                  ],
+                  [
+                    "o:40:0",
+                    {
+                      "key": "o:40:0",
+                      "x": 680,
+                      "y": 147,
+                      "width": 92,
+                      "height": 81,
+                      "band": 1,
+                      "row": 1
+                    }
+                  ],
+                  [
+                    "o:41:0",
+                    {
+                      "key": "o:41:0",
+                      "x": 124,
+                      "y": 147,
+                      "width": 92,
+                      "height": 81,
+                      "row": 1,
+                      "band": 1
+                    }
+                  ],
+                  [
+                    "o:42:0",
+                    {
+                      "key": "o:42:0",
+                      "x": 16,
+                      "y": 771,
+                      "width": 92,
+                      "height": 81,
+                      "row": 1,
+                      "band": 1
+                    }
+                  ]
+                ]
+              },
+              "rows": [],
+              "routes": [
+                {
+                  "id": "[\"node\",\"a:5\",\"node\",\"o:25:0\"]",
+                  "from": {
+                    "kind": "node",
+                    "id": "a:5"
+                  },
+                  "to": {
+                    "kind": "node",
+                    "id": "o:25:0"
+                  },
+                  "consumers": [
+                    {
+                      "parent": "a:5",
+                      "child": "o:25:0"
+                    }
+                  ],
+                  "path": "M159.5 97 L159.5 111 C159.5 114.3137084988 162.1862915012 117 165.5 117 L396 117 C399.3137084988 117 402 119.6862915012 402 123 L402 130.9999999999977 C402 130.99999999999847 402 130.99999999999923 402 131 L 402 139",
+                  "terminal": true
+                },
+                {
+                  "id": "[\"node\",\"a:5\",\"node\",\"o:26:0\"]",
+                  "from": {
+                    "kind": "node",
+                    "id": "a:5"
+                  },
+                  "to": {
+                    "kind": "node",
+                    "id": "o:26:0"
+                  },
+                  "consumers": [
+                    {
+                      "parent": "a:5",
+                      "child": "o:26:0"
+                    }
+                  ],
+                  "path": "M159.5 97 L159.5 111 C159.5 114.3137084988 162.1862915012 117 165.5 117 L504 117 C507.3137084988 117 510 119.6862915012 510 123 L510 130.9999999999977 C510 130.99999999999847 510 130.99999999999923 510 131 L 510 139",
+                  "terminal": true
+                },
+                {
+                  "id": "[\"node\",\"a:5\",\"node\",\"o:39:0\"]",
+                  "from": {
+                    "kind": "node",
+                    "id": "a:5"
+                  },
+                  "to": {
+                    "kind": "node",
+                    "id": "o:39:0"
+                  },
+                  "consumers": [
+                    {
+                      "parent": "a:5",
+                      "child": "o:39:0"
+                    }
+                  ],
+                  "path": "M159.5 97 L159.5 111 C159.5 114.3137084988 162.1862915012 117 165.5 117 L612 117 C615.3137084988 117 618 119.6862915012 618 123 L618 130.9999999999977 C618 130.99999999999847 618 130.99999999999923 618 131 L 618 139",
+                  "terminal": true
+                },
+                {
+                  "id": "[\"node\",\"a:5\",\"node\",\"o:40:0\"]",
+                  "from": {
+                    "kind": "node",
+                    "id": "a:5"
+                  },
+                  "to": {
+                    "kind": "node",
+                    "id": "o:40:0"
+                  },
+                  "consumers": [
+                    {
+                      "parent": "a:5",
+                      "child": "o:40:0"
+                    }
+                  ],
+                  "path": "M159.5 97 L159.5 111 C159.5 114.3137084988 162.1862915012 117 165.5 117 L720 117 C723.3137084988 117 726 119.6862915012 726 123 L726 130.9999999999977 C726 130.99999999999847 726 130.99999999999923 726 131 L 726 139",
+                  "terminal": true
+                },
+                {
+                  "id": "[\"folder-route\",\"[\\\"incremental\\\",\\\"[\\\\\\\"node\\\\\\\",\\\\\\\"a:5\\\\\\\",\\\\\\\"a:5\\\\\\\"]\\\",\\\"[\\\\\\\"node\\\\\\\",\\\\\\\"a:5\\\\\\\",\\\\\\\"o:41:0\\\\\\\"]\\\"]\",\"\"]",
+                  "from": {
+                    "kind": "node",
+                    "id": "a:5"
+                  },
+                  "to": {
+                    "kind": "node",
+                    "id": "o:41:0"
+                  },
+                  "consumers": [
+                    {
+                      "parent": "a:5",
+                      "child": "o:41:0"
+                    }
+                  ],
+                  "terminal": true,
+                  "path": "M159.5 97 L159.5 114 L170 114 L170 139"
+                },
+                {
+                  "id": "[\"folder-route\",\"[\\\"incremental\\\",\\\"[\\\\\\\"node\\\\\\\",\\\\\\\"a:5\\\\\\\",\\\\\\\"a:5\\\\\\\"]\\\",\\\"[\\\\\\\"node\\\\\\\",\\\\\\\"a:5\\\\\\\",\\\\\\\"o:42:0\\\\\\\"]\\\"]\",\"\"]",
+                  "from": {
+                    "kind": "node",
+                    "id": "a:5"
+                  },
+                  "to": {
+                    "kind": "node",
+                    "id": "o:42:0"
+                  },
+                  "consumers": [
+                    {
+                      "parent": "a:5",
+                      "child": "o:42:0"
+                    }
+                  ],
+                  "terminal": true,
+                  "path": "M205.5 48.5 L209.5 48.5 L209.5 103 L856 103 L856 754 L62 754 L62 763"
+                }
+              ],
+              "readingOrder": {
+                "__map": [
+                  [
+                    "a:5",
+                    0
+                  ],
+                  [
+                    "o:25:0",
+                    1
+                  ],
+                  [
+                    "o:26:0",
+                    2
+                  ],
+                  [
+                    "o:39:0",
+                    3
+                  ],
+                  [
+                    "o:40:0",
+                    4
+                  ]
+                ]
+              },
+              "junctions": {
+                "__map": []
+              },
+              "decision": {
+                "candidate": "folder-pinned-extension",
+                "stability": true
+              }
+            },
+            "origin": {
+              "x": 0,
+              "y": 0
+            },
+            "placement": {
+              "x": 348,
+              "coverX": 159.5,
+              "coverHeight": 97,
+              "width": 864,
+              "track": 20,
+              "bypassColumns": [
+                328.5
+              ],
+              "coverColumns": [
+                50.5,
+                268.5,
+                377.5,
+                486.5,
+                595.5
+              ],
+              "stemRoom": 50,
+              "left": 159.5,
+              "right": 780
+            },
+            "worldPlaced": true
+          }
+        ]
+      ]
+    },
+    "cellFootprints": {
+      "__map": [
+        [
+          "a:1",
+          {
+            "x": 4.5,
+            "y": 0,
+            "width": 92,
+            "height": 97
+          }
+        ],
+        [
+          "a:5",
+          {
+            "x": 113.5,
+            "y": 0,
+            "width": 92,
+            "height": 97
+          }
+        ],
+        [
+          "a:6",
+          {
+            "x": 222.5,
+            "y": 0,
+            "width": 92,
+            "height": 97
+          }
+        ],
+        [
+          "/pictures/notes.txt",
+          {
+            "x": 331.5,
+            "y": 0,
+            "width": 92,
+            "height": 97
+          }
+        ],
+        [
+          "/pictures/plain.png",
+          {
+            "x": 440.5,
+            "y": 0,
+            "width": 92,
+            "height": 97
+          }
+        ],
+        [
+          "/pictures/refs",
+          {
+            "x": 549.5,
+            "y": 0,
+            "width": 92,
+            "height": 97
+          }
+        ]
+      ]
+    },
+    "geometryBasis": "[864,{\"width\":92,\"image\":51},{\"contentWidth\":92,\"cellWidth\":92,\"cellHeight\":97,\"gap\":8}]",
+    "dataRevision": "9"
+  },
+  "dataRevision": "9",
+  "folderKey": "/pictures",
+  "contents": "metadata changed"
+}

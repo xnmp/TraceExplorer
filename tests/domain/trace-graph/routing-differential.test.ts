@@ -1,25 +1,31 @@
 import { createHash } from 'node:crypto';
 import { expect, it } from 'vitest';
-import { layoutLayered } from '$lib/domain/trace-graph/layout';
 import { packedGridFlow, bandPlacements } from '$lib/domain/trace-graph/band-geometry';
-import { corpus, requestFor } from '../../../layout-eval/corpus';
-import { node } from '../../../layout-eval/corpus';
+import { layoutLayered } from '$lib/domain/trace-graph/layout';
+import { importRoutingPlan } from '$lib/domain/trace-graph/routing-plan';
+import { eachConsumer } from '$lib/domain/trace-graph/route-consumers';
+import { corpus, requestFor, node } from '../../../layout-eval/corpus';
 import { createDefaultEngine } from '$lib/domain/trace-graph/folder-layout';
 import { tileMetrics } from '$lib/domain/trace-graph/metrics';
 import { fallbackGridMetrics } from '$lib/domain/trace-graph/folder-grid';
 import { folderInput, makeFolder } from './folder-layout-fixtures';
+import { sourcesReaching } from './fixtures';
 
-it('preserves serialized layered drawings across the existing corpus and channel scopes', () => {
-  // Captured by running the unmodified 6768262 engine, not by updating a snapshot
-  // from this implementation. Includes ordinary channels and unsupported cycles,
-  // swaps, fans and narrow gaps. Maps/Sets and route strings are included verbatim.
-  const hash = createHash('sha256');
-  for (const c of corpus()) for (const width of [360, 640, 1000]) {
-    const drawing = layoutLayered(requestFor(c, null, width, 48));
-    hash.update(JSON.stringify(drawing, (_, value) => value instanceof Map || value instanceof Set ? [...value] : value));
+it('preserves exact provenance and native port contracts across the existing corpus and channel scopes',()=>{
+  // Keep slice 1's complete 195-drawing population; slice 3 intentionally changes
+  // its coordinates, so verify the semantic/native contract instead of old bytes.
+  for(const c of corpus()) for(const width of [360,640,1000]) {
+    const request=requestFor(c,null,width,48),drawing=layoutLayered(request);
+    expect(new Set(drawing.nodes.keys())).toEqual(new Set(request.items.map(item=>item.key)));
+    for(const item of request.items) expect(sourcesReaching(drawing,item.key),`${c.id}/${width}/${item.key}`)
+      .toEqual(new Set(item.parents.filter(parent=>drawing.nodes.has(parent))));
+    const expected=new Set(request.items.flatMap(item=>item.parents.filter(parent=>drawing.nodes.has(parent))
+      .map(parent=>JSON.stringify([parent,item.key]))));
+    const actual=new Set(drawing.routes.flatMap(route=>[...eachConsumer(route)].map(({parent,child})=>JSON.stringify([parent,child]))));
+    expect(actual,`${c.id}/${width} consumer coverage`).toEqual(expected);
+    expect(()=>importRoutingPlan(structuredClone(drawing))).not.toThrow();
   }
-  expect(hash.digest('hex')).toBe('6bb1aad43b76b091ad1b6709d13c02ddccdca68409a54f6bedc06f48512f71df');
-}, 20000);
+},20000);
 
 it('preserves cold attachment, packing and corridor bytes outside retained channels', () => {
   // Unmodified 6768262: 63 cold packing states, including wrapped shared headers.

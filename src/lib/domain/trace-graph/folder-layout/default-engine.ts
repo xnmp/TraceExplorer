@@ -165,7 +165,27 @@ function openStacks(input: FolderLayoutInput): readonly (readonly [GraphId, Open
 }
 
 /** A planned band: its request, and the committed layout it keeps when its geometry basis is unchanged. */
-interface BandPlan { readonly plan: BandScenePlan; readonly kept: GraphLayout | null }
+interface BandPlan {
+  readonly plan: BandScenePlan;
+  /** The request's geometry is unchanged, including when its drawing lives in the folder frame. */
+  readonly unchanged: boolean;
+  /** Raw band geometry only: a world drawing must never be attached a second time. */
+  readonly kept: GraphLayout | null;
+}
+
+function canonicalBand(graph: FolderGraph | undefined, request: LayoutRequest): GraphLayout | null {
+  try {
+    const canonical = graph?.canonical;
+    return canonical && isLayoutShape(canonical.layout) && canonical.layout.width >= 0 && canonical.layout.height >= 0
+      && (!canonical.layout.bandBounds || canonical.layout.bandBounds.width >= 0)
+      && requestBasis(canonical.request) === requestBasis(request)
+      && canonical.layout.nodes.size === request.items.length && request.items.every(item => {
+        const node = canonical.layout.nodes.get(item.key);
+        return node?.width === item.width && node.height === item.height;
+      })
+      ? canonical.layout : null;
+  } catch { return null; } // Transported canonical metadata is untrusted too.
+}
 
 /** Plans every open band (the first half of step 2): what each band's layout request will be. */
 export function planBands(input: FolderLayoutInput, geometry: FolderGridGeometry): ReadonlyMap<GraphId, BandPlan> {
@@ -179,9 +199,13 @@ export function planBands(input: FolderLayoutInput, geometry: FolderGridGeometry
     const prior = priors.get(id);
     const plan = planBandScene(stack.graph, members, typeof stack.anchor === "string" ? stack.anchor : null, width,
       { pinned: pins.get(id)!, expanded: expandedOf(stack, id), history: prior?.history, hint: prior?.hint, tile: input.tile });
-    const kept = prior?.committed && isLayoutShape(prior.committed.layout)
-      && prior.committed.basis === requestBasis(plan.request) ? prior.committed.layout : null;
-    plans.set(id, { plan, kept });
+    const unchanged = !!prior?.committed && isLayoutShape(prior.committed.layout)
+      && prior.committed.basis === requestBasis(plan.request);
+    const graph = input.previous?.graphs instanceof Map ? input.previous.graphs.get(id) : undefined;
+    const kept = !unchanged ? null : graph?.worldPlaced
+      ? canonicalBand(graph, plan.request)
+      : prior!.committed!.layout;
+    plans.set(id, { plan, unchanged, kept });
   }
   return plans;
 }
@@ -272,8 +296,11 @@ export function rememberBands(layout: FolderLayout, cache: BoundedCache<GraphLay
   // Restored geometry was chosen under an earlier history, not the current request.
   if (layout.revisited) return;
   for (const graph of layout.graphs.values()) {
-    const canonical = graph.canonical ?? { request: graph.plan.request, layout: graph.layout };
-    cache.set(signatureOf(canonical.request), canonical.layout);
+    // World geometry has no raw-band transform. Missing/invalid provenance cannot seed the cache.
+    const canonical = graph.canonical ?? (graph.worldPlaced ? null : { request: graph.plan.request, layout: graph.layout });
+    if (!canonical || graph.canonical && !canonicalBand(graph, canonical.request)) continue;
+    try { cache.set(signatureOf(canonical.request), canonical.layout); }
+    catch { /* Malformed history/hints cannot supply a canonical cache key. */ }
   }
 }
 
@@ -352,6 +379,48 @@ function folderPlacementHistory(input: FolderLayoutInput, plans: ReadonlyMap<Gra
   return undefined;
 }
 
+/** Validate packing metadata too: the geometry gate certifies ink, not row/background records. */
+function validFolderFrame(previous: FolderLayout | null | undefined): previous is FolderLayout {
+  try {
+    const size = (value: unknown): value is { width: number; height: number } => isObject(value)
+      && finite(value.width, value.height) && Number(value.width) >= 0 && Number(value.height) >= 0;
+    const rect = (value: unknown): boolean => size(value) && finite((value as GridRect).x, (value as GridRect).y);
+    const row = (value: number): boolean => Number.isSafeInteger(value) && value >= 0;
+    return !!previous && Number.isSafeInteger(previous.columns) && previous.columns >= 1
+      && previous.cells instanceof Map && previous.graphs instanceof Map && size(previous.size) && rect(previous.bounds)
+      && Array.isArray(previous.bands) && Array.isArray(previous.rowBands)
+      && [...previous.cells].every(([id, cell]) => cell.id === id && rect(cell) && row(cell.row) && row(cell.col))
+      && previous.bands.length === previous.graphs.size && new Set(previous.bands.map(band => band.id)).size === previous.graphs.size
+      && previous.bands.every(band => rect(band) && row(band.row) && previous.graphs.has(band.id))
+      && previous.rowBands.every(band => rect(band) && row(band.row));
+  } catch { return false; }
+}
+
+/** A metadata refresh retains the complete drawing in its original coordinate frame. */
+function retainedFolder(input: FolderLayoutInput, plans: ReadonlyMap<GraphId, BandPlan>, basis: string): FolderLayout | null {
+  try {
+    const previous = input.previous;
+    if (!validFolderFrame(previous) || previous.geometryBasis !== basis || previous.cells.size !== input.items.length
+      || [...previous.cells.keys()].some((id, i) => id !== input.items[i].id) || previous.graphs.size !== plans.size
+      || [...plans].some(([id, band]) => !band.unchanged || !previous.graphs.has(id) || !validHistory(band.plan.request.history, id))) return null;
+    const graphs = new Map([...previous.graphs].map(([id, graph]) => [id, { ...graph, plan: plans.get(id)!.plan }]));
+    const result = withCellFootprints({ columns: previous.columns, size: previous.size, bounds: previous.bounds,
+      cells: previous.cells, bands: previous.bands, rowBands: previous.rowBands, graphs,
+      ...(previous.decision ? { decision: previous.decision } : {}) }, input);
+    return folderGeometryGate(result) ? null : result;
+  } catch { return null; } // Invalid retained folder metadata cannot authorize reuse.
+}
+
+/** Unchanged world bands retain their folder frame when another band opens, closes or changes. */
+function retainedWorldPlacement(input: FolderLayoutInput, plans: ReadonlyMap<GraphId, BandPlan>, basis: string): FolderPlacementHistory | undefined {
+  const previous = input.previous;
+  if (!validFolderFrame(previous) || previous.geometryBasis !== basis
+    || previous.cells.size !== input.items.length || [...previous.cells.keys()].some((id, i) => id !== input.items[i].id)
+    || ![...plans].some(([id, band]) => band.unchanged && previous.graphs.get(id)?.worldPlaced)) return undefined;
+  const { arrivalPlacement: _placement, arrivals: _arrivals, displays: _displays, ...layout } = previous;
+  return { basis, layout };
+}
+
 export function createDefaultEngine(options: DefaultEngineOptions = {}): FolderLayoutEngine {
   const cache = options.bandCache === undefined ? createBoundedCache(estimateLayoutBytes) : options.bandCache;
   // Certificates are bound to immutable serialized bytes and the requested state, not
@@ -401,12 +470,15 @@ export function createDefaultEngine(options: DefaultEngineOptions = {}): FolderL
     if (restored) return { ...restored, revisited: true, arrivals, geometryBasis, dataRevision: input.dataRevision,
       displays: rememberDisplay(input.previous?.displays, identity, restored, true) };
     const arrivalPlacement = folderPlacementHistory(input, plans, geometryBasis);
-    const bands = layoutPlanned(plans, cache, options.band);
-    let result = withCellFootprints(composeFolderLayout(input.items, geometry, bands), input);
+    const placement = arrivalPlacement ?? retainedWorldPlacement(input, plans, geometryBasis);
+    const retained = retainedFolder(input, plans, geometryBasis);
+    // A certified continuation needs no raw-band reconstruction, even if its canonical cache metadata is absent.
+    const bands = retained ? new Map<GraphId, PlannedBand>() : layoutPlanned(plans, cache, options.band);
+    let result = retained ?? withCellFootprints(composeFolderLayout(input.items, geometry, bands), input);
     let failure = folderGeometryGate(result);
     let pinningFailed = false;
-    if (arrivalPlacement && (failure || !preservesFolderRectangles(result, arrivalPlacement.layout))) {
-      const pinned = pinnedFolderPlacement(input, plans, arrivalPlacement.layout, result);
+    if (placement && (failure || !preservesFolderRectangles(result, placement.layout))) {
+      const pinned = pinnedFolderPlacement(input, plans, placement.layout, result);
       pinningFailed = pinned === null;
       result = pinned ?? result;
       if (pinned) failure = null; // The world candidate certifies its completed attached folder.

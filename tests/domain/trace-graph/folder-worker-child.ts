@@ -15,10 +15,34 @@ import { twoChainsMerge } from './folder-merge-fixture';
 import { createFolderLayoutRuntime } from '../../../src/lib/plugins/trace/view/folder-layout-runtime';
 import { buildFolderScene } from '../../../src/lib/domain/trace-graph/folder-scene';
 import { staticPresentation } from '../../../src/lib/plugins/trace/view/presentation';
+import { worldInput } from './folder-world-fixture';
 try {
-  if (mode === 'merges') {
-    const runtime = createFolderLayoutRuntime(), fixture = twoChainsMerge();
-    for (const prepare of fixture.steps) {
+  if (mode === 'world-refresh') {
+    const runtime = createFolderLayoutRuntime();
+    for (let step = 0; step < 7; step++) {
+      const input = worldInput(step > 0, previous, `save-${step}`);
+      if (step === 6) (input.open as Map<string, unknown>).delete('s1:root');
+      equal(runtime.inline(input), true);
+      const inline = runtime.engine(structuredClone(input)), id = ++sequence;
+      const reply: any = await new Promise((resolve, reject) => {
+        worker.onmessage = event => resolve(event.data); worker.onerror = reject;
+        worker.postMessage(ledger.message(id, input));
+      });
+      if (reply.error) throw new Error(reply.error);
+      deepStrictEqual(reply.folder, inline);
+      equal(folderGeometryGate(inline), null);
+      equal(inline.size.width, input.width);
+      if (step > 1 && step < 6) deepStrictEqual(inline.size, previous.size);
+      runtime.remember(reply.folder);
+      ledger.replied(id, reply.folder); previous = reply.folder;
+    }
+  } else if (mode === 'merges' || mode === 'routing-publication') {
+    const runtime = createFolderLayoutRuntime(), fixture = twoChainsMerge(mode==='routing-publication');
+    const saved = new Map<number,unknown>();
+    const drawing = (layout:any) => [layout.cells,layout.bands,layout.rowBands,layout.size,layout.bounds,
+      [...layout.graphs].map(([id,g]:any)=>[id,g.attached,g.origin,g.placement])];
+    const rectangles = (layout:any):Map<string,any> => new Map([...layout.graphs.values()].flatMap((g:any)=>[...g.attached.nodes].map(([key,n]:any)=>[key,{...n,x:n.x+g.origin.x,y:n.y+g.origin.y}])));
+    for (const [step,prepare] of fixture.steps.entries()) {
       const { input, sources } = prepare(previous), inline = runtime.engine(structuredClone(input)), id = ++sequence;
       const message = ledger.message(id, input);
       if (id > 1) equal(message.previous, id - 1);
@@ -34,8 +58,23 @@ try {
           layoutInput: input, layout, sources,
           styling: { focus: 'o:11:0', selectedKeys: new Set(['o:11:0']), selectedPaths: new Set(), badgeHover: null } });
         equal(staticPresentation(scene).live.size, scene.records.size);
-        equal(scene.graphs.size, [0, 1, 2, 2, 1][id - 1]);
+        equal(scene.graphs.size, [0,1,2,2,1,0,1,1,0,1][step]);
+        if (step===6 || step===9) {
+          equal(layout.revisited,true);
+          deepStrictEqual(drawing(layout),saved.get(step===6?4:7));
+        }
+        if (step===7) {
+          equal(layout.graphs.get('a:2').attached.nodes.has(fixture.arrived),true);
+          for (const [key,before] of rectangles(previous)) {
+            const after=rectangles(layout).get(key);
+            if (!after) continue;
+            equal(after.x,before.x, key+' arrival x');
+            equal(after.y,before.y, key+' arrival y');
+          }
+        }
       }
+      saved.set(step,structuredClone(drawing(inline)));
+      runtime.remember(reply.folder);
       ledger.replied(id, reply.folder); previous = reply.folder;
     }
     equal(previous.graphs.get('a:2').attached.nodes.has(fixture.joined), true);

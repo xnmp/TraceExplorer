@@ -1,7 +1,7 @@
 import { layoutStage, countLayoutWork } from './layout-profile';
 import { filterRouteConsumers } from "./route-consumers";
 /** Visible-first, bounded band optimisation. Geometry and history are immutable inputs. */
-import { downwardBandBound, layoutLayered, type GraphLayout, type LayoutItem, type LayoutRequest, type Ordering, type Passing, type PlacedNode } from "./layout";
+import { RoutingConflictError, downwardBandBound, layoutLayered, type GraphLayout, type LayoutItem, type LayoutRequest, type Ordering, type Passing, type PlacedNode } from "./layout";
 import { geometryGate, routeClearanceViolation } from "./geometry-gate";
 import { repairRouteContacts } from "./repair-route-contacts";
 import { safeChain } from "./safe-chain";
@@ -301,14 +301,22 @@ export function layoutBand(input: LayoutRequest, options: BandOptions = BAND_DEF
     const x = Number.isFinite(request.pinned.x) ? request.pinned.x : request.maxWidth / 2;
     request = { ...request, pinned: { ...request.pinned, x: Math.max(half, Math.min(request.maxWidth - half, x)) } };
   }
-  let result = layoutBandCandidates(request, options);
-  if (request.items.length && geometryGate(attachSingleBand(result, request), request.items, request.band!.key, request.maxWidth)) {
+  let result: GraphLayout | undefined;
+  try { result=layoutBandCandidates(request,options); }
+  catch(error) {
+    // Retained states must not turn a topology conflict into an unpinned cold
+    // drawing. Their explicit error keeps the last committed scene intact.
+    if(!(error instanceof RoutingConflictError) || request.history) throw error;
+  }
+  if (!result || request.items.length && geometryGate(attachSingleBand(result, request), request.items, request.band!.key, request.maxWidth)) {
     const endFallback = layoutStage('fallback-ladder');
     countLayoutWork('fallback-ladder');
     try {
     let replacement: GraphLayout | undefined;
     for (const scale of [1.5, 2, 3]) {
-      const candidate = withPaneBandBounds(layoutLayered({ ...request, history: undefined, band: undefined, tileWidth: (request.tileWidth ?? 92) * scale, orientation: "down" }, { ordering: options.ordering, passing: options.passing, channelStyle: "orthogonal" }), request.band!.key, request.maxWidth);
+      let candidate:GraphLayout;
+      try { candidate=withPaneBandBounds(layoutLayered({ ...request, history: undefined, band: undefined, tileWidth: (request.tileWidth ?? 92) * scale, orientation: "down" }, { ordering: options.ordering, passing: options.passing, channelStyle: "orthogonal" }), request.band!.key, request.maxWidth); }
+      catch(error) {if(error instanceof RoutingConflictError) continue;throw error;}
       if (!geometryGate(attachSingleBand(candidate, request), request.items, request.band!.key, request.maxWidth)) {
         replacement = { ...candidate, decision: { candidate: "wide-channels", stability: false, fallback: "geometry-fallback" } }; break;
       }

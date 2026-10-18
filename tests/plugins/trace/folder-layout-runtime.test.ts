@@ -1,8 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { node } from "../../../layout-eval/corpus";
 import { createFolderLayoutRuntime } from "$lib/plugins/trace/view/folder-layout-runtime";
-import { engines } from "$lib/domain/trace-graph/folder-layout";
+import { createDefaultEngine, engines } from "$lib/domain/trace-graph/folder-layout";
 import { folderInput, handCase, makeFolder } from "../../domain/trace-graph/folder-layout-fixtures";
+import { worldInput } from "../../domain/trace-graph/folder-world-fixture";
 
 const folder = makeFolder({ stacks: [handCase("screenshot"), handCase("fan-80")], files: 2 });
 
@@ -48,4 +49,22 @@ it('opens the harness-sized fan inline among the other stacks and ordinary cells
   const opening = folderInput(harness, { open: ['s0:root'], previous, width: 870 });
   expect(runtime.inline(opening)).toBe(true);
   expect(runtime.engine(opening).graphs.get('s0:root')!.attached.nodes.size).toBe(19);
+});
+
+it.each(['missing', 'malformed', 'bad-hint', 'bad-history'] as const)('ignores %s canonical cache provenance for world drawings', kind => {
+  const runtime = createFolderLayoutRuntime(), initial = runtime.engine(worldInput(false));
+  const arrived = runtime.engine(worldInput(true, initial));
+  const previous = structuredClone(arrived);
+  for (const [id, graph] of previous.graphs) {
+    (previous.graphs as Map<string, typeof graph>).set(id, { ...graph,
+      canonical: kind === 'missing' ? undefined : kind === 'malformed'
+        ? { layout: graph.canonical!.layout } as typeof graph.canonical
+        : { ...graph.canonical!, request: { ...graph.canonical!.request,
+          ...(kind === 'bad-hint' ? { hint: 42 } : { history: { signature: '', layout: null } }) } } as unknown as typeof graph.canonical });
+  }
+  const continuation = runtime.engine(worldInput(true, previous, 'saved metadata'));
+  expect(() => runtime.remember(continuation)).not.toThrow();
+  const next = worldInput(true, continuation, 'another save');
+  const input = { ...next, open: new Map([...next.open].filter(([id]) => id === 's0:root')) };
+  expect(runtime.engine(input)).toEqual(createDefaultEngine()(structuredClone(input)));
 });

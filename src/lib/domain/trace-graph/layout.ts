@@ -14,10 +14,15 @@
  * this engine sits behind the `layoutGraph(LayoutRequest) → GraphLayout`
  * boundary instead; callers never depend on how it works.
  */
+import { countLayoutWork } from "./layout-profile";
+import { cost, measure } from "./layout-quality";
 import { solveOrderedTracks } from "./ordered-tracks";
-import { solveSeparation, type Separation } from "./separation";
+import { solveSeparation } from "./separation";
+import { searchCorridors, type CorridorSearch, type CorridorConflict } from "./corridor-search";
+import { solveChannelTopology } from "./channel-topology";
+import { smallChannelOrder, freeBoundaryGrowth } from "./channel-domains";
 import { channelInk, roundChannelPath, type ChannelInk } from "./channel-corners";
-import { importRoutingPlan, tilePort, turnWindow } from "./routing-plan";
+import { importRoutingPlan, junctionInputPorts, tilePort, turnWindow } from "./routing-plan";
 import { boundedJunctions } from "./bounded-junctions";
 import { layoutBand, type BandOptions } from "./band-layout";
 import type { ConsumerSet } from "./route-consumers";
@@ -167,32 +172,12 @@ export interface GraphLayout {
 }
 
 const round = (value: number) => Math.round(value * 100) / 100;
-/** Inserts into a map of ascending number lists, keeping order (later sorts of concatenated runs stay linear). */
-const insertSorted = <K>(map: Map<K, number[]>, key: K, value: number) => {
-  const list = map.get(key) ?? [];
-  let low = 0, high = list.length;
-  while (low < high) { const middle = (low + high) >> 1; if (list[middle] < value) low = middle + 1; else high = middle; }
-  list.splice(low, 0, value);
-  map.set(key, list);
-};
 const append = <K, V>(map: Map<K, V[]>, key: K, value: V) => { const list = map.get(key); if (list) list.push(value); else map.set(key, [value]); };
 /** Turn order within a zone: leftward bends by where they end, then where they start; rightward ones reversed. */
-const leftwardFirst = (a: { readonly x1: number; readonly x2: number }, b: { readonly x1: number; readonly x2: number }) => a.x2 - b.x2 || a.x1 - b.x1;
-const rightwardFirst = (a: { readonly x1: number; readonly x2: number }, b: { readonly x1: number; readonly x2: number }) => b.x2 - a.x2 || b.x1 - a.x1;
-/** The root of `index` in a union-find array, compressing the path walked. */
-const unitRoot = (unit: number[], index: number): number => unit[index] === index ? index : (unit[index] = unitRoot(unit, unit[index]));
 /** The junctions a route from a tile belongs to: none. Shared, as it is never modified. */
 const NO_JUNCTIONS: ReadonlySet<string> = new Set();
 /** Narrowest separation between lanes sharing a gap. */
 const MIN_LANE = 3;
-/**
- * Widest column swap whose two bends cross in one shared slice: two minimal slices, less the
- * insets, 9 px tall, which S-curves 9 px wide cross at about 53°. Wider swaps take a dogleg.
- */
-const CROSSING_SWAP = 2 * TRACK_HEIGHT - LANE_SEPARATION;
-/** Farthest beyond its bend's own span a dogleg breaking a cycle of turn orders may take its column. */
-const DOGLEG_REACH = 4 * MIN_LANE;
-/** Distance kept outside a forbidden interval when stepping past it. */
 const FREE_STEP = 0.5;
 /** No tile is anywhere near this big; larger sizes are clamped so coordinates stay exact. */
 const MAX_TILE = 100_000;
@@ -260,23 +245,6 @@ export function mergeIntervals(intervals: readonly Interval[]): [number, number]
 }
 
 /** Merges intervals already sorted by start. */
-function mergeSortedStarts(intervals: readonly Interval[]): [number, number][] {
-  return unionMerged(intervals, []);
-}
-
-/** The union of two merged lists, in linear time. */
-function unionMerged(a: readonly Interval[], b: readonly Interval[]): [number, number][] {
-  const result: [number, number][] = [];
-  for (let i = 0, j = 0; i < a.length || j < b.length;) {
-    const [start, end] = j >= b.length || (i < a.length && a[i][0] <= b[j][0]) ? a[i++] : b[j++];
-    const last = result.at(-1);
-    if (last && start <= last[1] + FREE_STEP) last[1] = Math.max(last[1], end);
-    else result.push([start, end]);
-  }
-  return result;
-}
-
-/** `nearestFree` over intervals already merged: a binary search. */
 function nearestOutside(preferred: number, merged: readonly Interval[], low: number, high: number): number | null {
   if (!(low <= high)) return null;
   const point = Math.min(high, Math.max(low, preferred));
@@ -386,21 +354,28 @@ export function transposeLayout(layout: GraphLayout): GraphLayout {
 }
 
 /** The top-to-bottom engine; `minWidth` is the narrowest canvas it draws (within the budget). */
+export class RoutingConflictError extends RangeError {
+  constructor(readonly conflict: CorridorConflict) { super('Routing search conflict: ' + JSON.stringify(conflict)); }
+}
 function layoutDown(request: LayoutRequest, minWidth: number, options: LayeredOptions = {}): GraphLayout {
-  // Outer margins hold every lane that does not fit between tiles, and the
-  // junctions a crowded channel has no column for. When they overflow, they
-  // widen (the graph scrolls horizontally) rather than letting lanes merge or
-  // dots stack. Legacy placement needs two retries. A pinned band can first
-  // consume spare pane width; moving rows within that width changes gap slots,
-  // so allow two further routing passes to settle the new slot choices.
   const prepared = { ...prepare(request, options.ordering ?? "barycenter", options.passing ?? "straight", options.columnGap), channelStyle: options.channelStyle };
-  let extra = { left: 0, right: 0 };
-  const attempts = prepared.pinned ? 4 : 2;
-  for (let attempt = 0; ; attempt++) {
-    const { layout, shortfall } = layoutPass(prepared, extra, minWidth, attempt === attempts);
-    if (layout) return layout;
-    extra = { left: extra.left + Math.max(0, Math.ceil(shortfall.left)), right: extra.right + Math.max(0, Math.ceil(shortfall.right)) };
-  }
+  const scoreable=prepared.keys.length>0 && request.items.every(item=>Number.isFinite(item.width) && Number.isFinite(item.height) && item.width>0 && item.height>0 && item.width<=MAX_TILE && item.height<=MAX_TILE);
+  const result = searchCorridors(search => {
+    const layout=layoutPass(prepared,search,minWidth);
+    return layout;
+  },64_000_000,scoreable ? {
+    score:(layout,search)=>{
+      search.charge(layout.routes.length**2+layout.nodes.size,"quality");
+      return cost(measure(layout,prepared.pinned?.key??prepared.keys[0],prepared.budget,prepared.keys.map(key=>({key,...prepared.items.get(key)!,parents:prepared.parentsOf(key)}))),request.tileWidth??92);
+    // Admit the first fully scored feasible topology. Band candidates retain
+    // their existing objective ranking; another successful native rendering
+    // here doubled inline work without a product quality guarantee.
+    },samples:1,
+  }:undefined);
+  countLayoutWork('corridor-search-work',result.work);
+  countLayoutWork('corridor-search-candidates',result.candidates);
+  if (!result.ok) throw new RoutingConflictError(result.conflict);
+  return result.value;
 }
 
 /**
@@ -683,13 +658,11 @@ function junctionFacts(plan: ReturnType<typeof buildInputJunctions>, bands: Read
   return { joinFacts, ordered, targetsOf };
 }
 
-/**
- * One routing pass with `extra` room in the margins. Its layout is null when
- * the margins fall short and a further pass (not the `last`) will widen them:
- * the shortfall is known once lanes and junctions are placed, so such a pass
- * stops there instead of drawing what would be thrown away.
- */
-function layoutPass(prepared: Prepared, extra: { readonly left: number; readonly right: number }, minWidth: number, last: boolean): { layout: GraphLayout | null; shortfall: { left: number; right: number } } {
+/** One complete discrete embedding. A failed choice backtracks through the
+ * request's one work ledger; no partial geometry can reach the emitter. */
+function layoutPass(prepared: Prepared, search: CorridorSearch, minWidth: number): GraphLayout {
+  const extra = search.growth;
+  search.charge(32*(prepared.keys.length + prepared.plan.routes.length)+16*prepared.ordered.length**2);
   const { space, items, parentsOf, bandCount, byBand, pinnedViolation, plan, joinFacts, ordered, targetsOf, plainKeys, gap, margin, budget, pinned, contentWidth, rank, passing } = prepared;
   // A pinned band already spans the pane. Spend its unused horizontal room
   // on extra routing margins before widening it; centred legacy canvases
@@ -774,100 +747,68 @@ function layoutPass(prepared: Prepared, extra: { readonly left: number; readonly
     return cached;
   };
 
-  // 2. Junctions. Each prefers a point between its parents and consumers and
-  // takes the nearest x, at the shallowest level allowed by its nesting, that
-  // keeps it apart from junctions on its level, off every other junction's
-  // column in its channel, and off the vertical runs other routes may take
-  // (tile exits above, arrow entries below, and the gaps and margins lanes
-  // use). A full level opens a deeper one. A junction finding no such x is
-  // placed after lanes (step 3b), against the runs routes actually take; and
-  // junctions on one level never overlap.
-  type Keepout = { readonly low: number; readonly high: number; readonly key: NodeKey | null };
+  // Junction x/level choices are immutable for this candidate. Their actual
+  // input ports are reserved before corridor occupancy; later conflicts choose
+  // another embedding instead of relocating a provisional dot.
   const fanOf = (join: Junction) => join.inputs.length === 2 ? LANE_SEPARATION : (join.inputs.length - 1) * LANE_SEPARATION / 2;
-  const runs = (row: number, berth: number): Keepout[] => {
-    const boxes = spans(row);
-    if (!boxes.length) return [];
-    const first = boxes[0], last = boxes.at(-1)!;
-    // A fan extends beyond its dot; margin lanes begin only `clearance` outside
-    // the tiles, so reserve the remaining approach width inside their boundary.
-    const inset = Math.max(0, berth - JUNCTION_BERTH + MIN_LANE - space.clearance);
-    return [
-      ...boxes.map((box) => ({ low: box.x + box.width / 2 - berth, high: box.x + box.width / 2 + berth, key: box.key })),
-      ...boxes.slice(1).map((box, index) => ({ low: boxes[index].x + boxes[index].width - berth, high: box.x + berth, key: null })),
-      { low: -Infinity, high: first.x + inset, key: null },
-      { low: last.x + last.width - inset, high: Infinity, key: null },
-    ];
-  };
   const placed = new Map<string, { x: number; level: number; channel: number }>();
-  const runsNear = new Map<string, Keepout[]>();
-  const fanAt = new Map<string, number>();
-  const onLevel = new Map<string, number[]>();
-  const inChannel = new Map<number, number[]>();
   const channelDepth = new Map<number, number>();
-  /** Where a junction wants to be, and what it may sit on. */
-  const situate = (join: Junction) => {
-    const { bandIndex, consumers, own, nestedJoins } = joinFacts.get(join.id)!;
-    const parentX = join.parents.reduce((sum, id) => sum + center(id), 0) / join.parents.length;
-    const targetX = consumers.length ? consumers.reduce((sum, id) => sum + center(id), 0) / consumers.length : parentX;
-    // Within a pinned band, join immediately after its last actual parent row.
-    // Waiting for the whole generation keeps unrelated inputs alive through wraps.
-    const channel = pinned ? join.parents.reduce((last, id) => Math.max(last, columns.get(id)!.row), 0) : lastRowOfBand.get(bandIndex)!;
-    let deepestNested = 0;
-    for (const id of nestedJoins) { const spot = placed.get(id); if (spot?.channel === channel) deepestNested = Math.max(deepestNested, spot.level); }
-    const minLevel = 1 + deepestNested;
-    const preferred = Math.min(width - 14, Math.max(14, parentX * 0.6 + targetX * 0.4));
-    return { channel, own, minLevel, preferred, fan: fanOf(join), berth: JUNCTION_BERTH + fanOf(join) };
-  };
-  type Situation = ReturnType<typeof situate>;
-  const onLevelOf = (channel: number, level: number) => onLevel.get(`${channel}:${level}`) ?? [];
-  /**
-   * The nearest x on the shallowest level allowed, clear of `keepouts` (sorted
-   * by start); `stacking` also keeps it off every other dot's column.
-   */
-  const search = ({ channel, minLevel, preferred, fan }: Situation, keepouts: readonly Interval[], stacking: boolean, deepest: number) => {
-    // Every list here is sorted already, so merging stays linear.
-    const merged = stacking
-      ? unionMerged(mergeSortedStarts(keepouts), mergeIntervals((inChannel.get(channel) ?? []).map((other) => {
-        const otherFan = fanAt.get(`${channel}:${other}`)!;
-        const radius = Math.max(JUNCTION_BERTH + Math.max(fan, otherFan), fan + otherFan + MIN_LANE);
-        return [other - radius, other + radius] as const;
-      })))
-      : mergeSortedStarts(keepouts);
-    // Levels only add same-level spacing: no room here means none on any level.
-    if (nearestOutside(preferred, merged, 14, width - 14) === null) return null;
-    for (let level = minLevel; level <= deepest; level++) {
-      // Junctions on a level are kept sorted, so their spacing needs no sort.
-      const spacing = mergeSortedStarts(onLevelOf(channel, level).map((other) => [other - space.junctionSpacing, other + space.junctionSpacing] as const));
-      const x = nearestOutside(preferred, spacing.length ? unionMerged(merged, spacing) : merged, 14, width - 14);
-      if (x !== null) return { x, level };
+  const intervals = (preferred: number, blocked: readonly Interval[], low = 14, high = width - 14) => {
+    const merged = mergeIntervals(blocked);
+    const out: {low:number;high:number;preferred:number}[] = [];
+    let start = low;
+    for (const [a,b] of merged) {
+      if (a > start) out.push({low:start,high:Math.floor(Math.min(high,a)*100)/100,preferred});
+      start = Math.ceil(Math.max(start,b)*100)/100;
+      if (start > high) break;
     }
-    return null;
+    if (start <= high) out.push({low:start,high,preferred});
+    return out.filter(v=>v.low<=v.high).sort((a,b)=>Math.abs(Math.max(a.low,Math.min(a.high,preferred))-preferred)-Math.abs(Math.max(b.low,Math.min(b.high,preferred))-preferred) || a.low-b.low);
   };
-  const settle = (join: Junction, { channel }: Situation, { x, level }: { x: number; level: number }) => {
-    insertSorted(onLevel, `${channel}:${level}`, x);
-    insertSorted(inChannel, channel, x);
-    fanAt.set(`${channel}:${x}`, Math.max(fanOf(join), fanAt.get(`${channel}:${x}`) ?? 0));
-    channelDepth.set(channel, Math.max(channelDepth.get(channel) ?? 0, level));
-    placed.set(join.id, { x: round(x), level, channel });
-  };
-  // First pass: every constraint, with the vertical runs other routes may
-  // take (whole gaps and margins) kept out. A junction finding no such spot,
-  // or nesting one that did not, is deferred until lanes are known; it holds
-  // a provisional spot meanwhile, which only steers lane choice.
-  const deferred: { join: Junction }[] = [];
-  const isDeferred = new Set<string>();
   for (const join of ordered) {
-    const situation = situate(join);
-    const { channel, own, minLevel, preferred, berth } = situation;
-    const cacheKey = `${channel}:${berth}`;
-    if (!runsNear.has(cacheKey)) runsNear.set(cacheKey, [...runs(channel, berth), ...runs(channel + 1, berth)].sort((a, b) => a.low - b.low));
-    const keepouts = runsNear.get(cacheKey)!.filter((run) => !run.key || !own.has(run.key)).map((run) => [run.low, run.high] as const);
-    const nestsDeferred = join.inputs.some((input) => input.kind === "junction" && isDeferred.has(input.id));
-    const choice = nestsDeferred ? null : search(situation, keepouts, true, Math.max(minLevel, channelDepth.get(channel) ?? 0) + 1);
-    if (choice) { settle(join, situation, choice); continue; }
-    isDeferred.add(join.id);
-    deferred.push({ join });
-    placed.set(join.id, { x: round(preferred), level: minLevel, channel });
+    const {bandIndex,consumers,own,nestedJoins} = joinFacts.get(join.id)!;
+    const channel = pinned ? Math.max(...join.parents.map(id=>columns.get(id)!.row)) : lastRowOfBand.get(bandIndex)!;
+    const minLevel = 1 + Math.max(0,...nestedJoins.map(id=>placed.get(id)!).filter(p=>p?.channel===channel).map(p=>p.level));
+    const parentX = join.parents.reduce((n,id)=>n+center(id),0)/join.parents.length;
+    const targetX = consumers.length ? consumers.reduce((n,id)=>n+center(id),0)/consumers.length : parentX;
+    const preferred = Math.min(width-14,Math.max(14,parentX*.6+targetX*.4));
+    const fan = fanOf(join), berth = JUNCTION_BERTH+fan;
+    const blocked: Interval[] = [];
+    const conservative: Interval[] = [];
+    for (const row of [channel,channel+1]) {
+      const boxes = spans(row);
+      for (const box of boxes) if (!own.has(box.key)) blocked.push([box.x+box.width/2-berth,box.x+box.width/2+berth]);
+      for (let i=1;i<boxes.length;i++) conservative.push([boxes[i-1].x+boxes[i-1].width-berth,boxes[i].x+berth]);
+      if (boxes.length) {
+        const inset = Math.max(0,berth-JUNCTION_BERTH+MIN_LANE-space.clearance);
+        conservative.push([-Infinity,boxes[0].x+inset],[boxes.at(-1)!.x+boxes.at(-1)!.width-inset,Infinity]);
+      }
+    }
+    for (const other of ordered) {
+      const p = placed.get(other.id);
+      if (!p || p.channel !== channel) continue;
+      const radius = Math.max(JUNCTION_BERTH+Math.max(fan,fanOf(other)),fan+fanOf(other)+MIN_LANE);
+      blocked.push([p.x-radius,p.x+radius]);
+    }
+    const choices: {level:number;low:number;high:number;preferred:number}[] = [];
+    for (let level=minLevel;level<=Math.max(minLevel,channelDepth.get(channel)??0)+1;level++) {
+      const spacing: Interval[] = [...placed.values()].filter(p=>p.channel===channel && p.level===level).map(p=>[p.x-space.junctionSpacing,p.x+space.junctionSpacing]);
+      const hard = [...blocked,...spacing];
+      for (const interval of intervals(preferred,[...hard,...conservative])) choices.push({...interval,level});
+      for (const interval of intervals(preferred,hard)) choices.push({...interval,level});
+    }
+    search.charge(ordered.length + blocked.length + conservative.length + choices.length);
+    if (!choices.length) {
+      const need = ordered.filter(j=>joinFacts.get(j.id)!.bandIndex===bandIndex).reduce((sum,j)=>sum+2*(JUNCTION_BERTH+fanOf(j))+FREE_STEP,28);
+      const remaining=ordered.filter(j=>!placed.has(j.id) && joinFacts.get(j.id)!.bandIndex===bandIndex);
+      const growth=Math.max(berth*2,need-width,remaining.reduce((sum,j)=>sum+Math.max(space.junctionSpacing,2*(JUNCTION_BERTH+fanOf(j)))+FREE_STEP,0));
+      search.grow(preferred<width/2 ? growth : 0,preferred<width/2 ? 0 : growth);
+    }
+    const uniqueChoices=choices.filter((choice,i)=>choices.findIndex(other=>other.level===choice.level && other.low===choice.low && other.high===choice.high)===i);
+    const choice = search.choose('junction:'+join.id,uniqueChoices);
+    const solved = search.solve({variables:[{id:join.id,preferred:choice.preferred,bounds:{lower:choice.low,upper:choice.high}}],order:[join.id],separations:[]});
+    placed.set(join.id,{x:round(solved.positions.get(join.id)!),channel,level:choice.level});
+    channelDepth.set(channel,Math.max(choice.level,channelDepth.get(channel)??0));
   }
 
   // 3. Lanes. A route crosses each intermediate row through a gap between
@@ -933,6 +874,25 @@ function layoutPass(prepared: Prepared, extra: { readonly left: number; readonly
     const blocked = stemsAround(row).filter((stem) => stem.x > slot.low - MIN_LANE && stem.x < slot.high + MIN_LANE && !ownStem(source, stem)).map((stem) => [stem.x - MIN_LANE, stem.x + MIN_LANE] as const);
     return !blocked.length || nearestFree(slot.x, blocked, slot.low, slot.high) !== null;
   };
+  const fitsGap = (slot: Slot,row:number,source:string) => {
+    if(slot.margin) return true;
+    const sources=[...new Set([...(lanes.get(slot.id)?.sources.keys()??[]),source])];
+    if(sources.length>8) return true;
+    const domains=sources.map(id=>{
+      const blocked:Interval[]=[];
+      const rows=[...new Set([...(marginRows.get(slot.id)?.get(id)??[]),...(id===source?[row]:[])])];
+      for(const r of rows) {
+        if(passing==='straight') for(const stem of stemsAround(r)) if(!ownStem(id,stem)) blocked.push([stem.x-MIN_LANE,stem.x+MIN_LANE]);
+        for(const join of ordered) {
+          const p=placed.get(join.id)!;
+          if((p.channel===r || p.channel+1===r) && id!=='junction:'+join.id) {const berth=JUNCTION_BERTH+fanOf(join);blocked.push([p.x-berth,p.x+berth]);}
+        }
+      }
+      return {id,intervals:intervals(slot.x,blocked,slot.low,slot.high)};
+    });
+    search.charge(sources.length*(1<<sources.length));
+    return smallChannelOrder(domains,MIN_LANE)!==null;
+  };
   const claim = (row: number, desired: number, source: string, sourceX: number): string | null => {
     const all = gapsOf(row);
     if (!all.length) return null;
@@ -944,31 +904,18 @@ function layoutPass(prepared: Prepared, extra: { readonly left: number; readonly
     // keys that order is total, so the first is a minimum and needs no sort.
     // Outer margins cost a little extra: a gap between tiles keeps the route nearer the graph.
     const cost = (slot: Slot) => Math.abs(slot.x - desired) + (slot.margin ? 8 : 0);
-    const load = (slot: Slot) => (lanes.get(slot.id)?.sources.size ?? 0) / capacity(slot);
     const hasRoom = (slot: Slot) => {
       const lane = lanes.get(slot.id);
       return !lane || lane.sources.has(source) || lane.sources.size < capacity(slot);
     };
-    let open: Slot | undefined, finite = true, openCost = 0;
-    for (const slot of slots) {
-      const value = cost(slot);
-      if (!Number.isFinite(value) || !Number.isFinite(slot.x)) { finite = false; break; }
-      if (open && (value > openCost || (value === openCost && !(slot.x < open.x)))) continue;
-      const lane = lanes.get(slot.id);
-      if (!lane || lane.sources.has(source) || lane.sources.size < capacity(slot)) { open = slot; openCost = value; }
-    }
-    if (!finite) {
-      const costs = slots.map(cost);
-      const options = slots.map((_, index) => index).sort((a, b) => costs[a] - costs[b] || slots[a].x - slots[b].x).map((index) => slots[index]);
-      open = options.find(hasRoom) ?? options.reduce((best, slot) => load(slot) < load(best) ? slot : best);
-    } else if (!open) {
-      let bestLoad = 0, bestCost = 0;
-      for (const slot of slots) {
-        const value = cost(slot), used = load(slot);
-        if (!open || used < bestLoad || (used === bestLoad && (value < bestCost || (value === bestCost && slot.x < open.x)))) { open = slot; bestLoad = used; bestCost = value; }
-      }
-    }
-    open = open!;
+    const choices = slots.filter(hasRoom).filter(slot=>fitsGap(slot,row,source)).filter(slot => {
+      const blocked: Interval[] = [];
+      for (const join of ordered) { const p=placed.get(join.id)!; if (p.channel===row || p.channel+1===row) {const berth=JUNCTION_BERTH+fanOf(join);blocked.push([p.x-berth,p.x+berth]);} }
+      return !blocked.length || nearestFree(slot.x,blocked,slot.low,slot.high)!==null;
+    }).sort((a,b)=>cost(a)-cost(b) || a.x-b.x);
+    if (!choices.length) return search.reject(['passing-capacity:'+row+':'+source]);
+    const open = search.choose('passing:'+row+':'+source, choices);
+
     let lane = lanes.get(open.id);
     if (!lane) lanes.set(open.id, lane = { slot: open, sources: new Map<string, number>(), xs: new Map<string, number>() });
     if (!lane.sources.has(source)) lane.sources.set(source, sourceX);
@@ -977,13 +924,12 @@ function layoutPass(prepared: Prepared, extra: { readonly left: number; readonly
       if (!rows) rowsOfSlot.set(open.id, rows = new Set());
       rows.add(row);
     }
-    // Only deferred junctions read which lanes each row uses.
-    if (deferred.length) {
+    if (placed.size) {
       let used = slotsInRow.get(row);
       if (!used) slotsInRow.set(row, used = new Set());
       used.add(open.id);
     }
-    if (open.margin) {
+    {
       let bySource = marginRows.get(open.id);
       if (!bySource) marginRows.set(open.id, bySource = new Map());
       const rowsUsed = bySource.get(source);
@@ -1052,6 +998,7 @@ function layoutPass(prepared: Prepared, extra: { readonly left: number; readonly
     const endRow = columns.get(route.to.id)!.row, endX = center(route.to.id);
     let byRow = bundles.get(source);
     if (!byRow) bundles.set(source, byRow = new Map());
+    search.charge(Math.max(0,endRow-start-1),"long-edge bundles");
     for (let row = start + 1; row < endRow; row++) {
       const sum = byRow.get(row);
       if (sum) { sum.x += endX; sum.row += endRow; sum.count++; } else byRow.set(row, { x: endX, row: endRow, count: 1 });
@@ -1076,6 +1023,7 @@ function layoutPass(prepared: Prepared, extra: { readonly left: number; readonly
       let byRow = byEnd.get(endKey);
       if (!byRow) byEnd.set(endKey, byRow = new Map());
       const startRow = trie[node].row, straight = passing === "straight" && route.to.kind === "node";
+      search.charge(Math.max(0,endChannel-startRow),"corridor chains");
       for (let row = startRow + 1; row <= endChannel; row++) {
         let slot = byRow.get(row);
         if (slot === undefined) {
@@ -1151,7 +1099,13 @@ function layoutPass(prepared: Prepared, extra: { readonly left: number; readonly
           if (last && start <= last[1] + FREE_STEP) last[1] = Math.max(last[1], end);
           else around.push([start, end]);
         }
-        const x = nearestOutside(separation === MIN_LANE ? entry.edge : entry.anchor, around, left ? -Infinity : entry.edge, left ? entry.edge : Infinity)!;
+        for (const join of ordered) {
+          const p=placed.get(join.id)!;
+          if (p.channel>=entry.lo && p.channel<=entry.hi && entry.source!=='junction:'+join.id) {
+            const berth=JUNCTION_BERTH+fanOf(join); around.push([p.x-berth,p.x+berth]);
+          }
+        }
+        const x = nearestFree(entry.anchor, around, left ? -Infinity : entry.edge, left ? entry.edge : Infinity)!;
         let at = byX.length;
         while (at > 0 && byX[at - 1].x > x) at--;
         byX.splice(at, 0, { x, lo: entry.lo, hi: entry.hi });
@@ -1160,11 +1114,43 @@ function layoutPass(prepared: Prepared, extra: { readonly left: number; readonly
       }
       return { xs, overflow };
     };
-    const roomy = place(space.lane);
-    const chosen = roomy.overflow <= 0 ? roomy : place(MIN_LANE);
-    shortfall[left ? "left" : "right"] = Math.max(shortfall[left ? "left" : "right"], chosen.overflow);
-    entries.forEach((entry, index) => lane.xs.set(entry.source, chosen.xs[index]));
+    const desired = place(space.lane).xs;
+    const metricOrder = entries.map((entry,i)=>({...entry,id:entry.source,desired:left?-desired[i]:desired[i]})).sort((a,b)=>a.desired-b.desired || a.id.localeCompare(b.id));
+    const separations = metricOrder.flatMap((entry,i)=>metricOrder.slice(i+1).filter(other=>entry.lo<other.hi && other.lo<entry.hi)
+      .map(other=>({id:entry.id+'>'+other.id,before:entry.id,after:other.id,gap:MIN_LANE})));
+    const outer = left ? -bound : bound;
+    const variables = metricOrder.map(entry=>{
+      const lower=left?-entry.edge:entry.edge, blocked: Interval[]=[];
+      for (const join of ordered) {
+        const p=placed.get(join.id)!;
+        if (p.channel<entry.lo || p.channel>entry.hi || entry.source==='junction:'+join.id) continue;
+        const x=left?-p.x:p.x,berth=JUNCTION_BERTH+fanOf(join);blocked.push([x-berth,x+berth]);
+      }
+      const choices=intervals(entry.desired,blocked,lower,Infinity);
+      if (!choices.length) search.grow(left?MIN_LANE:0,left?0:MIN_LANE);
+      const choice=search.choose('margin-domain:'+side+':'+entry.id,choices);
+      return {id:entry.id,preferred:entry.desired,bounds:{lower:choice.low,upper:Math.min(outer,choice.high)},domain:choice};
+    });
+    search.charge(8*(variables.length+separations.length+1));
+    const fitted = solveSeparation({variables,order:metricOrder.map(e=>e.id),separations});
+    if (!fitted.ok) {
+      const end = 'boundary:'+side;
+      const expanded = search.solve({variables:[...variables.map(v=>({...v,preferred:v.bounds.lower,bounds:{lower:v.bounds.lower,upper:v.domain.high}})),{id:end,preferred:outer,bounds:{lower:outer}}],
+        order:[...metricOrder.map(e=>e.id),end],separations:[...separations,...metricOrder.map(e=>({id:'bound:'+e.id,before:e.id,after:end,gap:0}))]});
+      // Cover alignment is a preference for free rows. A pinned cover stays
+      // absolute while a left-boundary extension must first consume the rows'
+      // unused alignment slack before it can create new passing capacity.
+      // Unrelated rows with spare capacity contribute no delay.
+      shortfall[left?'left':'right'] = freeBoundaryGrowth(variables.map((v,i)=>({id:v.id,lower:v.bounds.lower,
+        alignmentSlack:left && pinned ? Math.max(0,metricOrder[i].edge+space.clearance-margin-extra.left) : 0})),
+        metricOrder.map(e=>e.id),separations,outer);
+      for (const entry of metricOrder) lane.xs.set(entry.id,(left?-1:1)*expanded.positions.get(entry.id)!);
+    } else for (const entry of metricOrder) lane.xs.set(entry.id,(left?-1:1)*fitted.positions.get(entry.id)!);
+
   }
+
+  if(shortfall.left>0 || shortfall.right>0) search.grow(Math.max(0,shortfall.left),Math.max(0,shortfall.right));
+  search.boundaryFeasible();
 
   // Lane positions, once every source in a gap is known: ordered by where
   // their routes' straight lines cross the row (or, `nearest-end`, by where
@@ -1176,80 +1162,50 @@ function layoutPass(prepared: Prepared, extra: { readonly left: number; readonly
     const spacing = order.length > 1 ? Math.min(space.lane, (slot.high - slot.low) / (order.length - 1)) : 0;
     const span = spacing * (order.length - 1);
     const centred = Math.min(slot.high - span, Math.max(slot.low, slot.x - span / 2));
-    // A lane runs on through the channels above and below its row, where other
-    // sources' stems leave the tiles above (at their centres) and enter the
-    // tiles below: keep each lane MIN_LANE clear of those stems where the gap
-    // has room, else stay centred.
-    const blocked: Interval[] = [];
-    for (const row of passing === "straight" ? rowsOfSlot.get(slot.id) ?? [] : []) {
-      const stems = stemsAround(row).filter((stem) => stem.x > slot.low - MIN_LANE && stem.x < slot.high + MIN_LANE);
-      order.forEach(([source], index) => {
-        for (const stem of stems) if (!ownStem(source, stem)) blocked.push([stem.x - index * spacing - MIN_LANE, stem.x - index * spacing + MIN_LANE]);
-      });
-    }
-    const first = blocked.length ? nearestFree(centred, blocked, slot.low, slot.high - span) ?? centred : centred;
-    // Interior stem exclusions choose the corridor offset above. Once that order
-    // and interval are representable, metric placement is a bounded separation DAG.
-    if (spacing >= MIN_LANE || order.length === 1) {
-      const solved = solveSeparation({
-        variables: order.map(([source], index) => ({ id: source, preferred: first + index * spacing, bounds: { lower: slot.low, upper: slot.high } })),
-        order: order.map(([source]) => source),
-        separations: order.slice(1).map(([source], i) => ({ id: `${i}`, before: order[i][0], after: source, gap: MIN_LANE })),
-      });
-      if (!solved.ok) throw new RangeError("Lane constraint conflict: " + JSON.stringify(solved.conflict));
-      solved.positions.forEach((x, source) => xs.set(source, x));
-    } else order.forEach(([source], index) => xs.set(source, first + index * spacing));
+    const variables = order.map(([source],index)=>{
+      const blocked: Interval[] = [];
+      for (const row of marginRows.get(slot.id)!.get(source)!) {
+        if (passing==='straight') for (const stem of stemsAround(row)) if (!ownStem(source,stem)) blocked.push([stem.x-MIN_LANE,stem.x+MIN_LANE]);
+        for (const join of ordered) {
+          const p=placed.get(join.id)!;
+          if ((p.channel===row || p.channel+1===row) && source!=='junction:'+join.id) {
+            const berth=JUNCTION_BERTH+fanOf(join);blocked.push([p.x-berth,p.x+berth]);
+          }
+        }
+      }
+      const preferred = centred+index*spacing, choices=intervals(preferred,blocked,slot.low,slot.high);
+      if (!choices.length) search.reject(['gap-exclusion:'+slot.id+':'+source],'topology',marginRows.get(slot.id)!.get(source)!.map(row=>'passing:'+row+':'+source));
+      const choice = search.choose('gap-offset:'+slot.id+':'+source,choices);
+      return {id:source,preferred,bounds:{lower:choice.low,upper:choice.high}};
+    });
+    const decisions = order.flatMap(([source])=>marginRows.get(slot.id)!.get(source)!.map(row=>'passing:'+row+':'+source));
+    const preferredOrder=order.map(([source])=>source);
+    search.charge(variables.length<=8 ? variables.length*(1<<variables.length) : variables.length);
+    const fittingOrder=smallChannelOrder(variables.map(v=>({id:v.id,intervals:[{low:v.bounds.lower,high:v.bounds.upper}]})),MIN_LANE);
+    const orderChoices=[preferredOrder];
+    if(fittingOrder && fittingOrder.some((id,i)=>id!==preferredOrder[i])) orderChoices.push([...fittingOrder]);
+    const candidateOrder=search.choose('gap-order:'+slot.id,orderChoices);
+    const solved=search.solve({variables,order:candidateOrder,
+      separations:candidateOrder.slice(1).map((source,i)=>({id:slot.id+':'+i,before:candidateOrder[i],after:source,gap:MIN_LANE}))},[...decisions,'gap-order:'+slot.id,...variables.map(v=>'gap-offset:'+slot.id+':'+v.id)]);
+    solved.positions.forEach((x,source)=>xs.set(source,x));
+
   }
   for (const { node, slot, desired } of pending) trie[node].x = slot ? laneX(slot, trie[node].source)! : desired;
 
-  // 3b. Deferred junctions, now kept off the columns routes actually
-  // use (lanes, tile exits and arrow entries) rather than whole gaps and
-  // margins. If even that is full, a dot may sit above another; at worst only
-  // same-level spacing holds.
-  if (deferred.length) {
-    const laneColumns = (row: number) => [...slotsInRow.get(row) ?? []].flatMap((slot) => [...lanes.get(slot)!.sources.keys()].map((source) => laneX(slot, source)!));
-    const columnsNear = new Map<number, { x: number; key: NodeKey | null }[]>();
-    const columnsOf = (channel: number) => {
-      let cached = columnsNear.get(channel);
-      if (!cached) {
-        const exits = spans(channel).filter((box) => targetsOf.has(endpointKey({ kind: "node", id: box.key })));
-        const entries = spans(channel + 1).filter((box) => parentsOf(box.key).length > 0);
-        columnsNear.set(channel, cached = [
-          ...[...exits, ...entries].map((box) => ({ x: box.x + box.width / 2, key: box.key })),
-          ...[...laneColumns(channel), ...laneColumns(channel + 1)].map((x) => ({ x, key: null })),
-        ].sort((a, b) => a.x - b.x));
+  // Every chosen lane keeps all foreign convergence regions clear. A
+  // conflict backtracks into corridor/junction choices, with no dropped berth.
+  for (const join of ordered) {
+    const p = placed.get(join.id)!, berth = JUNCTION_BERTH+fanOf(join);
+    for (const row of [p.channel,p.channel+1]) for (const slot of slotsInRow.get(row)??[]) {
+      for (const source of lanes.get(slot)!.sources.keys()) {
+        if (!marginRows.get(slot)!.get(source)!.includes(row)) continue;
+        search.charge();
+        if (source!=='junction:'+join.id && Math.abs(laneX(slot,source)!-p.x)<berth) {
+          search.reject(['junction-corridor:'+join.id+':'+source], 'topology', ['passing:'+row+':'+source,'junction:'+join.id]);
+        }
       }
-      return cached;
-    };
-    const moved = new Map<string, number>();
-    // Widening for junctions stops at two more view widths; beyond that a
-    // crowded channel stacks dots (see the layout notes' known limits).
-    let wideningLeft = 2 * (Number.isFinite(budget) ? budget : width) - extra.left - extra.right;
-    for (const { join } of deferred) {
-      const situation = situate(join);
-      const { channel, own, minLevel, berth } = situation;
-      const keepouts = columnsOf(channel).filter((column) => !column.key || !own.has(column.key)).map((column) => [column.x - berth, column.x + berth] as const);
-      const deepest = Math.max(minLevel, channelDepth.get(channel) ?? 0);
-      const ownColumn = search(situation, keepouts, true, deepest + 1);
-      const choice = ownColumn ?? search(situation, keepouts, false, deepest + 1) ?? search(situation, [], false, deepest + 1)!;
-      // A dot above another can leave no clean way for their routes; ask for
-      // a column of its own in the margin nearer its preferred spot.
-      if (!ownColumn && wideningLeft > 0) {
-        shortfall[situation.preferred < width / 2 ? "left" : "right"] += berth + FREE_STEP;
-        wideningLeft -= berth + FREE_STEP;
-      }
-      settle(join, situation, choice);
-      moved.set(join.id, placed.get(join.id)!.x);
     }
-    // Routes from and to moved junctions start and end at their final spots.
-    for (const [id, x] of moved) {
-      const root = sourceRoot.get(endpointKey({ kind: "junction", id }));
-      if (root !== undefined) trie[root].x = x;
-    }
-    for (const course of courses) if (course.end.to && "junction" in course.end.to && moved.has(course.end.to.junction)) course.end.x = moved.get(course.end.to.junction)!;
   }
-
-  if (!last && !(shortfall.left <= 0 && shortfall.right <= 0)) return { layout: null, shortfall };
 
   // Channels in level space. The channel below row c holds levelCount(c)
   // junction levels; bend zone i lies between level i and level i + 1
@@ -1263,8 +1219,6 @@ function layoutPass(prepared: Prepared, extra: { readonly left: number; readonly
     readonly own: ReadonlySet<string>; readonly lo: number; readonly hi: number;
     /** The bend's zone and its (lowest) track. */
     zone: number; track: number;
-    /** Tracks its curve spans, up to and including `track` (one unless it crosses a swapping partner). */
-    span?: number;
     /** A dogleg (a swap's, or one breaking a cycle of turn orders): the bend first curves to column `x` in track `track`, then on in its own. */
     dogleg?: { readonly track: number; readonly x: number };
   }
@@ -1287,25 +1241,27 @@ function layoutPass(prepared: Prepared, extra: { readonly left: number; readonly
   // The final six-pixel fan still ends at the separately recorded dot column.
   const targets = new Map<string, Leg[]>();
   for (const item of initialFinalLegs) if ("junction" in item.to) append(targets, item.to.junction, item);
-  const offsets = new Map<Leg, number>();
-  for (const inputs of targets.values()) {
-    const sorted = [...inputs].sort((a,b) => a.x1 - b.x1 || a.source.localeCompare(b.source));
-    if (sorted.length === 2) { offsets.set(sorted[0], -3); offsets.set(sorted[1], 3); }
-    else sorted.forEach((item, i) => offsets.set(item, (i - (sorted.length - 1) / 2) * 3));
-  }
   const fanIn = new Map<Leg, number>();
+  const portsBySource = new Map<string, number>();
+  for (const [id,inputs] of targets) {
+    const join = plan.joins.find(j=>j.id===id)!;
+    for (const port of junctionInputPorts(join,placed.get(id)!.x,inputs.map(l=>({source:l.source,x:l.x1})))) portsBySource.set(JSON.stringify([id,port.source]),port.x);
+  }
   const finalLegs = initialFinalLegs.map(item => {
-    const offset = offsets.get(item);
-    if (offset === undefined) return item;
-    const reserved = { ...item, x2: item.x2 + offset };
-    fanIn.set(reserved, offset);
-    return reserved;
+    if (!('junction' in item.to)) return item;
+    const x = portsBySource.get(JSON.stringify([item.to.junction,item.source]))!;
+    const reserved = {...item,x2:x}; fanIn.set(reserved,x-item.x2); return reserved;
   });
   const allLegs: Leg[] = [];
   for (const item of nodeLegs) if (item !== null) allLegs.push(item);
   for (const item of finalLegs) allLegs.push(item);
-  const bends = (item: Leg) => fanIn.has(item) ? round(item.x1) !== round(item.x2) : Math.abs(item.x1 - item.x2) >= 0.5;
+  const bends = (item: Leg) => round(item.x1) !== round(item.x2);
   const near = (a: number, b: number) => Math.abs(a - b) < MIN_LANE;
+  for (const item of allLegs) if (!bends(item)) for (const [id,p] of placed) {
+    search.charge();
+    if(p.channel===item.channel && !item.own.has(id) && p.level>item.lo && p.level<=item.hi && Math.abs(p.x-item.x1)<JUNCTION_BERTH)
+      search.reject(['straight-junction:'+id],'topology',['junction:'+id]);
+  }
   // Routes from one source (a branching trunk) or into one junction may meet.
   const compatible = (a: Leg, b: Leg) => a.source === b.source
     || (a.target !== null && a.target === b.target && a.target.startsWith("junction:")
@@ -1362,14 +1318,6 @@ function layoutPass(prepared: Prepared, extra: { readonly left: number; readonly
         if (at) at.push(run); else runsAt.set(key, [run]);
       }
     };
-    const unregister = (item: Leg) => {
-      for (const run of runsOf.get(item) ?? []) {
-        const at = runsAt.get(bucket(run.x));
-        const index = at ? at.indexOf(run) : -1;
-        if (index >= 0) { at![index] = at![at!.length - 1]; at!.pop(); }
-      }
-      runsOf.delete(item);
-    };
     /**
      * Other routes' runs that a run at `x` from level `from` to `to`, bending at `bend`, would
      * touch (`near`), and those it would run along (`shared`): routes from different sources
@@ -1386,265 +1334,52 @@ function layoutPass(prepared: Prepared, extra: { readonly left: number; readonly
           const top = Math.max(other.from, from), bottom = Math.min(other.to, to), column = Math.abs(other.x - x) < .01;
           if (compatible(other.leg, item)) { if (column && top < bottom) found.shared++; continue; }
           if (top > bottom || (other.bend !== null && other.bend === bend && top === bottom)) continue;
-          if (top < bottom || column) found.shared++; else found.near++;
+          if (top < bottom) found.shared++; else found.near++;
         }
       }
     };
     const runsFor = (item: Leg, zone: number): Run[] => [{ x: item.x1, from: item.lo, to: zone, bend: zone, leg: item }, { x: item.x2, from: zone, to: item.hi, bend: zone, leg: item }];
     for (const item of legs) if (!bends(item)) register(item, [{ x: item.x1, from: item.lo, to: item.hi, bend: null, leg: item }]);
-    // Zones are tried cheapest first (fewest junction contacts, then roomiest)
-    // and the first without crossings is taken, so tall channels stay cheap.
-    const choose = (item: Leg) => {
-      const above = levelsNear(item, item.x1), beneath = levelsNear(item, item.x2);
-      const options: { zone: number; touches: number; room: number }[] = [];
-      for (let zone = item.lo; zone <= item.hi; zone++) {
-        let touches = 0;
-        for (const level of above) if (level > item.lo && level <= zone) touches++;
-        for (const level of beneath) if (level > zone && level <= item.hi) touches++;
-        options.push({ zone, touches, room: defaultZone(channel, zone) });
+    // All endpoint choices are already explicit. Zone alternatives keep
+    // positive-length incompatible runs and foreign dot berths hard; touching
+    // bend endpoints are ordered by the channel dependency solve below.
+    const choose = (item: Leg, id: number) => {
+      const above = levelsNear(item,item.x1), beneath = levelsNear(item,item.x2);
+      const choices: {zone:number;cost:number}[] = [];
+      for (let zone=item.lo;zone<=item.hi;zone++) {
+        search.charge();
+        if (above.some(level=>level>item.lo && level<=zone) || beneath.some(level=>level>zone && level<=item.hi)) continue;
+        const found = {near:0,shared:0};
+        clashes(item,item.x1,item.lo,zone,zone,found); clashes(item,item.x2,zone,item.hi,zone,found);
+        if (found.shared) continue;
+        choices.push({zone,cost:found.near*10-defaultZone(channel,zone)/100});
       }
-      options.sort((a, b) => a.touches - b.touches || b.room - a.room || a.zone - b.zone);
-      let best: { zone: number; cost: number } | null = null;
-      for (const option of options) {
-        if (best && option.touches * 1000 > best.cost) break;
-        const zone = option.zone, found = { near: 0, shared: 0 };
-        clashes(item, item.x1, item.lo, zone, zone, found); clashes(item, item.x2, zone, item.hi, zone, found);
-        // A shared lane is never traded for anything else; a junction contact outweighs crowding.
-        const cost = found.shared * 1e6 + option.touches * 1000 + found.near * 10 - option.room / 100;
-        if (!best || cost < best.cost) best = { zone, cost };
-        if (!found.near && !found.shared) break;
-      }
-      item.zone = best!.zone;
-      register(item, runsFor(item, item.zone));
+      choices.sort((a,b)=>a.cost-b.cost || a.zone-b.zone);
+      item.zone = search.choose('zone:'+channel+':'+id,choices).zone;
+      register(item,runsFor(item,item.zone));
     };
-    // Single-zone bends still register their runs, which others' choices see.
-    for (const item of bending) if (item.lo === item.hi) register(item, runsFor(item, item.lo)); else choose(item);
-    // A second pass lets earlier bends react to later ones.
-    for (const item of bending) if (item.lo !== item.hi) { unregister(item); choose(item); }
+    for (const [id,item] of bending.entries()) if (item.lo===item.hi) register(item,runsFor(item,item.lo)); else choose(item,id);
   }
 
-  // 5. Tracks. Bends in one zone whose spans overlap bend in separate
-  // horizontal slices of it (left-edge channel routing), so two routes never
-  // run side by side at a shallow angle: wherever they cross, one of them runs
-  // vertically. Within a direction the bend reaching furthest turns first, so
-  // parallel routes never cross; and a route leaving a column bends before
-  // another route arriving in it, so their vertical runs never overlap.
-  // Two bends trading columns (a swap) are a cycle of that rule: in slices one after the other,
-  // one would leave a column exactly where the other arrives, the two lines meeting end to end
-  // there, so each would seem to continue as the other. Channel routers break such a cycle with
-  // a dogleg (Deutsch 1976; Yoshimura and Kuh 1982): one bend first curves to a free column
-  // between the two in a slice of its own, runs down it across the other's curve, and curves on
-  // in a third. Bends trading columns closer than `CROSSING_SWAP` instead cross in one shared
-  // slice twice as tall, steeply enough to read as a crossing.
-  // Track counts and zone boxes by channel, then zone.
+  // Channel topology and metrics are one bounded search. Critical cycles
+  // split endpoint pieces, and the separation solve enforces every dependency.
   const trackCount: number[][] = [];
-  // Every column a vertical run of the channel occupies, for choosing dogleg columns.
-  const columnsIn: number[][] = [];
-  for (const item of allLegs) (columnsIn[item.channel] ??= []).push(item.x1, item.x2);
-  /**
-   * How two swapping bends cross: in one shared slice ("cross"), with a dogleg of one of them
-   * (the bend, and the free column between the two it doglegs through), or not at all (null:
-   * no free column, or both end in a junction's fan-in, whose bends keep their own shape).
-   */
-  const swapCrossing = (channel: number, first: Leg, second: Leg): "cross" | { leg: Leg; x: number } | null => {
-    const lo = Math.max(Math.min(first.x1, first.x2), Math.min(second.x1, second.x2)), hi = Math.min(Math.max(first.x1, first.x2), Math.max(second.x1, second.x2));
-    // Columns other runs occupy between the two: the crossing (or the dogleg's run) keeps off them.
-    const busy: [number, number][] = [];
-    for (const x of columnsIn[channel] ?? []) if (x > lo && x < hi) busy.push([x - MIN_LANE, x + MIN_LANE]);
-    if (Math.max(Math.abs(first.x1 - first.x2), Math.abs(second.x1 - second.x2)) <= CROSSING_SWAP) {
-      // They cross midway; a run of another source there would meet both at one point.
-      const middle = (lo + hi) / 2;
-      if (Math.abs(first.x1 - second.x1) >= 2 * MIN_LANE && Math.abs(first.x2 - second.x2) >= 2 * MIN_LANE
-        && !busy.some(([low, high]) => middle > low && middle < high)) return "cross";
-    }
-    const leg = [first, second].find((item) => !("junction" in item.to));
-    if (!leg) return null;
-    let x = lo + MIN_LANE <= hi - MIN_LANE ? nearestFree((lo + hi) / 2, busy, lo + MIN_LANE, hi - MIN_LANE) : null;
-    if (x === null) {
-      // A blocked swap cannot use consecutive inset curves: their vertical stems would
-      // share the gap between slices. Try a bounded detour, clear of every actual stem.
-      const occupied: [number, number][] = (columnsIn[channel] ?? []).map(x => [x - MIN_LANE, x + MIN_LANE]);
-      x = nearestFree((lo + hi) / 2, occupied, 0, width);
-    }
-    return x === null ? null : { leg, x };
-  };
-  // Bends by channel, then zone (both small non-negative integers), in leg order.
-  // Groups are independent (each sets only its own bends' tracks and count), so
-  // the order they are visited in is free.
   const zoneGroups: Leg[][][] = [];
-  for (const item of allLegs) if (bends(item)) ((zoneGroups[item.channel] ??= [])[item.zone] ??= []).push(item);
-  for (let channel = 0; channel < zoneGroups.length; channel++) {
-    const byZone = zoneGroups[channel];
-    if (byZone) for (let zone = 0; zone < byZone.length; zone++) if (byZone[zone]) assignTracks(channel, zone, byZone[zone]);
+  const columnsIn: number[][] = [];
+  for (const item of allLegs) {
+    (columnsIn[item.channel]??=[]).push(item.x1,item.x2);
+    if (bends(item)) ((zoneGroups[item.channel]??=[])[item.zone]??=[]).push(item);
   }
-  function assignTracks(channel: number, zone: number, legs: readonly Leg[]) {
-    // Bends from one source never conflict: all keep track 0.
-    let mixed = false;
-    for (const item of legs) if (item.source !== legs[0].source) { mixed = true; break; }
-    if (!mixed) return;
-    // Every bend runs left or right (it moves at least half a pixel).
-    const ordered = legs.filter((item) => item.x2 < item.x1).sort(leftwardFirst);
-    for (const item of legs.filter((item) => item.x2 > item.x1).sort(rightwardFirst)) ordered.push(item);
-    const count = ordered.length;
-    const reachLow: number[] = [], reachHigh: number[] = [];
-    for (const item of ordered) { reachLow.push(Math.min(item.x1, item.x2) - MIN_LANE); reachHigh.push(Math.max(item.x1, item.x2) + MIN_LANE); }
-    const conflict = (i: number, j: number) => reachLow[i] < reachHigh[j] && reachLow[j] < reachHigh[i] && !compatible(ordered[i], ordered[j]);
-    // Two bends trading columns (a swap) form one unit: swapping bends move as
-    // one unit; forced order: a bend leaving a column turns before one arriving in it.
-    const unit: number[] = [];
-    for (let i = 0; i < count; i++) unit.push(i);
-    for (let i = 0; i < count; i++) for (let j = i + 1; j < count; j++) {
-      const a = ordered[i], b = ordered[j];
-      if (near(a.x1, b.x2) && near(b.x1, a.x2) && !compatible(a, b)) unit[unitRoot(unit, j)] = unitRoot(unit, i);
+  for (const [channel,zones] of zoneGroups.entries()) for (const [zone,legs] of (zones??[]).entries()) {
+    if (!legs?.length) continue;
+    const result = solveChannelTopology(legs.map((item,i)=>({...item,id:String(i)})),columnsIn[channel],width,search);
+    for (const [id,assignment] of result.tracks) {
+      const item = legs[Number(id)]; item.track = assignment.track;
+      if (assignment.split) item.dogleg = assignment.split;
     }
-    // Units are named by their root bend and listed by first member.
-    const unitOf: number[] = [], units: number[] = [], members: number[][] = [];
-    for (let i = 0; i < count; i++) {
-      const id = unitRoot(unit, i);
-      unitOf.push(id);
-      if (members[id]) members[id].push(i); else { members[id] = [i]; units.push(id); }
-    }
-    const column = (a: number, b: number) => Math.abs(a - b) < .01;
-    const inTurn = (group: number[]): number[] => {
-      if (group.length < 2) return group;
-      const rest = [...group], out: number[] = [];
-      while (rest.length) {
-        const free = rest.findIndex((i) => !rest.some((j) => j !== i && column(ordered[j].x1, ordered[i].x2) && !column(ordered[i].x1, ordered[j].x2)));
-        out.push(...rest.splice(free < 0 ? 0 : free, 1));
-      }
-      return out;
-    };
-    const forced: (Set<number> | undefined)[] = [];
-    const pending = new Array<number>(count).fill(0);
-    for (let i = 0; i < count; i++) for (let j = 0; j < count; j++) {
-      if (!near(ordered[i].x1, ordered[j].x2) || near(ordered[j].x1, ordered[i].x2) || unitOf[i] === unitOf[j] || !conflict(i, j)) continue;
-      const later = (forced[unitOf[i]] ??= new Set());
-      if (later.has(unitOf[j])) continue;
-      later.add(unitOf[j]);
-      pending[unitOf[j]]++;
-    }
-    // Ordinary channels have singleton units and an acyclic leave/arrive order.
-    // Swaps and cyclic orders still belong to the existing topology generator;
-    // this slice does not reinterpret their crossing cells or split pieces.
-    if (units.length === count) {
-      const degrees = [...pending], sequence: number[] = [], used = new Set<number>();
-      while (sequence.length < count) {
-        const next = units.find(id => !used.has(id) && degrees[id] === 0);
-        if (next === undefined) break;
-        sequence.push(next); used.add(next);
-        for (const later of forced[next] ?? []) degrees[later]--;
-      }
-      if (sequence.length === count) {
-        const separations: Separation[] = [];
-        for (let i = 0; i < count; i++) for (let j = i + 1; j < count; j++) if (conflict(sequence[i], sequence[j]))
-          separations.push({ id: `${i}:${j}`, before: `${sequence[i]}`, after: `${sequence[j]}`, gap: 1 });
-        const solved = solveSeparation({ variables: sequence.map(i => ({ id: `${i}`, preferred: 0, bounds: { lower: 0 } })),
-          order: sequence.map(String), separations });
-        if (!solved.ok) throw new RangeError("Track constraint conflict: " + JSON.stringify(solved.conflict));
-        let most = 1;
-        for (const [id, track] of solved.positions) { ordered[Number(id)].track = track; most = Math.max(most, track + 1); }
-        (trackCount[channel] ??= [])[zone] = most;
-        return;
-      }
-    }
-    // Turn order: the forced constraints, otherwise the sort order above.
-    const sequenced: boolean[] = [];
-    // Bends already given a track, in turn order.
-    const done: number[] = [];
-    // A cycle of forced constraints (three or more bends, each leaving a column beside where the
-    // next arrives) has no order: whichever turns first meets the last one's line along a column
-    // pair closer than a lane, between their tracks. Channel routers break such a cycle by
-    // splitting one of its nets with a dogleg (Deutsch 1976; ELK's orthogonal router splits a
-    // segment of a critical cycle, Schulze et al.): the bend first curves from its column to a
-    // free one, in a slice before any of the bends arriving beside its column, runs down the
-    // free column, and curves on in a later slice of its own. The first pieces, by bend index.
-    const pieces = new Map<number, { readonly x: number; readonly track: number; readonly low: number; readonly high: number }>();
-    /** The first slice a piece reaching from `low` to `high` can take, after every bend and piece so far it would meet. */
-    const firstTrack = (low: number, high: number, item: Leg) => {
-      let track = 0;
-      for (const earlier of done) if (ordered[earlier].track + 1 > track && reachLow[earlier] < high && low < reachHigh[earlier] && !compatible(ordered[earlier], item)) track = ordered[earlier].track + 1;
-      for (const [index, piece] of pieces) if (piece.track + 1 > track && piece.low < high && low < piece.high && !compatible(ordered[index], item)) track = piece.track + 1;
-      return track;
-    };
-    /** Splits one bend of a cycle with a dogleg, if one can take a free column; whether it did. */
-    const splitCycle = (): boolean => {
-      for (const id of units) {
-        const later = forced[id];
-        if (sequenced[id] || members[id].length !== 1 || !later?.size) continue;
-        const index = members[id][0], item = ordered[index];
-        // A junction's input keeps its fan-in shape.
-        if ("junction" in item.to) continue;
-        const busy: [number, number][] = [];
-        for (const x of columnsIn[channel] ?? []) busy.push([x - MIN_LANE, x + MIN_LANE]);
-        const lo = Math.min(item.x1, item.x2), hi = Math.max(item.x1, item.x2);
-        const x = nearestFree((lo + hi) / 2, busy, 0, width);
-        if (x === null) continue;
-        const low = Math.min(item.x1, x) - MIN_LANE, high = Math.max(item.x1, x) + MIN_LANE;
-        pieces.set(index, { x, track: firstTrack(low, high, item), low, high });
-        (columnsIn[channel] ??= []).push(x);
-        // The bend leaves its column in the piece, so the bends arriving beside that column
-        // need no longer wait for it; what remains of it runs from the free column.
-        for (const unit of later) pending[unit]--;
-        later.clear();
-        reachLow[index] = Math.min(x, item.x2) - MIN_LANE; reachHigh[index] = Math.max(x, item.x2) + MIN_LANE;
-        return true;
-      }
-      return false;
-    };
-    const ready = () => { for (const id of units) if (!sequenced[id] && pending[id] === 0) return id; return -1; };
-    for (let step = 0; step < units.length; step++) {
-      let next = ready();
-      while (next < 0 && splitCycle()) next = ready();
-      // No bend of the cycle can dogleg: it is broken in sort order.
-      if (next < 0) for (const id of units) if (!sequenced[id]) { next = id; break; }
-      sequenced[next] = true;
-      const later = forced[next];
-      if (later) for (const id of later) pending[id]--;
-      // Within a unit, a bend leaving a column exactly where another arrives turns first: in a
-      // near swap the other way round would leave both on that column between their tracks.
-      const group = inTurn(members[next]);
-      let track = 0;
-      for (const earlier of done) {
-        if (!(ordered[earlier].track + 1 > track)) continue;
-        for (const index of group) if (conflict(earlier, index)) { track = ordered[earlier].track + 1; break; }
-      }
-      // After the pieces it would meet, and a split bend after its own first piece.
-      for (const [index, piece] of pieces) for (const member of group) {
-        if (member === index || (piece.low < reachHigh[member] && reachLow[member] < piece.high && !compatible(ordered[index], ordered[member]))) track = Math.max(track, piece.track + 1);
-      }
-      const crossing = group.length === 2 ? swapCrossing(channel, ordered[group[0]], ordered[group[1]]) : null;
-      if (crossing === "cross") {
-        for (const index of group) { ordered[index].track = track + 1; ordered[index].span = 2; done.push(index); }
-        continue;
-      }
-      if (crossing) {
-        const index = group.find(i => ordered[i] === crossing.leg)!;
-        // An outside detour occupies more of the channel than the original bend. Reserve
-        // that reach against earlier tracks/pieces and against the units assigned next.
-        reachLow[index] = Math.min(reachLow[index], crossing.x - MIN_LANE);
-        reachHigh[index] = Math.max(reachHigh[index], crossing.x + MIN_LANE);
-        track = Math.max(track, firstTrack(reachLow[index], reachHigh[index], crossing.leg));
-        (columnsIn[channel] ??= []).push(crossing.x);
-        // The dogleg leaves its column before the other bend arrives there and reaches the
-        // other's column after that one has left it: first slice, third slice; the other between.
-        for (const index of group) {
-          const item = ordered[index];
-          if (item === crossing.leg) { item.dogleg = { track, x: crossing.x }; item.track = track + 2; } else item.track = track + 1;
-          done.push(index);
-        }
-        continue;
-      }
-      // Otherwise swapping bends take consecutive slices: each leaves its column just as the
-      // other arrives, so they do not cross at a shallow angle (but meet end to end there).
-      for (let offset = 0; offset < group.length; offset++) { ordered[group[offset]].track = track + offset; done.push(group[offset]); }
-    }
-    let most = 1;
-    for (const item of ordered) most = Math.max(most, item.track + 1);
-    for (const [index, piece] of pieces) { ordered[index].dogleg = { track: piece.track, x: piece.x }; most = Math.max(most, piece.track + 1); }
-    (trackCount[channel] ??= [])[zone] = most;
+    (trackCount[channel]??=[])[zone] = result.count;
   }
   const tracksIn = (channel: number, zone: number) => trackCount[channel]?.[zone] ?? 1;
-  const curvedTracks = zoneGroups.map(zones => zones?.map(legs => legs?.some(item => (item.span ?? 1) > 1) ?? false));
 
   // Port berths. A tile's outputs leave its bottom edge at its centre; another source bending
   // under that port within the stem's first PORT_BERTH crosses the stem so close to the tile that
@@ -1664,7 +1399,7 @@ function layoutPass(prepared: Prepared, extra: { readonly left: number; readonly
     }
   }
   const berthAt = (channel: number, zone: number) => zone === 0
-    ? Math.max(portBerth[channel] ?? 0, nearbyPort[channel] && curvedTracks[channel]?.[zone] ? PORT_BERTH : 0) : 0;
+    ? portBerth[channel] ?? 0 : 0;
 
   // 6. Vertical placement. Each zone is as tall as its tracks need (crowded
   // channels grow instead of squeezing bends), and junction levels sit
@@ -1672,7 +1407,7 @@ function layoutPass(prepared: Prepared, extra: { readonly left: number; readonly
   const nodes = new Map<NodeKey, PlacedNode>();
   const rows: RowBox[] = [];
   /** Zone boxes by channel, then zone. */
-  const zoneBoxes: { top: number; bottom: number; curved: boolean }[][] = [];
+  const zoneBoxes: { top: number; bottom: number }[][] = [];
   let y: number = space.top;
   rowKeys.forEach(({ band, keys: keysInRow }, index) => {
     for (const key of keysInRow) {
@@ -1683,21 +1418,19 @@ function layoutPass(prepared: Prepared, extra: { readonly left: number; readonly
     rows.push({ index, band, top: y, bottom, keys: keysInRow });
     y = bottom;
     const count = levelCount(index);
-    const boxes: { top: number; bottom: number; curved: boolean }[] = zoneBoxes[index] = [];
+    const boxes: { top: number; bottom: number }[] = zoneBoxes[index] = [];
     for (let zone = 0; zone <= count; zone++) {
-      const curved = curvedTracks[index]?.[zone] ?? false;
-      // Straight tracks need three pixels between centers and at free ends;
-      // a tile port needs six. Curved swaps retain their full six-pixel slices.
-      const preferredHeight = prepared.channelStyle === "orthogonal" && !curved ? 2 * LANE_SEPARATION : defaultZone(index, zone);
+      // Tracks keep three pixels between centers and at free ends; tile ports reserve six.
+      const preferredHeight = prepared.channelStyle === "orthogonal" ? 2 * LANE_SEPARATION : defaultZone(index, zone);
       let tall: number;
-      if (curved) tall = Math.max(preferredHeight, berthAt(index, zone) + tracksIn(index, zone) * TRACK_HEIGHT);
-      else {
+      {
+        search.charge(16*(tracksIn(index,zone)+1));
         const solved = solveOrderedTracks(tracksIn(index, zone), preferredHeight,
           zone === 0 && nearbyPort[index] ? PORT_BERTH : LANE_SEPARATION, LANE_SEPARATION);
         if (!solved.ok) throw new RangeError("Zone constraint conflict: " + JSON.stringify(solved.conflict));
         tall = solved.positions.get("end")!;
       }
-      boxes[zone] = { top: y, bottom: y + tall, curved };
+      boxes[zone] = { top: y, bottom: y + tall };
       y += tall + (zone < count ? 2 * JUNCTION_BERTH : 0);
     }
     // No bend below the last zone: routes into the next row run straight.
@@ -1717,14 +1450,13 @@ function layoutPass(prepared: Prepared, extra: { readonly left: number; readonly
   };
 
   // 7. Paths: vertical to the reserved track, across it, then vertical on, with local fillets.
-  // Paired swaps and junction fans retain their dedicated curve shapes.
+  // Junction inputs converge inside their explicit reserved regions.
   // Bend zones end `approach` above the next row, so a route into a tile ends
   // in a straight, vertical stem at least as long as its arrowhead.
   const preferredTrackCenter = (item: Leg, track: number) => {
     const box = zoneBoxes[item.channel][item.zone], y1 = at(item.from), y2 = at(item.to);
     const top = Math.max(box.top + berthAt(item.channel, item.zone), y1), bottom = Math.min(box.bottom, y2);
     const tracks = tracksIn(item.channel, item.zone), slice = (bottom - top) / tracks;
-    if (box.curved) return top + slice * (track + .5);
     const first = Math.max(box.top, y1) + (item.zone === 0 && nearbyPort[item.channel] ? PORT_BERTH : LANE_SEPARATION);
     const last = bottom - LANE_SEPARATION;
     return tracks === 1 ? (first + last) / 2 : first + (last - first) * track / (tracks - 1);
@@ -1733,7 +1465,7 @@ function layoutPass(prepared: Prepared, extra: { readonly left: number; readonly
   // channel end/port berths become bounds, not offsets applied after assignment.
   const solvedCenters = new Map<Leg, readonly number[]>();
   for (const zones of zoneGroups) for (const legs of zones ?? []) {
-    if (!legs?.length || legs.some(item => item.dogleg || (item.span ?? 1) > 1)) continue;
+    if (!legs?.length || legs.some(item => item.dogleg)) continue;
     const item = legs[0], box = zoneBoxes[item.channel][item.zone];
     const count = tracksIn(item.channel, item.zone);
     // Junction fan/crossing shapes with distinct endpoint windows remain outside
@@ -1742,9 +1474,8 @@ function layoutPass(prepared: Prepared, extra: { readonly left: number; readonly
     const lower = Math.max(box.top, at(item.from)) + (item.zone === 0 && nearbyPort[item.channel] ? PORT_BERTH : LANE_SEPARATION);
     const upper = Math.min(box.bottom, at(item.to)) - LANE_SEPARATION;
     const order = Array.from({ length: count }, (_, i) => `${i}`);
-    const solved = solveSeparation({ variables: order.map((id, i) => ({ id, preferred: preferredTrackCenter(item, i), bounds: { lower, upper } })), order,
+    const solved = search.solve({ variables: order.map((id, i) => ({ id, preferred: preferredTrackCenter(item, i), bounds: { lower, upper } })), order,
       separations: order.slice(1).map((id, i) => ({ id: `track:${id}`, before: order[i], after: id, gap: LANE_SEPARATION })) });
-    if (!solved.ok) throw new RangeError("Channel bound conflict: " + JSON.stringify(solved.conflict));
     const centers = [...solved.positions.values()];
     for (const leg of legs) solvedCenters.set(leg, centers);
   }
@@ -1766,12 +1497,17 @@ function layoutPass(prepared: Prepared, extra: { readonly left: number; readonly
     // where one ends and the next begins and read as one line there: with neighbours, a curve
     // keeps half of LANE_SEPARATION inside either edge of its slice, running vertically there.
     const inset = tracks > 1 ? LANE_SEPARATION / 2 : 0;
-    const span = item.span ?? 1, start = top + slice * (item.track + 1 - span) + inset, end = top + slice * (item.track + 1) - inset;
-    const left = `${round(x1)}`, middle = `${round(span > 1 ? (start + end) / 2 : trackCenter(item, item.track))}`;
+    const end = top + slice * (item.track + 1) - inset;
+    const left = `${round(x1)}`, middle = `${round(trackCenter(item, item.track))}`;
     if (item.dogleg) {
-      // Curve to the dogleg's column in its first slice, down that column, then on in its own.
       const column = `${round(item.dogleg.x)}`, upper = `${round(trackCenter(item, item.dogleg.track))}`;
-      return ` L${left} ${upper} L${column} ${upper} L${column} ${middle} L${right} ${middle} L${right} ${round(y2)}`;
+      const prefix = ` L${left} ${upper} L${column} ${upper} L${column} ${middle} L${right} ${middle}`;
+      const fan = fanIn.get(item);
+      if (fan !== undefined && fan !== 0) {
+        const dot = `${round(x2-fan)}`, berthTop = Math.max(Number(middle),y2-JUNCTION_BERTH), into = `${round((berthTop+y2)/2)}`;
+        return `${prefix} L${right} ${round(berthTop)} C${right} ${into},${dot} ${into},${dot} ${round(y2)}`;
+      }
+      return `${prefix} L${right} ${round(y2)}`;
     }
     const fan = fanIn.get(item);
     if (fan !== undefined && fan !== 0) {
@@ -1780,19 +1516,23 @@ function layoutPass(prepared: Prepared, extra: { readonly left: number; readonly
       const side = `${round(x2)}`, dot = `${round(x2 - fan)}`, berthTop = Math.max(end, y2 - JUNCTION_BERTH), into = `${round((berthTop + y2) / 2)}`;
       return ` L${left} ${middle} L${side} ${middle} L${side} ${round(berthTop)} C${side} ${into},${dot} ${into},${dot} ${round(y2)}`;
     }
-    // Keep turns on their reserved orthogonal track; paired swaps need crossing curves.
-    return (item.span ?? 1) > 1
-      ? `${start > y1 ? ` L${left} ${round(start)}` : ""} C${left} ${middle},${right} ${middle},${right} ${round(end)}${end < y2 ? ` L${right} ${round(y2)}` : ""}`
-      : ` L${left} ${middle} L${right} ${middle} L${right} ${round(y2)}`;
+    return ` L${left} ${middle} L${right} ${middle} L${right} ${round(y2)}`;
   };
+  search.charge(16*allLegs.length,"native ink");
   // Foreign ink is read from the sharp drawing, independently of turn order.
   const sharp = new Map(allLegs.map(item => [item, `M${round(item.x1)} ${round(at(item.from))}${drawSharp(item)}`]));
   const ink = new Map<number, { item: Leg; runs: ChannelInk[] }[]>();
-  for (const item of allLegs) append(ink, item.channel, { item, runs: channelInk(sharp.get(item)!) });
+  const nativeInk=new Map<Leg,ChannelInk[]>();
+  for (const item of allLegs) {
+    const runs=channelInk(sharp.get(item)!);nativeInk.set(item,runs);
+    append(ink, item.channel, { item, runs });
+  }
   const draw = (item: Leg): string => {
     if (!bends(item) && !fanIn.has(item)) return drawSharp(item);
     const box = zoneBoxes[item.channel][item.zone];
+    search.charge(ink.get(item.channel)!.length,"foreign ink selection");
     const foreign = ink.get(item.channel)!.filter(other => other.item.source !== item.source).flatMap(other => other.runs);
+    search.charge((8*foreign.length+tracksIn(item.channel,item.zone)+1)*nativeInk.get(item)!.length,"ink conflicts");
     const centers = Array.from({ length: tracksIn(item.channel, item.zone) }, (_, track) => round(trackCenter(item, track)));
     const path = roundChannelPath(sharp.get(item)!, foreign, corner => {
       return turnWindow(corner, box, centers).upper!;
@@ -1884,14 +1624,10 @@ function layoutPass(prepared: Prepared, extra: { readonly left: number; readonly
     routes.push({ id: plainKeys ? id : unique(id), from: route.from, to: route.to, consumers: route.consumers, path, terminal: route.to.kind === "node" });
   });
 
-  return {
-    shortfall,
-    layout: {
-      orientation: "down", width, height, nodes, rows, routes, readingOrder: reading,
-      ...(pinnedViolation ? { pinnedViolation } : {}),
-      junctions,
-    },
-  };
+  const result: GraphLayout = {orientation:"down",width,height,nodes,rows,routes,readingOrder:reading,
+    ...(pinnedViolation ? {pinnedViolation}:{}),junctions};
+  if ([...items.values()].every(item=>item.width>0 && item.height>0)) importRoutingPlan(result,search.charge);
+  return result;
 }
 
 export type Direction = "left" | "right" | "up" | "down";
