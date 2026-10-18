@@ -15,8 +15,28 @@ import { twoChainsMerge } from './folder-merge-fixture';
 import { createFolderLayoutRuntime } from '../../../src/lib/plugins/trace/view/folder-layout-runtime';
 import { buildFolderScene } from '../../../src/lib/domain/trace-graph/folder-scene';
 import { staticPresentation } from '../../../src/lib/plugins/trace/view/presentation';
+import { worldInput } from './folder-world-fixture';
 try {
-  if (mode === 'merges' || mode === 'routing-publication') {
+  if (mode === 'world-refresh') {
+    const runtime = createFolderLayoutRuntime();
+    for (let step = 0; step < 7; step++) {
+      const input = worldInput(step > 0, previous, `save-${step}`);
+      if (step === 6) (input.open as Map<string, unknown>).delete('s1:root');
+      equal(runtime.inline(input), true);
+      const inline = runtime.engine(structuredClone(input)), id = ++sequence;
+      const reply: any = await new Promise((resolve, reject) => {
+        worker.onmessage = event => resolve(event.data); worker.onerror = reject;
+        worker.postMessage(ledger.message(id, input));
+      });
+      if (reply.error) throw new Error(reply.error);
+      deepStrictEqual(reply.folder, inline);
+      equal(folderGeometryGate(inline), null);
+      equal(inline.size.width, input.width);
+      if (step > 1 && step < 6) deepStrictEqual(inline.size, previous.size);
+      runtime.remember(reply.folder);
+      ledger.replied(id, reply.folder); previous = reply.folder;
+    }
+  } else if (mode === 'merges' || mode === 'routing-publication') {
     const runtime = createFolderLayoutRuntime(), fixture = twoChainsMerge(mode==='routing-publication');
     const saved = new Map<number,unknown>();
     const drawing = (layout:any) => [layout.cells,layout.bands,layout.rowBands,layout.size,layout.bounds,

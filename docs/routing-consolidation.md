@@ -757,3 +757,74 @@ All **50** current rows were compared by exact target identity and numeric value
 | tours geometry fallback rate, % | 0.031746 | 0 | 0.500000 |
 
 The baseline acceptance, current complete report, exact comparison, repeated inventory and controls, source hashes, fail-first evidence and correctness reviews are archived in ignored `layout-eval/out/routing-s3-audit.tar.gz`. The final handover and portable commit bundle are beside that archive. No browser/Playwright run or push was performed.
+
+## Slice 3 save/publication regression (PR #95)
+
+The throttled save trace exposed an older folder-frame error. Entry 17 is not a
+corridor-search conflict or a band fallback: all three bands are committed
+`folder-pinned-extension` drawings, and the previous complete folder passes the
+unchanged geometry gate. `priorOf` deliberately has no attachment transform for
+`worldPlaced` history, but the old `planBands` kept that world drawing as raw
+geometry. `composeFolderLayout` attached it again. In the forest band, the
+reconstructed right departure starts at x=197.5 inside the cover rectangle
+x=113.5…205.5. The `route-through-tile` rejection is real; recomposition created it.
+Member facts did not change, so `folderPlacementHistory` did not run the world
+pinning path. The folder's isolated-row ladder then forced one column and
+864×4746 instead of the already certified eight-column 864×852 drawing.
+
+The inline and worker engines agree for identical inputs, with warm or empty band
+caches. The 4× trace's entries 18–28 keep the eight-column world history and all
+three bands: zero construction work, with drawing work 43 tiles / 40 routes /
+13,134 path bytes. The 1× worker request instead has the committed one-column
+fallback as history; its two missing bands require 52 tiles / 72 edges, above the
+20/20 inline construction budget. A cold inline engine also returns eight columns
+for that worker input. Dispatch itself did not regress. Replaying main with its own
+outputs keeps eight columns; applying only slice 3's finite-logical-order fix in
+`history-boundary.ts` reproduces entry 17's collapse. That fix correctly retains
+pending-output history and must remain.
+
+The engine now distinguishes unchanged geometry from reusable raw band geometry.
+A metadata refresh rebinds current plans onto the complete committed folder frame,
+refreshes cell footprints and recertifies it before reuse. Mixed changes compose
+validated canonical raw bands and pin retained world drawings in the folder frame;
+cell reorder and changed pane metrics still cause placement to change. Transported
+packing metadata and canonical node coverage are checked before reuse. Worker band
+remembering skips world drawings without valid canonical provenance and ignores
+unhashable history/hints; it never relabels a world drawing as raw. Warm/cold complete
+output parity and malformed-provenance regressions cover this boundary. No view,
+motion, geometry gate, tolerance, dispatch limit or evaluation population changes.
+
+The engine regression reduces the captured input to the seven-node forest band,
+six cells and its committed geometry, removing unrelated graphs, metadata and
+history ledgers. Both this fixture and the real inline scene-controller test fail
+on unmodified `cb87cbf`. The publication test checks a nonzero cover position,
+complete drawing identity across four separate saves, the visible saved state,
+discard removal, pane fit and every presented scene. Additional cases cover mixed
+close, resize, host reorder and malformed history. A seven-step real-worker replay
+checks complete inline/worker equality with transported history and band caching.
+
+Final correctness verification: `bun run check` reports **267 files, zero errors and
+warnings**. `bun run test --maxWorkers=4` passes **172 files, 2,208 tests and one
+existing skip** on the final source (1,339.94 s). The focused engine, runtime,
+publication and complete worker-parity run passes **35/35** (17.46 s), including the
+four malformed/missing canonical-provenance cases. Independent adversarial review
+accepted final production SHA-256
+`09dc865dd1511e9653549e7cc0ddd1c47398f721bd83eab0657c46cae528d01a`.
+The control comparison has no metric/decision changes across **6,060 proposed
+corpus layouts, 3,150 tour steps and 280 packing rows**.
+
+The complete fix evaluation passes **50/50**, exit 0, without a perf-only retry.
+Compared with the `cb87cbf` acceptance recorded above, **47 rows are unchanged**;
+only the three timing measurements differ. All thresholds and populations are
+unchanged. These are separate measurements, not performance improvement claims.
+
+| Current target | `cb87cbf` | Save/frame fix | Limit |
+|---|---:|---:|---:|
+| Main-thread maximum p95, ms | 4.328417 | 3.751365 | 8 |
+| ≤30 visible tiles maximum p95, ms | 47.617739 | 41.800999 | 100 |
+| Full folder engine maximum inline p95, ms | 5.986872 | 6.446482 | 10 |
+
+Geometry fallbacks remain **0/6,060 corpus, 0/3,150 tours and 0/140 proposed
+packing states**, with zero outside the pane. The report, exact comparison,
+fail-first logs and control replays are in ignored `layout-eval/out/s3fix/`.
+No Playwright/browser run or push was performed.
