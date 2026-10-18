@@ -1014,3 +1014,109 @@ success populations: corpus/tours T24=48/678, T25=4/84, T28=5/58, plus the separ
 internal-port, hint and folder-arrival classes. Import coverage is a prerequisite,
 not solver replacement coverage. The next step is the complete committed hard
 pin/equality model and affected conflict-component solve, before any deletion.
+
+## Slice 4: rebased retained-constant and component prerequisite
+
+This continuation starts at `0905388`, rebased onto the fixed slice 3 `f376163`.
+Slice 4 remains open. The new APIs are **not called by production routing**;
+complete committed-to-free-topology construction and publication are not adopted.
+
+`routing-problem.ts` captures caller-declared scenes without mutable aliases,
+imports their native topology and makes retained rectangle, port, native-control,
+suffix, corridor, allocation and convergence-chart numbers exact scalar constants.
+Declared frame recipes retain each arithmetic operation and intermediate result;
+this does not derive the production piecewise attachment/hint/world recipes.
+Native route bytes and painted declarations remain separate immutable bindings.
+A retained-geometry check rejects changed coordinates, missing identities, lost
+consumers and reserialized native paths. Projection policy must run before capture.
+
+`routing-components.ts` substitutes fixed constants before closing free dependency
+components. A common fixed port cannot join unrelated free subproblems; its
+incident obstacle constraints still bound each solve. Only affected or conflicting
+free components are solved, and every hard residual is checked. Two different
+pins on one variable return an explicit equality witness. Pins preserve their
+binary64 values, including signed zero. Snapshot, shape, shared-table, dependency,
+whole-array component scans and local solve work charge the caller's ledger;
+ledger exceptions retain their original control flow.
+
+The previously missed `random-dag-100-8101` 360/96 click `n33` now has an independently
+generated, gate-certified **selected-topology diagnostic**. It retains all 75
+surviving committed route strings, 28 tile rectangles, 18 dots and all 9,539
+imported attached-scene scalar pins. Hidden `n85`/`n93` and their two routes are
+outside current request membership; consumer projection precedes import.
+No retained hint resize or coordinate descent is required in this case.
+
+Only two new routes change. `n25→n98` takes the existing bottom departure/shared
+source prefix and a fresh visibility-grid corridor. Its old right port `(328,3274)`
+is only 2 px from retained `n18`'s vertical `x330` track, inside the unchanged 6 px
+port berth; editing later runs cannot fix that start. `n8→n17`'s new internal run
+is free. With the chosen topology, the metric kernel solves one three-track
+component: `174→174`, `175→175`, `169→178`; retained rectangles bound the corridor.
+The pre-solve topology fails `shared-lane`, the solved drawing passes the full
+unchanged gate, and restoring the old new-departure choice fails `route-contact`.
+The generator never reads the old repaired output: poisoning that output produces
+an identical regenerated drawing. This is one diagnostic, not adopted replacement
+coverage or a claim that every frame equality has been constructed.
+
+The actual `random-tree-12-7122` replay `[null,n1,n3,n1,n4,n3,n4]` still exposes the
+legacy committed `n4.y=321` versus saved revisit `312`. The metric API now returns
+both named equality constraints without mutating either drawing. Production
+snapshot policy and explicit fallback integration remain open.
+
+Independent adversarial review accepts only these prerequisite APIs and selected
+contracts: **85/85** focused tests, a 10,000-case ordered-DAG feasibility
+differential with zero mismatches, exact attached-scene n33 pins, independent
+missing-move failure checks and a poisoned-output differential. Review receipts
+and source/test hashes are in `layout-eval/out/s4c-review.md` and
+`s4c-review-acceptance.json`. The four new test files contain 33 contracts.
+
+Every archived distinct old-success output was audited, beyond the initial153
+sample: all **527** present-member gate-certified drawings import into the new
+constant representation. This includes corpus/tour T24 drafts **21/379**, T28
+**5/58**, and the separate original workload **46 T24, 11 T28, 4 hint and 3 retained
+route** outputs. Intermediate T24 drafts are certified only for present members;
+this is not complete-request publication or replacement coverage. T25 draft
+bodies were absent from the old archive. An isolated instrumented `0905388`
+snapshot now recaptures every positive raw T25 return with call maps: corpus
+**6 constrained / 4 repairable**, tours **74 constrained / 84 repairable**.
+All **168** drafts contain their complete requested membership and import into
+the constant model; **81** already pass the raw drawing gate. These are draft
+receipts, not adopted solver or publication successes.
+
+The repeated original workload has 522 legal tour steps, 65 cold bands, 65 raw
+layered diagnostics and 398 folder states, with no published gate failures.
+Every T18–T28/T37 counter matches the earlier inventory on this fixed base. Its
+complete-output SHA256 is now
+`67926c171020087ee52af1acb4e43cbc863fde41099f4571dc9d714f69e33833`,
+identical in instrumented and uninstrumented controls; the previous digest is
+not reused. All 12,120 full corpus rows match the uninstrumented control after
+omitting only top-level elapsed `ms`; entire tour and packing artifacts match.
+The repeated table and call maps are in `s4c-inventory.json`/`.md` and
+`s4c-recapture-summary.json`. No production stage has an adopted replacement
+after-run at this checkpoint.
+
+Adopted replacement coverage remains **0/48 and 0/678 T24**, **0/4 and 0/84 T25**,
+**0/5 and 0/58 T28** for corpus/tours, plus the still-unadopted internal-port,
+hint and folder classes. No stage is deleted. Complete frame/geometry adapters,
+all-success coverage, consistent production ledger policy and fail-first tests
+through adapter/inline/worker/publication remain required in slice 4.
+
+The additional original-workload capture contains **352** complete success
+bodies and **485** native drawing imports, including all **133** full folder
+gates and their **266** attached graphs. Independent evidence review checks every
+body, call mapping and attached request membership; it does not certify an
+automatic production frame adapter or replacement solver.
+
+The fresh native import census on this rebased base has **zero failures across
+9,519 drawings**: 6,060 corpus, 3,150 tour and 309 packing drawings from 140 states.
+Its exact native digest is
+`2a7c4ccaaea4c3489ad6889fdf99ef265ffd73803c7d24f914289657cc7f23c1`.
+Final gates pass: check has zero errors/warnings across 272 files; unit tests have
+2,265 passes and one existing skip across 177 files; layout evaluation is **50/50**
+at unchanged thresholds. Only three acceptance rows change, all timing values:
+main-thread maximum p95 **5.662279→6.460068 ms** (limit 8), ≤30 visible tiles
+maximum p95 **50.125955→40.375985 ms** (limit 100), and full-folder inline maximum
+p95 **4.276499→6.232340 ms** (limit 10). No performance work was undertaken.
+Receipts are `s4c-gates.json`, `s4c-acceptance-diff.json` and the corresponding
+logs under `layout-eval/out`; a verified bundle and guarded importer deliver this
+partial prerequisite checkpoint without writing this clone's read-only `.git`.
