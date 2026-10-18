@@ -1,16 +1,19 @@
 /** Import the existing embedding; certification here is local containment, not
  * admission of a drawing. The independent geometry gates remain authoritative. */
-import { nearestFree, type GraphLayout, type PlacedNode, type PlacedRoute } from './layout';
+import { nearestFree, type GraphLayout, type PlacedNode, type PlacedRoute, type PlacedJunction } from './layout';
 import type { BandPlacement } from './band-geometry';
 import { pathTailAtY } from './path-geometry';
 import type { Point } from './path-sampling';
 import { pathTokens } from './path-data';
 import { segments } from './layout-quality';
 import { arrowTip, BERTH_SLACK } from './route-contacts';
-import { ARROW, PORT_BERTH, TRACK_HEIGHT, LANE_SEPARATION, JUNCTION_BERTH } from './metrics';
+import { ARROW, PORT_BERTH, TRACK_HEIGHT, LANE_SEPARATION } from './metrics';
 import { CONNECTOR_STROKE, CONNECTOR_FILLET_RADIUS, JUNCTION_RADIUS, JUNCTION_STROKE_WIDTH } from './connector-ink';
 import { solveSeparation, type CoordinateBounds, type CoordinatePin } from './separation';
-import { endpointKey, type Junction } from './junctions';
+import { consumerKey, endpointKey, type Consumer, type Junction } from './junctions';
+import { eachConsumer } from './route-consumers';
+import { convergenceBounds, convergenceInput, type ConvergenceInput } from './routing-convergence';
+import { convergenceChart, validateConvergenceChart, independentConvergence, type ConvergenceChart } from './routing-chart';
 
 export const STROKE_RADIUS = Math.max(...Object.values(CONNECTOR_STROKE)) / 2;
 export const FILLET_RADIUS = CONNECTOR_FILLET_RADIUS;
@@ -80,12 +83,19 @@ export interface RoutingPlan {
   /** Geometry-to-port/paint bindings: removing an allocation cannot certify ink. */
   readonly paths: readonly RoutingPath[];
   readonly meetings?: readonly JunctionMeeting[];
+  /** Original painted dots, including historical declarations after pruning. */
+  readonly junctions?: readonly PlacedJunction[];
 }
 export interface JunctionMeeting {
   readonly id: string;
   readonly dot: Point;
   readonly parents: readonly string[];
-  readonly inputs: readonly { readonly source: string; readonly port: string; readonly path: string }[];
+  /** Parentage carried now, distinct from the retained dot's old declaration. */
+  readonly projection: { readonly declaredParents: readonly string[] };
+  readonly convergence: InkBounds;
+  readonly inputs: readonly { readonly source: string; readonly port: string; readonly path: string; readonly parents: readonly string[]; readonly entry: ConvergenceInput;
+    }[];
+  readonly chart?: ConvergenceChart;
 }
 export interface RoutingPath {
   readonly id: string;
@@ -106,6 +116,24 @@ export class RoutingImportError extends Error {
 }
 const reject = (id: string, message: string): never => { throw new RoutingImportError(id, message); };
 const finite = (id: string, ...values: number[]) => { if (!values.every(Number.isFinite)) reject(id, 'geometry must be finite'); };
+/** Validate ranges before iteration: structured-cloned history is untrusted. */
+function projectedConsumers(route: PlacedRoute, charge: (work:number,reason?:string)=>void): readonly Consumer[] {
+  const consumers = route.consumers;
+  if (!consumers || typeof consumers !== 'object') return reject(route.id, 'invalid consumer range');
+  if (!Array.isArray(consumers)) {
+    const range = consumers as Exclude<typeof consumers, readonly unknown[]>;
+    if (!Array.isArray(range.entries) || !Number.isSafeInteger(range.start) || !Number.isSafeInteger(range.end)
+      || range.start < 0 || range.end < range.start || range.end > range.entries.length) return reject(route.id, 'invalid consumer range');
+  }
+  const length = Array.isArray(consumers) ? consumers.length : (consumers as Exclude<typeof consumers, readonly unknown[]>).end - (consumers as Exclude<typeof consumers, readonly unknown[]>).start;
+  charge(length, 'consumer projection');
+  const result: Consumer[] = [];
+  for(const c of eachConsumer(route)) {
+    if (!c || typeof c.parent !== 'string' || !c.parent || typeof c.child !== 'string' || !c.child) return reject(route.id, 'invalid consumer');
+    result.push(c);
+  }
+  return result;
+}
 const same = (a: Point, b: Point) => a.x === b.x && a.y === b.y;
 function followsPort(side: PortSide, first: Point, next: Point): boolean {
   const length = Math.hypot(next.x - first.x, next.y - first.y), ux = (next.x - first.x) / length, uy = (next.y - first.y) / length;
@@ -223,6 +251,7 @@ export function importRoutingPlan(topology: RoutingTopology, charge: (work:numbe
     validateRoutingPlan(plan,charge); return plan;
   }
   const ports: RoutingPort[] = [], stubs: ArrowStub[] = [], corridors: CertifiedCorridor[] = [], paths: RoutingPath[] = [];
+  charge(topology.junctions.size,'painted junction import');
   for (const id of topology.departures ?? []) {
     const tile = topology.nodes.get(id);
     if (!tile) return reject(id, 'unknown departure owner');
@@ -314,17 +343,18 @@ export function importRoutingPlan(topology: RoutingTopology, charge: (work:numbe
       && (route.from.kind !== 'junction' || route.from.id !== dot.id));
     if (!inputs.length) continue;
     const arrivals = inputs.map(route=>{
-      const geometry=importedRoute(route),last=geometry.ink.at(-1)!;
-      const ratio=last.length===2 ? Math.min(1,JUNCTION_BERTH/Math.hypot(last[1].x-last[0].x,last[1].y-last[0].y)) : 0;
-      const point=last.length===4 ? last[0] : {x:last[1].x-(last[1].x-last[0].x)*ratio,y:last[1].y-(last[1].y-last[0].y)*ratio};
+      const entry = convergenceInput(importedRoute(route).ink, dot, charge);
       const source=endpointKey(route.from);
-      const port=junctionPort(`${dot.id}:input:${source}`,point,'top',JSON.stringify(['junction-input',dot.id,source]));
+      const port=junctionPort(`${dot.id}:input:${source}`,entry.point,entry.side,JSON.stringify(['junction-input',dot.id,source]));
       ports.push(port);
-      return {source,port:port.id,path:route.id};
+      const parents = [...new Set(projectedConsumers(route, charge).map(c => c.parent))].sort();
+      return {source,port:port.id,path:route.id,parents,entry};
     });
-    meetings.push({id:dot.id,dot:{x:dot.x,y:dot.y},parents:dot.parents,inputs:arrivals});
+    meetings.push({id:dot.id,dot:{x:dot.x,y:dot.y},parents:[...new Set(arrivals.flatMap(a=>a.parents))].sort(),
+      projection:{declaredParents:dot.parents},convergence:convergenceBounds(dot),inputs:arrivals,
+      ...(!independentConvergence(arrivals.map(a=>a.entry),charge) ? {chart:convergenceChart(arrivals.map(input=>({path:input.path,entry:input.entry})),dot,charge)} : {})});
   }
-  const plan = { ports, stubs, corridors, turns: [], paths, meetings };
+  const plan = { ports, stubs, corridors, turns: [], paths, meetings, junctions:[...topology.junctions.values()] };
   validateRoutingPlan(plan,charge); return plan;
 }
 
@@ -378,7 +408,7 @@ export function importAttachmentStem(path: string, bandTop: number, stemRoom: nu
 }
 
 export function validateRoutingPlan(plan: RoutingPlan, charge: (work:number, reason?:string)=>void = ()=>{}): void {
-  charge(plan.ports.length+plan.paths.length+plan.corridors.length+plan.turns.length+plan.stubs.length,'routing plan validation');
+  charge(plan.ports.length+plan.paths.length+plan.corridors.length+plan.turns.length+plan.stubs.length+(plan.meetings?.length??0)+(plan.junctions?.length??0),'routing plan validation');
   const ids = new Set<string>();
   const identity = (id: string) => { if (!id || ids.has(id)) reject(id, 'duplicate or empty identity'); ids.add(id); };
   const bounds = (id: string, b: InkBounds) => {
@@ -403,65 +433,93 @@ export function validateRoutingPlan(plan: RoutingPlan, charge: (work:number, rea
     }
   }
   const meetings=new Map((plan.meetings??[]).map(meeting=>[meeting.id,meeting]));
+  const junctions=new Map((plan.junctions??[]).map(dot=>[dot.id,dot]));
+  if(junctions.size!==(plan.junctions??[]).length) reject('junctions','duplicate painted junction');
+  for(const dot of junctions.values()) {
+    finite(dot.id,dot.x,dot.y);
+    if(!dot.id || !Array.isArray(dot.parents)) reject(dot.id,'invalid painted junction parent declaration');
+    charge(dot.parents.length+1,'retained junction declaration');
+    if(Array.from(dot.parents).some(parent=>typeof parent!=='string' || !parent) || new Set(dot.parents).size!==dot.parents.length) reject(dot.id,'invalid painted junction parent declaration');
+  }
   const pathsById=new Map(plan.paths.map(path=>[path.id,path]));
+  const consumersByPath=new Map(plan.paths.filter(path=>path.route).map(path=>[path.id,projectedConsumers(path.route!,charge)]));
   if(meetings.size!==(plan.meetings??[]).length) reject('junctions','duplicate junction meeting');
   for(const path of plan.paths) if(path.route?.to.kind==='junction'
     && (path.route.from.kind!=='junction' || path.route.from.id!==path.route.to.id) && !meetings.has(path.route.to.id))
     reject(path.route.to.id,'missing junction meeting');
   const represented=new Map<string,ReadonlySet<string>>();
+  const representedConsumers=new Map<string,ReadonlySet<string>>();
   const unresolved=new Set(meetings.keys());
   while(unresolved.size) {
     let progressed=false;
     for(const id of unresolved) {
       const meeting=meetings.get(id)!;
+      if(!Array.isArray(meeting.parents) || !Array.isArray(meeting.projection?.declaredParents)) reject(id,'invalid junction parent projection');
+      charge(meeting.parents.length+meeting.projection.declaredParents.length,'junction declaration projection');
       charge(meeting.inputs.length+1,'junction parentage');
       const sources=meeting.inputs.map(input=>pathsById.get(input.path)?.route?.from);
       if(sources.some(source=>!source)) reject(id,'invalid junction parent binding');
       if(sources.some(source=>source!.kind==='junction' && !represented.has(source!.id))) continue;
       const parents=new Set<string>();
-      for(const source of sources) {
-        const inputParents=source!.kind==='node' ? [source!.id] : represented.get(source!.id)!;
-        charge(inputParents instanceof Array ? inputParents.length : inputParents.size,'junction parent union');
+      const consumers=new Set<string>();
+      for(const [index,source] of sources.entries()) {
+        const input=meeting.inputs[index],route=pathsById.get(input.path)!.route!;
+        const available=source!.kind==='node' ? new Set([source!.id]) : represented.get(source!.id)!;
+        const carried=consumersByPath.get(route.id)!,inputParents=new Set(carried.map(c=>c.parent));
+        if(source!.kind==='junction' && carried.some(c=>!representedConsumers.get(source!.id)!.has(consumerKey(c)))) reject(id,'disconnected junction consumer projection');
+        for(const consumer of carried) consumers.add(consumerKey(consumer));
+        if(!Array.isArray(input.parents)) reject(id,'invalid junction input parent projection');
+        charge(input.parents.length,'junction input projection');
+        if(new Set(input.parents).size!==input.parents.length || input.parents.length!==inputParents.size
+          || Array.from(input.parents).some(parent=>!inputParents.has(parent)) || [...inputParents].some(parent=>!available.has(parent))) reject(id,'invalid junction input parent projection');
+        charge(inputParents.size,'junction parent union');
         for(const parent of inputParents) {
           if(parents.has(parent)) reject(id,'overlapping junction input parentage');
           parents.add(parent);
         }
       }
-      if(!Array.isArray(meeting.parents) || new Set(meeting.parents).size!==meeting.parents.length || meeting.parents.length!==parents.size || meeting.parents.some(parent=>!parents.has(parent))) reject(id,'incorrect junction parentage');
-      represented.set(id,parents);unresolved.delete(id);progressed=true;
+      if(!Array.isArray(meeting.parents) || new Set(meeting.parents).size!==meeting.parents.length || meeting.parents.length!==parents.size || Array.from(meeting.parents).some(parent=>!parents.has(parent))) reject(id,'incorrect junction parentage');
+      const dot=junctions.get(id),declared=meeting.projection?.declaredParents;
+      if(!dot || !same(dot,meeting.dot) || !Array.isArray(declared) || declared.length!==dot.parents.length
+        || Array.from(declared).some((parent,i)=>parent!==dot.parents[i]) || new Set(declared).size!==declared.length
+        || meeting.parents.some(parent=>!declared.includes(parent))) reject(id,'invalid retained junction parent projection');
+      represented.set(id,parents);representedConsumers.set(id,consumers);unresolved.delete(id);progressed=true;
     }
     if(!progressed) reject([...unresolved][0],'cyclic or missing junction parentage');
   }
-  // Authored centipixel coordinates compare as integers, avoiding binary
-  // subtraction inventing a clearance failure at an exact decimal boundary.
-  const separated=(a:number,b:number)=>{
-    const aa=Math.round(a*100),bb=Math.round(b*100);
-    return aa/100===a && bb/100===b ? Math.abs(aa-bb)>=LANE_SEPARATION*100
-      : a+LANE_SEPARATION<=b || b+LANE_SEPARATION<=a;
-  };
+  for(const path of plan.paths) if(path.route) {
+    const route=path.route,consumers=consumersByPath.get(path.id)!;
+    if(consumers.some(consumer=>route.from.kind==='node' ? consumer.parent!==route.from.id
+      : !representedConsumers.get(route.from.id)?.has(consumerKey(consumer)))) reject(path.id,'disconnected source consumer projection');
+    if(route.terminal && route.to.kind==='node' && consumers.some(consumer=>consumer.child!==route.to.id)) reject(path.id,'invalid terminal consumer projection');
+  }
   for (const meeting of plan.meetings??[]) {
     finite(meeting.id,meeting.dot.x,meeting.dot.y);
     charge(plan.paths.length,'junction path lookup');
     const incoming=plan.paths.filter(path=>path.route?.to.kind==='junction' && path.route.to.id===meeting.id
       && (path.route.from.kind!=='junction' || path.route.from.id!==meeting.id));
-    if (meeting.inputs.length<2 || new Set(meeting.inputs.map(input=>input.source)).size!==meeting.inputs.length || incoming.length!==meeting.inputs.length)
+    if (!meeting.inputs.length || new Set(meeting.inputs.map(input=>input.source)).size!==meeting.inputs.length || incoming.length!==meeting.inputs.length)
       reject(meeting.id,'incomplete junction inputs');
-    const approaches:{point:Point;axis:'x'|'y'}[]=[];
-    for (const input of meeting.inputs) {
+    const region=convergenceBounds(meeting.dot);
+    if(!meeting.convergence || region.left!==meeting.convergence.left || region.top!==meeting.convergence.top
+      || region.right!==meeting.convergence.right || region.bottom!==meeting.convergence.bottom) reject(meeting.id,'invalid junction convergence bounds');
+    const entries=meeting.inputs.map(input=>convergenceInput(pathsById.get(input.path)!.native,meeting.dot,charge));
+    for (const [index,input] of meeting.inputs.entries()) {
       const path=incoming.find(path=>path.id===input.path),port=ports.get(input.port);
       if (!path?.route || !port || input.source!==endpointKey(path.route.from) || !same(path.points.at(-1)!,meeting.dot)) reject(meeting.id,'invalid junction port binding');
-      const last=path!.native.at(-1)!,point=port!.point;
-      const on=last.length===4 ? same(last[0],point) : last[0].x===last[1].x
-        ? point.x===last[0].x && point.y>=Math.min(last[0].y,last[1].y) && point.y<=Math.max(last[0].y,last[1].y)
-        : point.y===last[0].y && point.x>=Math.min(last[0].x,last[1].x) && point.x<=Math.max(last[0].x,last[1].x);
-      if (!on) reject(meeting.id,'junction approach off native path');
-      const end=last.at(-1)!,before=[...last].reverse().find(p=>!same(p,end));
-      if(!before) reject(meeting.id,'junction approach has no tangent');
-      const axis=Math.abs(before!.x-end.x)<Math.abs(before!.y-end.y) ? 'x' as const : 'y' as const;
-      if(approaches.some(other=>other.axis===axis && !separated(other.point[axis],point[axis])))
-        reject(meeting.id,'junction inputs need independent approach ports');
-      approaches.push({point,axis});
+      const entry=entries[index],point=port!.point;
+      const binding=input.entry;
+      if(!binding || binding.primitive!==entry.primitive || binding.parameter!==entry.parameter || binding.side!==entry.side
+        || !binding.point || !same(binding.point,entry.point) || !Array.isArray(binding.suffix) || binding.suffix.length!==entry.suffix.length
+        || !same(entry.point,point) || port!.side!==entry.side) reject(meeting.id,'junction approach off native path');
+      charge(entry.suffix.length,'convergence suffix binding');
+      if(Array.from(binding.suffix).some((run,i)=>!Array.isArray(run) || run.length!==entry.suffix[i].length
+        || Array.from(run).some((point,j)=>!point || !same(point,entry.suffix[i][j])))) reject(meeting.id,'junction native convergence suffix changed');
     }
+    const chartEntries=meeting.chart ? validateConvergenceChart(meeting.chart,
+      meeting.inputs.map((input,i)=>({path:input.path,entry:entries[i]})),meeting.dot,charge) : undefined;
+    if(!independentConvergence(entries,charge) && (!chartEntries || !independentConvergence(chartEntries,charge)))
+      reject(meeting.id,'junction inputs need independent approach ports');
   }
   for (const stub of plan.stubs) {
     identity(stub.id);
