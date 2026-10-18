@@ -326,7 +326,7 @@ async pattern: use existing pure request/result and publication transaction.
 | **1. Channel and track assignment as a constraint solve (complete)** | T4/T11/T14/T15 metric assignment for existing ordered, representable channels; T31–T33 shared-row header rules, plus T34/T35 attachment offsets. Keep current row/corridor generators. Add common immutable segment/order/bounds/pin types and a deterministic separation solver first, within this slice. | Test below becomes ordinary `it`; retained tracks and child tops remain exact through packed attachment. Compatible disconnected spans reuse tracks. New groups can get deeper tracks/header/corridors without raising existing child tops. Differential tests for channel bound conflicts, pinned interior tracks, lifetime reuse and ordered insertions; no new fallback/errors. | 700–1,100 lines; 4–6 days | Medium-high: correct coordinate frame, cyclic orders, header corners and row packing are coupled. Scope adapters to represented channels and preserve other drawings. |
 | **2. Explicit ports and painted corridors (complete)** | T8/T14/T16/T29/T34/T35 duplicated endpoint/envelope reconstruction. Import existing topology into explicit ports, arrow stubs and certified turn/corridor bounds; retain current emitter initially. | Same semantic consumers/endpoints and exact reused route geometry; native cubics, near-pane arrows and host cover chrome pass existing tests/gates. Retained unaffected stem paths remain byte-identical, supporting interrupted motion. Reject malformed imported plans. | 600–1,000 lines; 3–5 days | Medium: source vs branch endpoints, raw/attached transforms, stroke versus allocation extents. |
 | **3. Junctions and corridor topology (complete)** | T3/T5–T10/T12/T13; reuse T1 semantics. Replace provisional/deferred/stacked placement, zone reconsideration and dropped ordering with explicit junction ports and channel search. | Critical cycle gets a certified split/crossing topology, never a discarded hard dependency. Exact parentage for reused subsets, 2–8 inputs, distant fan-outs and long edges; crossing/height/pane/fallback limits all hold. Try new corridor assignments before growing only free boundaries. | 1,200–1,800 lines; 6–9 days | High: combinatorial corridor capacity and fan-in/crossing semantics. Bounds on **total** search/constraint work, not per retry. |
-| **4. Constrained incremental insertion and hint changes** | T18–T28 plus T37's separate routing. Import committed drawing into same model, freeze declared tracks/rectangles/suffixes, add new ports/segments and re-solve affected conflict components. | Arrival world-oracles, merges/departures, single 16 px descent and shrink-space reuse; clicked ancestry equality; exact revisits and worker parity. Delete repairable-contact policy and port/bypass offset repair only when all old successes are covered. Preserve other retained tiles where the request pins them; optimize only free ones. | 1,200–1,900 lines; 6–10 days | High: pruning/identity, future departures, hint port changes, dense search tails. |
+| **4. Constrained incremental insertion and hint changes (open; lossless import boundary complete)** | T18–T28 plus T37's separate routing. Import committed drawing into same model, freeze declared tracks/rectangles/suffixes, add new ports/segments and re-solve affected conflict components. | Arrival world-oracles, merges/departures, single 16 px descent and shrink-space reuse; clicked ancestry equality; exact revisits and worker parity. Delete repairable-contact policy and port/bypass offset repair only when all old successes are covered. Preserve other retained tiles where the request pins them; optimize only free ones. | 1,200–1,900 lines; 6–10 days | High: pruning/identity, future departures, hint port changes, dense search tails. |
 | **5. Cold sweeps and folder packing in that model** | T2/T17/T19/T30/T36–T38 placement alternatives. Shelves, downward and serial layouts become embedding generators feeding one solve; packing contributes constraints before final routing. | All cold widths/presets and legal tours retain display/long-edge order, quality and timing targets. New-state sweeps may choose freer embeddings; pinned states never lose pins when a compact/serial candidate is considered. Folder ordinary cells and other bands are first-class obstacles. | 1,000–1,600 lines; 5–8 days | High: compactness, candidate pruning and 10 ms inline budget; avoids a simultaneous scoring rewrite. |
 | **6. Remove superseded routers/repairs** | Delete remaining legacy T21–T25/T28/T36/T38 implementations once every embedding uses common constraints; T5–T7/T10/T13 are deleted in slice 3. Retain T1 consumer semantics, T16 emitter if still useful, T39 history and T40 independent gates. | No legacy escapes reached across full acceptance and targeted rare-branch fixtures; safe chain/fan/serial are certified embedding choices under identical pins. New diagnostics distinguish topology conflict, metric conflict, unsupported input and budget exhaustion. | 300–700 new/changed lines, larger net deletion; 2–4 days | Medium after coverage; zero sample use alone never justifies deletion. |
 
@@ -829,11 +829,12 @@ packing states**, with zero outside the pane. The report, exact comparison,
 fail-first logs and control replays are in ignored `layout-eval/out/s3fix/`.
 No Playwright/browser run or push was performed.
 
-## Slice 4 investigation (not adopted)
+## Slice 4 initial investigation (620313b; not adopted)
 
-Slice 4 is **not complete**. Production routing remains at `cb87cbf`; no T18–T28
-or T37 implementation has been removed. The slice 4 row above remains open.
-The following evidence is a restart point, not acceptance of a partial replacement.
+At this initial checkpoint, slice 4 was **not complete** and production routing
+remained at `cb87cbf`; no T18–T28 or T37 implementation had been removed.
+The following evidence records that investigation, not acceptance of a partial
+replacement. The later representation step is documented below.
 
 An isolated contact-search probe reused slice 3's corridor ledger and
 separation domains instead of enumerating perpendicular offsets. It does not
@@ -913,11 +914,103 @@ skip**: the malformed-history `M100 NaN L200 NaN` case hit its unchanged
 five-second child-process timeout. Its focused file rerun passed **31/31** at
 the same limit; this does not turn the full unit command green.
 
-There is no adopted after-run or changed current acceptance row to report.
-New slice 4 fail-first publication contracts and replacement acceptance have
+There was no adopted after-run or changed current acceptance row at that
+checkpoint. New slice 4 fail-first publication contracts and replacement acceptance had
 **not** been established. The independent blocking review rejects the incomplete
 replacement; production remains unchanged. The handover, census, portable
 reproductions and baseline receipts are under `layout-eval/out` and in the
 slice 4 audit archive. No required slice 4 work is deferred under the name of
 slice 5; cold embedding and folder packing consolidation remain slice 5's
 unchanged scope.
+
+## Slice 4: lossless import boundary
+
+The incremental re-solve and stage deletion remain open. This step extends the
+import representation so that published incremental geometry can become a
+committed routing problem without rewriting its native paint.
+
+A junction now has two explicit semantic layers. Its painted dot retains its
+original parent declaration, coordinate and identity. Its current meeting
+projects the exact consumers carried by the incoming paths, including nested
+joins and a unary residual after pruning. Validation checks that every projected
+consumer reaches its terminal through the incoming source; a historical parent
+name cannot invent a current connection.
+
+Convergence inputs reference the last entry of each native path into the existing
+6 px square dot berth. A binding includes the native primitive, split parameter,
+directed face and complete native suffix. Cubics use polynomial interval roots
+and De Casteljau metadata; original path bytes and controls are never re-emitted.
+Opposite faces are distinct directed inputs. Inputs sharing a face still require
+the existing strict 3 px separation, including its unchanged exact-centipixel
+comparison. The original painted ports, dot and route bindings remain exact.
+
+A local numerical chart handles independent lanes whose attachment arithmetic
+crosses a binary64 precision boundary. It explicitly encodes only the already
+validated convergence cut, suffix controls and dot through at most two common
+bounded numerical operations. Every encoded point must round-trip at each
+operation to the exact preceding coordinate;
+primitive, parameter and face still reference the raw full-path cut. The same
+strict independence predicate runs in that chart. Deterministic candidate
+operations include a small exact recentering and origins placing the dot near
+binary binade boundaries (including adjacent representable origins) within the
+existing coordinate reach. Two real sequential attachments can preserve fine
+low-coordinate residues while accumulating rounding at a larger binade; a single
+reversible origin is insufficient for that certified case. This is numerical
+representation metadata, not claimed historical attachment provenance or a
+solver displacement. The independent geometry gates still admit the native
+paint. A 2.99 px gap and coincident inputs remain rejected.
+
+There is no new persisted `GraphLayout` field, history policy or cache state.
+Malformed ranges, sparse certificate arrays and nonfinite native geometry are
+rejected, and projection/chart work is charged to the caller's existing ledger.
+The previous complete-output differential hash remains unchanged.
+
+The import census uses the unchanged 6,060 corpus states, 3,150 legal tour steps
+and 140 packing states (309 separate packed drawings). Before this change,
+**843 of 9,519 drawings** failed import. After, **0 of 9,519** fail:
+
+| Published population | Before failures | After failures |
+|---|---:|---:|
+| Corpus | 177 / 6,060 | 0 / 6,060 |
+| Legal tours | 666 / 3,150 | 0 / 3,150 |
+| Packing (140 states) | 0 / 309 | 0 / 309 |
+
+The census
+also asserts exact retained route bytes/identities/consumer ranges and painted
+dots/declarations, and hashes the drawings independently of import metadata.
+Both complete runs have native drawing SHA256
+`2a7c4ccaaea4c3489ad6889fdf99ef265ffd73803c7d24f914289657cc7f23c1`.
+The independent population audit verifies the exact ordered producer states,
+actual published world drawings and full request membership without exclusions.
+
+The 24 new behavior contracts cover the pruned future-port fixture, its published
+clicked result, directed arrivals, malformed projections/certificates and exact
+reattachments. Six reduced certified sequential-attachment cases fail the frozen
+single-chart attempt and pass the two-operation representation. Independent
+adversarial review accepts the current design: 89 focused tests and 1,179/1,179
+gate-certified sequential-attachment drawings import successfully; coincident,
+2.99 px and counterfeit inputs still reject. No persisted frame/history policy
+was adopted. The unchanged full unit suite passes with 2,209 tests and one
+existing skip; source check reports 270 files, zero errors and zero warnings.
+The final unchanged evaluation targets pass **50/50**. All 12,120 corpus rows
+match baseline after omitting only top-level elapsed `ms`; entire tour and packing
+artifacts match. Metrics, decisions and work are unchanged. The only changed
+current acceptance rows are measured timings, all passing their original limits:
+
+| Current timing target (p95, ms) | Before | After | Limit |
+|---|---:|---:|---:|
+| Main-thread maximum | 4.302 | 5.662 | 8 |
+| At most 30 visible tiles maximum | 46.277 | 50.126 | 100 |
+| Full folder engine maximum inline | 7.093 | 4.276 | 10 |
+
+Perf-stage load samples range from 5.62 to 26.71. No profiling, optimization,
+threshold change or timing retry was needed. Receipts are in
+`layout-eval/out/import-census-chain.json`, `s4b-acceptance-diff.json`,
+`s4b-gate-exits.json` and `routing-s4-handover.md`.
+
+This step does not replace T24/T25/T28, port/bypass repairs, hint reconnection or
+folder pinning. New re-solve coverage remains unestablished over the full old
+success populations: corpus/tours T24=48/678, T25=4/84, T28=5/58, plus the separate
+internal-port, hint and folder-arrival classes. Import coverage is a prerequisite,
+not solver replacement coverage. The next step is the complete committed hard
+pin/equality model and affected conflict-component solve, before any deletion.
