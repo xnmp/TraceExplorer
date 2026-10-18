@@ -31,6 +31,8 @@ import { orthogonalRoute, LANE_TOLERANCE, NEAR_LANE, type AxisRun, type ForeignL
 import { JUNCTION_CLEARANCE } from "./connector-ink";
 import { forEachPathNumber } from "./path-data";
 import { pathCommands, type Point } from "./path-sampling";
+import { MAX_INDEX_ROWS, inReach } from './coordinate-space';
+export { inReach } from './coordinate-space';
 
 /** Fractional curve coordinates need the full reserved clearance. The drawing gate uses
  * this numerical tolerance; the legacy contact helper's .01px slack admits real near misses. */
@@ -75,10 +77,6 @@ const SIDE_LANE = 4;
 const GRID_BUDGET = 5000;
 /** A grid route may discover this many missing port/corner obstacles before giving up. */
 const BERTH_RETRIES = 16;
-/** Most 64 px rows one segment may span in the lane index (about 4 million px): beyond it the history is not usable. */
-const MAX_INDEX_ROWS = 65_536;
-/** Whether a coordinate or size lies within the lane index's reach: finite, at most `MAX_INDEX_ROWS` rows from zero. */
-export const inReach = (value: number) => Number.isFinite(value) && Math.abs(value) <= MAX_INDEX_ROWS * 64;
 
 /** Prefixes share immutable complete membership; the weak key releases its source index with it. */
 const futureSourceIndexes = new WeakMap<readonly LayoutItem[], ReadonlySet<string>>();
