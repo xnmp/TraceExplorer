@@ -35,7 +35,7 @@ export const routingCoordinate = (scene: string, ...address: readonly (string | 
 
 /** Charge snapshot/shape traversal before cloning, including shared consumer
  * tables and metadata the shape validator otherwise traverses without a ledger. */
-function chargeSnapshot(value: unknown, charge: (work: number, reason?: string) => void): void {
+export function chargeRoutingSnapshot(value: unknown, charge: (work: number, reason?: string) => void): void {
   const pending = [value], seen = new Set<object>();
   while (pending.length) {
     charge(1, 'committed snapshot traversal');
@@ -55,7 +55,10 @@ function chargeSnapshot(value: unknown, charge: (work: number, reason?: string) 
     } else {
       const keys = Object.keys(current);
       charge(keys.length, 'committed snapshot fields');
-      for (const key of keys) pending.push((current as Record<string, unknown>)[key]);
+      for (const key of keys) {
+        charge(key.length, 'committed snapshot property names');
+        pending.push((current as Record<string, unknown>)[key]);
+      }
     }
   }
 }
@@ -76,7 +79,8 @@ function numericPins(value: unknown, address: readonly (string | number)[], scen
   }
 }
 
-function scenePins(scene: CommittedRoutingScene, plan: RoutingPlan, charge: (work: number, reason?: string) => void): CoordinateVariable[] {
+export function committedRoutingCoordinates(scene: CommittedRoutingScene, plan: RoutingPlan,
+  charge: (work: number, reason?: string) => void): CoordinateVariable[] {
   const variables: CoordinateVariable[] = [];
   const pin = (value: unknown, ...address: readonly (string | number)[]) => numericPins(value, address, scene.id, variables, charge);
   const drawing = scene.drawing;
@@ -102,6 +106,43 @@ function scenePins(scene: CommittedRoutingScene, plan: RoutingPlan, charge: (wor
   return variables;
 }
 
+/** Bind ordered frame operations to explicitly selected constants. Callers may
+ * select retained fragments before this boundary; unselected path coordinates
+ * do not become constants merely because their native geometry was imported. */
+export function bindRoutingFrameConstants(constants: readonly CoordinateVariable[], frames: readonly RoutingFrameEquality[],
+  charge: (work: number, reason?: string) => void = () => {}):
+  { readonly ok: true; readonly metric: RoutingMetricProblem } | { readonly ok: false; readonly conflict: RoutingMetricConflict } {
+  const invalid = (variable: string, constraints: readonly string[]) =>
+    ({ ok: false as const, conflict: { kind: 'invalid' as const, variable, constraints } });
+  charge(constants.length + frames.length + 1, 'retained frame constants');
+  const variables = [...constants], values = new Map(variables.map(v => [v.id, v.pin?.value]));
+  if (values.size !== variables.length) return invalid('', ['duplicate committed coordinate']);
+  const frameIds = new Set<string>();
+  for (const frame of frames) {
+    if (!frame || typeof frame.id !== 'string' || frameIds.has(frame.id)
+      || !Number.isFinite(values.get(frame.input)) || !Number.isFinite(values.get(frame.output))
+      || !Array.isArray(frame.steps)) return invalid('', ['frame']);
+    frameIds.add(frame.id);
+    let value = values.get(frame.input)!;
+    for (const [index, step] of frame.steps.entries()) {
+      charge(8, 'ordered frame equality');
+      if (!step || !['add', 'subtract'].includes(step.operation) || !Number.isFinite(step.operand) || !Number.isFinite(step.result))
+        return invalid(frame.output, [frame.id]);
+      value = step.operation === 'add' ? value + step.operand : value - step.operand;
+      if (!Object.is(value, step.result)) return { ok: false, conflict: { kind: 'equality', variable: frame.output, constraints: [frame.id, 'step:' + index] } };
+      for (const [field, coordinate] of [['operand', step.operand], ['result', step.result]] as const) {
+        const id = JSON.stringify(['frame', frame.id, index, field]);
+        if (values.has(id)) return invalid(id, ['duplicate frame coordinate']);
+        values.set(id, coordinate);
+        variables.push({ id, preferred: coordinate, pin: { value: coordinate, reason: frame.id } });
+      }
+    }
+    if (!Object.is(value, values.get(frame.output)))
+      return { ok: false, conflict: { kind: 'equality', variable: frame.output, constraints: [frame.id, frame.output + ':pin'] } };
+  }
+  return { ok: true, metric: { variables, order: variables.map(v => v.id), separations: [] } };
+}
+
 export function importCommittedRouting(scenes: readonly CommittedRoutingScene[], frames: readonly RoutingFrameEquality[] = [],
   charge: (work: number, reason?: string) => void = () => {}): RoutingProblemResult {
   const invalid = (variable: string, constraints: readonly string[]): RoutingProblemResult => ({ ok: false, conflict: { kind: 'invalid', variable, constraints } });
@@ -112,11 +153,11 @@ export function importCommittedRouting(scenes: readonly CommittedRoutingScene[],
   try {
     if (!Array.isArray(scenes) || !Array.isArray(frames)) return invalid('', ['scenes/frames']);
     checkedCharge(scenes.length + 1, 'committed scenes');
-    chargeSnapshot(frames, checkedCharge);
+    chargeRoutingSnapshot(frames, checkedCharge);
     for (const scene of scenes) {
       // Shape validation visits shared tables once PER scene. Charging with a
       // fresh seen set mirrors that scope even when two scenes alias a table.
-      chargeSnapshot(scene, checkedCharge);
+      chargeRoutingSnapshot(scene, checkedCharge);
       if (!scene || !isLayoutShape(scene.drawing)) return invalid('', ['drawing']);
     }
     // No mutable caller-owned geometry can change a captured equality later.
@@ -127,29 +168,11 @@ export function importCommittedRouting(scenes: readonly CommittedRoutingScene[],
       if (!scene || typeof scene.id !== 'string' || ids.has(scene.id) || !['band', 'attached', 'folder'].includes(scene.space)) return invalid('', ['scene']);
       ids.add(scene.id);
       const plan = importRoutingPlan(scene.drawing, checkedCharge);
-      variables.push(...scenePins(scene, plan, checkedCharge)); imported.push({ ...scene, plan });
+      variables.push(...committedRoutingCoordinates(scene, plan, checkedCharge)); imported.push({ ...scene, plan });
     }
-    const values = new Map(variables.map(v => [v.id, v.pin!.value]));
-    if (values.size !== variables.length) return invalid('', ['duplicate committed coordinate']);
-    const frameIds = new Set<string>();
-    for (const frame of frames) {
-      if (!frame || typeof frame.id !== 'string' || frameIds.has(frame.id) || !values.has(frame.input) || !values.has(frame.output)
-        || !Array.isArray(frame.steps)) return invalid('', ['frame']);
-      frameIds.add(frame.id);
-      let value = values.get(frame.input)!;
-      for (const [index, step] of frame.steps.entries()) {
-        checkedCharge(8, 'ordered frame equality');
-        if (!step || !['add', 'subtract'].includes(step.operation) || !Number.isFinite(step.operand) || !Number.isFinite(step.result)) return invalid(frame.output, [frame.id]);
-        value = step.operation === 'add' ? value + step.operand : value - step.operand;
-        if (!Object.is(value, step.result)) return { ok: false, conflict: { kind: 'equality', variable: frame.output, constraints: [frame.id, 'step:' + index] } };
-        for (const [field, coordinate] of [['operand', step.operand], ['result', step.result]] as const) {
-          const id = JSON.stringify(['frame', frame.id, index, field]);
-          variables.push({ id, preferred: coordinate, pin: { value: coordinate, reason: frame.id } });
-        }
-      }
-      if (!Object.is(value, values.get(frame.output))) return { ok: false, conflict: { kind: 'equality', variable: frame.output, constraints: [frame.id, frame.output + ':pin'] } };
-    }
-    const metric = { variables, order: variables.map(v => v.id), separations: [] };
+    const bound = bindRoutingFrameConstants(variables, frames, checkedCharge);
+    if (!bound.ok) return bound;
+    const metric = bound.metric;
     const checked = solveRoutingComponents(metric, [], checkedCharge);
     return checked.ok ? { ok: true, problem: { scenes: imported, frames: structuredClone(frames), metric } } : checked;
   } catch (error) {

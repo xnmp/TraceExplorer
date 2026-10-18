@@ -1,5 +1,27 @@
 import type { GraphLayout, LayoutItem, PlacedNode } from './layout';
 
+/** Canonical relationship groups for constructor slot ordering. String comparison,
+ * escaping and key indexing debit the request ledger before each operation. */
+export function siblingCreationGroups(items: readonly LayoutItem[], charge: (work: number, reason?: string) => void): ReadonlyMap<string, number> {
+  charge(items.length + 1, 'sibling creation-order group entries');
+  const groups = new Map<string, number>(), identities = new Map<string, number>();
+  for (const item of items) {
+    charge(item.parents.length + 1, 'sibling parent list copy');
+    const parents = [...item.parents].sort((a, b) => {
+      charge(4 * (a.length + b.length + 1), 'sibling parent lexical comparison bytes');
+      return a < b ? -1 : a > b ? 1 : 0;
+    });
+    charge(8 * (parents.reduce((sum, parent) => sum + parent.length + 1, 0) + 1), 'sibling parent JSON escaping bytes');
+    const signature = JSON.stringify(parents);
+    charge(4 * (signature.length + item.key.length + 2), 'sibling relationship key lookup and insertion bytes');
+    let group = identities.get(signature);
+    if (group === undefined) { group = identities.size; identities.set(signature, group); }
+    groups.set(item.key, group);
+  }
+  return groups;
+}
+
+
 /** Greedy routing may fill an earlier hole with a later sibling. Assign interchangeable
  * new leaf identities to those slots in reading order after routing. Retained tiles,
  * geometry and shared consumer tables are untouched. Single-parent leaves have one

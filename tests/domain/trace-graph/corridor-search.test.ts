@@ -57,6 +57,30 @@ it('returns a conflict for budget exhaustion, including retries and metric work'
   expect(result.work).toBeLessThanOrEqual(40);
   expect(result.candidates).toBeGreaterThan(1);
 });
+it('settles unused constructor reservations without refunding independent work', () => {
+  const result = searchCorridors(s => {
+    const first = s.reserve(80, () => { s.charge(7, 'native ink'); return { value: 3, work: 5 }; });
+    const second = s.reserve(80, () => ({ value: 4, work: 6 }));
+    return first + second;
+  }, 100);
+  expect(result).toMatchObject({ ok: true, value: 7, work: 19 });
+});
+it('withholds unaffordable construction before executing it', () => {
+  let executed = false;
+  const result = searchCorridors(s => s.reserve(100, () => {
+    executed = true; return { value: null, work: 1 };
+  }), 100);
+  expect(executed).toBe(false);
+  expect(result).toMatchObject({ ok: false, work: 1, conflict: { kind: 'search-exhausted' } });
+});
+it('keeps exceptional reservations consumed and rejects invalid settlements', () => {
+  const exceptional = searchCorridors(s => s.reserve(80, () => s.reject(['native conflict'], 'metric')), 100);
+  expect(exceptional).toMatchObject({ ok: false, work: 81, conflict: { kind: 'metric' } });
+  for (const work of [-1, .5, NaN, 81]) {
+    const invalid = searchCorridors(s => s.reserve(80, () => ({ value: null, work })), 100);
+    expect(invalid).toMatchObject({ ok: false, work: 81, conflict: { kind: 'invalid' } });
+  }
+});
 it('tries another corridor on a metric conflict and leaves pins exact', () => {
   const result = searchCorridors(s=>{
     const upper = s.choose('channel',[1,20]);

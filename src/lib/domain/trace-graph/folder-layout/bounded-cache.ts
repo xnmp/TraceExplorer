@@ -71,6 +71,12 @@ const text = (value: string | undefined) => 2 * (value?.length ?? 0);
 
 export function estimateLayoutBytes(layout: GraphLayout): number {
   let total = OBJECT * 4;
+  if (layout.routingAttachment) {
+    const frame = layout.routingAttachment, p = frame.placement;
+    total += OBJECT * 3 + text(frame.key) + 16 * ((p.coverColumns?.length ?? 0) + (p.bypassColumns?.length ?? 0));
+    for (const [id, path] of frame.paths) total += ENTRY + text(id) + text(path);
+    if (p.bridge) total += OBJECT;
+  }
   for (const node of layout.nodes.values()) total += ENTRY + OBJECT + text(node.key);
   for (const junction of layout.junctions.values()) total += ENTRY + OBJECT + text(junction.id) + 16 * junction.parents.length;
   const tables = new Set<readonly unknown[]>();

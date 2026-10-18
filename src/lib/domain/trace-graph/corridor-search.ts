@@ -9,10 +9,14 @@ export interface CorridorConflict {
 export type CorridorResult<T> = { readonly ok: true; readonly value: T; readonly work: number; readonly candidates: number }
   | { readonly ok: false; readonly conflict: CorridorConflict; readonly work: number; readonly candidates: number };
 export interface CorridorSearch {
+  readonly remaining: number;
   readonly growth: { readonly left: number; readonly right: number };
   grow(left: number, right: number): never;
   boundaryFeasible(): void;
   charge(work?: number, reason?:string): void;
+  /** Admit a bounded subsearch before execution; settle only its own unused
+   * reservation on normal return. Other charges and exceptional exits persist. */
+  reserve<T>(maximum: number, execute: () => { readonly value: T; readonly work: number }, reason?: string): T;
   choose<T>(id: string, choices: readonly T[]): T;
   solve(problem: SeparationProblem, decisions?: readonly string[]): SeparationResult & { readonly ok: true };
   reject(constraints: readonly string[], kind?: CorridorConflict['kind'], decisions?: readonly string[]): never;
@@ -40,6 +44,15 @@ export function searchCorridors<T>(construct: (search: CorridorSearch) => T, bud
   };
   const search: CorridorSearch = {
     charge, reject,
+    reserve(maximum, execute, reason = 'bounded construction') {
+      charge(maximum, reason);
+      const result = execute();
+      if (!Number.isSafeInteger(result.work) || result.work < 0 || result.work > maximum)
+        return reject(['reservation settlement', reason], 'invalid');
+      work -= maximum - result.work;
+      return result.value;
+    },
+    get remaining() { return budget - work; },
     get growth() { return growth; },
     boundaryFeasible() { requested={left:0,right:0}; },
     grow(left, right) {
