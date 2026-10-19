@@ -69,8 +69,7 @@ describe('adoption contracts (pure)', () => {
     expect(movedRectangle(new Map(), new Map(), [])).toBeNull();
   });
   it('grows the interactive allowance with the band up to its ceiling and declines doomed sizes', () => {
-    const { work: ceiling, perItem, minimumPerItem } = PRODUCTION_ROUTING_WORK['band-insertion'];
-    const largest = Math.floor(ceiling / minimumPerItem);
+    const { work: ceiling, perItem, maximumItems: largest } = PRODUCTION_ROUTING_WORK['band-insertion'];
     expect(bandInsertionAllowance(1)!.work).toBe(perItem);
     expect(bandInsertionAllowance(2)!.work).toBe(2 * perItem);
     expect(bandInsertionAllowance(largest)!.work).toBe(ceiling);
@@ -115,9 +114,46 @@ describe('band insertion through publication', () => {
     expect(published).toBeGreaterThan(0);
   });
 
+  // The third click of this tour declined as budget at the former 4M ceiling
+  // (legacy published it): its net work is about 2.5M, but the up-front pool
+  // reservation plus capture does not fit 4M. The 6M allowance certifies it.
+  it('publishes a click the former 4M allowance declined, keeping retained tiles', () => {
+    const c = { ...corpus().find(f => f.id === 'random-bushy-100-8201')!, full: false }, visited = new Set<string>();
+    let focus: string | null = null, previous: Optimized | undefined;
+    for (let step = 0; step <= 2; step++) {
+      const req = requestFor(c, focus, 400, 48);
+      const { result: next, count } = counters(() => optimizedBand(req, { previous, anchorKey: focus ?? undefined }));
+      if (step === 2) {
+        expect([count('adoption:band-insertion:success'), count('adoption:band-insertion:published')]).toEqual([1, 1]);
+        expect(count('adoption:band-insertion:work')).toBeGreaterThan(2_000_000);
+        for (const [key, was] of previous!.placed.nodes) {
+          const now = next.placed.nodes.get(key);
+          if (now) expect([now.x, now.y, now.width, now.height], key).toEqual([was.x, was.y, was.width, was.height]);
+        }
+        expect(geometryGate(next.placed, req.items, req.band!.key, req.maxWidth)).toBeNull();
+      }
+      previous = next;
+      const selected = req.items.filter(n => !visited.has(n.key) && req.band!.items.some(child => child.parents.includes(n.key)))
+        .sort((a, b) => b.order - a.order || a.key.localeCompare(b.key))[0];
+      focus = selected.key; visited.add(focus);
+    }
+  });
+  // The largest band the size limit admits is attempted with a chance: its fan
+  // arrival certifies (at the former 4M it exhausted the allowance until import
+  // stopped re-solving its constants).
+  it('certifies the largest fan arrival the size limit admits', () => {
+    const fan = corpus().find(f => f.id === 'fan-80')!;
+    const band = (n: number) => requestFor({ ...fan, nodes: fan.nodes.slice(0, n), full: false }, null, 400, 48);
+    const largest = PRODUCTION_ROUTING_WORK['band-insertion'].maximumItems;
+    const req = band(largest), opened = optimizedBand(band(largest - 1), {});
+    const { result: next, count } = counters(() => optimizedBand(req, { previous: opened }));
+    expect([count('adoption:band-insertion:attempt'), count('adoption:band-insertion:success')]).toEqual([1, 1]);
+    for (const [key, was] of opened.placed.nodes) expect(next.placed.nodes.get(key), key).toMatchObject({ x: was.x, y: was.y, width: was.width, height: was.height });
+    expect(geometryGate(next.placed, req.items, req.band!.key, req.maxWidth)).toBeNull();
+  });
   // A band above the interactive size limit declines as budget before any capture
-  // or search work (without the limit this attempt spends the whole allowance and
-  // still declines), and legacy publishes a gated drawing.
+  // or search work, and legacy publishes a gated drawing. (This fan could certify;
+  // the limit is about the declines of other large bands, see the allowance.)
   it('declines an oversized insertion as budget without spending work', () => {
     const fan = corpus().find(f => f.id === 'fan-80')!;
     const band = (n: number) => requestFor({ ...fan, nodes: fan.nodes.slice(0, n), full: false }, null, 400, 48);

@@ -20,7 +20,7 @@ it.each([3.25, 3.9, 4.4])('keeps unrelated connectors out of the painted junctio
   // Certification must protect the outline and every connector styling state.
   // d-e crosses j-c just below the junction, without declaring that join.
   expect(geometryGate(layout, items, 'a', 200)).not.toBeNull();
-  const repaired = repairRouteContacts(layout, { items, maxWidth: 200, band: { key: 'a', items } });
+  const repaired = repairRouteContacts(layout, { items, maxWidth: 200, band: { key: 'a', items } }, 'band');
   expect(repaired).not.toBeNull();
   expect(geometryGate(repaired!, items, 'a', 200)).toBeNull();
   expect(repaired!.nodes).toEqual(layout.nodes);

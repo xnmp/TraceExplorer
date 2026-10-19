@@ -1375,18 +1375,16 @@ latency, measured end to end, rather than by coverage.
   - The result must keep every retained rectangle exactly. It then competes as the
     `incremental-tree` candidate under the unchanged ranking, anchors and gates.
     A success replaces the legacy `incrementalTree` call; a decline runs it.
-- **Interactive allowance** (`incremental-adoption.ts`). The allowance is 250K work
-  per band item, up to 4M. A work unit is not a fixed time: measured attempts run
-  at about 20 ns per unit at p50 and up to about 100 ns. The latency bound is
-  therefore measured, not guaranteed by construction. The constructor's pools scale with it: 1/8 of the
-  legacy pools at 4M.
-  - Every attempt that succeeded at the ceiling across the inventory needed less
-    than 250K per item. Small doomed requests therefore stop early instead of
-    spending the full ceiling.
-  - Capture alone costs about 85K per item even for a fan, the cheapest shape: 45
-    items succeed at 3.8M, while 49 exhaust 4M. So a band of more than 47 items
-    declines as `budget` before spending any work. No inventory request above
-    that size succeeded at 4M.
+- **Interactive allowance** (`incremental-adoption.ts`). The allowance is 375K work
+  per band item, up to 6M (250K and 4M at 6f00895; see "Slice 4 completion pass"
+  below). A work unit is not a fixed time: measured attempts run at about 20 ns
+  per unit at p50 and up to about 100 ns. The latency bound is therefore
+  measured, not guaranteed by construction. The constructor's pools scale with
+  it: 6/32 of the legacy pools at 6M.
+  - Small doomed requests stop early instead of spending the full ceiling.
+  - A band of more than 47 items declines as `budget` before spending any work.
+    Larger bands can certify (a 61-item fan does at 6M), but admitting them
+    added up to 190 ms per declined click on the eval tours.
 - **Folder world placement is not adopted.**
   - At 256M it published 132 arrivals, but every one was a request legacy also
     served.
@@ -1583,15 +1581,262 @@ is unchanged, including both click-anchor rows (26 and 73).
 
 Area, whitespace and paneWhitespace changed by less than 0.1%.
 
+#### What remained at 6f00895
+
+See "Slice 4 completion pass" below for the current state.
+
+### Slice 4 completion pass
+
+This pass made capture cheaper and converted the saving into production coverage.
+It found no move that covers the API-allowance misses, and it deleted no legacy
+stage.
+
+#### Where attempt time goes
+
+Measured over the 391 distinct production attempts (wall clock, after this pass):
+
+| Phase | Share |
+|---|---:|
+| Strict capture: import of the retained drawing | 18% |
+| Construction (legacy constructor under the strict families) | 37% |
+| Retained-constant check: import of the solved drawing | 10% |
+| Metric solve | 6% |
+| Native clearance, admission prepay and the independent gate | 17% |
+| Fragment capture | 2% |
+
+Before this pass, 17% of attempt time was a metric solve that
+`importCommittedRouting` ran over its own bound constants. That metric holds only
+unique, finite, unbounded pins, with no separations or equalities, so the solve
+could only reproduce the pins. It is removed, and binding remains the import's
+consistency check.
+
+- Production attempts: total time 4.07 s → 3.37 s; p95 28.4 → 23.5 ms;
+  decline p95 80 → 37 ms; max 90 → 59 ms.
+- Successes 312 → 313 at the old allowance. Every prior success is
+  byte-identical, and there are no losses.
+- A 47-item fan arrival now certifies within 4M, where it exhausted the budget
+  before.
+
+Foreign route parsing is also cached per incremental solve (eb62c59). That made
+production attempts 19% faster with identical outputs, and added 18 tour
+replays at the API allowance.
+
+#### Allowance
+
+The saving buys a 6M allowance (375K per item), where it was 4M. The 47-item size
+limit is kept and is now explicit. The table compares candidate allowances on
+the same 391 attempts:
+
+| Allowance | Successes | Total | p95 | Decline p95 | Max |
+|---|---:|---:|---:|---:|---:|
+| 4M at 6f00895 | 312 | 4.07 s | 28.4 ms | 80 ms | 90 ms |
+| 4M now | 313 | 3.37 s | 23.5 ms | 37 ms | 59 ms |
+| **6M now (adopted)** | **319** | **3.80 s** | **31.3 ms** | **38 ms** | **92 ms** |
+| 8M now | 326 | 4.34 s | 37.4 ms | 57 ms | 165 ms |
+| 6M, pools 1/48M of work (2/3 of the adopted pools) | 340 | 6.22 s | 63.5 ms | 138 ms | 162 ms |
+| 5M, pools 1/40M | 330 | 4.77 s | 42.5 ms | 68 ms | 128 ms |
+
+Smaller pools certify more, because the reservation leaves more of the allowance
+for capture, construction and the solve. They have the same cost as metering,
+though: a decline then spends most of its allowance in real work. Success is not
+monotone in pool size. On the random-bushy-100-8201 tour, for example, click 1
+certifies at 6M with 1/48M pools but declines with 1/32M pools, because the
+first family's larger pools exhaust the ledger.
+
+Two other approaches were rejected:
+- **8M.** It raised folder p95 to 10.8 ms, worse than 6f00895.
+- **Metered pools.** These charge the constructor's pools as they are spent,
+  rather than reserving them up front. They reached 330 successes, but every
+  decline then spends its whole allowance in real work. Folder p95 rose to
+  15.8 ms, 1.56× 6f00895.
+
+#### Click latency
+
+Latency is measured as before: 522 tour steps and 398 folder states through a
+real worker. Each column is the per-request minimum of two runs on the same
+machine. Rows are classified by this pass's own counters. Times are in ms.
+
+| Population / outcome | n | 5bbcb77 p50 / p95 / max | 6f00895 p50 / p95 / max | Now p50 / p95 / max | p95 vs 5bbcb77 | p95 vs 6f00895 |
+|---|---:|---|---|---|---:|---:|
+| Folder, all | 398 | 1.2 / 7.2 / 58.2 | 1.2 / 10.1 / 54.2 | 1.3 / 9.9 / 63.2 | 1.36× | 0.97× |
+| Folder, adopted | 37 | 3.3 / 6.7 / 8.7 | 5.2 / 10.2 / 15.4 | 4.4 / 9.4 / 13.2 | 1.39× | 0.92× |
+| Folder, declined | 25 | 5.3 / 10.9 / 15.8 | 8.7 / 16.7 / 19.5 | 8.9 / 19.4 / 21.9 | 1.79× | 1.16× |
+| Folder, legacy only | 336 | 1.1 / 4.4 / 58.2 | 1.1 / 4.5 / 54.2 | 1.1 / 4.5 / 63.2 | 1.03× | 1.00× |
+| Tour, all | 522 | 4.6 / 273.3 / 9838.5 | 10.6 / 273.0 / 9997.5 | 8.5 / 282.7 / 10099.4 | 1.03× | 1.04× |
+| Tour, adopted | 151 | 3.9 / 24.5 / 92.2 | 10.5 / 47.9 / 120.4 | 8.5 / 45.8 / 149.6 | 1.87× | 0.96× |
+| Tour, declined | 100 | 84.0 / 4231.3 / 9838.5 | 109.9 / 4208.4 / 9997.5 | 107.0 / 4290.6 / 10099.4 | 1.01× | 1.02× |
+| Tour, outranked | 146 | 4.4 / 13.1 / 33.1 | 10.6 / 31.4 / 44.3 | 8.4 / 26.6 / 37.5 | 2.03× | 0.85× |
+| Tour, legacy only | 125 | 0.7 / 39.6 / 360.2 | 0.7 / 36.8 / 356.0 | 0.7 / 35.9 / 368.4 | 0.91× | 0.97× |
+
+Notes on the table:
+- **Run-to-run noise.** Legacy-only groups vary by 1.0–1.18× between runs with
+  no code change.
+- **At 4M with the cheaper capture,** folder p95 was 9.1 ms (0.90×) and tour p95
+  285.9 ms. The 6M allowance gives back part of the folder saving for coverage.
+- **The newly adopted tour clicks cost 20–30 ms more than before.** A success
+  replaces only legacy's `incrementalTree`; legacy's other candidates still run.
+- **The attempt itself** takes at most 92 ms in the replay.
+- **Dispatch is unchanged:** nothing moved to the worker, and exact revisits
+  stay inline.
+
+#### Production inventory
+
+The inventory covers 1,050 requests with no geometry failures.
+
+| Count | 6f00895 | Now |
+|---|---:|---:|
+| Attempts (memo hits) | 459 (19) | 459 (19) |
+| Successes | 328 | 334 |
+| Published | 182 | 188 |
+| Budget fallbacks (by size) | 131 (49) | 125 (49) |
+| Work | 393.9M | 485.3M |
+
+Seven tour outputs differ from 6f00895. None of them moves a retained tile, and
+retained-tile moves across the inventory stay at 39 (44 at 5bbcb77).
+
+**Production reach of legacy stages is unchanged:** T24 7, T25 17 (constrained
+5, repairable 12) and T28 band 11, over 24 requests. By reason:
+
+| Reason | Requests | Stages reached |
+|---|---:|---|
+| Band over 47 items, so no attempt is made | 11 | T24 3, T25 constrained 5, T25 repairable 4, T28 2 |
+| Attempt declines at 6M | 8 | T24 3, T25 repairable 8, T28 3 |
+| Attempt adopted, but another legacy candidate still runs its own repair (anchored repack, T25 ladder) | 5 | T24 1, T28 4 |
+
+The eight declines need, with pools scaled with the allowance:
+- **8M–16M** for three (random-dag-40-7501 click 6, random-bushy-100-8201 and
+  -8202 click 3). These spend under 5M; what they lack is pool size.
+- **64M–256M** for three.
+- **More than 1,024M** for two.
+
+#### Coverage outside production
+
+At the API allowance (1,024M), no population lost a success:
+
+| Population | 6f00895 | Now |
+|---|---:|---:|
+| Corpus, complete requests | 62/63 | 62/63 |
+| Tours, complete requests | 601/894 | 619/894 |
+| Original, per-stage rows | 68/108 | 68/108 |
+
+| Old-success stage | Corpus | Tours | Original |
+|---|---|---|---|
+| T24 free port lanes | 47/48 | 411 → 427/678 | 41/80 |
+| T25 repairable contacts | 4/4 | 68/84 | 12/12 |
+| T28 route contacts | 5/5 | 53/58 | 11/11 |
+| Additional constrained route | 6/6 | 69 → 71/74 | 4/5 |
+
+**All 42 unique misses are budget exhaustion.** By the charge the allowance ran
+out on:
+- inside strict construction, where the legacy constructor found no embedding
+  in any family: 21;
+- in snapshot or import charges: 18;
+- in native checks: 3.
+
+The legacy successes on these inputs come from T24, which shifts a retained port
+lane, and from T25, which defers contact admission to repair. The constrained
+path forbids both, because they move or reroute retained ink.
+
+**Moves tried for the largest class, none adopted:**
+- **A "port blockers" occupancy.** It defers only the retained routes whose ink
+  covers a needed parent port, as T24 does. Construction then succeeds on tour
+  inputs 220 and 237. But the metric solve fails: the deferred routes' tracks
+  are pinned (`foreign-track`) and their order constraints form cycles.
+- **Consistent side choices for a contact.** A berth and a parallel run at the
+  same coordinate previously each defaulted to "before", which forms a two-edge
+  cycle. Taking an order already imposed between the pair first removes that
+  cycle. Combined with the port-blockers occupancy, it certified 1 of the 6
+  inputs tested (49). Alone it changed no production attempt and no output.
+
+The missing move is a repair that may move a retained free track off a port, as
+T24 does, inside the metric. That means unpinning a deferred route's own tracks
+while its source prefix and native bytes stay fixed. Until then, every legacy
+stage stays as the fallback.
+
+#### Tests
+
+- `routing-problem.test.ts`: an imported problem is unique finite pins that a
+  solve reproduces. It covers frames and a joined drawing, and guards the
+  removed solve.
+- `incremental-adoption.test.ts`:
+  - **Click beyond 4M:** a random-bushy-100-8201 click that needs more than 4M
+    is published with every retained tile kept. Failed first at 4M.
+  - **Largest admitted fan:** the 47-item fan arrival certifies. Failed first
+    before the import change, exhausting 4M.
+  - **Allowance boundaries:** now use `maximumItems`.
+- `legacy-reach.test.ts` (eb62c59): T24 is counted once, including on a memo
+  hit.
+
+#### Gates and changed acceptance rows
+
+All three gates pass on 5d5dd96:
+- `bun run check`: 0 errors.
+- `bun run test`: 192 files, 2,393 tests passed and 1 skipped.
+- `layout:eval`: all 50 targets pass.
+
+The table lists the rows that changed against 6f00895's recorded values. All
+other rows are unchanged, including both click-anchor rows (26 and 73).
+
+| Row | 6f00895 | Now | Limit |
+|---|---:|---:|---:|
+| Corpus per-layout movedFraction | 0.1214 | 0.1199 | 0.1283 |
+| Corpus transition movedFraction | 0.1938 | 0.1914 | 0.2574 |
+| Broad transition movedFraction | 0.0491 | 0.0487 | 0.0788 |
+| Mean legal displacement, px | 12.26 | 11.97 | 17.53 |
+| Mean displacement / maxDisplacement | 28.67 / 65.75 | 28.30 / 65.06 | 34.76 / 80.19 |
+| Mean siblingInversions / mixedDirections | 0.093 / 1.530 | 0.092 / 1.537 | 0.107 / 2.289 |
+| Main-thread max p95, ms | 2.665 | 2.997 | 8 |
+| ≤30 visible tiles max p95, ms | 37.959 | 41.395 | 100 |
+| Full folder inline max p95, ms | 4.333 | 8.705 | 10 |
+
+The timing rows were taken under load: the load average rose from 2.6 before the
+perf stage to 15.4 after it. The slowest folder case was `random-dag-12-7223 /
+open`, a first layout that runs no insertion attempt. At 81b5562, under normal
+load, the same rows were 2.562, 34.455 and 5.022.
+
+#### Review
+
+An independent adversarial review of eb62c59..5d5dd96 found no correctness or
+product-contract defects. It verified the following:
+- **The solve removal.** Import output is unchanged except for the work charged.
+- **Coordinate ids.** These are identical across 40 corpus drawings and
+  adversarial keys: sparse arrays, getters, `\u2028`, lone surrogates, and scene
+  ids like `x","tile`.
+- **Prefix matching.** It is equivalent to the old parse.
+- **Caches.** They are rebuilt on every backtrack.
+- **Allowance boundaries,** and parity between the worker and the main thread.
+
+It confirmed the following, and each is addressed in the commit after
+fbdfd83:
+- **T24 and T23 could be counted for a repair that changed nothing.** A stage
+  may return a fresh, unchanged object. They are now counted only when a route
+  path changed.
+- **T28 is counted when the repair succeeds, even if the caller then discards
+  the drawing.** The counter now documents that it counts reach, not
+  publication. Its call-site argument is now required, rather than defaulting
+  to `band`.
+- **The negative counter test could not reach any repair.** It now places a real
+  arrival that needs none.
+- **The 6M adoption test's title misstated why 4M declined.** It is retitled:
+  the up-front pool reservation plus capture does not fit 4M, even though the
+  attempt's net work is about 2.5M.
+- **The pool premise in the allowance comment was wrong.** Pool ratios are now
+  measured, as in the table above.
+- **Two commit messages overstate their results.** 5d5dd96 says latency is "at
+  or below 6f00895", but tour p95 is 1.04× and folder declined p95 is 1.16×;
+  read it as "within run-to-run noise". eb62c59 calls foreign-route work
+  linear, but the per-pair scan is still tracks × routes. The parse is the only
+  part done once.
+
 #### What remains of slice 4
 
-- Tour and original misses at the API allowance, led by the T24 free-port-lane
-  cases.
-- A contact-repair move inside the constrained constructor, which would cover the
-  T25 and T28 remainders.
-- Cheaper capture. It is about 60% of attempt time on large drawings, and it is
-  what bounds production coverage. Sharing capture with the legacy fallback, or
-  making capture incremental, would let the interactive allowance reach the
-  replay's coverage.
-- Deleting legacy stages once every population covers them within the
-  interactive bound.
+- **Retained-track port repair in the metric.** This is the move above. It
+  covers the largest miss class (T24) and is a prerequisite for deleting T24
+  and T25.
+- **Pool sizing.** Smaller up-front pool reservations certify up to 21 more
+  attempts. Three production declines need only a different pool size within
+  5M of real work. Granting pools without reserving them makes every decline
+  spend its allowance, so this needs a way to predict a decline early.
+- **The anchored-repack and T25 ladder call sites** never get a constrained
+  attempt. Five adopted requests still reach T24 or T28 through them.
+- **Deletion.** No stage meets the deletion rule.

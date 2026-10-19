@@ -121,5 +121,5 @@ function reroute(request: LayoutRequest, before: GraphLayout, heights: ReadonlyM
   const byId = new Map(draft.routes.map(route => [route.id, route]));
   draft = { ...draft, routes: before.routes.map(route => byId.get(route.id)!) };
   const retained = request.items.filter(item => nodes.has(item.key));
-  return repairRouteContacts(draft, { ...request, items: retained });
+  return repairRouteContacts(draft, { ...request, items: retained }, 'hint');
 }

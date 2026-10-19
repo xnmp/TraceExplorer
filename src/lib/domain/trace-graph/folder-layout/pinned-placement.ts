@@ -188,7 +188,7 @@ function place(input: FolderLayoutInput, plans: ReadonlyMap<GraphId, Plan>, snap
       ?? incrementalWorld({ ...request, maxWidth: Math.min(100_000, maxWidth + missing.reduce((sum,n) => sum + n.width + 64,64)) }, previous, undefined, ORIGIN_X) : previous;
     const result = placed && finish(placed);
     if (result) return result;
-    const repaired = placed && repairRouteContacts(placed, request);
+    const repaired = placed && repairRouteContacts(placed, request, 'folder');
     const repairedResult = repaired && finish(repaired);
     if (repairedResult) return repairedResult;
   }

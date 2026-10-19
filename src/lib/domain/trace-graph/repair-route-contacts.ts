@@ -6,6 +6,7 @@ import { berthsOf, distanceToSegment, paintedSegments, routeEnds, type Berth } f
 import { JUNCTION_CLEARANCE } from './connector-ink';
 import { PORT_BERTH } from './metrics';
 import { pathCommands, type Point } from './path-sampling';
+import { countLayoutWork } from './layout-profile';
 
 interface Line { readonly route: PlacedRoute; readonly pieces: readonly Segment[]; readonly berths: readonly Berth[] }
 interface Contact { readonly route: PlacedRoute; readonly other: PlacedRoute; readonly berth: Berth }
@@ -52,7 +53,7 @@ function contacts(lines: readonly Line[], layout: GraphLayout, changed?: PlacedR
  * same tile's other real departure. A bounded search may fail; failed drafts
  * never escape. Every accepted result passes the complete independent geometry gate.
  */
-export function repairRouteContacts(layout: GraphLayout, request: LayoutRequest): GraphLayout | null {
+export function repairRouteContacts(layout: GraphLayout, request: LayoutRequest, site: 'band' | 'hint' | 'folder'): GraphLayout | null {
   const cover = request.band?.key;
   if (!cover || layout.routes.length > 1024) return null;
   const certify = (drawing: GraphLayout) => geometryGate(drawing, request.items, cover, request.maxWidth);
@@ -83,7 +84,9 @@ export function repairRouteContacts(layout: GraphLayout, request: LayoutRequest)
         const remaining = unaffected + contacts(nextLines, next, replacement).length;
         if (remaining >= score) continue;
         const failure = certify(next);
-        if (!failure) return next;
+        // Production reach of this legacy stage (T28), counted per call site. A caller
+        // may still discard the repaired drawing, so this counts reach, not publication.
+        if (!failure) { countLayoutWork(`legacy:T28:${site}`); return next; }
         if (failure !== 'route-contact' && failure !== 'shared-lane') continue;
         chosen = next; score = remaining;
       }

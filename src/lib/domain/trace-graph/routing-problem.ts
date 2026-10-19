@@ -6,7 +6,7 @@ import { isLayoutShape } from './history-boundary';
 import { eachConsumer } from './route-consumers';
 import { importRoutingPlan, type RoutingPlan } from './routing-plan';
 import type { CoordinateVariable } from './separation';
-import { solveRoutingComponents, type RoutingMetricConflict, type RoutingMetricProblem } from './routing-components';
+import { type RoutingMetricConflict, type RoutingMetricProblem } from './routing-components';
 
 export interface CommittedRoutingScene {
   /** Stable within the retained problem; use tile identity to map merged scenes. */
@@ -63,26 +63,33 @@ export function chargeRoutingSnapshot(value: unknown, charge: (work: number, rea
   }
 }
 
+/** One element of a JSON array, exactly as `JSON.stringify` writes it inside one. */
+const jsonElement = (value: string | number): string => value === undefined ? 'null' : JSON.stringify(value);
+
 /** All numbers in a validated native binding are constants, including cut
- * parameters, suffix controls, turn bounds and reversible chart intermediates. */
-function numericPins(value: unknown, address: readonly (string | number)[], scene: string, variables: CoordinateVariable[],
+ * parameters, suffix controls, turn bounds and reversible chart intermediates.
+ * `prefix` is the coordinate's identity without its closing bracket, extended one
+ * element per level, so each id equals `routingCoordinate(scene, ...address)`. */
+function numericPins(value: unknown, prefix: string, variables: CoordinateVariable[],
   charge: (work: number, reason?: string) => void): void {
   charge(1, 'committed pin import');
   if (typeof value === 'number') {
     if (!Number.isFinite(value)) throw new RangeError('Nonfinite committed pin');
-    const id = routingCoordinate(scene, ...address);
+    const id = prefix + ']';
     variables.push({ id, preferred: value, pin: { value, reason: 'committed:' + id } });
   } else if (Array.isArray(value)) {
-    for (const [i, child] of value.entries()) numericPins(child, [...address, i], scene, variables, charge);
+    for (let i = 0; i < value.length; i++) numericPins(value[i], prefix + ',' + i, variables, charge);
   } else if (value && typeof value === 'object') {
-    for (const [key, child] of Object.entries(value)) numericPins(child, [...address, key], scene, variables, charge);
+    for (const key of Object.keys(value)) numericPins((value as Record<string, unknown>)[key], prefix + ',' + JSON.stringify(key), variables, charge);
   }
 }
 
 export function committedRoutingCoordinates(scene: CommittedRoutingScene, plan: RoutingPlan,
   charge: (work: number, reason?: string) => void): CoordinateVariable[] {
   const variables: CoordinateVariable[] = [];
-  const pin = (value: unknown, ...address: readonly (string | number)[]) => numericPins(value, address, scene.id, variables, charge);
+  const root = '["scene",' + JSON.stringify(scene.id);
+  const pin = (value: unknown, ...address: readonly (string | number)[]) =>
+    numericPins(value, root + address.map(part => ',' + jsonElement(part)).join(''), variables, charge);
   const drawing = scene.drawing;
   for (const [key, n] of drawing.nodes) pin({ x: n.x, y: n.y, width: n.width, height: n.height }, 'tile', key);
   for (const [key, j] of drawing.junctions) pin({ x: j.x, y: j.y }, 'dot', key);
@@ -170,11 +177,12 @@ export function importCommittedRouting(scenes: readonly CommittedRoutingScene[],
       const plan = importRoutingPlan(scene.drawing, checkedCharge);
       variables.push(...committedRoutingCoordinates(scene, plan, checkedCharge)); imported.push({ ...scene, plan });
     }
+    // Binding is the whole consistency check: every variable it returns is a
+    // finite, unbounded, uniquely named pin and there are no separations or
+    // equalities, so a metric solve here could only reproduce the pins.
     const bound = bindRoutingFrameConstants(variables, frames, checkedCharge);
     if (!bound.ok) return bound;
-    const metric = bound.metric;
-    const checked = solveRoutingComponents(metric, [], checkedCharge);
-    return checked.ok ? { ok: true, problem: { scenes: imported, frames: structuredClone(frames), metric } } : checked;
+    return { ok: true, problem: { scenes: imported, frames: structuredClone(frames), metric: bound.metric } };
   } catch (error) {
     // A caller's work-ledger exception must retain its original control flow.
     if (chargeFailed) throw error;
@@ -211,10 +219,11 @@ export function retainedRoutingConflict(problem: CommittedRoutingProblem, candid
   // Allocation may grow on extension, but retained physical coordinates cannot.
   // Meeting projection and allocation certificates can change with new consumers;
   // the original native coordinates/bytes above remain independently fixed.
-  const physical = (id: string) => {
-    const address = JSON.parse(id) as (string | number)[];
-    return ['tile', 'dot', 'path', 'port'].includes(String(address[2]));
-  };
+  // A committed coordinate's id is JSON ['scene', scene, kind, ...]; frame
+  // coordinates start with 'frame'. Match the kind by its exact JSON prefix.
+  const prefixes = problem.scenes.flatMap(scene => ['tile', 'dot', 'path', 'port']
+    .map(kind => '["scene",' + JSON.stringify(scene.id) + ',' + JSON.stringify(kind) + ','));
+  const physical = (id: string) => prefixes.some(prefix => id.startsWith(prefix));
   for (const variable of problem.metric.variables) if (physical(variable.id) && !Object.is(pins.get(variable.id), variable.pin!.value))
     return { kind: 'equality', variable: variable.id, constraints: ['committed pin', 'candidate coordinate'] };
   return null;
