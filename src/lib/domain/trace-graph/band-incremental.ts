@@ -1,8 +1,13 @@
+import { retainedHardObstacles, type HardRetainedObstacles } from './retained-hard-obstacles';
+import { nativeCarrierCuts } from './native-carrier-cuts';
+import { materializeSourcePrefixes } from './native-source-prefix';
+import { chargeRoutingSnapshot } from './routing-problem';
+import { chargedNativeClearance } from "./native-route-clearance";
 import { layoutStage, countLayoutWork } from './layout-profile';
 import { layoutSignature, geometrySignature } from './layout-signature';
 import { createBoundedCache, estimateLayoutBytes } from './folder-layout/bounded-cache';
 import { filterRouteConsumers } from "./route-consumers";
-import { orderNewSiblingLeaves } from "./new-sibling-order";
+import { orderNewSiblingLeaves, siblingCreationGroups } from "./new-sibling-order";
 /**
  * Incremental tree embedding: retained rectangles and routes are fixed obstacles.
  *
@@ -23,14 +28,17 @@ import { orderNewSiblingLeaves } from "./new-sibling-order";
 import { nearestFree, type GraphLayout, type LayoutItem, type LayoutRequest, type PlacedNode, type PlacedRoute, type PlacedJunction } from "./layout";
 import { ARROW, JUNCTION_BERTH, LANE_SEPARATION, PORT_BERTH, spacingFor, STACK_STEM_ROOM } from "./metrics";
 import { axisOf, berthsOf, paintedSegments, distanceToTile, distanceToSegment, grazesTile, INTO_JUNCTION, INTO_TILE, leavingRunFrom, routeEnds, shallowRun, SHALLOW_RUN, TILE_GRAZE, type Berth, type Ends } from "./route-contacts";
-import { bandExtent, roundedStem } from "./band-geometry";
+import { attachSingleBand, bandExtent, retainSingleBandFrame, roundedStem } from "./band-geometry";
 import { channelCornerRadius, channelInk } from './channel-corners';
 import { pinnedBandExtent } from './pinned-band-extent';
 import { intersectsTile, overlapLength, routeBounds, segments, type Segment } from "./layout-quality";
 import { orthogonalRoute, LANE_TOLERANCE, NEAR_LANE, type AxisRun, type ForeignLanes, type GridSearch } from "./orthogonal-route";
-import { JUNCTION_CLEARANCE } from "./connector-ink";
+import { CONNECTOR_STROKE, JUNCTION_CLEARANCE } from "./connector-ink";
 import { forEachPathNumber } from "./path-data";
 import { pathCommands, type Point } from "./path-sampling";
+import { MAX_INDEX_ROWS, inReach } from './coordinate-space';
+import { routeCommittedIncremental, type IncrementalRoutingConflict, type IncrementalRoutingResult, type IncrementalFrameFactory, type IncrementalAdmission } from './incremental-routing';
+export { inReach } from './coordinate-space';
 
 /** Fractional curve coordinates need the full reserved clearance. The drawing gate uses
  * this numerical tolerance; the legacy contact helper's .01px slack admits real near misses. */
@@ -75,10 +83,6 @@ const SIDE_LANE = 4;
 const GRID_BUDGET = 5000;
 /** A grid route may discover this many missing port/corner obstacles before giving up. */
 const BERTH_RETRIES = 16;
-/** Most 64 px rows one segment may span in the lane index (about 4 million px): beyond it the history is not usable. */
-const MAX_INDEX_ROWS = 65_536;
-/** Whether a coordinate or size lies within the lane index's reach: finite, at most `MAX_INDEX_ROWS` rows from zero. */
-export const inReach = (value: number) => Number.isFinite(value) && Math.abs(value) <= MAX_INDEX_ROWS * 64;
 
 /** Prefixes share immutable complete membership; the weak key releases its source index with it. */
 const futureSourceIndexes = new WeakMap<readonly LayoutItem[], ReadonlySet<string>>();
@@ -123,7 +127,34 @@ const FALLBACK_WORK = 1_600_000;
  * embedding gives way to the full layout.
  */
 export interface IncrementalBudget { fallback: number; second: number; probes: number }
+export interface IncrementalWorkBudget {
+  remaining: number;
+  /** A compatibility envelope cannot lend legacy effort to the replacement. */
+  automaticRemaining?: number;
+  /** Explicit production policy; callers supplying only legacy pools keep
+   * those exact pool limits. The shared total still bounds every retry. */
+  readonly automaticPools?: Readonly<IncrementalBudget>;
+}
 export const incrementalBudget = (): IncrementalBudget => ({ fallback: FALLBACK_WORK, second: SECOND_CHANCE_WORK, probes: PROBE_WORK });
+export const scaledIncrementalBudget = (k: number): IncrementalBudget => ({ fallback: Math.round(k * FALLBACK_WORK), second: Math.round(k * SECOND_CHANCE_WORK), probes: Math.round(k * PROBE_WORK) });
+/** Finite replacement allowance. Local pools remain bounded independently of
+ * the shared capture/construction/metric/admission ledger. */
+export const AUTOMATIC_ROUTING_WORK = 1_024_000_000;
+export const automaticIncrementalBudget = (): IncrementalBudget => ({
+  fallback: 4 * FALLBACK_WORK, second: 4 * SECOND_CHANCE_WORK, probes: 4 * PROBE_WORK,
+});
+const poolWork = (budget: IncrementalBudget): number => Math.ceil(8 * (budget.fallback + budget.second) + budget.probes);
+const spentPoolWork = (before: IncrementalBudget, after: IncrementalBudget): number => Math.ceil(
+  8 * (before.fallback - after.fallback + before.second - after.second) + before.probes - after.probes);
+/** Preserve the existing finite legacy itinerary while it remains fallback.
+ * Band: two fitted histories, initial/repack/wider, and retry efforts totaling22.
+ * Folder: two descent choices, three histories and two pane-width choices.
+ * Common snapshot/frame work and the automatic path have separate finite bounds. */
+export const incrementalWorkBudget = (scope: 'band' | 'folder'): IncrementalWorkBudget => ({
+  remaining: AUTOMATIC_ROUTING_WORK + 128_000_000 + (scope === 'band' ? 27 : 12) * poolWork(incrementalBudget()),
+  automaticRemaining: AUTOMATIC_ROUTING_WORK,
+  automaticPools: automaticIncrementalBudget(),
+});
 
 /** How hard the fallback tries: clear slots, grid points per search, the grid it routes on, and the pool it spends. */
 interface Effort {
@@ -136,7 +167,7 @@ interface Effort {
   hardest?: string;
 }
 const left = (effort: Effort) => effort.pool[effort.spends];
-const spend = (effort: Effort, spent: { readonly pops: number; readonly cells: number }) => { effort.pool[effort.spends] -= spent.pops + spent.cells / 8; };
+const spend = (effort: Effort, spent: { readonly pops: number; readonly cells: number; readonly setup?: number }) => { effort.pool[effort.spends] -= spent.pops + spent.cells / 8 + (spent.setup ?? 0); };
 const fallbackEffort = (pool: IncrementalBudget): Effort => ({ slots: FALLBACK_SLOTS, budget: GRID_BUDGET, everyLane: false, pool, spends: "fallback" });
 /**
  * The second chance, taken only when a tile has no placement otherwise (so layouts found
@@ -324,7 +355,7 @@ class Cells {
  * after a `mark` are withdrawn by `rollback` to it, so trial routes need no copies.
  */
 class LaneIndex {
-  constructor(private readonly base?: LaneIndex, private readonly deferContacts = false) {}
+  constructor(private readonly base?: LaneIndex, private readonly deferContacts = false, private readonly bodyBase?:LaneIndex) {}
   private readonly all: Segment[] = [];
   /** The source of each segment in `all`. */
   private readonly sources: string[] = [];
@@ -334,6 +365,9 @@ class LaneIndex {
   private readonly berths: (Berth & { readonly source: string })[][] = [];
   /** Alternative unpainted departures: preserve at least one, not both. */
   private readonly departures = new Map<string, readonly Berth[]>();
+  addProtectedPort(berth:Berth,source:string):void {
+    const row=Math.floor(berth.y/64);this.log.push(push(this.berths,row,{...berth,source}));
+  }
   /** Segment indices by 64 px row (an index property for a negative row; NaN rows are never visited). */
   private readonly rows: number[][] = [];
   /** Every segment by cell, and the slanted ones (flattened curves: neither horizontal nor vertical) apart. */
@@ -352,9 +386,9 @@ class LaneIndex {
   tooLarge(): boolean { return this.oversized || !!this.base?.tooLarge(); }
 
   /** Adds a route's segments (consecutive, as drawn) from `source`, and its berths: its corners, and its ends as `ends` says. */
-  add(list: readonly Segment[], source: string, ends: Ends = NO_ENDS): void {
+  add(list: readonly Segment[], source: string, ends: Ends = NO_ENDS, endpointMask?: { readonly start: boolean; readonly end: boolean }): void {
     if (list.some(([a, b]) => ![a.x, a.y, b.x, b.y].every(inReach))) { this.oversized = true; return; }
-    for (const berth of berthsOf(list, ends)) {
+    for (const berth of berthsOf(list, ends, endpointMask)) {
       const row = Math.floor(berth.y / 64);
       if (Number.isFinite(row) && Number.isFinite(berth.x)) this.log.push(push(this.berths, row, { ...berth, source }));
     }
@@ -384,11 +418,19 @@ class LaneIndex {
     }
   }
   /** A future source needs one clear departure; either candidate port may serve it. */
-  reserveDeparture(node: PlacedNode): void {
-    this.departures.set(sourceKey('node', node.key), [
+  reserveDeparture(node: PlacedNode, side?: 'bottom' | 'right'): void {
+    const ports = [
       { x: node.x + node.width / 2, y: node.y + node.height, radius: PORT_BERTH },
       { x: node.x + node.width, y: node.y + node.height / 2, radius: PORT_BERTH },
-    ]);
+    ];
+    this.departures.set(sourceKey('node', node.key), side ? [ports[side === 'bottom' ? 0 : 1]] : ports);
+  }
+  departureState(node: PlacedNode, charge: (work:number,reason?:string)=>void): readonly boolean[] {
+    const owner = sourceKey('node',node.key);
+    return [
+      !this.touched({x:node.x+node.width/2,y:node.y+node.height,radius:PORT_BERTH},owner,charge),
+      !this.touched({x:node.x+node.width,y:node.y+node.height/2,radius:PORT_BERTH},owner,charge),
+    ];
   }
   private blockingDeparture(ink: readonly Segment[], source: string): Berth | undefined {
     for (const [owner, ports] of this.departures) {
@@ -483,7 +525,7 @@ class LaneIndex {
 
   /** Whether any segment passes through the tile (the exact test of `intersectsTile`). */
   hits(tile: PlacedNode): boolean {
-    if (this.base?.hits(tile)) return true;
+    if (this.bodyBase?.hits(tile) || this.base?.hits(tile)) return true;
     const top = Math.floor(tile.y / 64), bottom = Math.floor((tile.y + tile.height) / 64);
     if (!indexRange(top, bottom)) return true;
     for (let row = top; row <= bottom; row++) {
@@ -500,7 +542,7 @@ class LaneIndex {
    * placed before it (`TileIndex.grazes`).
    */
   grazed(tile: PlacedNode): boolean {
-    if (this.base?.grazed(tile)) return true;
+    if (this.bodyBase?.grazed(tile) || this.base?.grazed(tile)) return true;
     const left = tile.x - TILE_GRAZE, right = tile.x + tile.width + TILE_GRAZE, top = tile.y - TILE_GRAZE, bottom = tile.y + tile.height + TILE_GRAZE;
     const query = ++this.query;
     return this.cells.some(left, top, right, bottom, index => {
@@ -587,10 +629,12 @@ class LaneIndex {
   }
 
   /** Whether a segment of a source other than `source` passes within the berth's radius of its point. */
-  private touched(berth: Berth, source: string): boolean {
-    if (this.base?.touched(berth, source)) return true;
+  private touched(berth: Berth, source: string, charge?: (work:number,reason?:string)=>void): boolean {
+    charge?.(12,'future departure cell queries');
+    if (this.base?.touched(berth, source, charge)) return true;
     const r = berth.radius, query = ++this.query;
     return this.cells.some(berth.x - r, berth.y - r, berth.x + r, berth.y + r, index => {
+      charge?.(1,'future departure indexed piece');
       if (this.visited[index] === query) return false;
       this.visited[index] = query;
       return this.sources[index] !== source && entersBerth(this.all[index], berth);
@@ -700,18 +744,22 @@ function retainedSegments(route: PlacedRoute): readonly Segment[] {
  * The retained routes' segments, indexed, memoized per previous layout for the last list of
  * routes kept from it (the same routes, with the same paths and sources, give the same index).
  */
-const retainedIndexes = new WeakMap<GraphLayout, { readonly routes: readonly PlacedRoute[]; readonly keys: readonly string[]; readonly index: LaneIndex; readonly targetJoin?: string }>();
-function retainedIndex(previous: GraphLayout, kept: readonly PlacedRoute[], targetJoin?: string): LaneIndex {
+const retainedIndexes = new WeakMap<GraphLayout, { readonly routes: readonly PlacedRoute[]; readonly keys: readonly string[]; readonly index: LaneIndex; readonly targetJoin?: string; readonly hard?:HardRetainedObstacles }>();
+function retainedIndex(previous: GraphLayout, kept: readonly PlacedRoute[], targetJoin?: string, hard?:HardRetainedObstacles): LaneIndex {
   const keys = kept.map(r => `${r.path}\u0001${sourceKey(r.from.kind, r.from.id)}`);
   const cached = retainedIndexes.get(previous);
-  if (cached && cached.targetJoin === targetJoin && cached.routes.length === kept.length && kept.every((r, i) => r === cached.routes[i] && keys[i] === cached.keys[i])) return cached.index;
+  if (cached && cached.hard === hard && cached.targetJoin === targetJoin && cached.routes.length === kept.length && kept.every((r, i) => r === cached.routes[i] && keys[i] === cached.keys[i])) return cached.index;
   const index = new LaneIndex();
-  for (const r of kept) { const ss = retainedSegments(r); index.add(ss, sourceKey(r.from.kind, r.from.id), routeEnds(r, ss, previous.nodes, previous.junctions)); }
+  for (const r of kept) {
+    const source=sourceKey(r.from.kind,r.from.id),parts=hard?.routes.get(r.id)??[r];
+    for(const part of parts){const ss=retainedSegments(part);index.add(ss,source,routeEnds(part,ss,previous.nodes,previous.junctions),hard?.endpointMasks.get(part));}
+    for(const port of hard?.ports.get(r.id)??[])index.addProtectedPort(port,source);
+  }
   // The dots the kept routes reach.
   const dots = new Set<string>();
   for (const r of kept) for (const end of [r.from, r.to]) if (end.kind === "junction") dots.add(end.id);
   for (const id of dots) { const j = previous.junctions.get(id); if (id !== targetJoin && j && Number.isFinite(j.x) && Number.isFinite(j.y)) index.addDot(point(j.x, j.y)); }
-  retainedIndexes.set(previous, { routes: kept, keys, index, targetJoin });
+  retainedIndexes.set(previous, { routes: kept, keys, index, targetJoin, hard });
   return index;
 }
 
@@ -774,7 +822,23 @@ function lanesAround(preferred: number, lo: number, hi: number, count: number, s
 interface Arrival { readonly end: Point; readonly heading: "down" | "right" | "left"; readonly level: number }
 
 /** Everything a route search reads besides its parent and arrival. */
+type NativeDepartureMode = 'orthogonal' | 'endpoint' | 'interior';
+/** A finite portfolio orders the same Cartesian domain by total deviation from
+ * the stable incumbent. Source and insertion alternatives therefore receive a
+ * turn before the search consumes every generation/occupancy combination. */
+const embeddingFamilies = (['orthogonal','endpoint','interior'] as const).flatMap((nativeMode,nativeRank)=>
+  (['stable','constrained'] as const).flatMap((order,orderRank)=>
+    (['stable','column','below'] as const).flatMap((generation,generationRank)=>
+      (['whole','deferred','route-only'] as const).map((occupancy,occupancyRank)=>
+        ({nativeMode,order,generation,occupancy,nativeRank,orderRank,generationRank,occupancyRank,
+          cost:nativeRank+orderRank+generationRank+occupancyRank})))))
+  .sort((a,b)=>a.cost-b.cost||a.generationRank-b.generationRank||a.occupancyRank-b.occupancyRank
+    ||a.orderRank-b.orderRank||a.nativeRank-b.nativeRank);
+const strictEmbeddingFamilies = embeddingFamilies.filter(family=>family.occupancy==='whole');
 interface Scene {
+  readonly departureMode?: NativeDepartureMode;
+  readonly native?: { readonly hard?:HardRetainedObstacles; readonly drawing: GraphLayout; readonly frame?: (drawing: GraphLayout) => GraphLayout | null; readonly charge: (work: number, reason?: string) => void };
+  readonly departurePrefixes?: ReadonlyMap<string, readonly (readonly Point[])[]>;
   readonly tiles: TileIndex;
   /** The probed tile (not yet among `tiles`). */
   readonly extra: PlacedNode;
@@ -952,6 +1016,32 @@ class Candidate {
  * do not depend on other routes, so they are built once and reused by every `find` against a
  * different set of placed lanes.
  */
+function nativeCompatible(points: readonly Point[], parent: PlacedNode, arrival: Arrival, s: Scene): boolean {
+  if (!s.native) return true;
+  const { drawing: base, charge } = s.native;
+  charge(base.nodes.size + base.junctions.size + base.routes.length + 64 * (points.length + 8), 'native candidate construction');
+  const id = JSON.stringify(['incremental-join', s.extra.key, arrival.level]), terminal = arrival.level < 0;
+  const route: PlacedRoute = {
+    id: JSON.stringify(['incremental', parent.key, s.extra.key]), from: { kind: 'node', id: parent.key },
+    to: terminal ? { kind: 'node', id: s.extra.key } : { kind: 'junction', id }, terminal,
+    consumers: [{ parent: parent.key, child: s.extra.key }], path: path(points),
+  };
+  const nodes = new Map([...base.nodes, [parent.key, parent], [s.extra.key, s.extra]]);
+  const junctions = new Map(base.junctions);
+  if (!terminal) junctions.set(id, { id, x: arrival.end.x, y: arrival.end.y, parents: [] });
+  const draft = { ...base, nodes, junctions, routes: [...base.routes, route] };
+  const painted = s.native.frame ? s.native.frame(draft) : draft;
+  if (!painted) return false;
+  const authored = painted.routes.find(r => r.id === route.id)!;
+  for (const old of painted.routes) {
+    if (old.id === authored.id || old.from.kind === authored.from.kind && old.from.id === authored.from.id) continue;
+    const obstacles=s.native.hard?.routes.get(old.id)??[old];
+    charge(old.id.length+obstacles.length+1,'native hard fragment lookup');
+    for(const obstacle of obstacles)if (chargedNativeClearance({ ...painted, routes: [obstacle, authored] }, charge, {endpointMasks:s.native.hard?.endpointMasks})) return false;
+  }
+  return true;
+}
+
 class RouteSearch {
   private readonly source: string;
   private readonly bottomOnly: boolean;
@@ -1013,7 +1103,7 @@ class RouteSearch {
         const c = bases[f] ??= this.candidate(families[f].base);
         if (!this.isClear(c)) continue;
         if (!c.crowded) {
-          if (!foreignJoinBerth(c.lanes, this.s.joinDots) && !lanes.conflicts(c.lanes, this.source, endsInto(owner[f]))) return route(c, owner[f], index);
+          if (!foreignJoinBerth(c.lanes, this.s.joinDots) && !lanes.conflicts(c.lanes, this.source, endsInto(owner[f])) && nativeCompatible(c.points,this.p,owner[f],this.s)) return route(c, owner[f], index);
           if (record) c.crowded = true;
         }
         crowded.push(f);
@@ -1028,7 +1118,7 @@ class RouteSearch {
       for (const i of ranked) {
         const c = options[i];
         if (c.crowded) continue;
-        if (!foreignJoinBerth(c.lanes, this.s.joinDots) && !lanes.conflicts(c.lanes, this.source, endsInto(owner[from[i]]))) { if (this.isClear(c)) return route(c, owner[from[i]], index); }
+        if (!foreignJoinBerth(c.lanes, this.s.joinDots) && !lanes.conflicts(c.lanes, this.source, endsInto(owner[from[i]])) && nativeCompatible(c.points,this.p,owner[from[i]],this.s)) { if (this.isClear(c)) return route(c, owner[from[i]], index); }
         else if (record) c.crowded = true;
       }
     }
@@ -1147,11 +1237,12 @@ function gridWire(parents: readonly PlacedNode[], n: PlacedNode, s: Scene, lanes
       if (!(left(effort) > 0)) break search;
       const complete = (grid: readonly Point[]) => [port, ...grid, ...(levels ? [] : [point(arrival.end.x, n.y - ARROW.length)])];
       const painted = (grid: readonly Point[]) => pathSegments(p.key === s.cover ? s.coverStem(complete(grid)) : complete(grid));
-      const grid = routeAroundBerths(start, arrival.end, obstacles, s.width, lanes, source, effort, { bounds: s.paneEdges }, levels, painted);
+      const grid = routeAroundBerths(start, arrival.end, obstacles, s.width, lanes, source, effort,
+        { bounds: s.paneEdges, workBudget: s.native ? left(effort) : undefined }, levels, painted);
       if (!grid) continue;
       const points = complete(grid);
       const ss = pathSegments(points);
-      if (!ss.length || lanes.conflicts(p.key === s.cover ? pathSegments(s.coverStem(points)) : ss, source, levels ? INTO_JUNCTION : INTO_TILE)) continue;
+      if (!ss.length || lanes.conflicts(p.key === s.cover ? pathSegments(s.coverStem(points)) : ss, source, levels ? INTO_JUNCTION : INTO_TILE) || !nativeCompatible(points,p,arrival,s)) continue;
       found = { points, ss, arrival };
       break search;
     }
@@ -1183,13 +1274,15 @@ function foreignJoinBerth(pieces: readonly Segment[], dots?: readonly Point[]): 
  * rejects unsupported corner/curve conflicts rather than weakening the geometry contract.
  */
 function routeAroundBerths(start: Point, goal: Point, obstacles: readonly PlacedNode[], width: number,
-  lanes: LaneIndex, source: string, effort: Effort, options: Pick<GridSearch, 'bounds' | 'column'>, joinDots?: readonly Point[],
+  lanes: LaneIndex, source: string, effort: Effort, options: Pick<GridSearch, 'bounds' | 'column' | 'workBudget'>, joinDots?: readonly Point[],
   painted: (grid: readonly Point[]) => readonly Segment[] = pathSegments): readonly Point[] | null {
   const foreign = lanes.foreign(source), avoided: PlacedNode[] = [], seen = new Set<string>();
   for (let attempt = 0; attempt < BERTH_RETRIES && left(effort) > 0; attempt++) {
     const spent = { cells: 0, pops: 0 };
     const grid = orthogonalRoute(start, goal, avoided.length ? [...obstacles, ...avoided] : obstacles, width, foreign,
-      { ...options, budget: Math.min(effort.budget, left(effort)), everyLane: effort.everyLane, spent });
+      { ...options, budget: Math.min(effort.budget, left(effort)),
+        workBudget: options.workBudget === undefined ? undefined : Math.min(options.workBudget, left(effort)),
+        everyLane: effort.everyLane, spent });
     spend(effort, spent);
     if (!grid) return null;
     const pieces = pathSegments(grid);
@@ -1216,6 +1309,36 @@ function routeAroundBerths(start: Point, goal: Point, obstacles: readonly Placed
  * leaves by its bottom or right port (the cover by its bottom only) and takes one search
  * per port to whichever junction level (or the tile) it reaches first.
  */
+/** Reuse an authored same-source prefix before entering a fresh corridor.
+ * Curved prefixes supply authored endpoint branches; completed new routes
+ * materialize exact native source spans before metric admission. */
+function retainedDeparturePrefixes(routes: readonly PlacedRoute[], charge: (work: number, reason?: string) => void, nativeCarriers = false): ReadonlyMap<string, readonly (readonly Point[])[]> {
+  const sources = new Map<string, (readonly Point[])[]>();
+  for (const route of routes) {
+    if (route.from.kind !== 'node') continue;
+    charge(route.path.length, 'native prefix parsing');
+    const commands = pathCommands(route.path);
+    if (!commands) continue;
+    if (commands.some(command => command.kind === 'C')) {
+      if (!nativeCarriers) continue;
+      charge(commands.length, 'native carrier departure alternatives');
+      const prefixes = sources.get(route.from.id) ?? [];
+      for (let i = commands.length - 2; i > 0; i--) {
+        const values = commands[i].values;
+        prefixes.push([point(values.at(-2)!, values.at(-1)!)]);
+      }
+      sources.set(route.from.id, prefixes);
+      continue;
+    }
+    charge(commands.length * (commands.length + 1) / 2, 'native prefix alternatives');
+    const points = commands.map(c => point(c.values[0], c.values[1]));
+    const prefixes = sources.get(route.from.id) ?? [];
+    for (let i = 1; i + 1 < points.length; i++) prefixes.push(points.slice(0, i + 1));
+    sources.set(route.from.id, prefixes);
+  }
+  return sources;
+}
+
 function gridWireAll(parents: readonly PlacedNode[], n: PlacedNode, s: Scene, lanes: LaneIndex, item: string, effort: Effort): Wiring | undefined {
   const obstacles = [...s.tiles.tiles, n], multi = parents.length > 1, junction = sourceKey("junction", `incremental-join:${item}`);
   const levels = multi ? joinLevels(n, parents.length, 0) : undefined;
@@ -1232,19 +1355,33 @@ function gridWireAll(parents: readonly PlacedNode[], n: PlacedNode, s: Scene, la
   const routes: Route[] = [];
   for (const i of order) {
     const p = parents[i], source = sourceKey("node", p.key), cover = p.key === s.cover;
-    const ports = [[point(p.x + p.width / 2, p.y + p.height), point(p.x + p.width / 2, p.y + p.height + 2)]];
+    // Prefer the deepest authored branch; stable ties retain native route order.
+    const retained = cover ? [] : s.departurePrefixes?.get(p.key) ?? [];
+    s.native?.charge(retained.length, 'native departure order snapshot');
+    let ports: (readonly Point[])[] = [...retained].sort((a, b) => {
+      s.native?.charge(1, 'native departure order comparison');
+      return b.length - a.length;
+    });
+    if(s.departureMode==='interior'&&s.native&&!cover){
+      const cuts=nativeCarrierCuts(s.native.drawing,p.key,n,goal,s.native.charge);
+      s.native.charge(cuts.length + ports.length + 1, 'native departure candidate copy');
+      ports = [...cuts, ...ports];
+    }
+    ports.push([point(p.x + p.width / 2, p.y + p.height), point(p.x + p.width / 2, p.y + p.height + 2)]);
     if (!cover) ports.push([point(p.x + p.width, p.y + p.height / 2), point(p.x + p.width + 2, p.y + p.height / 2)]);
     let found: Route | undefined;
-    for (const [port, start] of ports) {
+    for (const prefix of ports) {
       if (!(left(effort) > 0)) break;
-      const complete = (grid: readonly Point[]) => [port, ...grid, ...(levels ? [] : [point(goal.x, n.y - ARROW.length)])];
+      const start = prefix[prefix.length - 1];
+      const complete = (grid: readonly Point[]) => [...prefix.slice(0, -1), ...grid, ...(levels ? [] : [point(goal.x, n.y - ARROW.length)])];
       const painted = (grid: readonly Point[]) => pathSegments(cover ? s.coverStem(complete(grid)) : complete(grid));
-      const grid = routeAroundBerths(start, goal, obstacles, s.width, lanes, source, effort, { column, bounds: s.paneEdges }, levels, painted);
+      const grid = routeAroundBerths(start, goal, obstacles, s.width, lanes, source, effort,
+        { column, bounds: s.paneEdges, workBudget: s.native ? left(effort) : undefined }, levels, painted);
       if (!grid) continue;
       const end = grid[grid.length - 1], level = levels ? levels.findIndex(l => l.y === end.y) : -1;
       const points = complete(grid);
       const ss = pathSegments(points);
-      if (!ss.length || lanes.conflicts(cover ? pathSegments(s.coverStem(points)) : ss, source, levels ? INTO_JUNCTION : INTO_TILE)) continue;
+      if (!ss.length || lanes.conflicts(cover ? pathSegments(s.coverStem(points)) : ss, source, levels ? INTO_JUNCTION : INTO_TILE) || !nativeCompatible(points,p,{end,heading:"down",level},s)) continue;
       found = { points, ss, arrival: { end, heading: "down", level } };
       break;
     }
@@ -1445,7 +1582,8 @@ function freePortLanes(request: LayoutRequest, previous: GraphLayout, budget: In
           const old = vertical ? a.x : a.y, axis = vertical ? 'x' : 'y', center = vertical ? port.x : port.y;
           const direction = old < center ? -1 : 1;
           for (const distance of [PORT_BERTH + LANE_STEP, PORT_BERTH + 2 * LANE_STEP, PORT_BERTH, PORT_BERTH + 3 * LANE_STEP]) {
-            if (budget.probes-- <= 0) break;
+            if (budget.probes <= 0) break;
+            budget.probes--;
             const coordinate = center + direction * distance;
             const delta = coordinate - old;
             const shaped = commands.map((c, k) => ({ kind: c.kind, values: c.values.map((v, j) => k >= lo && k <= hi && j % 2 === (axis === 'x' ? 0 : 1) ? v + delta : v) }));
@@ -1510,13 +1648,96 @@ function freePortLanes(request: LayoutRequest, previous: GraphLayout, budget: In
 /** Repairable drafts defer contact admission to connector repair and independent certification. */
 type InsertionPolicy = "stable" | "constrained" | "repairable";
 
-function insertWithPortRepair(request: LayoutRequest, previous: GraphLayout, budget: IncrementalBudget, paneEdges?: Scene["paneEdges"], policy: InsertionPolicy = "stable"): GraphLayout | null {
+function insertWithPortRepair(request: LayoutRequest, previous: GraphLayout, budget: IncrementalBudget, paneEdges?: Scene["paneEdges"], policy: InsertionPolicy = "stable",
+  orderCharge?: (work: number, reason?: string) => void): GraphLayout | null {
   countLayoutWork("pinned-search");
   const repaired = freeBlockedPorts(request, previous, budget);
-  const placed = insertTree(request, repaired, budget, paneEdges, policy);
+  const placed = insertTree(request, repaired, budget, paneEdges, policy, undefined, undefined, undefined, undefined, orderCharge);
   if (placed) return placed;
   const shifted = freePortLanes(request, repaired, budget);
-  return shifted === repaired ? null : insertTree(request, shifted, budget, paneEdges, policy);
+  return shifted === repaired ? null : insertTree(request, shifted, budget, paneEdges, policy, undefined, undefined, undefined, undefined, orderCharge);
+}
+
+/** Strict legacy constructors provide a discrete embedding only. Port/contact
+ * repairs are excluded; constants are captured before the first construction. */
+export function constrainedIncremental(request: LayoutRequest, previous: GraphLayout,
+  budget: IncrementalBudget = automaticIncrementalBudget(), world?: { readonly left: number; readonly right: number }, workLimit = AUTOMATIC_ROUTING_WORK,
+  prepare?: IncrementalFrameFactory, admit?: IncrementalAdmission): IncrementalRoutingResult {
+  const remaining = { ...budget };
+  const ink = Math.max(...Object.values(CONNECTOR_STROKE)) / 2;
+  const pane = { left: (world?.left ?? 0) + ink, right: (world?.right ?? request?.maxWidth) - ink };
+  const result = routeCommittedIncremental(request, previous, (drawing, charge, choose, reserve, fragments) => {
+    const complete = request.items.every(n => drawing.nodes.has(n.key));
+    if (request.items.length > INCREMENTAL_LIMIT || !request.band || !drawing.nodes.has(request.band.key)
+      || !inReach(request.maxWidth) || request.items.some(n => ![n.width, n.height].every(inReach)))
+      return { reason: 'unsupported-input', constraints: ['strict insertion domain'] };
+    // Prepay the constructors' finite grid/probe pools. The metric and native
+    // import stages spend the remainder of this same request's ledger.
+    const {nativeMode,order,generation,occupancy}=complete?embeddingFamilies[0]
+      :choose('incremental embedding family',fragments?embeddingFamilies:strictEmbeddingFamilies);
+    const hard=occupancy!=='whole'&&fragments?retainedHardObstacles(fragments,charge):undefined;
+    if(hard&&!hard.ok)return hard.conflict;
+    Object.assign(remaining, budget);
+    if (!complete) countLayoutWork('pinned-search');
+    const prefixes = complete ? undefined : retainedDeparturePrefixes(drawing.routes, charge, nativeMode !== 'orthogonal');
+    const nativeFrame = world ? undefined : (draft: GraphLayout): GraphLayout | null => {
+      charge(draft.routes.length + draft.nodes.size + draft.junctions.size, 'native frame input scan');
+      const size = draft.routes.reduce((sum, route) => sum + route.path.length, 0);
+      charge(16 * size + 32 * (draft.nodes.size + draft.junctions.size) + 64, 'native frame construction');
+      const key = request.band!.key, extent = pinnedBandExtent(draft, key);
+      if (!extent) return null;
+      const allocated = { ...draft, bandBounds: { left: 0, width: extent.left + extent.width,
+        top: draft.nodes.get(key)!.height + (request.history?.attachment?.placement.stemRoom ?? STACK_STEM_ROOM) }, preferredX: 0 };
+      const declared = retainSingleBandFrame(allocated, request, drawing.routes);
+      return declared ? attachSingleBand(declared, request) : null;
+    };
+    const constructed = complete ? drawing : reserve(poolWork(remaining), () => ({
+      value: backtrackInsertion(request, drawing, remaining, pane, order, prefixes, charge, nativeFrame, nativeMode, hard, occupancy==='route-only',generation),
+      work: spentPoolWork(budget, remaining),
+    }), 'strict incremental construction');
+    if (!constructed) return { reason: 'budget-exhaustion',
+      constraints: ['bounded strict insertion has no topology'] };
+    charge(2 * drawing.routes.length, 'source-prefix retained identities');
+    const materialized = materializeSourcePrefixes(constructed, new Set(drawing.routes.map(route => route.id)), charge);
+    if (!materialized.ok) return materialized.conflict;
+    const placed = materialized.drawing;
+    if (world) {
+      const extent = bandExtent({ ...placed, bandBounds: undefined }, request.band!.key, 0);
+      return extent.left < 0 || extent.left + extent.width > request.maxWidth
+        ? { reason: 'topology-conflict', constraints: ['world corridor outside pane'] } : { ...placed, bandBounds: undefined };
+    }
+    const key = request.band!.key, extent = pinnedBandExtent(placed, key);
+    if (!extent) return { reason: 'topology-conflict', constraints: ['pinned painted extent'] };
+    const allocated = { ...placed, bandBounds: { left: 0, width: extent.left + extent.width,
+      top: placed.nodes.get(key)!.height + (request.history?.attachment?.placement.stemRoom ?? STACK_STEM_ROOM) }, preferredX: 0 };
+    // Admission uses the frame that band publication actually consumes. A root
+    // stem rewritten by attachment is not an unchanged retained suffix.
+    const declared = retainSingleBandFrame(allocated, request, drawing.routes);
+    if (!declared) return { reason: 'unsupported-input', constraints: ['incremental attachment identity frame'] };
+    const attached = retainSingleBandFrame(attachSingleBand(declared, request), request);
+    if (!attached) return { reason: 'unsupported-input', constraints: ['completed attachment identity frame'] };
+    return attached;
+  }, workLimit, pane, prepare, admit);
+  if (result.ok) Object.assign(budget, remaining);
+  if (!result.ok || world) return result;
+  const drawing = retainSingleBandFrame(result.drawing, request);
+  return drawing ? { ...result, drawing: { ...drawing, decision: { candidate: 'constrained-incremental', stability: true } } } : { ok: false, work: result.work,
+    conflict: { reason: 'unsupported-input', constraints: ['solved attachment identity frame'] } };
+}
+
+/** Band insertion under one allowance: retained connectors byte-identical first.
+ * Only if that search exhausts its budget, the remainder of the same allowance
+ * lets free retained tracks move (fragment capture); retained source constants,
+ * native pieces and every rectangle stay exact either way. The strict search is
+ * not a subset of the fragment search's order: on tour replays it certifies
+ * inputs whose fragment search exhausts its budget in metric conflicts. */
+export function constrainedBandInsertion(request: LayoutRequest, previous: GraphLayout,
+  pools: () => IncrementalBudget, allowance: number): IncrementalRoutingResult {
+  const strict = constrainedIncremental(request, previous, pools(), undefined, allowance);
+  if (strict.ok || strict.conflict.reason !== 'budget-exhaustion' || strict.work >= allowance) return strict;
+  const framed = constrainedIncremental(request, previous, pools(), undefined, allowance - strict.work,
+    preferred => ({ preferred, frames: [] }));
+  return { ...framed, work: framed.work + strict.work };
 }
 
 interface InsertionMemo { readonly layout: GraphLayout | null; readonly remaining: IncrementalBudget }
@@ -1560,7 +1781,54 @@ export function incrementalWorld(request: LayoutRequest, previous: GraphLayout, 
   return extent.left < 0 || extent.left + extent.width > request.maxWidth ? null : { ...placed, bandBounds: undefined };
 }
 
-function insertTree(request: LayoutRequest, previous: GraphLayout, budget: IncrementalBudget, paneEdges?: Scene["paneEdges"], policy: InsertionPolicy = "stable"): GraphLayout | null {
+interface ConsumedDeparture { readonly source:string; readonly side:'bottom'|'right'; readonly point:Point }
+interface InsertionCommit { readonly child:string; readonly before:GraphLayout; readonly consumed:readonly ConsumedDeparture[] }
+interface InsertionRetry {
+  readonly mode:NativeDepartureMode;
+  readonly generation?:'stable'|'column'|'below';
+  readonly hard?:HardRetainedObstacles;
+  readonly keepBody?:boolean;
+  readonly baseBottom:number;
+  readonly protected:ReadonlyMap<string,'bottom'|'right'>;
+  readonly commits:InsertionCommit[];
+  failure?: { readonly child:string; readonly visible:ReadonlySet<string> };
+}
+/** Rewind only free new commits. The original capture remains the sole retained
+ * constant set, and all attempts debit the same prepaid pools and work ledger. */
+function backtrackInsertion(request:LayoutRequest, initial:GraphLayout, budget:IncrementalBudget, pane:Scene['paneEdges'],
+  policy:InsertionPolicy, firstPrefixes:Scene['departurePrefixes'], charge:(work:number,reason?:string)=>void,
+  nativeFrame?: (drawing:GraphLayout)=>GraphLayout|null, mode:NativeDepartureMode = 'orthogonal', hard?:HardRetainedObstacles, keepBody=false,generation:'stable'|'column'|'below'='stable'):GraphLayout|null {
+  charge(initial.nodes.size+1,'insertion trail baseline');
+  const baseBottom=Math.max(initial.height,...[...initial.nodes.values()].map(n=>n.y+n.height));
+  let base=initial, prefixes=firstPrefixes;
+  const protectedPorts=new Map<string,'bottom'|'right'>(), tried=new Set<string>(), commits:InsertionCommit[]=[];
+  for(let attempt=0;;attempt++) {
+    const context:InsertionRetry={baseBottom,protected:protectedPorts,commits,mode,hard,keepBody,generation};
+    const result=insertTree(request,base,budget,pane,policy,prefixes,charge,nativeFrame,context);
+    if(result)return result;
+    if(!context.failure)return null;
+    charge(3*request.items.length+request.items.reduce((sum,item)=>sum+item.parents.length,0)+commits.length+1,'insertion trail conflict scan');
+    const demand=new Map<string,{count:number;merge:number}>();
+    for(const item of request.items)if(!context.failure!.visible.has(item.key))for(const parent of item.parents){const old=demand.get(parent);demand.set(parent,{count:(old?.count??0)+1,merge:Math.max(old?.merge??0,item.parents.length)});}
+    let selected:{index:number;departure:ConsumedDeparture;count:number;merge:number}|undefined;
+    for(let i=commits.length-1;i>=0;i--)for(const departure of commits[i].consumed) {
+      charge(6*(commits[i].child.length+departure.source.length)+32,'insertion trail consumed port');
+      const id=JSON.stringify([commits[i].child,departure.source,departure.side]),need=demand.get(departure.source);
+      if(need&&!protectedPorts.has(departure.source)&&!tried.has(id)&&(!selected||need.count>selected.count||need.count===selected.count&&need.merge>selected.merge)) selected={index:i,departure,...need};
+    }
+    if(!selected)return null;
+    const commit=commits[selected.index];
+    tried.add(JSON.stringify([commit.child,selected.departure.source,selected.departure.side]));
+    protectedPorts.set(selected.departure.source,selected.departure.side);
+    budget.second+=budget.fallback;budget.fallback=0;
+    base=commit.before;commits.length=selected.index;
+    charge(16*base.routes.reduce((sum,r)=>sum+r.path.length,0)+64*(base.nodes.size+base.routes.length+base.junctions.size+1),'insertion trail reconstruction');
+    prefixes=retainedDeparturePrefixes(base.routes,charge,mode !== 'orthogonal');
+  }
+}
+
+function insertTree(request: LayoutRequest, previous: GraphLayout, budget: IncrementalBudget, paneEdges?: Scene["paneEdges"], policy: InsertionPolicy = "stable", departurePrefixes?: Scene["departurePrefixes"], nativeCharge?: (work: number, reason?: string) => void, nativeFrame?: (drawing: GraphLayout) => GraphLayout | null, retry?:InsertionRetry,
+  orderCharge = nativeCharge): GraphLayout | null {
   const key = request.band!.key, s = spacingFor(request.tileWidth), wanted = new Set(request.items.map(n => n.key));
   if (request.items.length > INCREMENTAL_LIMIT || !wanted.has(key)) return null;
   if (!previous.nodes.has(key) || request.items.some(n => n.key !== key && n.parents.length === 0 && !previous.nodes.has(n.key))) return null;
@@ -1583,18 +1851,21 @@ function insertTree(request: LayoutRequest, previous: GraphLayout, budget: Incre
   previous.junctions.forEach((join, id) => { if (referenced.has(id)) joins.set(id, join); });
   for (const id of referenced) { const j = joins.get(id); if (!j || !inReach(j.x) || !inReach(j.y)) return null; }
   if (!inReach(previous.width) || !inReach(previous.height)) return null;
-  const lanes = new LaneIndex(retainedIndex(previous, kept), policy === "repairable");
+  const lanes = new LaneIndex(retainedIndex(previous, kept, undefined,retry?.hard), policy === "repairable",retry?.keepBody?retainedIndex(previous,kept):undefined);
   // Retained geometry beyond any real band (millions of pixels) cannot be indexed; lay out afresh.
   if (lanes.tooLarge()) return null;
   // Hidden outputs need one usable departure, without occupying both ports.
   // The same complete membership keeps future sources out of leaf reordering.
   const futureSources = futureSourcesOf(request.band?.items ?? request.items);
   const remaining = request.items.filter(n => !nodes.has(n.key));
+  // Ordering work is paid on both strict and legacy paths. Its separate
+  // callback does not enable native geometry mode on the legacy constructor.
+  const siblingGroups = orderCharge ? siblingCreationGroups(request.items, orderCharge) : undefined;
   // Multi-parent nodes need more independent corridors. On a bounded retry, place
   // them before easier siblings; readiness below still enforces topological order.
   if (policy === "constrained") remaining.sort((a, b) => b.parents.length - a.parents.length || b.order - a.order || b.key.localeCompare(a.key));
   if (!remaining.length) return null;
-  for (const node of nodes.values()) if (futureSources.has(node.key)) lanes.reserveDeparture(node);
+  for (const node of nodes.values()) if (futureSources.has(node.key)) lanes.reserveDeparture(node,retry?.protected.get(node.key));
   // Retained routes may already occupy channels outside the pane or the tile
   // envelope. Keep that certified allocation when extending the drawing.
   const width = Math.max(request.maxWidth, previous.width), cover = nodes.get(key)!;
@@ -1602,13 +1873,13 @@ function insertTree(request: LayoutRequest, previous: GraphLayout, budget: Incre
   // Placed boxes in `nodes` order and their lowest edge, kept in step with `nodes` below.
   let boxes = [...nodes.values()], bottom = -Infinity, tiles = new TileIndex([...boxes]);
   for (const n of boxes) bottom = Math.max(bottom, n.y + n.height);
-  const baseBottom = Math.max(previous.height, bottom);
+  const baseBottom = retry?.baseBottom ?? Math.max(previous.height, bottom);
   const header = (boxes.find(n => n.band === 0 && n.row === 0))?.height ?? 0;
   let grain = GRAIN;
   const sceneFor = (n: PlacedNode): Scene => {
     let bottomAbove = -Infinity;
     for (const b of boxes) if (b.y < n.y) bottomAbove = Math.max(bottomAbove, b.y + b.height);
-    return { tiles, extra: n, width, paneEdges, clearance: s.clearance, header: header || (n.band === 0 && n.row === 0 ? n.height : 0), bottomAbove, cover: key, coverStem, grain };
+    return { departureMode:retry?.mode, native: nativeCharge ? { hard:retry?.hard, drawing: { ...previous, nodes, junctions: joins, routes }, frame: nativeFrame, charge: nativeCharge } : undefined, departurePrefixes, tiles, extra: n, width, paneEdges, clearance: s.clearance, header: header || (n.band === 0 && n.row === 0 ? n.height : 0), bottomAbove, cover: key, coverStem, grain };
   };
   let second: Effort | undefined;
   const plain = fallbackEffort(budget);
@@ -1634,7 +1905,7 @@ function insertTree(request: LayoutRequest, previous: GraphLayout, budget: Incre
     if (item.height !== parent.height) column(parent.x + parent.width + Math.max(s.column, SIDE_LANE + s.approach));
     column(parent.x); column(24); column(width - item.width - 24);
     for (const b of boxes) { column(b.x); column(b.x + b.width + s.column); }
-    const ys = distinctValues3(Math.max(cover.height + STACK_STEM_ROOM, parent.y), Math.max(cover.height + STACK_STEM_ROOM, parent.y + parent.height + arrivalGap), bottom + arrivalGap);
+    const ys = distinctValues3(Math.max(cover.height + STACK_STEM_ROOM, retry?.generation!=='stable'&&retry?.generation&&parent.key!==key?parent.y+parent.height+arrivalGap:parent.y), Math.max(cover.height + STACK_STEM_ROOM, parent.y + parent.height + arrivalGap), bottom + arrivalGap);
     // Holes: the rows of placed tiles below the parent that a new tile fits in without adding
     // height (rows from index `base` of `ys`). At most HOLE_TRIES free holes are wired in vain.
     const base = ys.length, below = parent.y + parent.height + arrivalGap, holes = new Set<number>();
@@ -1648,12 +1919,22 @@ function insertTree(request: LayoutRequest, previous: GraphLayout, budget: Incre
       for (const b of near) if (overlapX(n, b, s.clearance)) return false;
       return !lanes.hits(n) && !lanes.grazed(n);
     };
-    const free = (n: PlacedNode) => parents.every(parent => n.x >= parent.x + parent.width || n.y >= parent.y + parent.height) && clear(n);
+    orderCharge?.(request.items.length+1,'new sibling placement order scan');
+    orderCharge?.(item.key.length+1,'active sibling group key lookup bytes');
+    const group=siblingGroups?.get(item.key);
+    const siblingItems=orderCharge ? request.items.filter(other=>{
+      orderCharge?.(8*(other.key.length+item.key.length+2),'new sibling tile identity lookup bytes');
+      return other.key!==item.key&&!previous.nodes.has(other.key)&&nodes.has(other.key)&&siblingGroups!.get(other.key)===group;
+    }) : [];
+    const visualOrder=(a:PlacedNode,b:PlacedNode)=>previous.orientation==='right'?a.row-b.row||a.x-b.x||a.y-b.y:a.y-b.y||a.x-b.x;
+    const siblingOrder=(n:PlacedNode)=>{orderCharge?.(siblingItems.reduce((sum,other)=>sum+8*(other.key.length+item.key.length+2),1),'new sibling order probe identity bytes');return siblingItems.every(other=>{const before=other.order<item.order||other.order===item.order&&other.key<item.key;const order=visualOrder(nodes.get(other.key)!,n);return before?order<=0:order>=0;});};
+    const free = (n: PlacedNode) => siblingOrder(n)&&parents.every(parent => n.x >= parent.x + parent.width || n.y >= parent.y + parent.height) && clear(n);
     // Rank every probe, then test freedom lazily: only probes up to the first routable one are
     // checked, and only those are wired. Probe p is (xs[p / ny], ys[p % ny]). A placement that
     // only a detour reaches (round other tiles, through the header or the outer gutters) is
     // taken only if no probe adding no more height has a direct route: a detour costs length
     // and turns, and the layout that holds still must not lose to a fresh one on them.
+    if(retry?.generation==='column'&&parent.key!==key)xs.splice(0,xs.length,parent.x);
     const ny = ys.length, ranked = rankProbes(xs, ys, bottom, item.height);
     const probes = (): { node: PlacedNode; wiring: Wiring } | undefined => {
       const hardest = { index: 0 };
@@ -1690,7 +1971,7 @@ function insertTree(request: LayoutRequest, previous: GraphLayout, budget: Incre
         let tried = 0;
         for (const y of rowYs) for (const x of slotXs) {
           const n: PlacedNode = { key: item.key, x, y, width: item.width, height: item.height, row: parent.row + 1, band: parent.band + 1 };
-          if (!(parents.every(p => n.y >= p.y + p.height || n.x >= p.x + p.width) && clear(n))) continue;
+          if (!(siblingOrder(n)&&parents.every(p => n.y >= p.y + p.height || n.x >= p.x + p.width) && clear(n))) continue;
           if (!(x >= 0 && x + item.width <= width) || tried++ >= effort.slots || !(left(effort) > 0)) return undefined;
           const wiring = gridWire(parents, n, sceneFor(n), lanes, item.key, effort);
           if (wiring) return { node: n, wiring };
@@ -1707,13 +1988,30 @@ function insertTree(request: LayoutRequest, previous: GraphLayout, budget: Incre
         best = probes() ?? fallback(effort);
         grain = GRAIN;
       }
-      if (!best) return null;
+      if (!best) {if(retry)retry.failure={child:item.key,visible:new Set(nodes.keys())};return null;}
+    }
+    let checkpoint:GraphLayout|undefined;
+    const beforePorts=new Map<string,readonly boolean[]>();
+    if(retry&&nativeCharge) {
+      nativeCharge(nodes.size+routes.length+joins.size+remaining.length+1,'insertion trail checkpoint');
+      checkpoint={...previous,nodes:new Map(nodes),routes:[...routes],junctions:new Map(joins)};
+      const pending=new Set<string>();
+      for(const next of remaining){nativeCharge(next.parents.length+1,'insertion trail pending sources');for(const parent of next.parents)pending.add(parent);}
+      for(const [id,node]of nodes)if(pending.has(id)&&id!==key)beforePorts.set(id,lanes.departureState(node,nativeCharge));
     }
     const placed = best.node;
     if (nodes.has(item.key)) { nodes.set(item.key, placed); boxes = [...nodes.values()]; tiles = new TileIndex([...boxes]); bottom = Math.max(...boxes.map(n => n.y + n.height)); }
     else { nodes.set(item.key, placed); boxes.push(placed); tiles.add(placed); bottom = Math.max(bottom, placed.y + placed.height); }
     commit(item.key, item.parents, parents, placed, best.wiring);
-    if (futureSources.has(item.key)) lanes.reserveDeparture(placed);
+    if (retry&&nativeCharge&&checkpoint) {
+      const consumed:ConsumedDeparture[]=[];
+      for(const [id,before]of beforePorts) {
+        const node=nodes.get(id)!,after=lanes.departureState(node,nativeCharge);
+        for(const i of [0,1])if(before[i]&&!after[i])consumed.push({source:id,side:i?'right':'bottom',point:i?point(node.x+node.width,node.y+node.height/2):point(node.x+node.width/2,node.y+node.height)});
+      }
+      retry.commits.push({child:item.key,before:checkpoint,consumed});
+    }
+    if (futureSources.has(item.key)) lanes.reserveDeparture(placed,retry?.protected.get(item.key));
   }
 
   /** Records a placed tile's routes, junctions and lanes. */

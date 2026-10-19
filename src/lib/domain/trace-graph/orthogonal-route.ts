@@ -151,8 +151,10 @@ function blockLanes(runs: readonly AxisRun[], lines: Float64Array, lineCount: nu
  */
 export interface GridSearch {
   readonly budget?: number;
+  /** Combined cell-build/8 and expansion allowance, reserved before allocation. */
+  readonly workBudget?: number;
   readonly everyLane?: boolean;
-  readonly spent?: { cells: number; pops: number };
+  readonly spent?: { cells: number; pops: number; setup?: number };
   /** Further goals on the goal's column (ignored if not): the path ends at whichever it reaches first. */
   readonly column?: readonly number[];
   /** World-pane edges are legal lanes; allocation padding does not reserve them. */
@@ -160,9 +162,15 @@ export interface GridSearch {
 }
 export function orthogonalRoute(start: Point, goal: Point, boxes: readonly PlacedNode[], width: number, foreign?: ForeignLanes, search: GridSearch = {}): readonly Point[] | null {
   const { budget = Infinity, everyLane = false, spent } = search;
-  const goalYs = [goal.y, ...(search.column ?? []).filter(y => y !== goal.y && Number.isFinite(y))];
   const bounds = search.bounds ?? { left: 8, right: width - 8 };
   const clearance = 2, runsX = foreign?.vertical ?? [], runsY = foreign?.horizontal ?? [];
+  const axisEntries = 6 + (search.column?.length ?? 0) + 4 * boxes.length + 4 * runsX.length + 2 * runsY.length;
+  const setup = search.workBudget === undefined ? 0 : Math.ceil(axisEntries * (2 + Math.ceil(Math.log2(axisEntries + 1))) / 8);
+  const allowance = search.workBudget ?? Infinity;
+  if (spent) spent.setup = (spent.setup ?? 0) + Math.min(setup, allowance);
+  if (setup > allowance || !(allowance > 0)) return null;
+  const remainingWork = allowance - setup;
+  const goalYs = [goal.y, ...(search.column ?? []).filter(y => y !== goal.y && Number.isFinite(y))];
   // Grid lines: the distinct candidate coordinates in range, ascending.
   const xs = f64(0, 4 + 2 * boxes.length + 4 * runsX.length), ys = f64(1, 1 + (search.column?.length ?? 0) + 1 + 2 * boxes.length + 2 * runsY.length);
   let xn = 0, yn = 0;
@@ -186,6 +194,8 @@ export function orthogonalRoute(start: Point, goal: Point, boxes: readonly Place
   const count = nx * ny;
   // Enormous malformed/history requests have an explicit bounded failure, never a timer exit.
   if (!nx || !ny || count > 250_000) return null;
+  if (count / 8 > remainingWork) return null;
+  const popBudget = Math.min(budget, Math.floor(remainingWork - count / 8));
   if (spent) spent.cells += count;
   const sx = indexOf(xs, nx, start.x), sy = indexOf(ys, ny, start.y), gx = indexOf(xs, nx, goal.x), gy = indexOf(ys, ny, goal.y);
   if (sx < 0 || sy < 0 || gx < 0 || gy < 0) return null;
@@ -227,7 +237,7 @@ export function orthogonalRoute(start: Point, goal: Point, boxes: readonly Place
   heap.clear();
   heap.push(first, 0, 0 + hx[sx] + hy[sy]);
   let pops = 0;
-  for (; heap.size && pops < budget; pops++) {
+  for (; heap.size && pops < popBudget; pops++) {
     heap.pop();
     const at = heap.topAt, cost = heap.topCost;
     if (cost !== distances[at]) continue;

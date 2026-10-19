@@ -326,7 +326,7 @@ async pattern: use existing pure request/result and publication transaction.
 | **1. Channel and track assignment as a constraint solve (complete)** | T4/T11/T14/T15 metric assignment for existing ordered, representable channels; T31–T33 shared-row header rules, plus T34/T35 attachment offsets. Keep current row/corridor generators. Add common immutable segment/order/bounds/pin types and a deterministic separation solver first, within this slice. | Test below becomes ordinary `it`; retained tracks and child tops remain exact through packed attachment. Compatible disconnected spans reuse tracks. New groups can get deeper tracks/header/corridors without raising existing child tops. Differential tests for channel bound conflicts, pinned interior tracks, lifetime reuse and ordered insertions; no new fallback/errors. | 700–1,100 lines; 4–6 days | Medium-high: correct coordinate frame, cyclic orders, header corners and row packing are coupled. Scope adapters to represented channels and preserve other drawings. |
 | **2. Explicit ports and painted corridors (complete)** | T8/T14/T16/T29/T34/T35 duplicated endpoint/envelope reconstruction. Import existing topology into explicit ports, arrow stubs and certified turn/corridor bounds; retain current emitter initially. | Same semantic consumers/endpoints and exact reused route geometry; native cubics, near-pane arrows and host cover chrome pass existing tests/gates. Retained unaffected stem paths remain byte-identical, supporting interrupted motion. Reject malformed imported plans. | 600–1,000 lines; 3–5 days | Medium: source vs branch endpoints, raw/attached transforms, stroke versus allocation extents. |
 | **3. Junctions and corridor topology (complete)** | T3/T5–T10/T12/T13; reuse T1 semantics. Replace provisional/deferred/stacked placement, zone reconsideration and dropped ordering with explicit junction ports and channel search. | Critical cycle gets a certified split/crossing topology, never a discarded hard dependency. Exact parentage for reused subsets, 2–8 inputs, distant fan-outs and long edges; crossing/height/pane/fallback limits all hold. Try new corridor assignments before growing only free boundaries. | 1,200–1,800 lines; 6–9 days | High: combinatorial corridor capacity and fan-in/crossing semantics. Bounds on **total** search/constraint work, not per retry. |
-| **4. Constrained incremental insertion and hint changes** | T18–T28 plus T37's separate routing. Import committed drawing into same model, freeze declared tracks/rectangles/suffixes, add new ports/segments and re-solve affected conflict components. | Arrival world-oracles, merges/departures, single 16 px descent and shrink-space reuse; clicked ancestry equality; exact revisits and worker parity. Delete repairable-contact policy and port/bypass offset repair only when all old successes are covered. Preserve other retained tiles where the request pins them; optimize only free ones. | 1,200–1,900 lines; 6–10 days | High: pruning/identity, future departures, hint port changes, dense search tails. |
+| **4. Constrained incremental insertion and hint changes (open; lossless import boundary complete)** | T18–T28 plus T37's separate routing. Import committed drawing into same model, freeze declared tracks/rectangles/suffixes, add new ports/segments and re-solve affected conflict components. | Arrival world-oracles, merges/departures, single 16 px descent and shrink-space reuse; clicked ancestry equality; exact revisits and worker parity. Delete repairable-contact policy and port/bypass offset repair only when all old successes are covered. Preserve other retained tiles where the request pins them; optimize only free ones. | 1,200–1,900 lines; 6–10 days | High: pruning/identity, future departures, hint port changes, dense search tails. |
 | **5. Cold sweeps and folder packing in that model** | T2/T17/T19/T30/T36–T38 placement alternatives. Shelves, downward and serial layouts become embedding generators feeding one solve; packing contributes constraints before final routing. | All cold widths/presets and legal tours retain display/long-edge order, quality and timing targets. New-state sweeps may choose freer embeddings; pinned states never lose pins when a compact/serial candidate is considered. Folder ordinary cells and other bands are first-class obstacles. | 1,000–1,600 lines; 5–8 days | High: compactness, candidate pruning and 10 ms inline budget; avoids a simultaneous scoring rewrite. |
 | **6. Remove superseded routers/repairs** | Delete remaining legacy T21–T25/T28/T36/T38 implementations once every embedding uses common constraints; T5–T7/T10/T13 are deleted in slice 3. Retain T1 consumer semantics, T16 emitter if still useful, T39 history and T40 independent gates. | No legacy escapes reached across full acceptance and targeted rare-branch fixtures; safe chain/fan/serial are certified embedding choices under identical pins. New diagnostics distinguish topology conflict, metric conflict, unsupported input and budget exhaustion. | 300–700 new/changed lines, larger net deletion; 2–4 days | Medium after coverage; zero sample use alone never justifies deletion. |
 
@@ -828,3 +828,770 @@ Geometry fallbacks remain **0/6,060 corpus, 0/3,150 tours and 0/140 proposed
 packing states**, with zero outside the pane. The report, exact comparison,
 fail-first logs and control replays are in ignored `layout-eval/out/s3fix/`.
 No Playwright/browser run or push was performed.
+
+## Slice 4 initial investigation (620313b; not adopted)
+
+At this initial checkpoint, slice 4 was **not complete** and production routing
+remained at `cb87cbf`; no T18–T28 or T37 implementation had been removed.
+The following evidence records that investigation, not acceptance of a partial
+replacement. The later representation step is documented below.
+
+An isolated contact-search probe reused slice 3's corridor ledger and
+separation domains instead of enumerating perpendicular offsets. It does not
+yet import the complete committed routing model, implement all declared track
+and suffix equalities, or replace insertion, hint reconnection and folder-world
+routing. Its initial replay covered **19 of 20** changed old contact-repair
+successes in the first 153 captured changed-success tour records, with tile/dot
+retention checks.
+That is a limited diagnostic, not the required complete old-success coverage.
+The missed case is `random-dag-100-8101`, width 360/image 96, anchor `n33`,
+32 visible tiles of 100. The old certified result uses several local bypasses
+and an internal run shift; the probe reports a topology conflict. A subsequent
+projection experiment was not accepted or integrated. Neither failure proves
+that another embedding or a complete constrained model is infeasible.
+
+Two committed-history import requirements were independently reproduced:
+
+- Current gate-certified `merges-3` and `random-dag-40-7503` incremental drawings
+  can fail `importRoutingPlan`'s independent-approach-port validation.
+- Both the retained `future-port-scene.json` fixture and its current successful
+  click result pass the geometry gate but fail imported junction parentage.
+  Consumer pruning can leave a one-input residual meeting declaring two parents.
+
+These cases need explicit semantic projection/convergence representation while
+preserving declared painted pins; removing the import checks is not a solution.
+An independent review also reproduced a saved-ledger equality conflict through
+the evaluation adapter: `random-tree-12-7122`, width 454/image 96, focuses
+`[null,n1,n3,n1,n4,n3,n4]`. At the final click, committed `n4.y=321`, while the
+exact saved revisit requires `n4.y=312`. All drawings pass the unchanged gate.
+This particular conflict was **not** reproduced in the production first-column
+folder flow. It needs explicit conflict handling for imported legacy ledgers;
+it is not evidence against a fresh policy that avoids inconsistent snapshots.
+
+The original inventory workload was remeasured: 522 legal tour steps, 65 cold
+bands, 65 raw layered diagnostics and 398 folder states. All T18–T28/T37 counters
+match the slice 3 table above, and there are zero published gate failures.
+The complete drawing digest is again
+`47e279306a18a12ce71fae8d30359f2d6ef5121b4bef64969d4d8ad803e82210`,
+matching slice 3's instrumented and uninstrumented controls. There is no new
+implementation to measure as an “after” population: the adopted stage counts
+remain unchanged.
+
+The full census also completed: **6,060 proposed corpus states, 3,150 tour steps and 140 proposed packing states**. Every non-timing field in all 12,120 corpus comparison rows matches the uninstrumented control; complete tour and packing results match too. Cells below count **geometry changes or non-null constructor/probe/retry returns / calls**, including rejected/reconstructed candidates, warmups and readability reconstructions in the corpus command. They are not distinct published layouts. T25 counts returned retry drafts, not certified repairs. No stage was deleted; there is no replacement after-run.
+
+| Stage | Original workload | Full corpus | Full tours | Packing |
+|---|---:|---:|---:|---:|
+| T18 Resize | 99 / 298 | 0 / 0 | 0 / 0 | 0 / 0 |
+| T18 Tile-only seed | 0 / 0 | 0 / 0 | 0 / 0 | 0 / 0 |
+| T19 Retain members | 189 / 189 | 114 / 114 | 1179 / 1182 | 2 / 2 |
+| T19 Subset projection | 189 / 648 | 114 / 2267 | 1179 / 3577 | 2 / 56 |
+| T19 Normalize frame | 18 / 83 | 0 / 0 | 0 / 0 | 27 / 54 |
+| T19 Anchor translation | 0 / 9 | 20 / 20 | 102 / 121 | 20 / 20 |
+| T20 Primary probes | 4581 / 5785 | 23934 / 26075 | 24233 / 34008 | 78 / 78 |
+| T20 Wiring | 4782 / 38823 | 24222 / 106032 | 25336 / 322415 | 78 / 122 |
+| T20 Insertion | 660 / 888 | 2080 / 2323 | 2906 / 5393 | 56 / 56 |
+| T21 Plain placement | 591 / 848 | 1204 / 1544 | 2802 / 5635 | 0 / 0 |
+| T21 Grid wiring | 967 / 2655 | 1905 / 4741 | 7234 / 26319 | 0 / 0 |
+| T22 Second placement | 393 / 613 | 734 / 937 | 4556 / 6973 | 0 / 0 |
+| T22 All-lane wiring | 376 / 1100 | 701 / 2247 | 4432 / 14896 | 0 / 0 |
+| T23 Free terminal ports | 0 / 808 | 0 / 2275 | 0 / 4715 | 0 / 56 |
+| T24 Free internal lanes | 80 / 169 | 48 / 229 | 678 / 1866 | 0 / 0 |
+| T25 Constrained retry | 5 / 57 | 6 / 6 | 74 / 707 | 0 / 0 |
+| T25 Repairable retry draft | 12 / 52 | 4 / 4 | 84 / 633 | 0 / 0 |
+| T26 Leaf ordering | 33 / 660 | 60 / 2080 | 95 / 2906 | 0 / 56 |
+| T27 Hint reroute | 7 / 9 | 0 / 0 | 0 / 0 | 0 / 0 |
+| T27 Retained route | 5 / 5 | 0 / 0 | 0 / 0 | 0 / 0 |
+| T28 Contact repair | 11 / 27 | 5 / 23 | 58 / 121 | 0 / 0 |
+| T37 Folder pins | 133 / 135 | 0 / 0 | 0 / 0 | 0 / 0 |
+
+The corpus/tours contain **48/678 internal-run repair changes**, **4/84 returned repairable retry drafts**, and **5/58 changed certified contact repairs**, respectively. The 19/20 diagnostic is only a subset of the required contact coverage; it does not cover those complete populations or the other repair classes. Hint and folder-arrival coverage remains represented by the separate original inventory workload.
+
+The unmodified `cb87cbf` baseline completed **50/50** current targets and is
+copied under `layout-eval/out/routing-s4-baseline`. No perf retry was needed.
+The source check passes with 267 files, zero errors and zero warnings. The full
+unchanged-source unit run finished with **2,184 passed, one failed, one existing
+skip**: the malformed-history `M100 NaN L200 NaN` case hit its unchanged
+five-second child-process timeout. Its focused file rerun passed **31/31** at
+the same limit; this does not turn the full unit command green.
+
+There was no adopted after-run or changed current acceptance row at that
+checkpoint. New slice 4 fail-first publication contracts and replacement acceptance had
+**not** been established. The independent blocking review rejects the incomplete
+replacement; production remains unchanged. The handover, census, portable
+reproductions and baseline receipts are under `layout-eval/out` and in the
+slice 4 audit archive. No required slice 4 work is deferred under the name of
+slice 5; cold embedding and folder packing consolidation remain slice 5's
+unchanged scope.
+
+## Slice 4: lossless import boundary
+
+The incremental re-solve and stage deletion remain open. This step extends the
+import representation so that published incremental geometry can become a
+committed routing problem without rewriting its native paint.
+
+A junction now has two explicit semantic layers. Its painted dot retains its
+original parent declaration, coordinate and identity. Its current meeting
+projects the exact consumers carried by the incoming paths, including nested
+joins and a unary residual after pruning. Validation checks that every projected
+consumer reaches its terminal through the incoming source; a historical parent
+name cannot invent a current connection.
+
+Convergence inputs reference the last entry of each native path into the existing
+6 px square dot berth. A binding includes the native primitive, split parameter,
+directed face and complete native suffix. Cubics use polynomial interval roots
+and De Casteljau metadata; original path bytes and controls are never re-emitted.
+Opposite faces are distinct directed inputs. Inputs sharing a face still require
+the existing strict 3 px separation, including its unchanged exact-centipixel
+comparison. The original painted ports, dot and route bindings remain exact.
+
+A local numerical chart handles independent lanes whose attachment arithmetic
+crosses a binary64 precision boundary. It explicitly encodes only the already
+validated convergence cut, suffix controls and dot through at most two common
+bounded numerical operations. Every encoded point must round-trip at each
+operation to the exact preceding coordinate;
+primitive, parameter and face still reference the raw full-path cut. The same
+strict independence predicate runs in that chart. Deterministic candidate
+operations include a small exact recentering and origins placing the dot near
+binary binade boundaries (including adjacent representable origins) within the
+existing coordinate reach. Two real sequential attachments can preserve fine
+low-coordinate residues while accumulating rounding at a larger binade; a single
+reversible origin is insufficient for that certified case. This is numerical
+representation metadata, not claimed historical attachment provenance or a
+solver displacement. The independent geometry gates still admit the native
+paint. A 2.99 px gap and coincident inputs remain rejected.
+
+There is no new persisted `GraphLayout` field, history policy or cache state.
+Malformed ranges, sparse certificate arrays and nonfinite native geometry are
+rejected, and projection/chart work is charged to the caller's existing ledger.
+The previous complete-output differential hash remains unchanged.
+
+The import census uses the unchanged 6,060 corpus states, 3,150 legal tour steps
+and 140 packing states (309 separate packed drawings). Before this change,
+**843 of 9,519 drawings** failed import. After, **0 of 9,519** fail:
+
+| Published population | Before failures | After failures |
+|---|---:|---:|
+| Corpus | 177 / 6,060 | 0 / 6,060 |
+| Legal tours | 666 / 3,150 | 0 / 3,150 |
+| Packing (140 states) | 0 / 309 | 0 / 309 |
+
+The census
+also asserts exact retained route bytes/identities/consumer ranges and painted
+dots/declarations, and hashes the drawings independently of import metadata.
+Both complete runs have native drawing SHA256
+`2a7c4ccaaea4c3489ad6889fdf99ef265ffd73803c7d24f914289657cc7f23c1`.
+The independent population audit verifies the exact ordered producer states,
+actual published world drawings and full request membership without exclusions.
+
+The 24 new behavior contracts cover the pruned future-port fixture, its published
+clicked result, directed arrivals, malformed projections/certificates and exact
+reattachments. Six reduced certified sequential-attachment cases fail the frozen
+single-chart attempt and pass the two-operation representation. Independent
+adversarial review accepts the current design: 89 focused tests and 1,179/1,179
+gate-certified sequential-attachment drawings import successfully; coincident,
+2.99 px and counterfeit inputs still reject. No persisted frame/history policy
+was adopted. The unchanged full unit suite passes with 2,209 tests and one
+existing skip; source check reports 270 files, zero errors and zero warnings.
+The final unchanged evaluation targets pass **50/50**. All 12,120 corpus rows
+match baseline after omitting only top-level elapsed `ms`; entire tour and packing
+artifacts match. Metrics, decisions and work are unchanged. The only changed
+current acceptance rows are measured timings, all passing their original limits:
+
+| Current timing target (p95, ms) | Before | After | Limit |
+|---|---:|---:|---:|
+| Main-thread maximum | 4.302 | 5.662 | 8 |
+| At most 30 visible tiles maximum | 46.277 | 50.126 | 100 |
+| Full folder engine maximum inline | 7.093 | 4.276 | 10 |
+
+Perf-stage load samples range from 5.62 to 26.71. No profiling, optimization,
+threshold change or timing retry was needed. Receipts are in
+`layout-eval/out/import-census-chain.json`, `s4b-acceptance-diff.json`,
+`s4b-gate-exits.json` and `routing-s4-handover.md`.
+
+This step does not replace T24/T25/T28, port/bypass repairs, hint reconnection or
+folder pinning. New re-solve coverage remains unestablished over the full old
+success populations: corpus/tours T24=48/678, T25=4/84, T28=5/58, plus the separate
+internal-port, hint and folder-arrival classes. Import coverage is a prerequisite,
+not solver replacement coverage. The next step is the complete committed hard
+pin/equality model and affected conflict-component solve, before any deletion.
+
+## Slice 4: rebased retained-constant and component prerequisite
+
+This continuation starts at `0905388`, rebased onto the fixed slice 3 `f376163`.
+Slice 4 remains open. The new APIs are **not called by production routing**;
+complete committed-to-free-topology construction and publication are not adopted.
+
+`routing-problem.ts` captures caller-declared scenes without mutable aliases,
+imports their native topology and makes retained rectangle, port, native-control,
+suffix, corridor, allocation and convergence-chart numbers exact scalar constants.
+Declared frame recipes retain each arithmetic operation and intermediate result;
+this does not derive the production piecewise attachment/hint/world recipes.
+Native route bytes and painted declarations remain separate immutable bindings.
+A retained-geometry check rejects changed coordinates, missing identities, lost
+consumers and reserialized native paths. Projection policy must run before capture.
+
+`routing-components.ts` substitutes fixed constants before closing free dependency
+components. A common fixed port cannot join unrelated free subproblems; its
+incident obstacle constraints still bound each solve. Only affected or conflicting
+free components are solved, and every hard residual is checked. Two different
+pins on one variable return an explicit equality witness. Pins preserve their
+binary64 values, including signed zero. Snapshot, shape, shared-table, dependency,
+whole-array component scans and local solve work charge the caller's ledger;
+ledger exceptions retain their original control flow.
+
+The previously missed `random-dag-100-8101` 360/96 click `n33` now has an independently
+generated, gate-certified **selected-topology diagnostic**. It retains all 75
+surviving committed route strings, 28 tile rectangles, 18 dots and all 9,539
+imported attached-scene scalar pins. Hidden `n85`/`n93` and their two routes are
+outside current request membership; consumer projection precedes import.
+No retained hint resize or coordinate descent is required in this case.
+
+Only two new routes change. `n25→n98` takes the existing bottom departure/shared
+source prefix and a fresh visibility-grid corridor. Its old right port `(328,3274)`
+is only 2 px from retained `n18`'s vertical `x330` track, inside the unchanged 6 px
+port berth; editing later runs cannot fix that start. `n8→n17`'s new internal run
+is free. With the chosen topology, the metric kernel solves one three-track
+component: `174→174`, `175→175`, `169→178`; retained rectangles bound the corridor.
+The pre-solve topology fails `shared-lane`, the solved drawing passes the full
+unchanged gate, and restoring the old new-departure choice fails `route-contact`.
+The generator never reads the old repaired output: poisoning that output produces
+an identical regenerated drawing. This is one diagnostic, not adopted replacement
+coverage or a claim that every frame equality has been constructed.
+
+The actual `random-tree-12-7122` replay `[null,n1,n3,n1,n4,n3,n4]` still exposes the
+legacy committed `n4.y=321` versus saved revisit `312`. The metric API now returns
+both named equality constraints without mutating either drawing. Production
+snapshot policy and explicit fallback integration remain open.
+
+Independent adversarial review accepts only these prerequisite APIs and selected
+contracts: **85/85** focused tests, a 10,000-case ordered-DAG feasibility
+differential with zero mismatches, exact attached-scene n33 pins, independent
+missing-move failure checks and a poisoned-output differential. Review receipts
+and source/test hashes are in `layout-eval/out/s4c-review.md` and
+`s4c-review-acceptance.json`. The four new test files contain 33 contracts.
+
+Every archived distinct old-success output was audited, beyond the initial153
+sample: all **527** present-member gate-certified drawings import into the new
+constant representation. This includes corpus/tour T24 drafts **21/379**, T28
+**5/58**, and the separate original workload **46 T24, 11 T28, 4 hint and 3 retained
+route** outputs. Intermediate T24 drafts are certified only for present members;
+this is not complete-request publication or replacement coverage. T25 draft
+bodies were absent from the old archive. An isolated instrumented `0905388`
+snapshot now recaptures every positive raw T25 return with call maps: corpus
+**6 constrained / 4 repairable**, tours **74 constrained / 84 repairable**.
+All **168** drafts contain their complete requested membership and import into
+the constant model; **81** already pass the raw drawing gate. These are draft
+receipts, not adopted solver or publication successes.
+
+The repeated original workload has 522 legal tour steps, 65 cold bands, 65 raw
+layered diagnostics and 398 folder states, with no published gate failures.
+Every T18–T28/T37 counter matches the earlier inventory on this fixed base. Its
+complete-output SHA256 is now
+`67926c171020087ee52af1acb4e43cbc863fde41099f4571dc9d714f69e33833`,
+identical in instrumented and uninstrumented controls; the previous digest is
+not reused. All 12,120 full corpus rows match the uninstrumented control after
+omitting only top-level elapsed `ms`; entire tour and packing artifacts match.
+The repeated table and call maps are in `s4c-inventory.json`/`.md` and
+`s4c-recapture-summary.json`. No production stage has an adopted replacement
+after-run at this checkpoint.
+
+Adopted replacement coverage remains **0/48 and 0/678 T24**, **0/4 and 0/84 T25**,
+**0/5 and 0/58 T28** for corpus/tours, plus the still-unadopted internal-port,
+hint and folder classes. No stage is deleted. Complete frame/geometry adapters,
+all-success coverage, consistent production ledger policy and fail-first tests
+through adapter/inline/worker/publication remain required in slice 4.
+
+The additional original-workload capture contains **352** complete success
+bodies and **485** native drawing imports, including all **133** full folder
+gates and their **266** attached graphs. Independent evidence review checks every
+body, call mapping and attached request membership; it does not certify an
+automatic production frame adapter or replacement solver.
+
+The fresh native import census on this rebased base has **zero failures across
+9,519 drawings**: 6,060 corpus, 3,150 tour and 309 packing drawings from 140 states.
+Its exact native digest is
+`2a7c4ccaaea4c3489ad6889fdf99ef265ffd73803c7d24f914289657cc7f23c1`.
+Final gates pass: check has zero errors/warnings across 272 files; unit tests have
+2,265 passes and one existing skip across 177 files; layout evaluation is **50/50**
+at unchanged thresholds. Only three acceptance rows change, all timing values:
+main-thread maximum p95 **5.662279→6.460068 ms** (limit 8), ≤30 visible tiles
+maximum p95 **50.125955→40.375985 ms** (limit 100), and full-folder inline maximum
+p95 **4.276499→6.232340 ms** (limit 10). No performance work was undertaken.
+Receipts are `s4c-gates.json`, `s4c-acceptance-diff.json` and the corresponding
+logs under `layout-eval/out`; a verified bundle and guarded importer deliver this
+partial prerequisite checkpoint without writing this clone's read-only `.git`.
+
+### Slice 4d — metered constructor prerequisite checkpoint
+
+This checkpoint adds the pure `captureIncrementalRouting`,
+`routeCommittedIncremental` and `solveIncrementalTopology` APIs, ordered native
+frame restoration, explicit revisit equality conflicts, and prepaid native and
+independent admission. Production callers, the default folder engine and the
+legacy repair itinerary remain at `d9aa452`. These prerequisites are independently
+accepted; the broader production adapter in the working tree is not included.
+The exact 22-file source manifest is `s4d-final-constructor/checkpoint-source.json`.
+
+The automatic n33 constructor now produces all 32 requested members while keeping
+28 retained rectangles, 75 native path strings and 9,539 scalar pins exact through
+actual single-band attachment. It uses 56,186,394 of the finite 64,000,000 work
+allowance. The native contact and T25 contracts also pass without changing either
+geometry gate. Capture precedes construction; a failed candidate cannot redefine
+the retained constants. Explicit outcomes distinguish topology, metric,
+unsupported-input and budget conflicts. A bounded miss is not a proof of geometric
+infeasibility.
+
+Every captured old success was replayed from its committed input through this
+pure automatic API, without supplying the old repaired output:
+
+| Population | T24 | T25 constrained | T25 repairable | T28 | All captured classes |
+|---|---:|---:|---:|---:|---:|
+| Corpus | 40/48 | 6/6 | 4/4 | 5/5 | 55/63 |
+| Tours | 93/678 | 6/74 | 3/84 | 32/58 | 134/894 |
+| Original workload | 24/80 | 0/5 | 1/12 | 5/11 | 30/352 |
+
+The original workload also includes 133 folder, 99 resize, seven hint and five
+retained-route successes. None is covered by this strict whole-route API yet.
+Failed API replays total eight budget outcomes for the corpus; 758 budget and two
+topology outcomes for tours; and 78 budget, four topology and 240 unsupported
+outcomes for the original workload. They are diagnostic outcomes, not production
+fallback counts or proven genuine conflicts. Production replacement coverage
+remains zero, its fallback counters remain unchanged, and no stage is deleted.
+
+The full original workload again matches all stage counters and the complete
+digest `67926c171020087ee52af1acb4e43cbc863fde41099f4571dc9d714f69e33833`,
+with 522 tour steps, 65 cold bands, 65 layered diagnostics and 398 folder states,
+and no published gate failures. The 12,120 corpus rows (omitting only top-level
+elapsed `ms`), 3,150 tour rows and 280 packing rows retain every geometry and
+decision field of the fixed-base control.
+
+The eval passes 50/50 at unchanged thresholds. Exactly three acceptance rows
+change from the newly measured fixed-base control:
+
+| Acceptance row | Before, ms | After, ms | Existing limit, ms |
+|---|---:|---:|---:|
+| Main-thread maximum p95 | 13.089809 | 4.202846 | 8 |
+| At most 30 visible tiles maximum p95 | 66.774539 | 34.706012 | 100 |
+| Full folder engine maximum inline p95 | 10.489301 | 7.638370 | 10 |
+
+The first and third rows change from failing to passing; the second stays passing.
+No performance tuning was done. The lead separately authorizes finite larger
+search allowances and permits the unchanged 8/10 ms rows to exceed their limits
+provided both actual p95 values stay below approximately 16 ms. Budget exhaustion
+alone does not justify keeping a legacy stage; missing construction moves and
+frame adapters must still be addressed across all three populations under the
+same policy. That larger-policy proposal is separate from this 64-million-work
+checkpoint.
+
+Unit tests pass: 2,297 passes and one existing skip across 182 files. Check has
+zero errors or warnings across 277 files. Review and gate receipts, exact acceptance changes, a verified bundle and
+the guarded importer live under `layout-eval/out`. Still required for slice 4:
+complete construction and hint/world frame coverage, production publication and
+ledger contracts, independent production adoption review, measured finite-policy
+coverage and latency, and deletion only after each stage is fully covered.
+
+
+### Slice 4d — source-bound fragment and hint API checkpoint
+
+This second prerequisite checkpoint includes the first constructor checkpoint and
+adds selective native-fragment retention, a source-bound frame factory, bounded
+hint growth/shrink recipes, and a withholding-only final-publication callback.
+Native source identity serialization and the unchanged independent geometry
+gate's expanded JSON key are prepaid before execution. The optional callback
+shares the constructor's finite ledger and cannot replace its captured source.
+Production callers, folder routing and legacy repair stages remain at the base;
+this checkpoint does not adopt the broader production work in the working tree.
+Its exact selected-source manifest has 33 files.
+
+All 63 corpus, 894 tour and 352 original old-success captures were replayed from
+their committed inputs with old repaired outputs blocked from access. The strict
+64-million-work constructor still covers 55/63, 134/894 and 30/352 respectively,
+with the same reason counts as the first prerequisite checkpoint. The additional
+source-bound hint API covers all 111 retained resize/hint/route stages: 99 retained
+membership-only resize occurrences and 12 complete-request invocations. The
+complete invocations include six insertion occurrences in two distinct requests;
+12 invocations are not 12 distinct user requests. The maximum hint work is
+7,896,990 of the same finite 64-million allowance. The input population and
+denominators are unchanged. These API proofs do not count as production adoption
+or genuine-conflict proofs for the remaining bounded misses.
+
+The original workload again matches 522 tour steps, 65 cold layouts, 65 layered
+layouts and 398 folder states, every stage counter and the complete digest
+`67926c171020087ee52af1acb4e43cbc863fde41099f4571dc9d714f69e33833`.
+No published gate fails. Production replacement coverage remains zero and no
+legacy stage is deleted in this checkpoint.
+
+Independent reviews accept the pure V4 API and the exact two-file V5 native
+accounting delta. They explicitly exclude production adapters, folder-wide
+accounting, broader search coverage and production adoption. Later terminal-ink,
+world-adapter and ledger proposals are separately reviewed work and are excluded
+from this immutable checkpoint.
+
+The immutable checkpoint passes `bun run check` with 284 files, zero errors and
+zero warnings; the complete unit gate passes 2,329 tests across 185 files, with
+one existing skip; and the eval passes all 50 unchanged acceptance targets.
+Every geometry and decision field in the 12,120 corpus, 3,150 tour and 280 packing
+rows matches the fixed-base control (only top-level corpus elapsed `ms` is
+excluded). Exactly three acceptance rows change:
+
+| Acceptance row | Before, ms | After, ms | Existing limit, ms | Before / after |
+|---|---:|---:|---:|---|
+| Main-thread maximum p95 | 13.089809 | 2.648017 | 8 | fail / pass |
+| At most 30 visible tiles maximum p95 | 66.774539 | 36.571020 | 100 | pass / pass |
+| Full folder engine maximum inline p95 | 10.489301 | 6.417995 | 10 | fail / pass |
+
+Both required inline p95 measurements remain below 16 ms; this checkpoint needs
+no timing exception. These measurements cover this prerequisite checkpoint,
+whose production callers remain at the base, rather than the broader ROOT
+production proposal. No performance tuning was done.
+
+The verified `routing-s4-fragments.bundle` and guarded
+`s4d-import-fragment-checkpoint.py` live under `layout-eval/out`, with source,
+review, gate and importer-rehearsal receipts. This bundle includes and supersedes
+the first constructor checkpoint, with the same parent `d9aa452`; import it into
+that base on `routing-s4`. It is not a fast-forward from the separate first
+checkpoint commit. Clean-base import is supported; `--preserve-wip` accepts only
+the exact WIP bytes recorded when this bundle was built. The importer never
+adopts the broader production WIP as part of the checkpoint.
+
+
+### Slice 4d — bounded constructor and world API checkpoint
+
+This third prerequisite checkpoint extends the reviewed APIs with finite fair
+constructor families, selective native-fragment masks, deferred free route cores,
+source departure prefixes and carrier cuts, and terminal-boundary bindings. It
+also includes six unwired folder-world modules. Production entry points retain
+the second checkpoint's legacy behavior. The immutable runtime has 721 source
+files and a 49-file selected-source manifest; the broader production adapter in
+the working tree is excluded. Production adoption and stage deletions are zero.
+
+All captured old successes were replayed from their actual committed inputs.
+Old repaired outputs and legacy folder candidates were inaccessible. Every
+success passes final attachment/folder geometry, complete per-ID membership,
+retained native/source constants and input/source immutability checks. The same
+finite policy applies to all three populations: 1,024,000,000 total work, with
+6,400,000 fallback work, 6,400,000 second-pass work and 64,000 probes inside that
+allowance. Search exhaustion is a bounded decline, not a genuine-conflict proof.
+
+The comparison below uses the earlier strict 64-million whole-route replay as
+its baseline. The second checkpoint's separate hint API already covered all
+111 retained hint/resize stages; that separate proof remains valid and is not
+added to the baseline constructor totals.
+
+| Population / input scope | Earlier strict API | Current unified API | Remaining budget outcomes |
+|---|---:|---:|---:|
+| Corpus, complete-request inputs | 55/63 | 62/63 | 1 |
+| Tours, complete-request inputs | 134/894 | 535/894 | 359 |
+| Original, complete-request occurrences | 30/253 | 204/253 | 49 |
+| Original, present-membership resize stages | 0/99 | 99/99 | 0 |
+
+The 99 retained-member resize stages are not complete user requests. All 409
+remaining outcomes are budget exhaustion; topology conflict, metric conflict,
+unsupported input and unexpected failures are zero. A serious separate
+8,192-million-work attempt on the sole corpus miss also exhausted its bound;
+it does not prove that case infeasible or justify retaining a legacy stage.
+
+| Old-success stage | Corpus before / after | Tours before / after | Original before / after |
+|---|---|---|---|
+| T24 free port lanes | 40/48 → 47/48 | 93/678 → 360/678 | 24/80 → 34/80 |
+| T25 repairable contacts | 4/4 → 4/4 | 3/84 → 64/84 | 1/12 → 11/12 |
+| T28 route contacts | 5/5 → 5/5 | 32/58 → 47/58 | 5/11 → 11/11 |
+| Additional constrained route | 6/6 → 6/6 | 6/74 → 64/74 | 0/5 → 3/5 |
+| Folder world placement | — | — | 0/133 → 133/133 |
+| Complete resized-history route | — | — | 0/7 → 7/7 |
+| Retained route | — | — | 0/5 → 5/5 |
+
+The automatic n33 fresh-departure/corridor contract remains covered from committed
+input alone. Captured successes use an immutable common runtime. The full tour
+ran the original V1 driver; corpus and original ran V3, whose additional branch
+recovers an explicit raw resize source for two absent-history roles. That branch
+is unexecuted on every tour input, and every V3 corpus result is byte-identical
+to V1. Actual per-population manifests, driver identities, numeric exit provenance
+and the full 63/894/352 input captures are bound in the evidence bundle.
+
+The unchanged production workload again completes 522 tour steps, 65 cold bands,
+65 layered diagnostics and 398 folder states, with no geometry failures and the
+exact baseline digest
+`67926c171020087ee52af1acb4e43cbc863fde41099f4571dc9d714f69e33833`.
+Its counters are legacy-only: 79,321,366 corridor work, 981 corridor candidates,
+2,036 candidates, 808 pinned searches and 26 pinned-cache hits. New production
+attempts, successes and fallbacks by every reason are zero. API replay coverage
+must not be reported as production replacement coverage.
+
+The immutable checkpoint passes `bun run check`: 293 files, zero errors and
+warnings. The full unit gate passes 2,371 tests across 189 files, with one
+existing host-theme skip; no test timeout changes are included. The complete
+eval passes all 50 original targets without an exception. Every geometry and
+decision field in the 12,120 corpus, 3,150 tour and 280 packing rows matches the
+fixed-base control (only top-level corpus elapsed `ms` is excluded).
+Exactly three acceptance rows change:
+
+| Acceptance row | Before, ms | After, ms | Existing limit, ms | Before / after |
+|---|---:|---:|---:|---|
+| Main-thread maximum p95 | 13.089809 | 2.528210 | 8 | fail / pass |
+| At most 30 visible tiles maximum p95 | 66.774539 | 36.105350 | 100 | pass / pass |
+| Full folder engine maximum inline p95 | 10.489301 | 4.625977 | 10 | fail / pass |
+
+Both required p95 measurements are below 16 ms and their unchanged original
+limits. Source inventories and hashes were verified before and after every
+gate. Independent review accepts this exact API source; publication adoption
+of the broader production work remains unaccepted.
+
+The larger raw replay allowance establishes bounded API feasibility only. Eval
+timings measure this checkpoint's unchanged legacy production callers; they do
+not establish inline latency suitability for an unwired automatic adapter. No
+performance optimization or geometry/eval-population change is included.
+
+Slice 4 remains open. Broader production work has real arrival/publication,
+saved-ledger and joint attachment-frame failures. A separate narrow hint
+investigation produces five certified direct worlds, but the next shrink/reuse
+click moves the clicked tile from Y216 to Y228 while both geometry gates, exact
+saved revisits and real-worker/main parity still pass. The required move must
+preserve actual committed cover/body/native frames jointly during attachment;
+relabeling a world result as canonical raw geometry is insufficient. The frozen
+fail-first/design packet and all broader ROOT WIP are separate unaccepted
+recovery material. No production adapter or legacy deletion is approved by this
+API checkpoint.
+
+The verified `routing-s4-api.bundle` and guarded `s4d-import-api-checkpoint.py`
+are delivered under `layout-eval/out` with source, review, gate and actual-import
+receipts. This checkpoint includes and supersedes both earlier API bundles,
+with parent `d9aa452`; import into that base on `routing-s4`. It is not a
+fast-forward from either separate earlier checkpoint commit. Clean-base import
+is supported. `--preserve-wip` requires the exact bytes and executable modes
+recorded when this bundle was built, and preserves all those worktree files.
+
+### Slice 4d — production adoption with legacy fallback
+
+Production runs the constrained incremental construction first at one site, band
+insertion. Legacy runs only when that attempt declines, inside the same engine
+request, so no intermediate frame exists. Each attempt is bounded by click
+latency, measured end to end, rather than by coverage.
+
+- **Band insertion** (`band-layout.ts`, `constrainedInsertion`). This calls
+  `constrainedBandInsertion` under `bandInsertionAllowance`.
+  - It runs the strict capture first, with retained connectors byte-identical.
+  - Only if that search exhausts its budget does the remainder of the same
+    allowance run the frameless fragment capture.
+  - The result must keep every retained rectangle exactly. It then competes as the
+    `incremental-tree` candidate under the unchanged ranking, anchors and gates.
+    A success replaces the legacy `incrementalTree` call; a decline runs it.
+- **Interactive allowance** (`incremental-adoption.ts`). The allowance is 250K work
+  per band item, up to 4M. A work unit is not a fixed time: measured attempts run
+  at about 20 ns per unit at p50 and up to about 100 ns. The latency bound is
+  therefore measured, not guaranteed by construction. The constructor's pools scale with it: 1/8 of the
+  legacy pools at 4M.
+  - Every attempt that succeeded at the ceiling across the inventory needed less
+    than 250K per item. Small doomed requests therefore stop early instead of
+    spending the full ceiling.
+  - Capture alone costs about 85K per item even for a fan, the cheapest shape: 45
+    items succeed at 3.8M, while 49 exhaust 4M. So a band of more than 47 items
+    declines as `budget` before spending any work. No inventory request above
+    that size succeeded at 4M.
+- **Folder world placement is not adopted.**
+  - At 256M it published 132 arrivals, but every one was a request legacy also
+    served.
+  - On the requests legacy declines it never succeeded.
+  - A success cost 15–100 ms against a few ms for legacy `pinnedFolderPlacement`,
+    and a budget decline cost over 1 s.
+  - Within an inline-sized allowance it bought nothing measurable, so
+    `default-engine.ts` keeps 5bbcb77's folder path plus `worldBandFrame` only.
+- **World-placed graphs** declare their band frame (`worldBandFrame` in
+  `priorOf`), so the next click's attachment frame matches. In the hint case the
+  clicked `s0:p` stays at y216; before this it moved to y228. This is independent
+  of adoption.
+- **Dispatch is 5bbcb77's.** `canLayoutFolderInline` and `canRetainFolderInline`
+  are unchanged.
+  - Every request that was inline at 5bbcb77 is still inline, including exact
+    revisits.
+  - No request moved to the worker.
+  - No test timeout was raised.
+- **Counters.** Every attempt is counted as `adoption:band-insertion:attempt`,
+  then `success` or `fallback:<topology|metric|unsupported|budget|contract>`, plus
+  `work` and `cache-hit`.
+  - `published` counts only drawings that ranking actually returned.
+  - Identical attempts are memoised and return clones, so the worker and the main
+    thread agree.
+
+#### Click latency
+
+The table below measures wall-clock time from request to published layout for
+every request:
+- the 522 eval tour steps, each an `optimizedBand` click on the main thread;
+- the 398 folder states, run through `createFolderLayoutRuntime`, either inline or
+  as a round trip to a real `layout.worker.ts`.
+
+Each request is classified by its own counters. Requests are matched one-to-one
+with the same run at 5bbcb77 on the same machine. "Added" is the per-request
+difference. Times are in ms.
+
+| Population / outcome | n | 5bbcb77 p50 / p95 / max | Now p50 / p95 / max | Added p95 / max | Moved to worker |
+|---|---:|---|---|---|---:|
+| Folder, all | 398 | 1.3 / 7.7 / 60.8 | 1.3 / 11.2 / 57.9 | 3.5 / 9.7 | 0 |
+| Folder, adopted | 37 | 3.2 / 7.8 / 8.9 | 5.5 / 9.4 / 16.0 | 4.6 / 8.1 | 0 |
+| Folder, declined | 25 | 5.3 / 10.7 / 15.4 | 10.1 / 19.0 / 19.8 | 9.2 / 9.7 | 0 |
+| Folder, legacy only | 336 | 1.1 / 5.6 / 60.8 | 1.2 / 5.5 / 57.9 | 0.6 / 5.1 | 0 |
+| Tour, all | 522 | 4.7 / 282.3 / 9817.7 | 10.8 / 295.3 / 10094.4 | 26.5 / 276.7 | 0 |
+| Tour, adopted | 145 | 3.9 / 18.1 / 45.0 | 10.6 / 39.0 / 95.4 | 22.7 / 58.1 | 0 |
+| Tour, declined | 106 | 89.1 / 4283.9 / 9817.7 | 102.5 / 4295.8 / 10094.4 | 61.1 / 276.7 | 0 |
+| Tour, outranked | 146 | 4.5 / 13.6 / 32.6 | 10.8 / 30.4 / 41.7 | 16.1 / 20.8 | 0 |
+| Tour, legacy only | 125 | 0.8 / 39.8 / 386.2 | 0.8 / 42.2 / 384.9 | 2.1 / 10.7 | 0 |
+
+**What the table shows:**
+- Folder states, all: p95 is 1.45× the baseline, and folder arrivals alone are
+  1.51× (11.0 against 7.3 ms).
+- Tour steps, all: p95 is 1.05×.
+- The constrained attempt itself, timed separately:
+  - tours: p95 24.5 ms when adopted and 46.2 ms when declined, with a max of 104 ms;
+  - folder states: under 11 ms.
+
+**Requests that run an attempt cost more than their own legacy baseline.** The
+aggregate p95 stays near the baseline because most clicks are cheap or
+legacy-only. But the subgroups that attempt are each 1.5–2.5× their legacy p95:
+- tours: adopted 2.2×, outranked 2.2×;
+- folder states: declined 1.8×.
+
+A success replaces legacy's cheap `incrementalTree`, but capture costs a few ms
+even on small bands, so an adopted click is still slower than legacy alone. In
+absolute terms the added time is 10–25 ms at the subgroup p95.
+
+An independent review measured workloads outside these populations:
+- dense synthetic folder arrivals of up to 12 tiles: inline p95 1.34–1.50× overall,
+  and up to about 17 ms added on the main thread for a 2.5M decline;
+- one-tile band arrivals up to 47 items: declines on 40-item bands add 100–190 ms;
+- the slowest attempt seen: 139 ms, a 4M decline.
+
+The inline dispatch limits in `layout-workload.ts` were calibrated before any
+attempt existed and are unchanged.
+
+**The tour "added max" of 277 ms is noise, not attempt cost.** It occurs on a
+10 s legacy request, where run-to-run variation is that large. Legacy-only rows
+show the same noise.
+
+**For comparison, the unbounded design at ab0411c** used 128M for bands and 256M
+for folders, with searches on the worker:
+- folder p95 was 55.8 ms, with a max of 1,167 ms;
+- 193 folder requests had moved to the worker;
+- tour p95 was 671 ms;
+- tour budget fallbacks took seconds.
+
+**The cost of the bound is coverage.** Requests the bounded attempt cannot
+certify stay with legacy and are counted as budget fallbacks.
+
+#### Production inventory
+
+The production inventory is unchanged: 1,050 requests (522 tour steps, 65 cold,
+65 layered, 398 folder states), with no geometry failures.
+
+| Site | Attempts | Successes | Published | Fallbacks by reason | Work |
+|---|---:|---:|---:|---|---:|
+| Band insertion | 459 (19 memo hits) | 328 | 182 | budget 131 (49 by size, before any work) | 393,924,505 |
+
+There were no topology, metric, unsupported or contract fallbacks.
+
+Retained-tile movements between consecutive inventory outputs went from 44 at
+5bbcb77 to 39:
+- tour indices 444 and 446 (random-bushy-40-7603, clicks 1 and 3) now keep every
+  retained tile, where legacy moved 2 and 3;
+- no output moved more tiles than at 5bbcb77.
+
+#### Coverage outside production
+
+Old-success replay at the API allowance (1,024M, 4x pools) is unaffected by the
+production bound. It calls `constrainedBandInsertion` for plain band inputs:
+
+| Population | Previous checkpoint | Now | Gains / losses |
+|---|---:|---:|---|
+| Corpus, complete requests | 62/63 | 62/63 | 0 / 0 |
+| Tours, complete requests | 535/894 | 601/894 | 66 / 0 |
+| Original, complete requests | 204/253 | 213/253 | 9 / 0 |
+| Original, resize stages | 99/99 | 99/99 | — |
+
+| Old-success stage | Corpus | Tours | Original |
+|---|---|---|---|
+| T24 free port lanes | 47/48 | 360 → 411/678 | 34 → 41/80 |
+| T25 repairable contacts | 4/4 | 64 → 68/84 | 11 → 12/12 |
+| T28 route contacts | 5/5 | 47 → 53/58 | 11/11 |
+| Additional constrained route | 6/6 | 64 → 69/74 | 3 → 4/5 |
+
+**The missing move behind the tour gains was the capture order.** On those
+inputs the fragment capture spends its whole allowance in metric conflicts,
+while the strict capture certifies within about 25M.
+
+**All 293 remaining tour misses are budget exhaustion.** Tour input 41, for
+example, needs the repairable-contact policy: every strict family's insertion
+search fails, and a contact-deferring order did not certify either.
+
+**Production's interactive allowance covers less than this replay.** In
+production, the replay's extra coverage stays with legacy as budget fallbacks.
+
+**No legacy stage is deleted.** None of T24, T25 or T28 is replayed for all its
+old successes in every population, and production does not reach them within
+the latency bound either.
+
+#### Tests
+
+Tests marked "failed first" were run against a2a3174 or 5bbcb77, or against the
+change with the guarded line disabled.
+
+- `routing-hint-next-click`: failed first, with y228 before.
+- `incremental-adoption.test.ts`:
+  - retained band tiles through clicks;
+  - shrink-space reuse and a single 16 px descent, each published by the
+    constrained path and then clicked, with the ancestry kept;
+  - hint growth and shrink under the same contracts. These publish legacy worlds,
+    since folder world placement is not adopted;
+  - exact revisits;
+  - arrivals keyed by tile identity, with constrained publication;
+  - merges keyed by tile identity. This case declines as budget, and no generated
+    merge variant reached constrained publication, so it guards legacy only;
+  - small arrivals, clicks and exact revisits staying inline. This is a
+    regression guard for 5bbcb77's dispatch and passes there;
+  - the allowance as a pure function: boundary sizes; the malformed sizes 0,
+    negative, NaN and infinite; and every allowance's pools fitting one embedding
+    family;
+  - an oversized insertion declining as budget with zero work. Failed first:
+    without the size decline it spent 3,999,998 work and still declined.
+- `routing-ledger-conflict`: the committed n4 now matches its saved revisit,
+  where legacy committed y321 against 312. Its conflict half now uses a synthetic
+  contradicting pin, so it only exercises the solver.
+- An `adoption` worker/main parity mode.
+
+#### Gates and changed acceptance rows
+
+All three gates pass:
+- `bun run check`: 294 files, 0 errors.
+- `bun run test`: 191 files, 2,386 tests passed and 1 skipped.
+- `layout:eval`: all 50 task targets pass.
+
+The table lists the acceptance rows that changed against 5bbcb77. Every other row
+is unchanged, including both click-anchor rows (26 and 73).
+
+| Row | 5bbcb77 | Now | Limit |
+|---|---:|---:|---:|
+| Corpus per-layout movedFraction | 0.1224 | 0.1214 | 0.1283 |
+| Corpus transition movedFraction | 0.1954 | 0.1938 | 0.2574 |
+| Broad transition movedFraction | 0.0503 | 0.0491 | 0.0788 |
+| Mean legal displacement, px | 12.27 | 12.26 | 17.53 |
+| Main-thread max p95, ms | 2.528 | 2.665 | 8 |
+| ≤30 visible tiles max p95, ms | 36.105 | 37.959 | 100 |
+| Full folder inline max p95, ms | 4.626 | 4.333 | 10 |
+| Mean height / width | 2119.7 / 556.6 | 2118.9 / 556.8 | 2372.7 / 603.0 |
+| Mean length / bends / crossings | 37614 / 154.11 / 333.10 | 37608 / 154.11 / 333.10 | 46535 / 157.20 / 364.36 |
+| Mean displacement / maxDisplacement | 28.93 / 65.96 | 28.67 / 65.75 | 34.76 / 80.19 |
+| Mean siblingInversions / mixedDirections | 0.102 / 1.533 | 0.093 / 1.530 | 0.107 / 2.289 |
+| Mean unaligned | 0.1640 | 0.1653 | 0.1766 |
+
+Area, whitespace and paneWhitespace changed by less than 0.1%.
+
+#### What remains of slice 4
+
+- Tour and original misses at the API allowance, led by the T24 free-port-lane
+  cases.
+- A contact-repair move inside the constrained constructor, which would cover the
+  T25 and T28 remainders.
+- Cheaper capture. It is about 60% of attempt time on large drawings, and it is
+  what bounds production coverage. Sharing capture with the legacy fallback, or
+  making capture incremental, would let the interactive allowance reach the
+  replay's coverage.
+- Deleting legacy stages once every population covers them within the
+  interactive bound.

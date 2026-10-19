@@ -128,7 +128,7 @@ export interface PlacedRoute {
  */
 export interface RowBox { readonly index: number; readonly band: number; readonly top: number; readonly bottom: number; readonly keys: readonly NodeKey[] }
 
-export interface BandHistory {
+export interface BandSnapshot {
   readonly signature: string;
   readonly layout: GraphLayout;
   /** Last committed geometry after real grid attachment, in cover-relative coordinates. */
@@ -136,7 +136,14 @@ export interface BandHistory {
   readonly attachment?: { readonly bandTop: number; readonly placement: import("./band-geometry").BandPlacement };
 }
 
+export interface BandHistory extends BandSnapshot {
+  /** Earlier published scenes in the same contents/metrics epoch. Observations
+   * have no nested history and survive a tile becoming temporarily hidden. */
+  readonly observed?: readonly BandSnapshot[];
+}
+
 export interface BandDecision {
+  readonly routingConflict?: import('./routing-components').RoutingMetricConflict;
   readonly relayout?: 'pane-width' | 'tile-size';
   readonly candidate: string;
   readonly partition?: readonly number[];
@@ -146,10 +153,18 @@ export interface BandDecision {
    * `lane-infeasible`: every candidate ran connectors from different sources along a shared lane; the best of them, priced, is shown.
    * `anchor-yield`: an anchor-preserving layout existed, but crossed far more than the best unanchored one (the crossing cap); the anchors moved.
    */
-  readonly fallback?: "geometry-fallback" | "invalid-history" | "anchor-infeasible" | "anchor-yield" | "packing-infeasible" | "gate-infeasible" | "lane-infeasible";
+  readonly fallback?: "geometry-fallback" | "invalid-history" | "anchor-infeasible" | "anchor-yield" | "packing-infeasible" | "gate-infeasible" | "lane-infeasible" | "revisit-pin-conflict";
 }
 
 export interface GraphLayout {
+  /** Exact native roots already authored in this attachment frame. Reusing the
+   * same frame keeps their bytes; another packing frame reconstructs its stem. */
+  readonly routingAttachment?: {
+    readonly key: string;
+    readonly bandTop: number;
+    readonly placement: import('./band-geometry').BandPlacement;
+    readonly paths: readonly (readonly [string, string])[];
+  };
   readonly decision?: BandDecision;
   /** Preferred child allocation x from committed history; packing may reject it. */
   readonly preferredX?: number;

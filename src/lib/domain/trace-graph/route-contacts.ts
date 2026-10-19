@@ -233,12 +233,12 @@ export function routeEnds(route: PlacedRoute, ss: readonly Segment[], nodes: Rea
 }
 
 /** The berths of a line drawn through `ss` with `ends`: its ends (and arrowhead tip) and its corners. */
-export function berthsOf(ss: readonly Segment[], ends: Ends): Berth[] {
+export function berthsOf(ss: readonly Segment[], ends: Ends, endpointMask?: { readonly start: boolean; readonly end: boolean }): Berth[] {
   if (!ss.length) return [];
   const out: Berth[] = [];
   const first = ss[0][0], last = ss[ss.length - 1][1];
-  if (ends.start > 0) out.push({ x: first.x, y: first.y, radius: ends.start });
-  if (ends.end > 0) {
+  if (ends.start > 0 && endpointMask?.start !== false) out.push({ x: first.x, y: first.y, radius: ends.start });
+  if (ends.end > 0 && endpointMask?.end !== false) {
     // The line ends at the arrow base; only its tip occupies the target port.
     out.push({ x: last.x, y: last.y, radius: ends.arrow ? CORNER_BERTH : ends.end });
     const tip = ends.arrow ? arrowTip(ss[ss.length - 1]) : null;

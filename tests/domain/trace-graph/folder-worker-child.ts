@@ -16,6 +16,9 @@ import { createFolderLayoutRuntime } from '../../../src/lib/plugins/trace/view/f
 import { buildFolderScene } from '../../../src/lib/domain/trace-graph/folder-scene';
 import { staticPresentation } from '../../../src/lib/plugins/trace/view/presentation';
 import { worldInput } from './folder-world-fixture';
+import { readFileSync } from 'node:fs';
+import { decode } from './routing-hint-next-click-codec';
+import { profileLayout } from '../../../src/lib/domain/trace-graph/layout-profile';
 try {
   if (mode === 'world-refresh') {
     const runtime = createFolderLayoutRuntime();
@@ -78,6 +81,35 @@ try {
       ledger.replied(id, reply.folder); previous = reply.folder;
     }
     equal(previous.graphs.get('a:2').attached.nodes.has(fixture.joined), true);
+  } else if (mode === 'adoption') {
+    // Constrained publication on the main thread and in the real worker: arrival,
+    // the next click, then the exact revisit of the arrival state.
+    let adopted = 0;
+    for (const name of ['world-hint-1', 'world-hint-2', 'shrink-1', 'early-descent-1']) {
+      const arrival = decode(readFileSync(new URL(`./fixtures/routing-adoption/${name}.json`, import.meta.url), 'utf8')).at(-1);
+      const run = async (input: any) => {
+        const { result: inline, profile } = profileLayout(() => engine(structuredClone(input)));
+        adopted += Object.entries(profile.counters).filter(([k]) => /^adoption:.*:published$/.test(k)).reduce((n, [, v]) => n + v, 0);
+        const id = ++sequence;
+        const reply: any = await new Promise((resolve, reject) => {
+          worker.onmessage = event => resolve(event.data); worker.onerror = reject;
+          worker.postMessage(ledger.message(id, input));
+        });
+        if (reply.error) throw new Error(reply.error);
+        deepStrictEqual(reply.folder, inline);
+        equal(folderGeometryGate(inline), null);
+        ledger.replied(id, reply.folder);
+        return reply.folder;
+      };
+      const published = await run(arrival);
+      const clicked = await run({ ...arrival, previous: published, open: new Map([...arrival.open].map(([id, stack]: any) => [id,
+        stack.members.includes('s0:p') ? { ...stack, anchor: 's0:p', expanded: new Map([...stack.expanded, ['s0:p', false]]) } : stack])) });
+      const back = await run({ ...arrival, previous: clicked });
+      equal(back.revisited, true);
+      const drawing = (layout: any) => [layout.cells, layout.bands, layout.size, [...layout.graphs].map(([id, g]: any) => [id, g.attached, g.origin])];
+      deepStrictEqual(drawing(back), drawing(published));
+    }
+    if (adopted < 2) throw new Error(`Constrained publication not exercised: ${adopted}`);
   } else if (mode === 'revisits') {
     let revisits = 0;
     for (const fixture of corpus().filter(c => c.nodes.length > 2 && c.nodes.length <= 16).slice(0,16)) {

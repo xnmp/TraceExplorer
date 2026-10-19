@@ -13,15 +13,36 @@ const coordinate = (value: unknown): value is number => typeof value === 'number
 const index = (value: unknown): value is number => typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 && inReach(value);
 const strings = (value: unknown): value is string[] => Array.isArray(value) && Array.from(value).every(v => typeof v === 'string');
 const endpoint = (value: unknown) => object(value) && (value.kind === 'node' || value.kind === 'junction') && typeof value.id === 'string';
+const only = (value: object, keys: readonly string[]) => Object.keys(value).every(key => keys.includes(key));
+const conflictShape = (value: unknown): boolean => value === undefined || object(value)
+  && only(value, ['kind', 'variable', 'constraints']) && ['invalid', 'equality', 'metric'].includes(String(value.kind))
+  && typeof value.variable === 'string' && strings(value.constraints);
+
+function routingAttachmentValid(value: unknown): boolean {
+  if (value === undefined) return true;
+  if (!object(value) || !only(value, ['key', 'bandTop', 'placement', 'paths']) || typeof value.key !== 'string'
+    || !attachmentValid(value) || !object(value.placement)
+    || !only(value.placement, ['x', 'coverX', 'coverHeight', 'width', 'left', 'right', 'track', 'stemRoom', 'coverColumns', 'bypassColumns', 'bridge'])
+    || object(value.placement.bridge) && !only(value.placement.bridge, ['top', 'gutter'])
+    || !Array.isArray(value.paths)) return false;
+  const ids = new Set<string>();
+  for (const entry of value.paths) {
+    if (!Array.isArray(entry) || entry.length !== 2 || typeof entry[0] !== 'string' || typeof entry[1] !== 'string' || ids.has(entry[0])) return false;
+    ids.add(entry[0]);
+  }
+  return true;
+}
 
 export function isLayoutShape(value: unknown): value is GraphLayout {
   if (!object(value) || !(value.nodes instanceof Map) || !(value.junctions instanceof Map) || !(value.readingOrder instanceof Map)
     || !Array.isArray(value.routes) || !Array.isArray(value.rows) || !coordinate(value.width) || !coordinate(value.height)
     || (value.orientation !== 'down' && value.orientation !== 'right')) return false;
   if (value.pinnedViolation !== undefined && value.pinnedViolation !== 'not-a-root') return false;
+  if (!routingAttachmentValid(value.routingAttachment)) return false;
   const decision=value.decision;
   if (decision!==undefined && (!object(decision) || typeof decision.candidate!=='string' || typeof decision.stability!=='boolean'
     || decision.fallback!==undefined && typeof decision.fallback!=='string' || decision.relayout!==undefined && typeof decision.relayout!=='string'
+    || !conflictShape(decision.routingConflict)
     || decision.partition!==undefined && (!Array.isArray(decision.partition) || !Array.from(decision.partition).every(index)))) return false;
   for (const [key, n] of value.nodes) if (typeof key !== 'string' || !object(n) || n.key !== key
     || ![n.x, n.y, n.width, n.height].every(coordinate) || !(n.width as number > 0) || !(n.height as number > 0)
@@ -115,6 +136,11 @@ function historyValues(history: BandHistory, visit: Visit): boolean {
   const tables = new Set<readonly unknown[]>();
   const list = (values: readonly unknown[] | undefined): boolean => visit(values)
     && (values === undefined || visit(values.length) && values.every(visit));
+  const fields = (value: object) => { const keys = Object.keys(value); return visit(keys.length) && keys.every(visit); };
+  const placement = (p: import('./band-geometry').BandPlacement): boolean => visit(p) && fields(p)
+    && visit(p.x) && visit(p.coverX) && visit(p.coverHeight) && visit(p.width) && visit(p.left) && visit(p.right)
+    && visit(p.track) && visit(p.stemRoom) && list(p.coverColumns) && list(p.bypassColumns) && visit(p.bridge)
+    && (!p.bridge || fields(p.bridge) && visit(p.bridge.top) && visit(p.bridge.gutter));
   const consumers = (entries: readonly { readonly parent: string; readonly child: string }[]): boolean => {
     if (!visit(entries)) return false;
     if (tables.has(entries)) return true;
@@ -127,6 +153,12 @@ function historyValues(history: BandHistory, visit: Visit): boolean {
     if (!visit(layout)) return false;
     const d=layout.decision;
     if (!visit(d) || d && (!visit(d.candidate) || !visit(d.stability) || !visit(d.fallback) || !visit(d.relayout) || !list(d.partition))) return false;
+    const conflict = d?.routingConflict;
+    if (!visit(conflict) || conflict && (!fields(conflict) || !visit(conflict.kind) || !visit(conflict.variable) || !list(conflict.constraints))) return false;
+    const frame = layout.routingAttachment;
+    if (!visit(frame) || frame && (!fields(frame) || !visit(frame.key) || !visit(frame.bandTop) || !placement(frame.placement)
+      || !visit(frame.paths) || !visit(frame.paths.length))) return false;
+    if (frame) for (const path of frame.paths) if (!visit(path) || !visit(path.length) || !visit(path[0]) || !visit(path[1])) return false;
     if (!visit(layout.orientation) || !visit(layout.width) || !visit(layout.height) || !visit(layout.pinnedViolation)
       || !visit(layout.nodes) || !visit(layout.nodes.size)) return false;
     for (const [key, n] of layout.nodes) if (!visit(key) || !visit(n) || !visit(n.key) || !visit(n.x) || !visit(n.y)
@@ -153,14 +185,17 @@ function historyValues(history: BandHistory, visit: Visit): boolean {
     const bounds = layout.bandBounds;
     return !bounds || visit(bounds.left) && visit(bounds.width) && visit(bounds.top);
   };
-  if (!visit(history.signature) || !drawing(history.layout) || !drawing(history.placed) || !visit(history.attachment)) return false;
-  const a = history.attachment;
-  if (!a) return true;
-  if (!visit(a.bandTop) || !visit(a.placement)) return false;
-  const p = a.placement;
-  return visit(p.x) && visit(p.coverX) && visit(p.coverHeight) && visit(p.width) && visit(p.left) && visit(p.right)
-    && visit(p.track) && visit(p.stemRoom) && list(p.coverColumns) && list(p.bypassColumns) && visit(p.bridge)
-    && (!p.bridge || visit(p.bridge.top) && visit(p.bridge.gutter));
+  const snapshot = (value: import('./layout').BandSnapshot): boolean => {
+    if (!visit(value) || !visit(value.signature) || !drawing(value.layout) || !drawing(value.placed) || !visit(value.attachment)) return false;
+    const a = value.attachment;
+    return !a || visit(a.bandTop) && placement(a.placement);
+  };
+  if (!snapshot(history) || !visit(history.observed)) return false;
+  if (history.observed) {
+    if (!visit(history.observed.length)) return false;
+    for (const observed of history.observed) if (!snapshot(observed)) return false;
+  }
+  return true;
 
   } finally { endStage(); }
 }
@@ -183,6 +218,8 @@ export function validHistory(value: unknown, cover: string): value is BandHistor
 
   if (object(value) && unchangedHistory(value, cover)) return true;
   if (!object(value) || typeof value.signature !== 'string' || !isLayoutShape(value.layout) || !isLayoutShape(value.placed) || !attachmentValid(value.attachment)) return false;
+  if (value.observed !== undefined && (!Array.isArray(value.observed) || value.observed.length > 64
+    || !Array.from(value.observed).every(snapshot => object(snapshot) && snapshot.observed === undefined && validHistory(snapshot, cover)))) return false;
   let key: string;
   try { key = JSON.stringify([cover, layoutSignature({ items: [], maxWidth: 0, history: value as unknown as BandHistory })]); }
   catch { return false; }

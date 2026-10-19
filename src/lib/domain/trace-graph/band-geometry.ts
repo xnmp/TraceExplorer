@@ -318,7 +318,14 @@ export function attachPackedBand(layout: GraphLayout, key: string, bandTop: numb
   const t = bandTransform(layout, key, bandTop, placement);
   if (!t) return layout;
   const { root, dx, mapY, stemRoom } = t;
+  const frame = layout.routingAttachment;
+  const sameFrame = frame?.key === key && frame.bandTop === bandTop
+    && JSON.stringify(frame.placement) === JSON.stringify(placement)
+    && dx === 0 && t.childOffset === 0 && root.y === 0
+    && root.x === placement.coverX - root.width / 2 && root.height === placement.coverHeight;
+  const retainedPaths = new Map(sameFrame && Array.isArray(frame?.paths) ? frame.paths : []);
   return { ...layout, width: placement.width, height: mapY(layout.height),
+    ...(frame ? { routingAttachment: sameFrame ? frame : undefined } : {}),
     ...(layout.bandBounds ? { bandBounds: { ...layout.bandBounds, left: layout.bandBounds.left + dx, top: mapY(layout.bandBounds.top) } } : {}),
     ...(((layout.anchorX ?? layout.preferredX) !== undefined && Math.abs(placement.x - (layout.anchorX ?? layout.preferredX)!) > .01
       || layout.anchorY !== undefined && Math.abs(bandTop - placement.coverHeight - layout.anchorY) > .01) && layout.decision
@@ -327,6 +334,7 @@ export function attachPackedBand(layout: GraphLayout, key: string, bandTop: numb
     junctions: translatedJunctions(layout, dx, mapY),
     rows: layout.rows.map(row => ({ ...row, top: mapY(row.top), bottom: mapY(row.bottom) })),
     routes: layout.routes.map(route => {
+      if (route.from.kind === 'node' && route.from.id === key && retainedPaths.get(route.id) === route.path) return route;
       const path = translatePath(route.path, t);
       if (route.from.kind !== "node" || route.from.id !== key) return { ...route, path };
       // The untranslated start y (NaN, never near, when the path has no second number).
@@ -423,6 +431,20 @@ export function attachSingleBand(layout: GraphLayout, request: import("./layout"
   if (layout.pinnedViolation) return layout;
   const placement = singleBandPlacement(layout, request);
   return placement ? attachPackedBand(layout, request.band!.key, placement.coverHeight, placement) : layout;
+}
+
+/** Declare exact native root suffixes from a committed, already attached scene.
+ * Only an identity frame can reuse them; a future placement gets no bypass. */
+export function retainSingleBandFrame(layout: GraphLayout, request: import('./layout').LayoutRequest,
+  routes: GraphLayout['routes'] = layout.routes, bandTop?: number): GraphLayout | null {
+  const placement = singleBandPlacement(layout, request), key = request.band!.key;
+  if (!placement) return null;
+  const top = bandTop ?? placement.coverHeight;
+  const t = bandTransform(layout, key, top, placement);
+  if (!t || t.dx !== 0 || t.childOffset !== 0 || t.root.y !== 0
+    || t.root.x !== placement.coverX - t.root.width / 2 || t.root.height !== placement.coverHeight) return null;
+  return { ...layout, routingAttachment: { key, bandTop: top, placement,
+    paths: routes.filter(r => r.from.kind === 'node' && r.from.id === key).map(r => [r.id, r.path] as const) } };
 }
 
 /** {@link attachedSkeleton} for {@link attachSingleBand}: nodes and allocation only. */

@@ -13,7 +13,9 @@ import { spacingFor, STACK_STEM_ROOM } from "./metrics";
 import { bandWidthBudget, columnsFor, partitions, buildShelves, validate } from "./band-shelves";
 import { attachSingleBand, attachPackedBand, localBandPlacement, bandExtent, withBandBounds, withPaneBandBounds, singleBandSkeleton } from "./band-geometry";
 import { measure, validateLayout, cost, routePlan, sharedLaneLength, DEFAULT_WEIGHTS, type Measures, type Weights } from "./layout-quality";
-import { incrementalBudget, incrementalTree, inReach, usableRetainedRoute } from "./band-incremental";
+import { constrainedBandInsertion, scaledIncrementalBudget, incrementalBudget, incrementalTree, inReach, usableRetainedRoute } from "./band-incremental";
+import { adoptionFallback, adoptOnce, bandInsertionAllowance, movedRectangle, recordAdoption, recordPublication } from "./incremental-adoption";
+import { geometrySignature, layoutSignature } from "./layout-signature";
 import { forEachPathNumber, mapPathNumbers, pathNumbers } from "./path-data";
 import { extentCost, optimisticCost, rectangleCost } from "./layout-cost-bound";
 import { bandHistorySignature, historyFit, historyRelayoutReason, resizedLayout, resizedTiles } from "./band-history";
@@ -107,6 +109,28 @@ function anchorKeys(request: LayoutRequest, previous: GraphLayout): readonly str
     pending.push(...byKey.get(key)!.parents);
   }
   return [...found];
+}
+
+/**
+ * Constrained incremental insertion (slice 4): retained rectangles, ports and
+ * native suffixes are captured as constants, new tiles and routes are constructed
+ * around them, and only affected free components are re-solved. Published only if
+ * the constructor's unchanged gates certified it and every retained rectangle is
+ * exactly where the committed drawing has it once attached. Null hands the request
+ * to the legacy insertion and repair itinerary in the same layout call.
+ */
+function constrainedInsertion(request: LayoutRequest, previous: GraphLayout): GraphLayout | null {
+  if (request.items.every(n => previous.nodes.has(n.key))) return null;
+  const allowance = bandInsertionAllowance(request.items.length);
+  if (!allowance) { recordAdoption('band-insertion', 'budget'); return null; }
+  const key = JSON.stringify(['band-insertion', layoutSignature(request), geometrySignature(previous)]);
+  return adoptOnce('band-insertion', key, () => {
+    const attempt = constrainedBandInsertion(request, previous, () => scaledIncrementalBudget(allowance.pools), allowance.work);
+    if (!attempt.ok) return { drawing: null, outcome: adoptionFallback(attempt.conflict.reason), work: attempt.work };
+    const retained = request.items.filter(n => previous.nodes.has(n.key)).map(n => n.key);
+    return movedRectangle(previous.nodes, attachSingleBand(attempt.drawing, request).nodes, retained) !== null
+      ? { drawing: null, outcome: 'contract', work: attempt.work } : { drawing: attempt.drawing, outcome: 'success', work: attempt.work };
+  });
 }
 
 /** Keep the existing embedding and only the consumers and junctions belonging to its members. */
@@ -456,6 +480,10 @@ function layoutBandCandidates(input: LayoutRequest, options: BandOptions): Graph
     }
   }
   const history: Candidate[] = [];
+  // The constrained insertion competes as the incremental-tree candidate; count it
+  // as published only when ranking returns that exact drawing.
+  let constrained: GraphLayout | null = null;
+  const published = (layout: GraphLayout) => { if (constrained && layout === constrained) recordPublication('band-insertion'); };
   const repairPinned = (layout: GraphLayout | null): GraphLayout | null => {
     if (!layout) return null;
     const placed = attachSingleBand(layout, request);
@@ -475,7 +503,8 @@ function layoutBandCandidates(input: LayoutRequest, options: BandOptions): Graph
     // Each embedding has bounded effort. A failed fully pinned search must not
     // consume the repack candidate's opportunity to keep the clicked anchor.
     const budget = incrementalBudget();
-    const incremental = repairPinned(incrementalTree(request, previous, budget));
+    constrained = constrainedInsertion(request, previous);
+    const incremental = constrained ?? repairPinned(incrementalTree(request, previous, budget));
     if (incremental) history.push({ name: "incremental-tree", layout: incremental });
     // With nothing new to place, the retained tiles as they are (`retained-visible`).
     const retained = projected(previous, request);
@@ -537,6 +566,7 @@ function layoutBandCandidates(input: LayoutRequest, options: BandOptions): Graph
         if (pins(placementFor(c)) && !geometryGate(placementFor(c), request.items, key, request.maxWidth)) pinned.unshift(c);
       }
     }
+    if (pinned.length) published(pinned[0].layout);
     if (pinned.length) return { ...pinned[0].layout,
       anchorX: anchors.length ? bandExtent(placementFor(pinned[0]), key).left : undefined,
       anchorY: anchors.length && compatible?.attachment ? compatible.attachment.bandTop - compatible.attachment.placement.coverHeight : undefined,
@@ -735,6 +765,7 @@ function layoutBandCandidates(input: LayoutRequest, options: BandOptions): Graph
       if (feasible(ranked.find(s => s.layout === c.layout)?.metrics ?? gate(c, false))) { stability = true; break; }
     }
   }
+  published(winner.layout);
   return { ...winner.layout, anchorY: anchors.length && winner.anchors && compatible?.attachment ? compatible.attachment.bandTop - compatible.attachment.placement.coverHeight : undefined, anchorX: anchors.length && winner.anchors ? bandExtent(winner.placed, key).left : undefined, decision: { candidate: winner.name, partition: winner.partition, stability,
     ...(lanesShared ? { fallback: "lane-infeasible" as const } : yielded ? { fallback: "anchor-yield" as const } : anchors.length && !winner.anchors ? { fallback: "anchor-infeasible" as const } : {}) } };
 
