@@ -1656,13 +1656,17 @@ function insertWithPortRepair(request: LayoutRequest, previous: GraphLayout, bud
   orderCharge?: (work: number, reason?: string) => void): { readonly placed: GraphLayout; readonly repairs: readonly PortRepair[] } | null {
   countLayoutWork("pinned-search");
   const repaired = freeBlockedPorts(request, previous, budget);
-  const freed: PortRepair[] = repaired === previous ? [] : ['T23'];
+  const freed: PortRepair[] = movedRoute(previous, repaired) ? ['T23'] : [];
   const placed = insertTree(request, repaired, budget, paneEdges, policy, undefined, undefined, undefined, undefined, orderCharge);
   if (placed) return { placed, repairs: freed };
   const shifted = freePortLanes(request, repaired, budget);
   const retried = shifted === repaired ? null : insertTree(request, shifted, budget, paneEdges, policy, undefined, undefined, undefined, undefined, orderCharge);
-  return retried && { placed: retried, repairs: [...freed, 'T24'] };
+  return retried && { placed: retried, repairs: movedRoute(repaired, shifted) ? [...freed, 'T24'] : freed };
 }
+
+/** Whether a repair stage changed any route (stages may return a fresh object unchanged). */
+const movedRoute = (before: GraphLayout, after: GraphLayout): boolean =>
+  after.routes.length !== before.routes.length || after.routes.some((r, i) => r.path !== before.routes[i].path);
 
 /** Strict legacy constructors provide a discrete embedding only. Port/contact
  * repairs are excluded; constants are captured before the first construction. */

@@ -115,8 +115,9 @@ describe('band insertion through publication', () => {
   });
 
   // The third click of this tour declined as budget at the former 4M ceiling
-  // (legacy published it); the allowance capture savings bought certifies it.
-  it('publishes a click that needs more than the former 4M allowance, keeping retained tiles', () => {
+  // (legacy published it): its net work is about 2.5M, but the up-front pool
+  // reservation plus capture does not fit 4M. The 6M allowance certifies it.
+  it('publishes a click the former 4M allowance declined, keeping retained tiles', () => {
     const c = { ...corpus().find(f => f.id === 'random-bushy-100-8201')!, full: false }, visited = new Set<string>();
     let focus: string | null = null, previous: Optimized | undefined;
     for (let step = 0; step <= 2; step++) {

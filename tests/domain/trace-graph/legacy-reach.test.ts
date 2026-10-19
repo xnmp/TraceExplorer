@@ -9,6 +9,8 @@ import { geometryGate } from '$lib/domain/trace-graph/geometry-gate';
 import { profileLayout } from '$lib/domain/trace-graph/layout-profile';
 import type { GraphLayout, LayoutRequest } from '$lib/domain/trace-graph/layout';
 import { decode } from './routing-hint-next-click-codec';
+import { corpus, requestFor } from '../../../layout-eval/corpus';
+import { optimizedBand } from '../../../layout-eval/engine';
 
 /** A captured corpus click whose legacy insertion needs a free port lane (T24):
  * a retained run occludes a new child's source port. */
@@ -29,11 +31,14 @@ describe('legacy stage reach counters', () => {
     expect(again.profile.counters['legacy:T24']).toBe(1);
   });
 
-  it('does not count a stage for an insertion that needs no repair', () => {
-    const { request, previous } = portLane();
-    // Without the new children there is nothing to insert, so no repair can run.
-    const retained = { ...request, items: request.items.filter(n => previous.nodes.has(n.key)) };
-    const { profile } = profileLayout(() => incrementalTree(retained, previous, incrementalBudget()));
+  it('does not count a stage for an arrival that the plain insertion places', () => {
+    const fan = corpus().find(f => f.id === 'fan-80')!;
+    const band = (n: number) => requestFor({ ...fan, nodes: fan.nodes.slice(0, n), full: false }, null, 400, 48);
+    const request = band(8), previous = optimizedBand(band(7), {}).placed;
+    expect(request.items.filter(n => !previous.nodes.has(n.key))).toHaveLength(1);
+    const { result, profile } = profileLayout(() => incrementalTree(request, previous, incrementalBudget()));
+    expect(result).not.toBeNull();
+    expect(profile.counters['pinned-search']).toBeGreaterThan(0);
     expect(Object.keys(profile.counters).filter(k => k.startsWith('legacy:'))).toEqual([]);
   });
 });

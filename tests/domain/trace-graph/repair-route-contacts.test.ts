@@ -20,7 +20,7 @@ function fixture(arrow: boolean): { layout: GraphLayout; request: LayoutRequest 
 for (const arrow of [false,true]) it(`repairs ${arrow?'an arrow-tip contact':'a short dogleg contact'} with pinned tiles and route endpoints`,()=>{
   const {layout,request}=fixture(arrow),before=structuredClone(layout);
   expect(geometryGate(layout,request.items,'a',200)).toBe('route-contact');
-  const repaired=repairRouteContacts(layout,request);
+  const repaired=repairRouteContacts(layout, request, 'band');
   expect(repaired).not.toBeNull();
   expect(geometryGate(repaired!,request.items,'a',200)).toBeNull();
   expect(repaired!.nodes).toEqual(before.nodes);
@@ -34,7 +34,7 @@ for (const arrow of [false,true]) it(`repairs ${arrow?'an arrow-tip contact':'a 
 it('does not admit an unrepaired fixed terminal contact',()=>{
   const {layout,request}=fixture(true);
   const blocked={...layout,routes:[layout.routes[0],{...layout.routes[1],path:'M150 20 L150 98 L50 98'}]};
-  expect(repairRouteContacts(blocked,request)).toBeNull();
+  expect(repairRouteContacts(blocked, request, 'band')).toBeNull();
 });
 
 it('keeps the clicked n24 tile when a reveal introduces short doglegs beside retained routes', async()=>{
@@ -61,7 +61,7 @@ it.each([false, true])('bypasses a mixed-curve run without diagonal shortcuts (r
     routes:[base.layout.routes[0],{...base.layout.routes[1],path:`M150 20 ${curve} L150 98 ${redundant ? 'L90 98 ' : ''}L30 98 L30 140 L150 140 L150 172`}]};
   const original=structuredClone(layout);
   expect(geometryGate(layout,items,'a',200)).toBe('route-contact');
-  const repaired=repairRouteContacts(layout,request);
+  const repaired=repairRouteContacts(layout, request, 'band');
   expect(repaired).not.toBeNull();
   expect(geometryGate(repaired!,items,'a',200)).toBeNull();
   expect(repaired!.routes[1].path).toContain(curve);
@@ -94,7 +94,7 @@ function occupiedDeparture(blockBottom = false): {layout:GraphLayout;request:Lay
 it('uses the other real source port when a fixed corridor blocks its departure',()=>{
   const {layout,request}=occupiedDeparture(),before=structuredClone(layout);
   expect(geometryGate(layout,request.items,'a',140)).toBe('route-contact');
-  const repaired=repairRouteContacts(layout,request);
+  const repaired=repairRouteContacts(layout, request, 'band');
   expect(repaired).not.toBeNull();
   expect(geometryGate(repaired!,request.items,'a',140)).toBeNull();
   expect(segments(repaired!.routes[0].path)[0][0]).toEqual({x:50,y:80});
@@ -109,7 +109,7 @@ it('uses the other real source port when a fixed corridor blocks its departure',
 it('rejects a pinned drawing when both real source departures are blocked',()=>{
   const {layout,request}=occupiedDeparture(true);
   expect(geometryGate(layout,request.items,'a',140)).toBe('route-contact');
-  expect(repairRouteContacts(layout,request)).toBeNull();
+  expect(repairRouteContacts(layout, request, 'band')).toBeNull();
 });
 
 it('repairs a shared departure lane only when the complete pinned drawing clears the gate', () => {
@@ -118,7 +118,7 @@ it('repairs a shared departure lane only when the complete pinned drawing clears
     path: 'M62 20 L62 25 L70 25 L70 120 L110 120 L110 172' }] };
   const before = structuredClone(shared);
   expect(geometryGate(shared, request.items, 'a', 140)).toBe('shared-lane');
-  const repaired = repairRouteContacts(shared, request);
+  const repaired = repairRouteContacts(shared, request, 'band');
   expect(repaired).not.toBeNull();
   expect(geometryGate(repaired!, request.items, 'a', 140)).toBeNull();
   expect(repaired!.nodes).toEqual(before.nodes);
@@ -132,6 +132,6 @@ it('does not replace an authored curved departure to switch source ports',()=>{
   const curved={...layout,routes:[{...layout.routes[0],path:layout.routes[0].path.replace('L70 60','C63 60 67 60 70 60')},layout.routes[1]]};
   const before=structuredClone(curved);
   expect(geometryGate(curved,request.items,'a',140)).toBe('route-contact');
-  expect(repairRouteContacts(curved,request)).toBeNull();
+  expect(repairRouteContacts(curved, request, 'band')).toBeNull();
   expect(curved).toEqual(before);
 });

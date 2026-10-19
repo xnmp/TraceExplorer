@@ -22,8 +22,11 @@ export type AdoptionSite = 'band-insertion';
  * not by construction; capture and construction grow with the drawing, so the allowance
  * grows with the band: `perItem` work per band item up to `work`. Doomed small
  * requests stop early instead of spending the ceiling. The constructor's local
- * pools scale with the allowance (`poolsPerWork`), so a family still fits it (a
- * family runs only if its pools fit the remaining work). A band of more than
+ * pools scale with the allowance (`poolsPerWork`) and are reserved up front (a
+ * family runs only if its pools fit the remaining work), so a decline stops after
+ * little real work. Smaller pools certify more (1/48M: 340 of the 391 inventory
+ * attempts, against 319) but let declines spend most of the allowance, which
+ * doubled decline p95; outcomes are not monotone in pool size either way. A band of more than
  * `maximumItems` declines as budget before spending any work: larger bands can
  * certify within the ceiling (a 61-item fan does), but their declines added up
  * to 190 ms per click on the eval tours. Coverage beyond these limits stays with

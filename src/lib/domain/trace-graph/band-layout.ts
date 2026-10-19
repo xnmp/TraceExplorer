@@ -488,7 +488,7 @@ function layoutBandCandidates(input: LayoutRequest, options: BandOptions): Graph
     if (!layout) return null;
     const placed = attachSingleBand(layout, request);
     if (!routeClearanceViolation(placed)) return layout;
-    const repaired = repairRouteContacts(placed, request);
+    const repaired = repairRouteContacts(placed, request, 'band');
     if (!repaired) return layout;
     // The repaired drawing is already in the attachment frame. Preserve that
     // allocation so attaching it again cannot translate any pinned rectangle.

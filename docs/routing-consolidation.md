@@ -1633,6 +1633,15 @@ the same 391 attempts:
 | 4M now | 313 | 3.37 s | 23.5 ms | 37 ms | 59 ms |
 | **6M now (adopted)** | **319** | **3.80 s** | **31.3 ms** | **38 ms** | **92 ms** |
 | 8M now | 326 | 4.34 s | 37.4 ms | 57 ms | 165 ms |
+| 6M, pools 1/48M of work (2/3 of the adopted pools) | 340 | 6.22 s | 63.5 ms | 138 ms | 162 ms |
+| 5M, pools 1/40M | 330 | 4.77 s | 42.5 ms | 68 ms | 128 ms |
+
+Smaller pools certify more, because the reservation leaves more of the allowance
+for capture, construction and the solve. They have the same cost as metering,
+though: a decline then spends most of its allowance in real work. Success is not
+monotone in pool size. On the random-bushy-100-8201 tour, for example, click 1
+certifies at 6M with 1/48M pools but declines with 1/32M pools, because the
+first family's larger pools exhaust the ledger.
 
 Two other approaches were rejected:
 - **8M.** It raised folder p95 to 10.8 ms, worse than 6f00895.
@@ -1785,14 +1794,49 @@ perf stage to 15.4 after it. The slowest folder case was `random-dag-12-7223 /
 open`, a first layout that runs no insertion attempt. At 81b5562, under normal
 load, the same rows were 2.562, 34.455 and 5.022.
 
+#### Review
+
+An independent adversarial review of eb62c59..5d5dd96 found no correctness or
+product-contract defects. It verified the following:
+- **The solve removal.** Import output is unchanged except for the work charged.
+- **Coordinate ids.** These are identical across 40 corpus drawings and
+  adversarial keys: sparse arrays, getters, `\u2028`, lone surrogates, and scene
+  ids like `x","tile`.
+- **Prefix matching.** It is equivalent to the old parse.
+- **Caches.** They are rebuilt on every backtrack.
+- **Allowance boundaries,** and parity between the worker and the main thread.
+
+It confirmed the following, and each is addressed in the commit after
+fbdfd83:
+- **T24 and T23 could be counted for a repair that changed nothing.** A stage
+  may return a fresh, unchanged object. They are now counted only when a route
+  path changed.
+- **T28 is counted when the repair succeeds, even if the caller then discards
+  the drawing.** The counter now documents that it counts reach, not
+  publication. Its call-site argument is now required, rather than defaulting
+  to `band`.
+- **The negative counter test could not reach any repair.** It now places a real
+  arrival that needs none.
+- **The 6M adoption test's title misstated why 4M declined.** It is retitled:
+  the up-front pool reservation plus capture does not fit 4M, even though the
+  attempt's net work is about 2.5M.
+- **The pool premise in the allowance comment was wrong.** Pool ratios are now
+  measured, as in the table above.
+- **Two commit messages overstate their results.** 5d5dd96 says latency is "at
+  or below 6f00895", but tour p95 is 1.04× and folder declined p95 is 1.16×;
+  read it as "within run-to-run noise". eb62c59 calls foreign-route work
+  linear, but the per-pair scan is still tracks × routes. The parse is the only
+  part done once.
+
 #### What remains of slice 4
 
 - **Retained-track port repair in the metric.** This is the move above. It
   covers the largest miss class (T24) and is a prerequisite for deleting T24
   and T25.
-- **Pool sizing.** Three production declines certify with larger pools inside
-  the same real work. Their pools would have to be granted without reserving
-  them up front, but uniform metering made declines too slow.
+- **Pool sizing.** Smaller up-front pool reservations certify up to 21 more
+  attempts. Three production declines need only a different pool size within
+  5M of real work. Granting pools without reserving them makes every decline
+  spend its allowance, so this needs a way to predict a decline early.
 - **The anchored-repack and T25 ladder call sites** never get a constrained
   attempt. Five adopted requests still reach T24 or T28 through them.
 - **Deletion.** No stage meets the deletion rule.
