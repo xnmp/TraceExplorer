@@ -13,4 +13,5 @@ it('keeps legal corpus clicks at least as stable as main using committed click h
 
 it('explains every corpus height regression over ten percent with actual retained stability', () => {
   expect(unexplainedHeightRegressions()).toEqual([]);
-}, 300_000);
+  // A whole-corpus sweep: CI runners took 260-285 s before the constrained attempt and 310-330 s with it.
+}, 600_000);
