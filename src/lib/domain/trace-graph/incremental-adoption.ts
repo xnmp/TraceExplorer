@@ -25,8 +25,8 @@ export type AdoptionSite = 'band-insertion';
  * `perItem` per item, while doomed small requests stop early instead of spending
  * the ceiling. The constructor's local pools scale with the allowance
  * (`poolsPerWork`), so a family still fits it (a family runs only if its pools fit
- * the remaining work). `minimumPerItem` is the cheapest shape's cost (a fan: 45
- * items succeed at 3.8M, 49 exhaust 4M); a band whose minimum exceeds the ceiling
+ * the remaining work). `minimumPerItem` is the cheapest shape's cost (a fan: 47
+ * items succeed at 3.87M, 48 exhaust 4M); a band whose minimum exceeds the ceiling
  * declines as budget before spending any work. Coverage beyond these limits stays
  * with legacy as budget fallbacks. */
 export const PRODUCTION_ROUTING_WORK = {

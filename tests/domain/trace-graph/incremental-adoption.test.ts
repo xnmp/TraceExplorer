@@ -115,6 +115,18 @@ describe('band insertion through publication', () => {
     expect(published).toBeGreaterThan(0);
   });
 
+  // The size limit is measured: the largest fan arrival it admits certifies within
+  // the ceiling (before import stopped re-solving its constants, it exhausted 4M).
+  it('certifies the largest fan arrival the size limit admits', () => {
+    const fan = corpus().find(f => f.id === 'fan-80')!;
+    const band = (n: number) => requestFor({ ...fan, nodes: fan.nodes.slice(0, n), full: false }, null, 400, 48);
+    const largest = Math.floor(PRODUCTION_ROUTING_WORK['band-insertion'].work / PRODUCTION_ROUTING_WORK['band-insertion'].minimumPerItem);
+    const req = band(largest), opened = optimizedBand(band(largest - 1), {});
+    const { result: next, count } = counters(() => optimizedBand(req, { previous: opened }));
+    expect([count('adoption:band-insertion:attempt'), count('adoption:band-insertion:success')]).toEqual([1, 1]);
+    for (const [key, was] of opened.placed.nodes) expect(next.placed.nodes.get(key), key).toMatchObject({ x: was.x, y: was.y, width: was.width, height: was.height });
+    expect(geometryGate(next.placed, req.items, req.band!.key, req.maxWidth)).toBeNull();
+  });
   // A band above the interactive size limit declines as budget before any capture
   // or search work (without the limit this attempt spends the whole allowance and
   // still declines), and legacy publishes a gated drawing.
