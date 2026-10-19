@@ -1376,7 +1376,9 @@ latency, measured end to end, rather than by coverage.
     `incremental-tree` candidate under the unchanged ranking, anchors and gates.
     A success replaces the legacy `incrementalTree` call; a decline runs it.
 - **Interactive allowance** (`incremental-adoption.ts`). The allowance is 250K work
-  per band item, up to 4M. The constructor's pools scale with it: 1/8 of the
+  per band item, up to 4M. A work unit is not a fixed time: measured attempts run
+  at about 20 ns per unit at p50 and up to about 100 ns. The latency bound is
+  therefore measured, not guaranteed by construction. The constructor's pools scale with it: 1/8 of the
   legacy pools at 4M.
   - Every attempt that succeeded at the ceiling across the inventory needed less
     than 250K per item. Small doomed requests therefore stop early instead of
@@ -1441,6 +1443,25 @@ difference. Times are in ms.
 - The constrained attempt itself, timed separately:
   - tours: p95 24.5 ms when adopted and 46.2 ms when declined, with a max of 104 ms;
   - folder states: under 11 ms.
+
+**Requests that run an attempt cost more than their own legacy baseline.** The
+aggregate p95 stays near the baseline because most clicks are cheap or
+legacy-only. But the subgroups that attempt are each 1.5–2.5× their legacy p95:
+- tours: adopted 2.2×, outranked 2.2×;
+- folder states: declined 1.8×.
+
+A success replaces legacy's cheap `incrementalTree`, but capture costs a few ms
+even on small bands, so an adopted click is still slower than legacy alone. In
+absolute terms the added time is 10–25 ms at the subgroup p95.
+
+An independent review measured workloads outside these populations:
+- dense synthetic folder arrivals of up to 12 tiles: inline p95 1.34–1.50× overall,
+  and up to about 17 ms added on the main thread for a 2.5M decline;
+- one-tile band arrivals up to 47 items: declines on 40-item bands add 100–190 ms;
+- the slowest attempt seen: 139 ms, a 4M decline.
+
+The inline dispatch limits in `layout-workload.ts` were calibrated before any
+attempt existed and are unchanged.
 
 **The tour "added max" of 277 ms is noise, not attempt cost.** It occurs on a
 10 s legacy request, where run-to-run variation is that large. Legacy-only rows
@@ -1515,17 +1536,24 @@ change with the guarded line disabled.
 - `routing-hint-next-click`: failed first, with y228 before.
 - `incremental-adoption.test.ts`:
   - retained band tiles through clicks;
-  - hint growth and shrink, shrink-space reuse, and a single 16 px descent, each
-    published and then clicked, with the ancestry kept;
+  - shrink-space reuse and a single 16 px descent, each published by the
+    constrained path and then clicked, with the ancestry kept;
+  - hint growth and shrink under the same contracts. These publish legacy worlds,
+    since folder world placement is not adopted;
   - exact revisits;
-  - arrivals and merges keyed by tile identity;
-  - small arrivals, clicks and exact revisits staying inline (5bbcb77's dispatch);
-  - the allowance as a pure function, including boundary sizes and the malformed
-    sizes 0, negative, NaN and infinite;
+  - arrivals keyed by tile identity, with constrained publication;
+  - merges keyed by tile identity. This case declines as budget, and no generated
+    merge variant reached constrained publication, so it guards legacy only;
+  - small arrivals, clicks and exact revisits staying inline. This is a
+    regression guard for 5bbcb77's dispatch and passes there;
+  - the allowance as a pure function: boundary sizes; the malformed sizes 0,
+    negative, NaN and infinite; and every allowance's pools fitting one embedding
+    family;
   - an oversized insertion declining as budget with zero work. Failed first:
     without the size decline it spent 3,999,998 work and still declined.
 - `routing-ledger-conflict`: the committed n4 now matches its saved revisit,
-  where legacy committed y321 against 312.
+  where legacy committed y321 against 312. Its conflict half now uses a synthetic
+  contradicting pin, so it only exercises the solver.
 - An `adoption` worker/main parity mode.
 
 #### Gates and changed acceptance rows

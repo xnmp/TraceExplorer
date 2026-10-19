@@ -5,6 +5,7 @@ import fs from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { adoptionFallback, bandInsertionAllowance, movedRectangle, PRODUCTION_ROUTING_WORK } from '$lib/domain/trace-graph/incremental-adoption';
 import { geometryGate } from '$lib/domain/trace-graph/geometry-gate';
+import { scaledIncrementalBudget } from '$lib/domain/trace-graph/band-incremental';
 import { createDefaultEngine } from '$lib/domain/trace-graph/folder-layout/default-engine';
 import { folderGeometryGate } from '$lib/domain/trace-graph/folder-layout/geometry-gate';
 import { profileLayout } from '$lib/domain/trace-graph/layout-profile';
@@ -75,8 +76,13 @@ describe('adoption contracts (pure)', () => {
     expect(bandInsertionAllowance(largest)!.work).toBe(ceiling);
     expect(bandInsertionAllowance(largest + 1)).toBeNull();
     for (const items of [0, -1, NaN, Infinity, Number.MAX_SAFE_INTEGER]) expect(bandInsertionAllowance(items)).toBeNull();
-    // Pools scale with the allowance, so a reduced allowance still admits a family.
-    expect(bandInsertionAllowance(1)!.pools / bandInsertionAllowance(largest)!.pools).toBeCloseTo(perItem / ceiling);
+    // Every allowance still admits one embedding family: its pools (eight fallback
+    // and second-chance pools plus probes) fit inside the allowance.
+    for (let items = 1; items <= largest; items++) {
+      const { work, pools } = bandInsertionAllowance(items)!, b = scaledIncrementalBudget(pools);
+      expect(8 * (b.fallback + b.second) + b.probes, `${items} items`).toBeLessThanOrEqual(work);
+      expect(b.fallback, `${items} items`).toBeGreaterThan(0);
+    }
   });
   it('maps every constrained conflict to one fallback reason', () => {
     expect(['topology-conflict', 'metric-conflict', 'unsupported-input', 'budget-exhaustion'].map(r => adoptionFallback(r as never)))

@@ -17,8 +17,9 @@ export type AdoptionSite = 'band-insertion';
 
 /** Interactive limits for band insertion, set from measured click latency so the
  * attempt plus any legacy fallback stays near the legacy baseline
- * (docs/routing-consolidation.md). Work units are not uniform in time (about 2-40
- * ns each), and capture and construction grow with the drawing, so the allowance
+ * (docs/routing-consolidation.md). Work units are not uniform in time (measured
+ * p50 about 20 ns, up to about 100 ns each), so this bounds latency by measurement,
+ * not by construction; capture and construction grow with the drawing, so the allowance
  * grows with the band: `perItem` work per band item up to `work`. Every attempt
  * in the evaluation inventory that succeeded at the ceiling needed less than
  * `perItem` per item, while doomed small requests stop early instead of spending
