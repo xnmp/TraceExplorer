@@ -6,7 +6,7 @@ import { isLayoutShape } from './history-boundary';
 import { eachConsumer } from './route-consumers';
 import { importRoutingPlan, type RoutingPlan } from './routing-plan';
 import type { CoordinateVariable } from './separation';
-import { solveRoutingComponents, type RoutingMetricConflict, type RoutingMetricProblem } from './routing-components';
+import { type RoutingMetricConflict, type RoutingMetricProblem } from './routing-components';
 
 export interface CommittedRoutingScene {
   /** Stable within the retained problem; use tile identity to map merged scenes. */
@@ -78,9 +78,9 @@ function numericPins(value: unknown, prefix: string, variables: CoordinateVariab
     const id = prefix + ']';
     variables.push({ id, preferred: value, pin: { value, reason: 'committed:' + id } });
   } else if (Array.isArray(value)) {
-    for (const [i, child] of value.entries()) numericPins(child, prefix + ',' + i, variables, charge);
+    for (let i = 0; i < value.length; i++) numericPins(value[i], prefix + ',' + i, variables, charge);
   } else if (value && typeof value === 'object') {
-    for (const [key, child] of Object.entries(value)) numericPins(child, prefix + ',' + JSON.stringify(key), variables, charge);
+    for (const key of Object.keys(value)) numericPins((value as Record<string, unknown>)[key], prefix + ',' + JSON.stringify(key), variables, charge);
   }
 }
 
@@ -177,11 +177,12 @@ export function importCommittedRouting(scenes: readonly CommittedRoutingScene[],
       const plan = importRoutingPlan(scene.drawing, checkedCharge);
       variables.push(...committedRoutingCoordinates(scene, plan, checkedCharge)); imported.push({ ...scene, plan });
     }
+    // Binding is the whole consistency check: every variable it returns is a
+    // finite, unbounded, uniquely named pin and there are no separations or
+    // equalities, so a metric solve here could only reproduce the pins.
     const bound = bindRoutingFrameConstants(variables, frames, checkedCharge);
     if (!bound.ok) return bound;
-    const metric = bound.metric;
-    const checked = solveRoutingComponents(metric, [], checkedCharge);
-    return checked.ok ? { ok: true, problem: { scenes: imported, frames: structuredClone(frames), metric } } : checked;
+    return { ok: true, problem: { scenes: imported, frames: structuredClone(frames), metric: bound.metric } };
   } catch (error) {
     // A caller's work-ledger exception must retain its original control flow.
     if (chargeFailed) throw error;

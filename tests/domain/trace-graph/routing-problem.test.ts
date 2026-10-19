@@ -140,6 +140,28 @@ describe('committed routing problem', () => {
     for (const invalid of [undefined, { ...d, nodes: null }, { ...d, rows: [{ index: 0, band: 0, top: 40, bottom: 0, keys: ['a'] }] }])
       expect(importCommittedRouting([{ id: 'retained', space: 'folder', drawing: invalid as GraphLayout }])).toMatchObject({ ok: false, conflict: { kind: 'invalid' } });
   });
+  it('imports an already consistent metric: unique finite pins that a solve reproduces', () => {
+    const source = { ...drawing(), routes: [] }, target = structuredClone(source);
+    const frames = [{ id: 'frame', input: routingCoordinate('raw', 'tile', 'a', 'x'), output: routingCoordinate('world', 'tile', 'a', 'x'),
+      steps: [{ operation: 'add' as const, operand: 0, result: 0 }] }];
+    const joined = layoutLayered({ items: [
+      { key: 'a', parents: [], width: 40, height: 40, order: 0 },
+      { key: 'b', parents: [], width: 40, height: 40, order: 1 },
+      { key: 'c', parents: ['a', 'b'], width: 40, height: 40, order: 2 },
+    ], maxWidth: 360 });
+    const cases: [CommittedRoutingScene[], typeof frames][] = [[[scene()], []], [[scene(source, 'raw'), scene(target, 'world')], frames], [[scene(joined)], []]];
+    for (const [scenes, declared] of cases) {
+      const result = importCommittedRouting(scenes, declared);
+      expect(result.ok).toBe(true);
+      if (!result.ok) continue;
+      const { variables } = result.problem.metric;
+      expect(variables.length).toBeGreaterThan(0);
+      expect(new Set(variables.map(v => v.id)).size).toBe(variables.length);
+      for (const v of variables) expect(Number.isFinite(v.pin?.value) && v.bounds === undefined && v.preferred === v.pin!.value).toBe(true);
+      const solved = solveRoutingComponents(result.problem.metric);
+      expect(solved.ok && variables.every(v => solved.positions.get(v.id) === v.pin!.value)).toBe(true);
+    }
+  });
   it('propagates the original work-ledger exhaustion', () => {
     for (const exhausted of [new Error('stop work'), new RangeError('work budget')])
       expect(() => importCommittedRouting([scene()], [], () => { throw exhausted; })).toThrow(exhausted);
