@@ -20,26 +20,25 @@ export type AdoptionSite = 'band-insertion';
  * (docs/routing-consolidation.md). Work units are not uniform in time (measured
  * p50 about 20 ns, up to about 100 ns each), so this bounds latency by measurement,
  * not by construction; capture and construction grow with the drawing, so the allowance
- * grows with the band: `perItem` work per band item up to `work`. Every attempt
- * in the evaluation inventory that succeeded at the ceiling needed less than
- * `perItem` per item, while doomed small requests stop early instead of spending
- * the ceiling. The constructor's local pools scale with the allowance
- * (`poolsPerWork`), so a family still fits it (a family runs only if its pools fit
- * the remaining work). `minimumPerItem` is the cheapest shape's cost (a fan: 47
- * items succeed at 3.87M, 48 exhaust 4M); a band whose minimum exceeds the ceiling
- * declines as budget before spending any work. Coverage beyond these limits stays
- * with legacy as budget fallbacks. */
+ * grows with the band: `perItem` work per band item up to `work`. Doomed small
+ * requests stop early instead of spending the ceiling. The constructor's local
+ * pools scale with the allowance (`poolsPerWork`), so a family still fits it (a
+ * family runs only if its pools fit the remaining work). A band of more than
+ * `maximumItems` declines as budget before spending any work: larger bands can
+ * certify within the ceiling (a 61-item fan does), but their declines added up
+ * to 190 ms per click on the eval tours. Coverage beyond these limits stays with
+ * legacy as budget fallbacks. */
 export const PRODUCTION_ROUTING_WORK = {
-  'band-insertion': { work: 4_000_000, perItem: 250_000, minimumPerItem: 85_000, poolsPerWork: 1 / 32_000_000 },
+  'band-insertion': { work: 6_000_000, perItem: 375_000, maximumItems: 47, poolsPerWork: 1 / 32_000_000 },
 } as const;
 
 export interface InteractiveAllowance { readonly work: number; readonly pools: number }
 
-/** The band insertion allowance for a band of `items` tiles, or null when even the
- * cheapest shape of that size cannot fit the ceiling (an early budget decline). */
+/** The band insertion allowance for a band of `items` tiles, or null above the
+ * interactive size limit (an early budget decline). */
 export function bandInsertionAllowance(items: number): InteractiveAllowance | null {
-  const { work: ceiling, perItem, minimumPerItem, poolsPerWork } = PRODUCTION_ROUTING_WORK['band-insertion'];
-  if (!(items > 0) || minimumPerItem * items > ceiling) return null;
+  const { work: ceiling, perItem, maximumItems, poolsPerWork } = PRODUCTION_ROUTING_WORK['band-insertion'];
+  if (!(items > 0) || items > maximumItems) return null;
   const work = Math.min(ceiling, perItem * items);
   return { work, pools: work * poolsPerWork };
 }
