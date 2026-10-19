@@ -3,7 +3,7 @@
   "id": "xnmp.image-generation",
   "name": "Image Generation",
   "description": "Reusable image generation and editing connections for Tauri Explorer",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "sdkVersion": 3,
   "svelteVersion": "5.56.3",
   "frontend": "frontend/index.js",
