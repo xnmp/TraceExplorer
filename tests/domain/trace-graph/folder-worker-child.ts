@@ -25,10 +25,7 @@ try {
     for (let step = 0; step < 7; step++) {
       const input = worldInput(step > 0, previous, `save-${step}`);
       if (step === 6) (input.open as Map<string, unknown>).delete('s1:root');
-      // Metadata refreshes keep the drawing inline. The arrival (step 1) and closing
-      // another band (step 6) re-place the folder around retained world rectangles:
-      // a bounded constrained search, which dispatch sends to the worker.
-      equal(runtime.inline(input), step !== 1 && step !== 6);
+      equal(runtime.inline(input), true);
       const inline = runtime.engine(structuredClone(input)), id = ++sequence;
       const reply: any = await new Promise((resolve, reject) => {
         worker.onmessage = event => resolve(event.data); worker.onerror = reject;
@@ -112,7 +109,7 @@ try {
       const drawing = (layout: any) => [layout.cells, layout.bands, layout.size, [...layout.graphs].map(([id, g]: any) => [id, g.attached, g.origin])];
       deepStrictEqual(drawing(back), drawing(published));
     }
-    if (adopted < 4) throw new Error(`Constrained publication not exercised: ${adopted}`);
+    if (adopted < 2) throw new Error(`Constrained publication not exercised: ${adopted}`);
   } else if (mode === 'revisits') {
     let revisits = 0;
     for (const fixture of corpus().filter(c => c.nodes.length > 2 && c.nodes.length <= 16).slice(0,16)) {

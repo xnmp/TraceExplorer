@@ -12,12 +12,36 @@ import { createBoundedCache, estimateLayoutBytes } from './folder-layout/bounded
 
 /** Why the constrained path declined and legacy ran instead. */
 export type AdoptionFallback = 'topology' | 'metric' | 'unsupported' | 'budget' | 'contract';
-export type AdoptionSite = 'band-insertion' | 'folder-arrival';
+/** Folder world placement is not adopted: see docs/routing-consolidation.md. */
+export type AdoptionSite = 'band-insertion';
 
-/** Finite production allowances shared by capture, construction, the affected
- * metric solve and admission, per site. Band insertion uses the legacy local
- * pools; the folder world adapter needs the larger automatic pools. */
-export const PRODUCTION_ROUTING_WORK = { 'band-insertion': 128_000_000, 'folder-arrival': 256_000_000 } as const;
+/** Interactive limits for band insertion, set from measured click latency so the
+ * attempt plus any legacy fallback stays near the legacy baseline
+ * (docs/routing-consolidation.md). Work units are not uniform in time (about 2-40
+ * ns each), and capture and construction grow with the drawing, so the allowance
+ * grows with the band: `perItem` work per band item up to `work`. Every attempt
+ * in the evaluation inventory that succeeded at the ceiling needed less than
+ * `perItem` per item, while doomed small requests stop early instead of spending
+ * the ceiling. The constructor's local pools scale with the allowance
+ * (`poolsPerWork`), so a family still fits it (a family runs only if its pools fit
+ * the remaining work). `minimumPerItem` is the cheapest shape's cost (a fan: 45
+ * items succeed at 3.8M, 49 exhaust 4M); a band whose minimum exceeds the ceiling
+ * declines as budget before spending any work. Coverage beyond these limits stays
+ * with legacy as budget fallbacks. */
+export const PRODUCTION_ROUTING_WORK = {
+  'band-insertion': { work: 4_000_000, perItem: 250_000, minimumPerItem: 85_000, poolsPerWork: 1 / 32_000_000 },
+} as const;
+
+export interface InteractiveAllowance { readonly work: number; readonly pools: number }
+
+/** The band insertion allowance for a band of `items` tiles, or null when even the
+ * cheapest shape of that size cannot fit the ceiling (an early budget decline). */
+export function bandInsertionAllowance(items: number): InteractiveAllowance | null {
+  const { work: ceiling, perItem, minimumPerItem, poolsPerWork } = PRODUCTION_ROUTING_WORK['band-insertion'];
+  if (!(items > 0) || minimumPerItem * items > ceiling) return null;
+  const work = Math.min(ceiling, perItem * items);
+  return { work, pools: work * poolsPerWork };
+}
 
 export const adoptionFallback = (reason: IncrementalConflictReason): AdoptionFallback =>
   reason === 'topology-conflict' ? 'topology' : reason === 'metric-conflict' ? 'metric'

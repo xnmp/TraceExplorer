@@ -136,6 +136,7 @@ export interface IncrementalWorkBudget {
   readonly automaticPools?: Readonly<IncrementalBudget>;
 }
 export const incrementalBudget = (): IncrementalBudget => ({ fallback: FALLBACK_WORK, second: SECOND_CHANCE_WORK, probes: PROBE_WORK });
+export const scaledIncrementalBudget = (k: number): IncrementalBudget => ({ fallback: Math.round(k * FALLBACK_WORK), second: Math.round(k * SECOND_CHANCE_WORK), probes: Math.round(k * PROBE_WORK) });
 /** Finite replacement allowance. Local pools remain bounded independently of
  * the shared capture/construction/metric/admission ledger. */
 export const AUTOMATIC_ROUTING_WORK = 1_024_000_000;

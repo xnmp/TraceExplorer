@@ -19,4 +19,4 @@ it('keeps a clicked tile when pinned connector ink fits but comfortable allocati
     }
     previous = next;
   }
-}, 30_000); // A budget fallback spends the constrained search's finite allowance before legacy runs.
+});

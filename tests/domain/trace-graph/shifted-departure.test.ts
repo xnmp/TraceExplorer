@@ -21,4 +21,4 @@ it('keeps retained tiles pinned when an arrival shifts a connected tile below it
   expect(arrived.placed.nodes.has('placeholder')).toBe(true);
   expectArrivalPinned(selected.placed, arrived.placed, 'selected n16 arrival');
   expect(geometryGate(arrived.placed, request.items, request.band!.key, request.maxWidth)).toBeNull();
-}, 30_000); // A budget fallback spends the constrained search's finite allowance before legacy runs.
+});

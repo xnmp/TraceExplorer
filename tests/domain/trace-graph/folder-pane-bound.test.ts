@@ -49,4 +49,4 @@ it('does not add band padding to ordinary world-coordinate cells during a merge 
   expect(after.size.width).toBeLessThanOrEqual(200);
   expect(folderGeometryGate(after)).toBeNull();
   expectFolderArrivalPinned(before, after);
-}, 30_000); // A budget fallback spends the constrained search's finite allowance before legacy runs.
+});

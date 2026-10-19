@@ -24,6 +24,7 @@ it('publishes the two-chains component merge after opening both stacks and click
   let previous: FolderLayout | null = null;
   for (const [step, prepare] of fixture.steps.entries()) {
     const { input, sources } = prepare(previous);
+    expect(runtime.inline(input)).toBe(true);
     const layout = runtime.engine(input);
     expect(folderGeometryGate(layout)).toBeNull();
     const scene = buildFolderScene({ scope: { paneId: 'merge', directory: '/pictures', generation: 1 },

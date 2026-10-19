@@ -39,4 +39,4 @@ it.each(Array.from({ length: 20 }, (_, index) => index + 1))('preserves every re
     }
     previous = next;
   }
-}, 30_000); // A budget fallback spends the constrained search's finite allowance before legacy runs.
+});

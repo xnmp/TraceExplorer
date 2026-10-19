@@ -45,7 +45,7 @@ it.each([
   const nextRects = rectangles(next);
   expectFolderArrivalPinned(after, next);
   expect(folderGeometryGate(next)).toBeNull();
-}, 30_000); // A budget fallback spends the constrained search's finite allowance before legacy runs.
+});
 
 it('appends new ordinary files without repacking the retained folder', () => {
   const engine = createDefaultEngine(), tile = tileMetrics(96);

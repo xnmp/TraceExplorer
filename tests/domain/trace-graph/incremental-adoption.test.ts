@@ -3,7 +3,8 @@
  * through the default engine (publication), the next click and a revisit. */
 import fs from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import { adoptionFallback, movedRectangle } from '$lib/domain/trace-graph/incremental-adoption';
+import { adoptionFallback, bandInsertionAllowance, movedRectangle, PRODUCTION_ROUTING_WORK } from '$lib/domain/trace-graph/incremental-adoption';
+import { geometryGate } from '$lib/domain/trace-graph/geometry-gate';
 import { createDefaultEngine } from '$lib/domain/trace-graph/folder-layout/default-engine';
 import { folderGeometryGate } from '$lib/domain/trace-graph/folder-layout/geometry-gate';
 import { profileLayout } from '$lib/domain/trace-graph/layout-profile';
@@ -66,6 +67,17 @@ describe('adoption contracts (pure)', () => {
     expect(movedRectangle(before, new Map([['a', r(NaN)], ['b', r(20)]]), ['a'])).toBe('a');
     expect(movedRectangle(new Map(), new Map(), [])).toBeNull();
   });
+  it('grows the interactive allowance with the band up to its ceiling and declines doomed sizes', () => {
+    const { work: ceiling, perItem, minimumPerItem } = PRODUCTION_ROUTING_WORK['band-insertion'];
+    const largest = Math.floor(ceiling / minimumPerItem);
+    expect(bandInsertionAllowance(1)!.work).toBe(perItem);
+    expect(bandInsertionAllowance(2)!.work).toBe(2 * perItem);
+    expect(bandInsertionAllowance(largest)!.work).toBe(ceiling);
+    expect(bandInsertionAllowance(largest + 1)).toBeNull();
+    for (const items of [0, -1, NaN, Infinity, Number.MAX_SAFE_INTEGER]) expect(bandInsertionAllowance(items)).toBeNull();
+    // Pools scale with the allowance, so a reduced allowance still admits a family.
+    expect(bandInsertionAllowance(1)!.pools / bandInsertionAllowance(largest)!.pools).toBeCloseTo(perItem / ceiling);
+  });
   it('maps every constrained conflict to one fallback reason', () => {
     expect(['topology-conflict', 'metric-conflict', 'unsupported-input', 'budget-exhaustion'].map(r => adoptionFallback(r as never)))
       .toEqual(['topology', 'metric', 'unsupported', 'budget']);
@@ -74,8 +86,9 @@ describe('adoption contracts (pure)', () => {
 
 describe('band insertion through publication', () => {
   // Legacy insertion failed this click and published an anchored repack that moved
-  // retained tiles; the constrained path keeps every retained rectangle.
-  it.each([['random-bushy-40-7603', 2], ['random-bushy-100-8201', 2]] as const)('%s keeps every retained tile through the first %i clicks', (id, steps) => {
+  // retained tiles; the constrained path keeps every retained rectangle within the
+  // interactive allowance.
+  it.each([['random-bushy-40-7603', 2]] as const)('%s keeps every retained tile through the first %i clicks', (id, steps) => {
     const c = { ...corpus().find(f => f.id === id)!, full: false }, visited = new Set<string>();
     let focus: string | null = null, previous: Optimized | undefined, published = 0;
     for (let step = 0; step <= steps; step++) {
@@ -95,6 +108,21 @@ describe('band insertion through publication', () => {
     }
     expect(published).toBeGreaterThan(0);
   });
+
+  // A band above the interactive size limit declines as budget before any capture
+  // or search work (without the limit this attempt spends the whole allowance and
+  // still declines), and legacy publishes a gated drawing.
+  it('declines an oversized insertion as budget without spending work', () => {
+    const fan = corpus().find(f => f.id === 'fan-80')!;
+    const band = (n: number) => requestFor({ ...fan, nodes: fan.nodes.slice(0, n), full: false }, null, 400, 48);
+    const opened = optimizedBand(band(48), {}), req = band(49);
+    expect(bandInsertionAllowance(req.items.length)).toBeNull();
+    expect(req.items.filter(n => !opened.placed.nodes.has(n.key))).toHaveLength(1);
+    const { result: next, count } = counters(() => optimizedBand(req, { previous: opened }));
+    expect([count('adoption:band-insertion:attempt'), count('adoption:band-insertion:fallback:budget'),
+      count('adoption:band-insertion:work'), count('adoption:band-insertion:published')]).toEqual([1, 1, 0, 0]);
+    expect(geometryGate(next.placed, req.items, req.band!.key, req.maxWidth)).toBeNull();
+  });
 });
 
 describe('folder arrivals through publication', () => {
@@ -105,15 +133,17 @@ describe('folder arrivals through publication', () => {
       ? { ...stack, anchor: key, expanded: new Map([...stack.expanded, [key, false]]) } : stack])) };
   };
 
+  // Band insertions publish the constrained drawing. Folder world placement stays
+  // legacy, so hint growth and shrink publish legacy worlds under the same contracts.
   it.each([
-    ['world-hint-1', 'hint growth', 'folder-arrival'],
-    ['world-hint-2', 'hint shrink', 'folder-arrival'],
+    ['world-hint-1', 'hint growth', null],
+    ['world-hint-2', 'hint shrink', null],
     ['shrink-1', 'shrink-space reuse', 'band-insertion'],
     ['early-descent-1', 'a single 16px descent', 'band-insertion'],
-  ] as const)('%s (%s) publishes the constrained drawing, then the next click and revisit keep it', (name, _label, site) => {
+  ] as const)('%s (%s) publishes a pinned drawing, then the next click and revisit keep it', (name, _label, site) => {
     const input = fixture(name), engine = createDefaultEngine();
     const { result: out, count } = counters(() => engine(input));
-    expect(count(`adoption:${site}:published`)).toBeGreaterThan(0);
+    if (site) expect(count(`adoption:${site}:published`)).toBeGreaterThan(0);
     expect(folderGeometryGate(out)).toBeNull();
     expectWorldHintPinned(input.previous!, out);
     const members = [...input.open.values()].flatMap(stack => stack.members);
@@ -134,24 +164,14 @@ describe('folder arrivals through publication', () => {
     expect(worldRects(back)).toEqual(worldRects(out));
   });
 
-  // Legacy placement declines malformed packing metadata; the constrained path
-  // must decline it too rather than throw out of the layout request.
-  it('declines a snapshot with malformed packing metadata and publishes the legacy result', () => {
-    const input = fixture('world-hint-1');
-    const malformed = { ...input, previous: { ...input.previous!, bounds: undefined as never } };
-    const { result: out, count } = counters(() => createDefaultEngine()(malformed));
-    expect(folderGeometryGate(out)).toBeNull();
-    expect([count('adoption:folder-arrival:attempt'), count('adoption:folder-arrival:fallback:unsupported')]).toEqual([1, 1]);
-  });
-
-  // The constrained search spends up to a finite allowance before any legacy
-  // fallback, so dispatch sends it to the worker; the exact revisit stays inline.
-  it('dispatches constrained searches to the worker and keeps exact revisits inline', () => {
+  // The bounded attempt keeps 5bbcb77's dispatch: a small arrival, its next click
+  // and the exact revisit all stay inline.
+  it('keeps small arrivals, clicks and exact revisits inline', () => {
     const input = fixture('world-hint-1'), runtime = createFolderLayoutRuntime();
-    expect(runtime.inline(input)).toBe(false);
+    expect(runtime.inline(input)).toBe(true);
     const out = runtime.engine(input);
     const closing = close(input, out, 's0:p');
-    expect(runtime.inline(closing)).toBe(false);
+    expect(runtime.inline(closing)).toBe(true);
     const clicked = runtime.engine(closing);
     const revisit = { ...input, previous: clicked };
     expect(runtime.inline(revisit)).toBe(true);
@@ -169,13 +189,13 @@ describe('folder arrivals through publication', () => {
       const { result: next, count } = counters(() => engine(folderInput(folder, { ...options, open: [...folder.stacks.keys()], previous })));
       expect(folderGeometryGate(next), `arrival ${n}`).toBeNull();
       if (previous) expectFolderArrivalPinned(previous, next);
-      adopted += count('adoption:folder-arrival:published');
+      adopted += count('adoption:band-insertion:published');
       previous = next;
     }
     expect(adopted).toBeGreaterThan(0);
   });
 
-  it.each([true, false])('keeps merged tiles by identity through the constrained world path (absorbed open: %s)', absorbedOpen => {
+  it.each([true, false])('keeps merged tiles by identity through the world placement (absorbed open: %s)', absorbedOpen => {
     const folder = makeFolder({ stacks: [[corpusNode('root'), corpusNode('a', ['root'], 1)], [corpusNode('root', [], 2), corpusNode('b', ['root'], 3)]] });
     const engine = createDefaultEngine();
     const initial = folderInput(folder, { open: absorbedOpen ? [...folder.stacks.keys()] : ['s0:root'], width: 640 });
@@ -183,8 +203,7 @@ describe('folder arrivals through publication', () => {
     const graph = projectReferenceBadges(projectDag([...[...folder.stacks.values()].flatMap(s => s.nodes), corpusNode('merged', ['s0:a', 's1:b'], 4)]));
     const request = { ...initial, previous: before, items: initial.items.filter(i => i.id !== 's1:root'),
       open: new Map([['s0:root', { id: 's0:root', graph, members: graph.dag.order, anchor: null, expanded: new Map(graph.dag.order.map(k => [k, true])) }]]) };
-    const { result: after, count } = counters(() => engine(request));
-    expect(count('adoption:folder-arrival:published')).toBe(1);
+    const after = engine(request);
     expect(folderGeometryGate(after)).toBeNull();
     expectFolderArrivalPinned(before, after);
     expect([...after.graphs.get('s0:root')!.attached.nodes.keys()].sort()).toEqual(['merged', 's0:a', 's0:root', 's1:b', 's1:root'].sort());

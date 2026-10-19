@@ -2,7 +2,6 @@ import './svelte-host';
 import { expect, it } from 'vitest';
 import { createSceneController } from '$lib/plugins/trace/view/scene-controller.svelte';
 import { createFolderLayoutRuntime } from '$lib/plugins/trace/view/folder-layout-runtime';
-import { createDefaultEngine } from '$lib/domain/trace-graph/folder-layout/default-engine';
 import { installSceneInstrumentation } from '$lib/plugins/trace/view/scene-instrumentation';
 import type { SceneIntent } from '$lib/plugins/trace/view/scene-inputs';
 import type { Publication } from '$lib/plugins/trace/view/presentation';
@@ -12,11 +11,8 @@ import { fallbackGridMetrics } from '$lib/domain/trace-graph/folder-grid';
 import { tileMetrics } from '$lib/domain/trace-graph/metrics';
 import { makeFolder, corpusNode as node, entry } from '../../domain/trace-graph/folder-layout-fixtures';
 
-it('publishes a generated batch, four separate saves and a discard without moving its cover or blinking a collapsed layout', async () => {
+it('publishes a generated batch, four separate saves and a discard inline without moving its cover or blinking a collapsed layout', async () => {
   const runtime = createFolderLayoutRuntime(), publications: Publication[] = [], failures: string[] = [];
-  // Arrivals run a constrained search, which dispatch sends off the main thread:
-  // a separate engine over structured clones stands in for the layout worker.
-  const worker = createDefaultEngine(), dispatched: boolean[] = [];
   const computed: number[] = [];
   const data = {
     index: null as FolderIndex | null,
@@ -25,10 +21,9 @@ it('publishes a generated batch, four separate saves and a discard without movin
     acquireComponents: () => { throw new Error('Complete fixture data must be available'); },
   };
   const controller = createSceneController({
-    paneId: 'batch', data, inline: input => { const inline = runtime.inline(input); dispatched.push(!inline); return inline; },
+    paneId: 'batch', data, inline: runtime.inline,
     engine: input => { const result = runtime.engine(input); computed.push(result.columns); return result; },
-    runLayout: async input => { const result = structuredClone(worker(structuredClone(input))); computed.push(result.columns); return result; },
-    remember: runtime.remember,
+    runLayout: async () => { throw new Error('This sequence must run inline'); },
     tick: () => Promise.resolve(),
   });
   const restore = installSceneInstrumentation({
@@ -86,7 +81,6 @@ it('publishes a generated batch, four separate saves and a discard without movin
     const discarded = await offer(true, 3, true);
     expect(discarded.scene.layout.graphs.get('s0:root')!.attached.nodes.has('s0:out3')).toBe(false);
     expect(publications.length).toBeGreaterThanOrEqual(7);
-    expect(dispatched.some(Boolean)).toBe(true);
     expect(computed.every(columns => columns === initial.scene.layout.columns)).toBe(true);
     for (const publication of publications) {
       const layout = publication.scene.layout;

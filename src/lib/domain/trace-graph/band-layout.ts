@@ -13,8 +13,8 @@ import { spacingFor, STACK_STEM_ROOM } from "./metrics";
 import { bandWidthBudget, columnsFor, partitions, buildShelves, validate } from "./band-shelves";
 import { attachSingleBand, attachPackedBand, localBandPlacement, bandExtent, withBandBounds, withPaneBandBounds, singleBandSkeleton } from "./band-geometry";
 import { measure, validateLayout, cost, routePlan, sharedLaneLength, DEFAULT_WEIGHTS, type Measures, type Weights } from "./layout-quality";
-import { constrainedBandInsertion, incrementalBudget, incrementalTree, inReach, usableRetainedRoute } from "./band-incremental";
-import { adoptionFallback, adoptOnce, movedRectangle, PRODUCTION_ROUTING_WORK, recordPublication } from "./incremental-adoption";
+import { constrainedBandInsertion, scaledIncrementalBudget, incrementalBudget, incrementalTree, inReach, usableRetainedRoute } from "./band-incremental";
+import { adoptionFallback, adoptOnce, bandInsertionAllowance, movedRectangle, recordAdoption, recordPublication } from "./incremental-adoption";
 import { geometrySignature, layoutSignature } from "./layout-signature";
 import { forEachPathNumber, mapPathNumbers, pathNumbers } from "./path-data";
 import { extentCost, optimisticCost, rectangleCost } from "./layout-cost-bound";
@@ -121,9 +121,11 @@ function anchorKeys(request: LayoutRequest, previous: GraphLayout): readonly str
  */
 function constrainedInsertion(request: LayoutRequest, previous: GraphLayout): GraphLayout | null {
   if (request.items.every(n => previous.nodes.has(n.key))) return null;
-  const key = JSON.stringify(['band-insertion', PRODUCTION_ROUTING_WORK['band-insertion'], layoutSignature(request), geometrySignature(previous)]);
+  const allowance = bandInsertionAllowance(request.items.length);
+  if (!allowance) { recordAdoption('band-insertion', 'budget'); return null; }
+  const key = JSON.stringify(['band-insertion', layoutSignature(request), geometrySignature(previous)]);
   return adoptOnce('band-insertion', key, () => {
-    const attempt = constrainedBandInsertion(request, previous, incrementalBudget, PRODUCTION_ROUTING_WORK['band-insertion']);
+    const attempt = constrainedBandInsertion(request, previous, () => scaledIncrementalBudget(allowance.pools), allowance.work);
     if (!attempt.ok) return { drawing: null, outcome: adoptionFallback(attempt.conflict.reason), work: attempt.work };
     const retained = request.items.filter(n => previous.nodes.has(n.key)).map(n => n.key);
     return movedRectangle(previous.nodes, attachSingleBand(attempt.drawing, request).nodes, retained) !== null

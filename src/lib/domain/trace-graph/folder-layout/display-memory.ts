@@ -83,10 +83,6 @@ export function validDisplayMemory(value: unknown): value is DisplayMemory {
 const compatible = (memory: DisplayMemory | undefined, identity: Identity) =>
   !identity.changed && validDisplayMemory(memory) && memory?.folder === identity.folder && memory.contents === identity.contents;
 
-/** Whether `recallDisplay` would find an entry, without decoding it. */
-export const holdsDisplay = (memory: DisplayMemory | undefined, identity: Identity): boolean =>
-  compatible(memory, identity) && memory!.entries.some(([key]) => key === identity.key);
-
 export function recallDisplay(memory: DisplayMemory | undefined, identity: Identity): FolderLayout | undefined {
   const endStage = layoutStage('restore-decode'); try {
 
