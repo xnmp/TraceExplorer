@@ -1648,14 +1648,20 @@ function freePortLanes(request: LayoutRequest, previous: GraphLayout, budget: In
 /** Repairable drafts defer contact admission to connector repair and independent certification. */
 type InsertionPolicy = "stable" | "constrained" | "repairable";
 
+/** Legacy repair stages a placement used: T23 (freeBlockedPorts) and T24 (freePortLanes). */
+type PortRepair = 'T23' | 'T24';
+const countRepairs = (repairs: readonly PortRepair[]) => { for (const stage of repairs) countLayoutWork(`legacy:${stage}`); };
+
 function insertWithPortRepair(request: LayoutRequest, previous: GraphLayout, budget: IncrementalBudget, paneEdges?: Scene["paneEdges"], policy: InsertionPolicy = "stable",
-  orderCharge?: (work: number, reason?: string) => void): GraphLayout | null {
+  orderCharge?: (work: number, reason?: string) => void): { readonly placed: GraphLayout; readonly repairs: readonly PortRepair[] } | null {
   countLayoutWork("pinned-search");
   const repaired = freeBlockedPorts(request, previous, budget);
+  const freed: PortRepair[] = repaired === previous ? [] : ['T23'];
   const placed = insertTree(request, repaired, budget, paneEdges, policy, undefined, undefined, undefined, undefined, orderCharge);
-  if (placed) return placed;
+  if (placed) return { placed, repairs: freed };
   const shifted = freePortLanes(request, repaired, budget);
-  return shifted === repaired ? null : insertTree(request, shifted, budget, paneEdges, policy, undefined, undefined, undefined, undefined, orderCharge);
+  const retried = shifted === repaired ? null : insertTree(request, shifted, budget, paneEdges, policy, undefined, undefined, undefined, undefined, orderCharge);
+  return retried && { placed: retried, repairs: [...freed, 'T24'] };
 }
 
 /** Strict legacy constructors provide a discrete embedding only. Port/contact
@@ -1740,7 +1746,7 @@ export function constrainedBandInsertion(request: LayoutRequest, previous: Graph
   return { ...framed, work: framed.work + strict.work };
 }
 
-interface InsertionMemo { readonly layout: GraphLayout | null; readonly remaining: IncrementalBudget }
+interface InsertionMemo { readonly layout: GraphLayout | null; readonly remaining: IncrementalBudget; readonly repairs: readonly PortRepair[] }
 const insertionMemo = createBoundedCache<InsertionMemo>(entry => 64 + (entry.layout ? estimateLayoutBytes(entry.layout) : 0));
 
 /** Content keys admit worker clones too. Cached objects stay private; budget effects are replayed
@@ -1755,30 +1761,37 @@ export function incrementalTree(request: LayoutRequest, previous: GraphLayout, b
     if (known) {
       Object.assign(budget, known.remaining);
       countLayoutWork('pinned-cache-hit');
+      countRepairs(known.repairs);
       return structuredClone(known.layout);
     }
-    const result = buildIncrementalTree(request, previous, budget, policy);
-    insertionMemo.set(memoKey, { layout: structuredClone(result), remaining: { ...budget } });
-    return result;
+    const { layout, repairs } = buildIncrementalTree(request, previous, budget, policy);
+    countRepairs(repairs);
+    insertionMemo.set(memoKey, { layout: structuredClone(layout), remaining: { ...budget }, repairs });
+    return layout;
   } finally { endStage(); }
 }
 
-function buildIncrementalTree(request: LayoutRequest, previous: GraphLayout, budget: IncrementalBudget, policy: InsertionPolicy): GraphLayout | null {
-  const placed = insertWithPortRepair(request, previous, budget, undefined, policy);
-  if (!placed) return null;
+function buildIncrementalTree(request: LayoutRequest, previous: GraphLayout, budget: IncrementalBudget, policy: InsertionPolicy):
+  { readonly layout: GraphLayout | null; readonly repairs: readonly PortRepair[] } {
+  const inserted = insertWithPortRepair(request, previous, budget, undefined, policy);
+  if (!inserted) return { layout: null, repairs: [] };
+  const { placed, repairs } = inserted;
   const key = request.band!.key;
   const extent = pinnedBandExtent(placed, key);
-  if (!extent) return null;
-  return { ...placed, bandBounds: { left: 0, width: extent.left + extent.width,
-    top: placed.nodes.get(key)!.height + (request.history?.attachment?.placement.stemRoom ?? STACK_STEM_ROOM) }, preferredX: 0 };
+  if (!extent) return { layout: null, repairs: [] };
+  return { layout: { ...placed, bandBounds: { left: 0, width: extent.left + extent.width,
+    top: placed.nodes.get(key)!.height + (request.history?.attachment?.placement.stemRoom ?? STACK_STEM_ROOM) }, preferredX: 0 }, repairs };
 }
 
 /** World coordinates already include packing. No child-band allocation padding applies. */
 export function incrementalWorld(request: LayoutRequest, previous: GraphLayout, budget: IncrementalBudget = incrementalBudget(), paneLeft = 0): GraphLayout | null {
-  const placed = insertWithPortRepair(request, previous, budget, { left: paneLeft, right: request.maxWidth });
-  if (!placed) return null;
+  const inserted = insertWithPortRepair(request, previous, budget, { left: paneLeft, right: request.maxWidth });
+  if (!inserted) return null;
+  const { placed } = inserted;
   const extent = bandExtent({ ...placed, bandBounds: undefined }, request.band!.key, 0);
-  return extent.left < 0 || extent.left + extent.width > request.maxWidth ? null : { ...placed, bandBounds: undefined };
+  if (extent.left < 0 || extent.left + extent.width > request.maxWidth) return null;
+  countRepairs(inserted.repairs);
+  return { ...placed, bandBounds: undefined };
 }
 
 interface ConsumedDeparture { readonly source:string; readonly side:'bottom'|'right'; readonly point:Point }

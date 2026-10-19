@@ -713,6 +713,7 @@ function layoutBandCandidates(input: LayoutRequest, options: BandOptions): Graph
         if (!alternative) continue;
         const candidate = prepare({ name: "incremental-tree", layout: alternative });
         if (candidate.holds) {
+          countLayoutWork(`legacy:T25:${policy}`);
           prepared.push(candidate);
           consider(candidate);
         }

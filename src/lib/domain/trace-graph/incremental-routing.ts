@@ -6,8 +6,8 @@ import { geometryGate } from './geometry-gate';
 import { isLayoutShape } from './history-boundary';
 import { filterRouteConsumers } from './route-consumers';
 import { pathCommands, type Point } from './path-sampling';
-import { segments } from './layout-quality';
-import { berthsOf, routeEnds, TILE_GRAZE } from './route-contacts';
+import { segments, type Segment } from './layout-quality';
+import { berthsOf, routeEnds, TILE_GRAZE, type Berth } from './route-contacts';
 import { LANE_SEPARATION } from './metrics';
 import { chargeRoutingSnapshot, importCommittedRouting, retainedRoutingConflict, type CommittedRoutingProblem } from './routing-problem';
 import { solveRoutingComponents } from './routing-components';
@@ -291,6 +291,21 @@ export function solveIncrementalTopology(request: LayoutRequest, seed: Increment
         constraints(forward ? left : right, forward ? right : left, 0, 'run-direction');
       }
     }
+    // Each foreign route's segments, ends and berths depend only on the topology,
+    // never on the track being separated: parse each once, on first need.
+    const parsed = new Map<PlacedRoute, { readonly ss: readonly Segment[]; readonly berths: readonly Berth[] }>();
+    const foreign = (r: PlacedRoute) => {
+      let known = parsed.get(r);
+      if (!known) {
+        search.charge(8 * r.path.length + 1, 'foreign native parsing');
+        const ss = segments(r.path);
+        known = { ss, berths: berthsOf(ss, routeEnds(r, ss, topology.nodes, topology.junctions)) };
+        parsed.set(r, known);
+      }
+      return known;
+    };
+    search.charge(models.length + 1, 'free route model index');
+    const modelOf = new Map(models.map(m => [m.route.id, m]));
     // Choose an empty tile corridor for each free segment. Its longitudinal span
     // remains part of the topology; the final independent gate checks all paint.
     for (const t of tracks) {
@@ -310,13 +325,12 @@ export function solveIncrementalTopology(request: LayoutRequest, seed: Increment
       }
       for (const r of topology.routes) {
         if (sameSource(r, t.route, search.charge)) continue;
-        search.charge(8 * r.path.length + models.length + 1, 'foreign native parsing');
-        const ss = segments(r.path), ends = routeEnds(r, ss, topology.nodes, topology.junctions);
+        const { ss, berths } = foreign(r);
         search.charge(ss.length + 1, 'foreign corridor');
         for (const [i, [a, b]] of ss.entries()) {
           if (a[t.axis] !== b[t.axis] || Math.min(a[along], b[along]) >= hi || Math.max(a[along], b[along]) <= lo) continue;
-          search.charge(models.length + 1, 'foreign route model lookup');
-          const foreignModel = models.find(m => m.route.id === r.id);
+          search.charge(1, 'foreign route model lookup');
+          const foreignModel = modelOf.get(r.id);
           search.charge((foreignModel?.tracks.length ?? 0) + 1, 'foreign route track lookup');
           const other = foreignModel?.tracks.find(u => u.axis === t.axis && u.value === a[t.axis]
             && Math.min(u.a[along], u.b[along]) <= Math.min(a[along], b[along]) && Math.max(u.a[along], u.b[along]) >= Math.max(a[along], b[along]));
@@ -325,14 +339,15 @@ export function solveIncrementalTopology(request: LayoutRequest, seed: Increment
           const forward = t.value < a[t.axis] || t.value === a[t.axis] && t.id < id;
           constraints(forward ? t.id : id, forward ? id : t.id, LANE_SEPARATION, 'parallel-tracks');
         }
-        for (const [i, berth] of berthsOf(ss, ends).entries()) {
+        search.charge(berths.length + 1, 'foreign berths');
+        for (const [i, berth] of berths.entries()) {
           if (berth[along] < lo || berth[along] > hi) continue;
           // Intentional convergence belongs to the native meeting model; moving
           // an internal track cannot invent another junction input.
           if ([r.from, r.to].some(e => e.kind === 'junction' && [t.route.from, t.route.to].some(f => f.kind === e.kind && f.id === e.id))) continue;
           if (Math.abs(berth[t.axis] - t.value) >= berth.radius) continue;
-          search.charge(models.length + 1, 'foreign berth model lookup');
-          const owner = models.find(m => m.route.id === r.id);
+          search.charge(1, 'foreign berth model lookup');
+          const owner = modelOf.get(r.id);
           search.charge((owner?.points.length ?? 0) + 1, 'foreign berth point lookup');
           const at = owner?.points.findIndex(p => p.x === berth.x && p.y === berth.y) ?? -1;
           const center = owner && at >= 0 ? coordinate(owner, at, t.axis)

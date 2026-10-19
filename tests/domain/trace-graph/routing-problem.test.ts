@@ -40,6 +40,34 @@ describe('committed routing problem', () => {
     }
     expect(p.scenes[0].drawing.routes[0].path).toBe(drawing().routes[0].path);
   });
+  it('names every captured coordinate exactly as routingCoordinate does, whatever its keys contain', () => {
+    const keys = ['plain', 'quo"te', 'back\\slash', '12', 'line\u2028sep', 'ünï', ''];
+    const nodes = new Map(keys.map((key, i) => [key, { key, x: 10 * i, y: 50, width: 8, height: 8, band: 1, row: 1 }]));
+    const value: GraphLayout = { orientation: 'down', width: 200, height: 100, rows: [{ band: 1, index: 2, top: 50, bottom: 58, keys: keys }],
+      readingOrder: new Map(), nodes, junctions: new Map(), routes: [] };
+    for (const sceneId of ['retained', 'sc"ene', '7']) {
+      const ids = new Set(committed([scene(value, sceneId)]).metric.variables.map(v => v.id));
+      for (const [i, key] of keys.entries()) for (const [axis, at] of [['x', 10 * i], ['y', 50]] as const) {
+        const id = routingCoordinate(sceneId, 'tile', key, axis);
+        expect(ids.has(id), id).toBe(true);
+        expect(committed([scene(value, sceneId)]).metric.variables.find(v => v.id === id)?.pin?.value).toBe(at);
+      }
+      expect(ids.has(routingCoordinate(sceneId, 'row', 1, 2, 'top'))).toBe(true);
+      expect([...ids].every(id => { const parsed = JSON.parse(id); return parsed[0] === 'scene' && parsed[1] === sceneId; })).toBe(true);
+    }
+  });
+
+  it('detects a moved retained tile whatever its scene id and key contain', () => {
+    const keys = ['quo"te', 'back\\slash'];
+    const make = (dx: number): GraphLayout => ({ orientation: 'down', width: 200, height: 100, rows: [], readingOrder: new Map(),
+      nodes: new Map(keys.map((key, i) => [key, { key, x: 10 * i + (i ? dx : 0), y: 50, width: 8, height: 8, band: 1, row: 1 }])), junctions: new Map(), routes: [] });
+    for (const sceneId of ['sc"ene', 'x","tile']) {
+      const p = committed([scene(make(0), sceneId)]);
+      expect(retainedRoutingConflict(p, [scene(make(0), sceneId)])).toBeNull();
+      expect(retainedRoutingConflict(p, [scene(make(1), sceneId)])?.variable).toBe(routingCoordinate(sceneId, 'tile', keys[1], 'x'));
+    }
+  });
+
   it('returns equality conflict if a proposed solve tries to move a retained track', () => {
     const p = committed(), id = routingCoordinate('retained', 'path', 'a-b', 'native', 1, 1, 'x');
     expect(solveRoutingComponents({ ...p.metric, equalities: [{ id: 'candidate-track', variable: id, value: 21 }] }))
