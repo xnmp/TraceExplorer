@@ -11,8 +11,7 @@ permissions:
 jobs:
   package:
     name: Both plugins (${{ matrix.target }})
-    # The unit suite takes 31-36 min on most runners and over 43 min on macos-15-intel.
-    timeout-minutes: 90
+    timeout-minutes: 45
     defaults:
       run:
         shell: bash
@@ -51,7 +50,8 @@ jobs:
             crates/image-generation-contract
       - run: bun install --frozen-lockfile
       - run: bun run check
-      - run: bun run test
+      # The click-stability corpus sweep is pure TypeScript and takes ~30 min, so it runs once, in its own Linux job below.
+      - run: bun run test --exclude tests/domain/trace-graph/click-stability.test.ts
       - name: Provider frontend type check
         run: bunx svelte-check --tsconfig plugins/image-generation/frontend/check.tsconfig.json
       - name: Provider frontend CAS and lifetime tests
@@ -98,6 +98,17 @@ jobs:
           name: SharedAI-plugins-${{ matrix.target }}
           path: package/*
           if-no-files-found: error
+
+  click-stability:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: '1.3.8'
+      - run: bun install --frozen-lockfile
+      - run: bunx vitest run tests/domain/trace-graph/click-stability.test.ts
 
   browser:
     runs-on: ubuntu-22.04
