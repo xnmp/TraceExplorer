@@ -1830,13 +1830,245 @@ fbdfd83:
 
 #### What remains of slice 4
 
-- **Retained-track port repair in the metric.** This is the move above. It
-  covers the largest miss class (T24) and is a prerequisite for deleting T24
-  and T25.
-- **Pool sizing.** Smaller up-front pool reservations certify up to 21 more
-  attempts. Three production declines need only a different pool size within
-  5M of real work. Granting pools without reserving them makes every decline
-  spend its allowance, so this needs a way to predict a decline early.
+- **Retained-track port repair in the metric.** Done; see "Retained-track port
+  repair" below. It covers every API-allowance miss of at most 47 items where
+  legacy's own insertion certifies without contact repair. It changes no
+  production outcome, so it unlocks no deletion by itself.
+- **Pool sizing.** This is now the main production blocker for T24. Eight of
+  the eleven declined attempts that reach T24 certify at 6M through the strict
+  capture, with no repair at all, once pools are 1/48M of the allowance rather
+  than 1/32M. Granting pools without reserving them makes every decline spend
+  its allowance, so this needs a way to predict a decline early.
 - **The anchored-repack and T25 ladder call sites** never get a constrained
-  attempt. Five adopted requests still reach T24 or T28 through them.
+  attempt. Adopted requests still reach T24 or T28 through them.
+- **Contact deferral (T25, T28).** The remaining API misses that legacy
+  certifies need a deferred contact repaired afterwards. They are not port
+  cases.
 - **Deletion.** No stage meets the deletion rule.
+
+### Retained-track port repair
+
+This pass adds the T24 counterpart inside the constrained metric. It covers
+three more tour inputs at the API allowance, loses none, and leaves every
+production output and latency group unchanged. No stage is deleted.
+
+#### The move
+
+A newly active source port is the bottom or right port of a retained parent of
+a new item; the band cover departs only through its bottom. Before
+construction, in the fragment (framed) capture only:
+
+1. `blockedSourcePorts` lists the newly active ports that a route of another
+   source passes within `PORT_BERTH`.
+2. `clearIncrementalPorts` runs the same affected solve as the final metric
+   (`solveAffectedTracks`), over the retained drawing, with one extra family of
+   hard separations. Each free retained core within a blocked port's berth must
+   sit at least `PORT_BERTH` from the port centre. Which side it takes is a
+   corridor choice, current side first.
+3. The solve moves those cores and whatever their separations push, in the
+   drawn order. Parallel tracks keep their order, unlike legacy T24, which can
+   carry a run past a parallel neighbour.
+4. If a port's separation conflicts with constants, the metric witness names
+   that port's centre pin. That port stays blocked and the others are cleared
+   without it. A witness that names no port pin, such as an order cycle,
+   drops the last port instead, so every retry tries fewer ports.
+5. The repair spends at most a quarter of the remaining ledger
+   (`PORT_REPAIR_SHARE`). If it exhausts that share, the drawn pose is kept and
+   construction proceeds with the rest, so a repair can never starve the
+   attempt.
+
+The cleared pose is what construction sees. It is a preference, not a
+certificate: the final solve, the retained-constant binding, native clearance
+and the unchanged independent gate still admit the completed drawing.
+
+**Why this is principled rather than T24 transplanted:**
+- It changes only variables the framed capture already frees (straight cores
+  between native spans).
+- It adds a hard separation of the same kind as `port-corner`, with its side a
+  discrete corridor choice, all on the same ledger.
+- Native spans, source prefixes, terminal suffixes, ports, tiles and dots stay
+  constants.
+- There is no offset probe list, no fillet rewriting and no four-edit cap.
+
+The strict capture is unchanged, since its retained connectors are byte-identical
+by contract.
+
+**Scope.** Only source ports of retained parents are repaired. Arrival ports
+of retained children that gain a new parent are not. A route counts as a
+blocker unless it departs from the port's owner. A junction-sourced route
+therefore counts, where legacy T24 skipped it. That route is still only
+separated by `PORT_BERTH` from the port, so it is not rerouted.
+
+Two parts of the abandoned prototype were dropped:
+- **Reordering parallel tracks.** Letting a cleared core pass a parallel
+  retained track (a "track-order" choice) certified nothing extra on the gained
+  inputs, and it would break "preserve retained orders".
+- **Port-blocker occupancy.** That earlier prototype is replaced. Cores are
+  cleared before construction instead of being deferred during it.
+
+#### Coverage outside production
+
+These are replays at the API allowance (1,024M, 4× pools). T24 rows replay the
+committed history the request carried, which reproduces the completion pass's
+numbers exactly at c00dea4. The table compares main (c00dea4) with this pass:
+
+| Population | Completion pass | c00dea4 | Now | Gains / losses |
+|---|---:|---:|---:|---|
+| Corpus, complete requests | 62/63 | 62/63 | 62/63 | 0 / 0 |
+| Tours, complete requests | 619/894 | 619/894 | **633/894** | 14 / 0 |
+| Original, per-stage rows | 68/108 | 68/108 | 68/108 | 0 / 0 |
+| Original, complete requests | 213/253 | 212/253 | 212/253 | 0 / 0 |
+
+| Old-success stage, tours | c00dea4 | Now |
+|---|---:|---:|
+| T24 free port lanes | 427/678 | **438/678** |
+| T25 repairable contacts | 68/84 | **71/84** |
+| T28 route contacts | 53/58 | 53/58 |
+| Additional constrained route | 71/74 | 71/74 |
+
+For the original population, the complete-request figure combines three
+replays: the per-stage band rows above, the 133 folder placements (133/133),
+and the 12 hint reroutes (11/12). The rebuilt replay counts one fewer success
+than the lost tool did. The s4d unified replay, which runs only the framed
+capture, gives 203/253 both before and after.
+
+The 14 rows are three unique inputs: tour inputs 41 and 62 (26 items) and
+699–710 (30 items). They certify at 156M–537M of work. Tour input 41, the
+canonical case, now certifies at 364M. On input 62, two retained cores at
+x=166 and x=169 pass n21's right port at x=164. The repair moves them to 170
+and 173, and pushes the parallel core at 172 to 176. Legacy T24 instead moved
+them to 176 and 179, past that core.
+
+**The 33 remaining unique tour misses are all budget exhaustion.** On each
+captured input, the legacy insertion was rerun at 1× and 4× pools under the
+stable, constrained and repairable policies:
+- **25 inputs: no legacy drawing at all.** The T24 stage ran, but the request
+  was served by another candidate. Four of these are within 47 items.
+- **5 inputs: legacy certifies without contact repair.** All have 50–65 items,
+  above the production limit.
+- **3 inputs: legacy needs contact repair** (49, 54 and 32 items). These are
+  T25/T28 cases, not port cases.
+
+So within the production size limit, no remaining miss is a port-repair case
+that legacy certifies.
+
+The replay that uses the drawing T24 itself received (`args[1]`) gives the same
+picture: tours 578 → 589/894 with no losses, and original 67/108 both before and
+after. On 95 of those rows, that drawing is an anchored-repack subset or one
+already changed by T23.
+
+#### Production inventory and reach
+
+The previous inventory and latency tools were lost, so this pass rebuilt them.
+They measure 3,405 requests:
+- 3,150 legal click-tour steps: corpus and dense corpus, five widths, image
+  96, up to nine steps, as in `import-census.ts`;
+- 255 folder open and click states: corpus fixtures of 2–40 nodes at 454 px,
+  run through `createFolderLayoutRuntime`'s engine on the main thread.
+
+This population is about three times the completion pass's 1,050 requests.
+Its counts are not comparable with that pass's.
+
+| Count | c00dea4 | Now |
+|---|---:|---:|
+| Attempts | 2,585 | 2,585 |
+| Successes | 1,692 | 1,692 |
+| Published | 1,013 | 1,013 |
+| Budget fallbacks | 893 | 893 |
+| Work | 3,974.5M | 3,976.4M |
+| Outputs that differ | — | 0 |
+| Geometry gate failures | 0 | 0 |
+
+Legacy reach is unchanged: T24 21, T25 constrained 74, T25 repairable 56 and
+T28 band 58 requests, out of 174 requests that reach any of them.
+
+The 21 requests that reach T24 break down as follows:
+
+| Reason | Requests | What it would take |
+|---|---:|---|
+| Attempt declines at 6M | 11 | 8 certify at 6M by the strict capture with 1/48M pools. One needs 16M; two need 64M and more than 1,024M. The repair changes none of these: the allowance each needs is identical with and without it. |
+| Band over 47 items, so no attempt | 8 | the size limit |
+| Attempt adopted, but the anchored repack or T25 ladder runs legacy | 2 | constrained attempts at those call sites |
+
+The port repair itself never decides these production cases. They are limited
+by pool reservation, the size limit and the call sites.
+
+#### Click latency
+
+Each figure is the per-request minimum of two runs, on the same population and
+the same machine, against c00dea4 plus a profiling stage around the attempt
+(0b284b5). Times are in ms.
+
+| Group | n | c00dea4 p50 / p95 / max | Now p50 / p95 / max | p95 ratio |
+|---|---:|---|---|---:|
+| Folder, all | 255 | 6.7 / 69.7 / 308.5 | 6.6 / 69.1 / 303.3 | 0.99 |
+| Folder, adopted | 160 | 7.9 / 40.3 / 111.8 | 7.4 / 37.6 / 111.6 | 0.93 |
+| Folder, declined | 16 | 76.4 / 308.5 / 308.5 | 69.1 / 303.3 / 303.3 | 0.98 |
+| Folder, outranked | 14 | 7.6 / 23.9 / 23.9 | 7.3 / 24.0 / 24.0 | 1.00 |
+| Folder, legacy only | 65 | 1.5 / 15.2 / 38.7 | 1.5 / 14.0 / 37.4 | 0.92 |
+| Tour, all | 3,150 | 12.5 / 1,477 / 34,662 | 12.5 / 1,516 / 34,620 | 1.03 |
+| Tour, adopted | 853 | 7.9 / 73.7 / 241.2 | 8.4 / 71.8 / 248.2 | 0.97 |
+| Tour, declined | 877 | 220.3 / 5,222 / 34,662 | 215.1 / 5,246 / 34,620 | 1.00 |
+| Tour, outranked | 665 | 10.8 / 33.8 / 95.5 | 10.5 / 35.8 / 85.3 | 1.06 |
+| Tour, legacy only | 755 | 1.3 / 231.5 / 800.4 | 1.3 / 229.3 / 798.1 | 0.99 |
+
+- **The attempt itself** takes at most 186.6 ms, against 179.0 ms at c00dea4,
+  with p99 87 ms. No attempt exceeds 250 ms.
+- **The allowance is unchanged:** 6M, 375K per item, at most 47 items.
+- **Nothing moved to the worker.**
+
+#### Tests
+
+`retained-port-repair.test.ts`:
+- **Blocked ports.** The owner's own routes, an exact berth, requests with no
+  new item, and the cover's missing right port.
+- **The clearance moves only the occluding core, to the berth.** Tiles and the
+  other route stay byte-identical, the fragment constants still bind, and a
+  repeat on cloned inputs gives the same result.
+- **A parallel core is pushed in its drawn order, never passed.**
+- **Whole-route captures decline** (no fragment authority).
+- **Tour input 62 certifies through `constrainedBandInsertion`.** The test
+  checks retained rectangles and fragment constants exact, the blocked port
+  clear, and the gate passing. It failed first with the call disabled: budget
+  exhaustion in strict construction.
+
+No production-allowance case changes outcome, so no publication-level test
+can fail first. The inventory shows zero changed outputs.
+
+#### Gates and changed acceptance rows
+
+All three gates pass:
+- `bun run check`: 294 files, 0 errors.
+- `bun run test`: 193 files, 2,400 tests passed and 1 skipped.
+- `layout:eval`: all 50 targets pass.
+
+Every production output is byte-identical to c00dea4, so only timing rows
+moved. Against the completion pass's recorded values:
+
+| Row | Completion pass | Now | Limit |
+|---|---:|---:|---:|
+| Main-thread max p95, ms | 2.997 | 2.980 | 8 |
+| ≤30 visible tiles max p95, ms | 41.395 | 35.172 | 100 |
+| Full folder inline max p95, ms | 8.705 | 5.550 | 10 |
+
+All other current rows match, including both click-anchor rows (26 and 73).
+
+#### Review
+
+An independent adversarial review found no contract violation. It confirmed
+the refactor is a line-for-line move, that only free cores move, that the
+ledger is never exceeded, and parity. It found five defects, all addressed:
+- The repair could spend the whole remainder, so exhausting it failed the
+  attempt instead of skipping the repair. It now runs within a quarter of the
+  remainder.
+- A witness that named no port pin abandoned every port. It now drops one port
+  and retries.
+- The witness bookkeeping undercharged string comparisons.
+- The parallel-core test asserted only the order, between two routes that
+  share a source and so were never separated. It now uses another source and
+  checks the exact pushed coordinate, 149.
+- The doc section was unfinished.
+
+Recomputing the repair on every outer backtrack costs work but changes nothing
+(one call on the gained inputs), so it is left as is. After the fixes, tours
+are still 633/894 and the production inventory is still unchanged.

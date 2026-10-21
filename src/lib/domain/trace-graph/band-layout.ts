@@ -125,7 +125,10 @@ function constrainedInsertion(request: LayoutRequest, previous: GraphLayout): Gr
   if (!allowance) { recordAdoption('band-insertion', 'budget'); return null; }
   const key = JSON.stringify(['band-insertion', layoutSignature(request), geometrySignature(previous)]);
   return adoptOnce('band-insertion', key, () => {
-    const attempt = constrainedBandInsertion(request, previous, () => scaledIncrementalBudget(allowance.pools), allowance.work);
+    const endStage = layoutStage('constrained-insertion');
+    let attempt: ReturnType<typeof constrainedBandInsertion>;
+    try { attempt = constrainedBandInsertion(request, previous, () => scaledIncrementalBudget(allowance.pools), allowance.work); }
+    finally { endStage(); }
     if (!attempt.ok) return { drawing: null, outcome: adoptionFallback(attempt.conflict.reason), work: attempt.work };
     const retained = request.items.filter(n => previous.nodes.has(n.key)).map(n => n.key);
     return movedRectangle(previous.nodes, attachSingleBand(attempt.drawing, request).nodes, retained) !== null

@@ -8,7 +8,7 @@ import { filterRouteConsumers } from './route-consumers';
 import { pathCommands, type Point } from './path-sampling';
 import { segments, type Segment } from './layout-quality';
 import { berthsOf, routeEnds, TILE_GRAZE, type Berth } from './route-contacts';
-import { LANE_SEPARATION } from './metrics';
+import { LANE_SEPARATION, PORT_BERTH } from './metrics';
 import { chargeRoutingSnapshot, importCommittedRouting, retainedRoutingConflict, type CommittedRoutingProblem } from './routing-problem';
 import { solveRoutingComponents } from './routing-components';
 import { chargedNativeTileClearance, chargedNativeClearance } from './native-route-clearance';
@@ -143,6 +143,9 @@ export function routeCommittedIncremental(request: LayoutRequest, previous: Grap
     } else seed = captureIncrementalRouting(request, previous, search.charge);
     if (!('problem' in seed)) return search.reject(seed.constraints, seed.reason === 'unsupported-input' ? 'invalid'
       : seed.reason === 'budget-exhaustion' ? 'search-exhausted' : seed.reason === 'metric-conflict' ? 'metric' : 'topology');
+    // Free retained cores give way to newly active source ports before
+    // construction, inside the same affected metric (retained-track port repair).
+    if (seed.fragments) seed = clearRetainedPorts(request, seed, search, pane);
     // Construction may defer free old cores while treating the selected native
     // fragments as hard obstacles. Give it a separate, prepaid snapshot so a
     // constructor cannot mutate the metric's captured authority.
@@ -225,203 +228,7 @@ function model(route: PlacedRoute, retained?: FragmentTopologyBindings): RouteMo
 export function solveIncrementalTopology(request: LayoutRequest, seed: IncrementalRoutingSeed, topology: GraphLayout,
   budget = 64_000_000, pane?: { readonly left: number; readonly right: number }): IncrementalRoutingResult {
   const result = searchCorridors(search => {
-    chargeRoutingSnapshot(request, search.charge);
-    chargeRoutingSnapshot(topology, search.charge);
-    if (!validRequest(request) || !isLayoutShape(topology)) return search.reject(['incremental request/topology shape'], 'invalid');
-    const metric = seed.fragments?.metric ?? seed.problem.metric;
-    search.charge(metric.variables.length + 1, 'committed metric table');
-    search.charge(seed.drawing.routes.length * (topology.routes.length + 1), 'retained native bindings');
-    let fragmentBindings: FragmentTopologyBindings | undefined;
-    if (seed.fragments) {
-      const bound = bindRoutingFragmentTopology(seed.fragments, topology, search.charge);
-      if (!bound.ok) return search.reject(bound.conflict.constraints, 'metric');
-      fragmentBindings = bound.bindings;
-    }
-    for (const old of seed.fragments ? [] : seed.drawing.routes) {
-      const next = topology.routes.find(r => r.id === old.id);
-      if (!next || next.path !== old.path) search.reject(['retained native route', old.id], 'metric');
-    }
-    const retained = new Set(seed.drawing.routes.map(r => r.id));
-    const freeRoutes = topology.routes.filter(r => seed.fragments || !retained.has(r.id));
-    for (const route of freeRoutes) search.charge(8 * route.path.length + 1, 'free native model parsing');
-    const models = freeRoutes.map(route => model(route, fragmentBindings));
-    const tracks = models.flatMap(m => m.tracks);
-    search.charge(topology.nodes.size + topology.routes.length + tracks.length + 1, 'incremental topology');
-    const variables = new Map<string, CoordinateVariable>(metric.variables.map(v => [v.id, v]));
-    const edges: Separation[] = [];
-    const decisions = new Map<string, string>();
-    const constant = (name: string, value: number): string => {
-      const id = JSON.stringify(['topology-constant', name]);
-      if (!variables.has(id)) variables.set(id, { id, preferred: value, pin: { value, reason: name } });
-      return id;
-    };
-    const constraints = (before: string, after: string, gap: number, name: string, decision?: string) => {
-      if (before === after) { if (gap > 0) search.reject([name], 'metric', decision ? [decision] : []); return; }
-      const id = JSON.stringify([name, edges.length]);
-      edges.push({ id, before, after, gap });
-      if (decision) decisions.set(id, decision);
-    };
-    for (const t of tracks) variables.set(t.id, { id: t.id, preferred: t.value, bounds: {
-      lower: t.axis === 'x' ? pane?.left ?? 0 : 0,
-      upper: t.axis === 'x' ? pane?.right ?? Math.max(request.maxWidth, topology.width) : topology.height,
-    } });
-    const coordinate = (m: RouteModel, index: number, axis: 'x' | 'y'): string => {
-      search.charge(m.tracks.length + 1, 'free track coordinate lookup');
-      return fragmentBindings?.coordinates.get(fragmentCoordinateKey(m.route.id, index, axis))
-        ?? m.tracks.find(t => t.axis === axis && (t.command === index || t.command - 1 === index))?.id
-        ?? constant(JSON.stringify([m.route.id, index, axis]), m.points[index][axis]);
-    };
-    for (const m of models) for (let i = 0; i < m.points.length; i++) {
-      coordinate(m, i, 'x'); coordinate(m, i, 'y');
-    }
-    for (const interval of fragmentBindings?.intervals ?? []) {
-      const owner = models.find(model => model.route.id === interval.route)!;
-      const end = coordinate(owner, interval.command, interval.axis);
-      const boundary = constant(JSON.stringify(['retained-interval', interval.route, interval.command,
-        interval.axis, interval.forward, interval.boundary]), interval.boundary);
-      constraints(interval.forward ? boundary : end, interval.forward ? end : boundary, 0, 'retained-native-interval');
-    }
-    // Preserve the directions of all edited neighbouring runs. An endpoint cannot
-    // pass its neighbour and silently change the selected topology.
-    for (const m of models) for (const t of m.tracks) {
-      const axis = t.axis;
-      for (const [a, b] of [[t.command - 2, t.command - 1], [t.command, t.command + 1]]) {
-        const left = coordinate(m, a, axis), right = coordinate(m, b, axis);
-        const forward = m.points[b][axis] >= m.points[a][axis];
-        constraints(forward ? left : right, forward ? right : left, 0, 'run-direction');
-      }
-    }
-    // Each foreign route's segments, ends and berths depend only on the topology,
-    // never on the track being separated: parse each once, on first need.
-    const parsed = new Map<PlacedRoute, { readonly ss: readonly Segment[]; readonly berths: readonly Berth[] }>();
-    const foreign = (r: PlacedRoute) => {
-      let known = parsed.get(r);
-      if (!known) {
-        search.charge(8 * r.path.length + 1, 'foreign native parsing');
-        const ss = segments(r.path);
-        known = { ss, berths: berthsOf(ss, routeEnds(r, ss, topology.nodes, topology.junctions)) };
-        parsed.set(r, known);
-      }
-      return known;
-    };
-    search.charge(models.length + 1, 'free route model index');
-    const modelOf = new Map(models.map(m => [m.route.id, m]));
-    // Choose an empty tile corridor for each free segment. Its longitudinal span
-    // remains part of the topology; the final independent gate checks all paint.
-    for (const t of tracks) {
-      const along = t.axis === 'x' ? 'y' : 'x';
-      const lo = Math.min(t.a[along], t.b[along]), hi = Math.max(t.a[along], t.b[along]);
-      for (const n of topology.nodes.values()) {
-        search.charge(1, 'tile corridor');
-        const near = along === 'y' ? n.y : n.x, far = near + (along === 'y' ? n.height : n.width);
-        if (hi <= near - TILE_GRAZE || lo >= far + TILE_GRAZE) continue;
-        const lower = n[t.axis] - TILE_GRAZE, upper = n[t.axis] + (t.axis === 'x' ? n.width : n.height) + TILE_GRAZE;
-        const sides = t.value <= lower ? ['before'] : t.value >= upper ? ['after']
-          : t.value - lower <= upper - t.value ? ['before', 'after'] : ['after', 'before'];
-        const decision = JSON.stringify(['tile-corridor', t.id, n.key]);
-        const side = search.choose(decision, sides);
-        if (side === 'before') constraints(t.id, constant(n.key + ':' + t.axis + ':near', lower), 0, 'tile-corridor', decision);
-        else constraints(constant(n.key + ':' + t.axis + ':far', upper), t.id, 0, 'tile-corridor', decision);
-      }
-      for (const r of topology.routes) {
-        if (sameSource(r, t.route, search.charge)) continue;
-        const { ss, berths } = foreign(r);
-        search.charge(ss.length + 1, 'foreign corridor');
-        for (const [i, [a, b]] of ss.entries()) {
-          if (a[t.axis] !== b[t.axis] || Math.min(a[along], b[along]) >= hi || Math.max(a[along], b[along]) <= lo) continue;
-          search.charge(1, 'foreign route model lookup');
-          const foreignModel = modelOf.get(r.id);
-          search.charge((foreignModel?.tracks.length ?? 0) + 1, 'foreign route track lookup');
-          const other = foreignModel?.tracks.find(u => u.axis === t.axis && u.value === a[t.axis]
-            && Math.min(u.a[along], u.b[along]) <= Math.min(a[along], b[along]) && Math.max(u.a[along], u.b[along]) >= Math.max(a[along], b[along]));
-          const id = other?.id ?? constant(JSON.stringify(['foreign-track', r.id, i, t.axis]), a[t.axis]);
-          if (other && t.id > other.id) continue;
-          const forward = t.value < a[t.axis] || t.value === a[t.axis] && t.id < id;
-          constraints(forward ? t.id : id, forward ? id : t.id, LANE_SEPARATION, 'parallel-tracks');
-        }
-        search.charge(berths.length + 1, 'foreign berths');
-        for (const [i, berth] of berths.entries()) {
-          if (berth[along] < lo || berth[along] > hi) continue;
-          // Intentional convergence belongs to the native meeting model; moving
-          // an internal track cannot invent another junction input.
-          if ([r.from, r.to].some(e => e.kind === 'junction' && [t.route.from, t.route.to].some(f => f.kind === e.kind && f.id === e.id))) continue;
-          if (Math.abs(berth[t.axis] - t.value) >= berth.radius) continue;
-          search.charge(1, 'foreign berth model lookup');
-          const owner = modelOf.get(r.id);
-          search.charge((owner?.points.length ?? 0) + 1, 'foreign berth point lookup');
-          const at = owner?.points.findIndex(p => p.x === berth.x && p.y === berth.y) ?? -1;
-          const center = owner && at >= 0 ? coordinate(owner, at, t.axis)
-            : constant(JSON.stringify(['berth', r.id, i, t.axis]), berth[t.axis]);
-          const decision = JSON.stringify(['berth-corridor', t.id, r.id, i]);
-          const side = search.choose(decision,
-            t.value <= berth[t.axis] ? ['before', 'after'] : ['after', 'before']);
-          if (side === 'before') constraints(t.id, center, berth.radius, 'port-corner', decision);
-          else constraints(center, t.id, berth.radius, 'port-corner', decision);
-        }
-      }
-    }
-    // The selected inequality graph needs a topological order. Dependency cycles
-    // request a new corridor, rather than discarding a hard separation.
-    search.charge(8 * (variables.size + edges.length + 1), 'incremental order graph');
-    const outgoing = new Map([...variables.keys()].map(id => [id, [] as string[]]));
-    const degree = new Map([...variables.keys()].map(id => [id, 0]));
-    for (const e of edges) { outgoing.get(e.before)!.push(e.after); degree.set(e.after, degree.get(e.after)! + 1); }
-    const order = [...variables.keys()].filter(id => !degree.get(id));
-    for (let i = 0; i < order.length; i++) for (const after of outgoing.get(order[i])!) {
-      degree.set(after, degree.get(after)! - 1); if (!degree.get(after)) order.push(after);
-    }
-    if (order.length !== variables.size) {
-      // Backtrack only a witnessed cycle's choices. A residual graph also
-      // contains outgoing tails whose alternatives cannot remove that cycle.
-      search.charge(variables.size + edges.length + 1, 'incremental order conflict witness');
-      const unresolved = new Set([...degree].filter(([, count]) => count > 0).map(([id]) => id));
-      const graph = new Map([...unresolved].map(id => [id, [] as Separation[]]));
-      for (const edge of edges) if (unresolved.has(edge.before) && unresolved.has(edge.after)) graph.get(edge.before)!.push(edge);
-      const color = new Map<string, number>(), parents = new Map<string, Separation>();
-      for (const root of unresolved) {
-        if (color.has(root)) continue;
-        const stack = [{ id: root, next: 0 }]; color.set(root, 1);
-        while (stack.length) {
-          search.charge(1, 'incremental cycle traversal');
-          const at = stack.at(-1)!, edge = graph.get(at.id)![at.next++];
-          if (!edge) { color.set(at.id, 2); stack.pop(); continue; }
-          if (!color.has(edge.after)) {
-            parents.set(edge.after, edge); color.set(edge.after, 1); stack.push({ id: edge.after, next: 0 });
-          } else if (color.get(edge.after) === 1) {
-            const cycle = [edge];
-            for (let id = edge.before; id !== edge.after;) {
-              search.charge(1, 'incremental cycle witness');
-              const prior = parents.get(id)!; cycle.push(prior); id = prior.before;
-            }
-            const relevant = cycle.flatMap(link => decisions.has(link.id) ? [decisions.get(link.id)!] : []);
-            search.reject(['incremental segment order cycle', ...cycle.map(link => link.id)], 'topology', relevant);
-          }
-        }
-      }
-      search.reject(['incremental segment order cycle']);
-    }
-    // A newly imported track whose preferred coordinate already satisfies every
-    // hard residual needs no projection. The kernel closes only the conflicting
-    // free components after eliminating the committed constants.
-    const solved = solveRoutingComponents({ variables: [...variables.values()], order, separations: edges }, [], search.charge);
-    if (!solved.ok) {
-      search.charge(solved.conflict.constraints.length + 1, 'incremental metric decision witness');
-      return search.reject(solved.conflict.constraints, 'metric',
-        solved.conflict.constraints.flatMap(id => decisions.has(id) ? [decisions.get(id)!] : []));
-    }
-    const paths = new Map(models.map(m => [m.route.id, m.points.every((p, i) =>
-      solved.positions.get(coordinate(m, i, 'x')) === p.x && solved.positions.get(coordinate(m, i, 'y')) === p.y) ? m.route.path : m.raw.map((raw, i) => {
-      const x = solved.positions.get(coordinate(m, i, 'x'))!, y = solved.positions.get(coordinate(m, i, 'y'))!;
-      return x === m.points[i].x && y === m.points[i].y ? raw : `${i ? 'L' : 'M'}${x} ${y}${seed.fragments ? ' ' : ''}`;
-    }).join(seed.fragments ? '' : ' ')]));
-    const drawing = { ...topology, routes: topology.routes.map(r => !paths.has(r.id) || paths.get(r.id) === r.path ? r : { ...r, path: paths.get(r.id)! }) };
-    if (seed.fragments) {
-      const retained = bindRoutingFragmentTopology(seed.fragments, drawing, search.charge, true);
-      if (!retained.ok) search.reject(retained.conflict.constraints, 'metric');
-    } else {
-      const conflict = retainedRoutingConflict(seed.problem, [scene(drawing)], search.charge);
-      if (conflict) search.reject(conflict.constraints, 'metric');
-    }
+    const { drawing, solved } = solveAffectedTracks(search, request, seed, topology, pane, []);
     const tiles = chargedNativeTileClearance(drawing, search.charge);
     if (!tiles.ok) return search.reject(['native tile admission', tiles.failure]);
     const native = chargedNativeClearance(drawing, (work, reason) => search.charge(2 * work, reason));
@@ -432,10 +239,316 @@ export function solveIncrementalTopology(request: LayoutRequest, seed: Increment
       return search.reject(['unsupported independent gate serialization'], 'invalid');
     const gate = geometryGate(drawing, request.items, request.band!.key, request.maxWidth);
     if (gate) search.reject(['independent geometry gate', gate]);
-    return { drawing, solved: solved.solved.length };
+    return { drawing, solved };
   }, budget);
-  return result.ok ? { ok: true, ...result.value, work: result.work }
-    : failure(result.conflict.kind === 'search-exhausted' ? 'budget-exhaustion'
-      : result.conflict.kind === 'metric' ? 'metric-conflict'
-      : result.conflict.kind === 'invalid' ? 'unsupported-input' : 'topology-conflict', result.conflict.constraints, result.work);
+  return result.ok ? { ok: true, ...result.value, work: result.work } : searchFailure(result.conflict, result.work);
+}
+
+const searchFailure = (conflict: { readonly kind: string; readonly constraints: readonly string[] }, work: number) =>
+  failure(conflict.kind === 'search-exhausted' ? 'budget-exhaustion' : conflict.kind === 'metric' ? 'metric-conflict'
+    : conflict.kind === 'invalid' ? 'unsupported-input' : 'topology-conflict', conflict.constraints, work) as
+    { readonly ok: false; readonly conflict: IncrementalRoutingConflict; readonly work: number };
+
+/** A source port that a request newly activates: the bottom or right port of a
+ * retained parent of a new item (the band cover departs only through its bottom). */
+export interface ReservedPort { readonly owner: string; readonly side: 'bottom' | 'right'; readonly x: number; readonly y: number }
+
+/** Newly activated source ports that a retained route of another source passes
+ * within the port berth. Only these can need a retained track to give way. */
+export function blockedSourcePorts(request: LayoutRequest, drawing: GraphLayout,
+  charge: (work: number, reason?: string) => void = () => {}): readonly ReservedPort[] {
+  charge(request.items.length + 1, 'newly active port scan');
+  const ports: ReservedPort[] = [], seen = new Set<string>();
+  for (const item of request.items) {
+    if (drawing.nodes.has(item.key)) continue;
+    charge(item.parents.length + 1, 'newly active port parents');
+    for (const key of item.parents) {
+      const p = drawing.nodes.get(key);
+      if (!p || seen.has(key)) continue;
+      seen.add(key);
+      ports.push({ owner: key, side: 'bottom', x: p.x + p.width / 2, y: p.y + p.height });
+      if (key !== request.band?.key) ports.push({ owner: key, side: 'right', x: p.x + p.width, y: p.y + p.height / 2 });
+    }
+  }
+  if (!ports.length) return ports;
+  const blocked = new Set<ReservedPort>();
+  for (const route of drawing.routes) {
+    charge(8 * route.path.length + 1, 'port blocker parsing');
+    const ss = segments(route.path);
+    charge(ss.length * ports.length + 1, 'port blocker scan');
+    for (const port of ports) {
+      if (blocked.has(port) || route.from.kind === 'node' && route.from.id === port.owner) continue;
+      if (ss.some(([a, b]) => distanceToSegment(port, a, b) < PORT_BERTH)) blocked.add(port);
+    }
+  }
+  return ports.filter(port => blocked.has(port));
+}
+
+const distanceToSegment = (p: Point, a: Point, b: Point): number => {
+  const dx = b.x - a.x, dy = b.y - a.y, length = dx * dx + dy * dy;
+  const t = length ? Math.max(0, Math.min(1, ((p.x - a.x) * dx + (p.y - a.y) * dy) / length)) : 0;
+  return Math.hypot(p.x - a.x - t * dx, p.y - a.y - t * dy);
+};
+const reservedCenter = (port: ReservedPort, axis: 'x' | 'y') => JSON.stringify(['reserved-port', port.owner, port.side, axis]);
+
+/** Retained-track port repair (the metric counterpart of legacy T24). Each free
+ * retained core within a newly active source port's berth gets one more hard
+ * separation from that port, its side a corridor choice; the same affected
+ * solve moves it and anything it pushes, in the drawn order. Native spans,
+ * source prefixes, suffixes, ports, tiles and dots stay constants. The result
+ * is a preferred retained pose for construction, not an admitted drawing: the
+ * final solve and the independent gate still certify the completed topology. */
+export function clearIncrementalPorts(request: LayoutRequest, seed: IncrementalRoutingSeed,
+  ports: readonly ReservedPort[], budget = 64_000_000, pane?: { readonly left: number; readonly right: number }):
+  { readonly ok: true; readonly drawing: GraphLayout; readonly work: number }
+  | { readonly ok: false; readonly conflict: IncrementalRoutingConflict; readonly work: number } {
+  if (!seed.fragments) return { ok: false, conflict: { reason: 'unsupported-input', constraints: ['port repair needs a fragment authority'] }, work: 0 };
+  const result = searchCorridors(search => solveAffectedTracks(search, request, seed, seed.drawing, pane, ports).drawing, budget);
+  return result.ok ? { ok: true, drawing: result.value, work: result.work } : searchFailure(result.conflict, result.work);
+}
+
+/** Clear every blocked port that the constants allow, within a capped share of
+ * the remaining ledger so a repair can never starve construction. A port whose
+ * separation conflicts with constants is named by the metric witness and stays
+ * blocked; a witness naming no port pin drops the last port instead. Either
+ * way each retry clears at least one fewer port, so the loop is bounded. On
+ * exhausting its share the drawn pose is kept and construction proceeds. */
+export const PORT_REPAIR_SHARE = 4;
+function clearRetainedPorts(request: LayoutRequest, seed: IncrementalRoutingSeed, search: CorridorSearch,
+  pane?: { readonly left: number; readonly right: number }): IncrementalRoutingSeed {
+  let ports = blockedSourcePorts(request, seed.drawing, search.charge);
+  while (ports.length) {
+    const cleared = clearIncrementalPorts(request, seed, ports, Math.floor(search.remaining / PORT_REPAIR_SHARE), pane);
+    search.charge(cleared.work, 'retained port repair');
+    if (cleared.ok) return { ...seed, drawing: cleared.drawing };
+    if (cleared.conflict.reason === 'budget-exhaustion') return seed;
+    const ids = ports.map(port => (['x', 'y'] as const).map(axis => JSON.stringify(['topology-constant', reservedCenter(port, axis)])));
+    search.charge(cleared.conflict.constraints.reduce((sum, c) => sum + c.length + 1, 0) * ports.length
+      + ids.flat().reduce((sum, id) => sum + id.length + 1, 0) + 1, 'retained port repair witness');
+    const witnessed = new Set(ports.filter((_, i) => ids[i].some(id =>
+      cleared.conflict.constraints.some(c => c === id || c.startsWith(id + ':')))));
+    ports = witnessed.size ? ports.filter(port => !witnessed.has(port)) : ports.slice(0, -1);
+  }
+  return seed;
+}
+
+/** The affected metric over one chosen topology: free tracks, their corridor
+ * sides and every hard separation, then the retained-constant check. */
+function solveAffectedTracks(search: CorridorSearch, request: LayoutRequest, seed: IncrementalRoutingSeed, topology: GraphLayout,
+  pane: { readonly left: number; readonly right: number } | undefined, reserved: readonly ReservedPort[]):
+  { readonly drawing: GraphLayout; readonly solved: number } {
+  chargeRoutingSnapshot(request, search.charge);
+  chargeRoutingSnapshot(topology, search.charge);
+  if (!validRequest(request) || !isLayoutShape(topology)) return search.reject(['incremental request/topology shape'], 'invalid');
+  const metric = seed.fragments?.metric ?? seed.problem.metric;
+  search.charge(metric.variables.length + 1, 'committed metric table');
+  search.charge(seed.drawing.routes.length * (topology.routes.length + 1), 'retained native bindings');
+  let fragmentBindings: FragmentTopologyBindings | undefined;
+  if (seed.fragments) {
+    const bound = bindRoutingFragmentTopology(seed.fragments, topology, search.charge);
+    if (!bound.ok) return search.reject(bound.conflict.constraints, 'metric');
+    fragmentBindings = bound.bindings;
+  }
+  for (const old of seed.fragments ? [] : seed.drawing.routes) {
+    const next = topology.routes.find(r => r.id === old.id);
+    if (!next || next.path !== old.path) search.reject(['retained native route', old.id], 'metric');
+  }
+  const retained = new Set(seed.drawing.routes.map(r => r.id));
+  const freeRoutes = topology.routes.filter(r => seed.fragments || !retained.has(r.id));
+  for (const route of freeRoutes) search.charge(8 * route.path.length + 1, 'free native model parsing');
+  const models = freeRoutes.map(route => model(route, fragmentBindings));
+  const tracks = models.flatMap(m => m.tracks);
+  search.charge(topology.nodes.size + topology.routes.length + tracks.length + 1, 'incremental topology');
+  const variables = new Map<string, CoordinateVariable>(metric.variables.map(v => [v.id, v]));
+  const edges: Separation[] = [];
+  const decisions = new Map<string, string>();
+  const constant = (name: string, value: number): string => {
+    const id = JSON.stringify(['topology-constant', name]);
+    if (!variables.has(id)) variables.set(id, { id, preferred: value, pin: { value, reason: name } });
+    return id;
+  };
+  const constraints = (before: string, after: string, gap: number, name: string, decision?: string) => {
+    if (before === after) { if (gap > 0) search.reject([name], 'metric', decision ? [decision] : []); return; }
+    const id = JSON.stringify([name, edges.length]);
+    edges.push({ id, before, after, gap });
+    if (decision) decisions.set(id, decision);
+  };
+  for (const t of tracks) variables.set(t.id, { id: t.id, preferred: t.value, bounds: {
+    lower: t.axis === 'x' ? pane?.left ?? 0 : 0,
+    upper: t.axis === 'x' ? pane?.right ?? Math.max(request.maxWidth, topology.width) : topology.height,
+  } });
+  const coordinate = (m: RouteModel, index: number, axis: 'x' | 'y'): string => {
+    search.charge(m.tracks.length + 1, 'free track coordinate lookup');
+    return fragmentBindings?.coordinates.get(fragmentCoordinateKey(m.route.id, index, axis))
+      ?? m.tracks.find(t => t.axis === axis && (t.command === index || t.command - 1 === index))?.id
+      ?? constant(JSON.stringify([m.route.id, index, axis]), m.points[index][axis]);
+  };
+  for (const m of models) for (let i = 0; i < m.points.length; i++) {
+    coordinate(m, i, 'x'); coordinate(m, i, 'y');
+  }
+  for (const interval of fragmentBindings?.intervals ?? []) {
+    const owner = models.find(model => model.route.id === interval.route)!;
+    const end = coordinate(owner, interval.command, interval.axis);
+    const boundary = constant(JSON.stringify(['retained-interval', interval.route, interval.command,
+      interval.axis, interval.forward, interval.boundary]), interval.boundary);
+    constraints(interval.forward ? boundary : end, interval.forward ? end : boundary, 0, 'retained-native-interval');
+  }
+  // Preserve the directions of all edited neighbouring runs. An endpoint cannot
+  // pass its neighbour and silently change the selected topology.
+  for (const m of models) for (const t of m.tracks) {
+    const axis = t.axis;
+    for (const [a, b] of [[t.command - 2, t.command - 1], [t.command, t.command + 1]]) {
+      const left = coordinate(m, a, axis), right = coordinate(m, b, axis);
+      const forward = m.points[b][axis] >= m.points[a][axis];
+      constraints(forward ? left : right, forward ? right : left, 0, 'run-direction');
+    }
+  }
+  // Each foreign route's segments, ends and berths depend only on the topology,
+  // never on the track being separated: parse each once, on first need.
+  const parsed = new Map<PlacedRoute, { readonly ss: readonly Segment[]; readonly berths: readonly Berth[] }>();
+  const foreign = (r: PlacedRoute) => {
+    let known = parsed.get(r);
+    if (!known) {
+      search.charge(8 * r.path.length + 1, 'foreign native parsing');
+      const ss = segments(r.path);
+      known = { ss, berths: berthsOf(ss, routeEnds(r, ss, topology.nodes, topology.junctions)) };
+      parsed.set(r, known);
+    }
+    return known;
+  };
+  search.charge(models.length + 1, 'free route model index');
+  const modelOf = new Map(models.map(m => [m.route.id, m]));
+  // A free core inside a reserved port's berth (never the port owner's own route).
+  const blocks = (t: Track, port: ReservedPort): boolean => {
+    const along = t.axis === 'x' ? 'y' : 'x';
+    return !(t.route.from.kind === 'node' && t.route.from.id === port.owner)
+      && port[along] >= Math.min(t.a[along], t.b[along]) && port[along] <= Math.max(t.a[along], t.b[along])
+      && Math.abs(port[t.axis] - t.value) < PORT_BERTH;
+  };
+  // Choose an empty tile corridor for each free segment. Its longitudinal span
+  // remains part of the topology; the final independent gate checks all paint.
+  for (const t of tracks) {
+    const along = t.axis === 'x' ? 'y' : 'x';
+    const lo = Math.min(t.a[along], t.b[along]), hi = Math.max(t.a[along], t.b[along]);
+    for (const n of topology.nodes.values()) {
+      search.charge(1, 'tile corridor');
+      const near = along === 'y' ? n.y : n.x, far = near + (along === 'y' ? n.height : n.width);
+      if (hi <= near - TILE_GRAZE || lo >= far + TILE_GRAZE) continue;
+      const lower = n[t.axis] - TILE_GRAZE, upper = n[t.axis] + (t.axis === 'x' ? n.width : n.height) + TILE_GRAZE;
+      const sides = t.value <= lower ? ['before'] : t.value >= upper ? ['after']
+        : t.value - lower <= upper - t.value ? ['before', 'after'] : ['after', 'before'];
+      const decision = JSON.stringify(['tile-corridor', t.id, n.key]);
+      const side = search.choose(decision, sides);
+      if (side === 'before') constraints(t.id, constant(n.key + ':' + t.axis + ':near', lower), 0, 'tile-corridor', decision);
+      else constraints(constant(n.key + ':' + t.axis + ':far', upper), t.id, 0, 'tile-corridor', decision);
+    }
+    for (const r of topology.routes) {
+      if (sameSource(r, t.route, search.charge)) continue;
+      const { ss, berths } = foreign(r);
+      search.charge(ss.length + 1, 'foreign corridor');
+      for (const [i, [a, b]] of ss.entries()) {
+        if (a[t.axis] !== b[t.axis] || Math.min(a[along], b[along]) >= hi || Math.max(a[along], b[along]) <= lo) continue;
+        search.charge(1, 'foreign route model lookup');
+        const foreignModel = modelOf.get(r.id);
+        search.charge((foreignModel?.tracks.length ?? 0) + 1, 'foreign route track lookup');
+        const other = foreignModel?.tracks.find(u => u.axis === t.axis && u.value === a[t.axis]
+          && Math.min(u.a[along], u.b[along]) <= Math.min(a[along], b[along]) && Math.max(u.a[along], u.b[along]) >= Math.max(a[along], b[along]));
+        const id = other?.id ?? constant(JSON.stringify(['foreign-track', r.id, i, t.axis]), a[t.axis]);
+        if (other && t.id > other.id) continue;
+        const forward = t.value < a[t.axis] || t.value === a[t.axis] && t.id < id;
+        constraints(forward ? t.id : id, forward ? id : t.id, LANE_SEPARATION, 'parallel-tracks');
+      }
+      search.charge(berths.length + 1, 'foreign berths');
+      for (const [i, berth] of berths.entries()) {
+        if (berth[along] < lo || berth[along] > hi) continue;
+        // Intentional convergence belongs to the native meeting model; moving
+        // an internal track cannot invent another junction input.
+        if ([r.from, r.to].some(e => e.kind === 'junction' && [t.route.from, t.route.to].some(f => f.kind === e.kind && f.id === e.id))) continue;
+        if (Math.abs(berth[t.axis] - t.value) >= berth.radius) continue;
+        search.charge(1, 'foreign berth model lookup');
+        const owner = modelOf.get(r.id);
+        search.charge((owner?.points.length ?? 0) + 1, 'foreign berth point lookup');
+        const at = owner?.points.findIndex(p => p.x === berth.x && p.y === berth.y) ?? -1;
+        const center = owner && at >= 0 ? coordinate(owner, at, t.axis)
+          : constant(JSON.stringify(['berth', r.id, i, t.axis]), berth[t.axis]);
+        const decision = JSON.stringify(['berth-corridor', t.id, r.id, i]);
+        const side = search.choose(decision,
+          t.value <= berth[t.axis] ? ['before', 'after'] : ['after', 'before']);
+        if (side === 'before') constraints(t.id, center, berth.radius, 'port-corner', decision);
+        else constraints(center, t.id, berth.radius, 'port-corner', decision);
+      }
+    }
+    search.charge(reserved.length + 1, 'reserved ports');
+    for (const port of reserved) {
+      if (!blocks(t, port)) continue;
+      const decision = JSON.stringify(['reserved-port', t.id, port.owner, port.side]);
+      const side = search.choose(decision, t.value <= port[t.axis] ? ['before', 'after'] : ['after', 'before']);
+      const center = constant(reservedCenter(port, t.axis), port[t.axis]);
+      if (side === 'before') constraints(t.id, center, PORT_BERTH, 'reserved-port', decision);
+      else constraints(center, t.id, PORT_BERTH, 'reserved-port', decision);
+    }
+  }
+  // The selected inequality graph needs a topological order. Dependency cycles
+  // request a new corridor, rather than discarding a hard separation.
+  search.charge(8 * (variables.size + edges.length + 1), 'incremental order graph');
+  const outgoing = new Map([...variables.keys()].map(id => [id, [] as string[]]));
+  const degree = new Map([...variables.keys()].map(id => [id, 0]));
+  for (const e of edges) { outgoing.get(e.before)!.push(e.after); degree.set(e.after, degree.get(e.after)! + 1); }
+  const order = [...variables.keys()].filter(id => !degree.get(id));
+  for (let i = 0; i < order.length; i++) for (const after of outgoing.get(order[i])!) {
+    degree.set(after, degree.get(after)! - 1); if (!degree.get(after)) order.push(after);
+  }
+  if (order.length !== variables.size) {
+    // Backtrack only a witnessed cycle's choices. A residual graph also
+    // contains outgoing tails whose alternatives cannot remove that cycle.
+    search.charge(variables.size + edges.length + 1, 'incremental order conflict witness');
+    const unresolved = new Set([...degree].filter(([, count]) => count > 0).map(([id]) => id));
+    const graph = new Map([...unresolved].map(id => [id, [] as Separation[]]));
+    for (const edge of edges) if (unresolved.has(edge.before) && unresolved.has(edge.after)) graph.get(edge.before)!.push(edge);
+    const color = new Map<string, number>(), parents = new Map<string, Separation>();
+    for (const root of unresolved) {
+      if (color.has(root)) continue;
+      const stack = [{ id: root, next: 0 }]; color.set(root, 1);
+      while (stack.length) {
+        search.charge(1, 'incremental cycle traversal');
+        const at = stack.at(-1)!, edge = graph.get(at.id)![at.next++];
+        if (!edge) { color.set(at.id, 2); stack.pop(); continue; }
+        if (!color.has(edge.after)) {
+          parents.set(edge.after, edge); color.set(edge.after, 1); stack.push({ id: edge.after, next: 0 });
+        } else if (color.get(edge.after) === 1) {
+          const cycle = [edge];
+          for (let id = edge.before; id !== edge.after;) {
+            search.charge(1, 'incremental cycle witness');
+            const prior = parents.get(id)!; cycle.push(prior); id = prior.before;
+          }
+          const relevant = cycle.flatMap(link => decisions.has(link.id) ? [decisions.get(link.id)!] : []);
+          search.reject(['incremental segment order cycle', ...cycle.map(link => link.id)], 'topology', relevant);
+        }
+      }
+    }
+    search.reject(['incremental segment order cycle']);
+  }
+  // A newly imported track whose preferred coordinate already satisfies every
+  // hard residual needs no projection. The kernel closes only the conflicting
+  // free components after eliminating the committed constants.
+  const solved = solveRoutingComponents({ variables: [...variables.values()], order, separations: edges }, [], search.charge);
+  if (!solved.ok) {
+    search.charge(solved.conflict.constraints.length + 1, 'incremental metric decision witness');
+    return search.reject(solved.conflict.constraints, 'metric',
+      solved.conflict.constraints.flatMap(id => decisions.has(id) ? [decisions.get(id)!] : []));
+  }
+  const paths = new Map(models.map(m => [m.route.id, m.points.every((p, i) =>
+    solved.positions.get(coordinate(m, i, 'x')) === p.x && solved.positions.get(coordinate(m, i, 'y')) === p.y) ? m.route.path : m.raw.map((raw, i) => {
+    const x = solved.positions.get(coordinate(m, i, 'x'))!, y = solved.positions.get(coordinate(m, i, 'y'))!;
+    return x === m.points[i].x && y === m.points[i].y ? raw : `${i ? 'L' : 'M'}${x} ${y}${seed.fragments ? ' ' : ''}`;
+  }).join(seed.fragments ? '' : ' ')]));
+  const drawing = { ...topology, routes: topology.routes.map(r => !paths.has(r.id) || paths.get(r.id) === r.path ? r : { ...r, path: paths.get(r.id)! }) };
+  if (seed.fragments) {
+    const retained = bindRoutingFragmentTopology(seed.fragments, drawing, search.charge, true);
+    if (!retained.ok) search.reject(retained.conflict.constraints, 'metric');
+  } else {
+    const conflict = retainedRoutingConflict(seed.problem, [scene(drawing)], search.charge);
+    if (conflict) search.reject(conflict.constraints, 'metric');
+  }
+  return { drawing, solved: solved.solved.length };
 }
