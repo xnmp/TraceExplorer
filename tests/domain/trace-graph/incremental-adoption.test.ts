@@ -5,7 +5,8 @@ import fs from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { adoptionFallback, bandInsertionAllowance, movedRectangle, PRODUCTION_ROUTING_WORK } from '$lib/domain/trace-graph/incremental-adoption';
 import { geometryGate } from '$lib/domain/trace-graph/geometry-gate';
-import { scaledIncrementalBudget } from '$lib/domain/trace-graph/band-incremental';
+import { constrainedBandInsertion, scaledIncrementalBudget } from '$lib/domain/trace-graph/band-incremental';
+import { PREDICTED_DECLINE } from '$lib/domain/trace-graph/incremental-routing';
 import { createDefaultEngine } from '$lib/domain/trace-graph/folder-layout/default-engine';
 import { folderGeometryGate } from '$lib/domain/trace-graph/folder-layout/geometry-gate';
 import { profileLayout } from '$lib/domain/trace-graph/layout-profile';
@@ -83,6 +84,13 @@ describe('adoption contracts (pure)', () => {
       expect(b.fallback, `${items} items`).toBeGreaterThan(0);
     }
   });
+  it('sizes pools at 1/48M of the allowance and predicts a decline above a twentieth of it in capture', () => {
+    for (const items of [1, 16, 47]) {
+      const { work, pools, captureLimit } = bandInsertionAllowance(items)!;
+      expect(pools).toBe(work / 48_000_000);
+      expect(captureLimit).toBe(Math.floor(work / 20));
+    }
+  });
   it('maps every constrained conflict to one fallback reason', () => {
     expect(['topology-conflict', 'metric-conflict', 'unsupported-input', 'budget-exhaustion'].map(r => adoptionFallback(r as never)))
       .toEqual(['topology', 'metric', 'unsupported', 'budget']);
@@ -137,6 +145,39 @@ describe('band insertion through publication', () => {
         .sort((a, b) => b.order - a.order || a.key.localeCompare(b.key))[0];
       focus = selected.key; visited.add(focus);
     }
+  });
+  // Reserving 1/32M pools left this arrival too little of its 6M allowance for
+  // construction's other charges, so it declined and legacy reached T24 (free
+  // port lanes). It spends about 3M and certifies with 1/48M pools.
+  it('publishes an arrival that 1/32M pools declined, without a legacy port repair', () => {
+    const c = { ...corpus().find(f => f.id === 'random-tree-100-8003')!, full: false };
+    const opened = optimizedBand(requestFor(c, null, 454, 96), {});
+    const req = requestFor(c, 'n21', 454, 96);
+    const { result: next, count } = counters(() => optimizedBand({ ...req, hint: opened.layout.readingOrder }, { previous: opened, anchorKey: 'n21' }));
+    expect([count('adoption:band-insertion:success'), count('adoption:band-insertion:published'), count('legacy:T24')]).toEqual([1, 1, 0]);
+    for (const [key, was] of opened.placed.nodes) {
+      const now = next.placed.nodes.get(key);
+      if (now) expect([now.x, now.y, now.width, now.height], key).toEqual([was.x, was.y, was.width, was.height]);
+    }
+    expect(geometryGate(next.placed, req.items, req.band!.key, req.maxWidth)).toBeNull();
+  });
+  // A capture costing more than the limit stops the attempt before construction,
+  // as a budget decline, without the fragment search; without a limit the same
+  // request goes on to construction.
+  it('declines before construction when the capture exceeds its limit', () => {
+    const c = { ...corpus().find(f => f.id === 'random-tree-100-8003')!, full: false };
+    const opened = optimizedBand(requestFor(c, null, 454, 96), {});
+    const req = { ...requestFor(c, 'n21', 454, 96), hint: opened.layout.readingOrder, anchorKey: 'n21', history: undefined };
+    const { work, pools } = bandInsertionAllowance(req.items.length)!;
+    const certified = constrainedBandInsertion(req, opened.layout, () => scaledIncrementalBudget(pools), work);
+    const predicted = constrainedBandInsertion(req, opened.layout, () => scaledIncrementalBudget(pools), work, 1);
+    expect(predicted.ok).toBe(false);
+    if (predicted.ok) return;
+    expect(predicted.conflict.reason).toBe('budget-exhaustion');
+    expect(predicted.conflict.constraints[0]).toBe(PREDICTED_DECLINE);
+    expect(predicted.work).toBeLessThan(work / 20);
+    expect(certified.ok || certified.conflict.constraints[0] !== PREDICTED_DECLINE).toBe(true);
+    expect(certified.work).toBeGreaterThan(10 * predicted.work);
   });
   // The largest band the size limit admits is attempted with a chance: its fan
   // arrival certifies (at the former 4M it exhausted the allowance until import

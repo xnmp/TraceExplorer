@@ -37,7 +37,7 @@ import { CONNECTOR_STROKE, JUNCTION_CLEARANCE } from "./connector-ink";
 import { forEachPathNumber } from "./path-data";
 import { pathCommands, type Point } from "./path-sampling";
 import { MAX_INDEX_ROWS, inReach } from './coordinate-space';
-import { routeCommittedIncremental, type IncrementalRoutingConflict, type IncrementalRoutingResult, type IncrementalFrameFactory, type IncrementalAdmission } from './incremental-routing';
+import { PREDICTED_DECLINE, routeCommittedIncremental, type IncrementalRoutingConflict, type IncrementalRoutingResult, type IncrementalFrameFactory, type IncrementalAdmission } from './incremental-routing';
 export { inReach } from './coordinate-space';
 
 /** Fractional curve coordinates need the full reserved clearance. The drawing gate uses
@@ -1672,7 +1672,7 @@ const movedRoute = (before: GraphLayout, after: GraphLayout): boolean =>
  * repairs are excluded; constants are captured before the first construction. */
 export function constrainedIncremental(request: LayoutRequest, previous: GraphLayout,
   budget: IncrementalBudget = automaticIncrementalBudget(), world?: { readonly left: number; readonly right: number }, workLimit = AUTOMATIC_ROUTING_WORK,
-  prepare?: IncrementalFrameFactory, admit?: IncrementalAdmission): IncrementalRoutingResult {
+  prepare?: IncrementalFrameFactory, admit?: IncrementalAdmission, captureLimit = Infinity): IncrementalRoutingResult {
   const remaining = { ...budget };
   const ink = Math.max(...Object.values(CONNECTOR_STROKE)) / 2;
   const pane = { left: (world?.left ?? 0) + ink, right: (world?.right ?? request?.maxWidth) - ink };
@@ -1727,7 +1727,7 @@ export function constrainedIncremental(request: LayoutRequest, previous: GraphLa
     const attached = retainSingleBandFrame(attachSingleBand(declared, request), request);
     if (!attached) return { reason: 'unsupported-input', constraints: ['completed attachment identity frame'] };
     return attached;
-  }, workLimit, pane, prepare, admit);
+  }, workLimit, pane, prepare, admit, captureLimit);
   if (result.ok) Object.assign(budget, remaining);
   if (!result.ok || world) return result;
   const drawing = retainSingleBandFrame(result.drawing, request);
@@ -1740,13 +1740,16 @@ export function constrainedIncremental(request: LayoutRequest, previous: GraphLa
  * lets free retained tracks move (fragment capture); retained source constants,
  * native pieces and every rectangle stay exact either way. The strict search is
  * not a subset of the fragment search's order: on tour replays it certifies
- * inputs whose fragment search exhausts its budget in metric conflicts. */
+ * inputs whose fragment search exhausts its budget in metric conflicts.
+ * A capture costing more than `captureLimit` predicts a decline: the attempt
+ * stops there, without the fragment search. */
 export function constrainedBandInsertion(request: LayoutRequest, previous: GraphLayout,
-  pools: () => IncrementalBudget, allowance: number): IncrementalRoutingResult {
-  const strict = constrainedIncremental(request, previous, pools(), undefined, allowance);
-  if (strict.ok || strict.conflict.reason !== 'budget-exhaustion' || strict.work >= allowance) return strict;
+  pools: () => IncrementalBudget, allowance: number, captureLimit = Infinity): IncrementalRoutingResult {
+  const strict = constrainedIncremental(request, previous, pools(), undefined, allowance, undefined, undefined, captureLimit);
+  if (strict.ok || strict.conflict.reason !== 'budget-exhaustion' || strict.work >= allowance
+    || strict.conflict.constraints[0] === PREDICTED_DECLINE) return strict;
   const framed = constrainedIncremental(request, previous, pools(), undefined, allowance - strict.work,
-    preferred => ({ preferred, frames: [] }));
+    preferred => ({ preferred, frames: [] }), undefined, captureLimit);
   return { ...framed, work: framed.work + strict.work };
 }
 

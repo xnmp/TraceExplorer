@@ -15,6 +15,7 @@ import { attachSingleBand, attachPackedBand, localBandPlacement, bandExtent, wit
 import { measure, validateLayout, cost, routePlan, sharedLaneLength, DEFAULT_WEIGHTS, type Measures, type Weights } from "./layout-quality";
 import { constrainedBandInsertion, scaledIncrementalBudget, incrementalBudget, incrementalTree, inReach, usableRetainedRoute } from "./band-incremental";
 import { adoptionFallback, adoptOnce, bandInsertionAllowance, movedRectangle, recordAdoption, recordPublication } from "./incremental-adoption";
+import { PREDICTED_DECLINE } from "./incremental-routing";
 import { geometrySignature, layoutSignature } from "./layout-signature";
 import { forEachPathNumber, mapPathNumbers, pathNumbers } from "./path-data";
 import { extentCost, optimisticCost, rectangleCost } from "./layout-cost-bound";
@@ -127,9 +128,12 @@ function constrainedInsertion(request: LayoutRequest, previous: GraphLayout): Gr
   return adoptOnce('band-insertion', key, () => {
     const endStage = layoutStage('constrained-insertion');
     let attempt: ReturnType<typeof constrainedBandInsertion>;
-    try { attempt = constrainedBandInsertion(request, previous, () => scaledIncrementalBudget(allowance.pools), allowance.work); }
+    try { attempt = constrainedBandInsertion(request, previous, () => scaledIncrementalBudget(allowance.pools), allowance.work, allowance.captureLimit); }
     finally { endStage(); }
-    if (!attempt.ok) return { drawing: null, outcome: adoptionFallback(attempt.conflict.reason), work: attempt.work };
+    if (!attempt.ok) {
+      if (attempt.conflict.constraints[0] === PREDICTED_DECLINE) countLayoutWork('adoption:band-insertion:predicted-decline');
+      return { drawing: null, outcome: adoptionFallback(attempt.conflict.reason), work: attempt.work };
+    }
     const retained = request.items.filter(n => previous.nodes.has(n.key)).map(n => n.key);
     return movedRectangle(previous.nodes, attachSingleBand(attempt.drawing, request).nodes, retained) !== null
       ? { drawing: null, outcome: 'contract', work: attempt.work } : { drawing: attempt.drawing, outcome: 'success', work: attempt.work };
