@@ -168,7 +168,7 @@ export function routeCommittedIncremental(request: LayoutRequest, previous: Grap
       seed = captureSeed(search, choose);
       if (!chose) captured = seed;
     }
-    return constructAndSolve(search, seed);
+    return constructAndSolve(search, seed, seed === captured);
   }, budget);
   function captureSeed(search: CorridorSearch, choose: CorridorSearch['choose']): IncrementalRoutingSeed {
     const start = search.remaining;
@@ -200,7 +200,7 @@ export function routeCommittedIncremental(request: LayoutRequest, previous: Grap
     if (seed.fragments) seed = clearRetainedPorts(request, seed, search, pane);
     return seed;
   }
-  function constructAndSolve(search: CorridorSearch, seed: IncrementalRoutingSeed): { readonly drawing: GraphLayout; readonly solved: number } {
+  function constructAndSolve(search: CorridorSearch, seed: IncrementalRoutingSeed, shared: boolean): { readonly drawing: GraphLayout; readonly solved: number } {
     // Construction may defer free old cores while treating the selected native
     // fragments as hard obstacles. Give it a separate, prepaid snapshot so a
     // constructor cannot mutate the metric's captured authority.
@@ -210,7 +210,14 @@ export function routeCommittedIncremental(request: LayoutRequest, previous: Grap
       chargeRoutingSnapshot(view.copied, search.charge);
       fragments = { ...structuredClone(view.copied), pins: view.pins };
     }
-    const topology = construct(seed.drawing, search.charge, search.choose, search.reserve, fragments);
+    // A seed shared across candidates hands each one its own prepaid drawing,
+    // so a rejected candidate's edits never reach the next candidate.
+    let drawing = seed.drawing;
+    if (shared) {
+      chargeRoutingSnapshot(drawing, search.charge);
+      drawing = structuredClone(drawing);
+    }
+    const topology = construct(drawing, search.charge, search.choose, search.reserve, fragments);
     if (!topology || typeof topology !== 'object') return search.reject(['topology constructor result'], 'invalid');
     if ('reason' in topology) {
       chargeRoutingSnapshot(topology, search.charge);

@@ -175,24 +175,55 @@ it('keeps a retained C identity when a free L command is inserted before it', ()
 });
 
 it('exposes selected construction obstacles without allowing them to replace captured pins', () => {
-  const { request, previous, topology } = fixture(), before = structuredClone(previous);
-  let observed = false;
-  const result = routeCommittedIncremental(request, previous, (_drawing, _charge, _choose, _reserve, fragments) => {
-    expect(fragments?.fragments.some(fragment => fragment.native.length === 4)).toBe(true);
-    observed = true;
-    // Simulate an accidental mutation in an adapter. It must not alter the
-    // independent capture used by the final metric and retained-paint check.
-    // Construction reads pins through a lookup only, and owns copies of the rest.
-    expect(Object.keys(fragments!.pins)).toEqual(['get']);
-    for (const node of fragments!.preferred.drawing.nodes.values()) (node as { x: number }).x += 10;
-    (fragments!.fragments as unknown[]).length = 0;
-    return { ...topology, nodes: new Map([...topology.nodes].map(([key, node]) =>
-      [key, key === 'a' ? { ...node, x: node.x + 10 } : node])) };
-  }, 64_000_000, undefined, source => ({ preferred: source, frames: [] }));
-  expect(observed).toBe(true);
-  expect(result.ok).toBe(false);
-  expect(previous).toEqual(before);
+  const frame = (source: GraphLayout) => ({ preferred: source, frames: [] });
+  const run = (mutate: boolean) => {
+    const { request, previous, topology } = fixture(), before = structuredClone(previous);
+    const result = routeCommittedIncremental(request, previous, (_drawing, _charge, _choose, _reserve, fragments) => {
+      expect(fragments?.fragments.some(fragment => fragment.native.length === 4)).toBe(true);
+      // Construction reads pins through a lookup only, and owns copies of the rest.
+      expect(Object.keys(fragments!.pins)).toEqual(['get']);
+      if (mutate) {
+        // An adapter that edits its view must not alter the independent capture
+        // used by the final metric and retained-paint check.
+        for (const node of fragments!.preferred.drawing.nodes.values()) (node as { x: number }).x += 10;
+        (fragments!.fragments as unknown[]).length = 0;
+        (fragments!.intervals as unknown[]).length = 0;
+        (fragments!.source.plan.paths as unknown[]).length = 0;
+      }
+      return topology;
+    }, 64_000_000, undefined, frame);
+    expect(previous).toEqual(before);
+    return result;
+  };
+  const clean = run(false), mutated = run(true);
+  expect(clean.ok, JSON.stringify(clean.ok || clean.conflict)).toBe(true);
+  expect(mutated).toEqual(clean);
 });
+
+for (const framed of [false, true]) {
+  it(`gives every ${framed ? 'framed' : 'strict'} candidate an unmutated drawing after a rejected candidate edits its own`, () => {
+    const run = (mutate: boolean) => {
+      const { request, previous, topology } = fixture();
+      const seen: string[] = [];
+      const result = routeCommittedIncremental(request, previous, (drawing, _charge, choose) => {
+        seen.push(JSON.stringify([[...drawing.nodes.keys()], drawing.routes.map(route => route.path)]));
+        if (choose('family', ['first', 'second']) === 'first') {
+          if (mutate) {
+            drawing.nodes.set('zzz', { key: 'zzz', x: 1, y: 1, width: 1, height: 1, row: 0, band: 0 });
+            (drawing.routes as PlacedRoute[])[0] = { ...drawing.routes[0], path: 'M0 0 L1 1' };
+          }
+          return { reason: 'topology-conflict', constraints: ['first family'] };
+        }
+        return topology;
+      }, 64_000_000, undefined, framed ? source => ({ preferred: source, frames: [] }) : undefined);
+      return { seen, result };
+    };
+    const clean = run(false), mutated = run(true);
+    expect(mutated.seen).toHaveLength(2);
+    expect(mutated.seen[1]).toBe(mutated.seen[0]);
+    expect(mutated.result).toEqual(clean.result);
+  });
+}
 
 it('captures once per attempt: a later embedding candidate builds on the same captured authority', () => {
   const { request, previous, topology } = fixture();

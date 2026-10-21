@@ -14,7 +14,7 @@ import { bandWidthBudget, columnsFor, partitions, buildShelves, validate } from 
 import { attachSingleBand, attachPackedBand, localBandPlacement, bandExtent, withBandBounds, withPaneBandBounds, singleBandSkeleton } from "./band-geometry";
 import { measure, validateLayout, cost, routePlan, sharedLaneLength, DEFAULT_WEIGHTS, type Measures, type Weights } from "./layout-quality";
 import { constrainedBandInsertion, scaledIncrementalBudget, incrementalBudget, incrementalTree, inReach, usableRetainedRoute } from "./band-incremental";
-import { adoptionFallback, adoptOnce, bandInsertionAllowance, type InsertionSite, movedRectangle, recordAdoption, recordPublication } from "./incremental-adoption";
+import { adoptionFallback, adoptOnce, bandInsertionAllowance, movedRectangle, recordAdoption, recordPublication } from "./incremental-adoption";
 import { PREDICTED_DECLINE } from "./incremental-routing";
 import { geometrySignature, layoutSignature } from "./layout-signature";
 import { forEachPathNumber, mapPathNumbers, pathNumbers } from "./path-data";
@@ -120,7 +120,7 @@ function anchorKeys(request: LayoutRequest, previous: GraphLayout): readonly str
  * exactly where the committed drawing has it once attached. Null hands the request
  * to the legacy insertion and repair itinerary in the same layout call.
  */
-function constrainedInsertion(request: LayoutRequest, previous: GraphLayout, site: InsertionSite = 'insertion'): GraphLayout | null {
+function constrainedInsertion(request: LayoutRequest, previous: GraphLayout): GraphLayout | null {
   const placed = request.items.filter(n => !previous.nodes.has(n.key)).length;
   if (!placed) return null;
   const allowance = bandInsertionAllowance(request.items.length);
@@ -493,8 +493,8 @@ function layoutBandCandidates(input: LayoutRequest, options: BandOptions): Graph
   const constrained = new Set<GraphLayout>();
   const published = (layout: GraphLayout) => { if (constrained.has(layout)) recordPublication('band-insertion'); };
   /** A constrained attempt on `base`; legacy's `fallback` only when it declines. */
-  const insertion = (base: GraphLayout, fallback: () => GraphLayout | null, site?: InsertionSite): GraphLayout | null => {
-    const certified = constrainedInsertion(request, base, site);
+  const insertion = (base: GraphLayout, fallback: () => GraphLayout | null): GraphLayout | null => {
+    const certified = constrainedInsertion(request, base);
     if (certified) constrained.add(certified);
     return certified ?? fallback();
   };
@@ -537,7 +537,7 @@ function layoutBandCandidates(input: LayoutRequest, options: BandOptions): Graph
         || (wantsDown && height > rowsHeight * 1.1 && height > bandExtent(visibleDown().layout, key).height * 1.1);
       const subset = repack ? projected(previous, { ...request, items: request.items.filter(n => fixed.has(n.key)) }) : null;
       const base = subset && { ...subset, bandBounds: undefined, anchorX: undefined, anchorY: undefined };
-      const compact = base && insertion(base, () => repairPinned(incrementalTree(request, base, incrementalBudget())), 'repack');
+      const compact = base && insertion(base, () => repairPinned(incrementalTree(request, base, incrementalBudget())));
       if (compact) history.push({ name: "anchored-repack", layout: compact });
     }
     if (retained) history.push({ name: "retained-visible", layout: retained, partition: request.history?.layout.decision?.partition });

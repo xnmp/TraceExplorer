@@ -42,10 +42,6 @@ export const PRODUCTION_ROUTING_WORK = {
   'band-insertion': { work: 256_000_000, perItem: 8_000_000, poolsPerWork: 1 / 64_000_000, captureShare: 1 / 20 },
 } as const;
 
-/** Where band insertion runs: the incremental insertion around the committed
- * drawing, or the anchored repack around the click's ancestry alone. */
-export type InsertionSite = 'insertion' | 'repack';
-
 export interface InteractiveAllowance { readonly work: number; readonly pools: number; readonly captureLimit: number }
 
 /** The band insertion allowance for a band of `items` tiles, or null for a
