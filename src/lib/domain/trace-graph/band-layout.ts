@@ -14,7 +14,7 @@ import { bandWidthBudget, columnsFor, partitions, buildShelves, validate } from 
 import { attachSingleBand, attachPackedBand, localBandPlacement, bandExtent, withBandBounds, withPaneBandBounds, singleBandSkeleton } from "./band-geometry";
 import { measure, validateLayout, cost, routePlan, sharedLaneLength, DEFAULT_WEIGHTS, type Measures, type Weights } from "./layout-quality";
 import { constrainedBandInsertion, scaledIncrementalBudget, incrementalBudget, incrementalTree, inReach, usableRetainedRoute } from "./band-incremental";
-import { adoptionFallback, adoptOnce, bandInsertionAllowance, movedRectangle, recordAdoption, recordPublication } from "./incremental-adoption";
+import { adoptionFallback, adoptOnce, bandInsertionAllowance, type InsertionSite, movedRectangle, recordAdoption, recordPublication } from "./incremental-adoption";
 import { PREDICTED_DECLINE } from "./incremental-routing";
 import { geometrySignature, layoutSignature } from "./layout-signature";
 import { forEachPathNumber, mapPathNumbers, pathNumbers } from "./path-data";
@@ -120,9 +120,10 @@ function anchorKeys(request: LayoutRequest, previous: GraphLayout): readonly str
  * exactly where the committed drawing has it once attached. Null hands the request
  * to the legacy insertion and repair itinerary in the same layout call.
  */
-function constrainedInsertion(request: LayoutRequest, previous: GraphLayout): GraphLayout | null {
-  if (request.items.every(n => previous.nodes.has(n.key))) return null;
-  const allowance = bandInsertionAllowance(request.items.length);
+function constrainedInsertion(request: LayoutRequest, previous: GraphLayout, site: InsertionSite = 'insertion'): GraphLayout | null {
+  const placed = request.items.filter(n => !previous.nodes.has(n.key)).length;
+  if (!placed) return null;
+  const allowance = bandInsertionAllowance(request.items.length, site, placed);
   if (!allowance) { recordAdoption('band-insertion', 'budget'); return null; }
   const key = JSON.stringify(['band-insertion', layoutSignature(request), geometrySignature(previous)]);
   return adoptOnce('band-insertion', key, () => {
@@ -489,8 +490,14 @@ function layoutBandCandidates(input: LayoutRequest, options: BandOptions): Graph
   const history: Candidate[] = [];
   // The constrained insertion competes as the incremental-tree candidate; count it
   // as published only when ranking returns that exact drawing.
-  let constrained: GraphLayout | null = null;
-  const published = (layout: GraphLayout) => { if (constrained && layout === constrained) recordPublication('band-insertion'); };
+  const constrained = new Set<GraphLayout>();
+  const published = (layout: GraphLayout) => { if (constrained.has(layout)) recordPublication('band-insertion'); };
+  /** A constrained attempt on `base`; legacy's `fallback` only when it declines. */
+  const insertion = (base: GraphLayout, fallback: () => GraphLayout | null, site?: InsertionSite): GraphLayout | null => {
+    const certified = constrainedInsertion(request, base, site);
+    if (certified) constrained.add(certified);
+    return certified ?? fallback();
+  };
   const repairPinned = (layout: GraphLayout | null): GraphLayout | null => {
     if (!layout) return null;
     const placed = attachSingleBand(layout, request);
@@ -510,8 +517,7 @@ function layoutBandCandidates(input: LayoutRequest, options: BandOptions): Graph
     // Each embedding has bounded effort. A failed fully pinned search must not
     // consume the repack candidate's opportunity to keep the clicked anchor.
     const budget = incrementalBudget();
-    constrained = constrainedInsertion(request, previous);
-    const incremental = constrained ?? repairPinned(incrementalTree(request, previous, budget));
+    const incremental = insertion(previous, () => repairPinned(incrementalTree(request, previous, budget)));
     if (incremental) history.push({ name: "incremental-tree", layout: incremental });
     // With nothing new to place, the retained tiles as they are (`retained-visible`).
     const retained = projected(previous, request);
@@ -530,7 +536,8 @@ function layoutBandCandidates(input: LayoutRequest, options: BandOptions): Graph
       const repack = !warm || height > compactShelf * 1.1
         || (wantsDown && height > rowsHeight * 1.1 && height > bandExtent(visibleDown().layout, key).height * 1.1);
       const subset = repack ? projected(previous, { ...request, items: request.items.filter(n => fixed.has(n.key)) }) : null;
-      const compact = repairPinned(subset && incrementalTree(request, { ...subset, bandBounds: undefined, anchorX: undefined, anchorY: undefined }, incrementalBudget()));
+      const base = subset && { ...subset, bandBounds: undefined, anchorX: undefined, anchorY: undefined };
+      const compact = base && insertion(base, () => repairPinned(incrementalTree(request, base, incrementalBudget())), 'repack');
       if (compact) history.push({ name: "anchored-repack", layout: compact });
     }
     if (retained) history.push({ name: "retained-visible", layout: retained, partition: request.history?.layout.decision?.partition });
@@ -704,6 +711,14 @@ function layoutBandCandidates(input: LayoutRequest, options: BandOptions): Graph
       const repacked = subset && { ...subset, bandBounds: undefined, anchorX: undefined, anchorY: undefined };
       // Fully pinned siblings can occupy the only usable corridor. Retrying the
       // same routes around the ancestry-only embedding lets those siblings move.
+      // The constrained insertion tries that embedding first; the legacy ladder
+      // runs only if it declines or does not hold the anchors.
+      const certified = repacked && constrainedInsertion(request, repacked, 'repack');
+      if (certified) {
+        constrained.add(certified);
+        const candidate = prepare({ name: "incremental-tree", layout: certified });
+        if (candidate.holds) { prepared.push(candidate); consider(candidate); }
+      }
       for (const [base, policy, effort] of [[previous, "constrained", 1], [previous, "repairable", 1],
         [previous, "constrained", 2], [previous, "repairable", 2],
         [previous, "constrained", 3], [previous, "repairable", 3],

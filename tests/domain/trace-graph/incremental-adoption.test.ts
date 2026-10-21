@@ -91,6 +91,13 @@ describe('adoption contracts (pure)', () => {
       expect(captureLimit).toBe(Math.floor(work / 20));
     }
   });
+  it('attempts the anchored repack only for a few new tiles', () => {
+    const { maximumRepackItems: few } = PRODUCTION_ROUTING_WORK['band-insertion'];
+    expect(bandInsertionAllowance(20, 'repack', few)).toEqual(bandInsertionAllowance(20));
+    expect(bandInsertionAllowance(20, 'repack', few + 1)).toBeNull();
+    expect(bandInsertionAllowance(20, 'insertion', few + 1)).toEqual(bandInsertionAllowance(20));
+    expect(bandInsertionAllowance(20, 'repack', NaN)).toBeNull();
+  });
   it('maps every constrained conflict to one fallback reason', () => {
     expect(['topology-conflict', 'metric-conflict', 'unsupported-input', 'budget-exhaustion'].map(r => adoptionFallback(r as never)))
       .toEqual(['topology', 'metric', 'unsupported', 'budget']);
@@ -178,6 +185,28 @@ describe('band insertion through publication', () => {
     expect(predicted.work).toBeLessThan(work / 20);
     expect(certified.ok || certified.conflict.constraints[0] !== PREDICTED_DECLINE).toBe(true);
     expect(certified.work).toBeGreaterThan(10 * predicted.work);
+  });
+  // This click re-embeds the unanchored tiles (the anchored repack). The
+  // constrained insertion certifies both the insertion and the repack, so the
+  // legacy insertion never runs in the request.
+  it('certifies the anchored repack without the legacy insertion', () => {
+    const c = { ...corpus().find(f => f.id === 'random-bushy-12-7323')!, full: false }, visited = new Set<string>();
+    let focus: string | null = null, previous: Optimized | undefined;
+    for (let step = 0; step <= 5; step++) {
+      const req = requestFor(c, focus, 640, 96);
+      const { result: next, profile } = profileLayout(() => optimizedBand({ ...req, hint: previous?.layout.readingOrder }, { previous, anchorKey: focus ?? undefined }));
+      if (step === 5) {
+        expect(focus).toBe('n2');
+        const count = (name: string) => profile.counters[name] ?? 0;
+        expect([count('adoption:band-insertion:attempt'), count('adoption:band-insertion:success')]).toEqual([2, 2]);
+        expect(profile.stages['pinned-band']).toBeUndefined();
+        expect(geometryGate(next.placed, req.items, req.band!.key, req.maxWidth)).toBeNull();
+      }
+      previous = next;
+      const selected = req.items.filter(n => !visited.has(n.key) && req.band!.items.some(child => child.parents.includes(n.key)))
+        .sort((a, b) => b.order - a.order || a.key.localeCompare(b.key))[0];
+      if (!selected) { if (focus === null) break; focus = null; } else { focus = selected.key; visited.add(focus); }
+    }
   });
   // The largest band the size limit admits is attempted with a chance: its fan
   // arrival certifies (at the former 4M it exhausted the allowance until import
