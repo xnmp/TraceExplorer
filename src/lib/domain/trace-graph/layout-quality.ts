@@ -44,7 +44,7 @@ export function crossing([a, b]: Segment, [c, d]: Segment): Point | null {
 }
 export function overlapLength([a, b]: Segment, [c, d]: Segment): number { return collinearOverlap(a.x, a.y, b.x, b.y, c.x, c.y, d.x, d.y); }
 /** {@link overlapLength} of segments (ax, ay)-(bx, by) and (cx, cy)-(ex, ey), on plain coordinates for the hot joins. */
-function collinearOverlap(ax: number, ay: number, bx: number, by: number, cx: number, cy: number, ex: number, ey: number): number {
+export function collinearOverlap(ax: number, ay: number, bx: number, by: number, cx: number, cy: number, ex: number, ey: number): number {
     const dx = bx - ax, dy = by - ay;
     // Flattening an almost-zero cubic can leave roundoff-sized fragments. Neither
     // operand then defines a line; testing only the first made overlap asymmetric
@@ -1417,9 +1417,9 @@ function recallGates(layout: GraphLayout, coverKey: string, paneWidth: number, i
 }
 
 /** Pieces of a run whose ends differ by less than this on its cross axis are axis-parallel. */
-const AXIS_SLACK = .01;
+export const AXIS_SLACK = .01;
 /** Two parallel runs closer than this read as one line once they run together further than an arrowhead. */
-const NEAR_RUN = ARROW.length;
+export const NEAR_RUN = ARROW.length;
 
 /**
  * Length along which axis-parallel runs of different sources lie closer than `LANE_SEPARATION`

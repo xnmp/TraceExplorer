@@ -129,8 +129,10 @@ describe('band insertion through publication', () => {
   });
 
   // The third click of this tour declined as budget at the former 4M ceiling
-  // (legacy published it): its net work is about 2.5M, but the up-front pool
-  // reservation plus capture does not fit 4M. The 6M allowance certifies it.
+  // (legacy published it): its net work was about 2.5M, but the up-front pool
+  // reservation plus capture did not fit 4M. The 6M allowance certifies it;
+  // with probes checked locally (each probe paints and reads only its own
+  // route) its work is about 1.7M.
   it('publishes a click the former 4M allowance declined, keeping retained tiles', () => {
     const c = { ...corpus().find(f => f.id === 'random-bushy-100-8201')!, full: false }, visited = new Set<string>();
     let focus: string | null = null, previous: Optimized | undefined;
@@ -139,7 +141,7 @@ describe('band insertion through publication', () => {
       const { result: next, count } = counters(() => optimizedBand(req, { previous, anchorKey: focus ?? undefined }));
       if (step === 2) {
         expect([count('adoption:band-insertion:success'), count('adoption:band-insertion:published')]).toEqual([1, 1]);
-        expect(count('adoption:band-insertion:work')).toBeGreaterThan(2_000_000);
+        expect(count('adoption:band-insertion:work')).toBeGreaterThan(1_000_000);
         for (const [key, was] of previous!.placed.nodes) {
           const now = next.placed.nodes.get(key);
           if (now) expect([now.x, now.y, now.width, now.height], key).toEqual([was.x, was.y, was.width, was.height]);

@@ -232,86 +232,171 @@ function entersNativeTile(primitive: Primitive, tile: PlacedNode, charge: Charge
   return visit(primitive, 0);
 }
 
+interface PreparedRoute {
+  readonly route: PlacedRoute;
+  readonly source: string;
+  readonly entries: readonly Segment[];
+  readonly probes: readonly Probe[];
+  /** The layout lookups the probes' radii read: endpoint dots and tiles, and the mask. */
+  readonly reads: readonly unknown[];
+}
+/** The lookups {@link prepareRoute} reads from `layout` for this route's probes. */
+const preparedReads = (layout: GraphLayout, route: PlacedRoute, options?: NativeClearanceOptions): unknown[] =>
+  [layout.junctions.get(route.from.id), layout.nodes?.get(route.from.id), layout.junctions.get(route.to.id), layout.nodes?.get(route.to.id),
+    options?.endpointMasks?.get(route)];
+
+/** One route's segments and probes; a failure name for a path the strict reader rejects. */
+function prepareRoute(layout: GraphLayout, route: PlacedRoute, charge: Charge, options?: NativeClearanceOptions): PreparedRoute | string {
+  charge(1, 'native clearance route');
+  const parsed = read(route.path, charge);
+  if (!parsed) return 'invalid-path';
+  charge(8 * (route.from.kind.length + route.from.id.length + 8), 'native source identity bytes');
+  const source = sourceOf(route), { points, errors, hulls, corners, pieces } = parsed;
+  const end = points.at(-1)!, before = points.at(-2)!;
+  if (route.terminal) {
+    const length = Math.hypot(end.x - before.x, end.y - before.y);
+    if (!length) return 'invalid-terminal';
+    errors.push(0);
+    points.push({ x: end.x + ARROW.length * (end.x - before.x) / length, y: end.y + ARROW.length * (end.y - before.y) / length });
+    hulls.push(boxOf(end, points.at(-1)!));
+    pieces.push([end, points.at(-1)!]);
+    // The arrow base is part of the target approach, not an ordinary interior crossing.
+    corners.push(end);
+  }
+  charge(2 * points.length + corners.length, 'native probes and segments');
+  const entries: Segment[] = [];
+  for (let i = 1; i < points.length; i++) entries.push({ a: points[i - 1], b: points[i], route, source, error: errors[i], hull: hulls[i], primitive: pieces[i] });
+  const portRadius = (p: Point, end: PlacedRoute['from']) => {
+    const dot = end.kind === 'junction' ? layout.junctions.get(end.id) : undefined;
+    if (dot && Math.hypot(p.x - dot.x, p.y - dot.y) < 1e-7) return Math.max(LANE_SEPARATION, JUNCTION_CLEARANCE);
+    const n = layout.nodes?.get(end.id);
+    const onOutline = n && p.x >= n.x - .01 && p.x <= n.x + n.width + .01 && p.y >= n.y - .01 && p.y <= n.y + n.height + .01
+      && Math.min(Math.abs(p.x - n.x), Math.abs(p.x - n.x - n.width), Math.abs(p.y - n.y), Math.abs(p.y - n.y - n.height)) < .01;
+    return onOutline ? PORT_BERTH : LANE_SEPARATION;
+  };
+  const mask = options?.endpointMasks?.get(route);
+  const probes = [...corners.map(p => ({ p, radius: LANE_SEPARATION })),
+    ...(mask?.start === false ? [] : [{ p: points[0], radius: portRadius(points[0], route.from) }]),
+    ...(mask?.end === false ? [] : [{ p: points.at(-1)!, radius: portRadius(points.at(-1)!, route.to) }])];
+  return { route, source, entries, probes, reads: preparedReads(layout, route, options) };
+}
+
+/** Whether a probe of `route` comes within its radius of another source's ink in `tree`. */
+function probeContact(layout: GraphLayout, route: PlacedRoute, source: string, { p, radius }: Probe, tree: Branch, charge: Charge): boolean {
+  const search = (branch: Branch): boolean => {
+    charge(1, 'native clearance query');
+    if (branch.source === source || p.x + radius + .025 < branch.minX || p.x - radius - .025 > branch.maxX || p.y + radius + .025 < branch.minY || p.y - radius - .025 > branch.maxY) return false;
+    if (branch.entries) return branch.entries.some(s => { charge(1, 'native probe pair'); return s.source !== source && !intentional(layout, route, s.route, p) && pointBoxDistance(p, s.hull) < radius - 1e-7 && distance(p, s.a, s.b) < radius + s.error - 1e-7
+      && !separatedPrimitives([p, p], s.primitive, radius - 1e-7, charge); });
+    return search(branch.left!) || search(branch.right!);
+  };
+  return search(tree);
+}
+
+/** Smooth contacts are not corners: whether segment `a` runs nearly parallel to,
+ * or transversally crosses outside a join, another source's ink in `tree`. */
+function tangentContact(layout: GraphLayout, a: Segment, tree: Branch, charge: Charge): boolean {
+  const radius = LANE_SEPARATION + .05;
+  const minX = Math.min(a.a.x, a.b.x) - radius, maxX = Math.max(a.a.x, a.b.x) + radius;
+  const minY = Math.min(a.a.y, a.b.y) - radius, maxY = Math.max(a.a.y, a.b.y) + radius;
+  const dx = a.b.x - a.a.x, dy = a.b.y - a.a.y, length = Math.hypot(dx, dy);
+  const search = (branch: Branch): boolean => {
+    charge(1, 'native clearance query');
+    if (branch.source === a.source || maxX < branch.minX || minX > branch.maxX || maxY < branch.minY || minY > branch.maxY) return false;
+    if (!branch.entries) return search(branch.left!) || search(branch.right!);
+    return branch.entries.some(b => {
+      charge(1, 'native tangent pair');
+      // Chord error is only an upper uncertainty bound. A separated control hull
+      // proves exact clearance even when the conservative chord test cannot.
+      if (a.source === b.source || boxDistance(a.hull, b.hull) >= LANE_SEPARATION - 1e-7) return false;
+      const bx = b.b.x - b.a.x, by = b.b.y - b.a.y;
+      if (Math.abs(dx * by - dy * bx) > .2 * length * Math.hypot(bx, by)) return false;
+      const cross=dx*by-dy*bx;
+      if (cross) {
+        const x=b.a.x-a.a.x,y=b.a.y-a.a.y,t=(x*by-y*bx)/cross,u=(x*dy-y*dx)/cross;
+        if (t>=0 && t<=1 && u>=0 && u<=1 && !intentional(layout,a.route,b.route,{x:a.a.x+t*dx,y:a.a.y+t*dy})) return true;
+      }
+      const possibleContact = [a.a, a.b].some(p => !intentional(layout, a.route, b.route, p) && distance(p, b.a, b.b) < LANE_SEPARATION + a.error + b.error - 1e-7)
+        || [b.a, b.b].some(p => !intentional(layout, a.route, b.route, p) && distance(p, a.a, a.b) < LANE_SEPARATION + a.error + b.error - 1e-7);
+      return possibleContact && !separatedPrimitives(a.primitive, b.primitive, LANE_SEPARATION - 1e-7, charge);
+    });
+  };
+  return search(tree);
+}
+
 function checkClearance(layout: GraphLayout, charge: Charge, options?: NativeClearanceOptions): string | null {
   const endStage = layoutStage('clearance-compute'); try {
 
-  const entries: Segment[] = [], probes: { route: PlacedRoute; source: string; probes: Probe[] }[] = [];
+  const entries: Segment[] = [], prepared: PreparedRoute[] = [];
   for (const route of layout.routes) {
-    charge(1, 'native clearance route');
-    const parsed = read(route.path, charge);
-    if (!parsed) return 'invalid-path';
-    charge(8 * (route.from.kind.length + route.from.id.length + 8), 'native source identity bytes');
-    const source = sourceOf(route), { points, errors, hulls, corners, pieces } = parsed;
-    const end = points.at(-1)!, before = points.at(-2)!;
-    if (route.terminal) {
-      const length = Math.hypot(end.x - before.x, end.y - before.y);
-      if (!length) return 'invalid-terminal';
-      errors.push(0);
-      points.push({ x: end.x + ARROW.length * (end.x - before.x) / length, y: end.y + ARROW.length * (end.y - before.y) / length });
-      hulls.push(boxOf(end, points.at(-1)!));
-      pieces.push([end, points.at(-1)!]);
-      // The arrow base is part of the target approach, not an ordinary interior crossing.
-      corners.push(end);
-    }
-    charge(2 * points.length + corners.length, 'native probes and segments');
-    for (let i = 1; i < points.length; i++) entries.push({ a: points[i - 1], b: points[i], route, source, error: errors[i], hull: hulls[i], primitive: pieces[i] });
-    const portRadius = (p: Point, end: PlacedRoute['from']) => {
-      const dot = end.kind === 'junction' ? layout.junctions.get(end.id) : undefined;
-      if (dot && Math.hypot(p.x - dot.x, p.y - dot.y) < 1e-7) return Math.max(LANE_SEPARATION, JUNCTION_CLEARANCE);
-      const n = layout.nodes?.get(end.id);
-      const onOutline = n && p.x >= n.x - .01 && p.x <= n.x + n.width + .01 && p.y >= n.y - .01 && p.y <= n.y + n.height + .01
-        && Math.min(Math.abs(p.x - n.x), Math.abs(p.x - n.x - n.width), Math.abs(p.y - n.y), Math.abs(p.y - n.y - n.height)) < .01;
-      return onOutline ? PORT_BERTH : LANE_SEPARATION;
-    };
-    const mask = options?.endpointMasks?.get(route);
-    probes.push({ route, source, probes: [...corners.map(p => ({ p, radius: LANE_SEPARATION })),
-      ...(mask?.start === false ? [] : [{ p: points[0], radius: portRadius(points[0], route.from) }]),
-      ...(mask?.end === false ? [] : [{ p: points.at(-1)!, radius: portRadius(points.at(-1)!, route.to) }])] });
+    const next = prepareRoute(layout, route, charge, options);
+    if (typeof next === 'string') return next;
+    prepared.push(next); entries.push(...next.entries);
   }
   if (!entries.length) return null;
   const tree = index(entries, charge);
-  for (const { route, source, probes: checks } of probes) for (const { p, radius } of checks) {
-    const search = (branch: Branch): boolean => {
-      charge(1, 'native clearance query');
-      if (branch.source === source || p.x + radius + .025 < branch.minX || p.x - radius - .025 > branch.maxX || p.y + radius + .025 < branch.minY || p.y - radius - .025 > branch.maxY) return false;
-      if (branch.entries) return branch.entries.some(s => { charge(1, 'native probe pair'); return s.source !== source && !intentional(layout, route, s.route, p) && pointBoxDistance(p, s.hull) < radius - 1e-7 && distance(p, s.a, s.b) < radius + s.error - 1e-7
-        && !separatedPrimitives([p, p], s.primitive, radius - 1e-7, charge); });
-      return search(branch.left!) || search(branch.right!);
-    };
-    if (search(tree)) return 'route-contact';
-  }
-  // Smooth contacts are not corners. Check nearly parallel local tangents as well;
-  // transverse interior crossings remain distinct from joins.
-  for (const a of entries) {
-    const radius = LANE_SEPARATION + .05;
-    const minX = Math.min(a.a.x, a.b.x) - radius, maxX = Math.max(a.a.x, a.b.x) + radius;
-    const minY = Math.min(a.a.y, a.b.y) - radius, maxY = Math.max(a.a.y, a.b.y) + radius;
-    const dx = a.b.x - a.a.x, dy = a.b.y - a.a.y, length = Math.hypot(dx, dy);
-    const search = (branch: Branch): boolean => {
-      charge(1, 'native clearance query');
-      if (branch.source === a.source || maxX < branch.minX || minX > branch.maxX || maxY < branch.minY || minY > branch.maxY) return false;
-      if (!branch.entries) return search(branch.left!) || search(branch.right!);
-      return branch.entries.some(b => {
-        charge(1, 'native tangent pair');
-        // Chord error is only an upper uncertainty bound. A separated control hull
-        // proves exact clearance even when the conservative chord test cannot.
-        if (a.source === b.source || boxDistance(a.hull, b.hull) >= LANE_SEPARATION - 1e-7) return false;
-        const bx = b.b.x - b.a.x, by = b.b.y - b.a.y;
-        if (Math.abs(dx * by - dy * bx) > .2 * length * Math.hypot(bx, by)) return false;
-        const cross=dx*by-dy*bx;
-        if (cross) {
-          const x=b.a.x-a.a.x,y=b.a.y-a.a.y,t=(x*by-y*bx)/cross,u=(x*dy-y*dx)/cross;
-          if (t>=0 && t<=1 && u>=0 && u<=1 && !intentional(layout,a.route,b.route,{x:a.a.x+t*dx,y:a.a.y+t*dy})) return true;
-        }
-        const possibleContact = [a.a, a.b].some(p => !intentional(layout, a.route, b.route, p) && distance(p, b.a, b.b) < LANE_SEPARATION + a.error + b.error - 1e-7)
-          || [b.a, b.b].some(p => !intentional(layout, a.route, b.route, p) && distance(p, a.a, a.b) < LANE_SEPARATION + a.error + b.error - 1e-7);
-        return possibleContact && !separatedPrimitives(a.primitive, b.primitive, LANE_SEPARATION - 1e-7, charge);
-      });
-    };
-    if (search(tree)) return 'route-contact';
-  }
+  for (const { route, source, probes } of prepared) for (const probe of probes)
+    if (probeContact(layout, route, source, probe, tree, charge)) return 'route-contact';
+  for (const a of entries) if (tangentContact(layout, a, tree, charge)) return 'route-contact';
   return null;
 
   } finally { endStage(); }
 }
 
+/** Pairwise native clearance for construction probes, local to the pair. Each
+ * route object is read, indexed and given an envelope once per cache and paid
+ * for then; a pair then visits only its own two routes' ink. The verdict for a
+ * pair equals {@link chargedNativeClearance} on a layout holding just those two
+ * routes. A cache must not outlive the route objects' immutability: a
+ * prepared route is reused only while the endpoint tiles, dots and mask it read
+ * are the same objects. */
+export class NativeRouteCache {
+  private readonly envelopes = new Map<PlacedRoute, Box | null>();
+  private readonly prepared = new Map<PlacedRoute, { readonly value: PreparedRoute | string; readonly tree?: Branch }>();
+
+  private envelope(route: PlacedRoute, charge: Charge): Box | null {
+    if (!this.envelopes.has(route)) {
+      charge(route.path.length + 1, 'native reach envelope');
+      this.envelopes.set(route, reachBox(route));
+    }
+    return this.envelopes.get(route)!;
+  }
+
+  /** {@link outOfNativeReach}, paying each route's envelope once. */
+  outOfReach(a: PlacedRoute, b: PlacedRoute, charge: Charge): boolean {
+    charge(2, 'native reach pair');
+    const p = this.envelope(a, charge), q = this.envelope(b, charge);
+    return !!p && !!q && boxDistance(p, q) >= NATIVE_REACH;
+  }
+
+  private prepare(layout: GraphLayout, route: PlacedRoute, charge: Charge, options?: NativeClearanceOptions) {
+    const known = this.prepared.get(route);
+    charge(6, 'native prepared route lookup');
+    if (known) {
+      if (typeof known.value === 'string') return known;
+      const reads = preparedReads(layout, route, options);
+      if (reads.every((value, i) => value === (known.value as PreparedRoute).reads[i])) return known;
+    }
+    const value = prepareRoute(layout, route, charge, options);
+    const next = typeof value === 'string' ? { value } : { value, tree: index([...value.entries], charge) };
+    this.prepared.set(route, next);
+    return next;
+  }
+
+  /** `chargedNativeClearance({ ...layout, routes: [a, b] }, charge, options)`. */
+  pair(layout: GraphLayout, a: PlacedRoute, b: PlacedRoute, charge: Charge, options?: NativeClearanceOptions): string | null {
+    const endStage = layoutStage('clearance-compute'); try {
+    const first = this.prepare(layout, a, charge, options);
+    if (typeof first.value === 'string') return first.value;
+    const second = this.prepare(layout, b, charge, options);
+    if (typeof second.value === 'string') return second.value;
+    const A = first.value, B = second.value;
+    if (A.source === B.source) return null;
+    for (const [X, tree] of [[A, second.tree!], [B, first.tree!]] as const)
+      for (const probe of X.probes) if (probeContact(layout, X.route, X.source, probe, tree, charge)) return 'route-contact';
+    for (const [X, tree] of [[A, second.tree!], [B, first.tree!]] as const)
+      for (const segment of X.entries) if (tangentContact(layout, segment, tree, charge)) return 'route-contact';
+    return null;
+    } finally { endStage(); }
+  }
+}
