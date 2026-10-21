@@ -1,5 +1,5 @@
-import { expect, it } from 'vitest';
-import { prepayBins } from '$lib/domain/trace-graph/routing-admission-work';
+import { describe, expect, it } from 'vitest';
+import { prepayBins, prepayIndependentAdmission } from '$lib/domain/trace-graph/routing-admission-work';
 import { chargedNativeTileClearance } from '$lib/domain/trace-graph/native-route-clearance';
 import type { GraphLayout } from '$lib/domain/trace-graph/layout';
 
@@ -35,4 +35,34 @@ it('checks native tile excursions without admitting the control hull as ink', ()
   expect(chargedNativeTileClearance(layout(20), () => {}).ok).toBe(true);
   const exhausted = new Error('native admission ledger');
   expect(() => chargedNativeTileClearance(layout(20), () => { throw exhausted; })).toThrow(exhausted);
+});
+
+describe('independent admission prepay', () => {
+  const lanes = (count: number, gap: number, length = 400): GraphLayout => ({ orientation: 'down', width: 2000, height: 2000,
+    nodes: new Map(), junctions: new Map(), rows: [], readingOrder: new Map(),
+    routes: Array.from({ length: count }, (_, i) => ({ id: `r${i}`, from: { kind: 'node', id: `s${i}` }, to: { kind: 'node', id: `t${i}` },
+      terminal: false, consumers: [], path: `M0 ${10 + i * gap} L${length} ${10 + i * gap}` })) } as unknown as GraphLayout);
+  const prepaid = (layout: GraphLayout) => {
+    let work = 0;
+    expect(prepayIndependentAdmission(layout, [], 0, amount => { work += amount; })).toBe(true);
+    return work;
+  };
+  // The gate's near-lane pass compares runs within one lane separation of each
+  // other: a dense bundle of different sources is quadratic, spread lanes are not.
+  it('pays quadratically for a dense bundle of near lanes', () => {
+    expect(prepaid(lanes(300, .01))).toBeGreaterThan(300 * 300);
+  });
+  it('pays for spread lanes by locality, not by every pair', () => {
+    const spread = prepaid(lanes(300, 50)), bundle = prepaid(lanes(300, .01));
+    expect(spread).toBeLessThan(bundle / 4);
+  });
+  // Collinear overlaps of different sources become shared-lane keys the crossing
+  // pass sorts; one coincident lane makes every pair one.
+  it('pays for sorting every shared-lane pair of coincident routes', () => {
+    expect(prepaid(lanes(300, 0))).toBeGreaterThan(300 * 299 / 2 * Math.log2(300 * 299 / 2));
+  });
+  // Below 256 segments the crossing pass may sweep all of them pairwise.
+  it('always pays for the small crossing sweep', () => {
+    expect(prepaid(lanes(200, 50))).toBeGreaterThan(200 * 199 / 2);
+  });
 });

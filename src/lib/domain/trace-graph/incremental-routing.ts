@@ -8,6 +8,7 @@ import { filterRouteConsumers } from './route-consumers';
 import { pathCommands, type Point } from './path-sampling';
 import { segments, type Segment } from './layout-quality';
 import { berthsOf, routeEnds, TILE_GRAZE, type Berth } from './route-contacts';
+import { IntervalIndex } from './interval-index';
 import { LANE_SEPARATION, PORT_BERTH } from './metrics';
 import { chargeRoutingSnapshot, importCommittedRouting, retainedRoutingConflict, type CommittedRoutingProblem } from './routing-problem';
 import { solveRoutingComponents } from './routing-components';
@@ -44,6 +45,9 @@ const sameSource = (a: PlacedRoute, b: PlacedRoute, charge: CorridorSearch['char
   charge(a.from.id.length + b.from.id.length + 4, 'metric source identity');
   return a.from.kind === b.from.kind && a.from.id === b.from.id;
 };
+/** Broad-phase cell of the affected solve's reach index (one lane row of tiles). */
+const REACH_CELL = 64;
+const lazy = <T>(make: () => T): (() => T) => { let made: { value: T } | undefined; return () => (made ??= { value: make() }).value; };
 const failure = (reason: IncrementalConflictReason, constraints: readonly string[], work = 0): IncrementalRoutingResult =>
   ({ ok: false, conflict: { reason, constraints }, work });
 const validConflict = (value: unknown): value is IncrementalRoutingConflict => {
@@ -435,12 +439,38 @@ function solveAffectedTracks(search: CorridorSearch, request: LayoutRequest, see
       && port[along] >= Math.min(t.a[along], t.b[along]) && port[along] <= Math.max(t.a[along], t.b[along])
       && Math.abs(port[t.axis] - t.value) < PORT_BERTH;
   };
+  // Tiles, parallel segments and berths only constrain a track whose span they
+  // reach along it. Index them by that extent once; candidates come back in
+  // drawing order, so every constraint and choice is made exactly as a full scan.
+  const tiles = [...topology.nodes.values()];
+  search.charge(tiles.length + topology.routes.length + 1, 'affected reach index');
+  const tileReach = (along: 'x' | 'y') => new IntervalIndex(tiles.map(n => along === 'y'
+    ? [n.y - TILE_GRAZE, n.y + n.height + TILE_GRAZE] as const : [n.x - TILE_GRAZE, n.x + n.width + TILE_GRAZE] as const),
+    REACH_CELL, search.charge);
+  // Pieces of routes a track might meet: a parallel segment, or a berth, within
+  // its span. Hits come back in drawing order: by route, segments then berths.
+  const routeReach = (axis: 'x' | 'y') => {
+    const along = axis === 'x' ? 'y' : 'x', pieces: { readonly owner: number; readonly berth: boolean; readonly at: number }[] = [];
+    const spans: (readonly [number, number])[] = [];
+    topology.routes.forEach((r, owner) => {
+      const { ss, berths } = foreign(r);
+      ss.forEach(([a, b], at) => {
+        if (a[axis] === b[axis]) { pieces.push({ owner, berth: false, at }); spans.push([Math.min(a[along], b[along]), Math.max(a[along], b[along])]); }
+      });
+      berths.forEach((berth, at) => { pieces.push({ owner, berth: true, at }); spans.push([berth[along], berth[along]]); });
+    });
+    const index = new IntervalIndex(spans, REACH_CELL, search.charge);
+    return (lo: number, hi: number) => index.query(lo, hi, search.charge).map(i => pieces[i]);
+  };
+  const reach = { x: { tiles: lazy(() => tileReach('y')), routes: lazy(() => routeReach('x')) },
+    y: { tiles: lazy(() => tileReach('x')), routes: lazy(() => routeReach('y')) } };
   // Choose an empty tile corridor for each free segment. Its longitudinal span
   // remains part of the topology; the final independent gate checks all paint.
   for (const t of tracks) {
     const along = t.axis === 'x' ? 'y' : 'x';
     const lo = Math.min(t.a[along], t.b[along]), hi = Math.max(t.a[along], t.b[along]);
-    for (const n of topology.nodes.values()) {
+    for (const index of reach[t.axis].tiles().query(lo, hi, search.charge)) {
+      const n = tiles[index];
       search.charge(1, 'tile corridor');
       const near = along === 'y' ? n.y : n.x, far = near + (along === 'y' ? n.height : n.width);
       if (hi <= near - TILE_GRAZE || lo >= far + TILE_GRAZE) continue;
@@ -452,11 +482,15 @@ function solveAffectedTracks(search: CorridorSearch, request: LayoutRequest, see
       if (side === 'before') constraints(t.id, constant(n.key + ':' + t.axis + ':near', lower), 0, 'tile-corridor', decision);
       else constraints(constant(n.key + ':' + t.axis + ':far', upper), t.id, 0, 'tile-corridor', decision);
     }
-    for (const r of topology.routes) {
-      if (sameSource(r, t.route, search.charge)) continue;
-      const { ss, berths } = foreign(r);
-      search.charge(ss.length + 1, 'foreign corridor');
-      for (const [i, [a, b]] of ss.entries()) {
+    let owner = -1, own = false;
+    for (const piece of reach[t.axis].routes()(lo, hi)) {
+      const r = topology.routes[piece.owner];
+      if (piece.owner !== owner) { owner = piece.owner; own = sameSource(r, t.route, search.charge); }
+      if (own) continue;
+      const { ss, berths } = foreign(r), i = piece.at;
+      if (!piece.berth) {
+        search.charge(1, 'foreign corridor');
+        const [a, b] = ss[i];
         if (a[t.axis] !== b[t.axis] || Math.min(a[along], b[along]) >= hi || Math.max(a[along], b[along]) <= lo) continue;
         search.charge(1, 'foreign route model lookup');
         const foreignModel = modelOf.get(r.id);
@@ -467,26 +501,26 @@ function solveAffectedTracks(search: CorridorSearch, request: LayoutRequest, see
         if (other && t.id > other.id) continue;
         const forward = t.value < a[t.axis] || t.value === a[t.axis] && t.id < id;
         constraints(forward ? t.id : id, forward ? id : t.id, LANE_SEPARATION, 'parallel-tracks');
+        continue;
       }
-      search.charge(berths.length + 1, 'foreign berths');
-      for (const [i, berth] of berths.entries()) {
-        if (berth[along] < lo || berth[along] > hi) continue;
-        // Intentional convergence belongs to the native meeting model; moving
-        // an internal track cannot invent another junction input.
-        if ([r.from, r.to].some(e => e.kind === 'junction' && [t.route.from, t.route.to].some(f => f.kind === e.kind && f.id === e.id))) continue;
-        if (Math.abs(berth[t.axis] - t.value) >= berth.radius) continue;
-        search.charge(1, 'foreign berth model lookup');
-        const owner = modelOf.get(r.id);
-        search.charge((owner?.points.length ?? 0) + 1, 'foreign berth point lookup');
-        const at = owner?.points.findIndex(p => p.x === berth.x && p.y === berth.y) ?? -1;
-        const center = owner && at >= 0 ? coordinate(owner, at, t.axis)
-          : constant(JSON.stringify(['berth', r.id, i, t.axis]), berth[t.axis]);
-        const decision = JSON.stringify(['berth-corridor', t.id, r.id, i]);
-        const side = search.choose(decision,
-          t.value <= berth[t.axis] ? ['before', 'after'] : ['after', 'before']);
-        if (side === 'before') constraints(t.id, center, berth.radius, 'port-corner', decision);
-        else constraints(center, t.id, berth.radius, 'port-corner', decision);
-      }
+      search.charge(1, 'foreign berths');
+      const berth = berths[i];
+      if (berth[along] < lo || berth[along] > hi) continue;
+      // Intentional convergence belongs to the native meeting model; moving
+      // an internal track cannot invent another junction input.
+      if ([r.from, r.to].some(e => e.kind === 'junction' && [t.route.from, t.route.to].some(f => f.kind === e.kind && f.id === e.id))) continue;
+      if (Math.abs(berth[t.axis] - t.value) >= berth.radius) continue;
+      search.charge(1, 'foreign berth model lookup');
+      const ownerModel = modelOf.get(r.id);
+      search.charge((ownerModel?.points.length ?? 0) + 1, 'foreign berth point lookup');
+      const at = ownerModel?.points.findIndex(p => p.x === berth.x && p.y === berth.y) ?? -1;
+      const center = ownerModel && at >= 0 ? coordinate(ownerModel, at, t.axis)
+        : constant(JSON.stringify(['berth', r.id, i, t.axis]), berth[t.axis]);
+      const decision = JSON.stringify(['berth-corridor', t.id, r.id, i]);
+      const side = search.choose(decision,
+        t.value <= berth[t.axis] ? ['before', 'after'] : ['after', 'before']);
+      if (side === 'before') constraints(t.id, center, berth.radius, 'port-corner', decision);
+      else constraints(center, t.id, berth.radius, 'port-corner', decision);
     }
     search.charge(reserved.length + 1, 'reserved ports');
     for (const port of reserved) {
