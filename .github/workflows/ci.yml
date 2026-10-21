@@ -25,10 +25,13 @@ jobs:
             target: aarch64-unknown-linux-gnu
           - os: macos-14
             target: aarch64-apple-darwin
+            platform_only: true
           - os: macos-15-intel
             target: x86_64-apple-darwin
+            platform_only: true
           - os: windows-2022
             target: x86_64-pc-windows-msvc
+            platform_only: true
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
@@ -50,8 +53,16 @@ jobs:
             crates/image-generation-contract
       - run: bun install --frozen-lockfile
       - run: bun run check
-      # The click-stability corpus sweep is pure TypeScript and takes ~30 min, so it runs once, in its own Linux job below.
-      - run: bun run test --exclude tests/domain/trace-graph/click-stability.test.ts
+      # The layout engine (tests/domain/trace-graph) is pure TypeScript with no platform branches, so the Linux
+      # jobs cover it; on slower macOS and Windows runners its corpus sweeps only hit wall-clock timeouts.
+      # The click-stability sweep takes ~30 min, so it runs once, in its own Linux job below.
+      - name: Run bun run test
+        run: |
+          if [ "${{ matrix.platform_only }}" = "true" ]; then
+            bun run test --exclude 'tests/domain/trace-graph/**'
+          else
+            bun run test --exclude tests/domain/trace-graph/click-stability.test.ts
+          fi
       - name: Provider frontend type check
         run: bunx svelte-check --tsconfig plugins/image-generation/frontend/check.tsconfig.json
       - name: Provider frontend CAS and lifetime tests
