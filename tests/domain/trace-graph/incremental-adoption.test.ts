@@ -69,13 +69,14 @@ describe('adoption contracts (pure)', () => {
     expect(movedRectangle(before, new Map([['a', r(NaN)], ['b', r(20)]]), ['a'])).toBe('a');
     expect(movedRectangle(new Map(), new Map(), [])).toBeNull();
   });
-  it('grows the interactive allowance with the band up to its ceiling and declines doomed sizes', () => {
-    const { work: ceiling, perItem, maximumItems: largest } = PRODUCTION_ROUTING_WORK['band-insertion'];
+  it('grows the interactive allowance with the band up to its ceiling, for bands of any size', () => {
+    const { work: ceiling, perItem } = PRODUCTION_ROUTING_WORK['band-insertion'];
+    const largest = Math.ceil(ceiling / perItem) + 1;
     expect(bandInsertionAllowance(1)!.work).toBe(perItem);
     expect(bandInsertionAllowance(2)!.work).toBe(2 * perItem);
     expect(bandInsertionAllowance(largest)!.work).toBe(ceiling);
-    expect(bandInsertionAllowance(largest + 1)).toBeNull();
-    for (const items of [0, -1, NaN, Infinity, Number.MAX_SAFE_INTEGER]) expect(bandInsertionAllowance(items)).toBeNull();
+    expect(bandInsertionAllowance(200)!.work).toBe(ceiling);
+    for (const items of [0, -1, 1.5, NaN, Infinity]) expect(bandInsertionAllowance(items)).toBeNull();
     // Every allowance still admits one embedding family: its pools (eight fallback
     // and second-chance pools plus probes) fit inside the allowance.
     for (let items = 1; items <= largest; items++) {
@@ -208,31 +209,28 @@ describe('band insertion through publication', () => {
       if (!selected) { if (focus === null) break; focus = null; } else { focus = selected.key; visited.add(focus); }
     }
   });
-  // The largest band the size limit admits is attempted with a chance: its fan
-  // arrival certifies (at the former 4M it exhausted the allowance until import
-  // stopped re-solving its constants).
-  it('certifies the largest fan arrival the size limit admits', () => {
+  // A 47-item fan arrival certifies (at the former 4M it exhausted the
+  // allowance until import stopped re-solving its constants).
+  it('certifies a 47-item fan arrival', () => {
     const fan = corpus().find(f => f.id === 'fan-80')!;
     const band = (n: number) => requestFor({ ...fan, nodes: fan.nodes.slice(0, n), full: false }, null, 400, 48);
-    const largest = PRODUCTION_ROUTING_WORK['band-insertion'].maximumItems;
-    const req = band(largest), opened = optimizedBand(band(largest - 1), {});
+    const req = band(47), opened = optimizedBand(band(46), {});
     const { result: next, count } = counters(() => optimizedBand(req, { previous: opened }));
     expect([count('adoption:band-insertion:attempt'), count('adoption:band-insertion:success')]).toEqual([1, 1]);
     for (const [key, was] of opened.placed.nodes) expect(next.placed.nodes.get(key), key).toMatchObject({ x: was.x, y: was.y, width: was.width, height: was.height });
     expect(geometryGate(next.placed, req.items, req.band!.key, req.maxWidth)).toBeNull();
   });
-  // A band above the interactive size limit declines as budget before any capture
-  // or search work, and legacy publishes a gated drawing. (This fan could certify;
-  // the limit is about the declines of other large bands, see the allowance.)
-  it('declines an oversized insertion as budget without spending work', () => {
+  // Bands above 47 items are attempted too (they used to decline before any
+  // work): this 61-item fan arrival certifies within the 6M ceiling.
+  it('attempts and certifies an arrival in a band of more than 47 items', () => {
     const fan = corpus().find(f => f.id === 'fan-80')!;
     const band = (n: number) => requestFor({ ...fan, nodes: fan.nodes.slice(0, n), full: false }, null, 400, 48);
-    const opened = optimizedBand(band(48), {}), req = band(49);
-    expect(bandInsertionAllowance(req.items.length)).toBeNull();
+    const opened = optimizedBand(band(60), {}), req = band(61);
     expect(req.items.filter(n => !opened.placed.nodes.has(n.key))).toHaveLength(1);
     const { result: next, count } = counters(() => optimizedBand(req, { previous: opened }));
-    expect([count('adoption:band-insertion:attempt'), count('adoption:band-insertion:fallback:budget'),
-      count('adoption:band-insertion:work'), count('adoption:band-insertion:published')]).toEqual([1, 1, 0, 0]);
+    expect([count('adoption:band-insertion:attempt'), count('adoption:band-insertion:success')]).toEqual([1, 1]);
+    expect(count('adoption:band-insertion:work')).toBeGreaterThan(0);
+    for (const [key, was] of opened.placed.nodes) expect(next.placed.nodes.get(key), key).toMatchObject({ x: was.x, y: was.y, width: was.width, height: was.height });
     expect(geometryGate(next.placed, req.items, req.band!.key, req.maxWidth)).toBeNull();
   });
 });
