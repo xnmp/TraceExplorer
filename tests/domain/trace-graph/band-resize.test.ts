@@ -184,7 +184,7 @@ describe("resizedLayout on the engine's own layouts", () => {
     }
     expect(tried).toBeGreaterThan(400);
     expect(tried - declined).toBeGreaterThan(0);
-  });
+  }, 30_000); // Engine layouts across the corpus; request latency is gated separately by layout:eval.
 
   it("growing a leaf and shrinking it back restores the drawing, or keeps the space it took", () => {
     let restored = 0, tried = 0;
@@ -215,7 +215,7 @@ describe("resizedLayout on the engine's own layouts", () => {
       const once = cycle(placed), twice = cycle(once);
       if (once && twice) expect(drawing(twice), `${id} ${leaf.key}`).toEqual(drawing(once));
     }
-  });
+  }, 30_000); // Two resize cycles per corpus leaf; request latency is gated separately by layout:eval.
 });
 
 describe("through the folder engine, whose committed histories carry their attachment", () => {
@@ -254,5 +254,5 @@ describe("through the folder engine, whose committed histories carry their attac
       }
     }
     expect(resized).toBeGreaterThan(40);
-  });
+  }, 30_000); // Folder-engine corpus sweep; request latency is gated separately by layout:eval.
 });
