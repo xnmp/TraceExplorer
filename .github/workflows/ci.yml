@@ -11,7 +11,8 @@ permissions:
 jobs:
   package:
     name: Both plugins (${{ matrix.target }})
-    timeout-minutes: 45
+    # The unit suite takes 31-36 min on most runners and over 43 min on macos-15-intel.
+    timeout-minutes: 90
     defaults:
       run:
         shell: bash
