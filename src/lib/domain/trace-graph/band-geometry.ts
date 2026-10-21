@@ -313,10 +313,13 @@ export function attachedSkeleton(layout: GraphLayout, key: string, bandTop: numb
     nodes: attachedNodes(layout, key, placement, t), junctions: new Map(), routes: [], rows: [] };
 }
 
-/** Translate the subtree as a unit while keeping its parent on its original folder cell. */
-export function attachPackedBand(layout: GraphLayout, key: string, bandTop: number, placement: BandPlacement): GraphLayout {
+/** How {@link attachPackedBand} paints each route: a pure function of the route,
+ * given the layout's transform and declared frame. Null when the layout has no
+ * transform (attachment then returns the layout unchanged). */
+interface RoutePainter { readonly t: BandTransform; readonly sameFrame: boolean; readonly paint: (route: import("./layout").PlacedRoute) => import("./layout").PlacedRoute }
+function routePainter(layout: GraphLayout, key: string, bandTop: number, placement: BandPlacement): RoutePainter | null {
   const t = bandTransform(layout, key, bandTop, placement);
-  if (!t) return layout;
+  if (!t) return null;
   const { root, dx, mapY, stemRoom } = t;
   const frame = layout.routingAttachment;
   const sameFrame = frame?.key === key && frame.bandTop === bandTop
@@ -324,6 +327,26 @@ export function attachPackedBand(layout: GraphLayout, key: string, bandTop: numb
     && dx === 0 && t.childOffset === 0 && root.y === 0
     && root.x === placement.coverX - root.width / 2 && root.height === placement.coverHeight;
   const retainedPaths = new Map(sameFrame && Array.isArray(frame?.paths) ? frame.paths : []);
+  return { t, sameFrame, paint: route => {
+    if (route.from.kind === 'node' && route.from.id === key && retainedPaths.get(route.id) === route.path) return route;
+    const path = translatePath(route.path, t);
+    if (route.from.kind !== "node" || route.from.id !== key) return { ...route, path };
+    // The untranslated start y (NaN, never near, when the path has no second number).
+    const startY = translatedStart[0];
+    if (!(Math.abs(mapY(startY) - root.height) <= .1)) return { ...route, path };
+    // Only the outgoing stem changes. Branches, junctions and descendant routes keep their
+    // graph-engine geometry. Its bend is entirely above this group's first child row.
+    const stem = importAttachmentStem(path, bandTop, stemRoom, placement, tilePort({ ...root, x: placement.coverX - root.width / 2, y: 0, height: placement.coverHeight }, "bottom"));
+    return { ...route, path: `${emitRoundedStem(stemCorners(stem.points), stem.turns)} ${stem.tail}` };
+  } };
+}
+
+/** Translate the subtree as a unit while keeping its parent on its original folder cell. */
+export function attachPackedBand(layout: GraphLayout, key: string, bandTop: number, placement: BandPlacement): GraphLayout {
+  const painter = routePainter(layout, key, bandTop, placement);
+  if (!painter) return layout;
+  const { t, sameFrame, paint } = painter, { dx, mapY } = t;
+  const frame = layout.routingAttachment;
   return { ...layout, width: placement.width, height: mapY(layout.height),
     ...(frame ? { routingAttachment: sameFrame ? frame : undefined } : {}),
     ...(layout.bandBounds ? { bandBounds: { ...layout.bandBounds, left: layout.bandBounds.left + dx, top: mapY(layout.bandBounds.top) } } : {}),
@@ -333,18 +356,7 @@ export function attachPackedBand(layout: GraphLayout, key: string, bandTop: numb
     nodes: attachedNodes(layout, key, placement, t),
     junctions: translatedJunctions(layout, dx, mapY),
     rows: layout.rows.map(row => ({ ...row, top: mapY(row.top), bottom: mapY(row.bottom) })),
-    routes: layout.routes.map(route => {
-      if (route.from.kind === 'node' && route.from.id === key && retainedPaths.get(route.id) === route.path) return route;
-      const path = translatePath(route.path, t);
-      if (route.from.kind !== "node" || route.from.id !== key) return { ...route, path };
-      // The untranslated start y (NaN, never near, when the path has no second number).
-      const startY = translatedStart[0];
-      if (!(Math.abs(mapY(startY) - root.height) <= .1)) return { ...route, path };
-      // Only the outgoing stem changes. Branches, junctions and descendant routes keep their
-      // graph-engine geometry. Its bend is entirely above this group's first child row.
-      const stem = importAttachmentStem(path, bandTop, stemRoom, placement, tilePort({ ...root, x: placement.coverX - root.width / 2, y: 0, height: placement.coverHeight }, "bottom"));
-      return { ...route, path: `${emitRoundedStem(stemCorners(stem.points), stem.turns)} ${stem.tail}` };
-    }),
+    routes: layout.routes.map(paint),
   };
 }
 
@@ -431,6 +443,26 @@ export function attachSingleBand(layout: GraphLayout, request: import("./layout"
   if (layout.pinnedViolation) return layout;
   const placement = singleBandPlacement(layout, request);
   return placement ? attachPackedBand(layout, request.band!.key, placement.coverHeight, placement) : layout;
+}
+
+/** {@link attachSingleBand}'s per-route painting, for a layout whose attachment
+ * is an identity frame: every tile, dot and allocation scalar keeps its value,
+ * so only route paint can differ. Null unless that identity holds (dx, child
+ * offset and cover row are unchanged, as {@link retainSingleBandFrame} requires).
+ * Equal keys paint every route identically while the declared retained root
+ * paths (`routingAttachment.paths`) stay the same; a cache keyed by it must
+ * hold those fixed. */
+export function identitySingleBandPainter(layout: GraphLayout, request: import("./layout").LayoutRequest):
+  { readonly key: string; readonly paint: (route: import("./layout").PlacedRoute) => import("./layout").PlacedRoute } | null {
+  if (layout.pinnedViolation) return null;
+  const placement = singleBandPlacement(layout, request);
+  if (!placement) return null;
+  const painter = routePainter(layout, request.band!.key, placement.coverHeight, placement);
+  if (!painter) return null;
+  const { t } = painter;
+  if (t.dx !== 0 || t.childOffset !== 0 || t.root.y !== 0 || t.root.x !== placement.coverX - t.root.width / 2
+    || t.root.height !== placement.coverHeight) return null;
+  return { key: JSON.stringify([placement, t.bottom, t.stemRoom, t.root.width, painter.sameFrame]), paint: painter.paint };
 }
 
 /** Declare exact native root suffixes from a committed, already attached scene.

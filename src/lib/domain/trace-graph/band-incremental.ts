@@ -2,7 +2,7 @@ import { retainedHardObstacles, type HardRetainedObstacles } from './retained-ha
 import { nativeCarrierCuts } from './native-carrier-cuts';
 import { materializeSourcePrefixes } from './native-source-prefix';
 import { chargeRoutingSnapshot } from './routing-problem';
-import { chargedNativeClearance, outOfNativeReach } from "./native-route-clearance";
+import { NativeRouteCache } from "./native-route-clearance";
 import { layoutStage, countLayoutWork } from './layout-profile';
 import { layoutSignature, geometrySignature } from './layout-signature';
 import { createBoundedCache, estimateLayoutBytes } from './folder-layout/bounded-cache';
@@ -28,7 +28,7 @@ import { orderNewSiblingLeaves, siblingCreationGroups } from "./new-sibling-orde
 import { nearestFree, type GraphLayout, type LayoutItem, type LayoutRequest, type PlacedNode, type PlacedRoute, type PlacedJunction } from "./layout";
 import { ARROW, JUNCTION_BERTH, LANE_SEPARATION, PORT_BERTH, spacingFor, STACK_STEM_ROOM } from "./metrics";
 import { axisOf, berthsOf, paintedSegments, distanceToTile, distanceToSegment, grazesTile, INTO_JUNCTION, INTO_TILE, leavingRunFrom, routeEnds, shallowRun, SHALLOW_RUN, TILE_GRAZE, type Berth, type Ends } from "./route-contacts";
-import { attachSingleBand, bandExtent, retainSingleBandFrame, roundedStem } from "./band-geometry";
+import { attachSingleBand, bandExtent, identitySingleBandPainter, retainSingleBandFrame, roundedStem } from "./band-geometry";
 import { channelCornerRadius, channelInk } from './channel-corners';
 import { pinnedBandExtent } from './pinned-band-extent';
 import { intersectsTile, overlapLength, routeBounds, segments, type Segment } from "./layout-quality";
@@ -433,8 +433,19 @@ class LaneIndex {
     ];
   }
   private blockingDeparture(ink: readonly Segment[], source: string): Berth | undefined {
+    if (!ink.length || !this.departures.size) return undefined;
+    // Only a port the new ink enters can be blocked by it. A port farther than
+    // its berth from the ink's bounds is not entered, so its owner is skipped
+    // before any occupancy query: every clear port must be entered to block.
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    for (const [a, b] of ink) {
+      minX = Math.min(minX, a.x, b.x); maxX = Math.max(maxX, a.x, b.x);
+      minY = Math.min(minY, a.y, b.y); maxY = Math.max(maxY, a.y, b.y);
+    }
     for (const [owner, ports] of this.departures) {
       if (owner === source) continue;
+      if (!ports.some(port => port.x >= minX - port.radius && port.x <= maxX + port.radius
+        && port.y >= minY - port.radius && port.y <= maxY + port.radius)) continue;
       const clear = ports.filter(port => !this.touched(port, owner));
       if (clear.length && clear.every(port => ink.some(segment => entersBerth(segment, port)))) return clear[0];
     }
@@ -837,7 +848,7 @@ const embeddingFamilies = (['orthogonal','endpoint','interior'] as const).flatMa
 const strictEmbeddingFamilies = embeddingFamilies.filter(family=>family.occupancy==='whole');
 interface Scene {
   readonly departureMode?: NativeDepartureMode;
-  readonly native?: { readonly hard?:HardRetainedObstacles; readonly drawing: GraphLayout; readonly frame?: (drawing: GraphLayout) => GraphLayout | null; readonly charge: (work: number, reason?: string) => void };
+  readonly native?: { readonly hard?:HardRetainedObstacles; readonly drawing: GraphLayout; readonly frame?: (drawing: GraphLayout) => GraphLayout | null; readonly charge: (work: number, reason?: string) => void; readonly routes: NativeRouteCache };
   readonly departurePrefixes?: ReadonlyMap<string, readonly (readonly Point[])[]>;
   readonly tiles: TileIndex;
   /** The probed tile (not yet among `tiles`). */
@@ -1037,7 +1048,7 @@ function nativeCompatible(points: readonly Point[], parent: PlacedNode, arrival:
     if (old.id === authored.id || old.from.kind === authored.from.kind && old.from.id === authored.from.id) continue;
     const obstacles=s.native.hard?.routes.get(old.id)??[old];
     charge(old.id.length+obstacles.length+1,'native hard fragment lookup');
-    for(const obstacle of obstacles)if (!outOfNativeReach(obstacle, authored, charge) && chargedNativeClearance({ ...painted, routes: [obstacle, authored] }, charge, {endpointMasks:s.native.hard?.endpointMasks})) return false;
+    for(const obstacle of obstacles)if (!s.native.routes.outOfReach(obstacle, authored, charge) && s.native.routes.pair(painted, obstacle, authored, charge, {endpointMasks:s.native.hard?.endpointMasks})) return false;
   }
   return true;
 }
@@ -1668,6 +1679,57 @@ function insertWithPortRepair(request: LayoutRequest, previous: GraphLayout, bud
 const movedRoute = (before: GraphLayout, after: GraphLayout): boolean =>
   after.routes.length !== before.routes.length || after.routes.some((r, i) => r.path !== before.routes[i].path);
 
+/** The painted frame a construction probe is checked in: the drawing as band
+ * publication will attach it. Attachment of a pinned band is an identity frame
+ * (tiles, dots and allocation keep their values), so only route paint can
+ * change, and each route's paint depends only on the route and the placement.
+ * Paint is therefore computed once per route object and placement, and a probe
+ * pays for its own new route, the allocation scan and any reused lookups, not
+ * for repainting the whole drawing. A frame that is not the identity takes the
+ * full attachment path, charged as such. `retained` must be the constructor's
+ * fixed retained routes; they declare the root paths the frame keeps. */
+function nativeProbeFrame(request: LayoutRequest, retained: readonly PlacedRoute[], charge: (work: number, reason?: string) => void):
+  (draft: GraphLayout) => GraphLayout | null {
+  const key = request.band!.key, painted = new Map<PlacedRoute, { readonly key: string; readonly route: PlacedRoute }>();
+  const scanned = new WeakSet<PlacedRoute>();
+  return draft => {
+    charge(draft.routes.length + draft.nodes.size + draft.junctions.size, 'native frame input scan');
+    // The allocation scan visits every tile, dot and route; a route's geometry
+    // import is paid the first time this frame meets that route object, and a
+    // cover route's points on every scan.
+    let scan = 4 * (draft.nodes.size + draft.junctions.size + draft.routes.length) + 64;
+    for (const route of draft.routes) {
+      if (!scanned.has(route)) { scan += 8 * route.path.length + 1; scanned.add(route); }
+      if (route.from.kind === 'node' && route.from.id === key) scan += route.path.length + 1;
+    }
+    charge(scan, 'native frame allocation scan');
+    const extent = pinnedBandExtent(draft, key, layout => charge(16 * layout.routes.reduce((sum, route) => sum + route.path.length, 0)
+      + 32 * layout.junctions.size + 64, 'native frame painted extent'));
+    if (!extent) return null;
+    const allocated = { ...draft, bandBounds: { left: 0, width: extent.left + extent.width,
+      top: draft.nodes.get(key)!.height + (request.history?.attachment?.placement.stemRoom ?? STACK_STEM_ROOM) }, preferredX: 0 };
+    charge(retained.length + 1, 'native frame retained roots');
+    const declared = retainSingleBandFrame(allocated, request, retained);
+    if (!declared) return null;
+    const painter = identitySingleBandPainter(declared, request);
+    if (!painter) {
+      const size = draft.routes.reduce((sum, route) => sum + route.path.length, 0);
+      charge(16 * size + 32 * (draft.nodes.size + draft.junctions.size) + 64, 'native frame construction');
+      return attachSingleBand(declared, request);
+    }
+    charge(painter.key.length + 1, 'native frame placement key');
+    const routes = draft.routes.map(route => {
+      const known = painted.get(route);
+      if (known?.key === painter.key) return known.route;
+      charge(16 * route.path.length + 64, 'native frame route paint');
+      const next = painter.paint(route);
+      painted.set(route, { key: painter.key, route: next });
+      return next;
+    });
+    return { ...declared, routes };
+  };
+}
+
 /** Strict legacy constructors provide a discrete embedding only. Port/contact
  * repairs are excluded; constants are captured before the first construction. */
 export function constrainedIncremental(request: LayoutRequest, previous: GraphLayout,
@@ -1690,17 +1752,7 @@ export function constrainedIncremental(request: LayoutRequest, previous: GraphLa
     Object.assign(remaining, budget);
     if (!complete) countLayoutWork('pinned-search');
     const prefixes = complete ? undefined : retainedDeparturePrefixes(drawing.routes, charge, nativeMode !== 'orthogonal');
-    const nativeFrame = world ? undefined : (draft: GraphLayout): GraphLayout | null => {
-      charge(draft.routes.length + draft.nodes.size + draft.junctions.size, 'native frame input scan');
-      const size = draft.routes.reduce((sum, route) => sum + route.path.length, 0);
-      charge(16 * size + 32 * (draft.nodes.size + draft.junctions.size) + 64, 'native frame construction');
-      const key = request.band!.key, extent = pinnedBandExtent(draft, key);
-      if (!extent) return null;
-      const allocated = { ...draft, bandBounds: { left: 0, width: extent.left + extent.width,
-        top: draft.nodes.get(key)!.height + (request.history?.attachment?.placement.stemRoom ?? STACK_STEM_ROOM) }, preferredX: 0 };
-      const declared = retainSingleBandFrame(allocated, request, drawing.routes);
-      return declared ? attachSingleBand(declared, request) : null;
-    };
+    const nativeFrame = world ? undefined : nativeProbeFrame(request, drawing.routes, charge);
     const constructed = complete ? drawing : reserve(poolWork(remaining), () => ({
       value: backtrackInsertion(request, drawing, remaining, pane, order, prefixes, charge, nativeFrame, nativeMode, hard, occupancy==='route-only',generation),
       work: spentPoolWork(budget, remaining),
@@ -1847,6 +1899,16 @@ function backtrackInsertion(request:LayoutRequest, initial:GraphLayout, budget:I
   }
 }
 
+/** One pairwise native clearance cache per work ledger: a constructor's retries
+ * and embedding families charge the same ledger, so a route paid for once stays
+ * paid for. Prepared routes are revalidated against the layout they are read in. */
+const nativeRouteCaches = new WeakMap<(work: number, reason?: string) => void, NativeRouteCache>();
+const nativeRouteCache = (charge: (work: number, reason?: string) => void): NativeRouteCache => {
+  let cache = nativeRouteCaches.get(charge);
+  if (!cache) nativeRouteCaches.set(charge, cache = new NativeRouteCache());
+  return cache;
+};
+
 function insertTree(request: LayoutRequest, previous: GraphLayout, budget: IncrementalBudget, paneEdges?: Scene["paneEdges"], policy: InsertionPolicy = "stable", departurePrefixes?: Scene["departurePrefixes"], nativeCharge?: (work: number, reason?: string) => void, nativeFrame?: (drawing: GraphLayout) => GraphLayout | null, retry?:InsertionRetry,
   orderCharge = nativeCharge): GraphLayout | null {
   const key = request.band!.key, s = spacingFor(request.tileWidth), wanted = new Set(request.items.map(n => n.key));
@@ -1896,10 +1958,11 @@ function insertTree(request: LayoutRequest, previous: GraphLayout, budget: Incre
   const baseBottom = retry?.baseBottom ?? Math.max(previous.height, bottom);
   const header = (boxes.find(n => n.band === 0 && n.row === 0))?.height ?? 0;
   let grain = GRAIN;
+  const nativeRoutes = nativeCharge ? nativeRouteCache(nativeCharge) : undefined;
   const sceneFor = (n: PlacedNode): Scene => {
     let bottomAbove = -Infinity;
     for (const b of boxes) if (b.y < n.y) bottomAbove = Math.max(bottomAbove, b.y + b.height);
-    return { departureMode:retry?.mode, native: nativeCharge ? { hard:retry?.hard, drawing: { ...previous, nodes, junctions: joins, routes }, frame: nativeFrame, charge: nativeCharge } : undefined, departurePrefixes, tiles, extra: n, width, paneEdges, clearance: s.clearance, header: header || (n.band === 0 && n.row === 0 ? n.height : 0), bottomAbove, cover: key, coverStem, grain };
+    return { departureMode:retry?.mode, native: nativeCharge ? { hard:retry?.hard, drawing: { ...previous, nodes, junctions: joins, routes }, frame: nativeFrame, charge: nativeCharge, routes: nativeRoutes! } : undefined, departurePrefixes, tiles, extra: n, width, paneEdges, clearance: s.clearance, header: header || (n.band === 0 && n.row === 0 ? n.height : 0), bottomAbove, cover: key, coverStem, grain };
   };
   let second: Effort | undefined;
   const plain = fallbackEffort(budget);
@@ -1947,7 +2010,11 @@ function insertTree(request: LayoutRequest, previous: GraphLayout, budget: Incre
       return other.key!==item.key&&!previous.nodes.has(other.key)&&nodes.has(other.key)&&siblingGroups!.get(other.key)===group;
     }) : [];
     const visualOrder=(a:PlacedNode,b:PlacedNode)=>previous.orientation==='right'?a.row-b.row||a.x-b.x||a.y-b.y:a.y-b.y||a.x-b.x;
-    const siblingOrder=(n:PlacedNode)=>{orderCharge?.(siblingItems.reduce((sum,other)=>sum+8*(other.key.length+item.key.length+2),1),'new sibling order probe identity bytes');return siblingItems.every(other=>{const before=other.order<item.order||other.order===item.order&&other.key<item.key;const order=visualOrder(nodes.get(other.key)!,n);return before?order<=0:order>=0;});};
+    // Which placed siblings precede this item is fixed for the item; a probe
+    // only compares its rectangle with theirs.
+    orderCharge?.(siblingItems.reduce((sum,other)=>sum+8*(other.key.length+item.key.length+2),1),'new sibling order identity bytes');
+    const siblingRanks=siblingItems.map(other=>({node:nodes.get(other.key)!,before:other.order<item.order||other.order===item.order&&other.key<item.key}));
+    const siblingOrder=(n:PlacedNode)=>{orderCharge?.(siblingRanks.length+1,'new sibling order probe');return siblingRanks.every(({node,before})=>{const order=visualOrder(node,n);return before?order<=0:order>=0;});};
     const free = (n: PlacedNode) => siblingOrder(n)&&parents.every(parent => n.x >= parent.x + parent.width || n.y >= parent.y + parent.height) && clear(n);
     // Rank every probe, then test freedom lazily: only probes up to the first routable one are
     // checked, and only those are wired. Probe p is (xs[p / ny], ys[p % ny]). A placement that
