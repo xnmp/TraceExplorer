@@ -2271,3 +2271,46 @@ It also tightened two tests: the prediction test now checks that the
 fragment search is skipped, and the repack test checks the clicked ancestry.
 A memo hit on a predicted decline counts the budget fallback but not
 `predicted-decline`, so that counter is a lower bound.
+
+#### Gates and changed acceptance rows
+
+- `bun run check`: 294 files, 0 errors.
+- `bun run test`: 194 files, 2,408 passed, 1 skipped, and 2 timeouts under
+  the full suite's load (`review-fixes.test.ts` click-anchor case at its 5 s
+  limit, `folder-layout-parity.test.ts` child at 20 s). Rerun alone, both
+  files pass, 23/23; the click-anchor case takes 1.5 s.
+- `layout:eval`: all 50 current targets pass. Both click-anchor rows are
+  unchanged (26 and 73).
+
+Rows that changed against the retained-track port repair pass:
+
+| Row | Before | Now | Limit |
+|---|---:|---:|---:|
+| Corpus per-layout movedFraction | 0.120 | 0.117 | 0.128 |
+| Corpus transition movedFraction | 0.191 | 0.187 | 0.257 |
+| Broad transition movedFraction | 0.049 | 0.047 | 0.079 |
+| Mean legal displacement, px | 11.974 | 11.965 | 17.530 |
+| Mean displacement / maxDisplacement | 28.297 / 65.062 | 27.978 / 64.662 | 34.757 / 80.188 |
+| Mean height / width | 2118.664 / 556.975 | 2117.755 / 557.444 | 2372.651 / 603.002 |
+| Mean length / bends / crossings | 37611.1 / 154.099 / 333.118 | 37646.1 / 154.137 / 333.237 | 46535.1 / 157.203 / 364.360 |
+| Mean mixedDirections / siblingInversions / unaligned | 1.537 / 0.092 / 0.165 | 1.543 / 0.088 / 0.164 | 2.289 / 0.107 / 0.177 |
+| Main-thread max p95, ms | 2.980 | 2.542 | 8 |
+| ≤30 visible tiles max p95, ms | 35.172 | 33.714 | 100 |
+| Full folder inline max p95, ms | 5.550 | 4.264 | 10 |
+
+#### What remains of slice 4, and for slices 5 and 6
+
+Slice 4 is **not complete**: T24, T25 and T28 keep production reach (13, 119
+and 57 requests) and API-allowance misses (tours 240, 13 and 5 rows). What
+would unblock them, in order of reach:
+- **Cheaper admission for large drawings.** The affected solve's
+  tracks-by-routes scan and the retained-constant re-import dominate a large
+  band's attempt. Making them local to the changed routes, as construction now
+  is, is what could bring the 12M–64M cases inside the click bound.
+- **Placement, not contact, is what fails on the T25 cases.** Even with
+  contacts deferred, the constructor cannot place the last tile of the
+  smallest contact case. The insertion search over retained free cores needs
+  to move them during placement, not only before it (the port repair) or
+  after it (the metric).
+- Slice 6 still owns the deletion of T21–T25/T28; slice 5's cold sweeps and
+  folder packing are unchanged by this pass.
