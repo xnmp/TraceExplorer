@@ -160,13 +160,14 @@ function intentional(layout: GraphLayout, a: PlacedRoute, b: PlacedRoute, p: Poi
 export const NATIVE_REACH = Math.max(PORT_BERTH, LANE_SEPARATION + .05, JUNCTION_CLEARANCE);
 const reachBoxes = new WeakMap<PlacedRoute, Box | null>();
 /** The route's painted envelope: every path coordinate, curve control points
- * included, and a terminal arrowhead in any direction. Null if unreadable. */
+ * included, and a terminal arrowhead in any direction. Null for any path the
+ * strict reader rejects, since the clearance check rejects those wherever they are. */
 function reachBox(route: PlacedRoute): Box | null {
   if (reachBoxes.has(route)) return reachBoxes.get(route)!;
   const numbers: number[] = [];
   forEachPathNumber(route.path, value => { numbers.push(value); });
   let box: Box | null = null;
-  if (numbers.length >= 4 && numbers.length % 2 === 0 && numbers.every(inReach)) {
+  if (read(route.path, () => {}) && numbers.length >= 4 && numbers.length % 2 === 0 && numbers.every(inReach)) {
     let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
     for (let i = 0; i < numbers.length; i += 2) {
       minX = Math.min(minX, numbers[i]); maxX = Math.max(maxX, numbers[i]);

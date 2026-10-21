@@ -3,9 +3,9 @@
  * through the default engine (publication), the next click and a revisit. */
 import fs from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import { adoptionFallback, bandInsertionAllowance, movedRectangle, PRODUCTION_ROUTING_WORK } from '$lib/domain/trace-graph/incremental-adoption';
+import { adoptionFallback, bandInsertionAllowance, repackAttempted, movedRectangle, PRODUCTION_ROUTING_WORK } from '$lib/domain/trace-graph/incremental-adoption';
 import { geometryGate } from '$lib/domain/trace-graph/geometry-gate';
-import { constrainedBandInsertion, scaledIncrementalBudget } from '$lib/domain/trace-graph/band-incremental';
+import { constrainedBandInsertion, constrainedIncremental, scaledIncrementalBudget } from '$lib/domain/trace-graph/band-incremental';
 import { PREDICTED_DECLINE } from '$lib/domain/trace-graph/incremental-routing';
 import { createDefaultEngine } from '$lib/domain/trace-graph/folder-layout/default-engine';
 import { folderGeometryGate } from '$lib/domain/trace-graph/folder-layout/geometry-gate';
@@ -94,10 +94,8 @@ describe('adoption contracts (pure)', () => {
   });
   it('attempts the anchored repack only for a few new tiles', () => {
     const { maximumRepackItems: few } = PRODUCTION_ROUTING_WORK['band-insertion'];
-    expect(bandInsertionAllowance(20, 'repack', few)).toEqual(bandInsertionAllowance(20));
-    expect(bandInsertionAllowance(20, 'repack', few + 1)).toBeNull();
-    expect(bandInsertionAllowance(20, 'insertion', few + 1)).toEqual(bandInsertionAllowance(20));
-    expect(bandInsertionAllowance(20, 'repack', NaN)).toBeNull();
+    expect([1, few].map(repackAttempted)).toEqual([true, true]);
+    expect([0, few + 1, NaN].map(repackAttempted)).toEqual([false, false, false]);
   });
   it('maps every constrained conflict to one fallback reason', () => {
     expect(['topology-conflict', 'metric-conflict', 'unsupported-input', 'budget-exhaustion'].map(r => adoptionFallback(r as never)))
@@ -170,8 +168,8 @@ describe('band insertion through publication', () => {
     expect(geometryGate(next.placed, req.items, req.band!.key, req.maxWidth)).toBeNull();
   });
   // A capture costing more than the limit stops the attempt before construction,
-  // as a budget decline, without the fragment search; without a limit the same
-  // request goes on to construction.
+  // as a budget decline, without the fragment search (its work is one strict
+  // capture); without a limit the same request goes on to construction.
   it('declines before construction when the capture exceeds its limit', () => {
     const c = { ...corpus().find(f => f.id === 'random-tree-100-8003')!, full: false };
     const opened = optimizedBand(requestFor(c, null, 454, 96), {});
@@ -184,7 +182,8 @@ describe('band insertion through publication', () => {
     expect(predicted.conflict.reason).toBe('budget-exhaustion');
     expect(predicted.conflict.constraints[0]).toBe(PREDICTED_DECLINE);
     expect(predicted.work).toBeLessThan(work / 20);
-    expect(certified.ok || certified.conflict.constraints[0] !== PREDICTED_DECLINE).toBe(true);
+    const strictOnly = constrainedIncremental(req, opened.layout, scaledIncrementalBudget(pools), undefined, work, undefined, undefined, 1);
+    expect(predicted.work).toBe(strictOnly.work);
     expect(certified.work).toBeGreaterThan(10 * predicted.work);
   });
   // This click re-embeds the unanchored tiles (the anchored repack). The
@@ -201,6 +200,12 @@ describe('band insertion through publication', () => {
         const count = (name: string) => profile.counters[name] ?? 0;
         expect([count('adoption:band-insertion:attempt'), count('adoption:band-insertion:success')]).toEqual([2, 2]);
         expect(profile.stages['pinned-band']).toBeUndefined();
+        // The clicked ancestry stays where the committed drawing had it.
+        const byKey = new Map(req.items.map(n => [n.key, n]));
+        for (let key: string | undefined = focus!; key && key !== req.band!.key; key = byKey.get(key)?.parents[0]) {
+          const was = previous!.placed.nodes.get(key)!, now = next.placed.nodes.get(key)!;
+          expect([now.x, now.y], key).toEqual([was.x, was.y]);
+        }
         expect(geometryGate(next.placed, req.items, req.band!.key, req.maxWidth)).toBeNull();
       }
       previous = next;

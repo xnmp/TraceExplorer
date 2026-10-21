@@ -56,12 +56,15 @@ export type InsertionSite = 'insertion' | 'repack';
 
 export interface InteractiveAllowance { readonly work: number; readonly pools: number; readonly captureLimit: number }
 
-/** The band insertion allowance for a band of `items` tiles of which `placed`
- * are new, or null outside the interactive limits (an early budget decline). */
-export function bandInsertionAllowance(items: number, site: InsertionSite = 'insertion', placed = 1): InteractiveAllowance | null {
-  const { work: ceiling, perItem, maximumRepackItems, poolsPerWork, captureShare } = PRODUCTION_ROUTING_WORK['band-insertion'];
+/** Whether the repack site attempts an insertion that places `placed` new tiles. */
+export const repackAttempted = (placed: number): boolean =>
+  placed > 0 && placed <= PRODUCTION_ROUTING_WORK['band-insertion'].maximumRepackItems;
+
+/** The band insertion allowance for a band of `items` tiles, or null for a
+ * malformed size (an early budget decline). */
+export function bandInsertionAllowance(items: number): InteractiveAllowance | null {
+  const { work: ceiling, perItem, poolsPerWork, captureShare } = PRODUCTION_ROUTING_WORK['band-insertion'];
   if (!(items > 0) || !Number.isSafeInteger(items)) return null;
-  if (site === 'repack' && !(placed <= maximumRepackItems)) return null;
   const work = Math.min(ceiling, perItem * items);
   return { work, pools: work * poolsPerWork, captureLimit: Math.floor(work * captureShare) };
 }

@@ -14,7 +14,7 @@ import { bandWidthBudget, columnsFor, partitions, buildShelves, validate } from 
 import { attachSingleBand, attachPackedBand, localBandPlacement, bandExtent, withBandBounds, withPaneBandBounds, singleBandSkeleton } from "./band-geometry";
 import { measure, validateLayout, cost, routePlan, sharedLaneLength, DEFAULT_WEIGHTS, type Measures, type Weights } from "./layout-quality";
 import { constrainedBandInsertion, scaledIncrementalBudget, incrementalBudget, incrementalTree, inReach, usableRetainedRoute } from "./band-incremental";
-import { adoptionFallback, adoptOnce, bandInsertionAllowance, type InsertionSite, movedRectangle, recordAdoption, recordPublication } from "./incremental-adoption";
+import { adoptionFallback, adoptOnce, bandInsertionAllowance, repackAttempted, type InsertionSite, movedRectangle, recordAdoption, recordPublication } from "./incremental-adoption";
 import { PREDICTED_DECLINE } from "./incremental-routing";
 import { geometrySignature, layoutSignature } from "./layout-signature";
 import { forEachPathNumber, mapPathNumbers, pathNumbers } from "./path-data";
@@ -123,7 +123,10 @@ function anchorKeys(request: LayoutRequest, previous: GraphLayout): readonly str
 function constrainedInsertion(request: LayoutRequest, previous: GraphLayout, site: InsertionSite = 'insertion'): GraphLayout | null {
   const placed = request.items.filter(n => !previous.nodes.has(n.key)).length;
   if (!placed) return null;
-  const allowance = bandInsertionAllowance(request.items.length, site, placed);
+  // A repack with too many new tiles is not attempted at all; it is counted
+  // apart from attempts so the inventory's attempts are attempts that ran.
+  if (site === 'repack' && !repackAttempted(placed)) { countLayoutWork('adoption:band-insertion:repack-skipped'); return null; }
+  const allowance = bandInsertionAllowance(request.items.length);
   if (!allowance) { recordAdoption('band-insertion', 'budget'); return null; }
   const key = JSON.stringify(['band-insertion', layoutSignature(request), geometrySignature(previous)]);
   return adoptOnce('band-insertion', key, () => {
