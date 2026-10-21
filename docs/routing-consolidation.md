@@ -2412,3 +2412,22 @@ starts. Capture still projects, snapshots and imports the whole retained
 drawing. Importing only the region a band can reach is the next lever, then
 moving free cores during placement for the T25 contact cases. Slice 6 still
 owns the deletion of T21–T25/T28.
+
+#### Review and gates
+
+An independent adversarial review found no change to any verdict, output or
+choice order. It fuzzed the pairwise native check against the full one
+(19,497 pairs, no mismatch) and the interval index (no miss or misordering,
+NaN and infinite spans included). It confirmed one accounting defect, left
+as is: the affected solve's reach index parses every route and pays for its
+cells up front, so a track among many same-source routes can be charged
+slightly more than the old scan charged. Replays show no lost success.
+
+- `bun run check`: 295 files, 0 errors.
+- `bun run test`: 196 files, 2,424 passed, 1 skipped. One timeout:
+  `folder-layout-parity.test.ts` at its 20 s child limit. Rerun alone, it
+  passes 9/9. The same file times out intermittently at the branch base too.
+  The full suite took 1,285 s.
+- `layout:eval`: all 50 current targets pass. Dense-tour anchor moves went
+  from 73 to 75 (limit 101), because more attempts now certify. Click-anchor
+  moves stay at 26.
