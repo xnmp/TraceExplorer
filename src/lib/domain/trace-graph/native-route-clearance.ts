@@ -5,6 +5,7 @@ import type { GraphLayout, PlacedNode, PlacedRoute } from './layout';
 import { JUNCTION_CLEARANCE } from './connector-ink';
 import { ARROW, LANE_SEPARATION, PORT_BERTH } from './metrics';
 import { inReach } from './coordinate-space';
+import { forEachPathNumber } from './path-data';
 
 type Charge = (work: number, reason?: string) => void;
 type Point = { readonly x: number; readonly y: number };
@@ -150,6 +151,39 @@ function intentional(layout: GraphLayout, a: PlacedRoute, b: PlacedRoute, p: Poi
     if (dot && Math.abs(p.x - dot.x) <= PORT_BERTH && Math.abs(p.y - dot.y) <= PORT_BERTH) return true;
   }
   return false;
+}
+
+/** The largest radius any clearance test below uses. Two routes whose painted
+ * envelopes (control hulls, arrowheads included) are at least this far apart
+ * cannot fail it: every probe and tangent test first requires a hull within
+ * its radius. */
+export const NATIVE_REACH = Math.max(PORT_BERTH, LANE_SEPARATION + .05, JUNCTION_CLEARANCE);
+const reachBoxes = new WeakMap<PlacedRoute, Box | null>();
+/** The route's painted envelope: every path coordinate, curve control points
+ * included, and a terminal arrowhead in any direction. Null if unreadable. */
+function reachBox(route: PlacedRoute): Box | null {
+  if (reachBoxes.has(route)) return reachBoxes.get(route)!;
+  const numbers: number[] = [];
+  forEachPathNumber(route.path, value => { numbers.push(value); });
+  let box: Box | null = null;
+  if (numbers.length >= 4 && numbers.length % 2 === 0 && numbers.every(inReach)) {
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    for (let i = 0; i < numbers.length; i += 2) {
+      minX = Math.min(minX, numbers[i]); maxX = Math.max(maxX, numbers[i]);
+      minY = Math.min(minY, numbers[i + 1]); maxY = Math.max(maxY, numbers[i + 1]);
+    }
+    const arrow = route.terminal ? ARROW.length : 0;
+    box = { minX: minX - arrow, minY: minY - arrow, maxX: maxX + arrow, maxY: maxY + arrow };
+  }
+  reachBoxes.set(route, box);
+  return box;
+}
+/** Whether a pair of routes provably passes {@link chargedNativeClearance} on
+ * distance alone. Charged as a parse of each path, whatever is cached. */
+export function outOfNativeReach(a: PlacedRoute, b: PlacedRoute, charge: Charge): boolean {
+  charge(a.path.length + b.path.length + 2, 'native reach envelope');
+  const p = reachBox(a), q = reachBox(b);
+  return !!p && !!q && boxDistance(p, q) >= NATIVE_REACH;
 }
 
 export function chargedNativeClearance(layout: GraphLayout, charge: Charge, options?: NativeClearanceOptions): string | null {

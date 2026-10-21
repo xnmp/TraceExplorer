@@ -2,7 +2,7 @@ import { retainedHardObstacles, type HardRetainedObstacles } from './retained-ha
 import { nativeCarrierCuts } from './native-carrier-cuts';
 import { materializeSourcePrefixes } from './native-source-prefix';
 import { chargeRoutingSnapshot } from './routing-problem';
-import { chargedNativeClearance } from "./native-route-clearance";
+import { chargedNativeClearance, outOfNativeReach } from "./native-route-clearance";
 import { layoutStage, countLayoutWork } from './layout-profile';
 import { layoutSignature, geometrySignature } from './layout-signature';
 import { createBoundedCache, estimateLayoutBytes } from './folder-layout/bounded-cache';
@@ -1037,7 +1037,7 @@ function nativeCompatible(points: readonly Point[], parent: PlacedNode, arrival:
     if (old.id === authored.id || old.from.kind === authored.from.kind && old.from.id === authored.from.id) continue;
     const obstacles=s.native.hard?.routes.get(old.id)??[old];
     charge(old.id.length+obstacles.length+1,'native hard fragment lookup');
-    for(const obstacle of obstacles)if (chargedNativeClearance({ ...painted, routes: [obstacle, authored] }, charge, {endpointMasks:s.native.hard?.endpointMasks})) return false;
+    for(const obstacle of obstacles)if (!outOfNativeReach(obstacle, authored, charge) && chargedNativeClearance({ ...painted, routes: [obstacle, authored] }, charge, {endpointMasks:s.native.hard?.endpointMasks})) return false;
   }
   return true;
 }
