@@ -307,24 +307,27 @@ export function clearIncrementalPorts(request: LayoutRequest, seed: IncrementalR
   return result.ok ? { ok: true, drawing: result.value, work: result.work } : searchFailure(result.conflict, result.work);
 }
 
-/** Clear every blocked port that the constants allow. A port whose separation
- * conflicts with constants is named by the metric witness and stays blocked;
- * the others are cleared without it. Budget exhaustion keeps the drawn pose. */
+/** Clear every blocked port that the constants allow, within a capped share of
+ * the remaining ledger so a repair can never starve construction. A port whose
+ * separation conflicts with constants is named by the metric witness and stays
+ * blocked; a witness naming no port pin drops the last port instead. Either
+ * way each retry clears at least one fewer port, so the loop is bounded. On
+ * exhausting its share the drawn pose is kept and construction proceeds. */
+export const PORT_REPAIR_SHARE = 4;
 function clearRetainedPorts(request: LayoutRequest, seed: IncrementalRoutingSeed, search: CorridorSearch,
   pane?: { readonly left: number; readonly right: number }): IncrementalRoutingSeed {
   let ports = blockedSourcePorts(request, seed.drawing, search.charge);
   while (ports.length) {
-    const cleared = clearIncrementalPorts(request, seed, ports, search.remaining, pane);
+    const cleared = clearIncrementalPorts(request, seed, ports, Math.floor(search.remaining / PORT_REPAIR_SHARE), pane);
     search.charge(cleared.work, 'retained port repair');
     if (cleared.ok) return { ...seed, drawing: cleared.drawing };
     if (cleared.conflict.reason === 'budget-exhaustion') return seed;
-    search.charge(cleared.conflict.constraints.length * ports.length + 1, 'retained port repair witness');
-    const witnessed = new Set(ports.filter(port => (['x', 'y'] as const).some(axis => {
-      const id = JSON.stringify(['topology-constant', reservedCenter(port, axis)]);
-      return cleared.conflict.constraints.some(c => c === id || c.startsWith(id + ':'));
-    })));
-    if (!witnessed.size) return seed;
-    ports = ports.filter(port => !witnessed.has(port));
+    const ids = ports.map(port => (['x', 'y'] as const).map(axis => JSON.stringify(['topology-constant', reservedCenter(port, axis)])));
+    search.charge(cleared.conflict.constraints.reduce((sum, c) => sum + c.length + 1, 0) * ports.length
+      + ids.flat().reduce((sum, id) => sum + id.length + 1, 0) + 1, 'retained port repair witness');
+    const witnessed = new Set(ports.filter((_, i) => ids[i].some(id =>
+      cleared.conflict.constraints.some(c => c === id || c.startsWith(id + ':')))));
+    ports = witnessed.size ? ports.filter(port => !witnessed.has(port)) : ports.slice(0, -1);
   }
   return seed;
 }

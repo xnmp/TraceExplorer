@@ -1869,8 +1869,13 @@ construction, in the fragment (framed) capture only:
    drawn order. Parallel tracks keep their order, unlike legacy T24, which can
    carry a run past a parallel neighbour.
 4. If a port's separation conflicts with constants, the metric witness names
-   that port's centre pin. The port stays blocked and the others are cleared
-   without it. Budget exhaustion keeps the drawn pose.
+   that port's centre pin. That port stays blocked and the others are cleared
+   without it. A witness that names no port pin, such as an order cycle,
+   drops the last port instead, so every retry tries fewer ports.
+5. The repair spends at most a quarter of the remaining ledger
+   (`PORT_REPAIR_SHARE`). If it exhausts that share, the drawn pose is kept and
+   construction proceeds with the rest, so a repair can never starve the
+   attempt.
 
 The cleared pose is what construction sees. It is a preference, not a
 certificate: the final solve, the retained-constant binding, native clearance
@@ -1887,6 +1892,12 @@ and the unchanged independent gate still admit the completed drawing.
 
 The strict capture is unchanged, since its retained connectors are byte-identical
 by contract.
+
+**Scope.** Only source ports of retained parents are repaired. Arrival ports
+of retained children that gain a new parent are not. A route counts as a
+blocker unless it departs from the port's owner. A junction-sourced route
+therefore counts, where legacy T24 skipped it. That route is still only
+separated by `PORT_BERTH` from the port, so it is not rerouted.
 
 Two parts of the abandoned prototype were dropped:
 - **Reordering parallel tracks.** Letting a cleared core pass a parallel
@@ -2026,4 +2037,38 @@ can fail first. The inventory shows zero changed outputs.
 
 #### Gates and changed acceptance rows
 
-GATES_PLACEHOLDER
+All three gates pass:
+- `bun run check`: 294 files, 0 errors.
+- `bun run test`: 193 files, 2,400 tests passed and 1 skipped.
+- `layout:eval`: all 50 targets pass.
+
+Every production output is byte-identical to c00dea4, so only timing rows
+moved. Against the completion pass's recorded values:
+
+| Row | Completion pass | Now | Limit |
+|---|---:|---:|---:|
+| Main-thread max p95, ms | 2.997 | 2.980 | 8 |
+| ≤30 visible tiles max p95, ms | 41.395 | 35.172 | 100 |
+| Full folder inline max p95, ms | 8.705 | 5.550 | 10 |
+
+All other current rows match, including both click-anchor rows (26 and 73).
+
+#### Review
+
+An independent adversarial review found no contract violation. It confirmed
+the refactor is a line-for-line move, that only free cores move, that the
+ledger is never exceeded, and parity. It found five defects, all addressed:
+- The repair could spend the whole remainder, so exhausting it failed the
+  attempt instead of skipping the repair. It now runs within a quarter of the
+  remainder.
+- A witness that named no port pin abandoned every port. It now drops one port
+  and retries.
+- The witness bookkeeping undercharged string comparisons.
+- The parallel-core test asserted only the order, between two routes that
+  share a source and so were never separated. It now uses another source and
+  checks the exact pushed coordinate, 149.
+- The doc section was unfinished.
+
+Recomputing the repair on every outer backtrack costs work but changes nothing
+(one call on the gained inputs), so it is left as is. After the fixes, tours
+are still 633/894 and the production inventory is still unchanged.

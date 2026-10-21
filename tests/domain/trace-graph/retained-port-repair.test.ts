@@ -10,7 +10,7 @@ import { AUTOMATIC_ROUTING_WORK, automaticIncrementalBudget, constrainedBandInse
 import { attachSingleBand } from '$lib/domain/trace-graph/band-geometry';
 import { geometryGate } from '$lib/domain/trace-graph/geometry-gate';
 import { segments } from '$lib/domain/trace-graph/layout-quality';
-import { PORT_BERTH } from '$lib/domain/trace-graph/metrics';
+import { LANE_SEPARATION, PORT_BERTH } from '$lib/domain/trace-graph/metrics';
 import type { GraphLayout, LayoutRequest, PlacedNode, PlacedRoute } from '$lib/domain/trace-graph/layout';
 
 const tile = (key: string, x: number, y: number): PlacedNode => ({ key, x, y, width: 40, height: 40, row: 0, band: 0 });
@@ -78,13 +78,13 @@ describe('retained port clearance', () => {
   });
 
   it('pushes a parallel retained core in its drawn order, never past it', () => {
-    const { request, previous } = scene(143, [route('a', 'q', 'M20 40 L20 64 L50 64 L50 147 L170 147 L170 292')], [tile('q', 150, 300)]);
+    const { request, previous } = scene(143, [route('p', 'q', 'M140 120 L142 120 L150 120 L150 147 L170 147 L170 292')], [tile('q', 150, 300)]);
     const result = clearIncrementalPorts(request, framed(request, previous), blockedSourcePorts(request, previous));
     expect(result.ok, JSON.stringify(result.ok ? undefined : result.conflict)).toBe(true);
     if (!result.ok) return;
-    const y = (id: string) => segments(result.drawing.routes.find(r => r.id === id)!.path).find(([a, b]) => a.y === b.y && a.y > 100)![0].y;
+    const y = (id: string) => segments(result.drawing.routes.find(r => r.id === id)!.path).find(([a, b]) => a.y === b.y && a.y > 130)![0].y;
     expect(y('a-b')).toBe(146);
-    expect(y('a-q')).toBeGreaterThan(y('a-b'));
+    expect(y('p-q')).toBe(146 + LANE_SEPARATION);
   });
 
   it('needs a fragment authority: whole-route captures keep every retained byte', () => {
