@@ -117,13 +117,19 @@ export function captureFramedIncrementalRouting(request: LayoutRequest, previous
     : { reason: 'unsupported-input', constraints: source.conflict.constraints };
 }
 
+/** The first constraint of a budget decline the capture predicted before construction. */
+export const PREDICTED_DECLINE = 'predicted decline';
+
 /** One ledger owns capture, topology construction and the affected metric solve.
  * Construction must charge its bounded work before executing it. No failed
- * attempt can turn a constant into a preferred coordinate on the next attempt. */
+ * attempt can turn a constant into a preferred coordinate on the next attempt.
+ * A candidate whose capture costs more than `captureLimit` declines as budget
+ * exhaustion before construction (early decline prediction). */
 export function routeCommittedIncremental(request: LayoutRequest, previous: GraphLayout,
   construct: IncrementalTopologyConstructor, budget = 64_000_000, pane?: { readonly left: number; readonly right: number },
-  prepare?: IncrementalFrameFactory, admit?: IncrementalAdmission): IncrementalRoutingResult {
+  prepare?: IncrementalFrameFactory, admit?: IncrementalAdmission, captureLimit = Infinity): IncrementalRoutingResult {
   const result = searchCorridors(search => {
+    const start = search.remaining;
     let seed: IncrementalRoutingSeed | IncrementalRoutingConflict;
     if (prepare) {
       chargeRoutingSnapshot([request, previous], search.charge);
@@ -143,6 +149,10 @@ export function routeCommittedIncremental(request: LayoutRequest, previous: Grap
     } else seed = captureIncrementalRouting(request, previous, search.charge);
     if (!('problem' in seed)) return search.reject(seed.constraints, seed.reason === 'unsupported-input' ? 'invalid'
       : seed.reason === 'budget-exhaustion' ? 'search-exhausted' : seed.reason === 'metric-conflict' ? 'metric' : 'topology');
+    // Early decline prediction: capture cost grows with the retained drawing, and
+    // so do construction and admission. A capture this large measurably leaves too
+    // little of the allowance to finish, so stop before construction spends it.
+    if (start - search.remaining > captureLimit) return search.reject([PREDICTED_DECLINE, 'capture share'], 'search-exhausted');
     // Free retained cores give way to newly active source ports before
     // construction, inside the same affected metric (retained-track port repair).
     if (seed.fragments) seed = clearRetainedPorts(request, seed, search, pane);

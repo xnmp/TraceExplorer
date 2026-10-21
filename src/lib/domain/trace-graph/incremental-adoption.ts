@@ -18,32 +18,55 @@ export type AdoptionSite = 'band-insertion';
 /** Interactive limits for band insertion, set from measured click latency so the
  * attempt plus any legacy fallback stays near the legacy baseline
  * (docs/routing-consolidation.md). Work units are not uniform in time (measured
- * p50 about 20 ns, up to about 100 ns each), so this bounds latency by measurement,
+ * p50 about 15 ns, up to about 100 ns each), so this bounds latency by measurement,
  * not by construction; capture and construction grow with the drawing, so the allowance
- * grows with the band: `perItem` work per band item up to `work`. Doomed small
- * requests stop early instead of spending the ceiling. The constructor's local
- * pools scale with the allowance (`poolsPerWork`) and are reserved up front (a
- * family runs only if its pools fit the remaining work), so a decline stops after
- * little real work. Smaller pools certify more (1/48M: 340 of the 391 inventory
- * attempts, against 319) but let declines spend most of the allowance, which
- * doubled decline p95; outcomes are not monotone in pool size either way. A band of more than
- * `maximumItems` declines as budget before spending any work: larger bands can
- * certify within the ceiling (a 61-item fan does), but their declines added up
- * to 190 ms per click on the eval tours. Coverage beyond these limits stays with
- * legacy as budget fallbacks. */
+ * grows with the band: `perItem` work per band item up to `work`.
+ *
+ * The constructor's local pools scale with the allowance (`poolsPerWork`) and are
+ * reserved up front: a family runs only if its pools fit the remaining work.
+ * Successes rarely spend their pools (nine in ten spend none), but the
+ * reservation competes with construction's other charges, so 1/32M pools
+ * declined requests that certify with 1/48M. Smaller pools let a decline spend
+ * more of the allowance, so a decline is predicted early instead: a capture
+ * costing more than `captureShare` of the allowance stops the attempt before
+ * construction. On the production inventory, 145 of the 146 attempts above that
+ * share declined anyway.
+ *
+ * Bands of any size are attempted. Above 47 items an attempt rarely certifies
+ * within the ceiling (9 of the inventory's 375), because construction and
+ * admission grow with the retained drawing; with the cheaper capture and the
+ * prediction, its declines cost at most about 170 ms and land on clicks whose
+ * legacy insertion already takes seconds. A larger allowance for them would
+ * break the click bound: 12M certifies 34 but declines take up to 330 ms.
+ *
+ * The anchored repack and the ladder after it re-embed every unanchored tile
+ * around the click's ancestry (the `repack` site). Their attempts run only for
+ * at most `maximumRepackItems` new tiles: on the production inventory, 205 of
+ * the 210 such attempts certify, while more new tiles certify less than half
+ * the time and their declines cost a further 14 s over the inventory, taking
+ * adopted clicks to 1.6x their legacy p95. Coverage beyond these limits stays
+ * with legacy as budget fallbacks. */
 export const PRODUCTION_ROUTING_WORK = {
-  'band-insertion': { work: 6_000_000, perItem: 375_000, maximumItems: 47, poolsPerWork: 1 / 32_000_000 },
+  'band-insertion': { work: 6_000_000, perItem: 375_000, maximumRepackItems: 4, poolsPerWork: 1 / 48_000_000, captureShare: 1 / 20 },
 } as const;
 
-export interface InteractiveAllowance { readonly work: number; readonly pools: number }
+/** Where band insertion runs: the incremental insertion around the committed
+ * drawing, or the anchored repack around the click's ancestry alone. */
+export type InsertionSite = 'insertion' | 'repack';
 
-/** The band insertion allowance for a band of `items` tiles, or null above the
- * interactive size limit (an early budget decline). */
+export interface InteractiveAllowance { readonly work: number; readonly pools: number; readonly captureLimit: number }
+
+/** Whether the repack site attempts an insertion that places `placed` new tiles. */
+export const repackAttempted = (placed: number): boolean =>
+  placed > 0 && placed <= PRODUCTION_ROUTING_WORK['band-insertion'].maximumRepackItems;
+
+/** The band insertion allowance for a band of `items` tiles, or null for a
+ * malformed size (an early budget decline). */
 export function bandInsertionAllowance(items: number): InteractiveAllowance | null {
-  const { work: ceiling, perItem, maximumItems, poolsPerWork } = PRODUCTION_ROUTING_WORK['band-insertion'];
-  if (!(items > 0) || items > maximumItems) return null;
+  const { work: ceiling, perItem, poolsPerWork, captureShare } = PRODUCTION_ROUTING_WORK['band-insertion'];
+  if (!(items > 0) || !Number.isSafeInteger(items)) return null;
   const work = Math.min(ceiling, perItem * items);
-  return { work, pools: work * poolsPerWork };
+  return { work, pools: work * poolsPerWork, captureLimit: Math.floor(work * captureShare) };
 }
 
 export const adoptionFallback = (reason: IncrementalConflictReason): AdoptionFallback =>

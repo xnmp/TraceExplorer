@@ -3,9 +3,10 @@
  * through the default engine (publication), the next click and a revisit. */
 import fs from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import { adoptionFallback, bandInsertionAllowance, movedRectangle, PRODUCTION_ROUTING_WORK } from '$lib/domain/trace-graph/incremental-adoption';
+import { adoptionFallback, bandInsertionAllowance, repackAttempted, movedRectangle, PRODUCTION_ROUTING_WORK } from '$lib/domain/trace-graph/incremental-adoption';
 import { geometryGate } from '$lib/domain/trace-graph/geometry-gate';
-import { scaledIncrementalBudget } from '$lib/domain/trace-graph/band-incremental';
+import { constrainedBandInsertion, constrainedIncremental, scaledIncrementalBudget } from '$lib/domain/trace-graph/band-incremental';
+import { PREDICTED_DECLINE } from '$lib/domain/trace-graph/incremental-routing';
 import { createDefaultEngine } from '$lib/domain/trace-graph/folder-layout/default-engine';
 import { folderGeometryGate } from '$lib/domain/trace-graph/folder-layout/geometry-gate';
 import { profileLayout } from '$lib/domain/trace-graph/layout-profile';
@@ -68,13 +69,14 @@ describe('adoption contracts (pure)', () => {
     expect(movedRectangle(before, new Map([['a', r(NaN)], ['b', r(20)]]), ['a'])).toBe('a');
     expect(movedRectangle(new Map(), new Map(), [])).toBeNull();
   });
-  it('grows the interactive allowance with the band up to its ceiling and declines doomed sizes', () => {
-    const { work: ceiling, perItem, maximumItems: largest } = PRODUCTION_ROUTING_WORK['band-insertion'];
+  it('grows the interactive allowance with the band up to its ceiling, for bands of any size', () => {
+    const { work: ceiling, perItem } = PRODUCTION_ROUTING_WORK['band-insertion'];
+    const largest = Math.ceil(ceiling / perItem) + 1;
     expect(bandInsertionAllowance(1)!.work).toBe(perItem);
     expect(bandInsertionAllowance(2)!.work).toBe(2 * perItem);
     expect(bandInsertionAllowance(largest)!.work).toBe(ceiling);
-    expect(bandInsertionAllowance(largest + 1)).toBeNull();
-    for (const items of [0, -1, NaN, Infinity, Number.MAX_SAFE_INTEGER]) expect(bandInsertionAllowance(items)).toBeNull();
+    expect(bandInsertionAllowance(200)!.work).toBe(ceiling);
+    for (const items of [0, -1, 1.5, NaN, Infinity]) expect(bandInsertionAllowance(items)).toBeNull();
     // Every allowance still admits one embedding family: its pools (eight fallback
     // and second-chance pools plus probes) fit inside the allowance.
     for (let items = 1; items <= largest; items++) {
@@ -82,6 +84,18 @@ describe('adoption contracts (pure)', () => {
       expect(8 * (b.fallback + b.second) + b.probes, `${items} items`).toBeLessThanOrEqual(work);
       expect(b.fallback, `${items} items`).toBeGreaterThan(0);
     }
+  });
+  it('sizes pools at 1/48M of the allowance and predicts a decline above a twentieth of it in capture', () => {
+    for (const items of [1, 16, 47]) {
+      const { work, pools, captureLimit } = bandInsertionAllowance(items)!;
+      expect(pools).toBe(work / 48_000_000);
+      expect(captureLimit).toBe(Math.floor(work / 20));
+    }
+  });
+  it('attempts the anchored repack only for a few new tiles', () => {
+    const { maximumRepackItems: few } = PRODUCTION_ROUTING_WORK['band-insertion'];
+    expect([1, few].map(repackAttempted)).toEqual([true, true]);
+    expect([0, few + 1, NaN].map(repackAttempted)).toEqual([false, false, false]);
   });
   it('maps every constrained conflict to one fallback reason', () => {
     expect(['topology-conflict', 'metric-conflict', 'unsupported-input', 'budget-exhaustion'].map(r => adoptionFallback(r as never)))
@@ -138,31 +152,90 @@ describe('band insertion through publication', () => {
       focus = selected.key; visited.add(focus);
     }
   });
-  // The largest band the size limit admits is attempted with a chance: its fan
-  // arrival certifies (at the former 4M it exhausted the allowance until import
-  // stopped re-solving its constants).
-  it('certifies the largest fan arrival the size limit admits', () => {
+  // Reserving 1/32M pools left this arrival too little of its 6M allowance for
+  // construction's other charges, so it declined and legacy reached T24 (free
+  // port lanes). It spends about 3M and certifies with 1/48M pools.
+  it('publishes an arrival that 1/32M pools declined, without a legacy port repair', () => {
+    const c = { ...corpus().find(f => f.id === 'random-tree-100-8003')!, full: false };
+    const opened = optimizedBand(requestFor(c, null, 454, 96), {});
+    const req = requestFor(c, 'n21', 454, 96);
+    const { result: next, count } = counters(() => optimizedBand({ ...req, hint: opened.layout.readingOrder }, { previous: opened, anchorKey: 'n21' }));
+    expect([count('adoption:band-insertion:success'), count('adoption:band-insertion:published'), count('legacy:T24')]).toEqual([1, 1, 0]);
+    for (const [key, was] of opened.placed.nodes) {
+      const now = next.placed.nodes.get(key);
+      if (now) expect([now.x, now.y, now.width, now.height], key).toEqual([was.x, was.y, was.width, was.height]);
+    }
+    expect(geometryGate(next.placed, req.items, req.band!.key, req.maxWidth)).toBeNull();
+  });
+  // A capture costing more than the limit stops the attempt before construction,
+  // as a budget decline, without the fragment search (its work is one strict
+  // capture); without a limit the same request goes on to construction.
+  it('declines before construction when the capture exceeds its limit', () => {
+    const c = { ...corpus().find(f => f.id === 'random-tree-100-8003')!, full: false };
+    const opened = optimizedBand(requestFor(c, null, 454, 96), {});
+    const req = { ...requestFor(c, 'n21', 454, 96), hint: opened.layout.readingOrder, anchorKey: 'n21', history: undefined };
+    const { work, pools } = bandInsertionAllowance(req.items.length)!;
+    const certified = constrainedBandInsertion(req, opened.layout, () => scaledIncrementalBudget(pools), work);
+    const predicted = constrainedBandInsertion(req, opened.layout, () => scaledIncrementalBudget(pools), work, 1);
+    expect(predicted.ok).toBe(false);
+    if (predicted.ok) return;
+    expect(predicted.conflict.reason).toBe('budget-exhaustion');
+    expect(predicted.conflict.constraints[0]).toBe(PREDICTED_DECLINE);
+    expect(predicted.work).toBeLessThan(work / 20);
+    const strictOnly = constrainedIncremental(req, opened.layout, scaledIncrementalBudget(pools), undefined, work, undefined, undefined, 1);
+    expect(predicted.work).toBe(strictOnly.work);
+    expect(certified.work).toBeGreaterThan(10 * predicted.work);
+  });
+  // This click re-embeds the unanchored tiles (the anchored repack). The
+  // constrained insertion certifies both the insertion and the repack, so the
+  // legacy insertion never runs in the request.
+  it('certifies the anchored repack without the legacy insertion', () => {
+    const c = { ...corpus().find(f => f.id === 'random-bushy-12-7323')!, full: false }, visited = new Set<string>();
+    let focus: string | null = null, previous: Optimized | undefined;
+    for (let step = 0; step <= 5; step++) {
+      const req = requestFor(c, focus, 640, 96);
+      const { result: next, profile } = profileLayout(() => optimizedBand({ ...req, hint: previous?.layout.readingOrder }, { previous, anchorKey: focus ?? undefined }));
+      if (step === 5) {
+        expect(focus).toBe('n2');
+        const count = (name: string) => profile.counters[name] ?? 0;
+        expect([count('adoption:band-insertion:attempt'), count('adoption:band-insertion:success')]).toEqual([2, 2]);
+        expect(profile.stages['pinned-band']).toBeUndefined();
+        // The clicked ancestry stays where the committed drawing had it.
+        const byKey = new Map(req.items.map(n => [n.key, n]));
+        for (let key: string | undefined = focus!; key && key !== req.band!.key; key = byKey.get(key)?.parents[0]) {
+          const was = previous!.placed.nodes.get(key)!, now = next.placed.nodes.get(key)!;
+          expect([now.x, now.y], key).toEqual([was.x, was.y]);
+        }
+        expect(geometryGate(next.placed, req.items, req.band!.key, req.maxWidth)).toBeNull();
+      }
+      previous = next;
+      const selected = req.items.filter(n => !visited.has(n.key) && req.band!.items.some(child => child.parents.includes(n.key)))
+        .sort((a, b) => b.order - a.order || a.key.localeCompare(b.key))[0];
+      if (!selected) { if (focus === null) break; focus = null; } else { focus = selected.key; visited.add(focus); }
+    }
+  });
+  // A 47-item fan arrival certifies (at the former 4M it exhausted the
+  // allowance until import stopped re-solving its constants).
+  it('certifies a 47-item fan arrival', () => {
     const fan = corpus().find(f => f.id === 'fan-80')!;
     const band = (n: number) => requestFor({ ...fan, nodes: fan.nodes.slice(0, n), full: false }, null, 400, 48);
-    const largest = PRODUCTION_ROUTING_WORK['band-insertion'].maximumItems;
-    const req = band(largest), opened = optimizedBand(band(largest - 1), {});
+    const req = band(47), opened = optimizedBand(band(46), {});
     const { result: next, count } = counters(() => optimizedBand(req, { previous: opened }));
     expect([count('adoption:band-insertion:attempt'), count('adoption:band-insertion:success')]).toEqual([1, 1]);
     for (const [key, was] of opened.placed.nodes) expect(next.placed.nodes.get(key), key).toMatchObject({ x: was.x, y: was.y, width: was.width, height: was.height });
     expect(geometryGate(next.placed, req.items, req.band!.key, req.maxWidth)).toBeNull();
   });
-  // A band above the interactive size limit declines as budget before any capture
-  // or search work, and legacy publishes a gated drawing. (This fan could certify;
-  // the limit is about the declines of other large bands, see the allowance.)
-  it('declines an oversized insertion as budget without spending work', () => {
+  // Bands above 47 items are attempted too (they used to decline before any
+  // work): this 61-item fan arrival certifies within the 6M ceiling.
+  it('attempts and certifies an arrival in a band of more than 47 items', () => {
     const fan = corpus().find(f => f.id === 'fan-80')!;
     const band = (n: number) => requestFor({ ...fan, nodes: fan.nodes.slice(0, n), full: false }, null, 400, 48);
-    const opened = optimizedBand(band(48), {}), req = band(49);
-    expect(bandInsertionAllowance(req.items.length)).toBeNull();
+    const opened = optimizedBand(band(60), {}), req = band(61);
     expect(req.items.filter(n => !opened.placed.nodes.has(n.key))).toHaveLength(1);
     const { result: next, count } = counters(() => optimizedBand(req, { previous: opened }));
-    expect([count('adoption:band-insertion:attempt'), count('adoption:band-insertion:fallback:budget'),
-      count('adoption:band-insertion:work'), count('adoption:band-insertion:published')]).toEqual([1, 1, 0, 0]);
+    expect([count('adoption:band-insertion:attempt'), count('adoption:band-insertion:success')]).toEqual([1, 1]);
+    expect(count('adoption:band-insertion:work')).toBeGreaterThan(0);
+    for (const [key, was] of opened.placed.nodes) expect(next.placed.nodes.get(key), key).toMatchObject({ x: was.x, y: was.y, width: was.width, height: was.height });
     expect(geometryGate(next.placed, req.items, req.band!.key, req.maxWidth)).toBeNull();
   });
 });

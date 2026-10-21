@@ -2072,3 +2072,245 @@ ledger is never exceeded, and parity. It found five defects, all addressed:
 Recomputing the repair on every outer backtrack costs work but changes nothing
 (one call on the gained inputs), so it is left as is. After the fixes, tours
 are still 633/894 and the production inventory is still unchanged.
+
+### Slice 4 finish pass
+
+This pass worked through the four blockers named above, then applied the
+deletion rule. Production reaches T24 in 13 requests (21 before), and T25
+and T28 as before. No stage meets the rule, so **slice 4 remains open**; the
+exact blockers are at the end. Every number is measured on the rebuilt
+inventory (3,405 requests) against a baseline captured at origin/main
+(d069394) before any change.
+
+#### 1. Pool sizing with early decline prediction
+
+Measured over the 2,210 production attempts of at most 47 items, replayed in
+isolation:
+- **Successes almost never spend their pools.** Nine in ten spend nothing
+  from them, the most any spends is 47%. The 1/32M reservation instead crowded
+  out construction's other charges (native checks, about 2.5M in a decline):
+  the eight T24 declines spend 3–5M in all and fail only because the
+  reservation left too little for those charges.
+- **What predicts a decline is capture cost.** Declines are the large
+  drawings: capture p50 0.23M against 0.02M for successes. 145 of the 146
+  attempts whose capture costs more than a twentieth of the allowance decline
+  anyway. Pool spend, path length and new-item count separate the rest no
+  better; the best two-feature rule found saved another 5 s of the 23 s of
+  remaining decline time.
+
+So pools are now 1/48M of the allowance, and a capture above a twentieth of
+it stops the attempt before construction (`PREDICTED_DECLINE`, counted as
+`adoption:band-insertion:predicted-decline` and as a budget fallback;
+`incremental-routing.ts` `routeCommittedIncremental`, `incremental-adoption.ts`
+`PRODUCTION_ROUTING_WORK`).
+
+| Attempts ≤ 47 items | Successes | Total | Decline p50 / p95 / max |
+|---|---:|---:|---|
+| 1/32M pools (main) | 1,685 | 33.1 s | 24.5 / 96.9 / 197 ms |
+| 1/48M pools | 1,786 | 51.8 s | 61.5 / 143.2 / 194 ms |
+| 1/48M + prediction | 1,785 | 45.3 s | 49.3 / 133.7 / 219 ms |
+| 1/48M + prediction + local native checks (below) | 1,799 | 41.2 s | 35.9 / 130.4 / 234 ms |
+| 4M, 1/48M · 5M, 1/48M | 1,702 · 1,750 | 41.7 · 48.8 s | 41 · 54 ms p50 |
+
+All eight T24 declines that certify with 1/48M pools are now published. The
+smaller allowances cover only two to five of them.
+
+#### 2. The anchored-repack and T25-ladder call sites
+
+Both sites re-embed every unanchored tile around the click's ancestry, so
+their base is the same projected subset. The constrained insertion now runs
+first at both (`band-layout.ts`, `insertion` and the ladder prelude) and the
+legacy `incrementalTree` only on a decline. Its cost is the catch:
+- **Unrestricted,** it added 1,126 attempts to the inventory, took adopted
+  tour clicks to 1.59× and outranked ones to 1.52× their main p95, changed one
+  output, and lowered T28 reach by 3. It removed no T24 or T25 reach.
+- **The two adopted requests whose losing repack candidate reaches T24**
+  (random-dag-40-7501 at 640 px, clicks 6 and 7) re-place 16 tiles. They
+  certify at 21M and 13M, taking 342 and 223 ms on their own.
+- Attempts with at most four new tiles certify 205 times in 210; with more,
+  fewer than half certify and their declines cost a further 14 s.
+
+The site therefore runs only for at most four new tiles
+(`maximumRepackItems`); a skipped repack is counted as
+`adoption:band-insertion:repack-skipped`, not as an attempt. With that limit the inventory's outputs and legacy
+reach are unchanged, and latency is within noise.
+
+#### 3. Bands over 47 items
+
+There are 375 such production attempts, all on clicks whose legacy insertion
+takes seconds. Replayed with 1/48M pools:
+
+| Allowance | Certify | Decline p50 / p95 / max |
+|---|---:|---|
+| 6M | 7 (9 with local native checks) | 36 / 87 / 182 ms |
+| 9M | 21 | 54 / 188 / 267 ms |
+| 12M | 34 | 62 / 263 / 330 ms |
+| 64M, pools as at 6M | 141 | 977 / 1,348 / 2,012 ms |
+
+A certifying large band spends median 15.8M. On a profile of 20 of them
+(about 200 ms each), construction was a third and the affected solve plus
+admission most of the rest; the unchanged independent gate alone is 22 ms.
+
+- **The move that paid: local native checks in construction.**
+  `nativeCompatible` ran the full pairwise native clearance of each probe
+  against every retained route. A pair whose painted envelopes (control hulls
+  and arrowheads) are at least the largest clearance radius apart cannot fail
+  that check (`NATIVE_REACH`, `outOfNativeReach` in
+  `native-route-clearance.ts`), so it is skipped and charged as a parse.
+  Construction time on large bands fell by about a third. Successes are
+  unchanged wherever they already fit; 14 more small and 2 more large
+  attempts now fit. The old-success replays below are identical.
+- **Admission is the remaining cost.** The affected solve still scans tracks
+  against every foreign route, and the retained-constant check re-imports the
+  whole drawing. Halving those would still leave a large band's typical
+  success near the 250 ms bound, with its declines above it.
+
+So bands of any size are now attempted under the same 6M ceiling (the
+47-item limit is removed): their declines cost at most about 170 ms on
+clicks that already take seconds, and 9 certify. **A larger allowance for
+them is not possible within the click bound:** 12M certifies 34 but declines
+take up to 330 ms, and none of the 8 large-band requests that reach T24
+certifies below 12M (6 do at 64M). They stay with legacy as budget
+fallbacks.
+
+#### 4. Contact deferral for T25 and T28
+
+- **What exists.** The framed `deferred` and `route-only` occupancies already
+  defer contacts with retained free cores: native checks and the lane index
+  see only the retained hard fragments, and the affected solve separates
+  parallel free tracks with side choices.
+- **The experiment.** A `repairable` insertion order was added to the framed
+  families, so contacts between new routes also wait for the metric. On the
+  only contact case of at most 47 items (tour input 84, 32 items) it does not
+  certify at 1,024M: in every family the constructor cannot place the last new
+  tile, n98, with 31 tiles placed. The failure is a placement, not a contact.
+  Legacy's success there uses the repairable draft plus T28, which moves a
+  *retained* free core of n21→n30 from x=330 to x=342 together with a new
+  core, which the framed metric could express but construction never reaches.
+  The experiment was not kept.
+- **Production.** 116 of the 119 requests that reach T25 have no constrained
+  certification even at 64M (74 are bands over 47 items, 42 smaller). Of the
+  57 requests that reach T28, 20 certify only at 7–61M, 29 not at 64M, 5 reach
+  it through another legacy candidate after an adopted attempt, and 3 have
+  no band attempt.
+
+#### 5. Deletion
+
+No stage is deleted. For each:
+
+| Stage | Production reach | Old-success coverage at the API allowance | Blocker |
+|---|---:|---|---|
+| T24 free port lanes | 13 requests | tours 438/678, corpus 47/48, original 41/80 | 8 large bands need 12M–64M or more; 1 predicted decline needs 6.8M; 2 repack candidates need 13M–21M; 2 need 15M and over 64M |
+| T25 repairable / constrained retry | 56 / 74 requests (119 in all) | tours 71/84, corpus 4/4, original 12/12 | 116 of 119 have no constrained certification at 64M; the remaining contact cases fail in placement (above) |
+| T28 band contact repair | 57 requests | tours 53/58, corpus 5/5, original 11/11 | 20 need 7M–61M, 29 have none at 64M, 5 come through other legacy candidates |
+
+Coverage is unchanged by this pass at every population (tours 633/894,
+corpus 62/63, original per-stage 68/108): every gain is inside the
+interactive allowance, and the API-allowance misses lie far beyond it.
+
+#### Production inventory and click latency
+
+| Count | origin/main | Now |
+|---|---:|---:|
+| Attempts (by size, before any work) | 2,585 (375) | 2,745 (0) |
+| Repack attempts skipped for more than four new tiles | — | 964 |
+| Successes | 1,692 | 1,974 |
+| Published | 1,013 | 1,106 |
+| Budget fallbacks (predicted) | 893 | 771 (237) |
+| Work | 3,974.5M | 4,822.1M |
+| Outputs that differ | — | 160 |
+| Geometry gate failures | 0 | 0 |
+
+The 160 extra attempts are repack-site attempts; the 375 large-band
+attempts now run instead of declining before any work. Outputs differ only
+where an attempt now certifies; consecutive-output tile moves fell from 352
+outputs (8,052 tile coordinates) to 338 (7,965).
+
+Latency is the per-request minimum of two runs, on the same machine,
+against the origin/main baseline. Groups are this pass's own counters. Times
+are in ms.
+
+| Group | n | main p50 / p95 / max | Now p50 / p95 / max | p95 ratio |
+|---|---:|---|---|---:|
+| Folder, all | 255 | 6.5 / 68.1 / 305.8 | 6.5 / 67.7 / 360.0 | 0.99 |
+| Folder, adopted | 165 | 7.8 / 55.2 / 242.8 | 7.4 / 60.0 / 270.9 | 1.09 |
+| Folder, declined | 13 | 68.5 / 305.8 / 305.8 | 72.1 / 360.0 / 360.0 | 1.18 |
+| Folder, outranked | 15 | 6.2 / 23.2 / 23.2 | 7.4 / 22.9 / 22.9 | 0.99 |
+| Folder, legacy only | 62 | 1.4 / 11.3 / 18.7 | 1.4 / 12.1 / 18.3 | 1.07 |
+| Tour, all | 3,150 | 11.4 / 1,497 / 33,812 | 11.3 / 1,529 / 34,232 | 1.02 |
+| Tour, adopted | 941 | 9.0 / 78.9 / 220.1 | 8.5 / 80.0 / 255.7 | 1.01 |
+| Tour, declined | 793 | 276.6 / 5,258 / 33,812 | 299.9 / 5,266 / 34,232 | 1.00 |
+| Tour, outranked | 697 | 10.2 / 46.7 / 80.1 | 10.6 / 54.6 / 100.2 | 1.17 |
+| Tour, legacy only | 719 | 1.2 / 84.5 / 797.8 | 1.1 / 84.0 / 786.8 | 0.99 |
+
+- **The attempt itself** takes at most 220 ms (per-request minimum of two
+  runs; p99 127 ms). Single runs under load reached 398 ms.
+- **Nothing moved to the worker,** and no new worker or async pattern exists.
+- **A request can now run two attempts** (insertion and repack), each within
+  its own 6M allowance.
+- **`click-stability.test.ts`** took 1,260 s against 1,237 s at origin/main,
+  run side by side on the same machine.
+
+#### Review
+
+An independent adversarial review of 2981b66..cb9e756 found no product-contract
+violation: retained rectangles, clicked ancestry and cold/warm parity held on
+728 replayed tour requests, and the reach bound is exact for every path the
+strict reader accepts. It confirmed three defects, all fixed:
+- Skipped repacks were counted as attempts and budget fallbacks, which
+  inflated the inventory counts. They now have their own counter, and the
+  table above is regenerated (outputs identical).
+- `outOfNativeReach` could skip a path the strict reader rejects (lowercase
+  commands, `Z`, subpaths, closed curves), where the clearance check would
+  have failed it. It now requires the strict reader to accept both paths.
+- The exhaustive reach test never exercised the tile-port and junction radii
+  that set `NATIVE_REACH`, so a reach reduced to the lane separation still
+  passed. It now covers both and fails under that mutation.
+
+It also tightened two tests: the prediction test now checks that the
+fragment search is skipped, and the repack test checks the clicked ancestry.
+A memo hit on a predicted decline counts the budget fallback but not
+`predicted-decline`, so that counter is a lower bound.
+
+#### Gates and changed acceptance rows
+
+- `bun run check`: 294 files, 0 errors.
+- `bun run test`: 194 files, 2,408 passed, 1 skipped, and 2 timeouts under
+  the full suite's load (`review-fixes.test.ts` click-anchor case at its 5 s
+  limit, `folder-layout-parity.test.ts` child at 20 s). Rerun alone, both
+  files pass, 23/23; the click-anchor case takes 1.5 s.
+- `layout:eval`: all 50 current targets pass. Both click-anchor rows are
+  unchanged (26 and 73).
+
+Rows that changed against the retained-track port repair pass:
+
+| Row | Before | Now | Limit |
+|---|---:|---:|---:|
+| Corpus per-layout movedFraction | 0.120 | 0.117 | 0.128 |
+| Corpus transition movedFraction | 0.191 | 0.187 | 0.257 |
+| Broad transition movedFraction | 0.049 | 0.047 | 0.079 |
+| Mean legal displacement, px | 11.974 | 11.965 | 17.530 |
+| Mean displacement / maxDisplacement | 28.297 / 65.062 | 27.978 / 64.662 | 34.757 / 80.188 |
+| Mean height / width | 2118.664 / 556.975 | 2117.755 / 557.444 | 2372.651 / 603.002 |
+| Mean length / bends / crossings | 37611.1 / 154.099 / 333.118 | 37646.1 / 154.137 / 333.237 | 46535.1 / 157.203 / 364.360 |
+| Mean mixedDirections / siblingInversions / unaligned | 1.537 / 0.092 / 0.165 | 1.543 / 0.088 / 0.164 | 2.289 / 0.107 / 0.177 |
+| Main-thread max p95, ms | 2.980 | 2.542 | 8 |
+| ≤30 visible tiles max p95, ms | 35.172 | 33.714 | 100 |
+| Full folder inline max p95, ms | 5.550 | 4.264 | 10 |
+
+#### What remains of slice 4, and for slices 5 and 6
+
+Slice 4 is **not complete**: T24, T25 and T28 keep production reach (13, 119
+and 57 requests) and API-allowance misses (tours 240, 13 and 5 rows). What
+would unblock them, in order of reach:
+- **Cheaper admission for large drawings.** The affected solve's
+  tracks-by-routes scan and the retained-constant re-import dominate a large
+  band's attempt. Making them local to the changed routes, as construction now
+  is, is what could bring the 12M–64M cases inside the click bound.
+- **Placement, not contact, is what fails on the T25 cases.** Even with
+  contacts deferred, the constructor cannot place the last tile of the
+  smallest contact case. The insertion search over retained free cores needs
+  to move them during placement, not only before it (the port repair) or
+  after it (the metric).
+- Slice 6 still owns the deletion of T21–T25/T28; slice 5's cold sweeps and
+  folder packing are unchanged by this pass.
