@@ -2314,3 +2314,101 @@ would unblock them, in order of reach:
   after it (the metric).
 - Slice 6 still owns the deletion of T21–T25/T28; slice 5's cold sweeps and
   folder packing are unchanged by this pass.
+
+### Local admission pass
+
+This pass made a band attempt's work local to the changed routes, so that
+large drawings certify inside the existing 6M allowance because the work
+shrinks, not because the allowance grows. Production now reaches T24 in 10
+requests (21 at origin/main, 13 after the finish pass), T25 in 74 + 55, and
+T28 in 54 (57 before). No stage meets the deletion rule, so **slice 4
+remains open**. Every number is measured on the 3,405-request inventory
+against a baseline captured at origin/main (da18cea) before any change.
+
+#### What became local
+
+Profiles of the large-band successes at 64M showed construction paying for
+the whole drawing on every probe: re-framing every retained route (36–45% of
+the work), a quadratic admission prepay (13%), and sibling-order identity
+bytes per probe (10%). Time went to re-reading retained routes for the native
+clearance check, and to the affected solve's tracks-by-tiles and
+tracks-by-routes scans.
+- **Construction probes** (`band-incremental.ts`, `nativeProbeFrame`). Under
+  the identity frame, a probe paints only its own routes; retained routes are
+  painted once per ledger (`identitySingleBandPainter`). The pairwise native
+  check reads, indexes and envelopes each retained route once
+  (`NativeRouteCache`) and equals `chargedNativeClearance` on the same two
+  routes. A departure blocks only owners whose ports lie within reach of the
+  ink. Sibling-order identity is paid once per item.
+- **Admission prepay** (`routing-admission-work.ts`). The p² scalar is
+  replaced by the gate's own pair structure: the small sweep (under 256
+  entries, or the whole set only when the grid declines), the sort of
+  shared-lane keys counted by a census of touching collinear pairs, and the
+  near-lane pass's bin neighbours. Route clearance stays prepaid by the
+  callers' native check.
+- **Affected solve** (`incremental-routing.ts`, `interval-index.ts`). Tiles,
+  parallel segments and berths are indexed by their extent along each track.
+  Candidates come back in drawing order, so every constraint and choice is
+  the same as the full scan's.
+
+Replays of the captured attempts showed no output change anywhere both
+versions certify, and no lost success: +116 at the production allowance
+after the construction change, +106 more after the prepay and index (0
+lost, 0 differing outputs). The large bands' needs at 64M fell from 12M–64M
+to 2.3M–42M.
+
+#### Production inventory and click latency
+
+| Count | origin/main | Now |
+|---|---:|---:|
+| Attempts | 2,585 | 2,745 |
+| Repack attempts skipped | — | 961 |
+| Successes | 1,692 | 2,191 |
+| Published | 1,013 | 1,255 |
+| Budget fallbacks (predicted) | 893 | 554 (225) |
+| Work | 3,976.3M | 3,982.5M |
+| Outputs that differ | — | 365 |
+| Geometry gate failures | 0 | 0 |
+
+| Group | n | main p50 / p95 / max | Now p50 / p95 / max | p95 ratio |
+|---|---:|---|---|---:|
+| Folder, all | 255 | 6.4 / 68.3 / 290.3 | 6.3 / 77.0 / 340.4 | 1.13 |
+| Folder, adopted | 174 | 8.4 / 69.9 / 290.3 | 7.7 / 87.4 / 287.5 | 1.25 |
+| Folder, declined | 2 | 257.0 / 257.0 / 257.0 | 340.4 / 340.4 / 340.4 | 1.32 |
+| Folder, outranked | 15 | 5.7 / 23.2 / 23.2 | 7.4 / 22.4 / 22.4 | 0.97 |
+| Folder, legacy only | 64 | 1.5 / 14.1 / 39.3 | 1.4 / 14.3 / 36.1 | 1.01 |
+| Tour, all | 3,150 | 11.7 / 1,474 / 34,078 | 11.8 / 1,428 / 33,857 | 0.97 |
+| Tour, adopted | 1,081 | 10.5 / 120.7 / 423.9 | 10.2 / 130.7 / 410.4 | 1.08 |
+| Tour, declined | 552 | 418.0 / 5,613 / 34,078 | 460.1 / 5,493 / 33,857 | 0.98 |
+| Tour, outranked | 765 | 11.1 / 64.9 / 263.2 | 11.9 / 92.2 / 271.9 | 1.42 |
+| Tour, legacy only | 752 | 1.2 / 219.5 / 790.7 | 1.2 / 220.7 / 785.7 | 1.01 |
+
+Groups are classified by the new counters, so a request that origin/main
+declined cheaply and that now certifies but loses the ranking counts as
+outranked. That is why that group's p95 rose most: large bushy bands now
+certify in about 100 ms. Before the affected solve was indexed, its ratio
+was 1.58.
+- **The attempt itself** takes at most 247 ms (per-request minimum of two
+  runs; p99 144 ms). Single runs under load reached 312 ms.
+- **Nothing moved to the worker,** and no new worker or async pattern exists.
+
+#### Coverage outside production
+
+At the API allowance, with the history-previous inputs used before: tours
+635/894 (T24 438/678, T25 72/84, T28 53/58), corpus 62/63, original 68/108
+(T24 41/80). Nothing is lost; the two gains are T25 and additional rows.
+
+#### Deletion, and what remains
+
+| Stage | Production reach | Blocker |
+|---|---:|---|
+| T24 free port lanes | 10 requests | 7 follow a budget decline (one predicted), 3 a published attempt; 240 tour rows still miss at the API allowance |
+| T25 repairable / constrained | 55 / 74 requests | every one follows a band-insertion budget decline, 53 of them predicted from the capture share |
+| T28 band contact repair | 54 requests | 37 follow a budget decline, 14 a certified attempt (13 published), 3 a request with no attempt |
+
+The residue is now mostly **capture**, not construction: a request whose
+retained drawing is large spends its capture share before construction
+starts. Capture still projects, snapshots and imports the whole retained
+drawing. Importing only the region a band can reach is the next lever, then
+moving free cores during placement for the T25 contact cases. Slice 6 still
+owns the deletion of T21–T25/T28.
