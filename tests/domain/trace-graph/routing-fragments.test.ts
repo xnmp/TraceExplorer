@@ -182,14 +182,41 @@ it('exposes selected construction obstacles without allowing them to replace cap
     observed = true;
     // Simulate an accidental mutation in an adapter. It must not alter the
     // independent capture used by the final metric and retained-paint check.
-    (fragments!.pins as Map<string, number>).clear();
-    for (const node of fragments!.source.drawing.nodes.values()) node.x += 10;
+    // Construction reads pins through a lookup only, and owns copies of the rest.
+    expect(Object.keys(fragments!.pins)).toEqual(['get']);
+    for (const node of fragments!.preferred.drawing.nodes.values()) (node as { x: number }).x += 10;
+    (fragments!.fragments as unknown[]).length = 0;
     return { ...topology, nodes: new Map([...topology.nodes].map(([key, node]) =>
       [key, key === 'a' ? { ...node, x: node.x + 10 } : node])) };
   }, 64_000_000, undefined, source => ({ preferred: source, frames: [] }));
   expect(observed).toBe(true);
   expect(result.ok).toBe(false);
   expect(previous).toEqual(before);
+});
+
+it('captures once per attempt: a later embedding candidate builds on the same captured authority', () => {
+  const { request, previous, topology } = fixture();
+  let prepared = 0, built = 0;
+  const result = routeCommittedIncremental(request, previous, (_drawing, _charge, choose) => {
+    built++;
+    return choose('family', ['first', 'second']) === 'first' ? { reason: 'topology-conflict', constraints: ['first family'] } : topology;
+  }, 64_000_000, undefined, source => { prepared++; return { preferred: source, frames: [] }; });
+  expect(result.ok, JSON.stringify(result.ok || result.conflict)).toBe(true);
+  expect(built).toBe(2);
+  expect(prepared).toBe(1);
+});
+
+it('captures again for every candidate when the frame policy itself chooses', () => {
+  const { request, previous, topology } = fixture();
+  let prepared = 0, frame = '';
+  const result = routeCommittedIncremental(request, previous, () => frame === 'first'
+    ? { reason: 'topology-conflict', constraints: ['first frame'] } : topology,
+  64_000_000, undefined, (source, _charge, choose) => {
+    prepared++; frame = choose('frame', ['first', 'second']);
+    return { preferred: source, frames: [] };
+  });
+  expect(result.ok, JSON.stringify(result.ok || result.conflict)).toBe(true);
+  expect(prepared).toBe(2);
 });
 
 it('withholds a solved band when actual publication admission finds a conflict', () => {

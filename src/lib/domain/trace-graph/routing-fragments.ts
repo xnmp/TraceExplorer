@@ -7,7 +7,7 @@ import { eachConsumer } from './route-consumers';
 import { sameRoutingOwnership, chargeRoutingConsumers } from './routing-consumer-work';
 import { importRoutingPlan, RoutingImportError, type NativeInk, type RoutingPlan } from './routing-plan';
 import { chargeRoutingSnapshot, importCommittedRouting, committedRoutingCoordinates, bindRoutingFrameConstants,
-  routingCoordinate, type CommittedRoutingScene, type RoutingFrameEquality } from './routing-problem';
+  routingCoordinate, type CommittedRoutingProblem, type CommittedRoutingScene, type RoutingFrameEquality } from './routing-problem';
 import type { RoutingMetricConflict, RoutingMetricProblem } from './routing-components';
 import type { Point } from './path-sampling';
 import { ARROW } from './metrics';
@@ -39,7 +39,22 @@ export interface RetainedRoutingFragments {
   readonly fragments: readonly NativeFragment[];
   readonly intervals: readonly SourceInterval[];
   readonly pins: ReadonlyMap<string, number>;
+  /** The selected pins every binding re-verifies: all but native path and
+   * meeting scalars, which bind as spans and convergence entries instead.
+   * Classified once at capture, so a binding does not re-read every address. */
+  readonly scalars: readonly (readonly [string, number])[];
   readonly heads: ReadonlyMap<string, string>;
+}
+/** What topology construction reads from a fragment authority: the source
+ * plan's paths, ports and stubs, the retained-only pose's tiles and dots, the
+ * protected spans and source intervals, and read access to selected pins. The
+ * metric tables, frame equations and raw source drawing stay with the metric. */
+export interface ConstructionFragments {
+  readonly source: { readonly plan: Pick<RoutingPlan, 'paths' | 'ports' | 'stubs'> };
+  readonly preferred: { readonly id: string; readonly drawing: Pick<GraphLayout, 'nodes' | 'junctions'> };
+  readonly fragments: readonly NativeFragment[];
+  readonly intervals: readonly SourceInterval[];
+  readonly pins: { readonly get: (id: string) => number | undefined };
 }
 export interface FragmentTopologyBindings {
   /** Keys address actual emitted route command endpoints, never source ordinals. */
@@ -96,7 +111,8 @@ const fragmentPlan = (drawing: GraphLayout, charge: (work: number, reason?: stri
  * Importing its geometry does not pin its unselected straight-core coordinates. */
 export function captureRoutingFragments(before: CommittedRoutingScene, preferred: CommittedRoutingScene,
   declared: readonly RoutingFrameEquality[] = [], charge: (work: number, reason?: string) => void = () => {}):
-  { readonly ok: true; readonly retained: RetainedRoutingFragments } | { readonly ok: false; readonly conflict: RoutingMetricConflict } {
+  { readonly ok: true; readonly retained: RetainedRoutingFragments; readonly problem: CommittedRoutingProblem }
+  | { readonly ok: false; readonly conflict: RoutingMetricConflict } {
   chargeRoutingSnapshot([before, preferred, declared], charge);
   if (!before || !preferred || typeof before.id !== 'string' || typeof preferred.id !== 'string'
     || before.id === preferred.id || before.space !== preferred.space
@@ -238,9 +254,16 @@ export function captureRoutingFragments(before: CommittedRoutingScene, preferred
     // Adding another equality cannot shorten it through an unrelated recipe.
     boundary: { ...nativePoint(interval.route, interval.primitive, 0),
       [interval.axis]: nativePoint(interval.route, 0, 0)[interval.axis] + (interval.forward ? 6 : -6) } }));
-  const retained = { source: raw, preferred: target, metric: bound.metric, frames, fragments, intervals, pins, heads };
+  // Native command positions and convergence ordinals are emitter bindings.
+  const scalars: (readonly [string, number])[] = [];
+  for (const [id, value] of pins) {
+    charge(id.length + 1, 'retained fragment address classification');
+    const address = JSON.parse(id) as (string | number)[];
+    if (address[2] !== 'path' && address[2] !== 'meeting') scalars.push([id, value]);
+  }
+  const retained = { source: raw, preferred: target, metric: bound.metric, frames, fragments, intervals, pins, scalars, heads };
   const checked = bindRoutingFragmentTopology(retained, target.drawing, charge, true);
-  return checked.ok ? { ok: true, retained } : checked;
+  return checked.ok ? { ok: true, retained, problem: source.problem } : checked;
 }
 
 /** Resolve stable source spans in an emitted topology. Extra free L commands do
@@ -293,12 +316,11 @@ export function bindRoutingFragmentTopology(retained: RetainedRoutingFragments, 
     }
     if (suffixStarted && cursor !== path.native.length) return { ok: false, conflict: equality(route.id, 'retained complete convergence suffix') };
   }
-  const actual = new Map(committedRoutingCoordinates({ ...retained.preferred, drawing }, plan, charge).map(variable => [variable.id, variable.pin!.value]));
-  for (const [id, value] of retained.pins) {
+  // Native path and meeting scalars are emitter bindings, verified above as
+  // spans and below as convergence entries; only the other kinds are compared.
+  const actual = new Map(committedRoutingCoordinates({ ...retained.preferred, drawing }, plan, charge, false).map(variable => [variable.id, variable.pin!.value]));
+  for (const [id, value] of retained.scalars) {
     charge(id.length + 1, 'retained fragment address verification');
-    const address = JSON.parse(id) as (string | number)[];
-    // Native command positions and convergence ordinals are emitter bindings.
-    if (address[2] === 'path' || address[2] === 'meeting') continue;
     if (!Object.is(actual.get(id), value)) return { ok: false, conflict: equality(id, 'retained fragment scalar') };
   }
   for (const port of retained.source.plan.ports) {

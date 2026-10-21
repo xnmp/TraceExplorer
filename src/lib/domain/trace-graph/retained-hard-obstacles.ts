@@ -2,7 +2,7 @@
  * only a geometric view: output routes keep their original IDs and free cores
  * are subsequently closed by the shared affected metric solver. */
 import type { PlacedRoute } from './layout';
-import type { RetainedRoutingFragments } from './routing-fragments';
+import type { ConstructionFragments } from './routing-fragments';
 import type { IncrementalRoutingConflict } from './incremental-routing';
 import { CORNER_BERTH, type Berth } from './route-contacts';
 import { routingCoordinate } from './routing-problem';
@@ -20,7 +20,7 @@ interface Piece {
 }
 const samePoint=(a:Point,b:Point)=>a.x===b.x&&a.y===b.y;
 
-export function retainedHardObstacles(retained: RetainedRoutingFragments,
+export function retainedHardObstacles(retained: ConstructionFragments,
   charge: (work:number,reason?:string)=>void):
   { readonly ok:true; readonly routes:ReadonlyMap<string,readonly PlacedRoute[]>;
     readonly ports:ReadonlyMap<string,readonly Berth[]>;

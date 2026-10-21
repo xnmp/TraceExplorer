@@ -15,39 +15,31 @@ export type AdoptionFallback = 'topology' | 'metric' | 'unsupported' | 'budget' 
 /** Folder world placement is not adopted: see docs/routing-consolidation.md. */
 export type AdoptionSite = 'band-insertion';
 
-/** Interactive limits for band insertion, set from measured click latency so the
- * attempt plus any legacy fallback stays near the legacy baseline
- * (docs/routing-consolidation.md). Work units are not uniform in time (measured
- * p50 about 15 ns, up to about 100 ns each), so this bounds latency by measurement,
- * not by construction; capture and construction grow with the drawing, so the allowance
- * grows with the band: `perItem` work per band item up to `work`.
+/** Limits for band insertion. Reach comes first: the allowance is sized so
+ * that the constrained path, not the legacy repairs (T24, T25, T28), certifies
+ * the clicks it can certify at all (docs/routing-consolidation.md, "Capture
+ * pass"). Work units are not uniform in time (measured p50 about 15 ns, up to
+ * about 100 ns each), so latency is checked by measurement, not by
+ * construction. Capture and construction grow with the drawing, so the
+ * allowance grows with the band: `perItem` work per band item up to `work`.
  *
- * The constructor's local pools scale with the allowance (`poolsPerWork`) and are
- * reserved up front: a family runs only if its pools fit the remaining work.
- * Successes rarely spend their pools (nine in ten spend none), but the
- * reservation competes with construction's other charges, so 1/32M pools
- * declined requests that certify with 1/48M. Smaller pools let a decline spend
- * more of the allowance, so a decline is predicted early instead: a capture
- * costing more than `captureShare` of the allowance stops the attempt before
- * construction. On the production inventory, 145 of the 146 attempts above that
- * share declined anyway.
- *
- * Bands of any size are attempted. Above 47 items an attempt rarely certifies
- * within the ceiling (9 of the inventory's 375), because construction and
- * admission grow with the retained drawing; with the cheaper capture and the
- * prediction, its declines cost at most about 170 ms and land on clicks whose
- * legacy insertion already takes seconds. A larger allowance for them would
- * break the click bound: 12M certifies 34 but declines take up to 330 ms.
+ * The constructor's local pools scale with the allowance (`poolsPerWork`) and
+ * are reserved up front: a family runs only if its pools fit the remaining
+ * work. At the ceiling they equal the automatic pools (four legacy budgets),
+ * which the crowded insertions of the legacy ladder need: on the production
+ * inventory, 137 of the 157 insertion inputs that reached legacy certify at
+ * 256M with them, 70 at 64M with one budget. A capture costing more than
+ * `captureShare` of the allowance still stops the attempt before construction
+ * (early decline prediction); capture is now charged for what it reads, so the
+ * prediction fires only on very large retained drawings.
  *
  * The anchored repack and the ladder after it re-embed every unanchored tile
- * around the click's ancestry (the `repack` site). Their attempts run only for
- * at most `maximumRepackItems` new tiles: on the production inventory, 205 of
- * the 210 such attempts certify, while more new tiles certify less than half
- * the time and their declines cost a further 14 s over the inventory, taking
- * adopted clicks to 1.6x their legacy p95. Coverage beyond these limits stays
- * with legacy as budget fallbacks. */
+ * around the click's ancestry (the `repack` site). They are attempted for any
+ * number of new tiles: a size limit there left the legacy repack, and its T24
+ * and T28 repairs, as the only path for those clicks, even after the
+ * insertion itself had certified. */
 export const PRODUCTION_ROUTING_WORK = {
-  'band-insertion': { work: 6_000_000, perItem: 375_000, maximumRepackItems: 4, poolsPerWork: 1 / 48_000_000, captureShare: 1 / 20 },
+  'band-insertion': { work: 256_000_000, perItem: 8_000_000, poolsPerWork: 1 / 64_000_000, captureShare: 1 / 20 },
 } as const;
 
 /** Where band insertion runs: the incremental insertion around the committed
@@ -55,10 +47,6 @@ export const PRODUCTION_ROUTING_WORK = {
 export type InsertionSite = 'insertion' | 'repack';
 
 export interface InteractiveAllowance { readonly work: number; readonly pools: number; readonly captureLimit: number }
-
-/** Whether the repack site attempts an insertion that places `placed` new tiles. */
-export const repackAttempted = (placed: number): boolean =>
-  placed > 0 && placed <= PRODUCTION_ROUTING_WORK['band-insertion'].maximumRepackItems;
 
 /** The band insertion allowance for a band of `items` tiles, or null for a
  * malformed size (an early budget decline). */

@@ -84,8 +84,11 @@ function numericPins(value: unknown, prefix: string, variables: CoordinateVariab
   }
 }
 
+/** `paint` false omits native path and convergence meeting coordinates: a
+ * caller that verifies only tiles, dots, allocation, ports, stubs, corridors
+ * and turns need not build the drawing's largest tables. */
 export function committedRoutingCoordinates(scene: CommittedRoutingScene, plan: RoutingPlan,
-  charge: (work: number, reason?: string) => void): CoordinateVariable[] {
+  charge: (work: number, reason?: string) => void, paint = true): CoordinateVariable[] {
   const variables: CoordinateVariable[] = [];
   const root = '["scene",' + JSON.stringify(scene.id);
   const pin = (value: unknown, ...address: readonly (string | number)[]) =>
@@ -101,6 +104,7 @@ export function committedRoutingCoordinates(scene: CommittedRoutingScene, plan: 
   for (const turn of plan.turns) pin(turn, 'turn', turn.id);
   // Native primitive order is part of the retained route's identity. Original
   // bytes live beside these scalar equalities, never reconstructed from them.
+  if (!paint) return variables;
   for (const path of plan.paths) pin({ points: path.points, native: path.native }, 'path', path.id);
   for (const meeting of plan.meetings ?? []) {
     pin({ dot: meeting.dot, convergence: meeting.convergence }, 'meeting', meeting.id);
