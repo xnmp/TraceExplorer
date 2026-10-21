@@ -2131,7 +2131,8 @@ legacy `incrementalTree` only on a decline. Its cost is the catch:
   fewer than half certify and their declines cost a further 14 s.
 
 The site therefore runs only for at most four new tiles
-(`maximumRepackItems`). With that limit the inventory's outputs and legacy
+(`maximumRepackItems`); a skipped repack is counted as
+`adoption:band-insertion:repack-skipped`, not as an attempt. With that limit the inventory's outputs and legacy
 reach are unchanged, and latency is within noise.
 
 #### 3. Bands over 47 items
@@ -2211,15 +2212,17 @@ interactive allowance, and the API-allowance misses lie far beyond it.
 
 | Count | origin/main | Now |
 |---|---:|---:|
-| Attempts | 2,585 | 3,709 |
+| Attempts (by size, before any work) | 2,585 (375) | 2,745 (0) |
+| Repack attempts skipped for more than four new tiles | — | 964 |
 | Successes | 1,692 | 1,974 |
 | Published | 1,013 | 1,106 |
-| Budget fallbacks (predicted) | 893 | 1,735 (237) |
+| Budget fallbacks (predicted) | 893 | 771 (237) |
 | Work | 3,974.5M | 4,822.1M |
 | Outputs that differ | — | 160 |
 | Geometry gate failures | 0 | 0 |
 
-The new attempts are the large bands and the repack site. Outputs differ only
+The 160 extra attempts are repack-site attempts; the 375 large-band
+attempts now run instead of declining before any work. Outputs differ only
 where an attempt now certifies; consecutive-output tile moves fell from 352
 outputs (8,052 tile coordinates) to 338 (7,965).
 
@@ -2243,3 +2246,28 @@ are in ms.
 - **The attempt itself** takes at most 220 ms (per-request minimum of two
   runs; p99 127 ms). Single runs under load reached 398 ms.
 - **Nothing moved to the worker,** and no new worker or async pattern exists.
+- **A request can now run two attempts** (insertion and repack), each within
+  its own 6M allowance.
+- **`click-stability.test.ts`** took 1,260 s against 1,237 s at origin/main,
+  run side by side on the same machine.
+
+#### Review
+
+An independent adversarial review of 2981b66..cb9e756 found no product-contract
+violation: retained rectangles, clicked ancestry and cold/warm parity held on
+728 replayed tour requests, and the reach bound is exact for every path the
+strict reader accepts. It confirmed three defects, all fixed:
+- Skipped repacks were counted as attempts and budget fallbacks, which
+  inflated the inventory counts. They now have their own counter, and the
+  table above is regenerated (outputs identical).
+- `outOfNativeReach` could skip a path the strict reader rejects (lowercase
+  commands, `Z`, subpaths, closed curves), where the clearance check would
+  have failed it. It now requires the strict reader to accept both paths.
+- The exhaustive reach test never exercised the tile-port and junction radii
+  that set `NATIVE_REACH`, so a reach reduced to the lane separation still
+  passed. It now covers both and fails under that mutation.
+
+It also tightened two tests: the prediction test now checks that the
+fragment search is skipped, and the repack test checks the clicked ancestry.
+A memo hit on a predicted decline counts the budget fallback but not
+`predicted-decline`, so that counter is a lower bound.
