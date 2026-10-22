@@ -175,4 +175,18 @@ describe('departure stubs', () => {
     expect(bindRoutingFragmentTopology(seed.fragments!, withPath('M40 20 L42 20 L42 143 L220 143 L220 292'), undefined, true).ok).toBe(false);
     expect(bindRoutingFragmentTopology(seed.fragments!, withPath('M40 20 L44 22 L44 143 L220 143 L220 292'), undefined, true).ok).toBe(false);
   });
+
+  it('keeps a run leaving within the tile graze of its own tile where it is drawn', () => {
+    // A 1 px stub below cover a's bottom port: the run leaving it lies inside
+    // a's corridor band, so it is part of the port, not a free core.
+    for (const path of ['M120 40 L120 41 L117 41 L117 143 L220 143 L220 292', 'M120 40 L120 41 L123 41 L123 143 L220 143 L220 292']) {
+      const previous: GraphLayout = { orientation: 'down', width: 300, height: 340,
+        nodes: new Map([tile('a', 100, 0), tile('b', 200, 300), tile('p', 40, 80)].map(n => [n.key, n])), junctions: new Map(),
+        routes: [route('a', 'b', path)], rows: [], readingOrder: new Map([['a', 0], ['p', 1], ['b', 2]]) };
+      const items = [item('a', 0, []), item('p', 1, []), item('b', 2, ['a']), item('c', 9, ['p'])];
+      const request: LayoutRequest = { items, maxWidth: 300, tileWidth: 40, orientation: 'down', band: { key: 'a', items } };
+      const result = clearIncrementalPorts(request, stubSeed(request, previous, true), []);
+      expect(result.ok && result.drawing.routes[0].path.replace(/ +/g, ' ').trim(), path).toBe(path);
+    }
+  });
 });

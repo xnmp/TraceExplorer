@@ -12,6 +12,7 @@ import type { RoutingMetricConflict, RoutingMetricProblem } from './routing-comp
 import type { Point } from './path-sampling';
 import { ARROW } from './metrics';
 import { convergenceBounds } from './routing-convergence';
+import { TILE_GRAZE } from './route-contacts';
 
 interface NativeFragment {
   readonly id: string;
@@ -207,10 +208,14 @@ export function captureRoutingFragments(before: CommittedRoutingScene, preferred
         boundary: { ...first, [axis]: head[axis] + (forward ? 6 : -6) } });
       // The leaving run turns off a straight stub inside the berth: the stub
       // keeps its start and line, and its end (this run's start) may slide
-      // outward along the line, so this run can move as a free core.
+      // outward along the line, so this run can move as a free core. A stub
+      // that hugs a face of its own tile (its line within the tile graze of
+      // that face) runs along the tile: it is part of the port and stays exact.
       const stub = i > 0 ? path.native[i - 1] : undefined, along = axis === 'x' ? 'y' : 'x';
+      const rect = start.owner.rect, size = axis === 'x' ? rect.width : rect.height;
+      const hugs = (line: number) => Math.min(Math.abs(line - rect[axis]), Math.abs(line - rect[axis] - size)) <= TILE_GRAZE;
       if (options.departureStubs && !declared.length && stub?.length === 2 && prefix.has(i - 1)
-        && stub[0][axis] === stub[1][axis] && stub[0][along] !== stub[1][along]) {
+        && stub[0][axis] === stub[1][axis] && stub[0][along] !== stub[1][along] && !hugs(stub[0][axis])) {
         slides.set(path.id, { primitive: i - 1, axis: along, forward: stub[1][along] > stub[0][along], boundary: stub[1][along] });
         require('path', path.id, 'native', i, 0, axis);
       } else point('path', path.id, 'native', i, 0);

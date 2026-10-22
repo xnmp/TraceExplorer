@@ -1671,9 +1671,10 @@ function insertWithPortRepair(request: LayoutRequest, previous: GraphLayout, bud
   const placed = insertTree(request, repaired, budget, paneEdges, policy, undefined, undefined, undefined, undefined, orderCharge);
   if (placed) return { placed, repairs: freed };
   // Retained-track port repair first (the metric's own move); legacy T24
-  // only for an insertion it leaves unplaced.
-  const cleared = clearPortsForInsertion(request, repaired, paneEdges);
-  const viaMetric = cleared === repaired ? null : insertTree(request, cleared, budget, paneEdges, policy, undefined, undefined, undefined, undefined, orderCharge);
+  // only for an insertion it leaves unplaced. The repaired attempt runs on a
+  // copy of the remaining pools, so T24 starts exactly where it did without it.
+  const cleared = clearPortsForInsertion(request, previous, repaired, paneEdges);
+  const viaMetric = cleared === repaired ? null : insertTree(request, cleared, { ...budget }, paneEdges, policy, undefined, undefined, undefined, undefined, orderCharge);
   if (viaMetric) return { placed: viaMetric, repairs: [...freed, 'port-repair'] };
   const shifted = freePortLanes(request, repaired, budget);
   const retried = shifted === repaired ? null : insertTree(request, shifted, budget, paneEdges, policy, undefined, undefined, undefined, undefined, orderCharge);
@@ -1682,10 +1683,23 @@ function insertWithPortRepair(request: LayoutRequest, previous: GraphLayout, bud
 
 /** Work the retained-track port repair may spend before a legacy insertion retry. */
 export const LEGACY_PORT_REPAIR_WORK = 16_000_000;
-function clearPortsForInsertion(request: LayoutRequest, drawing: GraphLayout, paneEdges?: Scene["paneEdges"]): GraphLayout {
+/** The repair is a pure function of the request, the drawing and the pane.
+ * The legacy ladder retries one (request, previous) at several pool sizes,
+ * so the repair runs once per request and committed drawing, not per retry. */
+const portRepairMemo = new WeakMap<LayoutRequest, WeakMap<GraphLayout, { readonly drawing: GraphLayout; readonly pane: string; readonly cleared: GraphLayout }>>();
+function clearPortsForInsertion(request: LayoutRequest, previous: GraphLayout, drawing: GraphLayout, paneEdges?: Scene["paneEdges"]): GraphLayout {
   const ink = Math.max(...Object.values(CONNECTOR_STROKE)) / 2;
   const pane = paneEdges && { left: paneEdges.left + ink, right: paneEdges.right - ink };
+  const known = portRepairMemo.get(request)?.get(previous), paneKey = JSON.stringify(pane ?? null);
+  if (known && known.pane === paneKey && !movedRoute(known.drawing, drawing)) {
+    countLayoutWork('retained-port-repair:legacy-insertion:memo-hit');
+    return movedRoute(known.drawing, known.cleared) ? known.cleared : drawing;
+  }
   const cleared = clearCommittedPorts(request, drawing, LEGACY_PORT_REPAIR_WORK, pane);
+  countLayoutWork('retained-port-repair:legacy-insertion:work', cleared.work);
+  let memo = portRepairMemo.get(request);
+  if (!memo) portRepairMemo.set(request, memo = new WeakMap());
+  memo.set(previous, { drawing, pane: paneKey, cleared: cleared.drawing });
   return movedRoute(drawing, cleared.drawing) ? cleared.drawing : drawing;
 }
 

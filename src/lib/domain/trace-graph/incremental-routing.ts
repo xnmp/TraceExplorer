@@ -404,7 +404,8 @@ function clearRetainedPorts(request: LayoutRequest, seed: IncrementalRoutingSeed
       + ids.flat().reduce((sum, id) => sum + id.length + 1, 0) + 1, 'retained port repair witness');
     const witnessed = new Set(ports.filter((_, i) => ids[i].some(id =>
       cleared.conflict.constraints.some(c => c === id || c.startsWith(id + ':')))));
-    if (!witnessed.size && !drawnRoom) { drawnRoom = true; continue; }
+    // Room cannot undo a segment order cycle: only a metric conflict is retried.
+    if (!witnessed.size && !drawnRoom && cleared.conflict.reason === 'metric-conflict') { drawnRoom = true; continue; }
     ports = witnessed.size ? ports.filter(port => !witnessed.has(port)) : ports.slice(0, -1);
   }
   return seed;
