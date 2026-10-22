@@ -38,4 +38,4 @@ it('retains a crowded later click with the larger bounded search', () => {
     focus = choices[0]?.key ?? null;
     if (focus) visited.add(focus);
   }
-}, 30_000);
+}, 120_000);

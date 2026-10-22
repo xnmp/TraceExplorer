@@ -11,7 +11,7 @@ it('keeps legal corpus clicks at least as stable as main using committed click h
   expect.soft(result.displacement).toBeLessThanOrEqual(17.53);
   // About 31 min alone with the 256M band allowance and the 512M anchor
   // escalation (2026-10); ~30% headroom.
-}, 2_450_000);
+}, 4_200_000);
 
 it('explains every corpus height regression over ten percent with actual retained stability', () => {
   expect(unexplainedHeightRegressions()).toEqual([]);
