@@ -55,7 +55,7 @@ jobs:
       - run: bun run check
       # The layout engine (tests/domain/trace-graph) is pure TypeScript with no platform branches, so the Linux
       # jobs cover it; on slower macOS and Windows runners its corpus sweeps only hit wall-clock timeouts.
-      # The click-stability sweep takes ~30 min, so it runs once, in its own Linux job below.
+      # The click-stability sweep takes ~35-50 min on CI runners, so it runs once, in its own Linux job below.
       - name: Run bun run test
         run: |
           if [ "${{ matrix.platform_only }}" = "true" ]; then
@@ -112,7 +112,7 @@ jobs:
 
   click-stability:
     runs-on: ubuntu-22.04
-    timeout-minutes: 60
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v7
       - uses: oven-sh/setup-bun@v2

@@ -3,9 +3,9 @@
  * through the default engine (publication), the next click and a revisit. */
 import fs from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import { adoptionFallback, bandInsertionAllowance, repackAttempted, movedRectangle, PRODUCTION_ROUTING_WORK } from '$lib/domain/trace-graph/incremental-adoption';
+import { adoptionFallback, bandInsertionAllowance, movedRectangle, PRODUCTION_ROUTING_WORK } from '$lib/domain/trace-graph/incremental-adoption';
 import { geometryGate } from '$lib/domain/trace-graph/geometry-gate';
-import { constrainedBandInsertion, constrainedIncremental, scaledIncrementalBudget } from '$lib/domain/trace-graph/band-incremental';
+import { automaticIncrementalBudget, constrainedBandInsertion, constrainedIncremental, scaledIncrementalBudget } from '$lib/domain/trace-graph/band-incremental';
 import { PREDICTED_DECLINE } from '$lib/domain/trace-graph/incremental-routing';
 import { createDefaultEngine } from '$lib/domain/trace-graph/folder-layout/default-engine';
 import { folderGeometryGate } from '$lib/domain/trace-graph/folder-layout/geometry-gate';
@@ -85,17 +85,29 @@ describe('adoption contracts (pure)', () => {
       expect(b.fallback, `${items} items`).toBeGreaterThan(0);
     }
   });
-  it('sizes pools at 1/48M of the allowance and predicts a decline above a twentieth of it in capture', () => {
-    for (const items of [1, 16, 47]) {
+  it('sizes pools at 1/64M of the allowance (the automatic pools at the ceiling) and predicts a decline above a twentieth of it in capture', () => {
+    for (const items of [1, 16, 47, 200]) {
       const { work, pools, captureLimit } = bandInsertionAllowance(items)!;
-      expect(pools).toBe(work / 48_000_000);
+      expect(pools).toBe(work / 64_000_000);
       expect(captureLimit).toBe(Math.floor(work / 20));
     }
+    const ceiling = bandInsertionAllowance(200)!;
+    expect(scaledIncrementalBudget(ceiling.pools)).toEqual(automaticIncrementalBudget());
   });
-  it('attempts the anchored repack only for a few new tiles', () => {
-    const { maximumRepackItems: few } = PRODUCTION_ROUTING_WORK['band-insertion'];
-    expect([1, few].map(repackAttempted)).toEqual([true, true]);
-    expect([0, few + 1, NaN].map(repackAttempted)).toEqual([false, false, false]);
+  it('bounds an anchor-loss escalation by one request-wide ceiling with twice the pools per work', () => {
+    for (const items of [1, 16, 47, 200]) {
+      const ordinary = bandInsertionAllowance(items)!, escalated = bandInsertionAllowance(items, 'anchor')!;
+      expect(escalated.work).toBeGreaterThanOrEqual(ordinary.work);
+      expect(escalated.pools).toBe(escalated.work / 32_000_000);
+      expect(escalated.captureLimit).toBe(Math.floor(escalated.work / 20));
+    }
+    // Small bands get more than their ordinary allowance; the ceiling is shared.
+    expect(bandInsertionAllowance(4, 'anchor')!.work).toBe(4 * bandInsertionAllowance(4)!.work);
+    expect(bandInsertionAllowance(10_000, 'anchor')!.work).toBe(PRODUCTION_ROUTING_WORK['band-insertion-anchor'].work);
+    // What earlier escalated attempts spent leaves less for the next one.
+    expect(bandInsertionAllowance(10_000, 'anchor', 1_000_000)!.work).toBe(1_000_000);
+    for (const remaining of [0, -1, NaN]) expect(bandInsertionAllowance(10_000, 'anchor', remaining)).toBeNull();
+    for (const items of [0, -1, 1.5, NaN, Infinity]) expect(bandInsertionAllowance(items, 'anchor')).toBeNull();
   });
   it('maps every constrained conflict to one fallback reason', () => {
     expect(['topology-conflict', 'metric-conflict', 'unsupported-input', 'budget-exhaustion'].map(r => adoptionFallback(r as never)))

@@ -18,7 +18,7 @@ import { prepayRoutingGateSerialization } from './routing-serialization-work';
 import { searchCorridors, type CorridorSearch } from './corridor-search';
 import type { CoordinateVariable, Separation } from './separation';
 import { captureRoutingFragments, bindRoutingFragmentTopology, fragmentCoordinateKey,
-  type RetainedRoutingFragments, type FragmentTopologyBindings } from './routing-fragments';
+  type RetainedRoutingFragments, type ConstructionFragments, type FragmentTopologyBindings } from './routing-fragments';
 import type { RoutingFrameEquality } from './routing-problem';
 
 export type IncrementalConflictReason = 'topology-conflict' | 'metric-conflict' | 'unsupported-input' | 'budget-exhaustion';
@@ -34,7 +34,7 @@ export interface IncrementalRoutingSeed {
   readonly fragments?: RetainedRoutingFragments;
 }
 export type IncrementalTopologyConstructor = (drawing: GraphLayout, charge: (work: number, reason?: string) => void,
-  choose: CorridorSearch['choose'], reserve: CorridorSearch['reserve'], fragments?: RetainedRoutingFragments) => GraphLayout | IncrementalRoutingConflict;
+  choose: CorridorSearch['choose'], reserve: CorridorSearch['reserve'], fragments?: ConstructionFragments) => GraphLayout | IncrementalRoutingConflict;
 export type IncrementalFrameFactory = (source: GraphLayout, charge: CorridorSearch['charge'], choose: CorridorSearch['choose']) =>
   { readonly preferred: GraphLayout; readonly frames: readonly RoutingFrameEquality[] } | IncrementalRoutingConflict;
 /** Additional actual-publication checks share capture/construction's ledger.
@@ -64,6 +64,17 @@ const validRequest = (request: LayoutRequest): boolean => !!request && Number.is
   && Array.from(request.band.items).every(validItem)
   && Array.isArray(request.items) && Array.from(request.items).every(validItem);
 
+/** The part of a request an insertion attempt reads, which its snapshot
+ * charges cover. An attempt reads the committed history only through the
+ * attachment placement (stem room and cover frame); the earlier published
+ * scenes it also carries (layout, placed, observations) are never read, so
+ * charging their traversal would bill a request by its past, not its work. */
+export function attemptRequestView(request: LayoutRequest): unknown {
+  if (!request || typeof request !== 'object') return request;
+  const placement = request.history && typeof request.history === 'object' ? request.history.attachment?.placement : undefined;
+  return { ...request, history: placement === undefined ? undefined : { attachment: { placement } } };
+}
+
 /** Membership projection is a request policy, applied before declaring pins.
  * A hidden/departed consumer cannot keep an obsolete meeting or wire alive. */
 export function projectCommittedRouting(previous: GraphLayout, request: LayoutRequest,
@@ -90,7 +101,7 @@ export function projectCommittedRouting(previous: GraphLayout, request: LayoutRe
  * boundary never silently changes a retained size or pin to fit an insertion. */
 export function captureIncrementalRouting(request: LayoutRequest, previous: GraphLayout,
   charge: (work: number, reason?: string) => void = () => {}): IncrementalRoutingSeed | IncrementalRoutingConflict {
-  chargeRoutingSnapshot([request, previous], charge);
+  chargeRoutingSnapshot([attemptRequestView(request), previous], charge);
   if (!validRequest(request) || !isLayoutShape(previous)) return { reason: 'unsupported-input', constraints: ['committed request/drawing shape'] };
   const drawing = projectCommittedRouting(previous, request, charge);
   if (request.items.some(item => {
@@ -107,7 +118,7 @@ export function captureIncrementalRouting(request: LayoutRequest, previous: Grap
 export function captureFramedIncrementalRouting(request: LayoutRequest, previous: GraphLayout, preferred: GraphLayout,
   frames: readonly RoutingFrameEquality[] = [], charge: (work: number, reason?: string) => void = () => {}):
   IncrementalRoutingSeed | IncrementalRoutingConflict {
-  chargeRoutingSnapshot([request, previous, preferred, frames], charge);
+  chargeRoutingSnapshot([attemptRequestView(request), previous, preferred, frames], charge);
   if (!validRequest(request) || !isLayoutShape(previous) || !isLayoutShape(preferred))
     return { reason: 'unsupported-input', constraints: ['framed request/drawing shape'] };
   const projected = projectCommittedRouting(previous, request, charge);
@@ -116,9 +127,20 @@ export function captureFramedIncrementalRouting(request: LayoutRequest, previous
   const captured = captureRoutingFragments({ id: 'before', space: 'attached', drawing: projected },
     { id: 'derived', space: 'attached', drawing: preferred }, frames, charge);
   if (!captured.ok) return { reason: 'unsupported-input', constraints: captured.conflict.constraints };
-  const source = importCommittedRouting([captured.retained.source], [], charge);
-  return source.ok ? { drawing: structuredClone(preferred), problem: source.problem, fragments: captured.retained }
-    : { reason: 'unsupported-input', constraints: source.conflict.constraints };
+  // The fragment capture already imported the projected source once; its
+  // problem is that import, so it is reused rather than imported again.
+  return { drawing: structuredClone(preferred), problem: captured.problem, fragments: captured.retained };
+}
+
+/** Construction's own copy of a fragment authority: only what construction
+ * reads (`ConstructionFragments`) is snapshotted and cloned, so a constructor
+ * can neither mutate the metric's captured authority nor be billed for the
+ * metric tables and frame equations it never reads. Pins are read through a
+ * lookup, never a mutable reference. */
+function constructionView(retained: RetainedRoutingFragments): { readonly copied: Omit<ConstructionFragments, 'pins'>; readonly pins: ConstructionFragments['pins'] } {
+  const { paths, ports, stubs } = retained.source.plan, { nodes, junctions } = retained.preferred.drawing;
+  return { copied: { source: { plan: { paths, ports, stubs } }, preferred: { id: retained.preferred.id, drawing: { nodes, junctions } },
+    fragments: retained.fragments, intervals: retained.intervals }, pins: { get: id => retained.pins.get(id) } };
 }
 
 /** The first constraint of a budget decline the capture predicted before construction. */
@@ -132,11 +154,27 @@ export const PREDICTED_DECLINE = 'predicted decline';
 export function routeCommittedIncremental(request: LayoutRequest, previous: GraphLayout,
   construct: IncrementalTopologyConstructor, budget = 64_000_000, pane?: { readonly left: number; readonly right: number },
   prepare?: IncrementalFrameFactory, admit?: IncrementalAdmission, captureLimit = Infinity): IncrementalRoutingResult {
+  // Capture and the retained port repair depend on no search choice unless a
+  // frame policy chooses. They then run once, on the first candidate, and
+  // every later candidate (another embedding family or corridor choice)
+  // builds on that same captured authority instead of capturing and repairing
+  // the whole retained drawing again. Their work is charged once.
+  let captured: IncrementalRoutingSeed | undefined;
   const result = searchCorridors(search => {
+    let seed = captured;
+    if (!seed) {
+      let chose = false;
+      const choose: CorridorSearch['choose'] = (id, choices) => { chose = true; return search.choose(id, choices); };
+      seed = captureSeed(search, choose);
+      if (!chose) captured = seed;
+    }
+    return constructAndSolve(search, seed, seed === captured);
+  }, budget);
+  function captureSeed(search: CorridorSearch, choose: CorridorSearch['choose']): IncrementalRoutingSeed {
     const start = search.remaining;
     let seed: IncrementalRoutingSeed | IncrementalRoutingConflict;
     if (prepare) {
-      chargeRoutingSnapshot([request, previous], search.charge);
+      chargeRoutingSnapshot([attemptRequestView(request), previous], search.charge);
       if (!validRequest(request) || !isLayoutShape(previous)) return search.reject(['framed request/drawing shape'], 'invalid');
       const projected = projectCommittedRouting(previous, request, search.charge);
       let snapshot: GraphLayout;
@@ -145,7 +183,7 @@ export function routeCommittedIncremental(request: LayoutRequest, previous: Grap
         if (error instanceof Error && error.name === 'DataCloneError') return search.reject(['framed source is not cloneable'], 'invalid');
         throw error;
       }
-      const frame = prepare(snapshot, search.charge, search.choose);
+      const frame = prepare(snapshot, search.charge, choose);
       if (!frame || typeof frame !== 'object') return search.reject(['framed policy result'], 'invalid');
       chargeRoutingSnapshot(frame, search.charge);
       if ('reason' in frame && !validConflict(frame)) return search.reject(['framed policy conflict shape'], 'invalid');
@@ -160,15 +198,26 @@ export function routeCommittedIncremental(request: LayoutRequest, previous: Grap
     // Free retained cores give way to newly active source ports before
     // construction, inside the same affected metric (retained-track port repair).
     if (seed.fragments) seed = clearRetainedPorts(request, seed, search, pane);
+    return seed;
+  }
+  function constructAndSolve(search: CorridorSearch, seed: IncrementalRoutingSeed, shared: boolean): { readonly drawing: GraphLayout; readonly solved: number } {
     // Construction may defer free old cores while treating the selected native
     // fragments as hard obstacles. Give it a separate, prepaid snapshot so a
     // constructor cannot mutate the metric's captured authority.
-    let fragments: RetainedRoutingFragments | undefined;
+    let fragments: ConstructionFragments | undefined;
     if (seed.fragments) {
-      chargeRoutingSnapshot(seed.fragments, search.charge);
-      fragments = structuredClone(seed.fragments);
+      const view = constructionView(seed.fragments);
+      chargeRoutingSnapshot(view.copied, search.charge);
+      fragments = { ...structuredClone(view.copied), pins: view.pins };
     }
-    const topology = construct(seed.drawing, search.charge, search.choose, search.reserve, fragments);
+    // A seed shared across candidates hands each one its own prepaid drawing,
+    // so a rejected candidate's edits never reach the next candidate.
+    let drawing = seed.drawing;
+    if (shared) {
+      chargeRoutingSnapshot(drawing, search.charge);
+      drawing = structuredClone(drawing);
+    }
+    const topology = construct(drawing, search.charge, search.choose, search.reserve, fragments);
     if (!topology || typeof topology !== 'object') return search.reject(['topology constructor result'], 'invalid');
     if ('reason' in topology) {
       chargeRoutingSnapshot(topology, search.charge);
@@ -194,7 +243,7 @@ export function routeCommittedIncremental(request: LayoutRequest, previous: Grap
       }
     }
     return { drawing: solved.drawing, solved: solved.solved };
-  }, budget);
+  }
   return result.ok ? { ok: true, ...result.value, work: result.work }
     : failure(result.conflict.kind === 'search-exhausted' || result.conflict.constraints[0] === 'budget-exhaustion' ? 'budget-exhaustion'
       : result.conflict.kind === 'metric' ? 'metric-conflict'
@@ -351,7 +400,7 @@ function clearRetainedPorts(request: LayoutRequest, seed: IncrementalRoutingSeed
 function solveAffectedTracks(search: CorridorSearch, request: LayoutRequest, seed: IncrementalRoutingSeed, topology: GraphLayout,
   pane: { readonly left: number; readonly right: number } | undefined, reserved: readonly ReservedPort[]):
   { readonly drawing: GraphLayout; readonly solved: number } {
-  chargeRoutingSnapshot(request, search.charge);
+  chargeRoutingSnapshot(attemptRequestView(request), search.charge);
   chargeRoutingSnapshot(topology, search.charge);
   if (!validRequest(request) || !isLayoutShape(topology)) return search.reject(['incremental request/topology shape'], 'invalid');
   const metric = seed.fragments?.metric ?? seed.problem.metric;
@@ -391,11 +440,16 @@ function solveAffectedTracks(search: CorridorSearch, request: LayoutRequest, see
     lower: t.axis === 'x' ? pane?.left ?? 0 : 0,
     upper: t.axis === 'x' ? pane?.right ?? Math.max(request.maxWidth, topology.width) : topology.height,
   } });
+  // Every coordinate a modelled route point resolves to; with the separations'
+  // ends, these are the only variables the solve can read back.
+  const referenced = new Set<string>();
   const coordinate = (m: RouteModel, index: number, axis: 'x' | 'y'): string => {
     search.charge(m.tracks.length + 1, 'free track coordinate lookup');
-    return fragmentBindings?.coordinates.get(fragmentCoordinateKey(m.route.id, index, axis))
+    const id = fragmentBindings?.coordinates.get(fragmentCoordinateKey(m.route.id, index, axis))
       ?? m.tracks.find(t => t.axis === axis && (t.command === index || t.command - 1 === index))?.id
       ?? constant(JSON.stringify([m.route.id, index, axis]), m.points[index][axis]);
+    referenced.add(id);
+    return id;
   };
   for (const m of models) for (let i = 0; i < m.points.length; i++) {
     coordinate(m, i, 'x'); coordinate(m, i, 'y');
@@ -534,6 +588,14 @@ function solveAffectedTracks(search: CorridorSearch, request: LayoutRequest, see
   }
   // The selected inequality graph needs a topological order. Dependency cycles
   // request a new corridor, rather than discarding a hard separation.
+  // A pinned variable that no separation and no route point references is an
+  // isolated constant: the captured pins were validated at capture, and the
+  // kernel would return it unchanged. Only referenced variables enter the
+  // order graph and the kernel, in the same relative order, so every free
+  // component, choice and position is as with the whole table.
+  search.charge(variables.size + edges.length + 1, 'referenced metric variables');
+  for (const e of edges) { referenced.add(e.before); referenced.add(e.after); }
+  for (const [id, variable] of variables) if (variable.pin && !referenced.has(id)) variables.delete(id);
   search.charge(8 * (variables.size + edges.length + 1), 'incremental order graph');
   const outgoing = new Map([...variables.keys()].map(id => [id, [] as string[]]));
   const degree = new Map([...variables.keys()].map(id => [id, 0]));

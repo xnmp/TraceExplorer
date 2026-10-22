@@ -2431,3 +2431,251 @@ slightly more than the old scan charged. Replays show no lost success.
 - `layout:eval`: all 50 current targets pass. Dense-tour anchor moves went
   from 73 to 75 (limit 101), because more attempts now certify. Click-anchor
   moves stay at 26.
+
+### Capture pass
+
+This pass made capture run once per attempt and charge only what it reads,
+then sized the band allowance for reach first. Legacy production reach over
+the 3,405-request inventory fell from 165 requests at origin/main (af0bcb6)
+and 160 at the local admission pass to **20**: T24 1, T25 9 constrained / 10
+repairable, T28 4. Every residual request follows a band-insertion budget
+decline (5 predicted from the capture share). Coverage outside production did
+not move, so no stage meets the deletion rule and **slice 4 remains open**.
+Latency was not a target of this pass; one sanity run is reported below.
+
+#### Profile: capture against construction
+
+On the 160 requests that still reached legacy (314 captured attempts at the
+6M allowance), the attempts the capture share stopped spent 83% of their work
+in capture. Most of it was the snapshot charge for the request, whose layout
+history is 2–6× the previous drawing, and a framed capture repeated for every
+embedding family (18 captures in one strict attempt). Charging capture only
+for what it reads turned those predicted declines into ordinary budget
+declines and added 2 successes: **construction, not capture, is the limiter**.
+At 64M, capture is 2.3% of a certifying attempt's work.
+
+#### What changed
+
+- **Capture once** (`incremental-routing.ts`, `routeCommittedIncremental`).
+  Capture, framed capture and the retained port repair run on the first
+  candidate and are reused by every later embedding or corridor candidate,
+  unless the frame policy itself chooses. Each candidate gets its own prepaid
+  copy of the drawing and of the construction view, so a rejected candidate's
+  edits never reach the next one.
+- **Charge what is read.** The snapshot charge reads the attempt's own view of
+  the request (`attemptRequestView`: only `attachment.placement` of the
+  history). The framed capture reuses the strict capture's import instead of
+  importing a third time.
+- **Read-only construction view** (`routing-fragments.ts`,
+  `ConstructionFragments`). Construction gets copies of the source plan,
+  preferred drawing, fragments and intervals, and reads pins only through a
+  lookup. Rebinding classifies scalar pins once at capture
+  (`RetainedRoutingFragments.scalars`) and skips paint-only coordinates.
+  A 22-item framed attempt fell from 13.5M to 9M work.
+- **Unreferenced constants** (`solveAffectedTracks`). Retained pins that no
+  edge or route point of the affected metric references leave the order graph
+  before the kernel runs.
+- **Reach-first allowance** (`incremental-adoption.ts`,
+  `PRODUCTION_ROUTING_WORK`): 8M per band item up to 256M, constructor pools
+  1 per 64M (four at the ceiling, the automatic pools), capture share 1/20.
+  Of the 157 insertion inputs that reached legacy, 137 certify at 256M with
+  four pools and 70 at 64M with one.
+- **Repack at any size** (`band-layout.ts`). All 20 requests that ran legacy
+  after a certified attempt, or with no attempt, came through the anchored
+  repack, which skipped constrained insertion above 4 new tiles and so left
+  the legacy repack and its T24/T28 repairs as the only path. Dropping the
+  legacy repack instead raised T25 reach (95 / 73), so it was rejected.
+
+Replaying the captured attempts at 32M with the old and new capture: 1,754
+attempts certify in both with identical output, 3 more certify, none is lost.
+
+#### Free-core moves during placement (item 3, not shipped)
+
+On the 37 inputs that still miss at the API allowance (T24 26, T25 10, T28 5),
+the framed placement certifies 2 at 1024M with four pools. Deferring retained
+routes or treating them as route-only occupancy does not help. With every
+retained route obstacle removed, placement mostly succeeds, but the affected
+metric then fails: the moved core collides with foreign-track constants,
+pinned native coordinates or the tile corridor, or the metric search exhausts
+20–50M on segment-order cycles and port-corner backtracking. In tour input 84
+(key 47b5ac217e3dfa93), the n9→n11 core at x=440 is pinned because its
+convergence-suffix entry is a protected primitive, and the convergence binding
+compares the parameter itself. Legacy T24 translates whole runs with their
+fillets; T28 moves L-L-L runs and bypasses. Shipping the move needs:
+- contact-tolerant placement that frees a retained core only with its ends;
+- a metric that can move a retained core whose ends lie on protected
+  convergence, terminal or fillet spans, which means changing the meeting
+  binding;
+- a cheaper metric search for those cases.
+
+#### Production inventory and click latency
+
+| Count | origin/main | Now |
+|---|---:|---:|
+| Attempts | 2,745 | 3,539 |
+| Successes | 1,974 | 3,155 |
+| Published | 1,106 | 1,681 |
+| Budget fallbacks (predicted) | 771 (237) | 382 (40) |
+| Metric fallbacks | 0 | 2 |
+| Work | 4,822M | 89,042M |
+| Requests reaching legacy | 165 | 20 |
+| Outputs that differ | — | 693 |
+| Geometry gate failures | 0 | 0 |
+
+One run each, in ms; groups are classified by the new counters.
+
+| Group | n | main p50 / p95 / max | Now p50 / p95 / max | p95 ratio |
+|---|---:|---|---|---:|
+| Folder, all | 255 | 6.6 / 81.9 / 375.1 | 6.4 / 74.6 / 442.2 | 0.91 |
+| Folder, adopted | 176 | 8.5 / 101.5 / 375.1 | 8.8 / 119.5 / 442.2 | 1.18 |
+| Folder, outranked | 17 | 8.2 / 39.5 / 39.5 | 7.2 / 63.7 / 63.7 | 1.61 |
+| Folder, legacy only | 62 | 1.4 / 12.4 / 17.9 | 1.5 / 13.9 / 20.4 | 1.12 |
+| Tour, all | 3,150 | 12.3 / 1,534 / 34,724 | 12.2 / 2,987 / 12,819 | 1.95 |
+| Tour, adopted | 1,505 | 25.9 / 1,470 / 34,724 | 26.5 / 2,664 / 6,300 | 1.81 |
+| Tour, declined | 107 | 4,676 / 6,659 / 7,708 | 9,015 / 11,833 / 12,819 | 1.78 |
+| Tour, outranked | 821 | 12.7 / 136 / 636 | 12.9 / 246 / 3,287 | 1.81 |
+| Tour, legacy only | 717 | 1.2 / 94.8 / 823 | 1.3 / 81.1 / 815 | 0.86 |
+
+The larger allowance roughly doubles the tour p95 and halves the worst click
+(the legacy ladder it replaces took 34.7 s). Work units are not uniform in
+time, so the allowance is the knob for this trade. Nothing moved to the
+worker, and no new worker or async pattern exists.
+
+#### Coverage outside production
+
+At the API allowance, unchanged: tours 635/894 (T24 438/678, T25 72/84, T28
+53/58), corpus 62/63, original 68/108. The 37 missing inputs still exhaust
+1024M with four pools.
+
+#### Deletion, and what remains
+
+With the anchor-loss escalation capped at 512M (below), production reach is
+T24 1, T25 2 constrained / 4 repairable, T28 1: 7 requests, down from 20
+without escalation.
+
+| Stage | Production reach | Blocker |
+|---|---:|---|
+| T24 free port lanes | 1 request (budget decline) | 240 tour rows (26 inputs) miss at the API allowance. Blocked on moving retained cores during placement: see "Free-core moves during placement" above |
+| T25 repairable / constrained | 4 / 2 requests (budget declines) | 10 inputs miss at the API allowance. Same blocker |
+| T28 band contact repair | 1 request (budget decline) | 5 inputs miss at the API allowance. Same blocker |
+
+**Next pass starts here (item 3 blocker).** All three stages' coverage misses
+need constrained placement that can move retained cores, which legacy does
+(T24 translates whole runs with their fillets, T28 moves L-L-L runs and
+bypasses). Three pieces are missing:
+1. contact-tolerant placement that frees a retained core together with its
+   ends, instead of treating every retained route as a hard obstacle;
+2. a metric that can move a retained core whose ends lie on protected
+   convergence, terminal or fillet spans. The convergence entry binding
+   compares the parameter itself, so this is a meeting-binding change. Example:
+   tour input 84 (key 47b5ac217e3dfa93), core n9→n11 at x=440;
+3. a cheaper metric search for those cases: segment-order cycles and
+   port-corner backtracking exhaust 20–50M per solve.
+
+The residue is construction that cannot place the new tiles without moving
+retained cores (see item 3 above). The production T25 cases certify through
+the framed whole/stable embedding with large pools (median 57M, about 0.9 s),
+so they are bounded by the allowance; the coverage misses are not.
+
+#### Review
+
+An independent adversarial review confirmed two defects, both fixed. Reusing
+the capture let a rejected candidate's edits to its input drawing reach the
+next candidate; each candidate now gets a prepaid copy, with strict and framed
+tests. The construction-view protection test passed whatever happened; it now
+compares a mutating constructor's result with a clean one. The review found
+certification unchanged: retained pins are still checked against the
+authority, and the scalar-pin classification and unreferenced-pin removal
+match the old behaviour.
+
+#### Gates and changed acceptance rows
+
+- `bun run check`: 295 files, 0 errors.
+- `bun run test`: 196 files, 2,426 passed, 1 skipped, 2 failed.
+  `folder-layout-parity.test.ts` timed out at its child limit under load and
+  passes 9/9 alone. **`pinned-search-budget.test.ts`, "retains a crowded later
+  click with the larger bounded search", fails deterministically.** The test
+  replays one seven-click history of random-dag-100-8101 at 640 px. With the
+  larger allowance, clicks 1–5 publish constrained drawings instead of legacy
+  ones, so click 6 (n69, 18 new tiles) starts from a different drawing. There
+  neither path holds the anchor: the constrained attempt needs about 349M work
+  with 16 pools (it certifies at a 1024M ceiling, not at 512M), and no legacy
+  candidate holds. The clicked tile moves from (188, 2954) to (408, 3687).
+  Across the evaluation, anchor moves fell (below), so this is one history
+  that got worse while the populations got better. The anchor-loss
+  escalation below fixes it.
+- `layout:eval`: all 50 current targets pass. Against the local admission
+  pass: click-anchor moves 26 → 20, dense-tour anchor moves 75 → 59,
+  held-screen moves at 480 px 30 → 25 (broad) and 72 → 57 (dense), mean legal
+  displacement 11.9 → 10.8 px, new-state transition moved fraction 0.184 →
+  0.168. Mean bends rose 154.3 → 156.1 and mean length 37,696 → 37,773.
+
+#### Anchor-loss escalation
+
+A click whose own tile would move breaks the product rule ("clicked ancestry
+stays put"), whatever the aggregate anchor-move count says. Legacy has a larger
+bounded search for that case (the T25 ladder); the constrained path now has
+one too (`band-layout.ts`, the branch taken when no candidate holds the click
+anchor). Each embedding, the committed drawing and the ancestry repack, whose
+ordinary attempt ended in a **budget** decline gets an attempt under the
+`band-insertion-anchor` allowance (`incremental-adoption.ts`). A conflict
+decline is not retried. The trigger is the anchor actually being lost. Each
+attempt is cached under its own key, which includes its allowance. Its result
+passes the same certification, retained-pin check, anchor check and gates as
+any other candidate. The legacy ladder runs after it only if it still does
+not hold.
+
+**The allowance is capped at 512M for the whole request.** All its escalated
+attempts share the cap. The other parameters are 32M per item, pools at
+1/32M (16 at the ceiling, twice the ordinary ratio) and a capture share of
+1/20. An escalation no larger than the ordinary allowance would repeat the
+same declined search, so it is skipped.
+
+One inventory run per configuration:
+
+| | No escalation | 256M cap | **512M / 16 pools (shipped)** | Uncapped 1024M |
+|---|---:|---:|---:|---:|
+| Requests that escalate | 0 | 4 | 98 | 99 |
+| Escalated attempts that certify | — | 1 | 27 | — |
+| Anchors held among escalating requests | — | 2 | 31 | 39 |
+| Tour anchor moves | 89 | 89 | 76 | 69 |
+| Legacy reach, requests | 20 | 19 | 7 | 2 |
+| Escalating clicks, p50 / max | — | 11.3 / 11.7 s | 12.7 / 21.9 s | 22.8 / 32.0 s |
+| Declined tours, p95 / max | 11.8 / 12.8 s | 11.7 / 12.9 s | 15.8 / 21.9 s | 29.8 / 32.0 s |
+
+At 512M:
+- 70 outputs differ from no escalation, with 0 gate failures. All other
+  latency groups are within 1.17×.
+- One escalating click is an outlier: `dense-f10-100-21102/1400/8/n65` takes
+  21.9 s, and its anchor still moves. The next slowest take 17.2, 17.1 and
+  16.2 s.
+- Caps of 384M or less never certify the `pinned-search-budget` click 6 (a
+  100-item band). I tried 256M with 4, 8 and 16 pools, and 384M with 6, 8, 12
+  and 16 pools. At 512M with 16 pools it certifies with 349M of escalated
+  work.
+- That click takes 17.8 s at 512M, against 22.4 s with no escalation (467M of
+  ordinary work, then the legacy ladder). A certified escalation skips the
+  ladder. The two ordinary 256M attempts alone take about 10 s, so no cap
+  makes such a click take only a few seconds.
+
+#### Gates after the 512M escalation
+
+- `bun run check`: 0 errors.
+- Affected test files pass alone (62 tests): `incremental-adoption`,
+  `routing-fragments`, `pinned-search-budget` (now green),
+  `anchored-repack-retry`, `band-layout`, `pinned-allocation-padding` and
+  `partial-band-routing-room`. The last full suite, at the 256M cap, was
+  clean apart from load timeouts.
+- `click-stability.test.ts` alone takes 2,222 s: 1,856 s for the anchor sweep
+  and 366 s for the height-regression test (limit 600 s). The sweep's limit is
+  now 2,450 s, about 30% headroom. The CI job's 60-minute limit still leaves
+  more than 30% over the 37-minute file.
+- `layout:eval`: all 50 current targets pass. Against the capture pass
+  before the escalation:
+  - click-anchor moves 20 → 15;
+  - dense-tour anchor moves 59 → 52;
+  - held-screen moves 25 → 20 (broad) and 57 → 53 (dense);
+  - mean legal displacement 10.8 → 10.1 px.
+
+  Against #105, click-anchor moves went 26 → 15 and dense-tour anchor moves
+  75 → 52.
