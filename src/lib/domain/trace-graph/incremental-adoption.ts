@@ -16,7 +16,7 @@ export type AdoptionFallback = 'topology' | 'metric' | 'unsupported' | 'budget' 
 export type AdoptionSite = 'band-insertion';
 
 /** Limits for band insertion. Reach comes first: the allowance is sized so
- * that the constrained path, not the legacy repairs (T24, T25, T28), certifies
+ * that the constrained path, not the legacy repairs (T25, T28; T24 is deleted), certifies
  * the clicks it can certify at all (docs/routing-consolidation.md, "Capture
  * pass"). Work units are not uniform in time (measured p50 about 15 ns, up to
  * about 100 ns each), so latency is checked by measurement, not by
@@ -35,8 +35,8 @@ export type AdoptionSite = 'band-insertion';
  *
  * The anchored repack and the ladder after it re-embed every unanchored tile
  * around the click's ancestry (the `repack` site). They are attempted for any
- * number of new tiles: a size limit there left the legacy repack, and its T24
- * and T28 repairs, as the only path for those clicks, even after the
+ * number of new tiles: a size limit there left the legacy repack, and its
+ * T28 repair, as the only path for those clicks, even after the
  * insertion itself had certified. */
 export const PRODUCTION_ROUTING_WORK = {
   'band-insertion': { work: 256_000_000, perItem: 8_000_000, poolsPerWork: 1 / 64_000_000, captureShare: 1 / 20 },

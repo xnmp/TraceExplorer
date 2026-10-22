@@ -28,8 +28,7 @@ import { orderNewSiblingLeaves, siblingCreationGroups } from "./new-sibling-orde
 import { nearestFree, type GraphLayout, type LayoutItem, type LayoutRequest, type PlacedNode, type PlacedRoute, type PlacedJunction } from "./layout";
 import { ARROW, JUNCTION_BERTH, LANE_SEPARATION, PORT_BERTH, spacingFor, STACK_STEM_ROOM } from "./metrics";
 import { axisOf, berthsOf, paintedSegments, distanceToTile, distanceToSegment, grazesTile, INTO_JUNCTION, INTO_TILE, leavingRunFrom, routeEnds, shallowRun, SHALLOW_RUN, TILE_GRAZE, type Berth, type Ends } from "./route-contacts";
-import { attachSingleBand, bandExtent, identitySingleBandPainter, retainSingleBandFrame, roundedStem } from "./band-geometry";
-import { channelCornerRadius, channelInk } from './channel-corners';
+import { attachSingleBand, bandExtent, identitySingleBandPainter, retainSingleBandFrame } from "./band-geometry";
 import { pinnedBandExtent } from './pinned-band-extent';
 import { intersectsTile, overlapLength, routeBounds, segments, type Segment } from "./layout-quality";
 import { orthogonalRoute, LANE_TOLERANCE, NEAR_LANE, type AxisRun, type ForeignLanes, type GridSearch } from "./orthogonal-route";
@@ -1532,135 +1531,13 @@ function freeBlockedPorts(request: LayoutRequest, previous: GraphLayout, budget:
   return changed ? { ...previous, routes } : previous;
 }
 
-/** Shift only an internal orthogonal run that occludes a newly active source port.
- * Endpoints and logical identities stay fixed; the shared insertion budget bounds repair.
- * This also handles junction inputs, which cannot be replaced by a tile-to-tile router. */
-function freePortLanes(request: LayoutRequest, previous: GraphLayout, budget: IncrementalBudget): GraphLayout {
-  const newParents = new Set(request.items.filter(n => !previous.nodes.has(n.key)).flatMap(n => n.parents));
-  let routes = [...previous.routes], repairs = 0;
-  if (previous.nodes.size > INCREMENTAL_LIMIT || !inReach(request.maxWidth)
-    || previous.routes.some(r => !usableRetainedRoute(r))) return previous;
-  const tiles = new TileIndex([...previous.nodes.values()]);
-  for (const key of newParents) {
-    const parent = previous.nodes.get(key); if (!parent) continue;
-    const ports = [point(parent.x + parent.width / 2, parent.y + parent.height), point(parent.x + parent.width, parent.y + parent.height / 2)];
-    for (const blocked of [...routes]) {
-      if (repairs >= 4 || budget.probes <= 0) return { ...previous, routes };
-      if (blocked.from.kind !== 'node' || blocked.from.id === key) continue;
-      const lines = segments(blocked.path);
-      if (!lines.length || !ports.some(port => lines.some(line => distanceToSegment(line, port) < PORT_BERTH - .01))) continue;
-      const from = previous.nodes.get(blocked.from.id); if (!from) continue;
-      // Curved attachment headers do not prevent repairing a later straight run.
-      // Keep their exact commands and controls; flattened curve segments are never edited.
-      const authored = pathCommands(blocked.path), authoredRaw = [...blocked.path.matchAll(/[MLC][^MLC]*/g)].map(m => m[0]);
-      if (!authored || authored.length !== authoredRaw.length) continue;
-      // A straight run can contain grid waypoints. They are not fixed corners and
-      // must not shorten the room available to move the neighbouring turn.
-      const kept = authored.flatMap((command, i) => {
-        if (!i || command.kind !== 'L' || authored[i + 1]?.kind !== 'L') return [i];
-        const a = authored[i - 1].values, b = command.values, c = authored[i + 1].values;
-        const dx = b.at(-2)! - a.at(-2)!, dy = b.at(-1)! - a.at(-1)!;
-        const ex = c.at(-2)! - b.at(-2)!, ey = c.at(-1)! - b.at(-1)!;
-        return dx * ey === dy * ex && dx * ex + dy * ey > 0 ? [] : [i];
-      });
-      const commands = kept.map(i => authored[i]), raw = kept.map(i => authoredRaw[i]);
-      const points = commands.map(c => point(c.values.at(-2)!, c.values.at(-1)!));
-      const lanes = retainedIndex(previous, routes);
-      const foreign = routes.filter(r => r.from.kind !== blocked.from.kind || r.from.id !== blocked.from.id)
-        .flatMap(r => {
-          const ss = retainedSegments(r), painted = paintedSegments(ss, routeEnds(r, ss, previous.nodes, previous.junctions));
-          return [...channelInk(r.path), ...painted.slice(ss.length)];
-        });
-      let found: string | undefined;
-      for (let i = 1; i < points.length - 2 && !found; i++) {
-        // Translate a run together with its adjacent fillets, keeping their radius and controls.
-        if (commands[i + 1].kind !== 'L') continue;
-        const elbow = (j: number): boolean => {
-          if (commands[j]?.kind !== 'C' || j < 1) return false;
-          const start = points[j - 1], end = points[j], [x1, y1, x2, y2] = commands[j].values;
-          return Math.abs(Math.abs(end.x - start.x) - Math.abs(end.y - start.y)) < 1e-7
-            && (start.x === x1 && end.y === y2 && start.y !== y1 && end.x !== x2
-              || start.y === y1 && end.x === x2 && start.x !== x1 && end.y !== y2);
-        };
-        const lo = commands[i].kind === 'C' && elbow(i) ? i - 1 : i;
-        const hi = commands[i + 2].kind === 'C' && elbow(i + 2) ? i + 2 : i + 1;
-        if (!lo || hi + 1 >= commands.length || commands[lo].kind !== 'L' || commands[hi + 1].kind !== 'L'
-          || commands[i].kind === 'C' && lo === i || commands[i + 2].kind === 'C' && hi === i + 1) continue;
-        const a = points[i], b = points[i + 1], vertical = a.x === b.x, horizontal = a.y === b.y;
-        if (!vertical && !horizontal) continue;
-        const nearby = ports.filter(port => distanceToSegment([a, b], port) < PORT_BERTH - .01);
-        for (const port of nearby) {
-          const old = vertical ? a.x : a.y, axis = vertical ? 'x' : 'y', center = vertical ? port.x : port.y;
-          const direction = old < center ? -1 : 1;
-          for (const distance of [PORT_BERTH + LANE_STEP, PORT_BERTH + 2 * LANE_STEP, PORT_BERTH, PORT_BERTH + 3 * LANE_STEP]) {
-            if (budget.probes <= 0) break;
-            budget.probes--;
-            const coordinate = center + direction * distance;
-            const delta = coordinate - old;
-            const shaped = commands.map((c, k) => ({ kind: c.kind, values: c.values.map((v, j) => k >= lo && k <= hi && j % 2 === (axis === 'x' ? 0 : 1) ? v + delta : v) }));
-            const skipped = new Set<number>();
-            const at = (j: number) => point(shaped[j].values.at(-2)!, shaped[j].values.at(-1)!);
-            const fitFillet = (j: number, incoming: boolean): boolean => {
-              const start = at(j - 1), end = at(j), values = shaped[j].values;
-              const u = point(Math.sign(values[0] - start.x), Math.sign(values[1] - start.y));
-              const v = point(Math.sign(end.x - values[2]), Math.sign(end.y - values[3]));
-              const radius = Math.abs(end.x - start.x), corner = point(start.x + u.x * radius, start.y + u.y * radius);
-              const fixed = at(incoming ? j - 2 : j + 1);
-              const room = incoming ? (corner.x - fixed.x) * u.x + (corner.y - fixed.y) * u.y
-                : (fixed.x - corner.x) * v.x + (fixed.y - corner.y) * v.y;
-              const reserve = !incoming && j + 1 === commands.length - 1 && blocked.terminal ? ARROW.length : 1e-7;
-              if (room < reserve) return false;
-              const available = Math.min(radius, room - reserve);
-              const sharpCorner = (index: number): Point => {
-                const p = at(index), c = shaped[index];
-                if (c.kind !== 'C' || !elbow(index)) return p;
-                const start = at(index - 1), r = Math.abs(p.x - start.x);
-                return point(start.x + Math.sign(c.values[0] - start.x) * r, start.y + Math.sign(c.values[1] - start.y) * r);
-              };
-              // Compare against the repaired sharp legs, including the neighbouring
-              // fillet's corner, rather than only the shortened straight pieces.
-              const before = sharpCorner(j - 2), after = elbow(j + 2) ? sharpCorner(j + 2) : at(j + 1);
-              const certified = channelCornerRadius(before, corner, after, foreign, available);
-              const fitted = certified < 1e-6 ? 0 : certified;
-              if (fitted === radius) return true;
-              if (!fitted) {
-                shaped[j - 1] = {kind:'L',values:[corner.x,corner.y]};
-                shaped[j] = {kind:'L',values:[corner.x,corner.y]}; skipped.add(j); return true;
-              }
-              const native = pathCommands(roundedStem([point(corner.x - u.x * 2 * fitted, corner.y - u.y * 2 * fitted), corner,
-                point(corner.x + v.x * 2 * fitted, corner.y + v.y * 2 * fitted)], () => fitted))!;
-              shaped[j - 1] = {kind:'L',values:[...native[1].values]};
-              shaped[j] = {kind:'C',values:[...native[2].values]}; return true;
-            };
-            if (commands[i].kind === 'C' && !fitFillet(i, true) || commands[i + 2].kind === 'C' && !fitFillet(i + 2, false)) continue;
-            const candidate = shaped.map((_, j) => at(j));
-            if (candidate.some(p => p.x < 8 || p.x > request.maxWidth - 8)) continue;
-            const nextPath = raw.map((command, k) => skipped.has(k) ? '' : k >= lo && k <= hi ? shaped[k].kind + shaped[k].values.join(' ') + ' ' : command).join('');
-            const pieces = segments(nextPath), end = candidate.at(-1)!, beforeEnd = candidate.at(-2)!;
-            if ([lo, hi + 1].some(k => {
-              const a = candidate[k - 1], b = candidate[k], oldA = points[k - 1], oldB = points[k];
-              return a.x !== b.x && a.y !== b.y || (b.x - a.x) * (oldB.x - oldA.x) + (b.y - a.y) * (oldB.y - oldA.y) <= 0;
-            })) continue;
-            if (blocked.terminal && !((end.x === beforeEnd.x && end.y - beforeEnd.y >= ARROW.length)
-              || (end.y === beforeEnd.y && end.x - beforeEnd.x >= ARROW.length))) continue;
-            if (tiles.crosses(pieces) || tiles.grazes(pieces, from)
-              || lanes.conflicts(pieces, sourceKey('node', blocked.from.id), blocked.to.kind === 'junction' ? INTO_JUNCTION : INTO_TILE)) continue;
-            found = nextPath; break;
-          }
-          if (found) break;
-        }
-      }
-      if (found) { routes = routes.map(r => r === blocked ? { ...r, path: found! } : r); repairs++; }
-    }
-  }
-  return repairs ? { ...previous, routes } : previous;
-}
-
 /** Repairable drafts defer contact admission to connector repair and independent certification. */
 type InsertionPolicy = "stable" | "constrained" | "repairable";
 
-/** Legacy repair stages a placement used: T23 (freeBlockedPorts) and T24 (freePortLanes). */
-type PortRepair = 'T23' | 'T24';
+/** Legacy repair stages a placement used: T23 (freeBlockedPorts). The port-lane
+ * shift (T24) is deleted: the constrained path's retained-track port repair covers
+ * every old success it reached (docs/routing-consolidation.md, "Placement pass"). */
+type PortRepair = 'T23';
 const countRepairs = (repairs: readonly PortRepair[]) => { for (const stage of repairs) countLayoutWork(`legacy:${stage}`); };
 
 function insertWithPortRepair(request: LayoutRequest, previous: GraphLayout, budget: IncrementalBudget, paneEdges?: Scene["paneEdges"], policy: InsertionPolicy = "stable",
@@ -1669,10 +1546,7 @@ function insertWithPortRepair(request: LayoutRequest, previous: GraphLayout, bud
   const repaired = freeBlockedPorts(request, previous, budget);
   const freed: PortRepair[] = movedRoute(previous, repaired) ? ['T23'] : [];
   const placed = insertTree(request, repaired, budget, paneEdges, policy, undefined, undefined, undefined, undefined, orderCharge);
-  if (placed) return { placed, repairs: freed };
-  const shifted = freePortLanes(request, repaired, budget);
-  const retried = shifted === repaired ? null : insertTree(request, shifted, budget, paneEdges, policy, undefined, undefined, undefined, undefined, orderCharge);
-  return retried && { placed: retried, repairs: movedRoute(repaired, shifted) ? [...freed, 'T24'] : freed };
+  return placed && { placed, repairs: freed };
 }
 
 /** Whether a repair stage changed any route (stages may return a fresh object unchanged). */
@@ -2014,7 +1888,13 @@ function insertTree(request: LayoutRequest, previous: GraphLayout, budget: Incre
     // only compares its rectangle with theirs.
     orderCharge?.(siblingItems.reduce((sum,other)=>sum+8*(other.key.length+item.key.length+2),1),'new sibling order identity bytes');
     const siblingRanks=siblingItems.map(other=>({node:nodes.get(other.key)!,before:other.order<item.order||other.order===item.order&&other.key<item.key}));
-    const siblingOrder=(n:PlacedNode)=>{orderCharge?.(siblingRanks.length+1,'new sibling order probe');return siblingRanks.every(({node,before})=>{const order=visualOrder(node,n);return before?order<=0:order>=0;});};
+    // Creation order among new siblings is a display preference (the layout
+    // objective prices inversions), not a certified constraint. It prunes the
+    // search first; an item no ordered placement fits is searched once more
+    // without it, before the trail rewinds earlier commits. Every item an
+    // ordered search places is placed exactly as before.
+    let unordered=false;
+    const siblingOrder=(n:PlacedNode)=>{if(unordered)return true;orderCharge?.(siblingRanks.length+1,'new sibling order probe');return siblingRanks.every(({node,before})=>{const order=visualOrder(node,n);return before?order<=0:order>=0;});};
     const free = (n: PlacedNode) => siblingOrder(n)&&parents.every(parent => n.x >= parent.x + parent.width || n.y >= parent.y + parent.height) && clear(n);
     // Rank every probe, then test freedom lazily: only probes up to the first routable one are
     // checked, and only those are wired. Probe p is (xs[p / ny], ys[p % ny]). A placement that
@@ -2049,34 +1929,39 @@ function insertTree(request: LayoutRequest, previous: GraphLayout, budget: Incre
     };
     // Contacts are a hard constraint. A failed compact probe must search another
     // route or placement rather than returning an illegal connector for later rejection.
-    let best = probes();
-    if (!best) {
-      const rowYs = [...new Set([Math.max(baseBottom, ...parents.map(p => p.y + p.height)) + arrivalGap,
-        ...boxes.filter(n => n.y > baseBottom).map(n => n.y), Math.max(bottom, previous.height) + arrivalGap])].sort((a, b) => a - b);
-      const slotXs = Array.from({ length: Math.min(32, Math.max(1, Math.floor((width - 48 + s.column) / (item.width + s.column)))) }, (_, i) => 24 + i * (item.width + s.column));
-      const fallback = (effort: Effort): { node: PlacedNode; wiring: Wiring } | undefined => {
-        let tried = 0;
-        for (const y of rowYs) for (const x of slotXs) {
-          const n: PlacedNode = { key: item.key, x, y, width: item.width, height: item.height, row: parent.row + 1, band: parent.band + 1 };
-          if (!(siblingOrder(n)&&parents.every(p => n.y >= p.y + p.height || n.x >= p.x + p.width) && clear(n))) continue;
-          if (!(x >= 0 && x + item.width <= width) || tried++ >= effort.slots || !(left(effort) > 0)) return undefined;
-          const wiring = gridWire(parents, n, sceneFor(n), lanes, item.key, effort);
-          if (wiring) return { node: n, wiring };
-        }
-        return undefined;
-      };
-      // Once a tile needed the second chance, later tiles go to it directly: the scene has proved
-      // too crowded for the plain fallback, and its failures cost as much as the second chance.
-      best = second ? undefined : fallback(plain);
+    const search = (): { node: PlacedNode; wiring: Wiring } | undefined => {
+      let best = probes();
       if (!best) {
-        // The second chance: the probes again on lanes half a step apart, then the grid router.
-        const effort = second ??= secondChance(budget);
-        grain = FINE_GRAIN;
-        best = probes() ?? fallback(effort);
-        grain = GRAIN;
+        const rowYs = [...new Set([Math.max(baseBottom, ...parents.map(p => p.y + p.height)) + arrivalGap,
+          ...boxes.filter(n => n.y > baseBottom).map(n => n.y), Math.max(bottom, previous.height) + arrivalGap])].sort((a, b) => a - b);
+        const slotXs = Array.from({ length: Math.min(32, Math.max(1, Math.floor((width - 48 + s.column) / (item.width + s.column)))) }, (_, i) => 24 + i * (item.width + s.column));
+        const fallback = (effort: Effort): { node: PlacedNode; wiring: Wiring } | undefined => {
+          let tried = 0;
+          for (const y of rowYs) for (const x of slotXs) {
+            const n: PlacedNode = { key: item.key, x, y, width: item.width, height: item.height, row: parent.row + 1, band: parent.band + 1 };
+            if (!(siblingOrder(n)&&parents.every(p => n.y >= p.y + p.height || n.x >= p.x + p.width) && clear(n))) continue;
+            if (!(x >= 0 && x + item.width <= width) || tried++ >= effort.slots || !(left(effort) > 0)) return undefined;
+            const wiring = gridWire(parents, n, sceneFor(n), lanes, item.key, effort);
+            if (wiring) return { node: n, wiring };
+          }
+          return undefined;
+        };
+        // Once a tile needed the second chance, later tiles go to it directly: the scene has proved
+        // too crowded for the plain fallback, and its failures cost as much as the second chance.
+        best = second ? undefined : fallback(plain);
+        if (!best) {
+          // The second chance: the probes again on lanes half a step apart, then the grid router.
+          const effort = second ??= secondChance(budget);
+          grain = FINE_GRAIN;
+          best = probes() ?? fallback(effort);
+          grain = GRAIN;
+        }
       }
-      if (!best) {if(retry)retry.failure={child:item.key,visible:new Set(nodes.keys())};return null;}
-    }
+      return best;
+    };
+    let best = search();
+    if (!best && siblingRanks.length) { unordered = true; best = search(); unordered = false; }
+    if (!best) {if(retry)retry.failure={child:item.key,visible:new Set(nodes.keys())};return null;}
     let checkpoint:GraphLayout|undefined;
     const beforePorts=new Map<string,readonly boolean[]>();
     if(retry&&nativeCharge) {
