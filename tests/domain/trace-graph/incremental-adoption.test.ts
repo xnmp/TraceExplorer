@@ -168,13 +168,13 @@ describe('band insertion through publication', () => {
   });
   // Reserving 1/32M pools left this arrival too little of its 6M allowance for
   // construction's other charges, so it declined and legacy reached T24 (free
-  // port lanes, since deleted). It spends about 3M and certifies with 1/48M pools.
-  it('publishes an arrival that 1/32M pools declined, from the constrained path', () => {
+  // port lanes). It spends about 3M and certifies with 1/48M pools.
+  it('publishes an arrival that 1/32M pools declined, without a legacy port repair', () => {
     const c = { ...corpus().find(f => f.id === 'random-tree-100-8003')!, full: false };
     const opened = optimizedBand(requestFor(c, null, 454, 96), {});
     const req = requestFor(c, 'n21', 454, 96);
     const { result: next, count } = counters(() => optimizedBand({ ...req, hint: opened.layout.readingOrder }, { previous: opened, anchorKey: 'n21' }));
-    expect([count('adoption:band-insertion:success'), count('adoption:band-insertion:published')]).toEqual([1, 1]);
+    expect([count('adoption:band-insertion:success'), count('adoption:band-insertion:published'), count('legacy:T24')]).toEqual([1, 1, 0]);
     for (const [key, was] of opened.placed.nodes) {
       const now = next.placed.nodes.get(key);
       if (now) expect([now.x, now.y, now.width, now.height], key).toEqual([was.x, was.y, was.width, was.height]);

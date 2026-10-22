@@ -118,7 +118,7 @@ describe("incremental tree: retained lanes", () => {
     expect(incrementalTree(next, previous)).toBeNull();
   });
 
-  it("never draws through a gutter lane another source's retained route holds", () => {
+  it("takes another lane when another source's retained route holds the gutter lane it would use", () => {
     // A full row of children of s2 lies between s0 and the new g, so g's route detours by a gutter.
     const items = [item("root"), ...Array.from({ length: 5 }, (_, i) => item(`s${i}`, ["root"], i + 1)), ...Array.from({ length: 5 }, (_, i) => item(`t${i}`, ["s2"], 10 + i))];
     const previous = committed(items), next = request([...items, item("g", ["s0"], 30)]);
@@ -128,11 +128,11 @@ describe("incremental tree: retained lanes", () => {
     const t0 = previous.nodes.get("t0")!, [gutter] = verticals(free).filter(([p, q]) => Math.min(p.y, q.y) < t0.y && Math.max(p.y, q.y) > t0.y + t0.height);
     expect(gutter).toBeDefined();
     const x = gutter[0].x, held: PlacedRoute = { id: "held", from: { kind: "node", id: "t4" }, to: { kind: "node", id: "t4" }, consumers: [{ parent: "s2", child: "t4" }], terminal: false, path: `M${x} 0 L${x} 2000` };
-    // The only other way out of s0 is its bottom port, whose lane s2's retained
-    // route to t0 turns in. Legacy insertion never moves retained ink to free it
-    // (that port-lane shift, T24, is deleted; the constrained path's retained-track
-    // port repair owns it), so it declines rather than share the held lane.
-    expect(incrementalTree(next, { ...previous, routes: [...previous.routes, held] })).toBeNull();
+    const result = incrementalTree(next, { ...previous, routes: [...previous.routes, held] });
+    expect(result).not.toBeNull();
+    expect(verticals(result!).filter(([p, q]) => Math.abs(p.x - x) < 0.5 && Math.min(q.y, p.y) < 2000)).toEqual([]);
+    const m = measure(attachSingleBand(result!, next), "root", next.maxWidth, next.items);
+    expect([m.sharedLanePx, m.tileIntersections, m.overlaps, m.terminalViolations, m.disconnectedEdges, m.missingEdges, m.overflow]).toEqual([0, 0, 0, 0, 0, 0, 0]);
   });
 });
 

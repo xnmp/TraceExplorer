@@ -361,7 +361,7 @@ const distanceToSegment = (p: Point, a: Point, b: Point): number => {
 };
 const reservedCenter = (port: ReservedPort, axis: 'x' | 'y') => JSON.stringify(['reserved-port', port.owner, port.side, axis]);
 
-/** Retained-track port repair (the metric counterpart of the deleted legacy T24). Each free
+/** Retained-track port repair (the metric counterpart of legacy T24). Each free
  * retained core within a newly active source port's berth gets one more hard
  * separation from that port, its side a corridor choice; the same affected
  * solve moves it and anything it pushes, in the drawn order. Native spans,
