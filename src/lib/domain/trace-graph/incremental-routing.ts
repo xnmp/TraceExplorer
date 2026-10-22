@@ -18,7 +18,7 @@ import { prepayRoutingGateSerialization } from './routing-serialization-work';
 import { searchCorridors, type CorridorSearch } from './corridor-search';
 import type { CoordinateVariable, Separation } from './separation';
 import { captureRoutingFragments, bindRoutingFragmentTopology, fragmentCoordinateKey,
-  type RetainedRoutingFragments, type ConstructionFragments, type FragmentTopologyBindings } from './routing-fragments';
+  type RetainedRoutingFragments, type ConstructionFragments, type FragmentTopologyBindings, type FragmentCaptureOptions } from './routing-fragments';
 import type { RoutingFrameEquality } from './routing-problem';
 
 export type IncrementalConflictReason = 'topology-conflict' | 'metric-conflict' | 'unsupported-input' | 'budget-exhaustion';
@@ -35,8 +35,10 @@ export interface IncrementalRoutingSeed {
 }
 export type IncrementalTopologyConstructor = (drawing: GraphLayout, charge: (work: number, reason?: string) => void,
   choose: CorridorSearch['choose'], reserve: CorridorSearch['reserve'], fragments?: ConstructionFragments) => GraphLayout | IncrementalRoutingConflict;
+/** `meetingEntries` opts a policy with no frame equations into binding
+ * convergence entries by their meeting (`FragmentCaptureOptions`). */
 export type IncrementalFrameFactory = (source: GraphLayout, charge: CorridorSearch['charge'], choose: CorridorSearch['choose']) =>
-  { readonly preferred: GraphLayout; readonly frames: readonly RoutingFrameEquality[] } | IncrementalRoutingConflict;
+  { readonly preferred: GraphLayout; readonly frames: readonly RoutingFrameEquality[]; readonly meetingEntries?: boolean } | IncrementalRoutingConflict;
 /** Additional actual-publication checks share capture/construction's ledger.
  * They may withhold a candidate, never replace its captured authority or result. */
 export type IncrementalAdmission = (drawing: GraphLayout, charge: CorridorSearch['charge']) => IncrementalRoutingConflict | null;
@@ -116,7 +118,8 @@ export function captureIncrementalRouting(request: LayoutRequest, previous: Grap
 /** Selective retention is explicit and opt-in. The raw projected source and
  * allowed frame equations precede construction; preferred core runs stay free. */
 export function captureFramedIncrementalRouting(request: LayoutRequest, previous: GraphLayout, preferred: GraphLayout,
-  frames: readonly RoutingFrameEquality[] = [], charge: (work: number, reason?: string) => void = () => {}):
+  frames: readonly RoutingFrameEquality[] = [], charge: (work: number, reason?: string) => void = () => {},
+  options: FragmentCaptureOptions = {}):
   IncrementalRoutingSeed | IncrementalRoutingConflict {
   chargeRoutingSnapshot([attemptRequestView(request), previous, preferred, frames], charge);
   if (!validRequest(request) || !isLayoutShape(previous) || !isLayoutShape(preferred))
@@ -125,7 +128,7 @@ export function captureFramedIncrementalRouting(request: LayoutRequest, previous
   if (request.items.some(item => { const old = preferred.nodes.get(item.key); return old && (old.width !== item.width || old.height !== item.height); }))
     return { reason: 'unsupported-input', constraints: ['declared framed request sizes'] };
   const captured = captureRoutingFragments({ id: 'before', space: 'attached', drawing: projected },
-    { id: 'derived', space: 'attached', drawing: preferred }, frames, charge);
+    { id: 'derived', space: 'attached', drawing: preferred }, frames, charge, options);
   if (!captured.ok) return { reason: 'unsupported-input', constraints: captured.conflict.constraints };
   // The fragment capture already imported the projected source once; its
   // problem is that import, so it is reused rather than imported again.
@@ -187,7 +190,11 @@ export function routeCommittedIncremental(request: LayoutRequest, previous: Grap
       if (!frame || typeof frame !== 'object') return search.reject(['framed policy result'], 'invalid');
       chargeRoutingSnapshot(frame, search.charge);
       if ('reason' in frame && !validConflict(frame)) return search.reject(['framed policy conflict shape'], 'invalid');
-      seed = 'reason' in frame ? frame : captureFramedIncrementalRouting(request, previous, frame.preferred, frame.frames, search.charge);
+      // A policy may bind convergence entries by their meeting (band insertion
+      // does), so a free retained core may move with the start of the entry run
+      // it feeds. Frame-equation policies (folder hints) keep the exact binding.
+      seed = 'reason' in frame ? frame : captureFramedIncrementalRouting(request, previous, frame.preferred, frame.frames, search.charge,
+        { meetingEntries: frame.meetingEntries === true });
     } else seed = captureIncrementalRouting(request, previous, search.charge);
     if (!('problem' in seed)) return search.reject(seed.constraints, seed.reason === 'unsupported-input' ? 'invalid'
       : seed.reason === 'budget-exhaustion' ? 'search-exhausted' : seed.reason === 'metric-conflict' ? 'metric' : 'topology');

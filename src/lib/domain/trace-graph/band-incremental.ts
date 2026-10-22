@@ -1801,7 +1801,7 @@ export function constrainedBandInsertion(request: LayoutRequest, previous: Graph
   if (strict.ok || strict.conflict.reason !== 'budget-exhaustion' || strict.work >= allowance
     || strict.conflict.constraints[0] === PREDICTED_DECLINE) return strict;
   const framed = constrainedIncremental(request, previous, pools(), undefined, allowance - strict.work,
-    preferred => ({ preferred, frames: [] }), undefined, captureLimit);
+    preferred => ({ preferred, frames: [], meetingEntries: true }), undefined, captureLimit);
   return { ...framed, work: framed.work + strict.work };
 }
 
@@ -2014,7 +2014,13 @@ function insertTree(request: LayoutRequest, previous: GraphLayout, budget: Incre
     // only compares its rectangle with theirs.
     orderCharge?.(siblingItems.reduce((sum,other)=>sum+8*(other.key.length+item.key.length+2),1),'new sibling order identity bytes');
     const siblingRanks=siblingItems.map(other=>({node:nodes.get(other.key)!,before:other.order<item.order||other.order===item.order&&other.key<item.key}));
-    const siblingOrder=(n:PlacedNode)=>{orderCharge?.(siblingRanks.length+1,'new sibling order probe');return siblingRanks.every(({node,before})=>{const order=visualOrder(node,n);return before?order<=0:order>=0;});};
+    // Creation order among new siblings is a display preference (the layout
+    // objective prices inversions), not a certified constraint. It prunes the
+    // search first; an item no ordered placement fits is searched once more
+    // without it, before the trail rewinds earlier commits. Every item an
+    // ordered search places is placed exactly as before.
+    let unordered=false;
+    const siblingOrder=(n:PlacedNode)=>{if(unordered)return true;orderCharge?.(siblingRanks.length+1,'new sibling order probe');return siblingRanks.every(({node,before})=>{const order=visualOrder(node,n);return before?order<=0:order>=0;});};
     const free = (n: PlacedNode) => siblingOrder(n)&&parents.every(parent => n.x >= parent.x + parent.width || n.y >= parent.y + parent.height) && clear(n);
     // Rank every probe, then test freedom lazily: only probes up to the first routable one are
     // checked, and only those are wired. Probe p is (xs[p / ny], ys[p % ny]). A placement that
@@ -2049,34 +2055,39 @@ function insertTree(request: LayoutRequest, previous: GraphLayout, budget: Incre
     };
     // Contacts are a hard constraint. A failed compact probe must search another
     // route or placement rather than returning an illegal connector for later rejection.
-    let best = probes();
-    if (!best) {
-      const rowYs = [...new Set([Math.max(baseBottom, ...parents.map(p => p.y + p.height)) + arrivalGap,
-        ...boxes.filter(n => n.y > baseBottom).map(n => n.y), Math.max(bottom, previous.height) + arrivalGap])].sort((a, b) => a - b);
-      const slotXs = Array.from({ length: Math.min(32, Math.max(1, Math.floor((width - 48 + s.column) / (item.width + s.column)))) }, (_, i) => 24 + i * (item.width + s.column));
-      const fallback = (effort: Effort): { node: PlacedNode; wiring: Wiring } | undefined => {
-        let tried = 0;
-        for (const y of rowYs) for (const x of slotXs) {
-          const n: PlacedNode = { key: item.key, x, y, width: item.width, height: item.height, row: parent.row + 1, band: parent.band + 1 };
-          if (!(siblingOrder(n)&&parents.every(p => n.y >= p.y + p.height || n.x >= p.x + p.width) && clear(n))) continue;
-          if (!(x >= 0 && x + item.width <= width) || tried++ >= effort.slots || !(left(effort) > 0)) return undefined;
-          const wiring = gridWire(parents, n, sceneFor(n), lanes, item.key, effort);
-          if (wiring) return { node: n, wiring };
-        }
-        return undefined;
-      };
-      // Once a tile needed the second chance, later tiles go to it directly: the scene has proved
-      // too crowded for the plain fallback, and its failures cost as much as the second chance.
-      best = second ? undefined : fallback(plain);
+    const search = (): { node: PlacedNode; wiring: Wiring } | undefined => {
+      let best = probes();
       if (!best) {
-        // The second chance: the probes again on lanes half a step apart, then the grid router.
-        const effort = second ??= secondChance(budget);
-        grain = FINE_GRAIN;
-        best = probes() ?? fallback(effort);
-        grain = GRAIN;
+        const rowYs = [...new Set([Math.max(baseBottom, ...parents.map(p => p.y + p.height)) + arrivalGap,
+          ...boxes.filter(n => n.y > baseBottom).map(n => n.y), Math.max(bottom, previous.height) + arrivalGap])].sort((a, b) => a - b);
+        const slotXs = Array.from({ length: Math.min(32, Math.max(1, Math.floor((width - 48 + s.column) / (item.width + s.column)))) }, (_, i) => 24 + i * (item.width + s.column));
+        const fallback = (effort: Effort): { node: PlacedNode; wiring: Wiring } | undefined => {
+          let tried = 0;
+          for (const y of rowYs) for (const x of slotXs) {
+            const n: PlacedNode = { key: item.key, x, y, width: item.width, height: item.height, row: parent.row + 1, band: parent.band + 1 };
+            if (!(siblingOrder(n)&&parents.every(p => n.y >= p.y + p.height || n.x >= p.x + p.width) && clear(n))) continue;
+            if (!(x >= 0 && x + item.width <= width) || tried++ >= effort.slots || !(left(effort) > 0)) return undefined;
+            const wiring = gridWire(parents, n, sceneFor(n), lanes, item.key, effort);
+            if (wiring) return { node: n, wiring };
+          }
+          return undefined;
+        };
+        // Once a tile needed the second chance, later tiles go to it directly: the scene has proved
+        // too crowded for the plain fallback, and its failures cost as much as the second chance.
+        best = second ? undefined : fallback(plain);
+        if (!best) {
+          // The second chance: the probes again on lanes half a step apart, then the grid router.
+          const effort = second ??= secondChance(budget);
+          grain = FINE_GRAIN;
+          best = probes() ?? fallback(effort);
+          grain = GRAIN;
+        }
       }
-      if (!best) {if(retry)retry.failure={child:item.key,visible:new Set(nodes.keys())};return null;}
-    }
+      return best;
+    };
+    let best = search();
+    if (!best && siblingRanks.length) { unordered = true; best = search(); unordered = false; }
+    if (!best) {if(retry)retry.failure={child:item.key,visible:new Set(nodes.keys())};return null;}
     let checkpoint:GraphLayout|undefined;
     const beforePorts=new Map<string,readonly boolean[]>();
     if(retry&&nativeCharge) {

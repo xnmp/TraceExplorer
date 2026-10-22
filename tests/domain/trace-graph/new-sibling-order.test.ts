@@ -4,6 +4,10 @@ import { corpus, requestFor } from '../../../layout-eval/corpus';
 import { optimizedBand, type Optimized } from '../../../layout-eval/engine';
 import { nodePenalties } from '../../../layout-eval/geometry';
 import { geometryGate } from '$lib/domain/trace-graph/geometry-gate';
+import { readFileSync } from 'node:fs';
+import { AUTOMATIC_ROUTING_WORK, automaticIncrementalBudget, constrainedBandInsertion } from '$lib/domain/trace-graph/band-incremental';
+import { attachSingleBand } from '$lib/domain/trace-graph/band-geometry';
+import type { GraphLayout, LayoutRequest } from '$lib/domain/trace-graph/layout';
 
 it.each([['random-bushy-200-9202',360,96,3,1],['random-tree-100-8002',640,48,1,0]] as const)(
   'keeps newly revealed siblings in creation order in %s', (id,width,imagePx,target,limit) => {
@@ -41,3 +45,19 @@ it('assigns interchangeable new leaves without moving geometry or retained ident
   const rectangles=(layout:typeof source)=>[...layout.nodes.values()].map(n=>[n.x,n.y,n.width,n.height].join(',')).sort();
   expect(rectangles(result)).toEqual(rectangles(source));
 });
+
+/** A captured tour click (18 new tiles) where no placement of one new tile keeps
+ * creation order with its placed siblings and still routes. Order is a display
+ * preference, so that tile is placed without it instead of the click falling
+ * back to the legacy ladder. */
+it('certifies an arrival whose creation order no routable placement satisfies', () => {
+  const { request, previous } = JSON.parse(readFileSync(new URL('./fixtures/routing-adoption/sibling-order-relaxed.json', import.meta.url), 'utf8'),
+    (_k, v) => v?.__map ? new Map(v.__map) : v?.__set ? new Set(v.__set) : v) as { request: LayoutRequest; previous: GraphLayout };
+  const result = constrainedBandInsertion(request, previous, () => automaticIncrementalBudget(), AUTOMATIC_ROUTING_WORK);
+  expect(result.ok, JSON.stringify(result.ok ? undefined : result.conflict.constraints.slice(0, 3))).toBe(true);
+  if (!result.ok) return;
+  const published = attachSingleBand(structuredClone(result.drawing), request);
+  expect(geometryGate(published, request.items, request.band!.key, request.maxWidth)).toBeNull();
+  for (const { key } of request.items) if (previous.nodes.has(key)) expect(published.nodes.get(key), key).toEqual(previous.nodes.get(key));
+  expect(request.items.filter(({ key }) => !published.nodes.has(key))).toEqual([]);
+}, 60_000);

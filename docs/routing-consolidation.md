@@ -2679,3 +2679,220 @@ At 512M:
 
   Against #105, click-anchor moves went 26 → 15 and dense-tour anchor moves
   75 → 52.
+
+### Placement pass
+
+This pass started from the capture pass's blocker: the 41 stage memberships
+(37 unique inputs) that miss at the API allowance. No stage is deleted.
+T24 was deleted and then restored, because the full suite found folder reach
+that the inventory misses (below). T25 and T28 also stay, with the blockers
+below, so **slice 4 remains open**.
+
+#### What legacy does that the constrained model forbids
+
+Legacy's own output was the oracle. Each missing input was replayed through
+legacy's complete itinerary (stable, constrained and repairable at ×1–×4
+budgets, with T24, T28 and the attachment frame), and its coordinates were
+diffed against the retained drawing.
+
+- **Legacy never completes 28 inputs.** No legacy drawing that passes the
+  gate exists within legacy's own ladder. The one exception, 0e6681d68800f317,
+  passes only at repairable ×8, which is outside the ladder. On these inputs
+  T24's move translates a free L core, mostly the core alone; a few also move
+  convergence, prefix, interval or terminal ink. Insertion still fails after
+  the move. Injecting T24's move into the constrained attempt does not help
+  either. These are budget exhaustion in both engines, not lost successes.
+- **Legacy completes the other 9:**
+  - ca6344689872128a, d777ad0e8fa9fe4b and e1c8645dde47a0e6 complete at
+    constrained ×4;
+  - 0b1fd2e5f0d0598a completes at stable ×4;
+  - d053ce70bb869fde and 0c9d48206160f863 complete at repairable plus T28,
+    where T28 moves only new routes;
+  - 47b5ac217e3dfa93, 45bed924bab484b2 and 86dcc53f600353a5 complete at
+    repairable plus T28, where T28 moves retained ink.
+
+  Grouped by what forbids legacy's drawing:
+  - **Construction search, not the model (6).** Fed legacy's drawing directly,
+    the constrained pipeline admits it for ca63, d777, e1c8, 0b1f, d053 and
+    0c9d. These are therefore limits of the construction search:
+    - ca63 and e1c8 need a new tile out of creation order with its new
+      siblings;
+    - d777 is search variance: either disabling native or pane probes finds
+      it;
+    - 0b1f is found by none of the toggles;
+    - d053 constructs, but the metric or admission then fails;
+    - 0c9d constructs framed, but the budget runs out, because each strict
+      family consumes about 100M of pool.
+  - **Convergence parameter binding (1).** For 47b5, T28 moves the retained
+    core n21→n30 from x=330 to 342. The span after the core is a protected
+    convergence-suffix entry, and the binding compared its parameter. A
+    second refusal, "retained raw source command", was a whitespace artifact:
+    T28 writes double spaces into its paths.
+  - **Metric conflicts (2, plus 47b5 once its binding is relaxed).** For 45be
+    and 86dc, T28 bypasses bump retained routes. With admission framed, these
+    fail in the metric on foreign-track constants pinned by the topology, on
+    port corners, and on cycles between parallel tracks and the tile
+    corridor.
+- **Every old success whose complete legacy drawing used T24 is covered** at
+  the API allowance: tours 62, corpus 39 and original 20. T24's coverage
+  misses are attempts whose results legacy itself discarded.
+
+#### What shipped
+
+1. **Sibling-order relaxation** (`band-incremental.ts`, `insertTree`, the
+   `search` closure and the retry after it). Creation order among new
+   siblings is a display preference that the objective prices; it is not a
+   certified constraint. Ordered placements are still searched first. A tile
+   that no ordered placement routes is searched once more without the order,
+   before the trail rewinds earlier commits. Any tile an ordered search places
+   is placed exactly as before.
+   - Coverage: tours +1 (ca63) and original +13 rows (e1c8 and 0e66).
+   - No old success is lost.
+   - The 32M replay of 3,512 production-like attempts: one more success,
+     none lost, and 5 of 2,901 outputs differ.
+2. **Meeting binding** (`routing-fragments.ts`: `FragmentCaptureOptions`,
+   `MeetingEntry`, and the `entries` capture and binding). A convergence
+   entry is bound by who meets the dot, on which side, at which point and in
+   what order. It is no longer bound by its parameter. A straight
+   single-meeting entry run that starts outside the dot's berth keeps its
+   line and its end. Its start may slide along the run, and a metric interval
+   keeps it at least 1 unit outside the berth face. The parameter is neither
+   required at capture nor compared at binding. Band insertion's framed
+   capture opts in (`incremental-routing.ts`, `routeCommittedIncremental`);
+   strict capture and folder placement do not.
+   - Framed admission now accepts legacy's normalized 47b5 drawing (10.2M of
+     work).
+   - The search still does not find it, because the metric conflicts above
+     remain. Coverage did not change.
+3. **Contact-tolerant placement of a freed core with its ends** was not
+   shipped. The classification shows that the move it would add, T24's
+   translation of a free core with its fillets, does not complete any input
+   legacy fails. On the inputs legacy completes, construction already admits
+   legacy's drawing, so the limit is the search, not the obstacle model.
+4. **A cheaper metric search** (in the manner of libavoid's nudging or ELK's
+   orthogonal ordering) was not attempted. 45be, 86dc and 47b5 need it.
+5. **T24 was deleted, then restored.** Without it, the one inventory T24
+   request, `random-dag-100-8101/360/1/n18`, publishes a certified
+   constrained repack: its anchor holds at (192, 1950) and it passes the gate.
+   The inventory then showed T24 reach 0, with 0 gate failures.
+
+   The full suite found reach that the inventory does not sample:
+   - **Folder arrivals.** In `folder-pinned-arrival.test.ts`, seed 14,
+     arrival 9, band insertion declines on budget. Legacy needs the port-lane
+     shift there; without it, all eight retained tiles of the stack move.
+   - **Fillet fit.** `repaired-fillet-clearance.test.ts` pins T24's fillet fit.
+
+   T24 is restored unchanged.
+
+#### Coverage outside production
+
+At the API allowance, against the capture pass:
+
+| Population | Before | After |
+|---|---|---|
+| Tours | 635/894 | 636/894 |
+| Corpus | 62/63 | 62/63 |
+| Original | 68/108 | 81/108 |
+
+No old success was lost.
+
+The residue is 34 inputs:
+- the 27 that legacy never completes (budget exhaustion in both engines);
+- d777 and 0b1f (construction search);
+- d053 (metric or admission);
+- 0c9d (budget);
+- 47b5, 45be and 86dc (metric conflict).
+
+#### Deletion, and what remains
+
+| Stage | Production reach | Status |
+|---|---:|---|
+| T24 free port lanes | 1 request (budget decline); folder arrivals (folder-pinned-arrival seed 14) | Open. Every old success whose legacy drawing used it is covered, but folder arrivals that decline on budget still need it. The inventory's folder population does not sample them |
+| T25 repairable / constrained | 4 / 2 requests (budget or predicted declines) | Open. Old-success misses with a legacy completion: d777 and 0b1f; the rest are T25 inputs that legacy never completes |
+| T28 band contact repair | 1 request (budget decline) | Open. Misses: d053, 0c9d, 47b5, 45be and 86dc |
+
+**Next pass starts here.** Three pieces are left:
+- T24's folder reach. Add the folder pinned-arrival seeds to the
+  inventory's reach measurement. Then find out whether those budget declines
+  certify at a larger folder allowance, or need retained-track port repair to
+  run in the folder path.
+- The metric conflicts (47b5, 45be and 86dc): foreign-track constants pinned
+  by the topology, port-corner backtracking, and cycles between parallel
+  tracks and the tile corridor. They need a metric with a cheaper ordering,
+  in the manner of libavoid's nudging and ELK's orthogonal routing.
+- Construction-search variance (d777, 0b1f and 0c9d). An option measured but
+  not adopted: use legacy `insertTree`, without native checks, as a proposer
+  and certify its drawing with the constrained pipeline. That certifies ca63,
+  d777, 0b1f, e1c8 and cd1205be00123f4d, but its ladder costs 0.8–1.5G of
+  work in total.
+
+#### Production inventory and click latency
+
+One inventory run over the 3,405 requests on the final code, against #106
+(8e784e2):
+- **Legacy reach:** the same 7 requests as #106 (T24 1, T25 2 constrained and
+  4 repairable, T28 1), with 0 gate failures.
+- **Outputs:** 14 differ, from the sibling relaxation. They are the
+  dense-f4-100-20501 tours at 640 and 1400 px, three clicks of
+  random-bushy-40-7601/454, and one folder.
+
+| Group | n | #106 p50 / p95 / max ms | This pass p50 / p95 / max ms | p95 ratio |
+|---|---:|---:|---:|---:|
+| Folder, adopted | 176 | 8.9 / 125.8 / 463.9 | 8.7 / 125.5 / 477.9 | 1.00 |
+| Folder, legacy only | 62 | 1.7 / 13.9 / 19.9 | 1.5 / 13.1 / 18.6 | 0.94 |
+| Folder, outranked | 17 | 9.0 / 74.5 / 74.5 | 8.9 / 73.9 / 73.9 | 0.99 |
+| Tour, adopted | 1,529 | 29.3 / 3,059.9 / 11,377.6 | 29.9 / 3,135.4 / 10,139.0 | 1.02 |
+| Tour, declined | 83 | 13,118.7 / 15,830.8 / 21,859.2 | 13,136.1 / 15,886.1 / 19,728.0 | 1.00 |
+| Tour, legacy only | 717 | 1.2 / 91.4 / 807.0 | 1.2 / 86.0 / 798.0 | 0.94 |
+| Tour, outranked | 821 | 12.8 / 240.4 / 3,211.2 | 12.6 / 244.1 / 3,239.8 | 1.02 |
+| Tour, all | 3,150 | 12.1 / 2,964.6 / 21,859.2 | 12.1 / 3,072.4 / 19,728.0 | 1.04 |
+
+There is no multi-fold or tens-of-seconds regression. In the 32M replay of
+3,512 captured attempts, the declined attempts' p95 rose from 617 to 726 ms.
+That is the unordered search, which runs only after an ordered search fails.
+
+#### Review
+
+An independent adversarial review confirmed one defect, which is fixed.
+
+**The defect.** The meeting binding reached every framed caller, folder hint
+placement included. Hint frames declare every native point of a convergence
+suffix, including the entry start that the relaxed binding leaves
+unrequired. So every hint growth on a drawing with convergence dots declined
+as "undeclared native span identity". On corpus scenes with dots, 27 hint
+growths certified before the change and 0 after it.
+
+**The fix.**
+- The opt-in now belongs to the frame policy (`IncrementalFrameFactory`'s
+  `meetingEntries`). Only `constrainedBandInsertion` sets it.
+- Capture ignores the option when frame equations are declared, because the
+  berth bound comes from the source dot.
+- A hint-routing test with convergence dots now fails without the fix.
+- After the fix, the reviewer's replay gives the same 27 certifications as the
+  base.
+
+**Suspected but not confirmed.**
+- Retained hard obstacles take the entry's preferred start, which is shorter
+  than the ink once the start slides outward. The final binding and the gate
+  keep this safe.
+- After a slide, the meeting point computed for a straight run can differ
+  from the pin in rare cases (about 0.01% of half-integer coordinates). That
+  gives a metric decline, never an unsafe drawing.
+- The sibling relaxation runs before the trail rewinds. Over 606 corpus tour
+  steps the inversions and adoption counters were identical, at +1.4% work.
+
+#### Gates and changed acceptance rows
+
+Final code, rebased on 8e784e2:
+- **`bun run check`:** 295 files, 0 errors.
+- **`bun run test`:** 196 files; 2,431 passed, 1 skipped, 2 failed. Both
+  failures are load timeouts (`folder-layout-parity`, spawnSync ETIMEDOUT;
+  `partial-band-routing-room`, 30 s). Both files pass alone (10/10).
+- **`layout:eval`:** all 50 current targets pass. Against the escalation pass:
+  - dense-tour anchor moves: 52 → 51;
+  - held-screen moves at 480 px (dense): 53 → 52;
+  - click-anchor moves: 15, unchanged;
+  - held-screen moves at 480 px (broad): 20, unchanged;
+  - mean legal displacement: 10.1 px, unchanged;
+  - mean bends: 156.1, unchanged;
+  - mean sibling inversions: 0.080.
