@@ -43,10 +43,11 @@ export const PRODUCTION_ROUTING_WORK = {
   // The anchor-loss escalation: run only for a click whose anchor no other
   // candidate holds, after the ordinary attempt declined for budget alone.
   // The click's own tile would otherwise move. The ceiling bounds the whole
-  // request (all its escalated attempts share it), so an escalated click stays
-  // within a few seconds of extra work; it helps only bands whose ordinary
-  // allowance is below the ceiling.
-  'band-insertion-anchor': { work: 256_000_000, perItem: 32_000_000, poolsPerWork: 1 / 64_000_000, captureShare: 1 / 20 },
+  // request (all its escalated attempts share it), at twice the ordinary pools
+  // per work: 16 pools at 512M, which crowded 100-item clicks need. When it
+  // certifies, the legacy ladder is skipped, so such a click usually takes no
+  // longer than without escalation (docs/routing-consolidation.md).
+  'band-insertion-anchor': { work: 512_000_000, perItem: 32_000_000, poolsPerWork: 1 / 32_000_000, captureShare: 1 / 20 },
 } as const;
 
 /** Which allowance an attempt runs under: the ordinary interactive one, or the

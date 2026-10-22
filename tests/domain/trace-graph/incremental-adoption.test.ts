@@ -94,11 +94,11 @@ describe('adoption contracts (pure)', () => {
     const ceiling = bandInsertionAllowance(200)!;
     expect(scaledIncrementalBudget(ceiling.pools)).toEqual(automaticIncrementalBudget());
   });
-  it('bounds an anchor-loss escalation by one request-wide ceiling at the same pool ratio', () => {
+  it('bounds an anchor-loss escalation by one request-wide ceiling with twice the pools per work', () => {
     for (const items of [1, 16, 47, 200]) {
       const ordinary = bandInsertionAllowance(items)!, escalated = bandInsertionAllowance(items, 'anchor')!;
       expect(escalated.work).toBeGreaterThanOrEqual(ordinary.work);
-      expect(escalated.pools).toBe(escalated.work / 64_000_000);
+      expect(escalated.pools).toBe(escalated.work / 32_000_000);
       expect(escalated.captureLimit).toBe(Math.floor(escalated.work / 20));
     }
     // Small bands get more than their ordinary allowance; the ceiling is shared.

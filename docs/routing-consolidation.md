@@ -2549,15 +2549,15 @@ At the API allowance, unchanged: tours 635/894 (T24 438/678, T25 72/84, T28
 
 #### Deletion, and what remains
 
-With the capped anchor-loss escalation (below), production reach is T24 1,
-T25 9 constrained / 9 repairable, T28 3 (19 requests). Uncapped (1024M) it
-was T24 1, T25 0 / 1, T28 0.
+With the anchor-loss escalation capped at 512M (below), production reach is
+T24 1, T25 2 constrained / 4 repairable, T28 1: 7 requests, down from 20
+without escalation.
 
 | Stage | Production reach | Blocker |
 |---|---:|---|
 | T24 free port lanes | 1 request (budget decline) | 240 tour rows (26 inputs) miss at the API allowance. Blocked on moving retained cores during placement: see "Free-core moves during placement" above |
-| T25 repairable / constrained | 9 / 9 requests (budget declines, 5 predicted) | 10 inputs miss at the API allowance. Same blocker |
-| T28 band contact repair | 3 requests (budget declines) | 5 inputs miss at the API allowance. Same blocker |
+| T25 repairable / constrained | 4 / 2 requests (budget declines) | 10 inputs miss at the API allowance. Same blocker |
+| T28 band contact repair | 1 request (budget decline) | 5 inputs miss at the API allowance. Same blocker |
 
 **Next pass starts here (item 3 blocker).** All three stages' coverage misses
 need constrained placement that can move retained cores, which legacy does
@@ -2625,53 +2625,57 @@ passes the same certification, retained-pin check, anchor check and gates as
 any other candidate. The legacy ladder runs after it only if it still does
 not hold.
 
-**The allowance is capped at 256M for the whole request.** Its escalated
-attempts share the cap: 32M per item, pools at 1/64M, capture share 1/20.
-An escalation no larger than the ordinary allowance would repeat the same
-declined search, so it is skipped. In practice it runs only for bands under
-32 items.
+**The allowance is capped at 512M for the whole request.** All its escalated
+attempts share the cap. The other parameters are 32M per item, pools at
+1/32M (16 at the ceiling, twice the ordinary ratio) and a capture share of
+1/20. An escalation no larger than the ordinary allowance would repeat the
+same declined search, so it is skipped.
 
-**Uncapped (1024M, 16 pools; one run):**
-- 99 requests escalated; 39 held their anchor.
-- Tour anchor moves fell from 89 to 69.
-- Legacy reach fell from 20 to 2 requests.
-- Escalating clicks took p50 22.8 s, p95 29.6 s, max 32.0 s.
+One inventory run per configuration:
 
-**Capped (one run):**
-- 4 requests escalate; 1 escalated attempt certifies; 2 anchors are held.
-- Tour anchor moves stay at 89. Legacy reach is 19 requests.
-- 2 outputs differ from before the escalation, with 0 gate failures.
-- Latency groups are within 1.11× of the capture pass. Declined tours: p95
-  11.7 s, max 12.9 s.
-- The escalating clicks took p50 11.3 s, max 11.7 s. Their time is the
-  ordinary attempts and the legacy ladder, not the escalation.
+| | No escalation | 256M cap | **512M / 16 pools (shipped)** | Uncapped 1024M |
+|---|---:|---:|---:|---:|
+| Requests that escalate | 0 | 4 | 98 | 99 |
+| Escalated attempts that certify | — | 1 | 27 | — |
+| Anchors held among escalating requests | — | 2 | 31 | 39 |
+| Tour anchor moves | 89 | 89 | 76 | 69 |
+| Legacy reach, requests | 20 | 19 | 7 | 2 |
+| Escalating clicks, p50 / max | — | 11.3 / 11.7 s | 12.7 / 21.9 s | 22.8 / 32.0 s |
+| Declined tours, p95 / max | 11.8 / 12.8 s | 11.7 / 12.9 s | 15.8 / 21.9 s | 29.8 / 32.0 s |
 
-**No cap of 384M or less keeps `pinned-search-budget` green.** I tried 256M
-with 4, 8 and 16 pools, and 384M with 6, 8, 12 and 16 pools. Click 6 of that
-test (a 100-item band) certifies only at a 512M cap with 16 pools, or at
-1024M; either way it uses 349M of escalated work. Its timings:
-- 22.4 s with no escalation (467M ordinary work, then the legacy ladder);
-- 17.8 s at 512M with 16 pools, because the escalation succeeds and skips the
-  legacy ladder;
-- 17.5 s at the 256M cap, where the escalation is skipped and the anchor
-  moves.
+At 512M:
+- 70 outputs differ from no escalation, with 0 gate failures. All other
+  latency groups are within 1.17×.
+- One escalating click is an outlier: `dense-f10-100-21102/1400/8/n65` takes
+  21.9 s, and its anchor still moves. The next slowest take 17.2, 17.1 and
+  16.2 s.
+- Caps of 384M or less never certify the `pinned-search-budget` click 6 (a
+  100-item band). I tried 256M with 4, 8 and 16 pools, and 384M with 6, 8, 12
+  and 16 pools. At 512M with 16 pools it certifies with 349M of escalated
+  work.
+- That click takes 17.8 s at 512M, against 22.4 s with no escalation (467M of
+  ordinary work, then the legacy ladder). A certified escalation skips the
+  ladder. The two ordinary 256M attempts alone take about 10 s, so no cap
+  makes such a click take only a few seconds.
 
-So a click like this cannot take only a few seconds under any cap: its two
-ordinary 256M attempts already take about 10 s. With the cap, the test fails
-as it did before the escalation. n69 moves from (188, 2954) to (408, 3687).
-
-#### Gates after the capped escalation
+#### Gates after the 512M escalation
 
 - `bun run check`: 0 errors.
-- `bun run test`: 2,424 passed, 1 skipped, 5 failed, in 2,068 s.
-  - Four are load timeouts that pass when run alone: `expansion`,
-    `pinned-allocation-padding`, `scale` and `folder-layout-parity`.
-  - **`pinned-search-budget.test.ts`, "crowded later click", fails as
-    described above.** It is left unchanged pending a decision.
-- `click-stability.test.ts` alone takes 1,970 s: 1,585 s for the anchor sweep,
-  whose limit is now 2,100 s (about 30% headroom), and 384 s for the
-  height-regression test (limit 600 s). It passed inside the full suite. The
-  CI job's 60-minute limit already leaves more than 30% headroom.
-- `layout:eval`: all 50 current targets pass. The acceptance rows equal the
-  capture pass before the escalation (click-anchor moves 20, dense-tour 59,
-  held-screen moves 25 / 57); only timing samples moved.
+- Affected test files pass alone (62 tests): `incremental-adoption`,
+  `routing-fragments`, `pinned-search-budget` (now green),
+  `anchored-repack-retry`, `band-layout`, `pinned-allocation-padding` and
+  `partial-band-routing-room`. The last full suite, at the 256M cap, was
+  clean apart from load timeouts.
+- `click-stability.test.ts` alone takes 2,222 s: 1,856 s for the anchor sweep
+  and 366 s for the height-regression test (limit 600 s). The sweep's limit is
+  now 2,450 s, about 30% headroom. The CI job's 60-minute limit still leaves
+  more than 30% over the 37-minute file.
+- `layout:eval`: all 50 current targets pass. Against the capture pass
+  before the escalation:
+  - click-anchor moves 20 → 15;
+  - dense-tour anchor moves 59 → 52;
+  - held-screen moves 25 → 20 (broad) and 57 → 53 (dense);
+  - mean legal displacement 10.8 → 10.1 px.
+
+  Against #105, click-anchor moves went 26 → 15 and dense-tour anchor moves
+  75 → 52.
