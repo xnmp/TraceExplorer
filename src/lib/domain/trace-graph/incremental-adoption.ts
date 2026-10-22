@@ -42,9 +42,11 @@ export const PRODUCTION_ROUTING_WORK = {
   'band-insertion': { work: 256_000_000, perItem: 8_000_000, poolsPerWork: 1 / 64_000_000, captureShare: 1 / 20 },
   // The anchor-loss escalation: run only for a click whose anchor no other
   // candidate holds, after the ordinary attempt declined for budget alone.
-  // The click's own tile would otherwise move, so this click is allowed four
-  // times the ceiling (16 pools at the same pools-per-work ratio).
-  'band-insertion-anchor': { work: 1_024_000_000, perItem: 32_000_000, poolsPerWork: 1 / 64_000_000, captureShare: 1 / 20 },
+  // The click's own tile would otherwise move. The ceiling bounds the whole
+  // request (all its escalated attempts share it), so an escalated click stays
+  // within a few seconds of extra work; it helps only bands whose ordinary
+  // allowance is below the ceiling.
+  'band-insertion-anchor': { work: 256_000_000, perItem: 32_000_000, poolsPerWork: 1 / 64_000_000, captureShare: 1 / 20 },
 } as const;
 
 /** Which allowance an attempt runs under: the ordinary interactive one, or the
@@ -55,10 +57,10 @@ export interface InteractiveAllowance { readonly work: number; readonly pools: n
 
 /** The band insertion allowance for a band of `items` tiles, or null for a
  * malformed size (an early budget decline). */
-export function bandInsertionAllowance(items: number, tier: AllowanceTier = 'interactive'): InteractiveAllowance | null {
+export function bandInsertionAllowance(items: number, tier: AllowanceTier = 'interactive', remaining = Infinity): InteractiveAllowance | null {
   const { work: ceiling, perItem, poolsPerWork, captureShare } = PRODUCTION_ROUTING_WORK[tier === 'anchor' ? 'band-insertion-anchor' : 'band-insertion'];
-  if (!(items > 0) || !Number.isSafeInteger(items)) return null;
-  const work = Math.min(ceiling, perItem * items);
+  if (!(items > 0) || !Number.isSafeInteger(items) || !(remaining > 0)) return null;
+  const work = Math.min(ceiling, perItem * items, remaining);
   return { work, pools: work * poolsPerWork, captureLimit: Math.floor(work * captureShare) };
 }
 
@@ -91,7 +93,7 @@ export const recordPublication = (site: AdoptionSite): void => countLayoutWork(`
 
 export interface AdoptionAttempt { readonly drawing: GraphLayout | null; readonly outcome: 'success' | AdoptionFallback; readonly work: number }
 /** An attempt's drawing (null on a decline) and why it ended. */
-export interface AdoptionResult { readonly drawing: GraphLayout | null; readonly outcome: 'success' | AdoptionFallback }
+export interface AdoptionResult { readonly drawing: GraphLayout | null; readonly outcome: 'success' | AdoptionFallback; readonly work: number }
 const attempts = createBoundedCache<AdoptionAttempt>(entry => 64 + (entry.drawing ? estimateLayoutBytes(entry.drawing) : 0));
 
 /** Run one counted attempt, reusing an identical earlier one. The key must cover
@@ -103,10 +105,10 @@ export function adoptOnce(site: AdoptionSite, key: string, run: () => AdoptionAt
   if (known) {
     recordAdoption(site, known.outcome);
     countLayoutWork(`adoption:${site}:cache-hit`);
-    return { drawing: known.drawing && structuredClone(known.drawing), outcome: known.outcome };
+    return { drawing: known.drawing && structuredClone(known.drawing), outcome: known.outcome, work: known.work };
   }
   const attempt = run();
   recordAdoption(site, attempt.outcome, attempt.work);
   attempts.set(key, { ...attempt, drawing: attempt.drawing && structuredClone(attempt.drawing) });
-  return { drawing: attempt.drawing, outcome: attempt.outcome };
+  return { drawing: attempt.drawing, outcome: attempt.outcome, work: attempt.work };
 }

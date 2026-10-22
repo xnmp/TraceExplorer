@@ -94,14 +94,19 @@ describe('adoption contracts (pure)', () => {
     const ceiling = bandInsertionAllowance(200)!;
     expect(scaledIncrementalBudget(ceiling.pools)).toEqual(automaticIncrementalBudget());
   });
-  it('gives an anchor-loss escalation a larger, still bounded allowance at the same pool ratio', () => {
+  it('bounds an anchor-loss escalation by one request-wide ceiling at the same pool ratio', () => {
     for (const items of [1, 16, 47, 200]) {
       const ordinary = bandInsertionAllowance(items)!, escalated = bandInsertionAllowance(items, 'anchor')!;
-      expect(escalated.work).toBeGreaterThan(ordinary.work);
+      expect(escalated.work).toBeGreaterThanOrEqual(ordinary.work);
       expect(escalated.pools).toBe(escalated.work / 64_000_000);
       expect(escalated.captureLimit).toBe(Math.floor(escalated.work / 20));
     }
-    expect(bandInsertionAllowance(10_000, 'anchor')!.work).toBe(4 * bandInsertionAllowance(10_000)!.work);
+    // Small bands get more than their ordinary allowance; the ceiling is shared.
+    expect(bandInsertionAllowance(4, 'anchor')!.work).toBe(4 * bandInsertionAllowance(4)!.work);
+    expect(bandInsertionAllowance(10_000, 'anchor')!.work).toBe(PRODUCTION_ROUTING_WORK['band-insertion-anchor'].work);
+    // What earlier escalated attempts spent leaves less for the next one.
+    expect(bandInsertionAllowance(10_000, 'anchor', 1_000_000)!.work).toBe(1_000_000);
+    for (const remaining of [0, -1, NaN]) expect(bandInsertionAllowance(10_000, 'anchor', remaining)).toBeNull();
     for (const items of [0, -1, 1.5, NaN, Infinity]) expect(bandInsertionAllowance(items, 'anchor')).toBeNull();
   });
   it('maps every constrained conflict to one fallback reason', () => {

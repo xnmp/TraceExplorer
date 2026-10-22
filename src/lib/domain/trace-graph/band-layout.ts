@@ -14,7 +14,7 @@ import { bandWidthBudget, columnsFor, partitions, buildShelves, validate } from 
 import { attachSingleBand, attachPackedBand, localBandPlacement, bandExtent, withBandBounds, withPaneBandBounds, singleBandSkeleton } from "./band-geometry";
 import { measure, validateLayout, cost, routePlan, sharedLaneLength, DEFAULT_WEIGHTS, type Measures, type Weights } from "./layout-quality";
 import { constrainedBandInsertion, scaledIncrementalBudget, incrementalBudget, incrementalTree, inReach, usableRetainedRoute } from "./band-incremental";
-import { adoptionFallback, adoptOnce, type AdoptionResult, bandInsertionAllowance, type AllowanceTier, movedRectangle, recordAdoption, recordPublication } from "./incremental-adoption";
+import { adoptionFallback, adoptOnce, type AdoptionResult, bandInsertionAllowance, PRODUCTION_ROUTING_WORK, type AllowanceTier, movedRectangle, recordAdoption, recordPublication } from "./incremental-adoption";
 import { PREDICTED_DECLINE } from "./incremental-routing";
 import { geometrySignature, layoutSignature } from "./layout-signature";
 import { forEachPathNumber, mapPathNumbers, pathNumbers } from "./path-data";
@@ -112,8 +112,8 @@ function anchorKeys(request: LayoutRequest, previous: GraphLayout): readonly str
   return [...found];
 }
 
-function insertionKey(request: LayoutRequest, previous: GraphLayout, tier: AllowanceTier): string {
-  return JSON.stringify([tier === 'anchor' ? 'band-insertion-anchor' : 'band-insertion', layoutSignature(request), geometrySignature(previous)]);
+function insertionKey(request: LayoutRequest, previous: GraphLayout, tier: AllowanceTier, work: number): string {
+  return JSON.stringify([tier === 'anchor' ? ['band-insertion-anchor', work] : 'band-insertion', layoutSignature(request), geometrySignature(previous)]);
 }
 
 /**
@@ -124,12 +124,13 @@ function insertionKey(request: LayoutRequest, previous: GraphLayout, tier: Allow
  * exactly where the committed drawing has it once attached. Null hands the request
  * to the legacy insertion and repair itinerary in the same layout call.
  */
-function constrainedInsertion(request: LayoutRequest, previous: GraphLayout, tier: AllowanceTier = 'interactive'): AdoptionResult | null {
+function constrainedInsertion(request: LayoutRequest, previous: GraphLayout, tier: AllowanceTier = 'interactive', remaining = Infinity): AdoptionResult | null {
   const placed = request.items.filter(n => !previous.nodes.has(n.key)).length;
   if (!placed) return null;
-  const allowance = bandInsertionAllowance(request.items.length, tier);
-  if (!allowance) { recordAdoption('band-insertion', 'budget'); return { drawing: null, outcome: 'budget' }; }
-  const key = insertionKey(request, previous, tier);
+  const allowance = bandInsertionAllowance(request.items.length, tier, remaining);
+  if (!allowance) { recordAdoption('band-insertion', 'budget'); return { drawing: null, outcome: 'budget', work: 0 }; }
+  // The anchor tier's allowance depends on what earlier escalated attempts spent.
+  const key = insertionKey(request, previous, tier, allowance.work);
   if (tier === 'anchor') countLayoutWork('adoption:band-insertion:escalated');
   const result = adoptOnce('band-insertion', key, () => {
     const endStage = layoutStage('constrained-insertion');
@@ -736,12 +737,19 @@ function layoutBandCandidates(input: LayoutRequest, options: BandOptions): Graph
       }
       // Anchor-loss escalation. Nothing so far holds the clicked anchor, so the
       // click's own tile would move. An embedding whose ordinary attempt ran out
-      // of work (not one that met a conflict) gets one attempt under the larger,
-      // still bounded, anchor allowance before the legacy ladder runs.
+      // of work (not one that met a conflict) gets one attempt under the larger
+      // anchor allowance before the legacy ladder runs. The allowance bounds the
+      // request: all its escalated attempts share it.
+      // An escalation no larger than the ordinary allowance would repeat the
+      // same declined search, so it is not attempted.
+      let left = PRODUCTION_ROUTING_WORK['band-insertion-anchor'].work;
+      const ordinaryWork = bandInsertionAllowance(request.items.length)?.work ?? 0;
       for (const base of [previous, repacked]) {
-        if (Number.isFinite(bestAnchored)) break;
+        if (Number.isFinite(bestAnchored) || !((bandInsertionAllowance(request.items.length, 'anchor', left)?.work ?? 0) > ordinaryWork)) break;
         if (!base || ordinary.get(base) !== 'budget') continue;
-        const escalated = constrainedInsertion(request, base, 'anchor')?.drawing;
+        const result = constrainedInsertion(request, base, 'anchor', left);
+        if (result) left -= result.work;
+        const escalated = result?.drawing;
         if (!escalated) continue;
         constrained.add(escalated);
         const candidate = prepare({ name: "incremental-tree", layout: escalated });
