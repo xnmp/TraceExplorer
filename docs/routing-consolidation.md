@@ -2648,7 +2648,8 @@ On the inventory (one run):
   - **`click-stability.test.ts` exceeds its 30-minute limit.** Run alone, it
     took more than 28 minutes even before the escalation. The 256M allowance
     and the escalation make this sweep far slower, which breaks the bound that
-    it must not get slower.
+    it must not get slower. With the limit lifted in a scratch copy, both tests
+    pass their assertions in 3,031 s (about 51 minutes).
 - `layout:eval`: all 50 current targets pass. Against the capture pass before
   the escalation:
   - click-anchor moves 20 → 12;
