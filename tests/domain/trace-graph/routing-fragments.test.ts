@@ -382,3 +382,46 @@ it('does not let an added frame equality weaken the mandatory source interval', 
   expect(solved.ok, JSON.stringify(solved.ok ? undefined : solved.conflict)).toBe(true);
   if (solved.ok) expect(pathCommands(solved.drawing.routes[0].path)![1].values[1]).toBeGreaterThanOrEqual(46);
 });
+
+/** Two parents meet at a dot. p's route turns along a free core at `coreY` and
+ * enters the dot's berth from above with a straight run; q's enters from the right. */
+const meetingScene = (coreY: number): GraphLayout => ({
+  orientation: 'down', width: 260, height: 260,
+  nodes: new Map([['p', { key: 'p', x: 0, y: 0, width: 40, height: 40, row: 0, band: 0 }],
+    ['q', { key: 'q', x: 180, y: 0, width: 40, height: 40, row: 0, band: 0 }]]),
+  junctions: new Map([['join', { id: 'join', x: 100, y: 200, parents: ['p', 'q'] }]]),
+  routes: [
+    { id: 'p-join', from: { kind: 'node', id: 'p' }, to: { kind: 'junction', id: 'join' }, consumers: [{ parent: 'p', child: 'out' }],
+      terminal: false, path: `M20 40 L20 ${coreY} L100 ${coreY} L100 200` },
+    { id: 'q-join', from: { kind: 'node', id: 'q' }, to: { kind: 'junction', id: 'join' }, consumers: [{ parent: 'q', child: 'out' }],
+      terminal: false, path: 'M200 40 L200 200 L100 200' }],
+  rows: [], readingOrder: new Map([['p', 0], ['q', 1]]),
+});
+const meetingCapture = (preferredCoreY: number, meetingEntries: boolean) => captureRoutingFragments(
+  { id: 'before', space: 'attached', drawing: meetingScene(100) }, { id: 'derived', space: 'attached', drawing: meetingScene(preferredCoreY) },
+  [], () => {}, { meetingEntries });
+
+it('binds a convergence entry by its parameter by default, pinning the core that feeds it', () => {
+  const kept = meetingCapture(100, false);
+  expect(kept.ok).toBe(true);
+  if (!kept.ok) return;
+  expect(bindRoutingFragmentTopology(kept.retained, meetingScene(100)).ok).toBe(true);
+  expect(bindRoutingFragmentTopology(kept.retained, meetingScene(140))).toMatchObject({ ok: false, conflict: { constraints: ['retained native span'] } });
+  expect(meetingCapture(120, false).ok).toBe(false);
+});
+
+it('binds a meeting-bound entry by its meeting, so the feeding core moves while the entry starts outside the berth', () => {
+  for (const preferred of [100, 120]) {
+    const captured = meetingCapture(preferred, true);
+    expect(captured.ok, `preferred core at ${preferred}`).toBe(true);
+    if (!captured.ok) return;
+    const moved = bindRoutingFragmentTopology(captured.retained, meetingScene(140));
+    expect(moved.ok).toBe(true);
+    if (!moved.ok) return;
+    // The entry's start keeps its line and is bounded one unit outside the berth face (dot y 200, berth 6).
+    expect(moved.bindings.intervals).toContainEqual({ route: 'p-join', command: 2, axis: 'y', forward: false, boundary: 193 });
+    expect(moved.bindings.fixed.has(JSON.stringify(['p-join', 2, 'x']))).toBe(true);
+    // A start inside the berth would change where, and from which side, the route meets the dot.
+    expect(bindRoutingFragmentTopology(captured.retained, meetingScene(195))).toMatchObject({ ok: false, conflict: { constraints: ['retained native span'] } });
+  }
+});

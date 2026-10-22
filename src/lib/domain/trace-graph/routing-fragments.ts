@@ -11,6 +11,7 @@ import { chargeRoutingSnapshot, importCommittedRouting, committedRoutingCoordina
 import type { RoutingMetricConflict, RoutingMetricProblem } from './routing-components';
 import type { Point } from './path-sampling';
 import { ARROW } from './metrics';
+import { convergenceBounds } from './routing-convergence';
 
 interface NativeFragment {
   readonly id: string;
@@ -22,7 +23,19 @@ interface NativeFragment {
   readonly sourcePrefix: boolean;
   readonly convergenceSuffix: boolean;
   readonly terminalSuffix: boolean;
+  /** A meeting-bound convergence entry: a straight run that enters its dot's
+   * berth from outside. Its end, its line and the meeting (entry point, side,
+   * primitive) are bound; its start may slide along the run, staying at least
+   * `boundary` beyond the berth face, so the free core before it can move. */
+  readonly entry?: MeetingEntry;
 }
+interface MeetingEntry { readonly axis: 'x' | 'y'; readonly forward: boolean; readonly boundary: number }
+/** How far outside the dot berth a meeting-bound entry run must start, so the
+ * run still crosses the same face and the corner before it stays outside. */
+const ENTRY_LEAD = 1;
+/** Capture options. `meetingEntries` binds a convergence entry by its meeting,
+ * not by the parameter where the entry run crosses the berth face. */
+export interface FragmentCaptureOptions { readonly meetingEntries?: boolean }
 interface SourceInterval {
   readonly route: string;
   readonly primitive: number;
@@ -110,7 +123,8 @@ const fragmentPlan = (drawing: GraphLayout, charge: (work: number, reason?: stri
  * Every changed protected scalar needs an explicit raw-source frame equation.
  * Importing its geometry does not pin its unselected straight-core coordinates. */
 export function captureRoutingFragments(before: CommittedRoutingScene, preferred: CommittedRoutingScene,
-  declared: readonly RoutingFrameEquality[] = [], charge: (work: number, reason?: string) => void = () => {}):
+  declared: readonly RoutingFrameEquality[] = [], charge: (work: number, reason?: string) => void = () => {},
+  options: FragmentCaptureOptions = {}):
   { readonly ok: true; readonly retained: RetainedRoutingFragments; readonly problem: CommittedRoutingProblem }
   | { readonly ok: false; readonly conflict: RoutingMetricConflict } {
   chargeRoutingSnapshot([before, preferred, declared], charge);
@@ -160,7 +174,7 @@ export function captureRoutingFragments(before: CommittedRoutingScene, preferred
     for (let i = 0; i < 2; i++) point('stub', stub.id, 'shaft', i);
   }
   const whole = new Map<string, Set<number>>(), prefixes = new Map<string, Set<number>>(), suffixes = new Map<string, Set<number>>();
-  const terminals = new Map<string, Set<number>>();
+  const terminals = new Map<string, Set<number>>(), entries = new Map<string, MeetingEntry & { readonly primitive: number }>();
   const partial: { readonly route: string; readonly primitive: number;
     readonly boundary: Point; readonly axis: 'x' | 'y'; readonly forward: boolean }[] = [];
   for (const path of raw.plan.paths) {
@@ -182,10 +196,26 @@ export function captureRoutingFragments(before: CommittedRoutingScene, preferred
       point('path', path.id, 'native', i, 0);
       break;
     }
-    for (const { meeting, input } of sourceIndex.inputs.get(path.id) ?? []) {
+    const meetingInputs = sourceIndex.inputs.get(path.id) ?? [];
+    for (const { meeting, input } of meetingInputs) {
+      // The protected relation is who meets whom, where and in what order.
+      // A straight entry run that starts outside the berth is bound by its
+      // line, its end and that meeting, so its start may slide along the run.
+      const run = path.native[input.entry.primitive];
+      const [first, last] = run?.length === 2 ? run : [undefined, undefined];
+      const face = convergenceBounds(meeting.dot), axis = !first || !last ? null
+        : first.y === last.y && first.x !== last.x ? 'x' : first.x === last.x && first.y !== last.y ? 'y' : null;
+      if (options.meetingEntries && first && last && axis && meetingInputs.length === 1 && input.entry.parameter > 0
+        && !prefix.has(input.entry.primitive) && !partial.some(p => p.route === path.id && p.primitive === input.entry.primitive)) {
+        const forward = first[axis] > last[axis];
+        const boundary = forward ? (axis === 'x' ? face.right : face.bottom) + ENTRY_LEAD : (axis === 'x' ? face.left : face.top) - ENTRY_LEAD;
+        if (forward ? first[axis] >= boundary : first[axis] <= boundary)
+          entries.set(path.id, { primitive: input.entry.primitive, axis, forward, boundary });
+      }
       for (let i = input.entry.primitive; i < path.native.length; i++) { indices.add(i); suffix.add(i); }
       point('meeting', meeting.id, 'input', path.id, input.source, 'point');
-      require('meeting', meeting.id, 'input', path.id, input.source, 'parameter');
+      // A meeting-bound entry's parameter follows its start along the run.
+      if (entries.get(path.id)?.primitive !== input.entry.primitive) require('meeting', meeting.id, 'input', path.id, input.source, 'parameter');
     }
     // Keep complete authored pieces of the terminal interval, including a
     // zero-length endpoint alias. A longer L contributes only its end interval.
@@ -199,7 +229,11 @@ export function captureRoutingFragments(before: CommittedRoutingScene, preferred
         indices.add(i); terminal.add(i);
       }
     }
-    for (const i of indices) for (let j = 0; j < path.native[i].length; j++) point('path', path.id, 'native', i, j);
+    const entry = entries.get(path.id);
+    for (const i of indices) for (let j = 0; j < path.native[i].length; j++) {
+      if (entry?.primitive === i && j === 0) require('path', path.id, 'native', i, j, entry.axis === 'x' ? 'y' : 'x');
+      else point('path', path.id, 'native', i, j);
+    }
   }
   // A declaration may add a stricter constant, but can never silently leave a
   // mandatory native span or semantic boundary unconstrained.
@@ -236,16 +270,25 @@ export function captureRoutingFragments(before: CommittedRoutingScene, preferred
     if (!nextHead || samePoint(oldHead, nextHead) && sourceRaw[0] !== targetRaw[0])
       return { ok: false, conflict: equality(path.id, 'retained raw source command') };
     heads.set(path.id, targetRaw[0]);
+    const entry = entries.get(path.id);
     for (const i of [...whole.get(path.id)!].sort((a, b) => a - b)) {
-      const expected = path.native[i].map((_, j) => nativePoint(path.id, i, j)) as unknown as NativeInk;
       const actual = next.native[i];
+      // A meeting-bound entry's start along the run is not selected: it is
+      // whatever the derived pose has, checked against its bound instead.
+      const open = entry?.primitive === i ? entry : undefined;
+      if (open && (!actual || actual.length !== 2 || (open.forward ? actual[0][open.axis] < open.boundary : actual[0][open.axis] > open.boundary)))
+        return { ok: false, conflict: equality(path.id, 'retained frame primitive') };
+      const expected = path.native[i].map((_, j) => open && j === 0
+        ? { ...nativePoint(path.id, i, 1), [open.axis === 'x' ? 'y' : 'x']: value('path', path.id, 'native', i, 0, open.axis === 'x' ? 'y' : 'x'), [open.axis]: actual![0][open.axis] }
+        : nativePoint(path.id, i, j)) as unknown as NativeInk;
       if (!actual || actual.length !== expected.length || actual.some((p, j) => !samePoint(p, expected[j])))
         return { ok: false, conflict: equality(path.id, 'retained frame primitive') };
       if (expected.every((p, j) => samePoint(p, path.native[i][j])) && sourceRaw[i + 1] !== targetRaw[i + 1])
         return { ok: false, conflict: equality(path.id, 'retained raw native span') };
       fragments.push({ id: JSON.stringify(['retained-span', path.id, i]), route: path.id, primitive: i,
         native: expected, raw: targetRaw[i + 1], sourcePrefix: prefixes.get(path.id)!.has(i),
-        convergenceSuffix: suffixes.get(path.id)!.has(i), terminalSuffix: terminals.get(path.id)!.has(i) });
+        convergenceSuffix: suffixes.get(path.id)!.has(i), terminalSuffix: terminals.get(path.id)!.has(i),
+        ...(open ? { entry: { axis: open.axis, forward: open.forward, boundary: open.boundary } } : {}) });
     }
   }
   const intervals: SourceInterval[] = partial.map(interval => ({ ...interval,
@@ -283,7 +326,9 @@ export function bindRoutingFragmentTopology(retained: RetainedRoutingFragments, 
   for (const fragment of retained.fragments) {
     const entries = byRoute.get(fragment.route) ?? []; entries.push(fragment); byRoute.set(fragment.route, entries);
   }
-  const indices = new Map<string, number>();
+  const indices = new Map<string, number>(), bound: FragmentTopologyBindings['intervals'][number][] = [];
+  const open = new Set<string>();
+  for (const fragment of retained.fragments) if (fragment.entry) open.add(fragment.id);
   for (const route of retained.source.drawing.routes) {
     const next = routes.get(route.id);
     if (!next || !sameRoutingOwnership(route, next, charge)) return { ok: false, conflict: equality(route.id, 'retained route ownership') };
@@ -302,14 +347,21 @@ export function bindRoutingFragmentTopology(retained: RetainedRoutingFragments, 
       for (let i = start; i < end; i++) {
         if (!path.native[i]) break;
         charge(path.native[i].length + raw[i + 1].length + 1, 'retained native span binding');
-        const native = path.native[i];
-        if (raw[i + 1] === fragment.raw && native.length === fragment.native.length
-          && native.every((p, j) => samePoint(p, fragment.native[j]))) { found = i; break; }
+        const native = path.native[i], open = fragment.entry;
+        if (raw[i + 1] === fragment.raw && native.length === fragment.native.length && (open
+          ? samePoint(native[1], fragment.native[1]) && Object.is(native[0][open.axis === 'x' ? 'y' : 'x'], fragment.native[0][open.axis === 'x' ? 'y' : 'x'])
+            && (open.forward ? native[0][open.axis] >= open.boundary : native[0][open.axis] <= open.boundary)
+          : native.every((p, j) => samePoint(p, fragment.native[j])))) { found = i; break; }
       }
       if (found < 0) return { ok: false, conflict: equality(fragment.id, 'retained native span') };
       suffixStarted ||= fragment.convergenceSuffix || fragment.terminalSuffix;
       cursor = found + 1; indices.set(fragment.id, found);
+      // A meeting-bound entry keeps its start's line; its position along the
+      // run is the neighbouring core's track, bounded outside the berth.
+      if (fragment.entry) bound.push({ route: route.id, command: found, axis: fragment.entry.axis,
+        forward: fragment.entry.forward, boundary: fragment.entry.boundary });
       for (const [command, j] of [[found, 0], [found + 1, fragment.native.length - 1]]) for (const axis of ['x', 'y'] as const) {
+        if (fragment.entry && command === found && axis === fragment.entry.axis) continue;
         const key = coordinateKey(route.id, command, axis);
         fixed.add(key); coordinates.set(key, routingCoordinate(retained.preferred.id, 'path', route.id, 'native', fragment.primitive, j, axis));
       }
@@ -334,12 +386,15 @@ export function bindRoutingFragmentTopology(retained: RetainedRoutingFragments, 
     const next = planIndex.meetings.get(JSON.stringify([meeting.id, input.path, input.source]));
     const primitive = indices.get(JSON.stringify(['retained-span', input.path, input.entry.primitive]));
     const prefix = ['meeting', meeting.id, 'input', input.path, input.source] as const;
+    // The meeting is bound: entry run, side and point. A meeting-bound entry's
+    // parameter follows its start along the run and is not compared.
+    const meetingBound = open.has(JSON.stringify(['retained-span', input.path, input.entry.primitive]));
     if (!next || next.entry.primitive !== primitive || next.entry.side !== input.entry.side
-      || !Object.is(next.entry.parameter, input.entry.parameter)
+      || !meetingBound && !Object.is(next.entry.parameter, input.entry.parameter)
       || !(['x', 'y'] as const).every(axis => Object.is(next.entry.point[axis], retained.pins.get(routingCoordinate(retained.preferred.id, ...prefix, 'point', axis)))))
       return { ok: false, conflict: equality(input.path, 'retained convergence entry') };
   }
-  const intervals: FragmentTopologyBindings['intervals'][number][] = [];
+  const intervals: FragmentTopologyBindings['intervals'][number][] = [...bound];
   // The arrow's retained shaft is native ink, not just an independently pinned
   // semantic object. Bind its endpoint aliases and keep the complete interval
   // behind the base, while leaving any longer straight core free to move.
