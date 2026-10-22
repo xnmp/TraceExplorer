@@ -3085,3 +3085,21 @@ identical.
 
 After these fixes, folder reach and pinning are identical to the figures
 above (T24 14, pinning failures 166, 0 gate failures, 0 outputs differ).
+
+#### Gates and changed acceptance rows
+
+Final code, rebased on 3694e6b (#107):
+- **`bun run check`:** 295 files, 0 errors.
+- **`bun run test`:** 198 files; 2,437 passed, 1 skipped, 2 failed. Both
+  failures are `folder-layout-parity` load timeouts (spawnSync ETIMEDOUT),
+  and that file passes alone (9/9).
+- **`layout:eval`:** all 50 current targets pass. The acceptance rows match
+  the placement pass:
+  - click-anchor moves: 15;
+  - dense-tour anchor moves: 51;
+  - held-screen moves at 480 px: 20 (broad) and 52 (dense);
+  - mean legal displacement: 10.1 px;
+  - mean bends: 156.1;
+  - mean sibling inversions: 0.080.
+- **`click-stability.test.ts`** alone takes 2,279 s, against 2,222 s at the
+  escalation pass.
