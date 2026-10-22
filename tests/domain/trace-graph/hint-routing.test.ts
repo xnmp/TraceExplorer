@@ -7,6 +7,8 @@ import { geometryGate } from '$lib/domain/trace-graph/geometry-gate';
 import type { GraphLayout, LayoutRequest } from '$lib/domain/trace-graph/layout';
 import { RoutingImportError } from '$lib/domain/trace-graph/routing-plan';
 import { HintRoutingError } from '$lib/domain/trace-graph/hint-routing-policy';
+import { corpus, requestFor } from '../../../layout-eval/corpus';
+import { optimizedBand } from '../../../layout-eval/engine';
 
 const fixture = (): { before: GraphLayout; beforeRequest: LayoutRequest; request: LayoutRequest } =>
   JSON.parse(readFileSync(new URL('./hint-shrink-committed.json', import.meta.url), 'utf8'),
@@ -94,4 +96,20 @@ it('bounds repeated long consumer identities before native import work', () => {
   } catch (error) { actual = error; }
   expect(actual).toBe(exhausted);
   expect(work).toBeLessThanOrEqual(limit);
+});
+
+it('certifies a hint growth on a drawing with convergence dots, binding their entries exactly', () => {
+  const fixture = corpus().find(c => c.id === 'merges-3')!;
+  const request = requestFor(fixture, 'a', 640, 48);
+  const drawing = optimizedBand(request, {}).placed;
+  expect(drawing.junctions.size).toBeGreaterThan(0);
+  const height = drawing.nodes.get('ab')!.height + 16;
+  const items = request.items.map(i => i.key === 'ab' ? { ...i, height } : i);
+  const grown: LayoutRequest = { ...request, items, band: { ...request.band!, items } };
+  const result = constrainedIncremental(grown, drawing, incrementalBudget(), { left: 0, right: grown.maxWidth }, 64_000_000,
+    hintRoutingFrame(new Map([['ab', height]])));
+  expect(result.ok, JSON.stringify(result.ok ? undefined : result.conflict)).toBe(true);
+  if (!result.ok) return;
+  expect(geometryGate(result.drawing, grown.items, grown.band!.key, grown.maxWidth)).toBeNull();
+  expect(result.drawing.nodes.get('ab')!.height).toBe(height);
 });

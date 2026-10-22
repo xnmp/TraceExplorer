@@ -34,7 +34,9 @@ interface MeetingEntry { readonly axis: 'x' | 'y'; readonly forward: boolean; re
  * run still crosses the same face and the corner before it stays outside. */
 const ENTRY_LEAD = 1;
 /** Capture options. `meetingEntries` binds a convergence entry by its meeting,
- * not by the parameter where the entry run crosses the berth face. */
+ * not by the parameter where the entry run crosses the berth face. It applies
+ * only without declared frame equations: the berth bound is taken from the
+ * source dot, which a frame equation could move. */
 export interface FragmentCaptureOptions { readonly meetingEntries?: boolean }
 interface SourceInterval {
   readonly route: string;
@@ -205,7 +207,7 @@ export function captureRoutingFragments(before: CommittedRoutingScene, preferred
       const [first, last] = run?.length === 2 ? run : [undefined, undefined];
       const face = convergenceBounds(meeting.dot), axis = !first || !last ? null
         : first.y === last.y && first.x !== last.x ? 'x' : first.x === last.x && first.y !== last.y ? 'y' : null;
-      if (options.meetingEntries && first && last && axis && meetingInputs.length === 1 && input.entry.parameter > 0
+      if (options.meetingEntries && !declared.length && first && last && axis && meetingInputs.length === 1 && input.entry.parameter > 0
         && !prefix.has(input.entry.primitive) && !partial.some(p => p.route === path.id && p.primitive === input.entry.primitive)) {
         const forward = first[axis] > last[axis];
         const boundary = forward ? (axis === 'x' ? face.right : face.bottom) + ENTRY_LEAD : (axis === 'x' ? face.left : face.top) - ENTRY_LEAD;

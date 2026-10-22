@@ -1675,7 +1675,7 @@ export function constrainedBandInsertion(request: LayoutRequest, previous: Graph
   if (strict.ok || strict.conflict.reason !== 'budget-exhaustion' || strict.work >= allowance
     || strict.conflict.constraints[0] === PREDICTED_DECLINE) return strict;
   const framed = constrainedIncremental(request, previous, pools(), undefined, allowance - strict.work,
-    preferred => ({ preferred, frames: [] }), undefined, captureLimit);
+    preferred => ({ preferred, frames: [], meetingEntries: true }), undefined, captureLimit);
   return { ...framed, work: framed.work + strict.work };
 }
 
