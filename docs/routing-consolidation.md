@@ -2880,3 +2880,19 @@ growths certified before the change and 0 after it.
   gives a metric decline, never an unsafe drawing.
 - The sibling relaxation runs before the trail rewinds. Over 606 corpus tour
   steps the inversions and adoption counters were identical, at +1.4% work.
+
+#### Gates and changed acceptance rows
+
+Final code, rebased on 8e784e2:
+- **`bun run check`:** 295 files, 0 errors.
+- **`bun run test`:** 196 files; 2,431 passed, 1 skipped, 2 failed. Both
+  failures are load timeouts (`folder-layout-parity`, spawnSync ETIMEDOUT;
+  `partial-band-routing-room`, 30 s). Both files pass alone (10/10).
+- **`layout:eval`:** all 50 current targets pass. Against the escalation pass:
+  - dense-tour anchor moves: 52 → 51;
+  - held-screen moves at 480 px (dense): 53 → 52;
+  - click-anchor moves: 15, unchanged;
+  - held-screen moves at 480 px (broad): 20, unchanged;
+  - mean legal displacement: 10.1 px, unchanged;
+  - mean bends: 156.1, unchanged;
+  - mean sibling inversions: 0.080.
