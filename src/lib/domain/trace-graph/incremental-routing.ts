@@ -35,10 +35,11 @@ export interface IncrementalRoutingSeed {
 }
 export type IncrementalTopologyConstructor = (drawing: GraphLayout, charge: (work: number, reason?: string) => void,
   choose: CorridorSearch['choose'], reserve: CorridorSearch['reserve'], fragments?: ConstructionFragments) => GraphLayout | IncrementalRoutingConflict;
-/** `meetingEntries` opts a policy with no frame equations into binding
- * convergence entries by their meeting (`FragmentCaptureOptions`). */
+/** `meetingEntries` and `departureStubs` opt a policy with no frame equations
+ * into binding convergence entries by their meeting and departure stubs by
+ * their line (`FragmentCaptureOptions`). */
 export type IncrementalFrameFactory = (source: GraphLayout, charge: CorridorSearch['charge'], choose: CorridorSearch['choose']) =>
-  { readonly preferred: GraphLayout; readonly frames: readonly RoutingFrameEquality[]; readonly meetingEntries?: boolean } | IncrementalRoutingConflict;
+  { readonly preferred: GraphLayout; readonly frames: readonly RoutingFrameEquality[]; readonly meetingEntries?: boolean; readonly departureStubs?: boolean } | IncrementalRoutingConflict;
 /** Additional actual-publication checks share capture/construction's ledger.
  * They may withhold a candidate, never replace its captured authority or result. */
 export type IncrementalAdmission = (drawing: GraphLayout, charge: CorridorSearch['charge']) => IncrementalRoutingConflict | null;
@@ -49,6 +50,9 @@ const sameSource = (a: PlacedRoute, b: PlacedRoute, charge: CorridorSearch['char
 };
 /** Broad-phase cell of the affected solve's reach index (one lane row of tiles). */
 const REACH_CELL = 64;
+/** A foreign piece shorter than this along its axis is curve-flattening noise
+ * (a fillet's end point repeated to ~1e-14), not a parallel track. */
+const DEGENERATE_EXTENT = 1e-6;
 const lazy = <T>(make: () => T): (() => T) => { let made: { value: T } | undefined; return () => (made ??= { value: make() }).value; };
 const failure = (reason: IncrementalConflictReason, constraints: readonly string[], work = 0): IncrementalRoutingResult =>
   ({ ok: false, conflict: { reason, constraints }, work });
@@ -194,7 +198,7 @@ export function routeCommittedIncremental(request: LayoutRequest, previous: Grap
       // does), so a free retained core may move with the start of the entry run
       // it feeds. Frame-equation policies (folder hints) keep the exact binding.
       seed = 'reason' in frame ? frame : captureFramedIncrementalRouting(request, previous, frame.preferred, frame.frames, search.charge,
-        { meetingEntries: frame.meetingEntries === true });
+        { meetingEntries: frame.meetingEntries === true, departureStubs: frame.departureStubs === true });
     } else seed = captureIncrementalRouting(request, previous, search.charge);
     if (!('problem' in seed)) return search.reject(seed.constraints, seed.reason === 'unsupported-input' ? 'invalid'
       : seed.reason === 'budget-exhaustion' ? 'search-exhausted' : seed.reason === 'metric-conflict' ? 'metric' : 'topology');
@@ -369,26 +373,29 @@ const reservedCenter = (port: ReservedPort, axis: 'x' | 'y') => JSON.stringify([
  * is a preferred retained pose for construction, not an admitted drawing: the
  * final solve and the independent gate still certify the completed topology. */
 export function clearIncrementalPorts(request: LayoutRequest, seed: IncrementalRoutingSeed,
-  ports: readonly ReservedPort[], budget = 64_000_000, pane?: { readonly left: number; readonly right: number }):
+  ports: readonly ReservedPort[], budget = 64_000_000, pane?: { readonly left: number; readonly right: number }, drawnRoom = false):
   { readonly ok: true; readonly drawing: GraphLayout; readonly work: number }
   | { readonly ok: false; readonly conflict: IncrementalRoutingConflict; readonly work: number } {
   if (!seed.fragments) return { ok: false, conflict: { reason: 'unsupported-input', constraints: ['port repair needs a fragment authority'] }, work: 0 };
-  const result = searchCorridors(search => solveAffectedTracks(search, request, seed, seed.drawing, pane, ports).drawing, budget);
+  const result = searchCorridors(search => solveAffectedTracks(search, request, seed, seed.drawing, pane, ports, drawnRoom).drawing, budget);
   return result.ok ? { ok: true, drawing: result.value, work: result.work } : searchFailure(result.conflict, result.work);
 }
 
 /** Clear every blocked port that the constants allow, within a capped share of
  * the remaining ledger so a repair can never starve construction. A port whose
  * separation conflicts with constants is named by the metric witness and stays
- * blocked; a witness naming no port pin drops the last port instead. Either
- * way each retry clears at least one fewer port, so the loop is bounded. On
- * exhausting its share the drawn pose is kept and construction proceeds. */
+ * blocked. A witness naming no port pin is the drawing's own conflict, which
+ * the repair did not cause: the same ports are retried once with every
+ * separation the drawing already lacks held at its drawn room (`drawnRoom`).
+ * After that, such a witness drops the last port. Each retry but that one
+ * clears at least one fewer port, so the loop is bounded. On exhausting its
+ * share the drawn pose is kept and construction proceeds. */
 export const PORT_REPAIR_SHARE = 4;
-function clearRetainedPorts(request: LayoutRequest, seed: IncrementalRoutingSeed, search: CorridorSearch,
+function clearRetainedPorts(request: LayoutRequest, seed: IncrementalRoutingSeed, search: Pick<CorridorSearch, 'charge' | 'remaining'>,
   pane?: { readonly left: number; readonly right: number }): IncrementalRoutingSeed {
-  let ports = blockedSourcePorts(request, seed.drawing, search.charge);
+  let ports = blockedSourcePorts(request, seed.drawing, search.charge), drawnRoom = false;
   while (ports.length) {
-    const cleared = clearIncrementalPorts(request, seed, ports, Math.floor(search.remaining / PORT_REPAIR_SHARE), pane);
+    const cleared = clearIncrementalPorts(request, seed, ports, Math.floor(search.remaining / PORT_REPAIR_SHARE), pane, drawnRoom);
     search.charge(cleared.work, 'retained port repair');
     if (cleared.ok) return { ...seed, drawing: cleared.drawing };
     if (cleared.conflict.reason === 'budget-exhaustion') return seed;
@@ -397,15 +404,44 @@ function clearRetainedPorts(request: LayoutRequest, seed: IncrementalRoutingSeed
       + ids.flat().reduce((sum, id) => sum + id.length + 1, 0) + 1, 'retained port repair witness');
     const witnessed = new Set(ports.filter((_, i) => ids[i].some(id =>
       cleared.conflict.constraints.some(c => c === id || c.startsWith(id + ':')))));
+    if (!witnessed.size && !drawnRoom) { drawnRoom = true; continue; }
     ports = witnessed.size ? ports.filter(port => !witnessed.has(port)) : ports.slice(0, -1);
   }
   return seed;
 }
 
+/** Retained-track port repair for a legacy insertion over a committed drawing
+ * (folder world placement and the legacy band ladder): the same move as in the
+ * framed capture, on its own ledger of `budget` work. The committed drawing is
+ * its own preferred pose, so only free straight cores can move; native spans,
+ * prefixes, suffixes, ports, tiles and dots stay constants. Returns the cleared
+ * pose (or the drawing itself when nothing could be cleared) with the work
+ * spent. The pose is a preference: the insertion's own gates still certify it. */
+export function clearCommittedPorts(request: LayoutRequest, previous: GraphLayout, budget: number,
+  pane?: { readonly left: number; readonly right: number }): { readonly drawing: GraphLayout; readonly work: number } {
+  if (!blockedSourcePorts(request, previous).length) return { drawing: previous, work: 0 };
+  const result = searchCorridors(search => {
+    const seed = captureFramedIncrementalRouting(request, previous, previous, [], search.charge, { meetingEntries: true, departureStubs: true });
+    if (!('problem' in seed)) return search.reject(seed.constraints, 'invalid');
+    return clearRetainedPorts(request, seed, search, pane).drawing;
+  }, budget);
+  return { drawing: result.ok ? result.value : previous, work: result.work };
+}
+
+/** The one order that orients every separation of the affected metric:
+ * drawn coordinate, then identity. As in libavoid's nudging (and ELK's
+ * orthogonal router), the order of shared segments is derived first from the
+ * drawing and the separations are then solved once; no side is a search
+ * choice. Parallel tracks, berths, reserved ports and tile corridors between
+ * the same two variables therefore agree, so a tie can never produce a
+ * two-cycle that only backtracking would undo. A cycle that remains is the
+ * topology's own and rejects that topology. */
+const precedes = (a: string, aValue: number, b: string, bValue: number): boolean => aValue < bValue || aValue === bValue && a < b;
+
 /** The affected metric over one chosen topology: free tracks, their corridor
  * sides and every hard separation, then the retained-constant check. */
 function solveAffectedTracks(search: CorridorSearch, request: LayoutRequest, seed: IncrementalRoutingSeed, topology: GraphLayout,
-  pane: { readonly left: number; readonly right: number } | undefined, reserved: readonly ReservedPort[]):
+  pane: { readonly left: number; readonly right: number } | undefined, reserved: readonly ReservedPort[], drawnRoom = false):
   { readonly drawing: GraphLayout; readonly solved: number } {
   chargeRoutingSnapshot(attemptRequestView(request), search.charge);
   chargeRoutingSnapshot(topology, search.charge);
@@ -431,17 +467,23 @@ function solveAffectedTracks(search: CorridorSearch, request: LayoutRequest, see
   search.charge(topology.nodes.size + topology.routes.length + tracks.length + 1, 'incremental topology');
   const variables = new Map<string, CoordinateVariable>(metric.variables.map(v => [v.id, v]));
   const edges: Separation[] = [];
-  const decisions = new Map<string, string>();
   const constant = (name: string, value: number): string => {
     const id = JSON.stringify(['topology-constant', name]);
     if (!variables.has(id)) variables.set(id, { id, preferred: value, pin: { value, reason: name } });
     return id;
   };
-  const constraints = (before: string, after: string, gap: number, name: string, decision?: string) => {
-    if (before === after) { if (gap > 0) search.reject([name], 'metric', decision ? [decision] : []); return; }
+  const constraints = (before: string, after: string, gap: number, name: string) => {
+    if (before === after) { if (gap > 0) search.reject([name], 'metric'); return; }
     const id = JSON.stringify([name, edges.length]);
+    // The port repair moves only what the newly active ports need. When the
+    // drawing itself already lacks room, that room is kept, not demanded: the
+    // separation is held at its drawn room (the final gates still certify).
+    if (drawnRoom && name !== 'reserved-port') {
+      const drawn = (v: string) => variables.get(v)?.pin?.value ?? variables.get(v)?.preferred;
+      const room = drawn(after)! - drawn(before)!;
+      if (Number.isFinite(room) && room < gap) gap = Math.max(0, room);
+    }
     edges.push({ id, before, after, gap });
-    if (decision) decisions.set(id, decision);
   };
   for (const t of tracks) variables.set(t.id, { id: t.id, preferred: t.value, bounds: {
     lower: t.axis === 'x' ? pane?.left ?? 0 : 0,
@@ -450,11 +492,19 @@ function solveAffectedTracks(search: CorridorSearch, request: LayoutRequest, see
   // Every coordinate a modelled route point resolves to; with the separations'
   // ends, these are the only variables the solve can read back.
   const referenced = new Set<string>();
+  // Constant points of one straight run lie on one line: they are one
+  // coordinate, named by the run's first point, whichever point a separation
+  // reaches it through.
+  const lineStart = (m: RouteModel, index: number, axis: 'x' | 'y'): number => {
+    let start = index;
+    while (start > 0 && m.points[start - 1][axis] === m.points[index][axis]) { search.charge(1, 'constant line start'); start--; }
+    return start;
+  };
   const coordinate = (m: RouteModel, index: number, axis: 'x' | 'y'): string => {
     search.charge(m.tracks.length + 1, 'free track coordinate lookup');
     const id = fragmentBindings?.coordinates.get(fragmentCoordinateKey(m.route.id, index, axis))
       ?? m.tracks.find(t => t.axis === axis && (t.command === index || t.command - 1 === index))?.id
-      ?? constant(JSON.stringify([m.route.id, index, axis]), m.points[index][axis]);
+      ?? constant(JSON.stringify([m.route.id, lineStart(m, index, axis), axis]), m.points[index][axis]);
     referenced.add(id);
     return id;
   };
@@ -516,7 +566,7 @@ function solveAffectedTracks(search: CorridorSearch, request: LayoutRequest, see
     topology.routes.forEach((r, owner) => {
       const { ss, berths } = foreign(r);
       ss.forEach(([a, b], at) => {
-        if (a[axis] === b[axis]) { pieces.push({ owner, berth: false, at }); spans.push([Math.min(a[along], b[along]), Math.max(a[along], b[along])]); }
+        if (a[axis] === b[axis] && Math.abs(a[along] - b[along]) > DEGENERATE_EXTENT) { pieces.push({ owner, berth: false, at }); spans.push([Math.min(a[along], b[along]), Math.max(a[along], b[along])]); }
       });
       berths.forEach((berth, at) => { pieces.push({ owner, berth: true, at }); spans.push([berth[along], berth[along]]); });
     });
@@ -536,12 +586,9 @@ function solveAffectedTracks(search: CorridorSearch, request: LayoutRequest, see
       const near = along === 'y' ? n.y : n.x, far = near + (along === 'y' ? n.height : n.width);
       if (hi <= near - TILE_GRAZE || lo >= far + TILE_GRAZE) continue;
       const lower = n[t.axis] - TILE_GRAZE, upper = n[t.axis] + (t.axis === 'x' ? n.width : n.height) + TILE_GRAZE;
-      const sides = t.value <= lower ? ['before'] : t.value >= upper ? ['after']
-        : t.value - lower <= upper - t.value ? ['before', 'after'] : ['after', 'before'];
-      const decision = JSON.stringify(['tile-corridor', t.id, n.key]);
-      const side = search.choose(decision, sides);
-      if (side === 'before') constraints(t.id, constant(n.key + ':' + t.axis + ':near', lower), 0, 'tile-corridor', decision);
-      else constraints(constant(n.key + ':' + t.axis + ':far', upper), t.id, 0, 'tile-corridor', decision);
+      // The nearer side of the tile, as drawn.
+      if (t.value - lower <= upper - t.value) constraints(t.id, constant(n.key + ':' + t.axis + ':near', lower), 0, 'tile-corridor');
+      else constraints(constant(n.key + ':' + t.axis + ':far', upper), t.id, 0, 'tile-corridor');
     }
     let owner = -1, own = false;
     for (const piece of reach[t.axis].routes()(lo, hi)) {
@@ -558,9 +605,19 @@ function solveAffectedTracks(search: CorridorSearch, request: LayoutRequest, see
         search.charge((foreignModel?.tracks.length ?? 0) + 1, 'foreign route track lookup');
         const other = foreignModel?.tracks.find(u => u.axis === t.axis && u.value === a[t.axis]
           && Math.min(u.a[along], u.b[along]) <= Math.min(a[along], b[along]) && Math.max(u.a[along], u.b[along]) >= Math.max(a[along], b[along]));
-        const id = other?.id ?? constant(JSON.stringify(['foreign-track', r.id, i, t.axis]), a[t.axis]);
+        // A modelled straight run is the same coordinate as its route points,
+        // which a port corner may also name: one variable, not two constants.
+        let run = -1;
+        if (!other && foreignModel) {
+          search.charge(foreignModel.points.length + 1, 'foreign run point lookup');
+          const p = foreignModel.points;
+          run = p.findIndex((q, k) => k > 0 && (q.x === b.x && q.y === b.y && p[k - 1].x === a.x && p[k - 1].y === a.y
+            || q.x === a.x && q.y === a.y && p[k - 1].x === b.x && p[k - 1].y === b.y));
+        }
+        const id = other?.id ?? (run > 0 ? coordinate(foreignModel!, run, t.axis)
+          : constant(JSON.stringify(['foreign-track', r.id, i, t.axis]), a[t.axis]));
         if (other && t.id > other.id) continue;
-        const forward = t.value < a[t.axis] || t.value === a[t.axis] && t.id < id;
+        const forward = precedes(t.id, t.value, id, a[t.axis]);
         constraints(forward ? t.id : id, forward ? id : t.id, LANE_SEPARATION, 'parallel-tracks');
         continue;
       }
@@ -577,24 +634,21 @@ function solveAffectedTracks(search: CorridorSearch, request: LayoutRequest, see
       const at = ownerModel?.points.findIndex(p => p.x === berth.x && p.y === berth.y) ?? -1;
       const center = ownerModel && at >= 0 ? coordinate(ownerModel, at, t.axis)
         : constant(JSON.stringify(['berth', r.id, i, t.axis]), berth[t.axis]);
-      const decision = JSON.stringify(['berth-corridor', t.id, r.id, i]);
-      const side = search.choose(decision,
-        t.value <= berth[t.axis] ? ['before', 'after'] : ['after', 'before']);
-      if (side === 'before') constraints(t.id, center, berth.radius, 'port-corner', decision);
-      else constraints(center, t.id, berth.radius, 'port-corner', decision);
+      if (precedes(t.id, t.value, center, berth[t.axis])) constraints(t.id, center, berth.radius, 'port-corner');
+      else constraints(center, t.id, berth.radius, 'port-corner');
     }
     search.charge(reserved.length + 1, 'reserved ports');
     for (const port of reserved) {
       if (!blocks(t, port)) continue;
-      const decision = JSON.stringify(['reserved-port', t.id, port.owner, port.side]);
-      const side = search.choose(decision, t.value <= port[t.axis] ? ['before', 'after'] : ['after', 'before']);
       const center = constant(reservedCenter(port, t.axis), port[t.axis]);
-      if (side === 'before') constraints(t.id, center, PORT_BERTH, 'reserved-port', decision);
-      else constraints(center, t.id, PORT_BERTH, 'reserved-port', decision);
+      if (t.value <= port[t.axis]) constraints(t.id, center, PORT_BERTH, 'reserved-port');
+      else constraints(center, t.id, PORT_BERTH, 'reserved-port');
     }
   }
-  // The selected inequality graph needs a topological order. Dependency cycles
-  // request a new corridor, rather than discarding a hard separation.
+  // The selected inequality graph needs a topological order. Every side was
+  // derived from the drawn order, so no side choice can undo a cycle or a
+  // metric conflict: either is final for this search (no decision is
+  // relevant) rather than discarding a hard separation.
   // A pinned variable that no separation and no route point references is an
   // isolated constant: the captured pins were validated at capture, and the
   // kernel would return it unchanged. Only referenced variables enter the
@@ -612,8 +666,8 @@ function solveAffectedTracks(search: CorridorSearch, request: LayoutRequest, see
     degree.set(after, degree.get(after)! - 1); if (!degree.get(after)) order.push(after);
   }
   if (order.length !== variables.size) {
-    // Backtrack only a witnessed cycle's choices. A residual graph also
-    // contains outgoing tails whose alternatives cannot remove that cycle.
+    // Witness one cycle. A residual graph also contains outgoing tails that
+    // are not part of it.
     search.charge(variables.size + edges.length + 1, 'incremental order conflict witness');
     const unresolved = new Set([...degree].filter(([, count]) => count > 0).map(([id]) => id));
     const graph = new Map([...unresolved].map(id => [id, [] as Separation[]]));
@@ -634,8 +688,7 @@ function solveAffectedTracks(search: CorridorSearch, request: LayoutRequest, see
             search.charge(1, 'incremental cycle witness');
             const prior = parents.get(id)!; cycle.push(prior); id = prior.before;
           }
-          const relevant = cycle.flatMap(link => decisions.has(link.id) ? [decisions.get(link.id)!] : []);
-          search.reject(['incremental segment order cycle', ...cycle.map(link => link.id)], 'topology', relevant);
+          search.reject(['incremental segment order cycle', ...cycle.map(link => link.id)], 'topology', []);
         }
       }
     }
@@ -646,9 +699,7 @@ function solveAffectedTracks(search: CorridorSearch, request: LayoutRequest, see
   // free components after eliminating the committed constants.
   const solved = solveRoutingComponents({ variables: [...variables.values()], order, separations: edges }, [], search.charge);
   if (!solved.ok) {
-    search.charge(solved.conflict.constraints.length + 1, 'incremental metric decision witness');
-    return search.reject(solved.conflict.constraints, 'metric',
-      solved.conflict.constraints.flatMap(id => decisions.has(id) ? [decisions.get(id)!] : []));
+    return search.reject(solved.conflict.constraints, 'metric', []);
   }
   const paths = new Map(models.map(m => [m.route.id, m.points.every((p, i) =>
     solved.positions.get(coordinate(m, i, 'x')) === p.x && solved.positions.get(coordinate(m, i, 'y')) === p.y) ? m.route.path : m.raw.map((raw, i) => {

@@ -28,7 +28,13 @@ interface NativeFragment {
    * primitive) are bound; its start may slide along the run, staying at least
    * `boundary` beyond the berth face, so the free core before it can move. */
   readonly entry?: MeetingEntry;
+  /** A sliding departure stub: the straight last run of a tile's source
+   * prefix, perpendicular to the run that leaves the port berth. Its start
+   * and line are bound; its end may slide outward along the line, never
+   * shortening the stub, so the leaving run is a free core. */
+  readonly slide?: DepartureSlide;
 }
+interface DepartureSlide { readonly axis: 'x' | 'y'; readonly forward: boolean; readonly boundary: number }
 interface MeetingEntry { readonly axis: 'x' | 'y'; readonly forward: boolean; readonly boundary: number }
 /** How far outside the dot berth a meeting-bound entry run must start, so the
  * run still crosses the same face and the corner before it stays outside. */
@@ -37,7 +43,7 @@ const ENTRY_LEAD = 1;
  * not by the parameter where the entry run crosses the berth face. It applies
  * only without declared frame equations: the berth bound is taken from the
  * source dot, which a frame equation could move. */
-export interface FragmentCaptureOptions { readonly meetingEntries?: boolean }
+export interface FragmentCaptureOptions { readonly meetingEntries?: boolean; readonly departureStubs?: boolean }
 interface SourceInterval {
   readonly route: string;
   readonly primitive: number;
@@ -45,6 +51,9 @@ interface SourceInterval {
   readonly boundary: Point;
   readonly axis: 'x' | 'y';
   readonly forward: boolean;
+  /** The run starts at a sliding departure stub's end: only its coordinate
+   * on `axis` (the stub's line) is bound. */
+  readonly slid?: boolean;
 }
 export interface RetainedRoutingFragments {
   readonly source: CommittedRoutingScene & { readonly plan: RoutingPlan };
@@ -177,6 +186,7 @@ export function captureRoutingFragments(before: CommittedRoutingScene, preferred
   }
   const whole = new Map<string, Set<number>>(), prefixes = new Map<string, Set<number>>(), suffixes = new Map<string, Set<number>>();
   const terminals = new Map<string, Set<number>>(), entries = new Map<string, MeetingEntry & { readonly primitive: number }>();
+  const slides = new Map<string, DepartureSlide & { readonly primitive: number }>();
   const partial: { readonly route: string; readonly primitive: number;
     readonly boundary: Point; readonly axis: 'x' | 'y'; readonly forward: boolean }[] = [];
   for (const path of raw.plan.paths) {
@@ -195,7 +205,15 @@ export function captureRoutingFragments(before: CommittedRoutingScene, preferred
       const forward = end[axis] > first[axis];
       partial.push({ route: path.id, primitive: i, axis, forward,
         boundary: { ...first, [axis]: head[axis] + (forward ? 6 : -6) } });
-      point('path', path.id, 'native', i, 0);
+      // The leaving run turns off a straight stub inside the berth: the stub
+      // keeps its start and line, and its end (this run's start) may slide
+      // outward along the line, so this run can move as a free core.
+      const stub = i > 0 ? path.native[i - 1] : undefined, along = axis === 'x' ? 'y' : 'x';
+      if (options.departureStubs && !declared.length && stub?.length === 2 && prefix.has(i - 1)
+        && stub[0][axis] === stub[1][axis] && stub[0][along] !== stub[1][along]) {
+        slides.set(path.id, { primitive: i - 1, axis: along, forward: stub[1][along] > stub[0][along], boundary: stub[1][along] });
+        require('path', path.id, 'native', i, 0, axis);
+      } else point('path', path.id, 'native', i, 0);
       break;
     }
     const meetingInputs = sourceIndex.inputs.get(path.id) ?? [];
@@ -232,8 +250,15 @@ export function captureRoutingFragments(before: CommittedRoutingScene, preferred
       }
     }
     const entry = entries.get(path.id);
+    // A stub that also belongs to a convergence or terminal suffix stays exact.
+    const slide = slides.get(path.id);
+    if (slide && (suffix.has(slide.primitive) || terminal.has(slide.primitive) || suffix.has(slide.primitive + 1) || terminal.has(slide.primitive + 1))) {
+      slides.delete(path.id); point('path', path.id, 'native', slide.primitive + 1, 0);
+    }
+    const sliding = slides.get(path.id);
     for (const i of indices) for (let j = 0; j < path.native[i].length; j++) {
       if (entry?.primitive === i && j === 0) require('path', path.id, 'native', i, j, entry.axis === 'x' ? 'y' : 'x');
+      else if (sliding?.primitive === i && j === 1) require('path', path.id, 'native', i, j, sliding.axis === 'x' ? 'y' : 'x');
       else point('path', path.id, 'native', i, j);
     }
   }
@@ -272,7 +297,7 @@ export function captureRoutingFragments(before: CommittedRoutingScene, preferred
     if (!nextHead || samePoint(oldHead, nextHead) && sourceRaw[0] !== targetRaw[0])
       return { ok: false, conflict: equality(path.id, 'retained raw source command') };
     heads.set(path.id, targetRaw[0]);
-    const entry = entries.get(path.id);
+    const entry = entries.get(path.id), stub = slides.get(path.id);
     for (const i of [...whole.get(path.id)!].sort((a, b) => a - b)) {
       const actual = next.native[i];
       // A meeting-bound entry's start along the run is not selected: it is
@@ -280,8 +305,14 @@ export function captureRoutingFragments(before: CommittedRoutingScene, preferred
       const open = entry?.primitive === i ? entry : undefined;
       if (open && (!actual || actual.length !== 2 || (open.forward ? actual[0][open.axis] < open.boundary : actual[0][open.axis] > open.boundary)))
         return { ok: false, conflict: equality(path.id, 'retained frame primitive') };
+      // Likewise a sliding stub's end along its line.
+      const slid = stub?.primitive === i ? stub : undefined;
+      if (slid && (!actual || actual.length !== 2 || (slid.forward ? actual[1][slid.axis] < slid.boundary : actual[1][slid.axis] > slid.boundary)))
+        return { ok: false, conflict: equality(path.id, 'retained frame primitive') };
       const expected = path.native[i].map((_, j) => open && j === 0
         ? { ...nativePoint(path.id, i, 1), [open.axis === 'x' ? 'y' : 'x']: value('path', path.id, 'native', i, 0, open.axis === 'x' ? 'y' : 'x'), [open.axis]: actual![0][open.axis] }
+        : slid && j === 1
+        ? { ...nativePoint(path.id, i, 0), [slid.axis === 'x' ? 'y' : 'x']: value('path', path.id, 'native', i, 1, slid.axis === 'x' ? 'y' : 'x'), [slid.axis]: actual![1][slid.axis] }
         : nativePoint(path.id, i, j)) as unknown as NativeInk;
       if (!actual || actual.length !== expected.length || actual.some((p, j) => !samePoint(p, expected[j])))
         return { ok: false, conflict: equality(path.id, 'retained frame primitive') };
@@ -290,14 +321,19 @@ export function captureRoutingFragments(before: CommittedRoutingScene, preferred
       fragments.push({ id: JSON.stringify(['retained-span', path.id, i]), route: path.id, primitive: i,
         native: expected, raw: targetRaw[i + 1], sourcePrefix: prefixes.get(path.id)!.has(i),
         convergenceSuffix: suffixes.get(path.id)!.has(i), terminalSuffix: terminals.get(path.id)!.has(i),
-        ...(open ? { entry: { axis: open.axis, forward: open.forward, boundary: open.boundary } } : {}) });
+        ...(open ? { entry: { axis: open.axis, forward: open.forward, boundary: open.boundary } } : {}),
+        ...(slid ? { slide: { axis: slid.axis, forward: slid.forward, boundary: slid.boundary } } : {}) });
     }
   }
   const intervals: SourceInterval[] = partial.map(interval => ({ ...interval,
-    start: nativePoint(interval.route, interval.primitive, 0),
+    // A sliding stub's end is this run's start: only its line is pinned.
+    ...(slides.get(interval.route)?.primitive === interval.primitive - 1 ? { slid: true } : {}),
+    start: slides.get(interval.route)?.primitive === interval.primitive - 1
+      ? { ...targetIndex.paths.get(interval.route)!.native[interval.primitive][0], [interval.axis]: value('path', interval.route, 'native', interval.primitive, 0, interval.axis) }
+      : nativePoint(interval.route, interval.primitive, 0),
     // The mandatory semantic berth is measured from the declared native head.
     // Adding another equality cannot shorten it through an unrelated recipe.
-    boundary: { ...nativePoint(interval.route, interval.primitive, 0),
+    boundary: { ...targetIndex.paths.get(interval.route)!.native[interval.primitive][0],
       [interval.axis]: nativePoint(interval.route, 0, 0)[interval.axis] + (interval.forward ? 6 : -6) } }));
   // Native command positions and convergence ordinals are emitter bindings.
   const scalars: (readonly [string, number])[] = [];
@@ -349,10 +385,14 @@ export function bindRoutingFragmentTopology(retained: RetainedRoutingFragments, 
       for (let i = start; i < end; i++) {
         if (!path.native[i]) break;
         charge(path.native[i].length + raw[i + 1].length + 1, 'retained native span binding');
-        const native = path.native[i], open = fragment.entry;
-        if (raw[i + 1] === fragment.raw && native.length === fragment.native.length && (open
+        const native = path.native[i], open = fragment.entry, slid = fragment.slide;
+        // A sliding stub's raw command names its end, which may have moved.
+        if ((slid ? raw[i + 1][0] === fragment.raw[0] : raw[i + 1] === fragment.raw) && native.length === fragment.native.length && (open
           ? samePoint(native[1], fragment.native[1]) && Object.is(native[0][open.axis === 'x' ? 'y' : 'x'], fragment.native[0][open.axis === 'x' ? 'y' : 'x'])
             && (open.forward ? native[0][open.axis] >= open.boundary : native[0][open.axis] <= open.boundary)
+          : slid
+          ? samePoint(native[0], fragment.native[0]) && Object.is(native[1][slid.axis === 'x' ? 'y' : 'x'], fragment.native[1][slid.axis === 'x' ? 'y' : 'x'])
+            && (slid.forward ? native[1][slid.axis] >= slid.boundary : native[1][slid.axis] <= slid.boundary)
           : native.every((p, j) => samePoint(p, fragment.native[j])))) { found = i; break; }
       }
       if (found < 0) return { ok: false, conflict: equality(fragment.id, 'retained native span') };
@@ -362,8 +402,13 @@ export function bindRoutingFragmentTopology(retained: RetainedRoutingFragments, 
       // run is the neighbouring core's track, bounded outside the berth.
       if (fragment.entry) bound.push({ route: route.id, command: found, axis: fragment.entry.axis,
         forward: fragment.entry.forward, boundary: fragment.entry.boundary });
+      // A sliding stub keeps its line; its end along the line is the leaving
+      // core's track, bounded so the stub never shortens.
+      if (fragment.slide) bound.push({ route: route.id, command: found + 1, axis: fragment.slide.axis,
+        forward: fragment.slide.forward, boundary: fragment.slide.boundary });
       for (const [command, j] of [[found, 0], [found + 1, fragment.native.length - 1]]) for (const axis of ['x', 'y'] as const) {
         if (fragment.entry && command === found && axis === fragment.entry.axis) continue;
+        if (fragment.slide && command === found + 1 && axis === fragment.slide.axis) continue;
         const key = coordinateKey(route.id, command, axis);
         fixed.add(key); coordinates.set(key, routingCoordinate(retained.preferred.id, 'path', route.id, 'native', fragment.primitive, j, axis));
       }
@@ -446,11 +491,13 @@ export function bindRoutingFragmentTopology(retained: RetainedRoutingFragments, 
     const index = interval.primitive === 0 ? 0
       : (indices.get(JSON.stringify(['retained-span', interval.route, interval.primitive - 1])) ?? -2) + 1;
     const native = path.native[index], other = interval.axis === 'x' ? 'y' : 'x';
-    if (!native || native.length !== 2 || !samePoint(native[0], interval.start) || native[0][other] !== native[1][other]
+    if (!native || native.length !== 2 || (interval.slid ? !Object.is(native[0][interval.axis], interval.start[interval.axis]) : !samePoint(native[0], interval.start))
+      || native[0][other] !== native[1][other]
       || final && (interval.forward ? path.native[index][1][interval.axis] < interval.boundary[interval.axis]
       : path.native[index][1][interval.axis] > interval.boundary[interval.axis]))
       return { ok: false, conflict: equality(interval.route, 'retained source interval') };
     for (const axis of ['x', 'y'] as const) {
+      if (interval.slid && axis !== interval.axis) continue;
       const key = coordinateKey(interval.route, index, axis); fixed.add(key);
       coordinates.set(key, routingCoordinate(retained.preferred.id, 'path', interval.route, 'native', interval.primitive, 0, axis));
     }
