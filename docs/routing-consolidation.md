@@ -2431,3 +2431,165 @@ slightly more than the old scan charged. Replays show no lost success.
 - `layout:eval`: all 50 current targets pass. Dense-tour anchor moves went
   from 73 to 75 (limit 101), because more attempts now certify. Click-anchor
   moves stay at 26.
+
+### Capture pass
+
+This pass made capture run once per attempt and charge only what it reads,
+then sized the band allowance for reach first. Legacy production reach over
+the 3,405-request inventory fell from 165 requests at origin/main (af0bcb6)
+and 160 at the local admission pass to **20**: T24 1, T25 9 constrained / 10
+repairable, T28 4. Every residual request follows a band-insertion budget
+decline (5 predicted from the capture share). Coverage outside production did
+not move, so no stage meets the deletion rule and **slice 4 remains open**.
+Latency was not a target of this pass; one sanity run is reported below.
+
+#### Profile: capture against construction
+
+On the 160 requests that still reached legacy (314 captured attempts at the
+6M allowance), the attempts the capture share stopped spent 83% of their work
+in capture. Most of it was the snapshot charge for the request, whose layout
+history is 2–6× the previous drawing, and a framed capture repeated for every
+embedding family (18 captures in one strict attempt). Charging capture only
+for what it reads turned those predicted declines into ordinary budget
+declines and added 2 successes: **construction, not capture, is the limiter**.
+At 64M, capture is 2.3% of a certifying attempt's work.
+
+#### What changed
+
+- **Capture once** (`incremental-routing.ts`, `routeCommittedIncremental`).
+  Capture, framed capture and the retained port repair run on the first
+  candidate and are reused by every later embedding or corridor candidate,
+  unless the frame policy itself chooses. Each candidate gets its own prepaid
+  copy of the drawing and of the construction view, so a rejected candidate's
+  edits never reach the next one.
+- **Charge what is read.** The snapshot charge reads the attempt's own view of
+  the request (`attemptRequestView`: only `attachment.placement` of the
+  history). The framed capture reuses the strict capture's import instead of
+  importing a third time.
+- **Read-only construction view** (`routing-fragments.ts`,
+  `ConstructionFragments`). Construction gets copies of the source plan,
+  preferred drawing, fragments and intervals, and reads pins only through a
+  lookup. Rebinding classifies scalar pins once at capture
+  (`RetainedRoutingFragments.scalars`) and skips paint-only coordinates.
+  A 22-item framed attempt fell from 13.5M to 9M work.
+- **Unreferenced constants** (`solveAffectedTracks`). Retained pins that no
+  edge or route point of the affected metric references leave the order graph
+  before the kernel runs.
+- **Reach-first allowance** (`incremental-adoption.ts`,
+  `PRODUCTION_ROUTING_WORK`): 8M per band item up to 256M, constructor pools
+  1 per 64M (four at the ceiling, the automatic pools), capture share 1/20.
+  Of the 157 insertion inputs that reached legacy, 137 certify at 256M with
+  four pools and 70 at 64M with one.
+- **Repack at any size** (`band-layout.ts`). All 20 requests that ran legacy
+  after a certified attempt, or with no attempt, came through the anchored
+  repack, which skipped constrained insertion above 4 new tiles and so left
+  the legacy repack and its T24/T28 repairs as the only path. Dropping the
+  legacy repack instead raised T25 reach (95 / 73), so it was rejected.
+
+Replaying the captured attempts at 32M with the old and new capture: 1,754
+attempts certify in both with identical output, 3 more certify, none is lost.
+
+#### Free-core moves during placement (item 3, not shipped)
+
+On the 37 inputs that still miss at the API allowance (T24 26, T25 10, T28 5),
+the framed placement certifies 2 at 1024M with four pools. Deferring retained
+routes or treating them as route-only occupancy does not help. With every
+retained route obstacle removed, placement mostly succeeds, but the affected
+metric then fails: the moved core collides with foreign-track constants,
+pinned native coordinates or the tile corridor, or the metric search exhausts
+20–50M on segment-order cycles and port-corner backtracking. In tour input 84
+(key 47b5ac217e3dfa93), the n9→n11 core at x=440 is pinned because its
+convergence-suffix entry is a protected primitive, and the convergence binding
+compares the parameter itself. Legacy T24 translates whole runs with their
+fillets; T28 moves L-L-L runs and bypasses. Shipping the move needs:
+- contact-tolerant placement that frees a retained core only with its ends;
+- a metric that can move a retained core whose ends lie on protected
+  convergence, terminal or fillet spans, which means changing the meeting
+  binding;
+- a cheaper metric search for those cases.
+
+#### Production inventory and click latency
+
+| Count | origin/main | Now |
+|---|---:|---:|
+| Attempts | 2,745 | 3,539 |
+| Successes | 1,974 | 3,155 |
+| Published | 1,106 | 1,681 |
+| Budget fallbacks (predicted) | 771 (237) | 382 (40) |
+| Metric fallbacks | 0 | 2 |
+| Work | 4,822M | 89,042M |
+| Requests reaching legacy | 165 | 20 |
+| Outputs that differ | — | 693 |
+| Geometry gate failures | 0 | 0 |
+
+One run each, in ms; groups are classified by the new counters.
+
+| Group | n | main p50 / p95 / max | Now p50 / p95 / max | p95 ratio |
+|---|---:|---|---|---:|
+| Folder, all | 255 | 6.6 / 81.9 / 375.1 | 6.4 / 74.6 / 442.2 | 0.91 |
+| Folder, adopted | 176 | 8.5 / 101.5 / 375.1 | 8.8 / 119.5 / 442.2 | 1.18 |
+| Folder, outranked | 17 | 8.2 / 39.5 / 39.5 | 7.2 / 63.7 / 63.7 | 1.61 |
+| Folder, legacy only | 62 | 1.4 / 12.4 / 17.9 | 1.5 / 13.9 / 20.4 | 1.12 |
+| Tour, all | 3,150 | 12.3 / 1,534 / 34,724 | 12.2 / 2,987 / 12,819 | 1.95 |
+| Tour, adopted | 1,505 | 25.9 / 1,470 / 34,724 | 26.5 / 2,664 / 6,300 | 1.81 |
+| Tour, declined | 107 | 4,676 / 6,659 / 7,708 | 9,015 / 11,833 / 12,819 | 1.78 |
+| Tour, outranked | 821 | 12.7 / 136 / 636 | 12.9 / 246 / 3,287 | 1.81 |
+| Tour, legacy only | 717 | 1.2 / 94.8 / 823 | 1.3 / 81.1 / 815 | 0.86 |
+
+The larger allowance roughly doubles the tour p95 and halves the worst click
+(the legacy ladder it replaces took 34.7 s). Work units are not uniform in
+time, so the allowance is the knob for this trade. Nothing moved to the
+worker, and no new worker or async pattern exists.
+
+#### Coverage outside production
+
+At the API allowance, unchanged: tours 635/894 (T24 438/678, T25 72/84, T28
+53/58), corpus 62/63, original 68/108. The 37 missing inputs still exhaust
+1024M with four pools.
+
+#### Deletion, and what remains
+
+| Stage | Production reach | Blocker |
+|---|---:|---|
+| T24 free port lanes | 1 request | budget decline; 240 tour rows (26 inputs) miss at the API allowance |
+| T25 repairable / constrained | 10 / 9 requests | budget declines (5 predicted); 10 inputs miss at the API allowance |
+| T28 band contact repair | 4 requests | budget declines; 5 inputs miss at the API allowance |
+
+The residue is construction that cannot place the new tiles without moving
+retained cores (see item 3 above). The production T25 cases certify through
+the framed whole/stable embedding with large pools (median 57M, about 0.9 s),
+so they are bounded by the allowance; the coverage misses are not.
+
+#### Review
+
+An independent adversarial review confirmed two defects, both fixed. Reusing
+the capture let a rejected candidate's edits to its input drawing reach the
+next candidate; each candidate now gets a prepaid copy, with strict and framed
+tests. The construction-view protection test passed whatever happened; it now
+compares a mutating constructor's result with a clean one. The review found
+certification unchanged: retained pins are still checked against the
+authority, and the scalar-pin classification and unreferenced-pin removal
+match the old behaviour.
+
+#### Gates and changed acceptance rows
+
+- `bun run check`: 295 files, 0 errors.
+- `bun run test`: 196 files, 2,426 passed, 1 skipped, 2 failed.
+  `folder-layout-parity.test.ts` timed out at its child limit under load and
+  passes 9/9 alone. **`pinned-search-budget.test.ts`, "retains a crowded later
+  click with the larger bounded search", fails deterministically.** The test
+  replays one seven-click history of random-dag-100-8101 at 640 px. With the
+  larger allowance, clicks 1–5 publish constrained drawings instead of legacy
+  ones, so click 6 (n69, 18 new tiles) starts from a different drawing. There
+  neither path holds the anchor: the constrained attempt needs about 349M work
+  with 16 pools (it certifies at a 1024M ceiling, not at 512M), and no legacy
+  candidate holds. The clicked tile moves from (188, 2954) to (408, 3687).
+  Across the evaluation, anchor moves fell (below), so this is one history
+  that got worse while the populations got better. It is left failing for a
+  decision: change the allowance, or rewrite the test around a history that
+  still exercises the legacy search.
+- `layout:eval`: all 50 current targets pass. Against the local admission
+  pass: click-anchor moves 26 → 20, dense-tour anchor moves 75 → 59,
+  held-screen moves at 480 px 30 → 25 (broad) and 72 → 57 (dense), mean legal
+  displacement 11.9 → 10.8 px, new-state transition moved fraction 0.184 →
+  0.168. Mean bends rose 154.3 → 156.1 and mean length 37,696 → 37,773.

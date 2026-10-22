@@ -713,7 +713,7 @@ function layoutBandCandidates(input: LayoutRequest, options: BandOptions): Graph
       // same routes around the ancestry-only embedding lets those siblings move.
       // The constrained insertion tries that embedding first; the legacy ladder
       // runs only if it declines or does not hold the anchors.
-      const certified = repacked && constrainedInsertion(request, repacked, 'repack');
+      const certified = repacked && constrainedInsertion(request, repacked);
       if (certified) {
         constrained.add(certified);
         const candidate = prepare({ name: "incremental-tree", layout: certified });
