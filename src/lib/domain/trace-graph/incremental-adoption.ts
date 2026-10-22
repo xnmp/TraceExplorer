@@ -40,14 +40,23 @@ export type AdoptionSite = 'band-insertion';
  * insertion itself had certified. */
 export const PRODUCTION_ROUTING_WORK = {
   'band-insertion': { work: 256_000_000, perItem: 8_000_000, poolsPerWork: 1 / 64_000_000, captureShare: 1 / 20 },
+  // The anchor-loss escalation: run only for a click whose anchor no other
+  // candidate holds, after the ordinary attempt declined for budget alone.
+  // The click's own tile would otherwise move, so this click is allowed four
+  // times the ceiling (16 pools at the same pools-per-work ratio).
+  'band-insertion-anchor': { work: 1_024_000_000, perItem: 32_000_000, poolsPerWork: 1 / 64_000_000, captureShare: 1 / 20 },
 } as const;
+
+/** Which allowance an attempt runs under: the ordinary interactive one, or the
+ * escalation for a click whose anchor would otherwise move. */
+export type AllowanceTier = 'interactive' | 'anchor';
 
 export interface InteractiveAllowance { readonly work: number; readonly pools: number; readonly captureLimit: number }
 
 /** The band insertion allowance for a band of `items` tiles, or null for a
  * malformed size (an early budget decline). */
-export function bandInsertionAllowance(items: number): InteractiveAllowance | null {
-  const { work: ceiling, perItem, poolsPerWork, captureShare } = PRODUCTION_ROUTING_WORK['band-insertion'];
+export function bandInsertionAllowance(items: number, tier: AllowanceTier = 'interactive'): InteractiveAllowance | null {
+  const { work: ceiling, perItem, poolsPerWork, captureShare } = PRODUCTION_ROUTING_WORK[tier === 'anchor' ? 'band-insertion-anchor' : 'band-insertion'];
   if (!(items > 0) || !Number.isSafeInteger(items)) return null;
   const work = Math.min(ceiling, perItem * items);
   return { work, pools: work * poolsPerWork, captureLimit: Math.floor(work * captureShare) };
@@ -81,21 +90,23 @@ export function recordAdoption(site: AdoptionSite, outcome: 'success' | Adoption
 export const recordPublication = (site: AdoptionSite): void => countLayoutWork(`adoption:${site}:published`);
 
 export interface AdoptionAttempt { readonly drawing: GraphLayout | null; readonly outcome: 'success' | AdoptionFallback; readonly work: number }
+/** An attempt's drawing (null on a decline) and why it ended. */
+export interface AdoptionResult { readonly drawing: GraphLayout | null; readonly outcome: 'success' | AdoptionFallback }
 const attempts = createBoundedCache<AdoptionAttempt>(entry => 64 + (entry.drawing ? estimateLayoutBytes(entry.drawing) : 0));
 
 /** Run one counted attempt, reusing an identical earlier one. The key must cover
  * every input of `run`; the attempt is a pure function of them, so a hit returns
  * exactly what recomputation would (worker and main thread alike). Cached values
  * stay private: callers receive a clone. */
-export function adoptOnce(site: AdoptionSite, key: string, run: () => AdoptionAttempt): GraphLayout | null {
+export function adoptOnce(site: AdoptionSite, key: string, run: () => AdoptionAttempt): AdoptionResult {
   const known = attempts.get(key);
   if (known) {
     recordAdoption(site, known.outcome);
     countLayoutWork(`adoption:${site}:cache-hit`);
-    return known.drawing && structuredClone(known.drawing);
+    return { drawing: known.drawing && structuredClone(known.drawing), outcome: known.outcome };
   }
   const attempt = run();
   recordAdoption(site, attempt.outcome, attempt.work);
   attempts.set(key, { ...attempt, drawing: attempt.drawing && structuredClone(attempt.drawing) });
-  return attempt.drawing;
+  return { drawing: attempt.drawing, outcome: attempt.outcome };
 }

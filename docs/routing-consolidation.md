@@ -2549,11 +2549,27 @@ At the API allowance, unchanged: tours 635/894 (T24 438/678, T25 72/84, T28
 
 #### Deletion, and what remains
 
+With the anchor-loss escalation (below), production reach is T24 1, T25 0
+constrained / 1 repairable, T28 0.
+
 | Stage | Production reach | Blocker |
 |---|---:|---|
-| T24 free port lanes | 1 request | budget decline; 240 tour rows (26 inputs) miss at the API allowance |
-| T25 repairable / constrained | 10 / 9 requests | budget declines (5 predicted); 10 inputs miss at the API allowance |
-| T28 band contact repair | 4 requests | budget declines; 5 inputs miss at the API allowance |
+| T24 free port lanes | 1 request (budget decline) | 240 tour rows (26 inputs) miss at the API allowance. Blocked on moving retained cores during placement: see "Free-core moves during placement" above |
+| T25 repairable / constrained | 1 / 0 requests (1 predicted decline) | 10 inputs miss at the API allowance. Same blocker |
+| T28 band contact repair | 0 requests | 5 inputs miss at the API allowance. Same blocker |
+
+**Next pass starts here (item 3 blocker).** All three stages' coverage misses
+need constrained placement that can move retained cores, which legacy does
+(T24 translates whole runs with their fillets, T28 moves L-L-L runs and
+bypasses). Three pieces are missing:
+1. contact-tolerant placement that frees a retained core together with its
+   ends, instead of treating every retained route as a hard obstacle;
+2. a metric that can move a retained core whose ends lie on protected
+   convergence, terminal or fillet spans. The convergence entry binding
+   compares the parameter itself, so this is a meeting-binding change. Example:
+   tour input 84 (key 47b5ac217e3dfa93), core n9→n11 at x=440;
+3. a cheaper metric search for those cases: segment-order cycles and
+   port-corner backtracking exhaust 20–50M per solve.
 
 The residue is construction that cannot place the new tiles without moving
 retained cores (see item 3 above). The production T25 cases certify through
@@ -2585,11 +2601,61 @@ match the old behaviour.
   with 16 pools (it certifies at a 1024M ceiling, not at 512M), and no legacy
   candidate holds. The clicked tile moves from (188, 2954) to (408, 3687).
   Across the evaluation, anchor moves fell (below), so this is one history
-  that got worse while the populations got better. It is left failing for a
-  decision: change the allowance, or rewrite the test around a history that
-  still exercises the legacy search.
+  that got worse while the populations got better. The anchor-loss
+  escalation below fixes it.
 - `layout:eval`: all 50 current targets pass. Against the local admission
   pass: click-anchor moves 26 → 20, dense-tour anchor moves 75 → 59,
   held-screen moves at 480 px 30 → 25 (broad) and 72 → 57 (dense), mean legal
   displacement 11.9 → 10.8 px, new-state transition moved fraction 0.184 →
   0.168. Mean bends rose 154.3 → 156.1 and mean length 37,696 → 37,773.
+
+#### Anchor-loss escalation
+
+A click whose own tile would move breaks the product rule ("clicked ancestry
+stays put"), whatever the aggregate anchor-move count says. Legacy has a larger
+bounded search for that case (the T25 ladder); the constrained path now has
+one too (`band-layout.ts`, the branch taken when no candidate holds the click
+anchor). Each embedding, the committed drawing and the ancestry repack, whose
+ordinary attempt ended in a **budget** decline gets one attempt under the
+`band-insertion-anchor` allowance (`incremental-adoption.ts`): 32M per item
+up to 1024M, pools at the same 1/64M ratio (16 at the ceiling), capture share
+1/20. A conflict decline is not retried. The trigger is the anchor actually
+being lost, the attempt is cached under its own key, and its result passes
+the same certification, retained-pin check, anchor check and gates as any
+other candidate. The legacy ladder runs after it only if it still does not
+hold.
+
+On the inventory (one run):
+- **99 requests** escalate (162 escalated attempts). In 39 of them the clicked
+  tile now stays put; the other 60 still move.
+- Tour anchor moves fell from 89 to 69. Legacy production reach fell from 20
+  requests to 2 (T24 1, T25 repairable 1).
+- Outputs differ from the capture pass in 109 requests. There were 0 gate
+  failures.
+- Latency: the declined tour group (n=74) went p95 11.8 s → 29.8 s, max 12.8 s →
+  32.0 s. All other groups are within 1.3×. Total work went from 89G to 210G.
+- `pinned-search-budget.test.ts` passes. Its click 6 needs 349M of the 1024M
+  ceiling.
+
+#### Gates after the escalation
+
+- `bun run check`: 0 errors.
+- `bun run test`: 2,425 passed, 1 skipped, 4 failed, all on timeouts, in
+  3,054 s (1,941 s before the escalation, 1,285 s at the local admission pass).
+  - `pinned-search-budget.test.ts` (15 s alone, 2/2 pass),
+    `partial-band-routing-room.test.ts` (13 s alone, pass) and
+    `folder-layout-parity.test.ts` (9/9 alone) pass when run alone.
+  - **`click-stability.test.ts` exceeds its 30-minute limit.** Run alone, it
+    took more than 28 minutes even before the escalation. The 256M allowance
+    and the escalation make this sweep far slower, which breaks the bound that
+    it must not get slower.
+- `layout:eval`: all 50 current targets pass. Against the capture pass before
+  the escalation:
+  - click-anchor moves 20 → 12;
+  - dense-tour anchor moves 59 → 48;
+  - held-screen moves 25 → 18 (broad) and 57 → 49 (dense);
+  - mean legal displacement 10.8 → 9.6 px;
+  - ≤30-tile maximum p95 31.3 → 27.8 ms.
+
+  Against #105, click-anchor moves went 26 → 12 and dense-tour anchor moves
+  75 → 48.
