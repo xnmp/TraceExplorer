@@ -262,6 +262,11 @@ function bandTransform(layout: GraphLayout, key: string, bandTop: number, placem
   return { root, bottom, stemRoom, dx: placement.x - extentLeft(layout, key), childOffset, mapY: (y: number) => y <= bottom ? y - root.y : y + childOffset };
 }
 
+/** The attached drawing's height. The cover takes the host's cover height, which can exceed
+ * a cover-only band's own height; the drawing still contains its cover (slice 5c). */
+const attachedHeight = (layout: GraphLayout, placement: BandPlacement, t: BandTransform): number =>
+  Math.max(t.mapY(layout.height), placement.coverHeight);
+
 function attachedNodes(layout: GraphLayout, key: string, placement: BandPlacement, t: BandTransform): GraphLayout["nodes"] {
   const nodes = new Map<string, import("./layout").PlacedNode>();
   layout.nodes.forEach((node, id) => nodes.set(id, id === key
@@ -308,7 +313,7 @@ const runLength = (dx: number, dy: number): number => dx === 0 ? Math.abs(dy) : 
 export function attachedSkeleton(layout: GraphLayout, key: string, bandTop: number, placement: BandPlacement): GraphLayout {
   const t = bandTransform(layout, key, bandTop, placement);
   if (!t) return { ...layout, routes: [], junctions: new Map() };
-  return { ...layout, width: placement.width, height: t.mapY(layout.height),
+  return { ...layout, width: placement.width, height: attachedHeight(layout, placement, t),
     ...(layout.bandBounds ? { bandBounds: { ...layout.bandBounds, left: layout.bandBounds.left + t.dx, top: t.mapY(layout.bandBounds.top) } } : {}),
     nodes: attachedNodes(layout, key, placement, t), junctions: new Map(), routes: [], rows: [] };
 }
@@ -316,7 +321,10 @@ export function attachedSkeleton(layout: GraphLayout, key: string, bandTop: numb
 /** How {@link attachPackedBand} paints each route: a pure function of the route,
  * given the layout's transform and declared frame. Null when the layout has no
  * transform (attachment then returns the layout unchanged). */
-interface RoutePainter { readonly t: BandTransform; readonly sameFrame: boolean; readonly paint: (route: import("./layout").PlacedRoute) => import("./layout").PlacedRoute }
+interface RoutePainter { readonly t: BandTransform; readonly sameFrame: boolean;
+  /** True when the route is a declared retained root path, painted byte-for-byte. */
+  readonly retained: (route: import("./layout").PlacedRoute) => boolean;
+  readonly paint: (route: import("./layout").PlacedRoute) => import("./layout").PlacedRoute }
 function routePainter(layout: GraphLayout, key: string, bandTop: number, placement: BandPlacement): RoutePainter | null {
   const t = bandTransform(layout, key, bandTop, placement);
   if (!t) return null;
@@ -327,8 +335,9 @@ function routePainter(layout: GraphLayout, key: string, bandTop: number, placeme
     && dx === 0 && t.childOffset === 0 && root.y === 0
     && root.x === placement.coverX - root.width / 2 && root.height === placement.coverHeight;
   const retainedPaths = new Map(sameFrame && Array.isArray(frame?.paths) ? frame.paths : []);
-  return { t, sameFrame, paint: route => {
-    if (route.from.kind === 'node' && route.from.id === key && retainedPaths.get(route.id) === route.path) return route;
+  const retained = (route: import("./layout").PlacedRoute) => route.from.kind === 'node' && route.from.id === key && retainedPaths.get(route.id) === route.path;
+  return { t, sameFrame, retained, paint: route => {
+    if (retained(route)) return route;
     const path = translatePath(route.path, t);
     if (route.from.kind !== "node" || route.from.id !== key) return { ...route, path };
     // The untranslated start y (NaN, never near, when the path has no second number).
@@ -347,7 +356,7 @@ export function attachPackedBand(layout: GraphLayout, key: string, bandTop: numb
   if (!painter) return layout;
   const { t, sameFrame, paint } = painter, { dx, mapY } = t;
   const frame = layout.routingAttachment;
-  return { ...layout, width: placement.width, height: mapY(layout.height),
+  return { ...layout, width: placement.width, height: attachedHeight(layout, placement, t),
     ...(frame ? { routingAttachment: sameFrame ? frame : undefined } : {}),
     ...(layout.bandBounds ? { bandBounds: { ...layout.bandBounds, left: layout.bandBounds.left + dx, top: mapY(layout.bandBounds.top) } } : {}),
     ...(((layout.anchorX ?? layout.preferredX) !== undefined && Math.abs(placement.x - (layout.anchorX ?? layout.preferredX)!) > .01
@@ -366,14 +375,22 @@ export function attachedStem(path: string, bandTop: number, stemRoom: number, pl
   return importAttachmentStem(path, bandTop, stemRoom, placement);
 }
 
+/** Candidates of world-placed drawings (folder-layout's pinned and constrained
+ * extensions): already in the attached frame, so no transform reproduces them. */
+const WORLD_DRAWINGS: ReadonlySet<string> = new Set(["folder-pinned-extension", "folder-constrained-extension"]);
+
 /** A root route's attachment, before corners are rounded. Non-root routes have no stem. */
 export function bandRouteStem(layout: GraphLayout, key: string, bandTop: number, placement: BandPlacement, route: import("./layout").PlacedRoute): AttachedStem | null {
   // A world-placed merge's envelope can include an absorbed cover beside this
   // cover. It is not a packed child band below the cover row, so its native
   // routes have no attachment transform to reconstruct.
-  if (bandTop < placement.coverHeight) return null;
-  const t = bandTransform(layout, key, bandTop, placement);
-  if (!t || route.from.kind !== "node" || route.from.id !== key) return null;
+  if (bandTop < placement.coverHeight || WORLD_DRAWINGS.has(layout.decision?.candidate ?? "")) return null;
+  const painter = routePainter(layout, key, bandTop, placement);
+  if (!painter || route.from.kind !== "node" || route.from.id !== key) return null;
+  // A retained root path is drawn byte-for-byte, not rebuilt from this
+  // placement, so it has no attachment stem: motion morphs its drawn shape.
+  if (painter.retained(route)) return null;
+  const t = painter.t;
   const path = translatePath(route.path, t);
   return Math.abs(t.mapY(translatedStart[0]) - t.root.height) <= .1 ? attachedStem(path, bandTop, t.stemRoom, placement) : null;
 }

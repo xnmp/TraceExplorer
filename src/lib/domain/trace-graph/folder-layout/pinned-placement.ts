@@ -15,6 +15,7 @@ import type { GridBand, GridCell, GridRect } from '../grid-flow';
 import { centeredCellFootprint, withCellFootprints } from './cell-footprints';
 import { folderGeometryGate } from './geometry-gate';
 import { paneRouteBounds, unionRect } from './route-bounds';
+import { freeSpaceInsertions } from './free-space-insertion';
 import type { FolderGraph, FolderLayout, FolderLayoutInput, GraphId, FolderPlacementHistory } from './types';
 
 type Plan = { readonly plan: BandScenePlan };
@@ -75,20 +76,41 @@ function mapRouteConsumers(routes: readonly PlacedRoute[], map: (c: Consumer) =>
 }
 
 /**
+ * How an arrival that packing could not pin searches the world (slice 5c):
+ * - `legacy-only` (production): the legacy pin search (T37) alone;
+ * - `legacy-first`: the legacy search, then free-space insertion;
+ * - `free-first`: free-space insertion, then the legacy search.
+ * Free-space insertion is a counted candidate; docs/routing-consolidation.md (5c) has its data.
+ */
+export type WorldSearchOrder = 'legacy-first' | 'free-first' | 'legacy-only';
+
+/**
  * Existing tiles and wires from every component are obstacles to every insertion. The neutral
  * anchor has no edges: its only purpose is adapting the band router's root parameter. It is
  * removed before certification. A failed bounded search withholds this candidate; it does not
  * prove that retained placement is infeasible.
  */
-export function pinnedFolderPlacement(input: FolderLayoutInput, plans: ReadonlyMap<GraphId, Plan>, snapshot: FolderPlacementHistory['layout'], candidate: FolderLayout): FolderLayout | null {
+export function pinnedFolderPlacement(input: FolderLayoutInput, plans: ReadonlyMap<GraphId, Plan>, snapshot: FolderPlacementHistory['layout'], candidate: FolderLayout,
+  order: WorldSearchOrder = 'legacy-only'): FolderLayout | null {
   const endStage = layoutStage('pinned-folder'); try {
-
-  try { return place(input, plans, snapshot, candidate) ?? place(input, plans, snapshot, candidate, true); } catch { return null; }
-
+  const legacy = () => {
+    const found = attempt(() => place(input, plans, snapshot, candidate) ?? place(input, plans, snapshot, candidate, true));
+    if (found) countLayoutWork('legacy:T37:published');
+    return found;
+  };
+  const free = () => {
+    countLayoutWork('folder-world:free-space:attempt');
+    const found = attempt(() => place(input, plans, snapshot, candidate, false, true));
+    if (found) countLayoutWork('folder-world:free-space:published');
+    return found;
+  };
+  return order === 'legacy-only' ? legacy() : order === 'free-first' ? free() ?? legacy() : legacy() ?? free();
   } finally { endStage(); }
 }
 
-function place(input: FolderLayoutInput, plans: ReadonlyMap<GraphId, Plan>, snapshot: FolderPlacementHistory['layout'], candidate: FolderLayout, shiftHintColumns = false): FolderLayout | null {
+const attempt = (search: () => FolderLayout | null): FolderLayout | null => { try { return search(); } catch { return null; } };
+
+function place(input: FolderLayoutInput, plans: ReadonlyMap<GraphId, Plan>, snapshot: FolderPlacementHistory['layout'], candidate: FolderLayout, shiftHintColumns = false, freeSpace = false): FolderLayout | null {
   if (!(snapshot.cells instanceof Map) || !(snapshot.graphs instanceof Map)) return null;
   if (!Array.isArray(snapshot.bands)) return null;
   const oldBands = new Map(snapshot.bands.map(band => [band.id, band]));
@@ -181,6 +203,17 @@ function place(input: FolderLayoutInput, plans: ReadonlyMap<GraphId, Plan>, snap
     () => missing.length ? rerouteResizedHistory(retainedRequest, unresized, heights, shiftHintColumns, ORIGIN_X) : null,
   ];
   const unplacedCells = cells;
+  if (freeSpace) {
+    // Every retained rectangle, dot and run is a constant obstacle; only the new tiles and their connectors are free.
+    const previous = histories[0]() ?? histories[1]();
+    if (!previous || !missing.length) return null;
+    for (const drawing of freeSpaceInsertions({ items: request.items, drawing: previous, pane: { left: ORIGIN_X, right: maxWidth }, exclude: new Set([ROOT]) })) {
+      countLayoutWork('folder-world:free-space:candidate');
+      const result = finish(drawing);
+      if (result) return result;
+    }
+    return null;
+  }
   for (const history of histories) {
     const previous = history();
     if (!previous) continue;

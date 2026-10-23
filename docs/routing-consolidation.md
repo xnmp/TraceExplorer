@@ -327,7 +327,7 @@ async pattern: use existing pure request/result and publication transaction.
 | **2. Explicit ports and painted corridors (complete)** | T8/T14/T16/T29/T34/T35 duplicated endpoint/envelope reconstruction. Import existing topology into explicit ports, arrow stubs and certified turn/corridor bounds; retain current emitter initially. | Same semantic consumers/endpoints and exact reused route geometry; native cubics, near-pane arrows and host cover chrome pass existing tests/gates. Retained unaffected stem paths remain byte-identical, supporting interrupted motion. Reject malformed imported plans. | 600–1,000 lines; 3–5 days | Medium: source vs branch endpoints, raw/attached transforms, stroke versus allocation extents. |
 | **3. Junctions and corridor topology (complete)** | T3/T5–T10/T12/T13; reuse T1 semantics. Replace provisional/deferred/stacked placement, zone reconsideration and dropped ordering with explicit junction ports and channel search. | Critical cycle gets a certified split/crossing topology, never a discarded hard dependency. Exact parentage for reused subsets, 2–8 inputs, distant fan-outs and long edges; crossing/height/pane/fallback limits all hold. Try new corridor assignments before growing only free boundaries. | 1,200–1,800 lines; 6–9 days | High: combinatorial corridor capacity and fan-in/crossing semantics. Bounds on **total** search/constraint work, not per retry. |
 | **4. Constrained incremental insertion and hint changes (open; lossless import boundary complete)** | T18–T28 plus T37's separate routing. Import committed drawing into same model, freeze declared tracks/rectangles/suffixes, add new ports/segments and re-solve affected conflict components. | Arrival world-oracles, merges/departures, single 16 px descent and shrink-space reuse; clicked ancestry equality; exact revisits and worker parity. Delete repairable-contact policy and port/bypass offset repair only when all old successes are covered. Preserve other retained tiles where the request pins them; optimize only free ones. | 1,200–1,900 lines; 6–10 days | High: pruning/identity, future departures, hint port changes, dense search tails. |
-| **5. Cold sweeps and folder packing in that model (open; 5a display-row and 5b wrapped rightward embeddings complete, see "Slice 5 plan")** | T2/T17/T19/T30/T36–T38 placement alternatives. Shelves, downward and serial layouts become embedding generators feeding one solve; packing contributes constraints before final routing. | All cold widths/presets and legal tours retain display/long-edge order, quality and timing targets. New-state sweeps may choose freer embeddings; pinned states never lose pins when a compact/serial candidate is considered. Folder ordinary cells and other bands are first-class obstacles. | 1,000–1,600 lines; 5–8 days | High: compactness, candidate pruning and 10 ms inline budget; avoids a simultaneous scoring rewrite. |
+| **5. Cold sweeps and folder packing in that model (complete: 5a display-row and 5b wrapped rightward embeddings, 5c folder packing as constraints; see "Slice 5 plan")** | T2/T17/T19/T30/T36–T38 placement alternatives. Shelves, downward and serial layouts become embedding generators feeding one solve; packing contributes constraints before final routing. | All cold widths/presets and legal tours retain display/long-edge order, quality and timing targets. New-state sweeps may choose freer embeddings; pinned states never lose pins when a compact/serial candidate is considered. Folder ordinary cells and other bands are first-class obstacles. | 1,000–1,600 lines; 5–8 days | High: compactness, candidate pruning and 10 ms inline budget; avoids a simultaneous scoring rewrite. |
 | **6. Remove superseded routers/repairs** | Delete remaining legacy T21–T25/T28/T36/T38 implementations once every embedding uses common constraints; T5–T7/T10/T13 are deleted in slice 3. Retain T1 consumer semantics, T16 emitter if still useful, T39 history and T40 independent gates. | No legacy escapes reached across full acceptance and targeted rare-branch fixtures; safe chain/fan/serial are certified embedding choices under identical pins. New diagnostics distinguish topology conflict, metric conflict, unsupported input and budget exhaustion. | 300–700 new/changed lines, larger net deletion; 2–4 days | Medium after coverage; zero sample use alone never justifies deletion. |
 
 Slices 3–5 are intentionally separate: metric solving first establishes enforceable
@@ -3546,4 +3546,263 @@ Final code, rebased onto origin/main df79de1:
   compacted inside the solve, not only for straight runs.
 - **Wrapped generator cost:** a lower-bound skip against the downward bound,
   and reuse of the candidate flow's chunk solves in the ladder rung.
-- **5c is next:** folder packing as constraints.
+- **5c followed:** folder packing as constraints, which completes slice 5.
+
+### Slice 5c: folder packing as constraints
+
+#### Design
+
+One-dimensional compaction, as VLSI and diagram compaction use it (scanline
+constraint graphs; ELK's `OneDimensionalCompactor` and rectangle packing):
+rectangles in a fixed order, every obstacle a separation constraint, solved
+before the final routing. Three folder stages meet in that model, and each
+keeps its legacy constructor beside it, counted.
+
+1. **T30, ordered packing.** The row packer is already this model in its x
+   pass. Within a line, groups keep cover order, and `packStackGroups` solves
+   `x[i+1] - x[i] >= w[i] + gap` with bounds `[0, W - w[i]]`, minimising squared
+   displacement from the preferred x by pool-adjacent-violators. That is the
+   block-merging solve VPSC uses (Dwyer, Marriott and Stuckey, "Fast node
+   overlap removal") on a chain. Click reservations (`anchorX`/`anchorY`) are
+   equalities, applied when feasible. The skyline is the longest path of the
+   scanline constraint graph in y. 5c keeps this solve and adds the constraint
+   it lacked: **a band's own certified attachment frame**. The band engine
+   certifies each band in an identity frame (`routingAttachment`). Where the
+   packed position equals that frame's (band top, band x, cover x and cover
+   height), the frame becomes an equality, and the band keeps its exact
+   certified drawing (`composeFolderLayout(…, identityFrames)`). Packing tries
+   this only when its ordinary attachment fails the folder gate. That happens
+   when packing re-attaches a world-placed band's stem with its own track. The
+   identity-frame packing is tried before any band leaves its requested column
+   (`packing:identity-frames:published`).
+2. **T37, retained world rectangles as constants.** On an arrival, every
+   retained world rectangle is a constant: cell footprints, band tiles, dots
+   and connector runs. The legacy pin search already builds the world this way
+   (`pinnedFolderPlacement`). 5c adds a second constructor of the same problem,
+   `freeSpaceInsertions` (`folder-layout/free-space-insertion.ts`):
+   1. **Discrete choice.** Each new tile takes a rectangle at a corner of the
+      free space: aligned with an obstacle's edge or the pane, or one gap beyond
+      it, with every obstacle at least `FREE_SPACE_GAP` away. Candidates are
+      ranked by added height, then connector length.
+   2. **Topology.** A visibility-grid corridor search (`orthogonalRoute`).
+      Another source's runs may be crossed but never run along, and its corners
+      keep a lane's distance. Several parents meet at one dot above the tile:
+      inputs one lane apart, curving into it, as the layered solve draws a
+      meeting.
+   3. **Metric.** Every interior run is a coordinate bounded by its channel, its
+      neighbours' directions and the arrow's straight approach. The separation
+      solve centres it.
+   4. **Emission.** The shared stem emitter rounds the corners.
+
+   The generator only proposes. Every candidate is certified by the unchanged
+   folder gate and the retained-rectangle check (`finish`), exactly as a legacy
+   candidate is. `DefaultEngineOptions.worldSearch` orders the two:
+   `legacy-only`, `legacy-first` or `free-first`.
+3. **T38, isolation under the same pins.** Isolation changes the folder grid
+   (one column), never the band requests. Its rungs are, in order:
+   1. the requested band layouts, first in their identity frames, then with
+      the packed attachment. Every band keeps its drawing, and so its pin set;
+   2. the serial embedding (5a) through the common solve, for each band whose
+      `ladderPins` it keeps;
+   3. legacy serial rows, counted as `legacy:T38:published`, with the pins it
+      drops counted as `legacy:T38:pins-lost`.
+
+Before the measurements, the reach analysis found a precondition bug, fixed at
+its root. 100 of the 166 pin-search exhaustions were one deterministic arrival:
+a cover-only band in a full two-column grid (360 px, 96 px tiles) gains its
+first child. The legacy pin search never ran there. `attachPackedBand` gave a
+cover-only band the height of its own tile (112 px), not of the host cover it
+draws (128 px). The attached drawing therefore failed the band gate, so
+`validHistory` rejected the snapshot, and `place` returned null before
+searching. The attached height now contains the cover (`attachedHeight`). Only
+cover-only bands change, since any child row lies below the cover.
+
+#### What shipped
+
+- `band-geometry.ts`: `attachedHeight`, used by `attachPackedBand` and
+  `attachedSkeleton`.
+- `folder-layout/default-engine.ts`:
+  - `composeFolderLayout(…, identityFrames)`;
+  - the identity-frame packing before isolation;
+  - `isolatedFolder` (T38 rungs);
+  - `DefaultEngineOptions.worldSearch`.
+- `folder-layout/pinned-placement.ts`: `WorldSearchOrder`; `place(…, freeSpace)`.
+  The legacy search is unchanged and now counted as `legacy:T37:published`.
+- `folder-layout/free-space-insertion.ts`: `freeSpaceInsertions`.
+- `band-geometry.ts`: `bandRouteStem` gives no motion stem for a retained
+  root path or a world-placed drawing (review fix, below).
+
+Counters:
+- `packing:identity-frames:published`;
+- `isolation:attempt`, then `isolation:framed|requested|serial-embedding:published`;
+- `legacy:T38:published` and `legacy:T38:pins-lost`;
+- `folder-world:free-space:attempt|candidate|published`.
+
+#### Folder arrival reach
+
+`s14/freach.ts`: the metric pass's population of 14,400 arrivals (100 seeds;
+widths 360, 454, 640 and 900; tiles 48, 64 and 96; 12 arrivals each). It now
+also records the folder decision. The base is routing-s5b (f1169c6), run the
+same day.
+
+| | 5b | 5c default |
+|---|---:|---:|
+| `search-exhausted` | 166 | **63** |
+| Gate failures | 0 | 0 |
+| `isolated-rows` | 0 | 0 |
+| Outputs identical to 5b | — | 13,310 |
+| p50 / p95 / p99 / max ms, all | 8.5 / 43.3 / 327.6 / 1,824 | 8.7 / 63.3 / 420.6 / 2,397 |
+| p50 / p95 / p99 / max ms, arrivals after the first | 9.5 / 50.6 / 339.5 / 1,824 | 9.8 / 90.1 / 428.7 / 2,397 |
+
+- **120 of 5b's 166 exhaustions now pin.**
+  - 100 are the cover-only case.
+  - The other 20 are later arrivals of those sequences. In 5b they followed a
+    moved step-1 layout; in 5c they follow the pinned world drawing.
+- **46 remain.** 58 of the 63 exhaustions are merges of 2–8 parents.
+- **17 are new.** All 17 are in sequences that diverged at step 1, so they never
+  existed in 5b.
+- **Latency.** Those 100 sequences now continue in the world frame: each later
+  arrival runs the world search (about 30–400 ms) instead of a free repack.
+  Arrival p95 therefore rises 1.5×, and 1.8× for arrivals after the first. These
+  are arrivals, not clicks, and no inline limit applies to them. Folder clicks
+  are unchanged (below).
+- **Isolation.** Before the identity frames, the same population reached
+  isolation 5 times, each through legacy T38 with a dropped pin. A world-placed
+  band's tile sat beside a cell, above the stem room that packing's attachment
+  assumes. Re-attaching its stem left a 3 px arrow approach, so both the packed
+  and the isolated compositions failed the gate. With identity frames, all 5
+  publish a certified packed folder (`packing:identity-frames:published` 5, kept
+  in the requested two columns), and isolation is never reached.
+
+#### Free-space insertion: candidate, not default
+
+All three orders, on the same population:
+
+| Order | Exhausted | Free-space published | Legacy T37 published | p95 / p99 / max ms |
+|---|---:|---:|---:|---:|
+| `legacy-only` | 63 | — | 1,076 | 63.3 / 420.6 / 2,397 |
+| `legacy-first` | 63 | 0 | 1,076 | 62.4 / 412.1 / 3,229 |
+| `free-first` | 56 | 686 | 402 | 50.0 / 489.0 / 25,910 |
+
+- **`legacy-first`.** Outputs are identical to `legacy-only` on all 14,400
+  arrivals. On the 63 requests the legacy search exhausts, free-space insertion
+  never certifies. These are cramped merges: 360 px with 96 px tiles holds two
+  columns with 8 px gaps. Its 33 proposals failed the gate on route contact
+  (27) and route through tile (6). Corner clearance, lane-symmetric fans and
+  extra drop rows, added after that, leave it with no certifiable proposal.
+- **`free-first`.**
+  - It changes which arrivals exhaust: 16 that legacy exhausts pin, and 9 that
+    legacy pins exhaust, a net 7 fewer.
+  - Its p95 is lower, because a free-space success is cheaper than a legacy one.
+  - Its tail is 25.9 s, since a failed free-space search on a large world
+    precedes the legacy search. The search had no cap on failed corridor tries
+    then; one is added now (`MAX_TRIES`), but this run predates it.
+  - Per the bounds, a tens-of-seconds regression is the user's call, so
+    `free-first` is not shipped.
+
+**Default decision: `legacy-only`.** Free-space insertion adds no reach after
+legacy and costs a tail before it. It stays a counted candidate behind
+`worldSearch`, with unit tests, for slice 6 to keep or delete. Production
+latency is unaffected, since the production path never calls it.
+
+#### Production inventory, cold sweeps and click latency
+
+Against origin/main df79de1, run at the same time:
+- **`s14/lat.ts`** (3,405 requests):
+  - folder clicks (255): 0 outputs differ and 0 gate failures; p95 93.3 ms on
+    main against 84.8 ms on 5c (ratio 0.91);
+  - tours (3,150): 7 outputs differ, all 5b's known `random-bushy-100-8203` at
+    360 px; 0 gate failures; p95 ratio 1.00;
+  - legacy T24, T25 and T28 counts are identical to main;
+  - `legacy:T38`, `fallback-ladder` and `cold-embedding` are all 0.
+- **Folder cold sweep** (`s14/fsweep.ts`): 40 random multi-stack folders
+  (`randomFolder`) at widths 360–1400 and tiles 48, 64, 96 and 128, so 800 cold
+  folders.
+  - 5c is byte-identical to 5b on all 800.
+  - Against main, the 84 that differ are 5b's wrapped shelves.
+
+  | Mean | main | 5c |
+  |---|---:|---:|
+  | Height, px | 914.9 | 903.5 |
+  | Compactness (tile area / folder area) | 0.4865 | 0.4901 |
+  | Gutter bridges | 0 | 0 |
+  | Isolated rows | 0 | 0 |
+  | Gate failures | 0 | 0 |
+  | p95, ms | 23.2 | 23.7 |
+
+#### Tests
+
+- `tests/domain/trace-graph/folder-packing-constraints.test.ts`:
+  - a cover-only band's attached drawing contains its cover and is valid history;
+  - a closed-row cover gaining its first child keeps every cell and tile
+    (360/96, 454/96 and 360/64);
+  - seed 49 at 360 px, 96 px tiles, arrivals 0–10: every folder passes the
+    gate, keeps two columns and is never isolated rows;
+  - a root connector has a motion stem only when that stem is the drawn
+    connector: ordinary packed, world-placed and identity-framed graphs.
+- `tests/domain/trace-graph/free-space-insertion.test.ts`: the empty grid slot
+  with every retained rectangle constant and a centred gap run; determinism
+  and ranking; chains; multi-parent meetings; malformed and declined inputs;
+  the obstacle bound; the whole-request work bound; foreign connectors never
+  run along; the excluded anchor frees the slot it covers.
+
+#### Review
+
+An independent adversarial review found no blockers. It confirmed gate,
+rectangle, determinism, worker parity and exact revisits on identity-frame
+packing (seeds 1–100 at 360/96), on all four isolation rungs under a forced
+gate, and on `free-first` publications. Fixed:
+
+1. **Should-fix, motion.** `bandRouteStem` rebuilt a root stem from the
+   placement even when the drawn path was a retained identity-frame path or a
+   world-placed drawing. A morph into or out of such a scene would start or end
+   on a stem never drawn (4 of 4 roots in `49/360/96/10`; the world-placed half
+   predates 5c, but the cover-only fix makes it common). Those routes now have
+   no stem pose, so motion morphs the drawn shape. `presentation.ts` is
+   unchanged.
+2. **Free-space work bound.** A long arrival multiplied the per-tile tries
+   (a chain of 80 took 7.5 s). `MAX_INSERTS` (192 corridor searches per
+   request) now bounds it: 1.1–1.3 s for chains of 40–160. Only the
+   non-default orders reach it.
+3. **Two vacuous tests** (the foreign-connector fixture had no proposals; the
+   anchor test didn't test exclusion), now sharpened.
+4. **Isolation** no longer recomposes the failed requested folder when no band
+   adopts the serial embedding, and the pins-lost count tolerates a missing
+   cover.
+
+#### Gates and acceptance rows
+
+Final code, rebased onto origin/main 78e8c16 (#110):
+- **`bun run check`:** 298 files, 0 errors.
+- **`bun run test`:** 202 files; 2,490 passed, 1 skipped, 3 failed, all load
+  timeouts: `folder-layout-parity`, `partial-band-routing-room`, and the new
+  seed-49 test at the default 5 s (now given 30 s). All three files pass alone
+  (20/20).
+- **`layout:eval`:** all 50 current targets pass. The acceptance rows equal
+  5b's: click-anchor moves 15; dense-tour anchor moves 51; held-screen moves at
+  480 px 20 and 52; mean legal displacement 10.6 px; mean height 2,104.5;
+  crossings 330.7; sibling inversions 0.080; unaligned 0.165; mixed directions
+  1.70. Main-thread maximum p95 3.58 ms (limit 8); full folder engine inline
+  p95 4.25 ms (limit 10).
+- **`click-stability.test.ts`** alone: passes in 2,268 s (5b: 2,276 s).
+
+5c's acceptance:
+- arrival reach: 63 search-exhausted against 166, 0 gate failures;
+- no `isolated-rows` publication in the reach population, the cold sweep or
+  the inventory. Where legacy T38 is still reached, the pins it drops are
+  counted (`legacy:T38:pins-lost`);
+- inline folder p95 4.25 ms.
+
+Slice 5 is complete.
+
+#### What remains, for slice 6
+
+- **T37 is still the production world constructor.** Free-space insertion is a
+  counted candidate (`worldSearch`) that adds no reach after the legacy search.
+  Deleting T37 needs a constructor that certifies its cramped merges.
+- **63 arrivals still exhaust**, 58 of them merges of 2–8 parents at 360 px.
+- **World-placed sequences cost more per arrival** (arrival p95 1.5×), because
+  the cover-only fix keeps about 100 more sequences in the world frame.
+- **T38's `safeLayout` rung and T30's skyline stay** as legacy, counted.
+  The production inventory reached no isolation rung (`legacy:T38` 0).
+
