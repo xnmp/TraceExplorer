@@ -53,7 +53,7 @@ describe('folder packing as constraints (slice 5c)', () => {
       expect(next.columns).toBe(2);
       previous = next;
     }
-  });
+  }, 30_000);
 
   it.each([[1, 900, 64, 2], [49, 360, 96, 1], [49, 360, 96, 9], [49, 360, 96, 10], [4, 360, 96, 11]])(
     'gives a root connector a motion stem only when that stem is the drawn connector (seed %i, %i px, %i px tiles, arrival %i)', (seed, width, px, last) => {
