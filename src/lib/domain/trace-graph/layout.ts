@@ -217,6 +217,24 @@ export function wrapRow(widths: readonly number[], limit: number, gap: number): 
   return greedyRows(widths, countWrapped(widths, low, gap) <= target ? low : high, gap);
 }
 
+/**
+ * A generation's display rows under an explicit embedding capacity: at most
+ * `capacity` tiles per row, in the given order. Groups are balanced by count
+ * (earlier rows take the remainder), then each group wraps by width as
+ * {@link wrapRow} does. No capacity is the default embedding, {@link wrapRow}.
+ */
+export function wrapCapacity(widths: readonly number[], limit: number, gap: number, capacity?: number): number[][] {
+  if (capacity === undefined || !(capacity >= 1) || widths.length <= capacity) return wrapRow(widths, limit, gap);
+  const whole = Math.floor(capacity), groups = Math.ceil(widths.length / whole), rows: number[][] = [];
+  const base = Math.floor(widths.length / groups), extra = widths.length % groups;
+  for (let group = 0, start = 0; group < groups; group++) {
+    const size = base + (group < extra ? 1 : 0), indices = Array.from({ length: size }, (_, i) => start + i);
+    for (const row of wrapRow(indices.map(index => widths[index]), limit, gap)) rows.push(row.map(i => indices[i]));
+    start += size;
+  }
+  return rows;
+}
+
 /** {@link wrapRow}'s rows at one bound: each takes tiles while they fit (holes in `widths` are skipped). */
 function greedyRows(widths: readonly number[], bound: number, gap: number): number[][] {
   const rows: number[][] = [];
@@ -308,7 +326,16 @@ export type Ordering = "barycenter" | "median-sweep" | {
  */
 export type Passing = "straight" | "nearest-end";
 
-export interface LayeredOptions { readonly columnGap?: number; readonly ordering?: Ordering; readonly passing?: Passing; readonly channelStyle?: "scaled" | "orthogonal" }
+export interface LayeredOptions {
+  readonly columnGap?: number; readonly ordering?: Ordering; readonly passing?: Passing; readonly channelStyle?: "scaled" | "orthogonal";
+  /**
+   * Discrete display embedding (routing slice 5): at most this many tiles per
+   * display row of a generation. Absent is the default balanced wrap. Serial
+   * rows (1) and bounded grids are other embeddings of the same layered solve;
+   * routing, junctions and separations are unchanged.
+   */
+  readonly rowCapacity?: number;
+}
 
 /** The reusable layered engine; band candidates call it without recursively planning bands. */
 export function layoutLayered(request: LayoutRequest, options: LayeredOptions = {}): GraphLayout {
@@ -373,7 +400,7 @@ export class RoutingConflictError extends RangeError {
   constructor(readonly conflict: CorridorConflict) { super('Routing search conflict: ' + JSON.stringify(conflict)); }
 }
 function layoutDown(request: LayoutRequest, minWidth: number, options: LayeredOptions = {}): GraphLayout {
-  const prepared = { ...prepare(request, options.ordering ?? "barycenter", options.passing ?? "straight", options.columnGap), channelStyle: options.channelStyle };
+  const prepared = { ...prepare(request, options.ordering ?? "barycenter", options.passing ?? "straight", options.columnGap, options.rowCapacity), channelStyle: options.channelStyle };
   const scoreable=prepared.keys.length>0 && request.items.every(item=>Number.isFinite(item.width) && Number.isFinite(item.height) && item.width>0 && item.height>0 && item.width<=MAX_TILE && item.height<=MAX_TILE);
   const result = searchCorridors(search => {
     const layout=layoutPass(prepared,search,minWidth);
@@ -511,7 +538,7 @@ export function downwardBandBound(request: LayoutRequest, coverKey: NodeKey, ste
  * Everything about a request that does not depend on a pass's extra margins:
  * computed once and shared by every pass of {@link layoutDown}.
  */
-function prepare(request: LayoutRequest, ordering: Ordering = "barycenter", passing: Passing = "straight", columnGap?: number) {
+function prepare(request: LayoutRequest, ordering: Ordering = "barycenter", passing: Passing = "straight", columnGap?: number, capacity?: number) {
   // Malformed input never spreads through the geometry: a size that is not a
   // finite, non-negative number counts as zero, sizes are capped far above
   // any tile, and an order that is not a number sorts first (ties by key).
@@ -612,7 +639,7 @@ function prepare(request: LayoutRequest, ordering: Ordering = "barycenter", pass
   for (const key of keys) if (typeof key !== "string" || key.includes(">") || key.includes("~")) { plainKeys = false; break; }
   return {
     space, items, keys, parentsOf, bandCount, byBand, pinnedViolation, plan, joinFacts, ordered, targetsOf, plainKeys, swept, passing,
-    gap, margin, budget, pinned, contentWidth, rank, firstBand, firstRows: wrapRow(firstBand.map((key) => items.get(key)!.width), contentWidth, gap),
+    gap, margin, budget, pinned, contentWidth, rank, firstBand, capacity, firstRows: wrapCapacity(firstBand.map((key) => items.get(key)!.width), contentWidth, gap, capacity),
   };
 }
 type Prepared = ReturnType<typeof prepare> & Pick<LayeredOptions, "channelStyle">;
@@ -707,7 +734,7 @@ function layoutPass(prepared: Prepared, search: CorridorSearch, minWidth: number
       members = prepared.swept[bandIndex];
       const widths: number[] = [];
       for (const key of members) widths.push(items.get(key)!.width);
-      wrapped = wrapRow(widths, contentWidth, gap);
+      wrapped = wrapCapacity(widths, contentWidth, gap, prepared.capacity);
     } else {
       // Barycenter of parents in reading order (row first, then x) keeps
       // children near their parents even when parent rows wrapped. Parents
@@ -722,7 +749,7 @@ function layoutPass(prepared: Prepared, search: CorridorSearch, minWidth: number
       members = byBand[bandIndex].filter((key) => !pinned || key !== pinned.key).sort((a, b) => score.get(a)! - score.get(b)! || rank.get(a)! - rank.get(b)!);
       const widths: number[] = [];
       for (const key of members) widths.push(items.get(key)!.width);
-      wrapped = wrapRow(widths, contentWidth, gap);
+      wrapped = wrapCapacity(widths, contentWidth, gap, prepared.capacity);
     }
     for (const indices of wrapped) {
       const keysInRow: NodeKey[] = [];
