@@ -2,7 +2,6 @@ import { expect, it } from 'vitest';
 import { corpus, requestFor } from '../../../layout-eval/corpus';
 import { safeLayout } from '$lib/domain/trace-graph/safe-layout';
 import { safeColumns } from '$lib/domain/trace-graph/safe-columns';
-import { safeFanGrid } from '$lib/domain/trace-graph/safe-grid';
 import { safeChain } from '$lib/domain/trace-graph/safe-chain';
 import { attachSingleBand } from '$lib/domain/trace-graph/band-geometry';
 import { geometryGate } from '$lib/domain/trace-graph/geometry-gate';
@@ -61,13 +60,3 @@ it.each([16,32,100].flatMap(count => [true,false].map(padded => ({count,padded})
   expect([...tables].reduce((sum,entries)=>sum+entries.length,0)).toBeLessThanOrEqual(count*8);
 });
 
-
-it.each([96,108,120])('wraps a fan when only %i px of pane width is available', width => {
-  const items=Array.from({length:17},(_,i)=>({key:String(i),order:i,width:96,height:96,parents:i?['0']:[]}));
-  const request={items,maxWidth:width,band:{key:'0',items},pinned:{key:'0',x:width/2}};
-  const raw=safeFanGrid(request)!;
-  expect(raw.width).toBeLessThanOrEqual(width);
-  const attached=attachSingleBand(raw,request);
-  expect(measure(attached,'0',width,items).overflow).toBe(0);
-  expect(geometryGate(attached,items,'0',width)).toBeNull();
-});

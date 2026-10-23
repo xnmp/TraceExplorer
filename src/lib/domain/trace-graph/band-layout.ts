@@ -6,7 +6,6 @@ import { geometryGate, routeClearanceViolation } from "./geometry-gate";
 import { repairRouteContacts } from "./repair-route-contacts";
 import { safeChain } from "./safe-chain";
 import { wrappedEmbeddings, wrappedGenerations } from "./wrapped-embedding";
-import { safeFanGrid } from "./safe-grid";
 import { safeColumns } from "./safe-columns";
 import { safeLayout } from "./safe-layout";
 import { gridRowsEmbedding, serialRowsEmbedding } from "./cold-embeddings";
@@ -429,7 +428,6 @@ export function layoutBand(input: LayoutRequest, options: BandOptions = BAND_DEF
       return wrapped ? withPaneBandBounds(wrapped, request.band!.key, request.maxWidth) : null;
     }) ?? undefined;
     replacement ??= legacy('chain', safeChain(request)) ?? undefined;
-    replacement ??= legacy('fan', safeFanGrid(request)) ?? undefined;
     replacement ??= embedded('serial-rows', () => serialRowsEmbedding(request, options)) ?? undefined;
     replacement ??= legacy('serial', safeColumns(request)) ?? undefined;
     if (!replacement) countLayoutWork('legacy:T36:uncertified');
