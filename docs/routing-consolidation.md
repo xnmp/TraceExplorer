@@ -3616,3 +3616,114 @@ draws (128 px). The attached drawing therefore failed the band gate, so
 `validHistory` rejected the snapshot, and `place` returned null before
 searching. The attached height now contains the cover (`attachedHeight`). Only
 cover-only bands change, since any child row lies below the cover.
+
+#### What shipped
+
+- `band-geometry.ts`: `attachedHeight`, used by `attachPackedBand` and
+  `attachedSkeleton`.
+- `folder-layout/default-engine.ts`:
+  - `composeFolderLayout(…, identityFrames)`;
+  - the identity-frame packing before isolation;
+  - `isolatedFolder` (T38 rungs);
+  - `DefaultEngineOptions.worldSearch`.
+- `folder-layout/pinned-placement.ts`: `WorldSearchOrder`; `place(…, freeSpace)`.
+  The legacy search is unchanged and now counted as `legacy:T37:published`.
+- `folder-layout/free-space-insertion.ts`: `freeSpaceInsertions`.
+
+Counters:
+- `packing:identity-frames:published`;
+- `isolation:attempt`, then `isolation:framed|requested|serial-embedding:published`;
+- `legacy:T38:published` and `legacy:T38:pins-lost`;
+- `folder-world:free-space:attempt|candidate|published`.
+
+#### Folder arrival reach
+
+`s14/freach.ts`: the metric pass's population of 14,400 arrivals (100 seeds;
+widths 360, 454, 640 and 900; tiles 48, 64 and 96; 12 arrivals each). It now
+also records the folder decision. The base is routing-s5b (f1169c6), run the
+same day.
+
+| | 5b | 5c default |
+|---|---:|---:|
+| `search-exhausted` | 166 | **63** |
+| Gate failures | 0 | 0 |
+| `isolated-rows` | 0 | 0 |
+| Outputs identical to 5b | — | 13,310 |
+| p50 / p95 / p99 / max ms, all | 8.5 / 43.3 / 327.6 / 1,824 | 8.7 / 63.3 / 420.6 / 2,397 |
+| p50 / p95 / p99 / max ms, arrivals after the first | 9.5 / 50.6 / 339.5 / 1,824 | 9.8 / 90.1 / 428.7 / 2,397 |
+
+- **120 of 5b's 166 exhaustions now pin.**
+  - 100 are the cover-only case.
+  - The other 20 are later arrivals of those sequences. In 5b they followed a
+    moved step-1 layout; in 5c they follow the pinned world drawing.
+- **46 remain.** 58 of the 63 exhaustions are merges of 2–8 parents.
+- **17 are new.** All 17 are in sequences that diverged at step 1, so they never
+  existed in 5b.
+- **Latency.** Those 100 sequences now continue in the world frame: each later
+  arrival runs the world search (about 30–400 ms) instead of a free repack.
+  Arrival p95 therefore rises 1.5×, and 1.8× for arrivals after the first. These
+  are arrivals, not clicks, and no inline limit applies to them. Folder clicks
+  are unchanged (below).
+- **Isolation.** Before the identity frames, the same population reached
+  isolation 5 times, each through legacy T38 with a dropped pin. A world-placed
+  band's tile sat beside a cell, above the stem room that packing's attachment
+  assumes. Re-attaching its stem left a 3 px arrow approach, so both the packed
+  and the isolated compositions failed the gate. With identity frames, all 5
+  publish a certified packed folder (`packing:identity-frames:published` 5, kept
+  in the requested two columns), and isolation is never reached.
+
+#### Free-space insertion: candidate, not default
+
+All three orders, on the same population:
+
+| Order | Exhausted | Free-space published | Legacy T37 published | p95 / p99 / max ms |
+|---|---:|---:|---:|---:|
+| `legacy-only` | 63 | — | 1,076 | 63.3 / 420.6 / 2,397 |
+| `legacy-first` | 63 | 0 | 1,076 | 62.4 / 412.1 / 3,229 |
+| `free-first` | 56 | 686 | 402 | 50.0 / 489.0 / 25,910 |
+
+- **`legacy-first`.** Outputs are identical to `legacy-only` on all 14,400
+  arrivals. On the 63 requests the legacy search exhausts, free-space insertion
+  never certifies. These are cramped merges: 360 px with 96 px tiles holds two
+  columns with 8 px gaps. Its 33 proposals failed the gate on route contact
+  (27) and route through tile (6). Corner clearance, lane-symmetric fans and
+  extra drop rows, added after that, leave it with no certifiable proposal.
+- **`free-first`.**
+  - It changes which arrivals exhaust: 16 that legacy exhausts pin, and 9 that
+    legacy pins exhaust, a net 7 fewer.
+  - Its p95 is lower, because a free-space success is cheaper than a legacy one.
+  - Its tail is 25.9 s, since a failed free-space search on a large world
+    precedes the legacy search. The search had no cap on failed corridor tries
+    then; one is added now (`MAX_TRIES`), but this run predates it.
+  - Per the bounds, a tens-of-seconds regression is the user's call, so
+    `free-first` is not shipped.
+
+**Default decision: `legacy-only`.** Free-space insertion adds no reach after
+legacy and costs a tail before it. It stays a counted candidate behind
+`worldSearch`, with unit tests, for slice 6 to keep or delete. Production
+latency is unaffected, since the production path never calls it.
+
+#### Production inventory, cold sweeps and click latency
+
+Against origin/main df79de1, run at the same time:
+- **`s14/lat.ts`** (3,405 requests):
+  - folder clicks (255): 0 outputs differ and 0 gate failures; p95 93.3 ms on
+    main against 84.8 ms on 5c (ratio 0.91);
+  - tours (3,150): 7 outputs differ, all 5b's known `random-bushy-100-8203` at
+    360 px; 0 gate failures; p95 ratio 1.00;
+  - legacy T24, T25 and T28 counts are identical to main;
+  - `legacy:T38`, `fallback-ladder` and `cold-embedding` are all 0.
+- **Folder cold sweep** (`s14/fsweep.ts`): 40 random multi-stack folders
+  (`randomFolder`) at widths 360–1400 and tiles 48, 64, 96 and 128, so 800 cold
+  folders.
+  - 5c is byte-identical to 5b on all 800.
+  - Against main, the 84 that differ are 5b's wrapped shelves.
+
+  | Mean | main | 5c |
+  |---|---:|---:|
+  | Height, px | 914.9 | 903.5 |
+  | Compactness (tile area / folder area) | 0.4865 | 0.4901 |
+  | Gutter bridges | 0 | 0 |
+  | Isolated rows | 0 | 0 |
+  | Gate failures | 0 | 0 |
+  | p95, ms | 23.2 | 23.7 |
