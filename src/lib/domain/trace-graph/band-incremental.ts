@@ -37,7 +37,7 @@ import { CONNECTOR_STROKE, JUNCTION_CLEARANCE } from "./connector-ink";
 import { forEachPathNumber } from "./path-data";
 import { pathCommands, type Point } from "./path-sampling";
 import { MAX_INDEX_ROWS, inReach } from './coordinate-space';
-import { PREDICTED_DECLINE, routeCommittedIncremental, type IncrementalRoutingConflict, type IncrementalRoutingResult, type IncrementalFrameFactory, type IncrementalAdmission } from './incremental-routing';
+import { PREDICTED_DECLINE, clearCommittedPorts, routeCommittedIncremental, type IncrementalRoutingConflict, type IncrementalRoutingResult, type IncrementalFrameFactory, type IncrementalAdmission } from './incremental-routing';
 export { inReach } from './coordinate-space';
 
 /** Fractional curve coordinates need the full reserved clearance. The drawing gate uses
@@ -1660,8 +1660,8 @@ function freePortLanes(request: LayoutRequest, previous: GraphLayout, budget: In
 type InsertionPolicy = "stable" | "constrained" | "repairable";
 
 /** Legacy repair stages a placement used: T23 (freeBlockedPorts) and T24 (freePortLanes). */
-type PortRepair = 'T23' | 'T24';
-const countRepairs = (repairs: readonly PortRepair[]) => { for (const stage of repairs) countLayoutWork(`legacy:${stage}`); };
+type PortRepair = 'T23' | 'T24' | 'port-repair';
+const countRepairs = (repairs: readonly PortRepair[]) => { for (const stage of repairs) countLayoutWork(stage === 'port-repair' ? 'retained-port-repair:legacy-insertion' : `legacy:${stage}`); };
 
 function insertWithPortRepair(request: LayoutRequest, previous: GraphLayout, budget: IncrementalBudget, paneEdges?: Scene["paneEdges"], policy: InsertionPolicy = "stable",
   orderCharge?: (work: number, reason?: string) => void): { readonly placed: GraphLayout; readonly repairs: readonly PortRepair[] } | null {
@@ -1670,9 +1670,37 @@ function insertWithPortRepair(request: LayoutRequest, previous: GraphLayout, bud
   const freed: PortRepair[] = movedRoute(previous, repaired) ? ['T23'] : [];
   const placed = insertTree(request, repaired, budget, paneEdges, policy, undefined, undefined, undefined, undefined, orderCharge);
   if (placed) return { placed, repairs: freed };
+  // Retained-track port repair first (the metric's own move); legacy T24
+  // only for an insertion it leaves unplaced. The repaired attempt runs on a
+  // copy of the remaining pools, so T24 starts exactly where it did without it.
+  const cleared = clearPortsForInsertion(request, previous, repaired, paneEdges);
+  const viaMetric = cleared === repaired ? null : insertTree(request, cleared, { ...budget }, paneEdges, policy, undefined, undefined, undefined, undefined, orderCharge);
+  if (viaMetric) return { placed: viaMetric, repairs: [...freed, 'port-repair'] };
   const shifted = freePortLanes(request, repaired, budget);
   const retried = shifted === repaired ? null : insertTree(request, shifted, budget, paneEdges, policy, undefined, undefined, undefined, undefined, orderCharge);
   return retried && { placed: retried, repairs: movedRoute(repaired, shifted) ? [...freed, 'T24'] : freed };
+}
+
+/** Work the retained-track port repair may spend before a legacy insertion retry. */
+export const LEGACY_PORT_REPAIR_WORK = 16_000_000;
+/** The repair is a pure function of the request, the drawing and the pane.
+ * The legacy ladder retries one (request, previous) at several pool sizes,
+ * so the repair runs once per request and committed drawing, not per retry. */
+const portRepairMemo = new WeakMap<LayoutRequest, WeakMap<GraphLayout, { readonly drawing: GraphLayout; readonly pane: string; readonly cleared: GraphLayout }>>();
+function clearPortsForInsertion(request: LayoutRequest, previous: GraphLayout, drawing: GraphLayout, paneEdges?: Scene["paneEdges"]): GraphLayout {
+  const ink = Math.max(...Object.values(CONNECTOR_STROKE)) / 2;
+  const pane = paneEdges && { left: paneEdges.left + ink, right: paneEdges.right - ink };
+  const known = portRepairMemo.get(request)?.get(previous), paneKey = JSON.stringify(pane ?? null);
+  if (known && known.pane === paneKey && !movedRoute(known.drawing, drawing)) {
+    countLayoutWork('retained-port-repair:legacy-insertion:memo-hit');
+    return movedRoute(known.drawing, known.cleared) ? known.cleared : drawing;
+  }
+  const cleared = clearCommittedPorts(request, drawing, LEGACY_PORT_REPAIR_WORK, pane);
+  countLayoutWork('retained-port-repair:legacy-insertion:work', cleared.work);
+  let memo = portRepairMemo.get(request);
+  if (!memo) portRepairMemo.set(request, memo = new WeakMap());
+  memo.set(previous, { drawing, pane: paneKey, cleared: cleared.drawing });
+  return movedRoute(drawing, cleared.drawing) ? cleared.drawing : drawing;
 }
 
 /** Whether a repair stage changed any route (stages may return a fresh object unchanged). */
@@ -1801,7 +1829,7 @@ export function constrainedBandInsertion(request: LayoutRequest, previous: Graph
   if (strict.ok || strict.conflict.reason !== 'budget-exhaustion' || strict.work >= allowance
     || strict.conflict.constraints[0] === PREDICTED_DECLINE) return strict;
   const framed = constrainedIncremental(request, previous, pools(), undefined, allowance - strict.work,
-    preferred => ({ preferred, frames: [], meetingEntries: true }), undefined, captureLimit);
+    preferred => ({ preferred, frames: [], meetingEntries: true, departureStubs: true }), undefined, captureLimit);
   return { ...framed, work: framed.work + strict.work };
 }
 

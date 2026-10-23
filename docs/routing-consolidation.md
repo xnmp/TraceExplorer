@@ -2896,3 +2896,210 @@ Final code, rebased on 8e784e2:
   - mean legal displacement: 10.1 px, unchanged;
   - mean bends: 156.1, unchanged;
   - mean sibling inversions: 0.080.
+
+### Metric pass
+
+This pass measured folder reach, moved the folder path's port clearing onto
+the retained-track port repair, and replaced the affected metric's side
+backtracking with a derived order. No stage is deleted: T24, T25 and T28 keep
+production reach, with the blockers below, so **slice 4 remains open**.
+
+#### Folder reach
+
+The inventory's folder population replays corpus tours. It never reaches the
+budget declines that `folder-pinned-arrival` found, so folder arrivals are now
+measured separately: the `folder-pinned-arrival` generator over seeds 1–100,
+widths 360, 454, 640 and 900 px and tiles 48, 64 and 96 px, with 12 arrivals
+each (14,400 requests through the default folder engine, every arrival
+expanded). Counts are requests reaching a stage.
+
+| Stage | #107 | This pass |
+|---|---:|---:|
+| T24 free port lanes | 103 (90 at band-ladder sites, 19 at folder world placement) | 14 (6 band, 8 world) |
+| T25 | 0 | 0 |
+| T28 band / folder / hint | 2 / 1 / 7 | 4 / 3 / 7 |
+| T23 (not a slice 4 target) | 43 | 40 |
+| Pinning failures (`search-exhausted`) | 181 | 166 |
+| Gate failures | 0 | 0 |
+
+Earlier reach figures counted only `legacy:T28:band`; the hint and folder T28
+sites were never counted.
+
+#### What shipped
+
+1. **Retained-track port repair before T24 in the legacy insertion**
+   (`band-incremental.ts`, `insertWithPortRepair` and
+   `clearPortsForInsertion`; `incremental-routing.ts`,
+   `clearCommittedPorts`). Folder world placement and the band ladder both
+   insert through `insertWithPortRepair`. When the first insertion fails,
+   the metric's own move clears the newly active ports on a 16M ledger
+   (`LEGACY_PORT_REPAIR_WORK`), and the insertion is retried. T24 runs only
+   if that retry fails. The repair is counted as
+   `retained-port-repair:legacy-insertion`.
+
+   The alternative, a larger folder allowance, was measured first and
+   rejected. Of the 35 arrivals that lose their pins without T24, ×4 and ×16
+   allowances certify 3, at 1–1.4 s each. The rest decline on metric (13),
+   topology (9) or budget (4). Seed 14, arrival 9 declines "bounded strict
+   insertion has no topology" at 11M regardless of allowance.
+
+   Two supporting moves:
+   - **Sliding departure stubs** (`routing-fragments.ts`, the
+     `departureStubs` capture option). A straight last run of a source prefix
+     keeps its start and its line. Its end may slide outward along the line,
+     never shortening the stub, so the run leaving the port berth becomes a
+     free core. Port repair and framed band capture opt in.
+   - **Drawn-room retry** (`clearRetainedPorts`). When the metric witness
+     names no port pin, the conflict is the drawing's own. The same ports are
+     retried once with every separation the drawing already lacks held at
+     its drawn room. The final gates still certify the result.
+
+   Effect: folder T24 reach fell from 103 to 14 requests, and pinning
+   failures from 181 to 166 (none lost). A larger reserved room (9) or a
+   room ladder (6, then 9) gave 33 and 10, so neither was kept.
+2. **Derived segment order in the affected metric**
+   (`incremental-routing.ts`, `solveAffectedTracks` and `precedes`). This
+   follows libavoid's nudging, where the order of shared segments comes from
+   the drawing and the separation problem is then solved once, and ELK's
+   orthogonal router. Every side is now derived from one order:
+   - parallel tracks, port corners and berths use the drawn coordinate, then
+     identity;
+   - tile corridors use the nearer side as drawn;
+   - reserved ports use the side of the port the track is drawn on.
+
+   No side is a search choice any more. A cycle or a metric conflict is
+   final for that search. The four metric conflicts traced to three defects
+   in how the metric named coordinates, not to the lack of backtracking:
+   - **Ties oriented two ways.** All 281 rejections of 47b5 were two-cycles
+     between a parallel-track separation and a port-corner separation over
+     the same two variables. Port corners broke ties with `<=` and parallel
+     tracks by value, then identity. Both now use `precedes`.
+   - **Curve-flattening noise.** Foreign pieces about 1e-14 long were
+     modelled as parallel foreign tracks, which pinned false conflicts
+     (45be). Pieces no longer than `DEGENERATE_EXTENT` along their axis are
+     ignored.
+   - **One coordinate, two constants.** A foreign straight run was a
+     per-segment constant, while a port corner on the same run named a
+     route-point constant. Both were pinned to one value and separated as if
+     independent. A modelled foreign run now resolves to its route's
+     coordinate (`coordinate(foreignModel, run, axis)`). Constant points of
+     one straight run are one constant, named by the run's start
+     (`lineStart`).
+
+   After these fixes, legacy's complete drawings of 45be, 86dc, 47b5 and d053
+   are admitted by the metric. `metric-order.test.ts` pins this for 45be,
+   which #107 rejected as a metric conflict. Coverage was measured with and
+   without side backtracking and is identical, so backtracking was removed.
+   All four inputs now fail only in construction: their topology is not
+   found within 1,024M of work. They are reclassified from metric conflict
+   to **budget exhaustion in construction search**.
+3. **Construction variance** (d777, 0b1f) was not attempted. Its only
+   measured remedy, legacy `insertTree` as a proposer, costs 0.8–1.5G of
+   work.
+
+#### Coverage outside production
+
+At the API allowance, the old-success replays are identical to the placement
+pass: tours 636/894, corpus 62/63, original 81/108. No old success is lost or
+gained.
+
+#### Deletion, and what remains
+
+| Stage | Production reach | Blocker |
+|---|---:|---|
+| T24 free port lanes | Inventory 1; folder arrivals 14 | The metric cannot do T24's moves. On 5 of the 14 arrivals, T24 translates a free core together with its fillets. On 5, port repair clears the ports but the insertion still fails. On 4, T24 squeezes a lane between tiles that the constrained separations (port berth, lane separation) forbid. Without T24, 10 arrivals lose their pins |
+| T25 repairable / constrained | Inventory 4 / 2; folder 0 | Old-success misses that legacy completes: d777 and 0b1f (construction variance) |
+| T28 band contact repair | Inventory 1; folder 4 band, 3 folder, 7 hint | Misses that legacy completes: d053, 0c9d, 47b5, 45be and 86dc. All are now construction-search budget exhaustion, not metric conflicts |
+
+**Next pass starts here.**
+- **T24's residue.** The metric needs to translate a core together with its
+  fillets, which means binding a fillet as a pair of moving ends rather than
+  as constants. Lane squeezes need either T24's lane rule, as a certified
+  separation, or a deliberate decision that those 4 arrivals may re-flow.
+- **Construction search** for d777, 0b1f, 0c9d, d053, 47b5, 45be and 86dc.
+  The metric admits legacy's drawing in every case, so a construction that
+  proposes that topology within budget is all that is missing.
+
+#### Production inventory and click latency
+
+One inventory run over the 3,405 requests on the final code, against #107
+(b518ae0), with both run at the same time:
+- **Legacy reach:** the same 7 requests as #107 (T24 1, T25 2 constrained and
+  4 repairable, T28 1), with 0 gate failures.
+- **Outputs:** 6 differ, all in folders. Three adopted band insertions
+  (merges-3 arrival 2, random-dag-40-7503 click 6 and random-dag-40-7502
+  click 7) now derive their sides instead of searching for them. The other
+  three are merges-3's later steps, which follow from arrival 2.
+
+| Group | n | #107 p50 / p95 / max ms | This pass p50 / p95 / max ms | p95 ratio |
+|---|---:|---:|---:|---:|
+| Folder, adopted | 176 | 8.5 / 117.7 / 462.8 | 8.0 / 118.3 / 485.9 | 1.01 |
+| Folder, legacy only | 62 | 1.4 / 11.1 / 17.7 | 1.3 / 12.0 / 20.3 | 1.08 |
+| Folder, outranked | 17 | 10.1 / 64.4 / 64.4 | 6.9 / 60.7 / 60.7 | 0.94 |
+| Tour, adopted | 1,529 | 27.3 / 3,048.7 / 9,396.4 | 28.3 / 3,085.7 / 8,873.5 | 1.01 |
+| Tour, declined | 83 | 12,998.3 / 15,592.4 / 19,594.5 | 13,531.8 / 18,036.1 / 19,368.0 | 1.16 |
+| Tour, legacy only | 717 | 1.2 / 82.8 / 822.1 | 1.1 / 87.1 / 779.6 | 1.05 |
+| Tour, outranked | 821 | 12.5 / 246.7 / 3,124.9 | 12.5 / 248.8 / 3,333.6 | 1.01 |
+| Tour, all | 3,150 | 11.6 / 3,016.3 / 19,594.5 | 11.9 / 3,022.9 / 19,368.0 | 1.00 |
+
+There is no multi-fold or tens-of-seconds regression. The declined tours' p95
+rose by 2.4 s, and their maximum did not rise. On the folder-arrival
+population, p95 is 40.5 ms against 40.7 ms before the order change.
+
+That table is the code before review, run alongside #107. After the review
+fixes, a rerun gives the same reach and the same outputs, with 0 gate
+failures. It ran with less concurrent load, so its timings are lower (tour
+p95 2,855 ms) and are not a like-for-like comparison.
+
+#### Review
+
+An independent adversarial review found no path that publishes an unsafe
+drawing: the gates are unchanged and run on every path. It confirmed three
+defects, all fixed:
+- **Uncounted, repeated repair work.** The port repair in
+  `insertWithPortRepair` spent up to 16M of work outside every ledger, and
+  the band ladder repeated it for each pool size, since the insertion memo
+  is keyed by pools. The repair is now memoised per request and committed
+  drawing (`portRepairMemo`), and its work is counted
+  (`retained-port-repair:legacy-insertion:work`).
+- **T24 started with less budget.** The repaired insertion spent the shared
+  pools before T24. It now runs on a copy, so T24 starts exactly where it did
+  in #107.
+- **A stub hugging its own tile was stretched.** With sliding stubs, a stub
+  drawn 1 px below its tile's face let the leaving run become free. The tile
+  corridor then pushed that run to the tile's corner, even when no port
+  needed it. A stub whose line lies within the tile graze of a face of its
+  own tile now stays exact. `retained-port-repair.test.ts` pins the
+  reviewer's two cases.
+
+A first fix, which kept any run starting inside its tile's graze box exact,
+lost 9 folder-arrival pins. The face-hugging rule loses none.
+
+Also changed: the drawn-room retry now runs only after a metric conflict. Room
+cannot undo a segment order cycle.
+
+Suspected but not confirmed: a track drawn inside a tile's graze band whose
+nearer side is infeasible used to be able to take the far side; it now fails.
+No example was found. Coverage with and without side backtracking is
+identical.
+
+After these fixes, folder reach and pinning are identical to the figures
+above (T24 14, pinning failures 166, 0 gate failures, 0 outputs differ).
+
+#### Gates and changed acceptance rows
+
+Final code, rebased on 3694e6b (#107):
+- **`bun run check`:** 295 files, 0 errors.
+- **`bun run test`:** 198 files; 2,437 passed, 1 skipped, 2 failed. Both
+  failures are `folder-layout-parity` load timeouts (spawnSync ETIMEDOUT),
+  and that file passes alone (9/9).
+- **`layout:eval`:** all 50 current targets pass. The acceptance rows match
+  the placement pass:
+  - click-anchor moves: 15;
+  - dense-tour anchor moves: 51;
+  - held-screen moves at 480 px: 20 (broad) and 52 (dense);
+  - mean legal displacement: 10.1 px;
+  - mean bends: 156.1;
+  - mean sibling inversions: 0.080.
+- **`click-stability.test.ts`** alone takes 2,279 s, against 2,222 s at the
+  escalation pass.

@@ -10,6 +10,7 @@ import { AUTOMATIC_ROUTING_WORK, automaticIncrementalBudget, constrainedBandInse
 import { attachSingleBand } from '$lib/domain/trace-graph/band-geometry';
 import { geometryGate } from '$lib/domain/trace-graph/geometry-gate';
 import { segments } from '$lib/domain/trace-graph/layout-quality';
+import { pathCommands } from '$lib/domain/trace-graph/path-sampling';
 import { LANE_SEPARATION, PORT_BERTH } from '$lib/domain/trace-graph/metrics';
 import type { GraphLayout, LayoutRequest, PlacedNode, PlacedRoute } from '$lib/domain/trace-graph/layout';
 
@@ -123,4 +124,69 @@ describe('constrained insertion with retained port repair', () => {
     }
     expect({ request, previous }).toEqual(before);
   }, 60_000);
+});
+
+describe('departure stubs', () => {
+  /** Cover `a` feeds `p` below it and `b` through a 4 px stub off its right
+   * port (40, 20), then down a core at x=44. That core passes 4 px from p's
+   * right port (40, 100), which a new child `c` of `p` activates. */
+  const stubScene = () => {
+    const previous: GraphLayout = { orientation: 'down', width: 300, height: 340,
+      nodes: new Map([tile('a', 0, 0), tile('p', 0, 80), tile('b', 200, 300)].map(n => [n.key, n])), junctions: new Map(),
+      routes: [route('a', 'p', 'M20 40 L20 72'), route('a', 'b', 'M40 20 L44 20 L44 143 L220 143 L220 292')],
+      rows: [], readingOrder: new Map([['a', 0], ['p', 1], ['b', 2]]) };
+    const items = [item('a', 0, []), item('p', 1, ['a']), item('b', 2, ['a']), item('c', 9, ['p'])];
+    const request: LayoutRequest = { items, maxWidth: 300, tileWidth: 40, orientation: 'down', band: { key: 'a', items } };
+    return { previous, request };
+  };
+  const stubSeed = (request: LayoutRequest, previous: GraphLayout, departureStubs: boolean) => {
+    const seed = captureFramedIncrementalRouting(request, previous, previous, [], () => {}, { departureStubs });
+    if (!('problem' in seed)) throw new Error(JSON.stringify(seed));
+    return seed;
+  };
+  const points = (drawing: GraphLayout, id: string) => pathCommands(drawing.routes.find(r => r.id === id)!.path)!.map(c => c.values.slice(-2));
+
+  it('lengthens the stub so the core leaving it clears the port, keeping its start and line', () => {
+    const { request, previous } = stubScene(), ports = blockedSourcePorts(request, previous);
+    expect(ports).toEqual([{ owner: 'p', side: 'right', x: 40, y: 100 }]);
+    const seed = stubSeed(request, previous, true), result = clearIncrementalPorts(request, seed, ports);
+    expect(result.ok, JSON.stringify(result.ok ? undefined : result.conflict)).toBe(true);
+    if (!result.ok) return;
+    const [start, stubEnd, coreEnd] = points(result.drawing, 'a-b');
+    expect(start).toEqual([40, 20]);
+    expect(stubEnd[1]).toBe(20);
+    expect(stubEnd[0]).toBeGreaterThanOrEqual(40 + PORT_BERTH);
+    expect(coreEnd[0]).toBe(stubEnd[0]);
+    expect(nearest(result.drawing, ports[0], 'p')).toBeGreaterThanOrEqual(PORT_BERTH);
+    expect(result.drawing.nodes).toEqual(previous.nodes);
+    expect(bindRoutingFragmentTopology(seed.fragments!, result.drawing, undefined, true).ok).toBe(true);
+  });
+
+  it('keeps the whole prefix exact without the option, so that port stays blocked', () => {
+    const { request, previous } = stubScene();
+    const result = clearIncrementalPorts(request, stubSeed(request, previous, false), blockedSourcePorts(request, previous));
+    expect(!result.ok || nearest(result.drawing, { x: 40, y: 100 }, 'p') < PORT_BERTH).toBe(true);
+  });
+
+  it('never shortens a stub or moves it off its line', () => {
+    const { request, previous } = stubScene(), seed = stubSeed(request, previous, true);
+    const withPath = (path: string): GraphLayout => ({ ...previous, routes: previous.routes.map(r => r.id === 'a-b' ? { ...r, path } : r) });
+    expect(bindRoutingFragmentTopology(seed.fragments!, withPath('M40 20 L50 20 L50 143 L220 143 L220 292'), undefined, true).ok).toBe(true);
+    expect(bindRoutingFragmentTopology(seed.fragments!, withPath('M40 20 L42 20 L42 143 L220 143 L220 292'), undefined, true).ok).toBe(false);
+    expect(bindRoutingFragmentTopology(seed.fragments!, withPath('M40 20 L44 22 L44 143 L220 143 L220 292'), undefined, true).ok).toBe(false);
+  });
+
+  it('keeps a run leaving within the tile graze of its own tile where it is drawn', () => {
+    // A 1 px stub below cover a's bottom port: the run leaving it lies inside
+    // a's corridor band, so it is part of the port, not a free core.
+    for (const path of ['M120 40 L120 41 L117 41 L117 143 L220 143 L220 292', 'M120 40 L120 41 L123 41 L123 143 L220 143 L220 292']) {
+      const previous: GraphLayout = { orientation: 'down', width: 300, height: 340,
+        nodes: new Map([tile('a', 100, 0), tile('b', 200, 300), tile('p', 40, 80)].map(n => [n.key, n])), junctions: new Map(),
+        routes: [route('a', 'b', path)], rows: [], readingOrder: new Map([['a', 0], ['p', 1], ['b', 2]]) };
+      const items = [item('a', 0, []), item('p', 1, []), item('b', 2, ['a']), item('c', 9, ['p'])];
+      const request: LayoutRequest = { items, maxWidth: 300, tileWidth: 40, orientation: 'down', band: { key: 'a', items } };
+      const result = clearIncrementalPorts(request, stubSeed(request, previous, true), []);
+      expect(result.ok && result.drawing.routes[0].path.replace(/ +/g, ' ').trim(), path).toBe(path);
+    }
+  });
 });
