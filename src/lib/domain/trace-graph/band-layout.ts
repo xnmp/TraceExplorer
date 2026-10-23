@@ -6,7 +6,6 @@ import { geometryGate, routeClearanceViolation } from "./geometry-gate";
 import { repairRouteContacts } from "./repair-route-contacts";
 import { safeChain } from "./safe-chain";
 import { wrappedEmbeddings, wrappedGenerations } from "./wrapped-embedding";
-import { safeColumns } from "./safe-columns";
 import { safeLayout } from "./safe-layout";
 import { gridRowsEmbedding, serialRowsEmbedding } from "./cold-embeddings";
 import { validHistory } from "./history-boundary";
@@ -429,7 +428,7 @@ export function layoutBand(input: LayoutRequest, options: BandOptions = BAND_DEF
     }) ?? undefined;
     replacement ??= legacy('chain', safeChain(request)) ?? undefined;
     replacement ??= embedded('serial-rows', () => serialRowsEmbedding(request, options)) ?? undefined;
-    replacement ??= legacy('serial', safeColumns(request)) ?? undefined;
+    replacement ??= legacy('serial', safeLayout(request)) ?? undefined;
     if (!replacement) countLayoutWork('legacy:T36:uncertified');
     result = replacement ?? safeLayout(request);
     const failure = geometryGate(attachSingleBand(result, request), request.items, request.band!.key, request.maxWidth);

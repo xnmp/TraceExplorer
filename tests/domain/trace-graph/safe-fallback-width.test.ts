@@ -1,7 +1,6 @@
 import { expect, it } from 'vitest';
 import { corpus, requestFor } from '../../../layout-eval/corpus';
 import { safeLayout } from '$lib/domain/trace-graph/safe-layout';
-import { safeColumns } from '$lib/domain/trace-graph/safe-columns';
 import { safeChain } from '$lib/domain/trace-graph/safe-chain';
 import { attachSingleBand } from '$lib/domain/trace-graph/band-geometry';
 import { geometryGate } from '$lib/domain/trace-graph/geometry-gate';
@@ -13,7 +12,7 @@ it.each(['fan-30','random-dag-100-8103','random-dag-200-9102'])('wraps safe cons
     const initial=requestFor(fixture,fixture.focuses.at(-1)??null,width,96);
     const half=initial.items.find(n=>n.key===initial.band!.key)!.width/2;
     const request={...initial,pinned:{key:initial.band!.key,x:position==='left'?half:position==='right'?width-half:width/2}};
-    for (const construct of [safeLayout,safeColumns]) {
+    for (const construct of [safeLayout]) {
       const raw=construct(request), layout=attachSingleBand(raw,request);
       expect(raw.width).toBeLessThanOrEqual(width);
       expect(measure(layout,request.band!.key,width,request.items).overflow).toBe(0);
