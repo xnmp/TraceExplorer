@@ -3547,3 +3547,72 @@ Final code, rebased onto origin/main df79de1:
 - **Wrapped generator cost:** a lower-bound skip against the downward bound,
   and reuse of the candidate flow's chunk solves in the ladder rung.
 - **5c is next:** folder packing as constraints.
+
+### Slice 5c: folder packing as constraints
+
+#### Design
+
+One-dimensional compaction, as VLSI and diagram compaction use it (scanline
+constraint graphs; ELK's `OneDimensionalCompactor` and rectangle packing):
+rectangles in a fixed order, every obstacle a separation constraint, solved
+before the final routing. Three folder stages meet in that model, and each
+keeps its legacy constructor beside it, counted.
+
+1. **T30, ordered packing.** The row packer is already this model in its x
+   pass. Within a line, groups keep cover order, and `packStackGroups` solves
+   `x[i+1] - x[i] >= w[i] + gap` with bounds `[0, W - w[i]]`, minimising squared
+   displacement from the preferred x by pool-adjacent-violators. That is the
+   block-merging solve VPSC uses (Dwyer, Marriott and Stuckey, "Fast node
+   overlap removal") on a chain. Click reservations (`anchorX`/`anchorY`) are
+   equalities, applied when feasible. The skyline is the longest path of the
+   scanline constraint graph in y. 5c keeps this solve and adds the constraint
+   it lacked: **a band's own certified attachment frame**. The band engine
+   certifies each band in an identity frame (`routingAttachment`). Where the
+   packed position equals that frame's (band top, band x, cover x and cover
+   height), the frame becomes an equality, and the band keeps its exact
+   certified drawing (`composeFolderLayout(…, identityFrames)`). Packing tries
+   this only when its ordinary attachment fails the folder gate. That happens
+   when packing re-attaches a world-placed band's stem with its own track. The
+   identity-frame packing is tried before any band leaves its requested column
+   (`packing:identity-frames:published`).
+2. **T37, retained world rectangles as constants.** On an arrival, every
+   retained world rectangle is a constant: cell footprints, band tiles, dots
+   and connector runs. The legacy pin search already builds the world this way
+   (`pinnedFolderPlacement`). 5c adds a second constructor of the same problem,
+   `freeSpaceInsertions` (`folder-layout/free-space-insertion.ts`):
+   1. **Discrete choice.** Each new tile takes a rectangle at a corner of the
+      free space: aligned with an obstacle's edge or the pane, or one gap beyond
+      it, with every obstacle at least `FREE_SPACE_GAP` away. Candidates are
+      ranked by added height, then connector length.
+   2. **Topology.** A visibility-grid corridor search (`orthogonalRoute`).
+      Another source's runs may be crossed but never run along, and its corners
+      keep a lane's distance. Several parents meet at one dot above the tile:
+      inputs one lane apart, curving into it, as the layered solve draws a
+      meeting.
+   3. **Metric.** Every interior run is a coordinate bounded by its channel, its
+      neighbours' directions and the arrow's straight approach. The separation
+      solve centres it.
+   4. **Emission.** The shared stem emitter rounds the corners.
+
+   The generator only proposes. Every candidate is certified by the unchanged
+   folder gate and the retained-rectangle check (`finish`), exactly as a legacy
+   candidate is. `DefaultEngineOptions.worldSearch` orders the two:
+   `legacy-only`, `legacy-first` or `free-first`.
+3. **T38, isolation under the same pins.** Isolation changes the folder grid
+   (one column), never the band requests. Its rungs are, in order:
+   1. the requested band layouts, first in their identity frames, then with
+      the packed attachment. Every band keeps its drawing, and so its pin set;
+   2. the serial embedding (5a) through the common solve, for each band whose
+      `ladderPins` it keeps;
+   3. legacy serial rows, counted as `legacy:T38:published`, with the pins it
+      drops counted as `legacy:T38:pins-lost`.
+
+Before the measurements, the reach analysis found a precondition bug, fixed at
+its root. 100 of the 166 pin-search exhaustions were one deterministic arrival:
+a cover-only band in a full two-column grid (360 px, 96 px tiles) gains its
+first child. The legacy pin search never ran there. `attachPackedBand` gave a
+cover-only band the height of its own tile (112 px), not of the host cover it
+draws (128 px). The attached drawing therefore failed the band gate, so
+`validHistory` rejected the snapshot, and `place` returned null before
+searching. The attached height now contains the cover (`attachedHeight`). Only
+cover-only bands change, since any child row lies below the cover.

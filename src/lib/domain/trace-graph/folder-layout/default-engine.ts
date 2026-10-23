@@ -30,7 +30,8 @@ import { TRACK_HEIGHT, STACK_STEM_ROOM } from "../metrics";
 import type { NodeKey } from "../model";
 import { gridFlow, type GridItem, type GridMetrics, type GridRect } from "../grid-flow";
 import { attachPackedBand, bandExtent, bandPlacements, packedGridFlow } from "../band-geometry";
-import { BAND_DEFAULTS, bandHistorySignature, type BandOptions } from "../band-layout";
+import { BAND_DEFAULTS, bandHistorySignature, ladderPins, type BandOptions } from "../band-layout";
+import { serialRowsEmbedding } from "../cold-embeddings";
 import { folderGridGeometry, gridPins, type FolderGridGeometry } from "../folder-grid";
 import { layoutGraph, type BandHistory, type GraphLayout, type LayoutRequest, type LayoutItem } from "../layout";
 import { layoutSignature } from "../layout-signature";
@@ -40,7 +41,7 @@ import { recallDisplay, rememberDisplay, displayIdentity } from "./display-memor
 import { withCellFootprints } from "./cell-footprints";
 import { folderGeometryGate } from "./geometry-gate";
 import { safeLayout } from "../safe-layout";
-import { pinnedFolderPlacement, preservesFolderRectangles } from "./pinned-placement";
+import { pinnedFolderPlacement, preservesFolderRectangles, type WorldSearchOrder } from "./pinned-placement";
 import { planBandScene, type BandScenePlan } from "../scene";
 import type { BandExpansion } from "../visibility";
 import { createBoundedCache, estimateLayoutBytes, type BoundedCache } from "./bounded-cache";
@@ -338,7 +339,7 @@ function bandLayout(request: LayoutRequest, cache: BoundedCache<GraphLayout> | n
  * Packs the rows with the bands' exact extents and attaches every band below its cover
  * (step 3). Bands whose id is not a stack item are ignored.
  */
-export function composeFolderLayout(items: readonly GridItem[], geometry: FolderGridGeometry, bands: ReadonlyMap<GraphId, PlannedBand>): FolderLayout {
+export function composeFolderLayout(items: readonly GridItem[], geometry: FolderGridGeometry, bands: ReadonlyMap<GraphId, PlannedBand>, identityFrames = false): FolderLayout {
   const extents = new Map(items.flatMap((item) => {
     const band = item.kind === "stack" ? bands.get(item.id) : undefined;
     return band ? [[item.id, bandExtent(band.layout, item.id)] as const] : [];
@@ -347,7 +348,12 @@ export function composeFolderLayout(items: readonly GridItem[], geometry: Folder
   const placements = bandPlacements(flow, geometry.cellHeight);
   const graphs = new Map<GraphId, FolderGraph>();
   for (const band of flow.bands) {
-    const cell = flow.cells.get(band.id)!, placement = placements.get(band.id)!, { plan, layout } = bands.get(band.id)!;
+    const cell = flow.cells.get(band.id)!, packed = placements.get(band.id)!, { plan, layout } = bands.get(band.id)!;
+    // With `identityFrames`, a band the packing puts exactly where its own certified frame
+    // declares (same band top, cover and band x) keeps that frame, and so its exact drawing.
+    const frame = identityFrames ? layout.routingAttachment : undefined;
+    const placement = frame && frame.key === band.id && frame.bandTop === band.y - cell.y && frame.placement.x === packed.x
+      && frame.placement.coverX === packed.coverX && frame.placement.coverHeight === packed.coverHeight ? frame.placement : packed;
     graphs.set(band.id, { id: band.id, plan, layout, attached: attachPackedBand(layout, band.id, band.y - cell.y, placement), origin: { x: 0, y: cell.y }, placement });
   }
   return { columns: geometry.columns, size: { width: flow.width, height: flow.height }, bounds: folderBounds({ x: 0, y: 0, width: flow.width, height: flow.height }, flow.cells.values(), [...flow.bands, ...flow.rowBands], graphs.values()),
@@ -374,6 +380,8 @@ export interface DefaultEngineOptions {
   readonly bandCache?: BoundedCache<GraphLayout> | null;
   /** Band layout policy (A/B in `layout-eval`); production uses the defaults. */
   readonly band?: BandOptions;
+  /** How an arrival that packing could not pin searches the world (slice 5c); production uses the default. */
+  readonly worldSearch?: WorldSearchOrder;
 }
 
 function folderPlacementHistory(input: FolderLayoutInput, plans: ReadonlyMap<GraphId, BandPlan>, basis: string): FolderPlacementHistory | undefined {
@@ -441,6 +449,63 @@ function retainedWorldPlacement(input: FolderLayoutInput, plans: ReadonlyMap<Gra
   return { basis, layout };
 }
 
+/**
+ * Isolation (T38, slice 5c): one stack per row, so no two bands' attachments share a
+ * row. Each rung is certified in full before the next is tried:
+ * 1. the requested band layouts in the one-column grid. Band requests do not change,
+ *    only the grid does, so every band keeps its own drawing and pin set exactly. A band
+ *    first keeps its own certified attachment frame where the packing allows it
+ *    (`identityFrames`), then takes the packed attachment;
+ * 2. the serial embedding (slice 5a) through the common solve for every band whose
+ *    pin set it keeps; any other band keeps its requested layout;
+ * 3. legacy serial rows (`safeLayout`) planned for the one-column grid, as before 5c,
+ *    counted as `legacy:T38`, with the bands whose pins it drops (`legacy:T38:pins-lost`).
+ */
+function isolatedFolder(input: FolderLayoutInput, geometry: FolderGridGeometry,
+  bands: ReadonlyMap<GraphId, PlannedBand>, policy: BandOptions = BAND_DEFAULTS): FolderLayout {
+  const serial = { ...geometry, columns: 1 };
+  // Attachment policy does not change the canonical band request or its cached result.
+  // Workers remember those original requests, even when the final folder uses wider rows.
+  const compose = (laid: ReadonlyMap<GraphId, PlannedBand>, identityFrames = false): FolderLayout => {
+    const isolated = withCellFootprints(composeFolderLayout(input.items, serial, laid, identityFrames), input);
+    const graphs = new Map([...isolated.graphs].map(([id, graph]) => {
+      const canonical = bands.get(id)!;
+      return [id, { ...graph, canonical: { request: canonical.plan.request, layout: canonical.layout } }] as const;
+    }));
+    return { ...isolated, graphs, decision: { fallback: "isolated-rows", requestedColumns: geometry.columns } };
+  };
+  countLayoutWork('isolation:attempt');
+  const framed = compose(bands, true);
+  if (!folderGeometryGate(framed)) { countLayoutWork('isolation:framed:published'); return framed; }
+  const requested = compose(bands);
+  if (!folderGeometryGate(requested)) { countLayoutWork('isolation:requested:published'); return requested; }
+  const embedded = new Map([...bands].map(([id, band]) => {
+    const request = band.plan.request;
+    const layout = serialRowsEmbedding(request, { ordering: policy.ordering, passing: policy.passing });
+    return [id, layout && layout.nodes.has(id) && ladderPins(request, policy).held(layout) ? { plan: band.plan, layout } : band] as const;
+  }));
+  const viaEmbedding = compose(embedded);
+  if (!folderGeometryGate(viaEmbedding)) { countLayoutWork('isolation:serial-embedding:published'); return viaEmbedding; }
+  const legacy = new Map([...planBands(input, serial)].flatMap(([id, { plan }]) => {
+    const request = { ...plan.request, history: undefined, hint: undefined, anchorKey: undefined };
+    return bands.has(id) ? [[id, { plan: { ...plan, request }, layout: safeLayout(request) }] as const] : [];
+  }));
+  const viaLegacy = compose(legacy);
+  countLayoutWork('legacy:T38:published');
+  const lost = [...bands].filter(([id, band]) => {
+    const keys = ladderPins(band.plan.request, policy).keys;
+    if (!keys.length) return false;
+    const before = band.layout.nodes.get(id)!, after = legacy.get(id)!.layout.nodes.get(id)!;
+    // Compare in the cover's frame: the grid moves covers, the band frame must not change.
+    return keys.some(key => {
+      const a = band.layout.nodes.get(key), b = legacy.get(id)!.layout.nodes.get(key);
+      return !a || !b || Math.abs((a.x - before.x) - (b.x - after.x)) > .01 || Math.abs((a.y - before.y) - (b.y - after.y)) > .01;
+    });
+  }).length;
+  if (lost) countLayoutWork('legacy:T38:pins-lost', lost);
+  return viaLegacy;
+}
+
 export function createDefaultEngine(options: DefaultEngineOptions = {}): FolderLayoutEngine {
   const cache = options.bandCache === undefined ? createBoundedCache(estimateLayoutBytes) : options.bandCache;
   // Certificates are bound to immutable serialized bytes and the requested state, not
@@ -498,27 +563,22 @@ export function createDefaultEngine(options: DefaultEngineOptions = {}): FolderL
     let failure = folderGeometryGate(result);
     let pinningFailed = false;
     if (placement && (failure || !preservesFolderRectangles(result, placement.layout))) {
-      const pinned = pinnedFolderPlacement(input, plans, placement.layout, result);
+      const pinned = pinnedFolderPlacement(input, plans, placement.layout, result, options.worldSearch);
       pinningFailed = pinned === null;
       result = pinned ?? result;
       if (pinned) failure = null; // The world candidate certifies its completed attached folder.
     }
+    if (failure && bands.size) {
+      // Packing keeps each band's own certified attachment frame where the packed
+      // position allows it, before any band leaves its requested column (slice 5c).
+      const framed = withCellFootprints(composeFolderLayout(input.items, geometry, bands, true), input);
+      if (!folderGeometryGate(framed)) {
+        countLayoutWork('packing:identity-frames:published');
+        result = framed; failure = null;
+      }
+    }
     if (failure) {
-      // A complete, isolated row per stack prevents attachment routes of neighbouring
-      // bands from sharing stems. Build all rows before publishing the replacement.
-      const serial = { ...geometry, columns: 1 };
-      const fallback = new Map([...planBands(input, serial)].map(([id, { plan }]) => {
-        const request = { ...plan.request, history: undefined, hint: undefined, anchorKey: undefined };
-        return [id, { plan: { ...plan, request }, layout: safeLayout(request) }] as const;
-      }));
-      const isolated = withCellFootprints(composeFolderLayout(input.items, serial, fallback), input);
-      // Attachment policy does not change the canonical band request or its cached result.
-      // Workers remember those original requests, even when the final folder uses wider rows.
-      const graphs = new Map([...isolated.graphs].map(([id, graph]) => {
-        const canonical = bands.get(id)!;
-        return [id, { ...graph, canonical: { request: canonical.plan.request, layout: canonical.layout } }] as const;
-      }));
-      result = { ...isolated, graphs, decision: { fallback: "isolated-rows", requestedColumns: geometry.columns } };
+      result = isolatedFolder(input, geometry, bands, options.band);
       failure = folderGeometryGate(result);
       if (failure) throw new RangeError("No certified folder layout: " + failure);
     }
