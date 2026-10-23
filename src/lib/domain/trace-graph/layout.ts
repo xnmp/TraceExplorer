@@ -335,6 +335,12 @@ export interface LayeredOptions {
    * routing, junctions and separations are unchanged.
    */
   readonly rowCapacity?: number;
+  /**
+   * Where a display row starts across the canvas: centred (the default), or at
+   * the margin. Running right, `start` top-aligns every generation's column, as
+   * wrapped rightward embeddings (routing slice 5b) align their chunks.
+   */
+  readonly rowAlign?: "center" | "start";
 }
 
 /** The reusable layered engine; band candidates call it without recursively planning bands. */
@@ -342,8 +348,8 @@ export function layoutLayered(request: LayoutRequest, options: LayeredOptions = 
   if (request.orientation !== "right") return layoutDown(request, spacingFor(request.tileWidth).minWidth, options);
   // Left to right: the same engine on transposed tiles, transposed back.
   // Generations then form columns that never wrap (no height budget), and
-  // the canvas needs no minimum height. Only passing and channel style apply.
-  const turned = transposeLayout(layoutDown({ items: request.items.map((item) => ({ ...item, width: item.height, height: item.width })), maxWidth: Infinity, hint: request.hint, tileWidth: request.tileWidth }, 0, { passing: options.passing, channelStyle: options.channelStyle }));
+  // the canvas needs no minimum height. Only passing, channel style and row alignment apply.
+  const turned = transposeLayout(layoutDown({ items: request.items.map((item) => ({ ...item, width: item.height, height: item.width })), maxWidth: Infinity, hint: request.hint, tileWidth: request.tileWidth }, 0, { passing: options.passing, channelStyle: options.channelStyle, rowAlign: options.rowAlign }));
   const extent = request.extent !== undefined && Number.isFinite(request.extent) && request.extent > 0 ? Math.ceil(request.extent) : 0;
   return extent > turned.width ? { ...turned, width: extent } : turned;
 }
@@ -400,7 +406,7 @@ export class RoutingConflictError extends RangeError {
   constructor(readonly conflict: CorridorConflict) { super('Routing search conflict: ' + JSON.stringify(conflict)); }
 }
 function layoutDown(request: LayoutRequest, minWidth: number, options: LayeredOptions = {}): GraphLayout {
-  const prepared = { ...prepare(request, options.ordering ?? "barycenter", options.passing ?? "straight", options.columnGap, options.rowCapacity), channelStyle: options.channelStyle };
+  const prepared = { ...prepare(request, options.ordering ?? "barycenter", options.passing ?? "straight", options.columnGap, options.rowCapacity), channelStyle: options.channelStyle, rowAlign: options.rowAlign };
   const scoreable=prepared.keys.length>0 && request.items.every(item=>Number.isFinite(item.width) && Number.isFinite(item.height) && item.width>0 && item.height>0 && item.width<=MAX_TILE && item.height<=MAX_TILE);
   const result = searchCorridors(search => {
     const layout=layoutPass(prepared,search,minWidth);
@@ -642,7 +648,7 @@ function prepare(request: LayoutRequest, ordering: Ordering = "barycenter", pass
     gap, margin, budget, pinned, contentWidth, rank, firstBand, capacity, firstRows: wrapCapacity(firstBand.map((key) => items.get(key)!.width), contentWidth, gap, capacity),
   };
 }
-type Prepared = ReturnType<typeof prepare> & Pick<LayeredOptions, "channelStyle">;
+type Prepared = ReturnType<typeof prepare> & Pick<LayeredOptions, "channelStyle" | "rowAlign">;
 
 /** What does not move between passes about where a junction goes: its band, consumers, what it may sit on, and its nested junctions. */
 interface JoinFacts { readonly bandIndex: number; readonly consumers: NodeKey[]; readonly own: ReadonlySet<NodeKey>; readonly nestedJoins: string[] }
@@ -761,7 +767,7 @@ function layoutPass(prepared: Prepared, search: CorridorSearch, minWidth: number
       const right = width - extra.right - margin - rowWidth;
       let x = pinned
         ? Math.max(left, Math.min(right, pinned.x - rowWidth / 2))
-        : extra.left + (width - extra.left - extra.right - rowWidth) / 2;
+        : prepared.rowAlign === "start" ? left : extra.left + (width - extra.left - extra.right - rowWidth) / 2;
       const row = rowKeys.length;
       for (const key of keysInRow) {
         columns.set(key, { x: round(x), row, band: bandIndex });

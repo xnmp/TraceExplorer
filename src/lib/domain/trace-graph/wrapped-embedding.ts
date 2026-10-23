@@ -120,7 +120,7 @@ function solveChunk(request: LayoutRequest, generations: readonly (readonly Layo
     ...generations.flat().map(item => ({ ...item, parents: item.parents.map(p => dummyOf.get(p) ?? p) })),
   ];
   let layout: GraphLayout;
-  try { layout = layoutLayered({ items, maxWidth: Infinity, orientation: 'right', tileWidth: request.tileWidth, hint: request.hint }, { channelStyle: 'orthogonal' }); }
+  try { layout = layoutLayered({ items, maxWidth: Infinity, orientation: 'right', tileWidth: request.tileWidth, hint: request.hint }, { channelStyle: 'orthogonal', rowAlign: 'start' }); }
   catch (error) { if (error instanceof RoutingConflictError) return null; throw error; }
   const parentOf = new Map([...dummyOf].map(([p, d]) => [d, p]));
   const nodes = new Map<NodeKey, PlacedNode>(), dummies = new Map<NodeKey, PlacedNode>();
@@ -213,27 +213,56 @@ function embed(request: LayoutRequest, ends: readonly number[], generations: rea
   const cx = Math.max(cover.width / 2, Math.min(budget - cover.width / 2, request.pinned?.x ?? budget / 2));
   const nodes = new Map<NodeKey, PlacedNode>([[key, { key, x: cx - cover.width / 2, y: 0, width: cover.width, height: cover.height, band: 0, row: 0 }]]);
   const junctions = new Map<string, PlacedJunction>(), routes: PlacedRoute[] = [];
-  // Cut parents leaving the previous chunk, top to bottom, with their exit ports.
-  let leaving: { readonly key: NodeKey; readonly x: number; readonly y: number; readonly height: number }[] = [{ key, x: cx, y: cover.height, height: DUMMY_WIDTH }];
-  let exitRight = cx, bottom = cover.height, fromCover = true;
+  // First every chunk is solved. A chunk's breaking points follow its cut
+  // parents' order in the chunk above, which translation does not change.
+  interface Chunk { readonly start: number; readonly end: number; readonly solved: Solved; readonly parents: readonly NodeKey[];
+    readonly fans: ReadonlyMap<NodeKey, ReturnType<typeof entryFan>>; readonly inner: number; readonly box: ReturnType<typeof extent> }
+  const chunks: Chunk[] = [];
+  let parents: { readonly key: NodeKey; readonly height: number }[] = [{ key, height: DUMMY_WIDTH }];
   for (let chunk = 0, start = 0; chunk < ends.length; start = ends[chunk++]) {
-    const members = generations.slice(start, ends[chunk]);
-    const memo = `${start},${ends[chunk]},${leaving.map(p => p.key).join('\u0000')}`;
-    const solved = cache.has(memo) ? cache.get(memo)! : cache.set(memo, solveChunk(request, members, leaving.map(p => p.key), leaving.map(p => p.height))).get(memo)!;
+    const members = generations.slice(start, ends[chunk]), keys = parents.map(p => p.key);
+    const memo = `${start},${ends[chunk]},${keys.join('\u0000')}`;
+    const solved = cache.has(memo) ? cache.get(memo)! : cache.set(memo, solveChunk(request, members, keys, parents.map(p => p.height))).get(memo)!;
     if (!solved) return null;
-    const m = leaving.length, box = extent(solved);
+    const port = (p: NodeKey) => { const d = solved.dummies.get(p)!; return { x: d.x + d.width, y: d.y + d.height / 2 }; };
+    const fans = new Map(keys.map(p => [p, entryFan(solved.routes, p, port(p), s)] as const));
+    chunks.push({ start, end: ends[chunk], solved, parents: keys, fans, inner: Math.min(...[...fans.values()].map(f => f.inner)), box: extent(solved) });
+    const more = new Set((generations[ends[chunk]] ?? []).flatMap(item => item.parents));
+    parents = members.at(-1)!.filter(item => more.has(item.key)).map(item => solved.nodes.get(item.key)!)
+      .sort((a, b) => a.y - b.y).map(n => ({ key: n.key, height: n.height }));
+  }
+  // Then their columns are aligned: every chunk's first column starts where the
+  // chunk needing the most entry room puts it, so wrapped columns line up. When
+  // that overflows the pane, each chunk takes only its own entry room.
+  const need = (c: Chunk) => s.clearance + (c.parents.length - 1) * s.lane + c.box.left - c.inner;
+  const exitRoom = (c: Chunk, i: number) => i + 1 < chunks.length ? 2 * s.clearance + chunks[i + 1].parents.length * s.lane : 0;
+  const lastRight = (c: Chunk) => Math.max(...generations[c.end - 1].map(item => { const n = c.solved.nodes.get(item.key)!; return n.x + n.width; }));
+  const fitsAt = (left: (c: Chunk) => number) => chunks.findIndex((c, i) => {
+    const dx = left(c) - c.box.left;
+    return c.box.right + dx > budget || (exitRoom(c, i) && lastRight(c) + dx + exitRoom(c, i) > budget);
+  });
+  const aligned = Math.max(...chunks.map(need));
+  let left: (c: Chunk) => number = () => aligned;
+  if (fitsAt(left) >= 0) {
+    left = need;
+    const failed = fitsAt(left);
+    if (failed >= 0) return { overflow: [chunks[failed].start, chunks[failed].end] };
+  }
+
+  // Cut parents leaving the previous chunk, top to bottom, with their exit ports.
+  let leaving: { readonly key: NodeKey; readonly x: number; readonly y: number }[] = [{ key, x: cx, y: cover.height }];
+  let exitRight = cx, bottom = cover.height, fromCover = true;
+  for (const [index, chunk] of chunks.entries()) {
+    const { solved, fans, inner, box, start } = chunk, m = leaving.length;
     // Gap tracks below the previous chunk: the topmost cut parent takes the lowest.
     const firstTrack = fromCover ? cover.height + 2 * TRACK_HEIGHT : bottom + TRACK_HEIGHT;
     const track = (rank: number) => firstTrack + (m - 1 - rank) * TRACK_HEIGHT;
     const top = Math.max(fromCover ? cover.height + STACK_STEM_ROOM : 0, track(0) + s.approach);
     // Entry columns left of the dummies' ports: the topmost parent innermost.
     const port = (p: NodeKey) => { const d = solved.dummies.get(p)!; return { x: round(d.x + d.width), y: round(d.y + d.height / 2) }; };
-    const fans = new Map(leaving.map(parent => [parent.key, entryFan(solved.routes, parent.key, port(parent.key), s)] as const));
-    const inner = Math.min(...[...fans.values()].map(f => f.inner));
-    const dx = round(s.clearance + (m - 1) * s.lane - inner), dy = round(top - box.top);
+    const dx = round(left(chunk) - box.left), dy = round(top - box.top);
     const entry = (rank: number) => round(inner + dx - rank * s.lane);
-    if (box.right + dx > budget) return { overflow: [start, ends[chunk]] };
-    for (const [id, node] of solved.nodes) nodes.set(id, { ...node, x: node.x + dx, y: node.y + dy, band: node.band + start, row: chunk + 1 });
+    for (const [id, node] of solved.nodes) nodes.set(id, { ...node, x: node.x + dx, y: node.y + dy, band: node.band + start, row: index + 1 });
     for (const [id, j] of solved.junctions) {
       if (junctions.has(id)) return null;
       junctions.set(id, { ...j, x: round(j.x + dx), y: round(j.y + dy) });
@@ -254,18 +283,14 @@ function embed(request: LayoutRequest, ends: readonly number[], generations: rea
           consumers: fan.fanned.flatMap(route => routeConsumers(route)), path: polyline([...points, [x, y]]) });
         continue;
       }
-      const index = solved.routes.indexOf(fan.fanned[0]), path = shiftedRoutes[index].path;
+      const at2 = solved.routes.indexOf(fan.fanned[0]), path = shiftedRoutes[at2].path;
       if (!starts(path, x, y)) return null;
       // Past the port: the run's own end when it was compacted, else the port itself.
-      shiftedRoutes[index] = { ...shiftedRoutes[index], path: polyline(points) + (fan.run === null ? ' L' + path.slice(1) : ' ' + path.slice(`M${x} ${y}`.length).trimStart()) };
+      shiftedRoutes[at2] = { ...shiftedRoutes[at2], path: polyline(points) + (fan.run === null ? ' L' + path.slice(1) : ' ' + path.slice(`M${x} ${y}`.length).trimStart()) };
     }
     routes.push(...shiftedRoutes);
-    // The next chunk's cut parents: this chunk's last generation with children, top to bottom.
-    const last = members.at(-1)!, more = new Set((generations[ends[chunk]] ?? []).flatMap(item => item.parents));
-    leaving = last.filter(item => more.has(item.key)).map(item => nodes.get(item.key)!)
-      .sort((a, b) => a.y - b.y).map(n => ({ key: n.key, x: n.x + n.width, y: round(n.y + n.height / 2), height: n.height }));
-    exitRight = Math.max(...last.map(item => nodes.get(item.key)!.x + nodes.get(item.key)!.width));
-    if (leaving.length && exitRight + 2 * s.clearance + leaving.length * s.lane > budget) return { overflow: [start, ends[chunk]] };
+    leaving = (chunks[index + 1]?.parents ?? []).map(p => { const n = nodes.get(p)!; return { key: p, x: n.x + n.width, y: round(n.y + n.height / 2) }; });
+    exitRight = Math.max(...generations[chunk.end - 1].map(item => nodes.get(item.key)!.x + nodes.get(item.key)!.width));
     bottom = box.bottom + dy;
     fromCover = false;
   }
