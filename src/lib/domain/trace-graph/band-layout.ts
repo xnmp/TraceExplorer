@@ -8,6 +8,7 @@ import { safeChain } from "./safe-chain";
 import { safeFanGrid } from "./safe-grid";
 import { safeColumns } from "./safe-columns";
 import { safeLayout } from "./safe-layout";
+import { gridRowsEmbedding, serialRowsEmbedding } from "./cold-embeddings";
 import { validHistory } from "./history-boundary";
 import { spacingFor, STACK_STEM_ROOM } from "./metrics";
 import { bandWidthBudget, columnsFor, partitions, buildShelves, validate } from "./band-shelves";
@@ -324,6 +325,28 @@ function normalizedHistory(history: import("./layout").BandHistory, request: Lay
   return attachPackedBand(history.layout, key, cover.height, localBandPlacement(history.attachment.placement, cover.height));
 }
 
+/**
+ * The pin set a fallback-ladder candidate must keep (slice 5a): every retained
+ * rectangle for an arrival, the clicked tile and its visible ancestry for a
+ * click, as the ordinary candidates define them. Compared exactly once attached.
+ * Without compatible history there is nothing to pin.
+ */
+export function ladderPins(request: LayoutRequest): (layout: GraphLayout) => boolean {
+  const history = request.history, key = request.band?.key;
+  if (!history || !key || typeof history.signature !== "string") return () => true;
+  const fit = historyFit(history.signature, request);
+  if (!fit) return () => true;
+  const previous = history.attachment ? normalizedHistory(history, request) : history.placed;
+  const keys = fit.kind === "grown" ? request.items.filter(n => previous.nodes.has(n.key)).map(n => n.key) : anchorKeys(request, previous);
+  return layout => {
+    const placed = attachSingleBand(layout, request).nodes;
+    return keys.every(id => {
+      const before = previous.nodes.get(id)!, after = placed.get(id);
+      return !!after && after.x === before.x && after.y === before.y;
+    });
+  };
+}
+
 /** Machine-readable decisions retain a concise diagnostic for the view and evaluator. */
 export function fallbackReason(layout: GraphLayout): string | null {
   const reason = layout.decision?.fallback;
@@ -353,26 +376,43 @@ export function layoutBand(input: LayoutRequest, options: BandOptions = BAND_DEF
     countLayoutWork('fallback-ladder');
     try {
     let replacement: GraphLayout | undefined;
+    const pinsHeld = ladderPins(request);
+    if (request.history) countLayoutWork('fallback-ladder:history');
     for (const scale of [1.5, 2, 3]) {
       let candidate:GraphLayout;
       try { candidate=withPaneBandBounds(layoutLayered({ ...request, history: undefined, band: undefined, tileWidth: (request.tileWidth ?? 92) * scale, orientation: "down" }, { ordering: options.ordering, passing: options.passing, channelStyle: "orthogonal" }), request.band!.key, request.maxWidth); }
       catch(error) {if(error instanceof RoutingConflictError) continue;throw error;}
       if (!geometryGate(attachSingleBand(candidate, request), request.items, request.band!.key, request.maxWidth)) {
+        // Pre-existing rung: the same solve at wider spacing, kept and attributed when it drops pins.
+        if (!pinsHeld(candidate)) countLayoutWork('legacy:T36:wide:pins-lost');
         replacement = { ...candidate, decision: { candidate: "wide-channels", stability: false, fallback: "geometry-fallback" } }; break;
       }
     }
-    if (!replacement) {
-      const chain = safeChain(request);
-      if (chain && !geometryGate(attachSingleBand(chain, request), request.items, request.band!.key, request.maxWidth)) replacement = chain;
-    }
-    if (!replacement) {
-      const fan = safeFanGrid(request);
-      if (fan && !geometryGate(attachSingleBand(fan, request), request.items, request.band!.key, request.maxWidth)) replacement = fan;
-    }
-    if (!replacement) {
-      const columns = safeColumns(request);
-      if (!geometryGate(attachSingleBand(columns, request), request.items, request.band!.key, request.maxWidth)) replacement = columns;
-    }
+    // Slice 5a: compact and serial display embeddings through the common
+    // layered solve. A pinned state admits one only if it keeps every pin;
+    // otherwise the attributed legacy rungs below run as before.
+    const certified = (layout: GraphLayout | null) => !!layout && !geometryGate(attachSingleBand(layout, request), request.items, request.band!.key, request.maxWidth);
+    const legacy = (name: string, layout: GraphLayout | null): GraphLayout | null => {
+      if (!certified(layout)) return null;
+      countLayoutWork(`legacy:T36:${name}`);
+      if (!pinsHeld(layout!)) countLayoutWork('legacy:T36:pins-lost');
+      return layout;
+    };
+    const embedded = (name: string, build: () => GraphLayout | null): GraphLayout | null => {
+      countLayoutWork(`cold-embedding:${name}:attempt`);
+      const layout = build();
+      if (!certified(layout)) return null;
+      if (!pinsHeld(layout!)) { countLayoutWork(`cold-embedding:${name}:pins`); return null; }
+      countLayoutWork(`cold-embedding:${name}:published`);
+      return layout;
+    };
+    replacement ??= embedded('grid-rows', () => gridRowsEmbedding(request)) ?? undefined;
+    // The rightward chain is a shelf-family embedding (slice 5b); it stays ahead of serial rows.
+    replacement ??= legacy('chain', safeChain(request)) ?? undefined;
+    replacement ??= legacy('fan', safeFanGrid(request)) ?? undefined;
+    replacement ??= embedded('serial-rows', () => serialRowsEmbedding(request)) ?? undefined;
+    replacement ??= legacy('serial', safeColumns(request)) ?? undefined;
+    if (!replacement) countLayoutWork('legacy:T36:uncertified');
     result = replacement ?? safeLayout(request);
     const failure = geometryGate(attachSingleBand(result, request), request.items, request.band!.key, request.maxWidth);
     if (failure) throw new RangeError("No certified layout: " + failure);
