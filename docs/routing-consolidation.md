@@ -328,7 +328,7 @@ async pattern: use existing pure request/result and publication transaction.
 | **3. Junctions and corridor topology (complete)** | T3/T5–T10/T12/T13; reuse T1 semantics. Replace provisional/deferred/stacked placement, zone reconsideration and dropped ordering with explicit junction ports and channel search. | Critical cycle gets a certified split/crossing topology, never a discarded hard dependency. Exact parentage for reused subsets, 2–8 inputs, distant fan-outs and long edges; crossing/height/pane/fallback limits all hold. Try new corridor assignments before growing only free boundaries. | 1,200–1,800 lines; 6–9 days | High: combinatorial corridor capacity and fan-in/crossing semantics. Bounds on **total** search/constraint work, not per retry. |
 | **4. Constrained incremental insertion and hint changes (open; lossless import boundary complete)** | T18–T28 plus T37's separate routing. Import committed drawing into same model, freeze declared tracks/rectangles/suffixes, add new ports/segments and re-solve affected conflict components. | Arrival world-oracles, merges/departures, single 16 px descent and shrink-space reuse; clicked ancestry equality; exact revisits and worker parity. Delete repairable-contact policy and port/bypass offset repair only when all old successes are covered. Preserve other retained tiles where the request pins them; optimize only free ones. | 1,200–1,900 lines; 6–10 days | High: pruning/identity, future departures, hint port changes, dense search tails. |
 | **5. Cold sweeps and folder packing in that model (complete: 5a display-row and 5b wrapped rightward embeddings, 5c folder packing as constraints; see "Slice 5 plan")** | T2/T17/T19/T30/T36–T38 placement alternatives. Shelves, downward and serial layouts become embedding generators feeding one solve; packing contributes constraints before final routing. | All cold widths/presets and legal tours retain display/long-edge order, quality and timing targets. New-state sweeps may choose freer embeddings; pinned states never lose pins when a compact/serial candidate is considered. Folder ordinary cells and other bands are first-class obstacles. | 1,000–1,600 lines; 5–8 days | High: compactness, candidate pruning and 10 ms inline budget; avoids a simultaneous scoring rewrite. |
-| **6. Remove superseded routers/repairs** | Delete remaining legacy T21–T25/T28/T36/T38 implementations once every embedding uses common constraints; T5–T7/T10/T13 are deleted in slice 3. Retain T1 consumer semantics, T16 emitter if still useful, T39 history and T40 independent gates. | No legacy escapes reached across full acceptance and targeted rare-branch fixtures; safe chain/fan/serial are certified embedding choices under identical pins. New diagnostics distinguish topology conflict, metric conflict, unsupported input and budget exhaustion. | 300–700 new/changed lines, larger net deletion; 2–4 days | Medium after coverage; zero sample use alone never justifies deletion. |
+| **6. Remove superseded routers/repairs (partial: fan grid and the `safeColumns` alias deleted; exhaustion diagnostics; surviving legacy chain and serial rows admitted only under exact pins; T17, T21–T25, T28, T37 and T38 remain, see "Slice 6")** | Delete remaining legacy T21–T25/T28/T36/T38 implementations once every embedding uses common constraints; T5–T7/T10/T13 are deleted in slice 3. Retain T1 consumer semantics, T16 emitter if still useful, T39 history and T40 independent gates. | No legacy escapes reached across full acceptance and targeted rare-branch fixtures; safe chain/fan/serial are certified embedding choices under identical pins. New diagnostics distinguish topology conflict, metric conflict, unsupported input and budget exhaustion. | 300–700 new/changed lines, larger net deletion; 2–4 days | Medium after coverage; zero sample use alone never justifies deletion. |
 
 Slices 3–5 are intentionally separate: metric solving first establishes enforceable
 contracts; topology search then supplies better feasible choices; insertion and
@@ -3806,3 +3806,225 @@ Slice 5 is complete.
 - **T38's `safeLayout` rung and T30's skyline stay** as legacy, counted.
   The production inventory reached no isolation rung (`legacy:T38` 0).
 
+
+## Slice 6: remove superseded routers and repairs
+
+Branch `routing-s6`, on origin/main cccde82 (slice 5c, #111). Scratch tools
+are in `layout-eval/out/s15/`.
+
+### The deletion rule, and how it was measured
+
+A stage is deleted only when both of these hold:
+1. **Zero reach** on the full acceptance run: the 3,405-request inventory
+   (`lat.ts`), the 14,400 folder arrivals (`freach.ts`), the cold band sweep
+   (`cold.ts`, 3,080 requests: corpus and dense cases, widths 360–1400, tiles
+   48/64/96/128, full and focused), the 800 cold folders (`fsweep.ts`) and
+   `layout:eval`. Targeted rare-branch fixtures (`rare.ts`, `giant.ts`) must
+   not reach it either.
+2. **Covered successes.** Every input the stage certifies when forced is also
+   certified by the common path under the identical pin set (the ladder's
+   `ladderPins`), with both unchanged gates. Three forced replays:
+   - the cold forced ladder of slices 5a and 5b (`s12/ladder.ts`, 1,540
+     requests);
+   - the forced ladder **under pins** (`s15/pladder.ts`): every rung on every
+     tour step with its committed history, 3,150 requests, 2,680 with pins;
+   - forced isolation (`s15/fiso.ts`, a scratch hook in a 5c worktree): every
+     T38 rung on the 800 cold folders and on 3,600 pinned arrivals (seeds
+     1–25, all widths and tiles).
+
+Reach on routing-s5c, the code before any deletion:
+
+| Population | Ladder (T36) | Isolation (T38) | T17 shelves | T23 / T24 / T25 / T28 | T37 |
+|---|---:|---:|---:|---|---:|
+| Inventory, 3,405 | 0 | 0 | 0 | 0 / 1 / 2 constrained, 4 repairable / 1 | 0 |
+| Folder arrivals, 14,400 | 0 | 0 | 0 | 51 / 22 / 0 / 4 band, 4 folder, 13 hint | 1,076 |
+| Cold band sweep, 3,080 | 0 | — | 7 entered, 5 built candidates, 0 published | 0 | — |
+| Cold folders, 800 | 0 | 0 | 0 | 0 | 0 |
+
+(Requests reaching each counter. T23, `freeBlockedPorts`, is a further legacy
+repair the counters reveal; it runs inside the same legacy insertion as T24.)
+
+### Deleted
+
+| Stage | Reach | Covered successes |
+|---|---|---|
+| **T36 legacy fan grid** (`safe-grid.ts`) | 0 everywhere. One rare fixture reached it: 44 fan tiles of 100,000 px at 900 px (the giant-tile contract test), where it was the only certified rung | Cold: 110 of 110 covered (5a). Under pins: 455 of 455 pin-keeping successes covered. The giant fan is covered once the grid embedding takes near-square rows when tiles are wider than the pane and rows of one would leave the coordinate reach (`gridEmbedding`, below) |
+| **`safe-columns.ts`** | An alias of `safeLayout`; no stage of its own | — |
+
+The grid embedding change (`cold-embeddings.ts`, `ColdEmbedding.width`) applies
+only when not even one tile fits the pane **and** rows of one would leave the
+coordinate reach (`inReach`). Then it takes the near-square capacity and
+solves at that row width, as the legacy grid did. Every other input keeps the
+pane-fitting capacity, so no other output changes.
+
+Where the legacy constructions drew narrow panes differently, it is recorded
+here, not hidden. In a pane narrower than one tile and two margins, grid and
+serial rows keep their route margin and overflow the pane by up to 20 px;
+with many live lanes, serial rows can draw wider than the pane (401 px at
+360 px for `random-dag-200-9102`). Both are certified by the gate. Neither is
+new in production: since 5a these embeddings run ahead of the legacy rungs, so
+they were already what got published wherever both certified.
+`serial-embedding-width.test.ts` pins the narrow-pane fixtures the legacy rows
+were written for.
+
+### Kept, with residue
+
+| Stage | Why it stays | Residue |
+|---|---|---|
+| **T38 legacy serial-rows isolation** (the `safeLayout` rung) | Zero on every acceptance population, and forced isolation on the single-stack arrivals found every pin-keeping success covered (800 of 800 cold folders through the framed rung; of 3,600 forced arrival probes legacy certified all, dropped pins in 3,000, and the other 600 were certified earlier by the framed rung). The review found reach the acceptance populations do not sample: arrivals with two or three open, fully expanded stacks in panes of 260–360 px reach it in 12 of its tours (`review/stuck.ts`), and 258 of 13,200 forced probes certify only through it (`review/fiso2.ts`). Without it those folders fail on every later arrival, since a failed state keeps its pins | Kept, counted (`legacy:T38:published`, `:pins-lost`). It publishes only a certified folder, and drops pins as before. Replacing it needs a pinned isolation that keeps the pins, or a rule for when a failed retained state may release them |
+| **T36 legacy chain** (`safe-chain.ts`) | Fails both checks on a rare fixture: a chain of 44 tiles of 100,000 px reaches it, and no embedding certifies it. Every embedding's drawing leaves the coordinate reach, and the wrapped embedding's unwrapped measuring solve does too | Cold 140 and pinned 75 successes are all covered otherwise. Now admitted only as a certified drawing that keeps the pin set (`legacy:T36:chain:published` / `:pins`) |
+| **T36 legacy serial rows** (`safe-layout.ts`, with `fallback-order.ts` and `streaming-junctions.ts`) | Fails covered successes under pins: 50 forced pinned requests (the first click of ten chain-like tours at five widths) where the committed drawing is a cover over one left-aligned tile. Legacy rows reproduce it; the centred serial embedding and every other embedding move the clicked tile | 0 reach. Now admitted only under exact pins, after the serial embedding (`legacy:T36:serial:published` / `:pins`). It no longer ends the ladder with an uncertified drawing |
+| **T17 legacy shelves** (`buildShelves`, `partitions`, `channelFor`) | Reached in the cold sweep: 7 requests enter it (200-node trees at 360 px, no wrapped plan fits), 5 build candidates. None is published | Closing it needs the wrapped embedding's entry channel compacted inside the solve (5b) |
+| **T24, T25, T28** (user-sanctioned) | Production reach, as before: inventory T24 1, T25 2 constrained / 4 repairable, T28 1; arrivals T24 22, T28 21 | Old-success coverage at the API allowance re-measured (below). Unchanged by this slice |
+| **T23** (`freeBlockedPorts`), **T21/T22** (plain grid and second chance) | Part of the same legacy insertion (`insertWithPortRepair`, `insertTree`) as T24, T25 and T37; T23 reaches 51 arrivals | Leaves with that insertion |
+| **T37** folder-world pin search | Still the production world constructor: 1,076 arrivals published by it | As at 5c: free-space insertion (`worldSearch`) stays a counted candidate that adds no reach after it |
+| Wide channels (1.5/2/3×) | A pre-existing rung of the same layered solve, not a legacy constructor; 0 reach | Still counted as `legacy:T36:wide:pins-lost` when it drops pins |
+
+T1 consumer semantics, the T16 emitter, T39 history and the T40 gates are
+unchanged.
+
+### Exhaustion diagnostics
+
+`layout-exhaustion.ts` names why a request failed when every bounded
+construction did. Each attempt ends in an `AttemptOutcome`: not applicable,
+pinned skip, topology, metric, search exhausted, invalid, gate rejected or pins
+lost. `exhaustionReason` reports the furthest stage any attempt reached:
+1. **budget exhaustion**, if any search spent its work bound;
+2. else **topology conflict**, if a certified drawing moved a pin (its geometry
+   was sound, so the pins conflict with the embedding);
+3. else **metric conflict**, if a drawing's coordinates failed (the solve's or
+   the gate's);
+4. else **topology conflict**, if a topology admitted no drawing;
+5. else **unsupported input**.
+
+The failure is `LayoutExhaustedError`, a `RangeError` like the anonymous
+failure it replaces. Its message leads with the reason, which is what crosses
+the worker boundary. It is also counted as `exhausted:<band|folder>:<reason>`.
+Three places throw it:
+- the band ladder, when no rung certifies (`band-layout.ts`, `layoutBand`);
+- a retained state whose candidates hit a routing conflict, wrapping the
+  `RoutingConflictError` as its cause;
+- folder isolation, when no rung, legacy T38 included, certifies
+  (`default-engine.ts`, `isolatedFolder`).
+
+Nothing new is published on any of them: the last committed scene stays. To
+report outcomes, the cold embeddings gained `gridRowsAttempt` and
+`serialRowsAttempt`, and `LayeredOptions.work` makes the corridor search's
+bound explicit (default unchanged, 64M). `conflictReason` replaces the
+world search's inline mapping of a corridor conflict.
+`layout-exhaustion.test.ts` produces each reason from a representative input:
+- metric: a giant chain with a merge, through `layoutBand`;
+- budget: a serial attempt given too little work;
+- topology: a click whose only certified drawing moves the clicked tile;
+- unsupported: attempts that do not apply.
+
+### Outputs, reach and latency
+
+Final code (after the review fixes) against origin/main cccde82 (slice 5c;
+its tree equals routing-s5c, which these runs used) and 5b (78e8c16), all run
+the same day:
+
+| Population | Outputs differing from main | From 5b | Gate failures | Errors |
+|---|---:|---:|---:|---:|
+| Inventory, 3,405 | 0 | 0 | 0 | 0 |
+| Folder arrivals, 14,400 | 0 | 1,090 (5c's, below) | 0 | 0 |
+| Cold band sweep, 3,080 | 0 | 0 | 0 | 0 |
+| Cold folders, 800 | 0 | 0 | 0 | 0 |
+
+Every deleted stage had zero reach there, and outputs are byte-identical to
+main everywhere. The 1,090 arrivals that differ from 5b are 5c's cover-only
+fix, as measured there. Arrival reach is unchanged: 63 `search-exhausted`
+(5b: 166), 0 gate failures, 0 `isolated-rows`. No population reached the
+ladder, isolation or an exhaustion.
+
+| ms (p50 / p95 / max) | 5b | main (5c) | Slice 6 |
+|---|---|---|---|
+| Folder clicks (255) | 7.2 / 72.6 / 449.8 | 7.0 / 73.3 / 456.5 | 6.9 / 79.0 / 441.0 |
+| Tours (3,150) | 14.0 / 3,051.8 / 19,292.7 | 13.8 / 3,059.4 / 18,953.4 | 14.0 / 3,009.5 / 18,805.0 |
+| Folder arrivals (14,400) | 8.0 / 40.7 / 1,775.4 | 8.5 / 60.9 / 2,214.3 | 8.2 / 59.3 / 2,121.4 |
+| Cold folders (800) | 4.6 / 24.2 / 40.3 | 4.5 / 24.3 / 46.4 | 4.9 / 23.7 / 41.8 |
+| Cold bands (3,080) | 8.7 / 442.7 / 4,277.9 | 8.2 / 425.3 / 4,141.4 | 8.0 / 429.5 / 4,171.2 |
+
+The latency sanity run shows no regression (four shards ran concurrently, so
+single ratios carry a few percent of noise); the code these populations run is
+unchanged.
+
+### T24, T25 and T28 coverage
+
+Old-success replays at the API allowance (`rp.ts` on the slice 4 success sets,
+scored by `cov2.py`) on the final code: tours 636/894, corpus 62/63, original
+81/108, as at the metric pass. Per stage: tours T24 438/678, T25 72/84, T28
+53/58. None passes the deletion rule: each still has production reach.
+
+### Tests
+
+- `layout-exhaustion.test.ts`: the reason precedence, the corridor-conflict
+  mapping, the error type and message, and one representative input per
+  reason.
+- `cold-embeddings.test.ts`: grid rows keep 2–100 unequal fan tiles and their
+  edges, the same under permutation; fans in 96–120 px panes certify (overflow
+  bounded by the route margin); giant fans take near-square rows only when rows
+  of one would leave the reach.
+- `giant-fan.test.ts`: the 44 × 100,000 px fan contract, moved from
+  `safe-grid.test.ts`, now published by grid rows.
+- `serial-embedding-width.test.ts`: serial and grid rows on the legacy rows'
+  narrow-pane fixtures (pinned covers anywhere, 100-input merges at 360 px,
+  16–100-input merges in a 108 px pane with O(n log n) consumer entries).
+- `safe-layout.test.ts` (was `safe-columns.test.ts`): the shared source
+  channel, and the first-click residue that keeps legacy serial rows.
+
+### Review
+
+An independent adversarial review compared the pre-slice code with this branch
+through the public entry points. It ran a 17,043-case band differential
+(panes of 1–100,000 px, tiles of 20 px–100k px, malformed inputs), an
+11,100-step folder differential, band tours with history at 40–200 px panes
+and a forced pinned ladder at 90 and 200 px. On those, no input that published
+before now fails. The only output differences were the giant fans (grid rows
+in place of the legacy grid), plus 24 giant inputs that used to throw and now
+publish. Fixed from its findings:
+1. **High, stuck UI: T38 deletion reverted.** Folders with two or three open,
+   fully expanded stacks in 260–360 px panes reach the T38 rung, which the
+   single-stack arrival populations never sample. Without the rung, such a
+   folder threw on that arrival and on every later one, since a failed state
+   keeps its pins. The rung is restored (see Kept). It is now published only
+   when certified, and otherwise ends in `LayoutExhaustedError`.
+2. **Low: the giant-tile trigger.** It charged every row the tallest tile's
+   height, so one tall tile among small ones widened the grid. It now uses
+   the real one-per-row height.
+3. **Diagnostic: lost pins were masked.** Any gate rejection reported a metric
+   conflict even when the decisive failure was a certified drawing that moved
+   a pin. Lost pins now rank above gate rejections.
+
+### Gates and acceptance rows
+
+Final code, on origin/main cccde82:
+- **`bun run check`:** 297 files, 0 errors.
+- **`bun run test`:** 204 files; 2,508 passed, 1 skipped, 2 failed. Both
+  failures are load timeouts (`folder-layout-parity`, `partial-band-routing-room`,
+  as at 5c), and both files pass alone (10/10).
+- **`layout:eval`:** all 50 current targets pass. The acceptance rows equal
+  5c's: click-anchor moves 15; dense-tour anchor moves 51; held-screen moves at
+  480 px 20 and 52; mean legal displacement 10.6 px; mean height 2,104.5;
+  crossings 330.7; sibling inversions 0.080; unaligned 0.165; mixed directions
+  1.70. Main-thread maximum p95 3.33 ms (limit 8); full folder engine inline
+  p95 4.61 ms (limit 10).
+- **`click-stability.test.ts`** alone: passes in 2,271 s (5c: 2,268 s).
+
+### What remains
+
+Slice 6 is **not complete**. These legacy stages keep reach or uncovered
+successes:
+- **T24, T25 and T28** (user-sanctioned), with **T21–T23** and **T37**, which
+  share their legacy insertion. Next: the free-core moves and construction
+  search recorded in slice 4, and a world constructor that certifies T37's
+  cramped merges.
+- **T38 isolation**, reached by multi-stack arrivals. It needs a pinned
+  isolation that keeps every band's pins, or a stated rule for when a failed
+  retained state may release them.
+- **T17 shelves**, entered by 7 cold 200-node trees at 360 px and never
+  published. Needs the wrapped embedding's entry channel compacted in the
+  solve.
+- **Legacy chain and serial rows**, now admitted only as certified drawings
+  that keep the pin set: giant-tile chains and pinned first clicks are their
+  residue.
