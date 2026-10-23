@@ -325,26 +325,35 @@ function normalizedHistory(history: import("./layout").BandHistory, request: Lay
   return attachPackedBand(history.layout, key, cover.height, localBandPlacement(history.attachment.placement, cover.height));
 }
 
+/** The pin set a fallback-ladder candidate must keep, and whether a candidate keeps it. */
+export interface LadderPins { readonly keys: readonly string[]; readonly held: (layout: GraphLayout) => boolean }
+const NO_PINS: LadderPins = { keys: [], held: () => true };
+
 /**
- * The pin set a fallback-ladder candidate must keep (slice 5a): every retained
- * rectangle for an arrival, the clicked tile and its visible ancestry for a
- * click, as the ordinary candidates define them. Compared exactly once attached.
- * Without compatible history there is nothing to pin.
+ * The pin set a fallback-ladder candidate must keep (slice 5a), as the ordinary
+ * candidates define it: every retained rectangle for an arrival (when the
+ * policy keeps growth history), the clicked tile and its retained visible
+ * ancestry for a click. A tile gaining its first hint may let the tiles below
+ * it in its column descend by the hint height (`resizedLayout`'s d ∈ {0, 1}),
+ * so either position holds such a tile. Without compatible history there is
+ * nothing to pin.
  */
-export function ladderPins(request: LayoutRequest): (layout: GraphLayout) => boolean {
+export function ladderPins(request: LayoutRequest, options: BandOptions = BAND_DEFAULTS): LadderPins {
   const history = request.history, key = request.band?.key;
-  if (!history || !key || typeof history.signature !== "string") return () => true;
+  if (!history || !key || typeof history.signature !== "string") return NO_PINS;
   const fit = historyFit(history.signature, request);
-  if (!fit) return () => true;
-  const previous = history.attachment ? normalizedHistory(history, request) : history.placed;
-  const keys = fit.kind === "grown" ? request.items.filter(n => previous.nodes.has(n.key)).map(n => n.key) : anchorKeys(request, previous);
-  return layout => {
+  if (!fit || (fit.kind === "grown" && !options.growthHistory)) return NO_PINS;
+  const frame = (h: import("./layout").BandHistory) => h.attachment ? normalizedHistory(h, request) : h.placed;
+  const previous = frame(history);
+  const descended = fit.kind === "grown" && fit.heights.size
+    ? frame({ ...history, layout: resizedTiles(history.layout, fit.heights), placed: resizedTiles(history.placed, fit.heights) }) : previous;
+  // A click can reveal an ancestor the committed drawing never had: nothing pins it.
+  const keys = (fit.kind === "grown" ? request.items.map(n => n.key) : anchorKeys(request, previous)).filter(id => previous.nodes.has(id));
+  const at = (a: PlacedNode | undefined, b: PlacedNode | undefined) => !!a && !!b && Math.hypot(a.x - b.x, a.y - b.y) < .01;
+  return { keys, held: layout => {
     const placed = attachSingleBand(layout, request).nodes;
-    return keys.every(id => {
-      const before = previous.nodes.get(id)!, after = placed.get(id);
-      return !!after && after.x === before.x && after.y === before.y;
-    });
-  };
+    return keys.every(id => at(placed.get(id), previous.nodes.get(id)) || at(placed.get(id), descended.nodes.get(id)));
+  } };
 }
 
 /** Machine-readable decisions retain a concise diagnostic for the view and evaluator. */
@@ -376,7 +385,10 @@ export function layoutBand(input: LayoutRequest, options: BandOptions = BAND_DEF
     countLayoutWork('fallback-ladder');
     try {
     let replacement: GraphLayout | undefined;
-    const pinsHeld = ladderPins(request);
+    const pins = ladderPins(request, options), pinsHeld = pins.held;
+    // A cold embedding ignores history, so beyond the cover it could keep pins
+    // only by coincidence: pinned states skip its solve and never publish one.
+    const pinnedBeyondCover = pins.keys.some(id => id !== request.band!.key);
     if (request.history) countLayoutWork('fallback-ladder:history');
     for (const scale of [1.5, 2, 3]) {
       let candidate:GraphLayout;
@@ -399,6 +411,7 @@ export function layoutBand(input: LayoutRequest, options: BandOptions = BAND_DEF
       return layout;
     };
     const embedded = (name: string, build: () => GraphLayout | null): GraphLayout | null => {
+      if (pinnedBeyondCover) { countLayoutWork(`cold-embedding:${name}:pinned-skip`); return null; }
       countLayoutWork(`cold-embedding:${name}:attempt`);
       const layout = build();
       if (!certified(layout)) return null;
@@ -406,11 +419,11 @@ export function layoutBand(input: LayoutRequest, options: BandOptions = BAND_DEF
       countLayoutWork(`cold-embedding:${name}:published`);
       return layout;
     };
-    replacement ??= embedded('grid-rows', () => gridRowsEmbedding(request)) ?? undefined;
+    replacement ??= embedded('grid-rows', () => gridRowsEmbedding(request, options)) ?? undefined;
     // The rightward chain is a shelf-family embedding (slice 5b); it stays ahead of serial rows.
     replacement ??= legacy('chain', safeChain(request)) ?? undefined;
     replacement ??= legacy('fan', safeFanGrid(request)) ?? undefined;
-    replacement ??= embedded('serial-rows', () => serialRowsEmbedding(request)) ?? undefined;
+    replacement ??= embedded('serial-rows', () => serialRowsEmbedding(request, options)) ?? undefined;
     replacement ??= legacy('serial', safeColumns(request)) ?? undefined;
     if (!replacement) countLayoutWork('legacy:T36:uncertified');
     result = replacement ?? safeLayout(request);

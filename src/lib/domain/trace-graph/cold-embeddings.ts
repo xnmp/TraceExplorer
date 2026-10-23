@@ -8,7 +8,7 @@
  * ahead of one orthogonal router. Null means the solve found no topology
  * within its bound for this embedding; it is not a proof of infeasibility.
  */
-import { layoutLayered, RoutingConflictError, type GraphLayout, type LayoutRequest } from './layout';
+import { layoutLayered, RoutingConflictError, type GraphLayout, type LayeredOptions, type LayoutRequest } from './layout';
 import { withPaneBandBounds } from './band-geometry';
 import { spacingFor } from './metrics';
 
@@ -19,12 +19,15 @@ export interface ColdEmbedding {
   readonly capacity: number;
 }
 
-function solve(request: LayoutRequest, embedding: ColdEmbedding): GraphLayout | null {
+/** The band's ordering and passing policy; spacing and routing style are the solve's own. */
+export type EmbeddingPolicy = Pick<LayeredOptions, 'ordering' | 'passing'>;
+
+function solve(request: LayoutRequest, embedding: ColdEmbedding, policy: EmbeddingPolicy = {}): GraphLayout | null {
   const key = request.band?.key;
   if (!key || !request.items.some(item => item.key === key)) return null;
   try {
     const layout = layoutLayered({ ...request, history: undefined, band: undefined, orientation: 'down' },
-      { channelStyle: 'orthogonal', rowCapacity: embedding.capacity });
+      { ordering: policy.ordering, passing: policy.passing, channelStyle: 'orthogonal', rowCapacity: embedding.capacity });
     return { ...withPaneBandBounds(layout, key, request.maxWidth),
       decision: { candidate: embedding.name, stability: false, fallback: 'geometry-fallback' } };
   } catch (error) {
@@ -43,19 +46,23 @@ export function gridEmbedding(request: LayoutRequest): ColdEmbedding | null {
   if (!items.length) return null;
   const space = spacingFor(request.tileWidth);
   const widest = Math.max(...items.map(item => item.width)), tallest = Math.max(...items.map(item => item.height));
-  // Generation sizes bound the useful capacity; the deepest generation sets it.
-  const depth = new Map<string, number>(), byKey = new Map(request.items.map(item => [item.key, item]));
-  const level = (id: string, seen = new Set<string>()): number => {
-    const known = depth.get(id);
-    if (known !== undefined) return known;
-    if (seen.has(id)) return 0;
-    seen.add(id);
-    const value = Math.max(-1, ...(byKey.get(id)?.parents ?? []).filter(p => byKey.has(p) && p !== id).map(p => level(p, seen))) + 1;
-    depth.set(id, value);
-    return value;
-  };
+  // Longest-path generations (Kahn order, iterative); the largest sets the capacity.
+  const byKey = new Map(request.items.map(item => [item.key, item]));
+  const children = new Map<string, string[]>(), waiting = new Map<string, number>(), depth = new Map<string, number>();
+  for (const item of request.items) {
+    const parents = [...new Set(item.parents)].filter(p => p !== item.key && byKey.has(p));
+    waiting.set(item.key, parents.length);
+    for (const p of parents) (children.get(p) ?? children.set(p, []).get(p)!).push(item.key);
+  }
+  const ready = request.items.filter(item => !waiting.get(item.key)).map(item => item.key);
+  for (const id of ready) depth.set(id, 0);
+  for (let i = 0; i < ready.length; i++) for (const child of children.get(ready[i]) ?? []) {
+    depth.set(child, Math.max(depth.get(child) ?? 0, depth.get(ready[i])! + 1));
+    const left = waiting.get(child)! - 1; waiting.set(child, left);
+    if (!left) ready.push(child);
+  }
   const sizes = new Map<number, number>();
-  for (const item of items) { const d = level(item.key); sizes.set(d, (sizes.get(d) ?? 0) + 1); }
+  for (const item of items) { const d = depth.get(item.key) ?? 0; sizes.set(d, (sizes.get(d) ?? 0) + 1); }
   const largest = Math.max(...sizes.values());
   const square = Math.ceil(Math.sqrt(largest * (tallest + space.rowChannel) / (widest + space.column)));
   const fitting = Math.floor((request.maxWidth - 2 * space.margin + space.column) / (widest + space.column));
@@ -66,12 +73,12 @@ export function gridEmbedding(request: LayoutRequest): ColdEmbedding | null {
 export const serialEmbedding = (_request: LayoutRequest): ColdEmbedding => ({ name: 'serial-rows', capacity: 1 });
 
 /** Grid rows through the common solve; null when it does not apply or is not found. */
-export function gridRowsEmbedding(request: LayoutRequest): GraphLayout | null {
+export function gridRowsEmbedding(request: LayoutRequest, policy?: EmbeddingPolicy): GraphLayout | null {
   const embedding = gridEmbedding(request);
-  return embedding && solve(request, embedding);
+  return embedding && solve(request, embedding, policy);
 }
 
 /** Serial rows (one tile per display row) through the common solve. */
-export function serialRowsEmbedding(request: LayoutRequest): GraphLayout | null {
-  return solve(request, serialEmbedding(request));
+export function serialRowsEmbedding(request: LayoutRequest, policy?: EmbeddingPolicy): GraphLayout | null {
+  return solve(request, serialEmbedding(request), policy);
 }
