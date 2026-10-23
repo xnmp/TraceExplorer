@@ -25,8 +25,9 @@ describe("compact band choice", () => {
     expect(bandExtent(graph, "root").height).toBeLessThanOrEqual(260);
     assertClear(attached(graph));
     for (const child of ["Cerulean", "Saffron"]) {
-      const route = attached(graph).routes.find((route) => route.to.id === child)!;
-      expect(samplePathString(route.path, 1)![0]).toEqual({ x: 700, y: 100 });
+      // The child's output leaves the cover stem: its route, or the trunk its route branches from.
+      const carriers = attached(graph).routes.filter((route) => route.from.id === "root" && routeConsumers(route).some((c) => c.child === child));
+      expect(carriers.map((route) => samplePathString(route.path, 1)![0])).toContainEqual({ x: 700, y: 100 });
     }
   });
   it("hidden topology never allocates positions or changes arrangement", () => {

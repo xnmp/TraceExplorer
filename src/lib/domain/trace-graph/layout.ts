@@ -342,8 +342,8 @@ export function layoutLayered(request: LayoutRequest, options: LayeredOptions = 
   if (request.orientation !== "right") return layoutDown(request, spacingFor(request.tileWidth).minWidth, options);
   // Left to right: the same engine on transposed tiles, transposed back.
   // Generations then form columns that never wrap (no height budget), and
-  // the canvas needs no minimum height.
-  const turned = transposeLayout(layoutDown({ items: request.items.map((item) => ({ ...item, width: item.height, height: item.width })), maxWidth: Infinity, hint: request.hint, tileWidth: request.tileWidth }, 0, { passing: options.passing }));
+  // the canvas needs no minimum height. Only passing and channel style apply.
+  const turned = transposeLayout(layoutDown({ items: request.items.map((item) => ({ ...item, width: item.height, height: item.width })), maxWidth: Infinity, hint: request.hint, tileWidth: request.tileWidth }, 0, { passing: options.passing, channelStyle: options.channelStyle }));
   const extent = request.extent !== undefined && Number.isFinite(request.extent) && request.extent > 0 ? Math.ceil(request.extent) : 0;
   return extent > turned.width ? { ...turned, width: extent } : turned;
 }

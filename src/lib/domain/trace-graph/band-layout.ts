@@ -5,6 +5,7 @@ import { RoutingConflictError, downwardBandBound, layoutLayered, type GraphLayou
 import { geometryGate, routeClearanceViolation } from "./geometry-gate";
 import { repairRouteContacts } from "./repair-route-contacts";
 import { safeChain } from "./safe-chain";
+import { wrappedEmbeddings, wrappedGenerations } from "./wrapped-embedding";
 import { safeFanGrid } from "./safe-grid";
 import { safeColumns } from "./safe-columns";
 import { safeLayout } from "./safe-layout";
@@ -420,7 +421,13 @@ export function layoutBand(input: LayoutRequest, options: BandOptions = BAND_DEF
       return layout;
     };
     replacement ??= embedded('grid-rows', () => gridRowsEmbedding(request, options)) ?? undefined;
-    // The rightward chain is a shelf-family embedding (slice 5b); it stays ahead of serial rows.
+    // Slice 5b: the wrapped rightward embedding covers the chain's domain (any
+    // tree, a chain included) through the common solve; the legacy chain follows.
+    // One generation cannot be cut: a single column would only lengthen a fan, so the fan grid keeps it.
+    if ((wrappedGenerations(request)?.length ?? 0) >= 2) replacement ??= embedded('wrapped-right', () => {
+      const wrapped = wrappedEmbeddings(request, 1)[0]?.layout;
+      return wrapped ? withPaneBandBounds(wrapped, request.band!.key, request.maxWidth) : null;
+    }) ?? undefined;
     replacement ??= legacy('chain', safeChain(request)) ?? undefined;
     replacement ??= legacy('fan', safeFanGrid(request)) ?? undefined;
     replacement ??= embedded('serial-rows', () => serialRowsEmbedding(request, options)) ?? undefined;
@@ -498,11 +505,20 @@ function layoutBandCandidates(input: LayoutRequest, options: BandOptions): Graph
   const shelves: Candidate[] = [];
   const columns = columnsFor(request.items, key, spacingFor(request.tileWidth).column);
   const chain = !!columns && columns.length >= 2 && columns.every(c => c.items.length === 1);
-  if (columns && columns.length >= 2) {
+  // Slice 5b: wrapped rightward embeddings through the common solve are the
+  // shelf family. The legacy shelf router (T17) runs, counted, only when no
+  // wrapped plan fits the pane.
+  if (columns && columns.length >= 2)
+    for (const { layout, partition } of wrappedEmbeddings(request, chain ? 1 : Infinity)) {
+      countLayoutWork("wrapped-shelves:candidate");
+      shelves.push({ name: "wrapped-shelves", layout: withBandBounds(layout, key), partition });
+    }
+  if (columns && columns.length >= 2 && !shelves.length) {
+    countLayoutWork("legacy:T17:fallback");
     const plans = partitions(columns, request);
     for (const ends of chain ? plans.slice(0, 1) : plans) {
       const layout = buildShelves(request, columns, ends);
-      if (layout) shelves.push({ name: "top-shelves", layout: withBandBounds(layout, key), partition: ends });
+      if (layout) { countLayoutWork("legacy:T17:candidate"); shelves.push({ name: "top-shelves", layout: withBandBounds(layout, key), partition: ends }); }
     }
   }
   // A serial chain's bounded shelves dominate its one-tile downward column.
@@ -878,6 +894,8 @@ function layoutBandCandidates(input: LayoutRequest, options: BandOptions): Graph
     }
   }
   published(winner.layout);
+  if (winner.name.endsWith("top-shelves")) countLayoutWork("legacy:T17:published");
+  if (winner.name.endsWith("wrapped-shelves")) countLayoutWork("wrapped-shelves:published");
   return { ...winner.layout, anchorY: anchors.length && winner.anchors && compatible?.attachment ? compatible.attachment.bandTop - compatible.attachment.placement.coverHeight : undefined, anchorX: anchors.length && winner.anchors ? bandExtent(winner.placed, key).left : undefined, decision: { candidate: winner.name, partition: winner.partition, stability,
     ...(lanesShared ? { fallback: "lane-infeasible" as const } : yielded ? { fallback: "anchor-yield" as const } : anchors.length && !winner.anchors ? { fallback: "anchor-infeasible" as const } : {}) } };
 
