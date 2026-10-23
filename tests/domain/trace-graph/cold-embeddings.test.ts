@@ -8,7 +8,7 @@ import { bandHistorySignature, historyFit } from '$lib/domain/trace-graph/band-h
 import { TILE } from '$lib/domain/trace-graph/metrics';
 import { attachSingleBand } from '$lib/domain/trace-graph/band-geometry';
 import { geometryGate } from '$lib/domain/trace-graph/geometry-gate';
-import { safeFanGrid } from '$lib/domain/trace-graph/safe-grid';
+import { measure } from '$lib/domain/trace-graph/layout-quality';
 import { safeLayout } from '$lib/domain/trace-graph/safe-layout';
 
 const certified = (layout: GraphLayout | null, request: LayoutRequest) =>
@@ -57,12 +57,51 @@ describe('cold embeddings through the common layered solve', () => {
     expect(gridEmbedding(chain)).toBeNull();
   });
 
-  it('covers every request the legacy fan grid and serial rows certify (corpus sample)', () => {
+  it.each([2, 7, 43, 100])('grid rows keep all %i unequal fan tiles and parent edges, the same under permutation', count => {
+    const items = Array.from({ length: count }, (_, i) => ({ key: String(i), order: count - i,
+      width: 92 + i % 3 * 16, height: 97 + i % 4 * 16, parents: i ? ['0'] : [] }));
+    const request = { items, band: { key: '0', items }, maxWidth: 640, tileWidth: 92, pinned: { key: '0', x: 320 } };
+    const layout = gridRowsEmbedding(request) ?? serialRowsEmbedding(request)!;
+    expect(certified(layout, request)).toBe(true);
+    const placed = attachSingleBand(layout, request);
+    expect(placed.nodes.size).toBe(count);
+    expect(measure(placed, '0', 640, items)).toMatchObject({ missingEdges: 0, disconnectedEdges: 0, overflow: 0 });
+    const permuted = { ...request, items: [...items].reverse() };
+    const again = gridRowsEmbedding(permuted) ?? serialRowsEmbedding(permuted)!;
+    expect([...again.nodes]).toEqual([...layout.nodes]);
+  });
+
+  // The legacy fan grid drew these without its side gutters. The embeddings keep
+  // their route margin, so below one tile and two margins their ink overflows the
+  // pane by at most that margin; they are still certified.
+  it.each([[96, 20], [108, 20], [120, 0]])('certify a fan when only %i px of pane is available (overflow ≤ %i px)', (width, overflow) => {
+    const items = Array.from({ length: 17 }, (_, i) => ({ key: String(i), order: i, width: 96, height: 96, parents: i ? ['0'] : [] }));
+    const request = { items, maxWidth: width, band: { key: '0', items }, pinned: { key: '0', x: width / 2 } };
+    for (const layout of [gridRowsEmbedding(request), serialRowsEmbedding(request)]) {
+      expect(certified(layout, request)).toBe(true);
+      expect(measure(attachSingleBand(layout!, request), '0', width, items).overflow).toBeLessThanOrEqual(overflow);
+    }
+  });
+
+  it('grid rows overflow the pane only when tiles wider than it would leave the coordinate reach in rows of one', () => {
+    const fan = (size: number) => { const items = Array.from({ length: 44 }, (_, i) => ({ key: 'n' + i, width: size, height: size, order: i, parents: i ? ['n0'] : [] }));
+      return { items, band: { key: 'n0', items }, maxWidth: 900, tileWidth: size }; };
+    const giant = fan(100_000), large = fan(50_000);
+    expect(gridEmbedding(giant)!.width).toBeGreaterThan(900);
+    expect(certified(gridRowsEmbedding(giant), giant)).toBe(true);
+    // Rows of one stay within reach: the pane bounds the rows, as before.
+    expect(gridEmbedding(large)!.width).toBeUndefined();
+    // One tall tile among small ones: rows of one stay within reach, so the pane bounds the rows.
+    const items = Array.from({ length: 100 }, (_, i) => ({ key: 'n' + i, width: i === 1 ? 1000 : 96, height: i === 1 ? 100_000 : 96, order: i, parents: i ? ['n0'] : [] }));
+    expect(gridEmbedding({ items, band: { key: 'n0', items }, maxWidth: 360 })!.width).toBeUndefined();
+  });
+
+  it('covers every request legacy serial rows certify (corpus sample)', () => {
     const missed: string[] = [];
     for (const fixture of corpus().filter(c => c.nodes.length <= 40)) for (const width of [360, 640]) {
       const request = requestFor({ ...fixture, full: true }, null, width, 48);
       if (!request.items.length) continue;
-      const legacy = certified(safeFanGrid(request), request) || certified(safeLayout(request), request);
+      const legacy = certified(safeLayout(request), request);
       if (legacy && !certified(gridRowsEmbedding(request), request) && !certified(serialRowsEmbedding(request), request)) missed.push(`${fixture.id}/${width}`);
     }
     expect(missed).toEqual([]);

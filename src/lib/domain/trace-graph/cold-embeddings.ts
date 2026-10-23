@@ -11,27 +11,38 @@
 import { layoutLayered, RoutingConflictError, type GraphLayout, type LayeredOptions, type LayoutRequest } from './layout';
 import { withPaneBandBounds } from './band-geometry';
 import { spacingFor } from './metrics';
+import { inReach } from './coordinate-space';
+import { corridorOutcome, type AttemptOutcome } from './layout-exhaustion';
 
 /** Discrete embedding choice; the solve and its constraints are shared. */
 export interface ColdEmbedding {
   readonly name: 'serial-rows' | 'grid-rows';
   /** Maximum tiles per display row of a generation. */
   readonly capacity: number;
+  /**
+   * The solve's row width, when it is not the pane's: tiles too large for the
+   * pane, whose pane-fitting rows would leave the coordinate reach.
+   */
+  readonly width?: number;
 }
 
-/** The band's ordering and passing policy; spacing and routing style are the solve's own. */
-export type EmbeddingPolicy = Pick<LayeredOptions, 'ordering' | 'passing'>;
+/** The band's ordering and passing policy, and optionally the solve's work bound; spacing and routing style are the solve's own. */
+export type EmbeddingPolicy = Pick<LayeredOptions, 'ordering' | 'passing' | 'work'>;
 
-function solve(request: LayoutRequest, embedding: ColdEmbedding, policy: EmbeddingPolicy = {}): GraphLayout | null {
+/** One embedding through the common solve: its drawing, or how it ended without one. */
+export type EmbeddingAttempt = GraphLayout | AttemptOutcome;
+export const drawn = (attempt: EmbeddingAttempt): GraphLayout | null => typeof attempt === 'string' ? null : attempt;
+
+function solve(request: LayoutRequest, embedding: ColdEmbedding, policy: EmbeddingPolicy = {}): EmbeddingAttempt {
   const key = request.band?.key;
-  if (!key || !request.items.some(item => item.key === key)) return null;
+  if (!key || !request.items.some(item => item.key === key)) return 'not-applicable';
   try {
-    const layout = layoutLayered({ ...request, history: undefined, band: undefined, orientation: 'down' },
-      { ordering: policy.ordering, passing: policy.passing, channelStyle: 'orthogonal', rowCapacity: embedding.capacity });
+    const layout = layoutLayered({ ...request, history: undefined, band: undefined, orientation: 'down', maxWidth: embedding.width ?? request.maxWidth },
+      { ordering: policy.ordering, passing: policy.passing, work: policy.work, channelStyle: 'orthogonal', rowCapacity: embedding.capacity });
     return { ...withPaneBandBounds(layout, key, request.maxWidth),
       decision: { candidate: embedding.name, stability: false, fallback: 'geometry-fallback' } };
   } catch (error) {
-    if (error instanceof RoutingConflictError) return null;
+    if (error instanceof RoutingConflictError) return corridorOutcome(error.conflict);
     throw error;
   }
 }
@@ -67,18 +78,37 @@ export function gridEmbedding(request: LayoutRequest): ColdEmbedding | null {
   const square = Math.ceil(Math.sqrt(largest * (tallest + space.rowChannel) / (widest + space.column)));
   const fitting = Math.floor((request.maxWidth - 2 * space.margin + space.column) / (widest + space.column));
   const capacity = Math.max(1, Math.min(largest, square, Math.max(1, fitting)));
-  return capacity >= largest ? null : { name: 'grid-rows', capacity };
+  if (capacity >= largest) return null;
+  // Not even one tile fits the pane, and rows of one (each tile its own row)
+  // would leave the coordinate reach: near-square rows overflow the pane, as
+  // the only bounded drawing does.
+  const serialHeight = items.reduce((sum, item) => sum + item.height + space.rowChannel, 0);
+  if (fitting < 1 && !inReach(serialHeight) && square > capacity) {
+    const wide = Math.min(largest, square);
+    return { name: 'grid-rows', capacity: wide, width: 2 * space.margin + wide * widest + (wide - 1) * space.column };
+  }
+  return { name: 'grid-rows', capacity };
 }
 
 export const serialEmbedding = (_request: LayoutRequest): ColdEmbedding => ({ name: 'serial-rows', capacity: 1 });
 
+/** Grid rows through the common solve, or how the attempt ended. */
+export function gridRowsAttempt(request: LayoutRequest, policy?: EmbeddingPolicy): EmbeddingAttempt {
+  const embedding = gridEmbedding(request);
+  return embedding ? solve(request, embedding, policy) : 'not-applicable';
+}
+
 /** Grid rows through the common solve; null when it does not apply or is not found. */
 export function gridRowsEmbedding(request: LayoutRequest, policy?: EmbeddingPolicy): GraphLayout | null {
-  const embedding = gridEmbedding(request);
-  return embedding && solve(request, embedding, policy);
+  return drawn(gridRowsAttempt(request, policy));
+}
+
+/** Serial rows (one tile per display row) through the common solve, or how the attempt ended. */
+export function serialRowsAttempt(request: LayoutRequest, policy?: EmbeddingPolicy): EmbeddingAttempt {
+  return solve(request, serialEmbedding(request), policy);
 }
 
 /** Serial rows (one tile per display row) through the common solve. */
 export function serialRowsEmbedding(request: LayoutRequest, policy?: EmbeddingPolicy): GraphLayout | null {
-  return solve(request, serialEmbedding(request), policy);
+  return drawn(serialRowsAttempt(request, policy));
 }
