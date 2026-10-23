@@ -327,7 +327,7 @@ async pattern: use existing pure request/result and publication transaction.
 | **2. Explicit ports and painted corridors (complete)** | T8/T14/T16/T29/T34/T35 duplicated endpoint/envelope reconstruction. Import existing topology into explicit ports, arrow stubs and certified turn/corridor bounds; retain current emitter initially. | Same semantic consumers/endpoints and exact reused route geometry; native cubics, near-pane arrows and host cover chrome pass existing tests/gates. Retained unaffected stem paths remain byte-identical, supporting interrupted motion. Reject malformed imported plans. | 600–1,000 lines; 3–5 days | Medium: source vs branch endpoints, raw/attached transforms, stroke versus allocation extents. |
 | **3. Junctions and corridor topology (complete)** | T3/T5–T10/T12/T13; reuse T1 semantics. Replace provisional/deferred/stacked placement, zone reconsideration and dropped ordering with explicit junction ports and channel search. | Critical cycle gets a certified split/crossing topology, never a discarded hard dependency. Exact parentage for reused subsets, 2–8 inputs, distant fan-outs and long edges; crossing/height/pane/fallback limits all hold. Try new corridor assignments before growing only free boundaries. | 1,200–1,800 lines; 6–9 days | High: combinatorial corridor capacity and fan-in/crossing semantics. Bounds on **total** search/constraint work, not per retry. |
 | **4. Constrained incremental insertion and hint changes (open; lossless import boundary complete)** | T18–T28 plus T37's separate routing. Import committed drawing into same model, freeze declared tracks/rectangles/suffixes, add new ports/segments and re-solve affected conflict components. | Arrival world-oracles, merges/departures, single 16 px descent and shrink-space reuse; clicked ancestry equality; exact revisits and worker parity. Delete repairable-contact policy and port/bypass offset repair only when all old successes are covered. Preserve other retained tiles where the request pins them; optimize only free ones. | 1,200–1,900 lines; 6–10 days | High: pruning/identity, future departures, hint port changes, dense search tails. |
-| **5. Cold sweeps and folder packing in that model (open; 5a display-row embeddings complete, see "Slice 5 plan")** | T2/T17/T19/T30/T36–T38 placement alternatives. Shelves, downward and serial layouts become embedding generators feeding one solve; packing contributes constraints before final routing. | All cold widths/presets and legal tours retain display/long-edge order, quality and timing targets. New-state sweeps may choose freer embeddings; pinned states never lose pins when a compact/serial candidate is considered. Folder ordinary cells and other bands are first-class obstacles. | 1,000–1,600 lines; 5–8 days | High: compactness, candidate pruning and 10 ms inline budget; avoids a simultaneous scoring rewrite. |
+| **5. Cold sweeps and folder packing in that model (open; 5a display-row and 5b wrapped rightward embeddings complete, see "Slice 5 plan")** | T2/T17/T19/T30/T36–T38 placement alternatives. Shelves, downward and serial layouts become embedding generators feeding one solve; packing contributes constraints before final routing. | All cold widths/presets and legal tours retain display/long-edge order, quality and timing targets. New-state sweeps may choose freer embeddings; pinned states never lose pins when a compact/serial candidate is considered. Folder ordinary cells and other bands are first-class obstacles. | 1,000–1,600 lines; 5–8 days | High: compactness, candidate pruning and 10 ms inline budget; avoids a simultaneous scoring rewrite. |
 | **6. Remove superseded routers/repairs** | Delete remaining legacy T21–T25/T28/T36/T38 implementations once every embedding uses common constraints; T5–T7/T10/T13 are deleted in slice 3. Retain T1 consumer semantics, T16 emitter if still useful, T39 history and T40 independent gates. | No legacy escapes reached across full acceptance and targeted rare-branch fixtures; safe chain/fan/serial are certified embedding choices under identical pins. New diagnostics distinguish topology conflict, metric conflict, unsupported input and budget exhaustion. | 300–700 new/changed lines, larger net deletion; 2–4 days | Medium after coverage; zero sample use alone never justifies deletion. |
 
 Slices 3–5 are intentionally separate: metric solving first establishes enforceable
@@ -3287,3 +3287,263 @@ Final code, on origin/main 17a702c:
   - full-folder inline p95: 4.20 ms, under the 10 ms limit.
 - **`click-stability.test.ts`** alone takes 2,228 s, against 2,279 s at the
   metric pass.
+
+### Slice 5b: wrapped rightward embeddings
+
+#### Design
+
+Graph wrapping as ELK Layered does it (`elk.layered.wrapping.strategy`;
+Rüegg and von Hanxleden, "Wrapping Layered Graphs", Diagrams 2018, Kiel
+report 1803). ELK cuts the layering into chunks after crossing minimisation.
+Its `BreakingPointInserter` splits each cut edge with breaking-point dummies,
+and its `BreakingPointProcessor` stacks the chunks. Node placement and the
+orthogonal router then run on the combined graph. The 5a pass found that our
+layered pass cannot express that directly: running right, it transposes the
+downward pass, which never wraps and has no back edges. 5b therefore keeps the
+pass unchanged and wraps around it (`wrapped-embedding.ts`):
+
+1. **Domain.** A tree under the cover, each edge spanning one generation: the
+   shelf router's domain, chains included (`wrappedGenerations`).
+2. **Cut indices** (`wrapCuts`). One unwrapped rightward solve measures every
+   column's span and every entry channel. A dynamic programme picks the cuts
+   that minimise wrapped height within the pane, and the greedy fill (fewest
+   chunks) is a second plan. When a solved chunk proves wider than its estimate,
+   that chunk is excluded and the cuts are chosen again, at most six times. This
+   is the analogue of ELK's validified cut indices.
+3. **Chunks through the common solve** (`solveChunk`). Each chunk is one
+   `layoutLayered` call, rightward, orthogonal channels, columns top-aligned
+   (the new `LayeredOptions.rowAlign: 'start'`, forwarded by the rightward
+   branch together with `channelStyle`). Its sources are one breaking-point
+   dummy per cut parent:
+   - the dummy is as tall as its parent, so a one-to-one cut stays straight;
+   - dummies keep their parents' order, and a chunk whose solve reorders them
+     is declined.
+
+   The shared junction plan, corridor search, separation solve and emitter
+   draw every fan-out into a chunk. No generator routes a tile-to-tile edge.
+4. **Breaking-point removal.** The dummies are dropped. Each cut edge is joined
+   by one wrapped connector: out of the parent's free right side, down a track
+   in the gap below its chunk, back left, then down the entry column into the
+   dummy's port. A connector is prefixed onto the dummy's one route, or becomes
+   the trunk (`from === to`, all consumers) that the dummy's routes branch from.
+   Exits, gap tracks and entries take one strict nesting order: the topmost
+   parent is outermost on the right, lowest in the gap and innermost on the
+   left. Wrapped connectors therefore never cross each other.
+5. **One-dimensional compaction** (`entryFan`). When a dummy's only route
+   leaves along its port's line, the entry column moves up to that run's end
+   (the arrow approach for a straight edge). Chunks then share one left edge
+   where the pane allows, so wrapped columns line up as shelves did. Otherwise
+   each chunk keeps only its own entry room.
+
+What this retires, as soon as slice 6 deletes the code:
+- the shelf router's interval lanes (`channelFor`);
+- its exit ranks;
+- its leave-before-arrive cycle broken in sort order.
+
+None of these runs any more by default. Route ids name the real edge
+(`edgeKey(parent, child)`, or `["wrap","node",parent]` for a connector trunk),
+so ids do not depend on the partition.
+
+#### What shipped
+
+- `wrapped-embedding.ts`:
+  - `wrappedGenerations` (domain);
+  - `wrapCuts` (cut selection);
+  - `solveChunk` and `entryFan` (chunk solve and compaction);
+  - `embed`, `wrappedEmbedding` and `wrappedEmbeddings` (the generator).
+- `layout.ts`: `LayeredOptions.rowAlign`. The rightward branch forwards
+  `channelStyle` and `rowAlign`; existing callers pass neither, so their output
+  is unchanged.
+- `band-layout.ts`, candidate flow (`wrapped-shelves`). Wrapped embeddings are
+  the default shelf family, counted as `wrapped-shelves:candidate` and
+  `:published`. The legacy shelf router runs only when no wrapped plan fits,
+  counted as `legacy:T17:fallback` and `legacy:T17:candidate`/`:published`.
+- `band-layout.ts`, fallback ladder: a `wrapped-right` cold-embedding rung (two
+  or more generations; pinned states skip it, as in 5a) runs ahead of the
+  legacy chain, which stays as an attributed rung.
+
+#### Candidate, then default
+
+First the wrapped embedding ran beside legacy shelves as a candidate, on the
+existing score, over a cold sweep: corpus and dense cases, widths 360–1400,
+presets 48/64/96/128, full and focused (3,398 requests).
+- It won 325 of the 356 shelf publications.
+- Where legacy shelves had won, the published layout's mean height fell from
+  2,749 to 2,540 px, and its crossings from 36.1 to 5.7.
+- On the same requests, the wrapped-only default reached height 2,546 and
+  crossings 2.6.
+
+The candidate eval failed one target: mean unaligned rose to 0.194, against a
+limit of 0.177. The cause was chunk columns centred by the solve, so the
+columns were then top-aligned (`rowAlign`) and the chunks left-aligned. After
+that, wrapped against legacy shelves on every request both build (873):
+
+| | Legacy shelves (best plan) | Wrapped (best plan) |
+|---|---:|---:|
+| Mean height, px | 5,624 | 5,473 |
+| Mean crossings | 861 | 0 |
+| Mean bends | 194.5 | 186.5 |
+| Mean length, px | 151,404 | 113,883 |
+| Unaligned tiles (sum) | 0 | 23 |
+| Requests certified only by this family | 5 (200-node trees at 360 px; legacy T17 still covers them as the counted fallback) | 1,100 (single-generation requests, which legacy shelves do not take) |
+
+Every wrapped build passed the independent gate (2,216 of 2,216). Legacy
+shelves failed it 23 times (14 route-contact, 9 shared-lane), and those
+candidates were dropped.
+
+**Default decision: wrapped.** Cold sweep through the public engine against
+origin/main df79de1 (3,080 requests, 0 gate failures either side):
+
+| Mean | main | 5b |
+|---|---:|---:|
+| Height, px | 2,699.3 | 2,676.6 |
+| Crossings | 705.1 | 701.9 |
+| Bends | 258.55 | 258.48 |
+| Length, px | 63,748 | 63,478 |
+| Unaligned | 0.132 | 0.131 |
+| Sibling inversions | 0 | 0 |
+| Mixed directions | 1.28 | 1.41 |
+
+- **Changes.** 316 decisions changed. Of the 287 requests main published as
+  legacy shelves, 285 are now wrapped shelves and 2 are downward layouts.
+- **Height.** Per request it is worse in 5 and better in 265.
+- **Crossings.** Worse in 1 and better in 116.
+- **Legacy shelves** are published 0 times.
+- **Mixed directions** (a soft term) rises because wrapped chunks replace some
+  downward layouts.
+
+**Forced ladder replay** (1,540 requests, the 5a population):
+- Every request the legacy chain certifies (140) is also certified by the
+  wrapped embedding, apart from the 20 cover-only `single` requests, which never
+  reach the ladder.
+- On the 120 requests both certify, mean height falls from 1,446 to 1,200 px.
+- The wrapped rung costs p95 45 ms, max 125 ms.
+
+#### Production inventory, folder reach and click latency
+
+Final code against origin/main df79de1, run at the same time
+(`s13/lat.ts`, 3,405 requests; `s13/freach.ts`, 14,400 folder arrivals):
+- **Folder clicks** (255): 0 outputs differ and 0 gate failures.
+- **Tours** (3,150): 0 gate failures; 7 outputs differ.
+  - All 7 are one tour, `random-bushy-100-8203` at 360 px. The shorter
+    wrapped shelves tighten the anchored-repack budget (`compactShelf`), so it
+    repacks (`anchored-repack`, then `incremental-tree`) where main kept the
+    anchored downward layout.
+  - Height falls by 1,300–2,800 px a step, crossings rise, and anchors stay put.
+  - Wrapped shelves are built 1,728 times in tours and 177 in folders, and are
+    never published there.
+  - Legacy T17 is never reached (`legacy:T17:fallback` 0). Legacy T24, T25 and
+    T28 counts are identical to main.
+- **Folder arrivals:** 166 `search-exhausted` and 0 gate failures, as at 5a.
+  Output digests are identical to 5a for all 14,400 arrivals.
+
+| Group | n | main p50 / p95 / max ms | 5b p50 / p95 / max ms | p95 ratio |
+|---|---:|---:|---:|---:|
+| Folder, all | 255 | 6.5 / 83.8 / 491.0 | 7.0 / 76.7 / 464.7 | 0.92 |
+| Folder, wrapped built | 148 | 6.5 / 22.9 / 34.2 | 7.2 / 23.6 / 38.5 | 1.03 |
+| Tour, all | 3,150 | 12.5 / 3,265.2 / 19,390.8 | 15.4 / 3,257.3 / 19,416.0 | 1.00 |
+| Tour, wrapped built | 1,550 | 9.8 / 139.1 / 648.9 | 12.4 / 160.0 / 671.0 | 1.15 |
+
+The wrapped generator costs one unwrapped rightward solve plus one solve per
+chunk of each plan. That is about 1 ms on a 12-tile tree, where legacy shelves
+cost about 0.1 ms. Inline limits hold in `layout:eval`:
+- main-thread p95: 3.56 ms (5a: 3.13 ms);
+- full-folder inline p95: 5.20 ms (5a: 4.20 ms).
+
+The cost is paid even when a downward layout wins. A cheap lower bound that
+skips wrapped solves the downward bound already beats is the obvious follow-up.
+The review measured `layoutBand` on a 1,000-node chain at 332 ms, against
+107 ms on main (worker-only sizes).
+
+#### Tests
+
+`tests/domain/trace-graph/wrapped-embedding.test.ts` (19 tests) covers:
+- the domain and cut selection, including re-cutting around an overflowing
+  chunk;
+- gate certification, pane fit and cover pin across 8 fixtures × 3 widths × 2
+  presets;
+- display and long-edge order: chunks stacked in generation order, generations
+  left to right within a chunk, 0 sibling inversions and 0 crossings;
+- malformed plans and requests;
+- determinism;
+- route ids that do not depend on the partition;
+- the reserved dummy-key namespace;
+- fractional tile sizes;
+- publication through `layoutBand`.
+
+One assertion in `band-layout.test.ts` changed: a child's output must leave the
+cover stem, either on its own route or on the connector trunk its route
+branches from.
+
+#### Review
+
+An independent adversarial review found no gate or consumer failures on 710
+corpus layouts and 2,129 random trees, and confirmed determinism. Its
+findings, all fixed in `947fa46`:
+1. **Route ids carried the breaking-point dummy's rank.** 17 of 39 edges
+   changed id between partitions, which would break motion matching by route
+   id. Ids now name the real edge, and connector trunks are
+   `["wrap","node",parent]`. Route ids are checked unique.
+2. **A real key equal to a dummy key crashed `layoutBand`.** Dummy keys now use
+   a reserved namespace, and requests holding one are declined.
+3. **Fractional tile heights rejected every multi-chunk plan.** The port was
+   compared unrounded against the solve's printed path. Ports are now compared
+   as printed.
+4. **Fractional widths failed the gate.** Node x had been rounded while its
+   width was not. Nodes now keep the solve's exact geometry.
+5. **The ladder's wrapped rung pre-empted the fan grid for one generation.**
+   The rung now needs two generations.
+6. **Overflow exclusion ended the cut scan**, although overflow is not monotone
+   in the chunk end. It now skips the excluded chunk only.
+
+Its performance notes (the 1,000-node chain; the ladder rung repeating the
+candidate flow's solves) are recorded above and not changed.
+
+#### Gates and changed acceptance rows
+
+Final code, rebased onto origin/main df79de1:
+- **`bun run check`:** 297 files, 0 errors.
+- **`bun run test`:** 200 files; 2,471 passed, 1 skipped, 2 failed. Both
+  failures are the known load timeouts:
+  - `folder-layout-parity` (spawnSync ETIMEDOUT);
+  - `partial-band-routing-room` (30 s).
+
+  Both files pass alone (10/10).
+- **`layout:eval`:** all 50 current targets pass. These acceptance rows are
+  unchanged from 5a:
+  - click-anchor moves: 15;
+  - dense-tour anchor moves: 51;
+  - held-screen moves at 480 px: 20 (broad) and 52 (dense);
+  - mean legal displacement: 10.6 px;
+  - sibling inversions: 0.080;
+  - unaligned: 0.165.
+
+  Changed rows:
+  - mean height: 2,115.1 to 2,104.5;
+  - crossings: 333.7 to 330.7;
+  - bends: 156.07 to 156.02;
+  - length: 37,778 to 37,609;
+  - mixed directions: 1.57 to 1.70 (limit 2.29).
+
+  The frozen-baseline diagnostic of unpaid crossing regressions falls from 78
+  to 63.
+- **`click-stability.test.ts`** alone: passes in 2,276 s, against 2,228 s at 5a.
+
+#### Deletion, and what remains
+
+- **Ready for slice 6, by this sample.** By default, `buildShelves`,
+  `partitions`, `channelFor` and `safe-chain.ts` are reached only as attributed
+  fallbacks:
+  - legacy T17 when no wrapped plan fits (5 of 878 shelf-domain requests in
+    the sweep, 0 in production inventory);
+  - the legacy chain after the wrapped rung in the ladder (0 reach).
+
+  As the plan requires, zero reach in a sample alone does not justify deleting
+  them.
+- **Legacy-only coverage.** The 5 requests only legacy shelves cover are
+  200-node trees at 360 px. A chunk there needs more entry-channel room than
+  the solve's fan tracks leave. Closing that needs the fan's entry channel
+  compacted inside the solve, not only for straight runs.
+- **Wrapped generator cost:** a lower-bound skip against the downward bound,
+  and reuse of the candidate flow's chunk solves in the ladder rung.
+- **5c is next:** folder packing as constraints.
