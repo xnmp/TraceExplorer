@@ -91,6 +91,9 @@ describe('cold embeddings through the common layered solve', () => {
     expect(certified(gridRowsEmbedding(giant), giant)).toBe(true);
     // Rows of one stay within reach: the pane bounds the rows, as before.
     expect(gridEmbedding(large)!.width).toBeUndefined();
+    // One tall tile among small ones: rows of one stay within reach, so the pane bounds the rows.
+    const items = Array.from({ length: 100 }, (_, i) => ({ key: 'n' + i, width: i === 1 ? 1000 : 96, height: i === 1 ? 100_000 : 96, order: i, parents: i ? ['n0'] : [] }));
+    expect(gridEmbedding({ items, band: { key: 'n0', items }, maxWidth: 360 })!.width).toBeUndefined();
   });
 
   it('covers every request legacy serial rows certify (corpus sample)', () => {

@@ -47,14 +47,16 @@ export function conflictReason(kind: CorridorConflict['kind']): ExhaustionReason
 /**
  * The reason a whole failed ladder gives: the furthest stage any attempt
  * reached. A spent budget comes first, since more work is the one change that
- * could still succeed; then a drawing whose coordinates failed; then a
- * topology that admitted no drawing (or none keeping the pins); otherwise
- * nothing applied.
+ * could still succeed. Then a certified drawing that moved a pin: its
+ * geometry was sound, so the pins conflict with the embedding's topology.
+ * Then a drawing whose coordinates failed; then a topology that admitted no
+ * drawing; otherwise nothing applied.
  */
 export function exhaustionReason(outcomes: readonly AttemptOutcome[]): ExhaustionReason {
   if (outcomes.includes('search-exhausted')) return 'budget-exhaustion';
+  if (outcomes.includes('pins-lost')) return 'topology-conflict';
   if (outcomes.some(outcome => outcome === 'metric' || outcome === 'gate-rejected')) return 'metric-conflict';
-  if (outcomes.some(outcome => outcome === 'topology' || outcome === 'pins-lost')) return 'topology-conflict';
+  if (outcomes.includes('topology')) return 'topology-conflict';
   return 'unsupported-input';
 }
 

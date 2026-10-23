@@ -19,6 +19,8 @@ describe('exhaustion reason', () => {
     expect(exhaustionReason(['not-applicable', 'topology', 'metric'])).toBe('metric-conflict');
     expect(exhaustionReason(['pinned-skip', 'gate-rejected'])).toBe('metric-conflict');
     expect(exhaustionReason(['not-applicable', 'pins-lost'])).toBe('topology-conflict');
+    // A certified drawing that moved a pin got further than one the gate rejected.
+    expect(exhaustionReason(['gate-rejected', 'gate-rejected', 'pins-lost'])).toBe('topology-conflict');
     expect(exhaustionReason(['pinned-skip', 'topology'])).toBe('topology-conflict');
     expect(exhaustionReason(['not-applicable', 'pinned-skip', 'invalid'])).toBe('unsupported-input');
     expect(exhaustionReason([])).toBe('unsupported-input');

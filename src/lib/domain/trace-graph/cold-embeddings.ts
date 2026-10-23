@@ -79,10 +79,11 @@ export function gridEmbedding(request: LayoutRequest): ColdEmbedding | null {
   const fitting = Math.floor((request.maxWidth - 2 * space.margin + space.column) / (widest + space.column));
   const capacity = Math.max(1, Math.min(largest, square, Math.max(1, fitting)));
   if (capacity >= largest) return null;
-  // Not even one tile fits the pane, and rows of one would leave the coordinate
-  // reach: near-square rows overflow the pane, as the only bounded drawing does.
-  const rowsHeight = (k: number) => [...sizes.values()].reduce((sum, size) => sum + Math.ceil(size / k), 0) * (tallest + space.rowChannel);
-  if (fitting < 1 && !inReach(rowsHeight(capacity)) && square > capacity) {
+  // Not even one tile fits the pane, and rows of one (each tile its own row)
+  // would leave the coordinate reach: near-square rows overflow the pane, as
+  // the only bounded drawing does.
+  const serialHeight = items.reduce((sum, item) => sum + item.height + space.rowChannel, 0);
+  if (fitting < 1 && !inReach(serialHeight) && square > capacity) {
     const wide = Math.min(largest, square);
     return { name: 'grid-rows', capacity: wide, width: 2 * space.margin + wide * widest + (wide - 1) * space.column };
   }
