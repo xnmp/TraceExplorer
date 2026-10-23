@@ -77,6 +77,8 @@ export const MAX_OBSTACLES = 320;
 const MAX_TRIES = 48;
 /** Rectangle positions one tile considers, nearest rows first. */
 const MAX_POSITIONS = 4096;
+/** Corridor searches one whole request may spend, across every tile and proposal. */
+export const MAX_INSERTS = 192;
 
 /** An obstacle; `source` names the connector source whose ink it is (the same source may share it). */
 type Box = Pick<PlacedNode, 'x' | 'y' | 'width' | 'height'> & { readonly key?: string; readonly source?: string };
@@ -326,13 +328,14 @@ function insert(drawing: GraphLayout, scene: Scene, item: LayoutItem, box: Box, 
  * Complete drawings with every missing item placed in free space, best first.
  * Later tiles of a multi-tile arrival take their best rectangle greedily.
  * Yields nothing for a root item, a parent that is absent, more than `MAX_INPUTS` parents,
- * or a world of more than `MAX_OBSTACLES` obstacles.
+ * or a world of more than `MAX_OBSTACLES` obstacles. Stops after `MAX_INSERTS`
+ * corridor searches in all, so its work is bounded whatever the arrival's size.
  */
 export function* freeSpaceInsertions(request: FreeSpaceRequest): Generator<GraphLayout> {
   const { drawing, pane } = request, exclude = request.exclude ?? new Set<string>();
   const missing = request.items.filter(item => !drawing.nodes.has(item.key));
   if (!missing.length) return;
-  // Topological order over the missing items; each needs exactly one parent.
+  // Topological order over the missing items; each needs at least one parent.
   const order: LayoutItem[] = [], placed = new Set(drawing.nodes.keys()), pending = [...missing];
   while (pending.length) {
     const index = pending.findIndex(item => item.parents.every(p => placed.has(p)));
@@ -347,9 +350,10 @@ export function* freeSpaceInsertions(request: FreeSpaceRequest): Generator<Graph
   const bottomOf = (scene: Scene) => scene.boxes.reduce((max, b) => Math.max(max, b.y + b.height), 0);
   const [first, ...rest] = order;
   const parentsOf = (layout: GraphLayout, item: LayoutItem) => [...new Set(item.parents)].map(key => layout.nodes.get(key)!);
-  let proposed = 0, tried = 0;
+  let proposed = 0, tried = 0, inserts = 0;
+  const within = () => ++inserts <= MAX_INSERTS;
   for (const box of rectangles(parentsOf(drawing, first), first.width, first.height, base, pane, bottomOf(base))) {
-    if (proposed >= (request.limit ?? 12) || ++tried > MAX_TRIES) return;
+    if (proposed >= (request.limit ?? 12) || ++tried > MAX_TRIES || !within()) return;
     const placedFirst = insert(drawing, base, first, box, pane);
     if (!placedFirst) continue;
     proposed++;
@@ -358,6 +362,7 @@ export function* freeSpaceInsertions(request: FreeSpaceRequest): Generator<Graph
       const current: Inserted = step;
       let next: Inserted | null = null;
       for (const candidate of rectangles(parentsOf(current.drawing, item), item.width, item.height, current.scene, pane, bottomOf(current.scene)).slice(0, MAX_TRIES)) {
+        if (!within()) return;
         next = insert(current.drawing, current.scene, item, candidate, pane);
         if (next) break;
       }

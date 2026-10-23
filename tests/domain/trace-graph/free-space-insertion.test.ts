@@ -106,29 +106,48 @@ describe('free-space world insertion', () => {
     expect(performance.now() - started).toBeLessThan(1000);
   });
 
+  it('bounds its work for a long arrival in a cluttered world', () => {
+    // 100 small obstacles and a chain of 160 new tiles: unbounded, the corridor searches grow with the chain.
+    let state = 7;
+    const random = () => (state = (state * 1103515245 + 12345) % 2147483648) / 2147483648;
+    const nodes = [tile('p0', 150, 0, 60, 40), ...Array.from({ length: 99 }, (_, i) =>
+      tile(`o${i}`, 8 + Math.floor(random() * 330), 60 + Math.floor(random() * 1500), 14 + Math.floor(random() * 20), 14 + Math.floor(random() * 20)))];
+    const items = [...nodes.map(n => item(n.key, [], n.width, n.height)), ...Array.from({ length: 160 }, (_, i) => item(`c${i}`, [i ? `c${i - 1}` : 'p0'], 60, 40))];
+    const started = performance.now();
+    for (const proposed of freeSpaceInsertions({ items, drawing: world(nodes), pane })) for (const n of nodes) expect(proposed.nodes.get(n.key)).toEqual(n);
+    expect(performance.now() - started).toBeLessThan(6000);
+  }, 30_000);
+
   it('declines when no free rectangle in the pane fits', () => {
     const drawing = grid(), items = [item('cover'), item('file-0'), item('file-1'), item('wide', ['cover'], 400)];
     expect([...freeSpaceInsertions({ items, drawing, pane })]).toEqual([]);
   });
 
   it('never runs along another source’s connector', () => {
-    // A foreign connector occupies the row gap's centre line across the whole pane.
+    // A foreign connector occupies the row gap's centre line over the right half of the pane.
     const foreign = { id: 'foreign', from: { kind: 'node' as const, id: 'file-0' }, to: { kind: 'node' as const, id: 'file-0' },
-      consumers: [], terminal: false, path: 'M8 132 L368 132' };
+      consumers: [], terminal: false, path: 'M200 132 L368 132' };
     const drawing = world([...grid().nodes.values()], [foreign]);
     const items = [item('cover'), item('file-0'), item('file-1'), item('child', ['cover'])];
-    for (const proposed of freeSpaceInsertions({ items, drawing, pane })) {
+    const proposals = [...freeSpaceInsertions({ items, drawing, pane })];
+    expect(proposals.length).toBeGreaterThan(0);
+    for (const proposed of proposals) {
       const points = importedRoute(proposed.routes.at(-1)!).points;
       for (let i = 1; i < points.length; i++) {
         const a = points[i - 1], b = points[i];
-        if (a.y === b.y && Math.abs(a.x - b.x) > 1e-6) expect(Math.abs(a.y - 132) >= 3 - 1e-6 || Math.max(a.x, b.x) <= 8 || Math.min(a.x, b.x) >= 368).toBe(true);
+        if (a.y === b.y && Math.abs(a.x - b.x) > 1e-6) expect(Math.abs(a.y - 132) >= 3 - 1e-6 || Math.max(a.x, b.x) <= 200 || Math.min(a.x, b.x) >= 368).toBe(true);
       }
     }
   });
 
   it('ignores the excluded anchor as an obstacle', () => {
-    const drawing = world([...grid().nodes.values(), tile('anchor', 0, 0, 1, 1)]);
+    // The anchor fills the empty grid slot: only its exclusion frees the slot.
+    const drawing = world([...grid().nodes.values(), tile('anchor', 192, 136, 176, 128)]);
     const items = [item('anchor'), item('cover'), item('file-0'), item('file-1'), item('child', ['cover'])];
-    expect([...freeSpaceInsertions({ items, drawing, pane, exclude: new Set(['anchor']) })].length).toBeGreaterThan(0);
+    const inSlot = (d: GraphLayout) => { const c = d.nodes.get('child')!; return c.y + c.height <= 264; };
+    const [blocked] = freeSpaceInsertions({ items, drawing, pane });
+    const [freed] = freeSpaceInsertions({ items, drawing, pane, exclude: new Set(['anchor']) });
+    expect(inSlot(blocked)).toBe(false);
+    expect(inSlot(freed)).toBe(true);
   });
 });

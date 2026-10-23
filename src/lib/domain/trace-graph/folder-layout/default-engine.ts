@@ -484,8 +484,11 @@ function isolatedFolder(input: FolderLayoutInput, geometry: FolderGridGeometry,
     const layout = serialRowsEmbedding(request, { ordering: policy.ordering, passing: policy.passing });
     return [id, layout && layout.nodes.has(id) && ladderPins(request, policy).held(layout) ? { plan: band.plan, layout } : band] as const;
   }));
-  const viaEmbedding = compose(embedded);
-  if (!folderGeometryGate(viaEmbedding)) { countLayoutWork('isolation:serial-embedding:published'); return viaEmbedding; }
+  // With no band adopting an embedding, this is the requested composition that just failed.
+  if ([...embedded].some(([id, band]) => band !== bands.get(id))) {
+    const viaEmbedding = compose(embedded);
+    if (!folderGeometryGate(viaEmbedding)) { countLayoutWork('isolation:serial-embedding:published'); return viaEmbedding; }
+  }
   const legacy = new Map([...planBands(input, serial)].flatMap(([id, { plan }]) => {
     const request = { ...plan.request, history: undefined, hint: undefined, anchorKey: undefined };
     return bands.has(id) ? [[id, { plan: { ...plan, request }, layout: safeLayout(request) }] as const] : [];
@@ -495,7 +498,8 @@ function isolatedFolder(input: FolderLayoutInput, geometry: FolderGridGeometry,
   const lost = [...bands].filter(([id, band]) => {
     const keys = ladderPins(band.plan.request, policy).keys;
     if (!keys.length) return false;
-    const before = band.layout.nodes.get(id)!, after = legacy.get(id)!.layout.nodes.get(id)!;
+    const before = band.layout.nodes.get(id), after = legacy.get(id)?.layout.nodes.get(id);
+    if (!before || !after) return true;
     // Compare in the cover's frame: the grid moves covers, the band frame must not change.
     return keys.some(key => {
       const a = band.layout.nodes.get(key), b = legacy.get(id)!.layout.nodes.get(key);

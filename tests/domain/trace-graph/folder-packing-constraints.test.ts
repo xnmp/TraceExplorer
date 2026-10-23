@@ -5,7 +5,9 @@ import { tileMetrics } from '$lib/domain/trace-graph/metrics';
 import { folderGeometryGate } from '$lib/domain/trace-graph/folder-layout/geometry-gate';
 import { validHistory } from '$lib/domain/trace-graph/history-boundary';
 import { bandHistorySignature } from '$lib/domain/trace-graph/band-history';
-import { corpusNode as node, makeFolder, folderInput } from './folder-layout-fixtures';
+import { corpusNode as node, makeFolder, folderInput, sourcesOf } from './folder-layout-fixtures';
+import { buildFolderScene } from '$lib/domain/trace-graph/folder-scene';
+import { posePath, settledPose, staticPresentation } from '$lib/plugins/trace/view/presentation';
 import { expectFolderArrivalPinned } from './folder-arrival-contract';
 import { rng } from '../../../layout-eval/corpus';
 import type { TraceNode } from '$lib/domain/trace-graph/model';
@@ -52,4 +54,30 @@ describe('folder packing as constraints (slice 5c)', () => {
       previous = next;
     }
   });
+
+  it.each([[1, 900, 64, 2], [49, 360, 96, 1], [49, 360, 96, 9], [49, 360, 96, 10], [4, 360, 96, 11]])(
+    'gives a root connector a motion stem only when that stem is the drawn connector (seed %i, %i px, %i px tiles, arrival %i)', (seed, width, px, last) => {
+      // World-placed drawings and identity frames keep their drawn root paths; a stem rebuilt from the placement would snap.
+      const random = rng(seed), nodes = [node('root')], engine = createDefaultEngine();
+      let previous: FolderLayout | undefined;
+      for (let i = 0; i <= last; i++) {
+        if (i) {
+          const parents = nodes.filter(() => random() < .25).map(n => n.key);
+          if (!parents.length) parents.push(nodes[Math.floor(random() * nodes.length)].key);
+          nodes.push(node(`n${i}`, parents, i));
+        }
+        previous = engine(inputFor(nodes, width, px, previous));
+      }
+      const input = inputFor(nodes, width, px, previous), layout = engine(input);
+      const scene = buildFolderScene({ scope: { paneId: 'p', directory: '/f', generation: 1 }, layoutInput: input, layout,
+        sources: sourcesOf(makeFolder({ stacks: [nodes], files: 2 })), styling: { focus: null, selectedKeys: new Set(), selectedPaths: new Set(), badgeHover: null } });
+      let stems = 0;
+      for (const presented of staticPresentation(scene).live.values()) {
+        if (!presented.attachment || presented.record.kind !== 'route') continue;
+        stems++;
+        const norm = (path: string) => path.replace(/\s+/g, ' ').trim().slice(0, 48);
+        expect(norm(posePath({ ...settledPose(presented.record), stem: presented.attachment }, presented.record.rect)!)).toBe(norm(presented.record.route.path));
+      }
+      if (seed === 1) expect(stems).toBeGreaterThan(0);
+    });
 });
