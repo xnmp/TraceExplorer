@@ -31,7 +31,8 @@ import type { NodeKey } from "../model";
 import { gridFlow, type GridItem, type GridMetrics, type GridRect } from "../grid-flow";
 import { attachPackedBand, bandExtent, bandPlacements, packedGridFlow } from "../band-geometry";
 import { BAND_DEFAULTS, bandHistorySignature, ladderPins, type BandOptions } from "../band-layout";
-import { serialRowsEmbedding } from "../cold-embeddings";
+import { serialRowsAttempt } from "../cold-embeddings";
+import { LayoutExhaustedError, type AttemptOutcome } from "../layout-exhaustion";
 import { folderGridGeometry, gridPins, type FolderGridGeometry } from "../folder-grid";
 import { layoutGraph, type BandHistory, type GraphLayout, type LayoutRequest, type LayoutItem } from "../layout";
 import { layoutSignature } from "../layout-signature";
@@ -460,6 +461,7 @@ function retainedWorldPlacement(input: FolderLayoutInput, plans: ReadonlyMap<Gra
  *    pin set it keeps; any other band keeps its requested layout;
  * 3. legacy serial rows (`safeLayout`) planned for the one-column grid, as before 5c,
  *    counted as `legacy:T38`, with the bands whose pins it drops (`legacy:T38:pins-lost`).
+ * With none certified, the folder is not published: `LayoutExhaustedError` (slice 6).
  */
 function isolatedFolder(input: FolderLayoutInput, geometry: FolderGridGeometry,
   bands: ReadonlyMap<GraphId, PlannedBand>, policy: BandOptions = BAND_DEFAULTS): FolderLayout {
@@ -475,25 +477,40 @@ function isolatedFolder(input: FolderLayoutInput, geometry: FolderGridGeometry,
     return { ...isolated, graphs, decision: { fallback: "isolated-rows", requestedColumns: geometry.columns } };
   };
   countLayoutWork('isolation:attempt');
+  // How each rung ended (slice 6 diagnostics); only an exhausted folder reads it.
+  const outcomes: AttemptOutcome[] = [];
   const framed = compose(bands, true);
   if (!folderGeometryGate(framed)) { countLayoutWork('isolation:framed:published'); return framed; }
   const requested = compose(bands);
   if (!folderGeometryGate(requested)) { countLayoutWork('isolation:requested:published'); return requested; }
+  outcomes.push('gate-rejected', 'gate-rejected');
   const embedded = new Map([...bands].map(([id, band]) => {
     const request = band.plan.request;
-    const layout = serialRowsEmbedding(request, { ordering: policy.ordering, passing: policy.passing });
-    return [id, layout && layout.nodes.has(id) && ladderPins(request, policy).held(layout) ? { plan: band.plan, layout } : band] as const;
+    const attempt = serialRowsAttempt(request, { ordering: policy.ordering, passing: policy.passing });
+    const layout = typeof attempt === 'string' ? null : attempt;
+    const adopted = !!layout && layout.nodes.has(id) && ladderPins(request, policy).held(layout);
+    if (!adopted) outcomes.push(typeof attempt === 'string' ? attempt : !layout!.nodes.has(id) ? 'not-applicable' : 'pins-lost');
+    return [id, adopted ? { plan: band.plan, layout: layout! } : band] as const;
   }));
   // With no band adopting an embedding, this is the requested composition that just failed.
   if ([...embedded].some(([id, band]) => band !== bands.get(id))) {
     const viaEmbedding = compose(embedded);
     if (!folderGeometryGate(viaEmbedding)) { countLayoutWork('isolation:serial-embedding:published'); return viaEmbedding; }
+    outcomes.push('gate-rejected');
   }
   const legacy = new Map([...planBands(input, serial)].flatMap(([id, { plan }]) => {
     const request = { ...plan.request, history: undefined, hint: undefined, anchorKey: undefined };
     return bands.has(id) ? [[id, { plan: { ...plan, request }, layout: safeLayout(request) }] as const] : [];
   }));
   const viaLegacy = compose(legacy);
+  // Kept (slice 6): multi-stack arrivals still reach this rung. It is published
+  // only when certified; with no rung certified the folder is not published.
+  if (folderGeometryGate(viaLegacy)) {
+    outcomes.push('gate-rejected');
+    const error = new LayoutExhaustedError('folder', outcomes, 'every isolation rung failed');
+    countLayoutWork(`exhausted:folder:${error.reason}`);
+    throw error;
+  }
   countLayoutWork('legacy:T38:published');
   const lost = [...bands].filter(([id, band]) => {
     const keys = ladderPins(band.plan.request, policy).keys;

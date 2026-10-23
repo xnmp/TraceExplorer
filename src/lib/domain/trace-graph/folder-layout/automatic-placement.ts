@@ -1,4 +1,5 @@
 import { worldReject, WorldPlacementDecline, guardedWorld, type FolderWorldRoutingResult, type FolderWorldPreferences } from './world-result';
+import { conflictReason } from '../layout-exhaustion';
 import { worldCopy, worldGet, worldSet, worldIndex, worldKey,worldHas,worldEntries,sameWorldIdentities, type WorldCharge } from './world-indexes';
 import { prepayWorldInputs, certifyWorldFolder,prepayFolderRectangles } from './world-admission';
 import { layoutStage, countLayoutWork } from '../layout-profile';
@@ -108,7 +109,7 @@ export function automaticFolderPlacement(input:FolderLayoutInput,plans:ReadonlyM
   return drawing?{ok:true,drawing,work:start-work.remaining}:fail({reason:'metric-conflict',constraints:['folder world candidate withheld']});
  }catch(error){
   if(error instanceof WorldPlacementDecline)return fail(error.conflict);
-  if(error instanceof RoutingConflictError)return fail({reason:error.conflict.kind==='search-exhausted'?'budget-exhaustion':error.conflict.kind==='invalid'?'unsupported-input':error.conflict.kind==='metric'?'metric-conflict':'topology-conflict',constraints:error.conflict.constraints});
+  if(error instanceof RoutingConflictError)return fail({reason:conflictReason(error.conflict.kind),constraints:error.conflict.constraints});
   if(error instanceof RoutingImportError)return fail({reason:'unsupported-input',constraints:[error.message]});
   throw error;
  }finally{endStage();}

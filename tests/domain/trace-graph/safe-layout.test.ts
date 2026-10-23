@@ -13,3 +13,21 @@ it('draws a shared source channel once while preserving every output edge', () =
   expect(metrics.disconnectedEdges).toBe(0);
   expect(metrics.length).toBeLessThan(7000);
 });
+
+// Slice 6 residue: why legacy serial rows stay in the band ladder. On a chain's
+// first click the committed drawing is a cover over one left-aligned tile, which
+// legacy rows reproduce and the centred serial embedding does not.
+import {corpus,requestFor} from '../../../layout-eval/corpus';
+import {optimizedBand} from '../../../layout-eval/engine';
+import {ladderPins} from '$lib/domain/trace-graph/band-layout';
+import {serialRowsEmbedding} from '$lib/domain/trace-graph/cold-embeddings';
+it('keeps a first click\'s pins where the serial embedding does not (chain-8 at 454 px)', () => {
+  const fixture={...corpus().find(c=>c.id==='chain-8')!,full:false};
+  const first=optimizedBand(requestFor(fixture,null,454,96));
+  const request={...requestFor(fixture,'n1',454,96),anchorKey:'n1',history:{signature:first.signature,layout:first.layout,placed:first.placed}};
+  const pins=ladderPins(request);
+  expect(pins.keys).toContain('n1');
+  expect(geometryGate(attachSingleBand(safeLayout(request),request),request.items,request.band!.key,454)).toBeNull();
+  expect(pins.held(safeLayout(request))).toBe(true);
+  expect(pins.held(serialRowsEmbedding(request)!)).toBe(false);
+});

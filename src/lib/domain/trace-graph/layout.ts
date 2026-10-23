@@ -341,6 +341,11 @@ export interface LayeredOptions {
    * wrapped rightward embeddings (routing slice 5b) align their chunks.
    */
   readonly rowAlign?: "center" | "start";
+  /**
+   * The corridor search's work bound (default 64M). A spent bound is a
+   * `search-exhausted` conflict, never a weaker drawing.
+   */
+  readonly work?: number;
 }
 
 /** The reusable layered engine; band candidates call it without recursively planning bands. */
@@ -405,13 +410,15 @@ export function transposeLayout(layout: GraphLayout): GraphLayout {
 export class RoutingConflictError extends RangeError {
   constructor(readonly conflict: CorridorConflict) { super('Routing search conflict: ' + JSON.stringify(conflict)); }
 }
+/** The layered solve's default corridor-search work bound. */
+export const LAYERED_WORK = 64_000_000;
 function layoutDown(request: LayoutRequest, minWidth: number, options: LayeredOptions = {}): GraphLayout {
   const prepared = { ...prepare(request, options.ordering ?? "barycenter", options.passing ?? "straight", options.columnGap, options.rowCapacity), channelStyle: options.channelStyle, rowAlign: options.rowAlign };
   const scoreable=prepared.keys.length>0 && request.items.every(item=>Number.isFinite(item.width) && Number.isFinite(item.height) && item.width>0 && item.height>0 && item.width<=MAX_TILE && item.height<=MAX_TILE);
   const result = searchCorridors(search => {
     const layout=layoutPass(prepared,search,minWidth);
     return layout;
-  },64_000_000,scoreable ? {
+  },options.work ?? LAYERED_WORK,scoreable ? {
     score:(layout,search)=>{
       search.charge(layout.routes.length**2+layout.nodes.size,"quality");
       return cost(measure(layout,prepared.pinned?.key??prepared.keys[0],prepared.budget,prepared.keys.map(key=>({key,...prepared.items.get(key)!,parents:prepared.parentsOf(key)}))),request.tileWidth??92);

@@ -5,9 +5,10 @@ import { RoutingConflictError, downwardBandBound, layoutLayered, type GraphLayou
 import { geometryGate, routeClearanceViolation } from "./geometry-gate";
 import { repairRouteContacts } from "./repair-route-contacts";
 import { safeChain } from "./safe-chain";
-import { wrappedEmbeddings, wrappedGenerations } from "./wrapped-embedding";
 import { safeLayout } from "./safe-layout";
-import { gridRowsEmbedding, serialRowsEmbedding } from "./cold-embeddings";
+import { wrappedEmbeddings, wrappedGenerations } from "./wrapped-embedding";
+import { gridRowsAttempt, serialRowsAttempt, type EmbeddingAttempt } from "./cold-embeddings";
+import { corridorOutcome, LayoutExhaustedError, type AttemptOutcome } from "./layout-exhaustion";
 import { validHistory } from "./history-boundary";
 import { spacingFor, STACK_STEM_ROOM } from "./metrics";
 import { bandWidthBudget, columnsFor, partitions, buildShelves, validate } from "./band-shelves";
@@ -364,6 +365,19 @@ export function fallbackReason(layout: GraphLayout): string | null {
   return reason ? `${reason}: no accepted candidate preserves the requested placement` : null;
 }
 
+/** Legacy serial rows, or how they failed: their lane capacity is a limit of the construction. */
+function legacySerialRows(request: LayoutRequest): EmbeddingAttempt {
+  try { return safeLayout(request); }
+  catch (error) { if (error instanceof RangeError && error.message.startsWith('Bounded fallback lane capacity')) return 'not-applicable'; throw error; }
+}
+
+/** The typed failure when every bounded construction of a band failed (slice 6). */
+function exhausted(outcomes: readonly AttemptOutcome[], detail: string, cause?: unknown): LayoutExhaustedError {
+  const error = new LayoutExhaustedError('band', outcomes, detail, cause);
+  countLayoutWork(`exhausted:band:${error.reason}`);
+  return error;
+}
+
 export function layoutBand(input: LayoutRequest, options: BandOptions = BAND_DEFAULTS): GraphLayout {
   const invalid = input?.history !== undefined && !validHistory(input.history, input.band?.key ?? "");
   let request = input ? { ...input, history: invalid ? undefined : input.history, maxWidth: Number.isFinite(input.maxWidth) && input.maxWidth > 0 ? Math.min(100_000, input.maxWidth) : bandWidthBudget(input.maxWidth, input.tileWidth) } : input;
@@ -373,13 +387,19 @@ export function layoutBand(input: LayoutRequest, options: BandOptions = BAND_DEF
     request = { ...request, pinned: { ...request.pinned, x: Math.max(half, Math.min(request.maxWidth - half, x)) } };
   }
   let result: GraphLayout | undefined;
+  // How each bounded construction ended without a publishable drawing (slice 6
+  // diagnostics). Only an exhausted request reads it.
+  const outcomes: AttemptOutcome[] = [];
   try { result=layoutBandCandidates(request,options); }
   catch(error) {
+    if (!(error instanceof RoutingConflictError)) throw error;
     // Retained states must not turn a topology conflict into an unpinned cold
-    // drawing. Their explicit error keeps the last committed scene intact.
-    if(!(error instanceof RoutingConflictError) || request.history) throw error;
+    // drawing. Their typed error keeps the last committed scene intact.
+    if (request.history) throw exhausted([corridorOutcome(error.conflict)], 'retained state', error);
+    outcomes.push(corridorOutcome(error.conflict));
   }
   if (!result || request.items.length && geometryGate(attachSingleBand(result, request), request.items, request.band!.key, request.maxWidth)) {
+    if (result) outcomes.push('gate-rejected');
     const endFallback = layoutStage('fallback-ladder');
     countLayoutWork('fallback-ladder');
     try {
@@ -389,50 +409,52 @@ export function layoutBand(input: LayoutRequest, options: BandOptions = BAND_DEF
     // only by coincidence: pinned states skip its solve and never publish one.
     const pinnedBeyondCover = pins.keys.some(id => id !== request.band!.key);
     if (request.history) countLayoutWork('fallback-ladder:history');
+    const certified = (layout: GraphLayout | null) => !!layout && !geometryGate(attachSingleBand(layout, request), request.items, request.band!.key, request.maxWidth);
     for (const scale of [1.5, 2, 3]) {
       let candidate:GraphLayout;
       try { candidate=withPaneBandBounds(layoutLayered({ ...request, history: undefined, band: undefined, tileWidth: (request.tileWidth ?? 92) * scale, orientation: "down" }, { ordering: options.ordering, passing: options.passing, channelStyle: "orthogonal" }), request.band!.key, request.maxWidth); }
-      catch(error) {if(error instanceof RoutingConflictError) continue;throw error;}
-      if (!geometryGate(attachSingleBand(candidate, request), request.items, request.band!.key, request.maxWidth)) {
+      catch(error) {if(error instanceof RoutingConflictError) { outcomes.push(corridorOutcome(error.conflict)); continue; } throw error;}
+      if (certified(candidate)) {
         // Pre-existing rung: the same solve at wider spacing, kept and attributed when it drops pins.
         if (!pinsHeld(candidate)) countLayoutWork('legacy:T36:wide:pins-lost');
         replacement = { ...candidate, decision: { candidate: "wide-channels", stability: false, fallback: "geometry-fallback" } }; break;
       }
+      outcomes.push('gate-rejected');
     }
-    // Slice 5a: compact and serial display embeddings through the common
-    // layered solve. A pinned state admits one only if it keeps every pin;
-    // otherwise the attributed legacy rungs below run as before.
-    const certified = (layout: GraphLayout | null) => !!layout && !geometryGate(attachSingleBand(layout, request), request.items, request.band!.key, request.maxWidth);
-    const legacy = (name: string, layout: GraphLayout | null): GraphLayout | null => {
-      if (!certified(layout)) return null;
-      countLayoutWork(`legacy:T36:${name}`);
-      if (!pinsHeld(layout!)) countLayoutWork('legacy:T36:pins-lost');
-      return layout;
+    // Every later rung is an embedding choice admitted only when it is certified
+    // and keeps the request's pin set exactly (slices 5a, 5b and 6).
+    const admitted = (name: string, attempt: EmbeddingAttempt): GraphLayout | null => {
+      if (typeof attempt === 'string') { outcomes.push(attempt); return null; }
+      if (!certified(attempt)) { outcomes.push('gate-rejected'); return null; }
+      if (!pinsHeld(attempt)) { outcomes.push('pins-lost'); countLayoutWork(`${name}:pins`); return null; }
+      countLayoutWork(`${name}:published`);
+      return attempt;
     };
-    const embedded = (name: string, build: () => GraphLayout | null): GraphLayout | null => {
-      if (pinnedBeyondCover) { countLayoutWork(`cold-embedding:${name}:pinned-skip`); return null; }
+    const embedded = (name: string, build: () => EmbeddingAttempt): GraphLayout | null => {
+      if (pinnedBeyondCover) { countLayoutWork(`cold-embedding:${name}:pinned-skip`); outcomes.push('pinned-skip'); return null; }
       countLayoutWork(`cold-embedding:${name}:attempt`);
-      const layout = build();
-      if (!certified(layout)) return null;
-      if (!pinsHeld(layout!)) { countLayoutWork(`cold-embedding:${name}:pins`); return null; }
-      countLayoutWork(`cold-embedding:${name}:published`);
-      return layout;
+      return admitted(`cold-embedding:${name}`, build());
     };
-    replacement ??= embedded('grid-rows', () => gridRowsEmbedding(request, options)) ?? undefined;
+    replacement ??= embedded('grid-rows', () => gridRowsAttempt(request, options)) ?? undefined;
     // Slice 5b: the wrapped rightward embedding covers the chain's domain (any
     // tree, a chain included) through the common solve; the legacy chain follows.
-    // One generation cannot be cut: a single column would only lengthen a fan, so the fan grid keeps it.
+    // One generation cannot be cut: a single column would only lengthen a fan, so grid rows keep it.
     if ((wrappedGenerations(request)?.length ?? 0) >= 2) replacement ??= embedded('wrapped-right', () => {
       const wrapped = wrappedEmbeddings(request, 1)[0]?.layout;
-      return wrapped ? withPaneBandBounds(wrapped, request.band!.key, request.maxWidth) : null;
+      // No cut plan fits the pane: the tree admits no wrapped embedding here.
+      return wrapped ? withPaneBandBounds(wrapped, request.band!.key, request.maxWidth) : 'topology';
     }) ?? undefined;
-    replacement ??= legacy('chain', safeChain(request)) ?? undefined;
-    replacement ??= embedded('serial-rows', () => serialRowsEmbedding(request, options)) ?? undefined;
-    replacement ??= legacy('serial', safeLayout(request)) ?? undefined;
-    if (!replacement) countLayoutWork('legacy:T36:uncertified');
-    result = replacement ?? safeLayout(request);
-    const failure = geometryGate(attachSingleBand(result, request), request.items, request.band!.key, request.maxWidth);
-    if (failure) throw new RangeError("No certified layout: " + failure);
+    // The legacy chain (T36) stays for chains whose tiles are too large for every
+    // embedding of the common solve (slice 6 residue), admitted like an embedding.
+    replacement ??= admitted('legacy:T36:chain', safeChain(request) ?? 'not-applicable') ?? undefined;
+    replacement ??= embedded('serial-rows', () => serialRowsAttempt(request, options)) ?? undefined;
+    // Legacy serial rows (T36) stay for pinned states they happen to keep (a
+    // cover over one left-aligned column; slice 6 residue), admitted like an embedding.
+    replacement ??= admitted('legacy:T36:serial', legacySerialRows(request)) ?? undefined;
+    // Every rung admits only a certified drawing. With none, the request is not
+    // published: the last committed scene stays (the fallback boundary).
+    if (!replacement) throw exhausted(outcomes, 'every bounded construction failed');
+    result = replacement;
     } finally { endFallback(); }
   }
   if (result.pinnedViolation) result = { ...result, decision: { ...result.decision!, fallback: "gate-infeasible" } };
