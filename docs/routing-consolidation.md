@@ -3804,6 +3804,5 @@ Slice 5 is complete.
 - **World-placed sequences cost more per arrival** (arrival p95 1.5×), because
   the cover-only fix keeps about 100 more sequences in the world frame.
 - **T38's `safeLayout` rung and T30's skyline stay** as legacy, counted.
-  Neither the identity-frame packing nor the isolation rungs were needed in
-  the production inventory.
+  The production inventory reached no isolation rung (`legacy:T38` 0).
 
