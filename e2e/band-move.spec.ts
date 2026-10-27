@@ -191,6 +191,9 @@ for (const theme of ['light', 'dark']) test(`opaque cards occlude routes across 
   }
   const result = await page.evaluate(() => {
     const w = window as any, plane = document.querySelector<HTMLElement>('[data-paint-plane=routes]')!;
+    // A route only ever crosses a depth-0 cell while motion runs, and cells are backed only then: stage that state.
+    const grid = document.querySelector<HTMLElement>('[role=grid][aria-label=Folder]')!;
+    grid.setAttribute('data-scene-moving', '');
     const path = document.querySelector<SVGPathElement>('[data-route-band] path[data-route]')!;
     const original = path.getAttribute('d')!;
     const targets = [document.querySelector<HTMLElement>('[data-grid-cell].stack [data-tile-key]')!,
@@ -215,6 +218,7 @@ for (const theme of ['light', 'dark']) test(`opaque cards occlude routes across 
       path.setAttribute('d', original);
       return { faults, overlaps, reversed, translucent };
     });
+    grid.removeAttribute('data-scene-moving');
     return checks;
   });
   for (const check of result) {

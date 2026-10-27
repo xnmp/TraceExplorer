@@ -378,6 +378,15 @@ interface Owned {
   readonly written: Map<MotionProperty, string>;
 }
 
+/**
+ * Set on the grid while an epoch moves tiles. Routes may pass behind a moving tile only while it
+ * paints an opaque backing, so depth-0 cells and covers show `--background-solid` under this
+ * attribute and nothing at rest (the host Tiles view has no tile background). Set and cleared in
+ * the same tasks that write and release the poses, so no frame shows a cell without its
+ * backing mid-motion or with it at rest.
+ */
+export const MOVING = "data-scene-moving";
+
 export function createSceneMotion({ handles, scroller = () => null, reduced = prefersReducedMotion }: SceneMotionOptions): SceneMotionDriver {
   /** The newest epoch started, and its loop entry while it runs. */
   let current: { readonly presentation: Presentation; running: Running | null; camera: boolean } | null = null;
@@ -562,6 +571,7 @@ export function createSceneMotion({ handles, scroller = () => null, reduced = pr
           }
         } else if (outcome === "fail") restoreAll();
         ended = true;
+        grid?.removeAttribute(MOVING);
         if (epoch.running === running) epoch.running = null;
         settle(outcome !== "cancel");
       };
@@ -587,6 +597,8 @@ export function createSceneMotion({ handles, scroller = () => null, reduced = pr
       epoch.running = running;
       // The first pose is written now, synchronously, so the first frame painted shows it.
       render(0);
+      // Same task as the first pose: from the first painted frame until the epoch ends, depth-0 cells paint their opaque backing (see MOVING).
+      grid?.setAttribute(MOVING, "");
       active.add(running);
       startedEpochs++;
       schedule();

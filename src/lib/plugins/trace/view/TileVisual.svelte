@@ -140,9 +140,9 @@
 {#if hint && !explorer}<span class="hint" style:height="{TILE.hint}px">{hint}</span>{/if}
 
 <style>
-  :global(.explorer-cover) .card { position: relative; align-items: center; overflow: visible; background: var(--background-solid); border-color: transparent; }
-  :global(.explorer-cover) .card:hover { background: linear-gradient(var(--subtle-fill-secondary), var(--subtle-fill-secondary)), var(--background-solid); }
-  :global(.explorer-cover) .card.selected { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, var(--background-solid)); }
+  :global(.explorer-cover) .card { position: relative; align-items: center; overflow: visible; background: none; border-color: transparent; }
+  :global(.explorer-cover) .card:hover { background: var(--subtle-fill-secondary); }
+  :global(.explorer-cover) .card.selected { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, transparent); }
   :global(.explorer-cover) .image { position: relative; isolation: isolate; overflow: visible; width: 100%; background: none; }
   /* At most two static sheets. Filters or extra composited decoration stall cold
      opens in the host's software renderer; the thumbnail keeps its ordinary bounds. */

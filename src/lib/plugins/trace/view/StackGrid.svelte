@@ -248,7 +248,9 @@
   .paint-plane { position: absolute; inset: 0; z-index: 0; pointer-events: none; }
   .paint-plane.tiles { z-index: 1; }
   .component, .route-component { position: absolute; left: 0; width: 100%; pointer-events: none; }
-  .cell { position: absolute; top: 0; pointer-events: auto; z-index: 2; background: var(--background-solid); }
+  .cell { position: absolute; top: 0; pointer-events: auto; z-index: 2; }
+  /* Transparent at rest like the host's Tiles view; opaque only while motion can slide a route or tile behind it (scene-motion.ts MOVING). */
+  .grid:global([data-scene-moving]) .cell { background: var(--background-solid); }
   .content { --trace-tile-surface: color-mix(in srgb, var(--accent) 3%, var(--background-solid)); position: absolute; top: 0; left: 0; width: 100%; pointer-events: none; }
   .content :global(.tile) { pointer-events: auto; }
   .row-band { position: absolute; left: 0; pointer-events: none; transform-origin: top left; background: color-mix(in srgb, var(--accent) 3%, transparent); }
