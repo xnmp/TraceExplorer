@@ -73,3 +73,12 @@ a candidate hit is trusted (an optimistic `true`). A miss answers `"pending"` (f
 still checked with the exact `folder_has_trace` lookup, which canonicalizes, so
 an alias shows Trace once that answer arrives, as before candidates existed. A
 Rust regression test documents the canonical-key contract.
+
+## Entry lineage (Show traces)
+
+Capability `entryLineage` lets the host group a folder's files by provenance in its built-in Details, List and Tiles views. Where it is announced, Trace calls `registerEntryLineage` with id `xnmp.trace-explorer.lineage` and title `Traces`, and adds the command "Show Traces" (`workspace.toggleEntryLineage`). Trace View stays a separate file view with its own toggle. The shapes (`EntryLineageContribution`, `EntryLineage`, `LineageParent`) are in [plugin-sdk/index.d.ts](plugin-sdk/index.d.ts) and must match the host's `api.ts`.
+
+- `available` reuses the Trace view's folder eligibility, including `"pending"`.
+- `load` pages `trace_folder_components`, `trace_folder_members` and `trace_component_nodes` and maps the node graph onto paths (`src/lib/domain/entry-lineage.ts`). Parents with no file in the folder (deleted, moved, or running-output placeholders) are replaced by their nearest present ancestors. Parents in a subfolder or outside the folder become `external` parents keyed by artifact id (or node key), labelled with the file name. `revision` is a content hash, so unrelated Trace changes do not change it.
+- `subscribe` fires on `trace:changed` and on `onFilesChanged` for that directory; extra notifications are harmless because the host compares revisions.
+- Detection is by capability and a callable `registerEntryLineage`, never by host version. On an older host nothing registers and the command is absent.

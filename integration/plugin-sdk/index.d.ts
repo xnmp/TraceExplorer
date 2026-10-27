@@ -95,6 +95,28 @@ export type PreviewSubject =
   | { readonly kind: "file"; readonly entry: FileEntry; readonly paneId: string | null }
   | { readonly kind: "target"; readonly target: PreviewTarget; readonly pluginId: string; readonly paneId: string | null };
 export type FileViewEligibility = boolean | "pending";
+/** Capability "entryLineage". */
+export interface EntryLineageContribution {
+  /** `<pluginId>.<name>`, validated like registerFileView ids. */
+  id: string;
+  /** Pane option label in the context-menu View section, e.g. "Traces" → "Show traces". */
+  title: string;
+  /** Whether this directory has lineage; "pending" holds first paint (same 400 ms bound as fileViewEligibilityPending). */
+  available(directory: string): boolean | "pending";
+  /** Lineage for the directory's files. Reject or abort on signal. */
+  load(directory: string, signal: AbortSignal): Promise<EntryLineage>;
+  /** Call `changed` whenever load() would now return a different revision. Returns an unsubscribe. */
+  subscribe?(directory: string, changed: () => void): () => void;
+}
+export interface EntryLineage {
+  /** Opaque; equal revisions mean equal lineage. */
+  revision: string;
+  /** Path of a file in `directory` → its lineage parents in input order. Files with no parents may be omitted. */
+  parents: ReadonlyMap<string, readonly LineageParent[]>;
+}
+export type LineageParent =
+  | { kind: "entry"; path: string }                                  // a file in the same directory
+  | { kind: "external"; key: string; label: string; thumbnailPath?: string }; // outside the directory; `key` is stable identity
 export interface FileViewContribution { id: string; title: string; component: Component<any>; props?: Record<string, unknown>; available?(directory: string): FileViewEligibility; reveal?(targetId: string, pane: FileViewPane, signal: AbortSignal): Promise<void> }
 /**
  * A Preview-info section. It spans the pane's width below the host's own info
@@ -138,6 +160,8 @@ export interface PluginContext {
   registerFileView?(view: FileViewContribution): void;
   /** SDK 2. */
   registerPreviewInfo?(section: PreviewInfoContribution): void;
+  /** Capability "entryLineage". */
+  registerEntryLineage?(contribution: EntryLineageContribution): void;
   /** `options` needs capability "paneDialogs". */
   openDialog(id: string, props?: Record<string, unknown>, options?: PluginDialogOptions): void;
   closeDialog(id: string): void;
@@ -162,6 +186,10 @@ export interface PluginContext {
     getFileView?(): string | null;
     /** SDK 2. */
     toggleFileView?(viewId: string): void;
+    /** Capability "entryLineage": toggles "Show <title>" on the active pane. */
+    toggleEntryLineage?(contributionId: string): void;
+    /** Capability "entryLineage". */
+    isEntryLineageShown?(contributionId: string): boolean;
     /** Capability "paneDialogs": capture a pane of the active tab (the active pane when omitted); valid for the pane's lifetime. */
     capturePane?(paneId?: string): PluginDialogPane | null;
     /** Capability "fileDropTargets": deliver paths dropped on `element`; returns an idempotent disposer.
@@ -231,7 +259,7 @@ export interface RuntimeSDK {
   sdkVersion: 1;
   /** Present from SDK 2 hosts on. */
   apiVersion?: number;
-  /** For example `fileViews`, `previewInfo`, `previewTargets`, `blobWorkers`, `fileTiles`, `tileSize`, `jobRetry`, `jobReveal`, `jobCost`, `fileViewReveal`. */
+  /** For example `fileViews`, `previewInfo`, `previewTargets`, `entryLineage`, `blobWorkers`, `fileTiles`, `tileSize`, `jobRetry`, `jobReveal`, `jobCost`, `fileViewReveal`. */
   capabilities?: readonly string[];
   svelteVersion: string;
   /** Shared host modules: `svelte`, `ui/modal`, `ui/image-editor`, `ui/file-tiles` where `fileTiles` is announced, and `ui/file-tile` where `fileTile` is. */
