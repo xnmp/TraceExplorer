@@ -11,7 +11,7 @@ import type { FolderMemberRecord } from "$lib/api/trace";
 import type { TraceBackend } from "./view/backend";
 import { componentRequest } from "./view/component-requests";
 
-export const LINEAGE_ID = "xnmp.trace-explorer.lineage";
+export const LINEAGE_ID = "trace.lineage";
 /** Restarts allowed when the folder index changes under a read. */
 const MAX_RESTARTS = 3;
 

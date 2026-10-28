@@ -127,7 +127,7 @@ describe("registerLineage", () => {
     const { ctx, commands, toggle } = context({ registerEntryLineage: (c: never) => registered.push(c) });
     expect(registerLineage(ctx, backend(), (d) => d === D ? true : "pending")).toBe(true);
     expect(registered).toHaveLength(1);
-    expect(registered[0]).toMatchObject({ id: "xnmp.trace-explorer.lineage", title: "Traces" });
+    expect(registered[0]).toMatchObject({ id: "trace.lineage", title: "Traces" });
     expect(registered[0].available(D)).toBe(true);
     expect(registered[0].available("/other")).toBe("pending");
     expect(commands.map((c) => c.label)).toEqual(["Show Traces"]);
