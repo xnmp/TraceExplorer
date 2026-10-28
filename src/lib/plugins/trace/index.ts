@@ -3,6 +3,8 @@ import { compatibleFolderEligibility } from "$lib/domain/folder-eligibility";
 import type { Plugin } from "../api";
 import { traceInvalidation } from "./invalidation.svelte";
 import { traceFolderVisibility } from "./folder-visibility.svelte";
+import { registerLineage, lineageSubscriptions } from "./lineage";
+import { traceBackend } from "./view/backend";
 import { traceThumbnails } from "./thumbnail-cache";
 import { promptTitles } from "./prompt-titles.svelte";
 import { tracePanes, isTraceTargetData } from "./view/pane-registry.svelte";
@@ -26,6 +28,7 @@ export const tracePlugin: Plugin = {
     forgetFolderSnapshots();
     tracePanes.clear();
     traceFolderVisibility.clear();
+    lineageSubscriptions.clear();
     traceThumbnails.clear();
     promptTitles.unbind();
     previewData.clear();
@@ -69,8 +72,9 @@ export const tracePlugin: Plugin = {
       id: "plugin.trace.toggle", label: "Toggle Trace View", category: "view", shortcut: "Alt+M P",
       handler: () => ctx.workspace.toggleFileView?.(TRACE_VIEW_ID),
     });
-    ctx.events.listen<string>("trace:changed", () => { traceInvalidation.bump(); traceFolderVisibility.refreshRecent(); });
-    ctx.workspace.onFilesChanged((directories) => { traceInvalidation.bump(); traceFolderVisibility.filesChanged(directories); });
+    registerLineage(ctx, traceBackend, (directory) => traceFolderVisibility.available(directory));
+    ctx.events.listen<string>("trace:changed", () => { traceInvalidation.bump(); traceFolderVisibility.refreshRecent(); lineageSubscriptions.notifyAll(); });
+    ctx.workspace.onFilesChanged((directories) => { traceInvalidation.bump(); traceFolderVisibility.filesChanged(directories); lineageSubscriptions.notifyDirectories(directories); });
     return preload;
   },
 };

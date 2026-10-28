@@ -64,3 +64,8 @@ export function hostRegisterFileDropTarget(workspace: PluginContext["workspace"]
 export function hostSupportsFileViewEligibilityPending(): boolean {
   try { return host().capabilities?.includes("fileViewEligibilityPending") ?? false; } catch { return false; }
 }
+
+/** Whether the host groups files by provenance (`entryLineage`) and the context can register a provider. */
+export function hostSupportsEntryLineage(ctx: Pick<PluginContext, "registerEntryLineage">): boolean {
+  try { return host().capabilities?.includes("entryLineage") === true && typeof ctx.registerEntryLineage === "function"; } catch { return false; }
+}
