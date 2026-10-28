@@ -12,7 +12,11 @@ function activate(capabilities: string[], withMethod: boolean) {
   g.__TAURI_EXPLORER_PLUGIN_SDK__ = { ...original, sdkVersion: 1, apiVersion: 2, svelteVersion: SVELTE_ABI, capabilities, modules: original?.modules ?? {} };
   configureBackend({ invoke: async () => [] } as never);
   const commands: string[] = [];
-  const entryLineage = vi.fn();
+  // Mirrors the host's id rule (tauri-explorer api.ts): `<plugin id>.<name>`.
+  const entryLineage = vi.fn((c: { id: string }) => {
+    const name = c.id.startsWith(`${tracePlugin.id}.`) ? c.id.slice(tracePlugin.id.length + 1) : null;
+    if (!name || name.includes(".")) throw new Error(`Entry lineage ${c.id} must be named ${tracePlugin.id}.<name>`);
+  });
   const listeners: Array<(directories: readonly string[]) => void> = [];
   const ctx = {
     registerSettingsSection: vi.fn(), registerCommand: (c: { id: string }) => commands.push(c.id), registerFileView: vi.fn(), registerPreviewInfo: vi.fn(),
@@ -27,7 +31,7 @@ describe("Trace plugin activation and lineage", () => {
     const { ctx, commands, entryLineage } = activate(["fileViews", "entryLineage"], true);
     await tracePlugin.activate(ctx as never);
     expect(entryLineage).toHaveBeenCalledOnce();
-    expect(entryLineage.mock.calls[0][0]).toMatchObject({ id: "xnmp.trace-explorer.lineage", title: "Traces" });
+    expect(entryLineage.mock.calls[0][0]).toMatchObject({ id: "trace.lineage", title: "Traces" });
     expect(commands).toEqual(expect.arrayContaining(["plugin.trace.toggle", "plugin.trace.show-traces"]));
   });
 
