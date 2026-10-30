@@ -1,16 +1,17 @@
 import { expect, it } from 'vitest';
-import { clickStability, packingAnchorMoves, unexplainedHeightRegressions } from '../../../layout-eval/click-stability';
+import { packingAnchorMoves, unexplainedHeightRegressions } from '../../../layout-eval/click-stability';
+import { clickStabilitySweep } from '../../../layout-eval/click-stability-sweep';
 // This sweeps every dense worker case at the enlarged construction budget.
 // Request latency is gated separately by layout:eval's isolated timing sample.
-it('keeps legal corpus clicks at least as stable as main using committed click history', () => {
-  const result=clickStability();
+it('keeps legal corpus clicks at least as stable as main using committed click history', async () => {
+  const result=await clickStabilitySweep();
   expect.soft(result.anchors + packingAnchorMoves()).toBeLessThanOrEqual(32);
   expect.soft(result.denseAnchors).toBeLessThanOrEqual(101);
   expect.soft(result.screenAnchors).toBeLessThanOrEqual(82);
   expect.soft(result.denseScreenAnchors).toBeLessThanOrEqual(114);
   expect.soft(result.displacement).toBeLessThanOrEqual(17.53);
-  // About 31 min alone with the 256M band allowance and the 512M anchor
-  // escalation (2026-10); ~30% headroom.
+  // About 31 min of CPU alone with the 256M band allowance and the 512M anchor
+  // escalation (2026-10), now spread over the machine's cores; ~30% headroom.
 }, 4_200_000);
 
 it('explains every corpus height regression over ten percent with actual retained stability', () => {
