@@ -19,7 +19,11 @@ let binding = 0;
 let sequence = 0;
 const session = globalThis.crypto.randomUUID();
 
+const listeners = new Set<() => void>();
+const announce = () => { for (const listener of [...listeners]) { try { listener(); } catch { /* one listener must not starve the rest */ } } };
+
 function invalidate() {
+  const hadTitles = Object.keys(titles).length > 0;
   generation += 1;
   configured = false;
   context = null;
@@ -30,6 +34,7 @@ function invalidate() {
   draining = null;
   if (active) void invoke("trace_cancel_prompt_title", { requestId: active.requestId }).catch(() => {});
   active = null;
+  if (hadTitles) announce();
 }
 
 async function drain() {
@@ -50,6 +55,7 @@ async function drain() {
           && result.fingerprint === admittedContext.fingerprint && typeof result.title === "string"
           && result.title.trim() && [...result.title].length <= 120 && !/[\u0000-\u001f\u007f]/.test(result.title)) {
           titles = { ...titles, [runId]: result.title };
+          announce();
         }
       } catch { /* The original persisted prompt remains readable. */ }
       finally {
@@ -61,6 +67,10 @@ async function drain() {
 
 export const promptTitles = {
   get configured() { return configured; },
+  /** A generated title, if one exists now. Never requests one. */
+  titleFor(runId: number): string | undefined { return titles[runId] || undefined; },
+  /** Calls `changed` when a title arrives or the set is cleared. */
+  subscribe(changed: () => void): () => void { listeners.add(changed); return () => { listeners.delete(changed); }; },
   async configure(settings: Record<string,unknown>) {
     invalidate();
     const current = generation;

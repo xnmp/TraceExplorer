@@ -113,6 +113,10 @@ export interface EntryLineage {
   revision: string;
   /** Path of a file in `directory` → its lineage parents in input order. Files with no parents may be omitted. */
   parents: ReadonlyMap<string, readonly LineageParent[]>;
+  /** Optional per-file text, keyed by path (#1449): `title` is the short
+   * summary preferred for a lineage child's row label, `prompt` the full text
+   * for the Details Prompt column and tooltips. Absent: no column, no labels. */
+  labels?: ReadonlyMap<string, { prompt?: string; title?: string }>;
 }
 export type LineageParent =
   | { kind: "entry"; path: string }                                  // a file in the same directory

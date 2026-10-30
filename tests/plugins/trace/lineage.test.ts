@@ -1,6 +1,6 @@
 import "./svelte-host";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createLineageSubscriptions, loadFolderLineage, registerLineage, LINEAGE_ID } from "$lib/plugins/trace/lineage";
+import { createLineageSubscriptions, loadFolderLineage, lineageContribution, registerLineage, LINEAGE_ID } from "$lib/plugins/trace/lineage";
 import { SVELTE_ABI } from "../../../src/sdk";
 import type { TraceBackend } from "$lib/plugins/trace/view/backend";
 import type { TraceNodeRecord } from "$lib/api/trace";
@@ -33,6 +33,19 @@ describe("loadFolderLineage", () => {
     expect(lineage.parents.get(`${D}/c`)).toEqual([{ kind: "entry", path: `${D}/a` }, { kind: "entry", path: `${D}/b` }]);
     expect(lineage.parents.get(`${D}/d`)).toEqual([{ kind: "entry", path: `${D}/c` }]);
     expect(lineage.parents.has(`${D}/a`)).toBe(false);
+  });
+
+  it("fills titles from already-generated summaries by run id, never requesting any", async () => {
+    const withRuns = backend({}, 10);
+    const base = withRuns.nodes;
+    withRuns.nodes = async (...args) => { const p = await base(...args); return { ...p, nodes: p.nodes.map((n, i) => ({ ...n, runId: i === 0 ? 7 : i === 1 ? 8 : null, prompt: `p-${n.key}` })) }; };
+    const titleFor = vi.fn((id: number) => id === 7 ? "Seven" : undefined);
+    const lineage = await loadFolderLineage(withRuns, D, new AbortController().signal, { titleFor });
+    expect(lineage.labels?.get(`${D}/a`)).toEqual({ prompt: "p-a", title: "Seven" });
+    expect(lineage.labels?.get(`${D}/b`)).toEqual({ prompt: "p-b" });
+    expect(titleFor).not.toHaveBeenCalledWith(null);
+    const without = await loadFolderLineage(withRuns, D, new AbortController().signal);
+    expect(without.labels?.get(`${D}/a`)).toEqual({ prompt: "p-a" });
   });
 
   it("restarts when a page reports the index changed, then gives up", async () => {
@@ -90,6 +103,21 @@ describe("loadFolderLineage", () => {
     const none = vi.fn();
     await loadFolderLineage(backend({ members: async (_d, _t, offset) => ({ stale: false, total: 0, offset, members: [] }), nodes: none }), D, new AbortController().signal);
     expect(none).not.toHaveBeenCalled();
+  });
+});
+
+describe("lineage title notifications", () => {
+  it("tells the host to reload when a title arrives, and stops after unsubscribe", () => {
+    let fire = () => {};
+    const off = vi.fn();
+    const titles = { titleFor: () => undefined, subscribe: (changed: () => void) => { fire = changed; return off; } };
+    const contribution = lineageContribution(backend(), () => true, createLineageSubscriptions(), titles);
+    const changed = vi.fn();
+    const stop = contribution.subscribe!(D, changed);
+    fire();
+    expect(changed).toHaveBeenCalledTimes(1);
+    stop();
+    expect(off).toHaveBeenCalledTimes(1);
   });
 });
 

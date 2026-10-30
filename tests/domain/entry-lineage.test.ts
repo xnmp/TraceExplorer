@@ -145,4 +145,60 @@ describe("buildEntryLineage", () => {
     expect(l.parents.size).toBe(n); // f1..f9999 plus tail
     expect(l.parents.get(`${D}/tail.png`)).toEqual([entry("f0.png")]);
   });
+
+  describe("labels", () => {
+    const ms = [member("a"), member("b")];
+    const labelled = (a: Partial<LineageNode>, b: Partial<LineageNode> = {}) => buildEntryLineage(ms, [node("a", [], a), node("b", ["a"], b)]);
+
+    it("maps each member's prompt by path, including files without parents", () => {
+      const l = labelled({ prompt: "a red fox" }, { prompt: "make it blue" });
+      expect(l.labels).toEqual(new Map([[`${D}/a`, { prompt: "a red fox" }], [`${D}/b`, { prompt: "make it blue" }]]));
+    });
+
+    it("carries a title alongside the prompt", () => {
+      expect(labelled({ prompt: "a red fox", title: "Red fox" }).labels?.get(`${D}/a`)).toEqual({ prompt: "a red fox", title: "Red fox" });
+    });
+
+    it("omits empty, whitespace, missing and non-string text, and files it does not describe", () => {
+      const l = labelled({ prompt: "  " }, { prompt: 42 as never, title: {} as never });
+      expect(l.labels).toBeUndefined();
+      expect("labels" in l).toBe(false);
+      const some = labelled({ prompt: "x" }, { prompt: "" });
+      expect([...some.labels!.keys()]).toEqual([`${D}/a`]);
+    });
+
+    it("ignores nodes that are not members", () => {
+      const l = buildEntryLineage([member("a")], [node("a"), node("ghost", [], { prompt: "orphan" })]);
+      expect(l.labels).toBeUndefined();
+    });
+
+    it("bounds very long prompts and titles", () => {
+      const l = labelled({ prompt: "x".repeat(5_000_000), title: "t".repeat(5_000) });
+      const label = l.labels!.get(`${D}/a`)!;
+      expect(label.prompt!.length).toBeLessThanOrEqual(2000);
+      expect(label.title!.length).toBeLessThanOrEqual(200);
+    });
+
+    it("changes the revision when only a prompt or title changes, and not otherwise", () => {
+      const base = labelled({ prompt: "one" });
+      expect(labelled({ prompt: "one" }).revision).toBe(base.revision);
+      expect(labelled({ prompt: "two" }).revision).not.toBe(base.revision);
+      expect(labelled({ prompt: "one", title: "T" }).revision).not.toBe(base.revision);
+      expect(labelled({}).revision).not.toBe(base.revision);
+    });
+
+    it("keeps the unlabelled revision unchanged by the labels feature", () => {
+      expect(buildEntryLineage(ms, [node("a"), node("b", ["a"])]).revision).toBe(labelled({ prompt: "" }).revision);
+    });
+
+    it("labels a 10,000-file folder within the bound", () => {
+      const members = Array.from({ length: 10_000 }, (_, i) => member(`f${i}.png`, `f${i}`));
+      const nodes = members.map((m, i) => node(m.key, i ? [`f${i - 1}`] : [], { prompt: `prompt ${i}` }));
+      const start = performance.now();
+      const l = buildEntryLineage(members, nodes);
+      expect(performance.now() - start).toBeLessThan(2000);
+      expect(l.labels!.size).toBe(10_000);
+      expect(l.labels!.get(`${D}/f9999.png`)).toEqual({ prompt: "prompt 9999" });
+    });
+  });
 });

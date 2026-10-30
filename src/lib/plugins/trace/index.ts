@@ -72,7 +72,7 @@ export const tracePlugin: Plugin = {
       id: "plugin.trace.toggle", label: "Toggle Trace View", category: "view", shortcut: "Alt+M P",
       handler: () => ctx.workspace.toggleFileView?.(TRACE_VIEW_ID),
     });
-    registerLineage(ctx, traceBackend, (directory) => traceFolderVisibility.available(directory));
+    registerLineage(ctx, traceBackend, (directory) => traceFolderVisibility.available(directory), promptTitles);
     ctx.events.listen<string>("trace:changed", () => { traceInvalidation.bump(); traceFolderVisibility.refreshRecent(); lineageSubscriptions.notifyAll(); });
     ctx.workspace.onFilesChanged((directories) => { traceInvalidation.bump(); traceFolderVisibility.filesChanged(directories); lineageSubscriptions.notifyDirectories(directories); });
     return preload;
