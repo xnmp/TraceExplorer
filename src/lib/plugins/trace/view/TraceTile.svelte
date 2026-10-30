@@ -101,7 +101,8 @@
 </div>
 
 <style>
-  .tile { position: absolute; box-sizing: border-box; background: var(--trace-tile-surface, var(--background-solid)); }
+  .tile { position: absolute; box-sizing: border-box; }
+  :global([data-scene-moving]) .tile { background: var(--trace-tile-surface, var(--background-solid)); }
   /* A cover is transparent at rest; it is backed only while motion runs (scene-motion.ts MOVING). */
   .explorer-cover { background: none; }
   :global([data-scene-moving]) .explorer-cover { background: var(--background-solid); }

@@ -25,6 +25,11 @@ for (const host of ["", "&fileTile=1&tileSize=medium"]) for (const theme of ["li
     expect(rest.cells.length).toBeGreaterThan(1);
     expect(rest.covers.length).toBeGreaterThan(0);
     for (const group of [rest.cells, rest.covers, rest.coverCards]) expect(group.every((a) => a === 0), JSON.stringify(rest)).toBe(true);
+    await page.locator(".explorer-cover .stack-disclosure").first().click(); await settle(page);
+    const childTiles = await page.locator(".tile:not(.explorer-cover)").evaluateAll((all) => all.map((e) => getComputedStyle(e).backgroundColor));
+    expect(childTiles.length).toBeGreaterThan(0);
+    expect(childTiles.every((c) => c === "rgba(0, 0, 0, 0)"), JSON.stringify(childTiles)).toBe(true);
+    await page.locator(".explorer-cover .stack-disclosure").first().click(); await settle(page);
     await expect(page.locator(".explorer-cover .stack-sheet").first()).toBeVisible();
     await expect(page.locator(".explorer-cover .count-badge").first()).toBeVisible();
 
