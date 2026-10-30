@@ -11,9 +11,11 @@ import type { FolderMemberRecord } from "$lib/api/trace";
 import type { TraceBackend } from "./view/backend";
 import { componentRequest } from "./view/component-requests";
 
-/** Short prompt summaries that already exist (never requested from here: that costs a language-model call each). */
+/** Short prompt summaries. The backend stores them by prompt, so asking again for a known prompt costs no language-model call. */
 export interface LineageTitles {
   titleFor(runId: number): string | undefined;
+  /** Asks for a summary; a no-op with "Summarize prompts" off. The new title arrives through `subscribe`. */
+  request?(runId: number, prompt: string): void;
   /** Calls `changed` whenever the set of titles changes. Returns an unsubscribe. */
   subscribe(changed: () => void): () => void;
 }
@@ -25,7 +27,7 @@ const MAX_RESTARTS = 3;
 class Restart extends Error {}
 
 /** Reads the folder's members and the nodes of the components that own them. */
-export async function loadFolderLineage(backend: TraceBackend, directory: string, signal: AbortSignal, titles?: Pick<LineageTitles, "titleFor">): Promise<EntryLineage> {
+export async function loadFolderLineage(backend: TraceBackend, directory: string, signal: AbortSignal, titles?: Pick<LineageTitles, "titleFor" | "request">): Promise<EntryLineage> {
   for (let attempt = 0; ; attempt += 1) {
     signal.throwIfAborted();
     // Each attempt owns a signal, so a failed or restarted attempt cancels its queued node reads.
@@ -44,7 +46,7 @@ export async function loadFolderLineage(backend: TraceBackend, directory: string
   }
 }
 
-async function readOnce(backend: TraceBackend, directory: string, signal: AbortSignal, titles?: Pick<LineageTitles, "titleFor">): Promise<EntryLineage> {
+async function readOnce(backend: TraceBackend, directory: string, signal: AbortSignal, titles?: Pick<LineageTitles, "titleFor" | "request">): Promise<EntryLineage> {
   signal.throwIfAborted();
   // The first components page names the index; members and node pages are checked against its token
   // and report `stale` when the index moves on, so the remaining summary pages are not needed.
@@ -78,10 +80,14 @@ async function readOnce(backend: TraceBackend, directory: string, signal: AbortS
   return buildEntryLineage(members, nodes);
 }
 
-function withTitle(node: LineageNode, titles: Pick<LineageTitles, "titleFor">): LineageNode {
+function withTitle(node: LineageNode, titles: Pick<LineageTitles, "titleFor" | "request">): LineageNode {
   const runId = (node as { runId?: unknown } | null)?.runId;
-  const title = typeof runId === "number" ? titles.titleFor(runId) : undefined;
-  return title ? { ...node, title } : node;
+  if (typeof runId !== "number") return node;
+  const title = titles.titleFor(runId);
+  if (title) return { ...node, title };
+  // Only edits are labelled by their prompt, so only they are worth summarizing.
+  if (typeof node?.prompt === "string" && node.prompt.trim() && node.parents?.length) titles.request?.(runId, node.prompt);
+  return node;
 }
 
 /** Who wants to hear that lineage may have changed, per directory. Over-notifying is safe: the host compares revisions. */

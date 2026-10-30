@@ -35,13 +35,16 @@ describe("loadFolderLineage", () => {
     expect(lineage.parents.has(`${D}/a`)).toBe(false);
   });
 
-  it("fills titles from already-generated summaries by run id, never requesting any", async () => {
+  it("asks for a summary only for edits that lack one, and fills titles it already has", async () => {
     const withRuns = backend({}, 10);
     const base = withRuns.nodes;
     withRuns.nodes = async (...args) => { const p = await base(...args); return { ...p, nodes: p.nodes.map((n, i) => ({ ...n, runId: i === 0 ? 7 : i === 1 ? 8 : null, prompt: `p-${n.key}` })) }; };
     const titleFor = vi.fn((id: number) => id === 7 ? "Seven" : undefined);
-    const lineage = await loadFolderLineage(withRuns, D, new AbortController().signal, { titleFor });
+    const request = vi.fn();
+    const lineage = await loadFolderLineage(withRuns, D, new AbortController().signal, { titleFor, request });
     expect(lineage.labels?.get(`${D}/a`)).toEqual({ prompt: "p-a", title: "Seven" });
+    expect(request.mock.calls.filter(([id]) => id === 7)).toEqual([]);
+    expect(request).toHaveBeenCalledWith(8, "p-b");
     expect(lineage.labels?.get(`${D}/b`)).toEqual({ prompt: "p-b" });
     expect(titleFor).not.toHaveBeenCalledWith(null);
     const without = await loadFolderLineage(withRuns, D, new AbortController().signal);
