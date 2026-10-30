@@ -11,6 +11,13 @@ import type { FolderMemberRecord } from "$lib/api/trace";
 import type { TraceBackend } from "./view/backend";
 import { componentRequest } from "./view/component-requests";
 
+/** Short prompt summaries that already exist (never requested from here: that costs a language-model call each). */
+export interface LineageTitles {
+  titleFor(runId: number): string | undefined;
+  /** Calls `changed` whenever the set of titles changes. Returns an unsubscribe. */
+  subscribe(changed: () => void): () => void;
+}
+
 export const LINEAGE_ID = "trace.lineage";
 /** Restarts allowed when the folder index changes under a read. */
 const MAX_RESTARTS = 3;
@@ -18,14 +25,14 @@ const MAX_RESTARTS = 3;
 class Restart extends Error {}
 
 /** Reads the folder's members and the nodes of the components that own them. */
-export async function loadFolderLineage(backend: TraceBackend, directory: string, signal: AbortSignal): Promise<EntryLineage> {
+export async function loadFolderLineage(backend: TraceBackend, directory: string, signal: AbortSignal, titles?: Pick<LineageTitles, "titleFor">): Promise<EntryLineage> {
   for (let attempt = 0; ; attempt += 1) {
     signal.throwIfAborted();
     // Each attempt owns a signal, so a failed or restarted attempt cancels its queued node reads.
     const attemptAbort = new AbortController();
     const forward = () => attemptAbort.abort(signal.reason);
     signal.addEventListener("abort", forward, { once: true });
-    try { return await readOnce(backend, directory, attemptAbort.signal); }
+    try { return await readOnce(backend, directory, attemptAbort.signal, titles); }
     catch (error) {
       signal.throwIfAborted();
       if (!(error instanceof Restart)) throw error;
@@ -37,7 +44,7 @@ export async function loadFolderLineage(backend: TraceBackend, directory: string
   }
 }
 
-async function readOnce(backend: TraceBackend, directory: string, signal: AbortSignal): Promise<EntryLineage> {
+async function readOnce(backend: TraceBackend, directory: string, signal: AbortSignal, titles?: Pick<LineageTitles, "titleFor">): Promise<EntryLineage> {
   signal.throwIfAborted();
   // The first components page names the index; members and node pages are checked against its token
   // and report `stale` when the index moves on, so the remaining summary pages are not needed.
@@ -62,13 +69,19 @@ async function readOnce(backend: TraceBackend, directory: string, signal: AbortS
       signal.throwIfAborted();
       if (page.stale) throw new Restart();
       const batch = Array.isArray(page.nodes) ? page.nodes : [];
-      nodes.push(...batch);
+      nodes.push(...(titles ? batch.map((node) => withTitle(node, titles)) : batch));
       offset += batch.length;
       if (!batch.length || offset >= page.total) break;
     }
   };
   await Promise.all([...owners].map(read));
   return buildEntryLineage(members, nodes);
+}
+
+function withTitle(node: LineageNode, titles: Pick<LineageTitles, "titleFor">): LineageNode {
+  const runId = (node as { runId?: unknown } | null)?.runId;
+  const title = typeof runId === "number" ? titles.titleFor(runId) : undefined;
+  return title ? { ...node, title } : node;
 }
 
 /** Who wants to hear that lineage may have changed, per directory. Over-notifying is safe: the host compares revisions. */
@@ -99,20 +112,26 @@ export function lineageContribution(
   backend: TraceBackend,
   available: (directory: string) => FileViewEligibility,
   subscriptions = lineageSubscriptions,
+  titles?: LineageTitles,
 ): EntryLineageContribution {
   return {
     id: LINEAGE_ID,
     title: "Traces",
     available,
-    load: (directory, signal) => loadFolderLineage(backend, directory, signal),
-    subscribe: (directory, changed) => subscriptions.subscribe(directory, changed),
+    load: (directory, signal) => loadFolderLineage(backend, directory, signal, titles),
+    subscribe: (directory, changed) => {
+      const off = subscriptions.subscribe(directory, changed);
+      // A late summary changes the labels, so the host must reload.
+      const offTitles = titles?.subscribe(changed);
+      return () => { off(); offTitles?.(); };
+    },
   };
 }
 
 /** Registers the contribution and its command; does nothing on hosts without `entryLineage`. */
-export function registerLineage(ctx: PluginContext, backend: TraceBackend, available: (directory: string) => FileViewEligibility): boolean {
+export function registerLineage(ctx: PluginContext, backend: TraceBackend, available: (directory: string) => FileViewEligibility, titles?: LineageTitles): boolean {
   if (!hostSupportsEntryLineage(ctx)) return false;
-  ctx.registerEntryLineage!(lineageContribution(backend, available));
+  ctx.registerEntryLineage!(lineageContribution(backend, available, lineageSubscriptions, titles));
   ctx.registerCommand({
     id: "plugin.trace.show-traces", label: "Show Traces", category: "view",
     handler: () => ctx.workspace.toggleEntryLineage?.(LINEAGE_ID),

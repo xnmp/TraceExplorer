@@ -10,7 +10,10 @@
  *   sees present ancestors;
  * - a parent in a subfolder or outside the folder becomes an `external` parent
  *   and is not looked through;
- * - input order is kept and duplicates are removed.
+ * - input order is kept and duplicates are removed;
+ * - `labels` carries each member's prompt (and short title, when the caller has one) for the host's
+ *   Prompt column and row labels. Non-string or blank text is skipped; the map is omitted when no
+ *   file has any.
  * Malformed input (unknown keys, cycles, missing paths) is skipped, never thrown.
  */
 import type { EntryLineage, LineageParent } from "../../../integration/plugin-sdk";
@@ -32,7 +35,37 @@ export interface LineageNode {
   /** Superseded by a later in-place edit at the same path; only the newest revision is a folder member. */
   readonly earlierRevision?: boolean;
   readonly referenceBadge?: { readonly path: string } | null;
+  /** The prompt that made this node (`NodeRecord.prompt`); untrusted text. */
+  readonly prompt?: string | null;
+  /** A short summary of the prompt, when one already exists. */
+  readonly title?: string | null;
 }
+
+/** Bounds a runaway prompt before it crosses the SDK boundary; the host applies the same limits. */
+export const LABEL_PROMPT_MAX = 2000;
+export const LABEL_TITLE_MAX = 200;
+
+const labelText = (value: unknown, max: number): string | undefined => {
+  if (typeof value !== "string") return undefined;
+  const text = value.trim();
+  if (!text) return undefined;
+  return text.length > max ? `${text.slice(0, max - 1).trimEnd()}…` : text;
+};
+
+function labelsOf(valid: readonly LineageMember[], nodeByKey: ReadonlyMap<string, LineageNode>): ReadonlyMap<string, LabelText> {
+  const labels = new Map<string, LabelText>();
+  for (const member of valid) {
+    if (labels.has(member.path)) continue;
+    const node = nodeByKey.get(member.key);
+    if (!node) continue;
+    const prompt = labelText(node.prompt, LABEL_PROMPT_MAX);
+    const title = labelText(node.title, LABEL_TITLE_MAX);
+    if (prompt !== undefined || title !== undefined) labels.set(member.path, { ...(prompt !== undefined && { prompt }), ...(title !== undefined && { title }) });
+  }
+  return labels;
+}
+
+type LabelText = { readonly prompt?: string; readonly title?: string };
 
 const parentKeys = (node: LineageNode): readonly unknown[] => Array.isArray(node.parents) ? node.parents : [];
 
@@ -93,7 +126,8 @@ export function buildEntryLineage(memberList: readonly LineageMember[], nodeList
       .filter((parent) => !(parent.kind === "entry" && parent.path === member.path));
     if (list.length) parents.set(member.path, list);
   }
-  return { revision: revisionOf(parents), parents };
+  const labels = labelsOf(valid, nodeByKey);
+  return { revision: revisionOf(parents, labels), parents, ...(labels.size && { labels }) };
 }
 
 function externalParent(node: LineageNode): LineageParent | null {
@@ -114,7 +148,7 @@ function distinct(list: readonly LineageParent[]): LineageParent[] {
 }
 
 /** Content hash of the lineage in a canonical order, so equal lineage has equal revision. */
-function revisionOf(parents: ReadonlyMap<string, readonly LineageParent[]>): string {
+function revisionOf(parents: ReadonlyMap<string, readonly LineageParent[]>, labels: ReadonlyMap<string, LabelText>): string {
   let a = 0xdeadbeef, b = 0x41c6ce57;
   const feed = (text: string) => {
     for (let i = 0; i < text.length; i += 1) {
@@ -128,6 +162,11 @@ function revisionOf(parents: ReadonlyMap<string, readonly LineageParent[]>): str
     for (const parent of parents.get(path)!) {
       feed(parent.kind === "entry" ? `\u0002${parent.path}` : `\u0003${parent.key}\u0004${parent.label}\u0004${parent.thumbnailPath ?? ""}`);
     }
+  }
+  // Labels are fed only when present, so a folder without any keeps its pre-labels revision.
+  for (const path of [...labels.keys()].sort()) {
+    const label = labels.get(path)!;
+    feed(`\u0005${path}\u0006${label.prompt ?? ""}\u0006${label.title ?? ""}`);
   }
   a = Math.imul(a ^ (a >>> 16), 2246822507) ^ Math.imul(b ^ (b >>> 13), 3266489909);
   b = Math.imul(b ^ (b >>> 16), 2246822507) ^ Math.imul(a ^ (a >>> 13), 3266489909);
