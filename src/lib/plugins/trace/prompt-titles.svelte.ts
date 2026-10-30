@@ -67,7 +67,7 @@ async function drain() {
 
 export const promptTitles = {
   get configured() { return configured; },
-  /** A generated title, if one exists now. Never requests one. */
+  /** A generated title, if one exists now. */
   titleFor(runId: number): string | undefined { return titles[runId] || undefined; },
   /** Calls `changed` when a title arrives or the set is cleared. */
   subscribe(changed: () => void): () => void { listeners.add(changed); return () => { listeners.delete(changed); }; },
@@ -81,6 +81,7 @@ export const promptTitles = {
       && /^[a-f0-9]{64}$/.test(description.context.fingerprint)) {
       context = description.context;
       configured = true;
+      announce(); // A lineage load that ran first could not ask for its titles.
     }
   },
   bind(ctx: Pick<PluginContext, "storage" | "text">) {
